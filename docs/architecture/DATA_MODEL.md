@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-26
 
 ---
 
@@ -86,7 +86,7 @@ Several tables use `*_json` TEXT columns to store structured data that varies by
 
 ### Database Schema
 
-The following 35 tables are created by the migration system in `kvDb.ts`:
+The following 40 tables are created by the migration system in `kvDb.ts`:
 
 #### Key-Value Store
 
@@ -1043,7 +1043,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 ### Completed
 
 - SQLite database initialization with sql.js WASM
-- Complete schema with 35 tables and 70+ indexes
+- Complete schema with 40 tables and 80+ indexes
 - Debounced flush strategy (125ms after last write)
 - Parameterized query API (no SQL injection)
 - KV store for layout and settings
@@ -1055,6 +1055,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - Automation run logging: `automation_runs`, `automation_action_results` (Phase 8)
 - Missions persistence: `missions`, `mission_steps`, `mission_events`, `mission_artifacts`, `mission_interventions` (Phase 1)
 - Context hardening persistence: `orchestrator_runs`, `orchestrator_steps`, `orchestrator_attempts`, `orchestrator_claims`, `orchestrator_context_snapshots`, `mission_step_handoffs` (Phase 1.5)
+- Orchestrator evolution persistence: `memories` (with status/agent_id/confidence/promoted_at/source_run_id extensions), `agent_identities` (agent definition/identity store), `orchestrator_shared_facts`, `attempt_transcripts` (Orchestrator Evolution)
 - Lanes table extended with: `lane_type`, `attached_root_path`, `is_edit_protected`, `parent_lane_id`, `color`, `icon`, `tags_json`
 - Terminal sessions table extended with: `tracked`, `goal`, `tool_type`, `pinned`, `summary`
 - Process runtime table extended with `lane_id` (per-lane process isolation, with legacy migration)
@@ -1136,3 +1137,105 @@ Phase 1.5 gate reporting snapshots now persist evaluation outputs for:
 - pack freshness by type,
 - context completeness rate for orchestrated attempts,
 - blocked-run rate due to insufficient context (with reason metadata).
+
+---
+
+## 2026-02-25 Addendum — Orchestrator Evolution Tables
+
+### New Tables
+
+#### Memories (with schema extensions)
+
+```sql
+CREATE TABLE IF NOT EXISTS memories (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL,
+  scope             TEXT NOT NULL,
+  category          TEXT NOT NULL,
+  content           TEXT NOT NULL,
+  importance        TEXT DEFAULT 'medium',
+  source_session_id TEXT,
+  source_pack_key   TEXT,
+  created_at        TEXT NOT NULL,
+  last_accessed_at  TEXT NOT NULL,
+  access_count      INTEGER DEFAULT 0,
+  -- New columns (added via addColumnIfMissing):
+  status            TEXT DEFAULT 'promoted',     -- 'candidate' | 'promoted' | 'archived'
+  agent_id          TEXT,                        -- originating agent identity
+  confidence        REAL DEFAULT 1.0,            -- 0.0-1.0 confidence score
+  promoted_at       TEXT,                        -- timestamp when promoted from candidate
+  source_run_id     TEXT                         -- orchestrator run that created this memory
+);
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
+CREATE INDEX IF NOT EXISTS idx_memories_project_status ON memories(project_id, status);
+```
+
+Stores project-level memories with a lifecycle: `candidate` (discovered by agents), `promoted` (confirmed as valuable), `archived` (superseded or incorrect). New columns support the memory promotion flow: agents create candidate memories during runs, high-confidence facts are auto-promoted on run completion, and users can manually promote/archive via the Context Budget Panel.
+
+#### Agent Identities (Schema Placeholder)
+
+```sql
+CREATE TABLE IF NOT EXISTS agent_identities (
+  id                     TEXT PRIMARY KEY,
+  project_id             TEXT NOT NULL,
+  name                   TEXT NOT NULL,           -- "Developer Agent", "Testing Agent"
+  profile_json           TEXT NOT NULL DEFAULT '{}',  -- role, rules, capabilities
+  persona_json           TEXT NOT NULL DEFAULT '{}',  -- communication style, preferences
+  tool_policy_json       TEXT NOT NULL DEFAULT '{}',  -- allowed/denied tools, permission level
+  user_preferences_json  TEXT NOT NULL DEFAULT '{}',  -- per-agent user preferences
+  heartbeat_json         TEXT,                    -- last activity, health, resource usage
+  model_preference       TEXT,                    -- preferred model ID
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_identities_project ON agent_identities(project_id);
+```
+
+Identity and policy store for agent definitions. Supports runtime profile reconstruction (identity, tool policy, user preferences, heartbeat) and agent-bound memory scoping.
+
+#### Orchestrator Shared Facts
+
+```sql
+CREATE TABLE IF NOT EXISTS orchestrator_shared_facts (
+  id          TEXT PRIMARY KEY,
+  run_id      TEXT NOT NULL,
+  step_id     TEXT,
+  fact_type   TEXT NOT NULL,              -- 'discovery' | 'decision' | 'blocker' | 'dependency'
+  content     TEXT NOT NULL,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_shared_facts_run ON orchestrator_shared_facts(run_id);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_shared_facts_run_type ON orchestrator_shared_facts(run_id, fact_type);
+```
+
+Stores facts discovered by agents during a mission run. Facts are injected into subsequent agent prompts via `buildFullPrompt()`, enabling collective knowledge sharing across agents. The pre-compaction writeback step extracts facts before context compaction to prevent knowledge loss.
+
+#### Attempt Transcripts
+
+```sql
+CREATE TABLE IF NOT EXISTS attempt_transcripts (
+  id                  TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL,
+  attempt_id          TEXT NOT NULL,
+  run_id              TEXT NOT NULL,
+  step_id             TEXT NOT NULL,
+  messages_json       TEXT NOT NULL,        -- JSON array of conversation messages
+  token_count         INTEGER DEFAULT 0,
+  compacted_at        TEXT,                 -- timestamp of last compaction
+  compaction_summary  TEXT,                 -- summary generated during compaction
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attempt_transcripts_attempt ON attempt_transcripts(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_transcripts_run ON attempt_transcripts(run_id);
+```
+
+Stores the full conversation history for each orchestrator attempt. Used by the compaction engine (records compaction events) and session resume (`resumeUnified()` loads the latest transcript to restore agent state). The `messages_json` column contains the complete message array; `compaction_summary` stores the compressed summary after compaction.
+
+### Run Narrative Metadata
+
+The `orchestrator_runs` table's `metadata_json` column now includes a `runNarrative` field — a rolling text summary of mission progress that is appended after each step completion via `appendRunNarrative()`. This narrative is displayed in the Activity tab's Run Narrative section.
+
+### Updated Table Count
+
+The schema now contains **40 tables** (up from 35) with the addition of: `memories`, `agent_identities`, `orchestrator_shared_facts`, `attempt_transcripts`, and `orchestrator_timeline_events`/`orchestrator_gate_reports` (from Phase 2 addendum).

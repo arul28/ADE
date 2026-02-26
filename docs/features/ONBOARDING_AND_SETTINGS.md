@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-26
 
 ---
 
@@ -100,9 +100,9 @@ Presented as a step-by-step wizard (`OnboardingPage`) when the opened repository
 | `pyproject.toml` | Suggests `pip install -e .`, `pytest` |
 | `.github/workflows/` | Parses YAML workflow files, imports test/lint commands from CI steps |
 
-Detection also generates default automation rules (session-end conflict prediction) and default provider configuration (context tool generators for Codex and Claude).
+Detection also generates default agent suggestions (for example, a session-end health automation agent) and default provider configuration (context tool generators for Codex and Claude).
 
-**Step 3 — Review Config**: Full-page form showing suggested processes, tests, stack buttons, and automations. User can edit each section before saving. Supports "Append" mode (merge with existing) and "Replace" mode (overwrite). Automations are displayed alongside processes and tests for review.
+**Step 3 — Review Config**: Full-page form showing suggested processes, tests, stack buttons, and agents. User can edit each section before saving. Supports "Append" mode (merge with existing) and "Replace" mode (overwrite). Agents are displayed alongside processes and tests for review.
 
 **Step 4 — Detect Branches**: Scans for existing local branches (via `git for-each-ref refs/heads`). Displays a table showing each branch's ahead/behind counts relative to the base ref, whether it has a remote tracking branch, and whether it is the current branch. Filters out branches already tracked as ADE lanes.
 
@@ -186,9 +186,33 @@ The dashboard includes:
 
 Usage data is stored locally in SQLite (`ai_usage_log` table) with columns: `id`, `timestamp`, `feature`, `provider`, `model`, `input_tokens`, `output_tokens`, `duration_ms`, `success`, `session_id` (optional link to terminal/mission session).
 
-**Implementation status**: The backend infrastructure (`ai_usage_log` table, `logUsage()` recording, daily budget enforcement via `checkBudget()`, aggregated usage queries, and token cost estimation) is fully implemented. A usage dashboard component exists in the Missions tab (`UsageDashboard.tsx`) showing summary cards, model breakdowns, mission breakdowns, and recent sessions. The Settings-embedded version with per-feature progress bars and sparkline history is not yet built.
+**Implementation status**: The backend infrastructure (`ai_usage_log` table, `logUsage()` recording, daily budget enforcement via `checkBudget()`, aggregated usage queries, and token cost estimation) is fully implemented. A usage dashboard component exists in the Missions tab (`UsageDashboard.tsx`) showing summary cards, model breakdowns, mission breakdowns, and recent sessions. The `UsageDashboard` also includes Context Budget Panel functionality for monitoring memory and context usage during active missions. The Settings-embedded version with per-feature progress bars and sparkline history is not yet built.
 
 The usage dashboard connects to the Agents hub (Phase 4) by providing the budget enforcement infrastructure — agent guardrails (including Night Shift agent budget caps) reuse the same per-feature limits and usage counters.
+
+**Memory Settings**: Configuration for scoped memory namespaces that support agent knowledge persistence across missions.
+
+| Setting | Options | Default | Description |
+|---------|---------|---------|-------------|
+| Memory budget level | `lite` / `standard` / `deep` | `standard` | Controls how much memory context is injected into agent prompts. |
+| Auto-promote candidates | Toggle | On | When enabled, candidate memories with sufficient confidence are automatically promoted on run completion. |
+| Read scopes | Checkboxes: `run` / `project` / `identity` / `daily-log` | `run`, `project`, `identity` | Controls which scoped memories are retrieved into runtime context. |
+| Write scopes | Checkboxes: `run` / `project` / `identity` | `run` | Controls where runtime writeback is allowed by default. |
+
+Memory settings persist to `.ade/local.yaml` under `ai.memory`.
+
+**Implementation status**: The `memoryService` backend (`apps/desktop/src/main/services/memory/memoryService.ts`) is fully implemented with candidate/promoted status tracking, confidence scoring, shared facts, and scoped retrieval/query methods for prompt injection. The Settings UI for full scope policy control is not yet built.
+
+**Compaction Settings**: Configuration for SDK agent context compaction during long-running missions.
+
+| Setting | Options | Default | Description |
+|---------|---------|---------|-------------|
+| Compaction threshold | Percentage slider | 70% | Context window usage percentage at which compaction triggers. Lower values compact more aggressively (preserves headroom); higher values allow more context before compacting. |
+| Pre-compaction fact writeback | Toggle | On | When enabled, facts are extracted from the transcript and persisted to the memory service before compaction. |
+
+Compaction settings persist to `.ade/local.yaml` under `ai.compaction`.
+
+**Implementation status**: The compaction engine (`apps/desktop/src/main/services/ai/compactionEngine.ts`) is fully implemented with transcript persistence (`attempt_transcripts` table), compaction monitoring, fact writeback, and session resume. The Settings UI for compaction configuration is not yet built.
 
 **AI Permissions & Sandbox Configuration**: A dedicated section for controlling how Claude and Codex agents operate when invoked by ADE. These settings determine the security posture and autonomy level of AI agents across all ADE features.
 
@@ -310,7 +334,7 @@ Note: Daytona integration is always opt-in. It provides isolated cloud sandbox e
 |---------|--------|------|
 | `projectService` | Exists | Repository initialization, `.ade/` creation, project metadata |
 | `projectConfigService` | Exists | Config CRUD, validation, trust confirmation, schema enforcement |
-| `onboardingService` | Exists | Detection of project defaults (node/rust/go/python/make/docker/CI), suggested config generation (incl. default automations and provider config), existing branch detection with ahead/behind computation, initial pack generation |
+| `onboardingService` | Exists | Detection of project defaults (node/rust/go/python/make/docker/CI), suggested config generation (incl. default agents and provider config), existing branch detection with ahead/behind computation, initial pack generation |
 | `keybindingsService` | Exists | Keybinding override store. Reads definitions from `shared/keybindings.ts`, persists user overrides via `kvDb`. |
 | `terminalProfilesService` | Exists | Terminal launch profile management. Default profiles: Shell, Claude, Codex, Aider. Merge-defaults pattern, persisted via `kvDb`. |
 | `kvDb` | Exists | Persists theme, keybinding overrides, terminal profiles, and local settings outside YAML config |
@@ -327,7 +351,7 @@ Note: Daytona integration is always opt-in. It provides isolated cloud sandbox e
 | `ade.projectConfig.confirmTrust()` | Exists | Marks shared config as trusted |
 | `ade.app.getInfo()` | Exists | Returns `AppInfo` (version, platform, etc.) |
 | `ade.onboarding.getStatus()` | Exists | Returns `OnboardingStatus` (completedAt timestamp or null) |
-| `ade.onboarding.detectDefaults()` | Exists | Scans repo for project indicators, returns `OnboardingDetectionResult` with suggested config incl. automations and provider defaults |
+| `ade.onboarding.detectDefaults()` | Exists | Scans repo for project indicators, returns `OnboardingDetectionResult` with suggested config incl. agents and provider defaults |
 | `ade.onboarding.detectExistingLanes()` | Exists | Scans for local branches, returns `OnboardingExistingLaneCandidate[]` with ahead/behind/remote/isCurrent per branch |
 | `ade.onboarding.generateInitialPacks(args)` | Exists | Triggers initial pack generation for project and selected lane IDs |
 | `ade.onboarding.complete()` | Exists | Marks onboarding as complete, returns `OnboardingStatus` |
@@ -353,7 +377,7 @@ OnboardingPage (route: /onboarding, 7-step wizard)
   |    +-- Process list editor (add/edit/remove)
   |    +-- Test suite editor (add/edit/remove)
   |    +-- Stack button editor (add/edit/remove)
-  |    +-- Agent rule editor (add/edit/remove)
+  |    +-- Agent editor (add/edit/remove)
   |    +-- Append/Replace mode toggle
   +-- DetectBranchesStep (branch table with ahead/behind/remote columns)
   +-- ImportBranchesStep (sequential import with parent lane selection)
@@ -375,6 +399,13 @@ SettingsPage (route: /settings)
   |    +-- BudgetControlsTable (per-feature limits)
   |    +-- UsageHistoryChart (sparkline/bar)
   |    +-- ExportButton (JSON export)
+  +-- AIMemorySettingsSection
+  |    +-- MemoryBudgetLevelPicker (lite / standard / deep)
+  |    +-- AutoPromoteCandidatesToggle
+  |    +-- MemoryScopeVisibilityCheckboxes (user, project, lane, mission)
+  +-- AICompactionSettingsSection
+  |    +-- CompactionThresholdSlider (percentage, default 70%)
+  |    +-- FactWritebackToggle (default on)
   +-- AIPermissionsSandboxSection
   |    +-- ClaudePermissionsCard (permission mode, settings sources, CLAUDE.md, budget, sandbox)
   |    +-- CodexPermissionsCard (sandbox level, approval mode, writable paths, command allowlist)
@@ -419,7 +450,7 @@ SettingsPage (route: /settings)
 **Onboarding**: User opens project via file picker (`ade.project.openRepo`). Main
 validates git repo, returns `ProjectInfo`. Renderer calls `ade.onboarding.detectDefaults()`
 to scan for indicators, which returns `OnboardingDetectionResult` with project types,
-indicators, suggested config (including automations and provider defaults), and
+indicators, suggested config (including agent definitions and provider defaults), and
 suggested workflows. User reviews and edits the suggested config. Renderer calls
 `ade.onboarding.applySuggestedConfig()` (via `projectConfig.save`) to write files.
 Next, `ade.onboarding.detectExistingLanes()` scans for local branches and returns
@@ -511,6 +542,21 @@ ai:
     codex_sandbox: workspace-write     # read-only | workspace-write | full-access
     claude_permission_mode: acceptEdits # plan | acceptEdits | bypassPermissions
     session_budget_usd: 10.00
+  memory:
+    budget_level: standard             # lite | standard | deep
+    auto_promote_candidates: true
+    read_scopes:
+      run: true
+      project: true
+      identity: true
+      daily_log: false
+    write_scopes:
+      run: true
+      project: false
+      identity: false
+  compaction:
+    threshold_percent: 70              # 0-100, context window % before compaction triggers
+    fact_writeback: true               # extract facts before compacting
 preferences:
   theme: "dark"
   confirmBeforeExecute: true
@@ -525,7 +571,7 @@ trusted:
 interface OnboardingDetectionResult {
   projectTypes: string[];             // e.g. ["node", "docker", "ci"]
   indicators: OnboardingDetectionIndicator[];
-  suggestedConfig: ProjectConfigFile; // Full suggested config incl. processes, tests, stacks, automations, providers
+  suggestedConfig: ProjectConfigFile; // Full suggested config incl. processes, tests, stacks, agents, providers
   suggestedWorkflows: Array<{ path: string; kind: "github-actions" | "gitlab-ci" | "other" }>;
 }
 
@@ -580,7 +626,7 @@ interface OnboardingStatus {
 | ONBOARD-008 | Onboarding wizard UI | 7-step wizard (welcome, detect-defaults, review-config, detect-branches, import-branches, generate-packs, complete) with progress indicator | DONE |
 | ONBOARD-009 | Suggested process definitions | Generate entries from detection results (install, build per detected ecosystem) | DONE |
 | ONBOARD-010 | Suggested test definitions | Generate test entries from detection + CI-derived commands (filtered to test/lint patterns, max 6) | DONE |
-| ONBOARD-011 | Config review step | Edit suggested config (processes, tests, stacks, automations) with append/replace mode before saving | DONE |
+| ONBOARD-011 | Config review step | Edit suggested config (processes, tests, stacks, agents) with append/replace mode before saving | DONE |
 | ONBOARD-013 | "What ADE will do" previews | Pre-execution dialogs for shared config | PARTIAL — onboarding previews implemented; generic pre-execution dialogs TBD |
 | ONBOARD-014 | AI provider detection UI | Detected CLI tools display with subscription status and per-task model routing | DONE |
 | ONBOARD-016 | Keybindings viewer | Shortcut table by scope with action, default, override, effective columns | DONE |
@@ -594,7 +640,7 @@ interface OnboardingStatus {
 | ONBOARD-024 | Initial pack generation trigger | Run pack generation for project and all detected lanes during onboarding | DONE |
 | ONBOARD-027 | Terminal profiles service | Default launch profiles (Shell, Claude, Codex, Aider) with user customization. Persisted via kvDb. | DONE |
 | ONBOARD-028 | Terminal profiles UI | TerminalProfilesSection in Settings for profile CRUD (name, command, args, cwd, env) | DONE |
-| ONBOARD-029 | Suggested automations in onboarding | Default automation rules (session-end conflict prediction) generated as part of suggested config | DONE |
+| ONBOARD-029 | Suggested agents in onboarding | Default agent rules (session-end conflict prediction and baseline maintenance) generated as part of suggested config | DONE |
 | ONBOARD-030 | Suggested provider config in onboarding | Default context tool generators (Codex, Claude) and conflict resolvers generated in suggested config | DONE |
 | ONBOARD-031 | GitHub settings section | Local PAT management and PR polling interval configuration | DONE |
 | ONBOARD-032 | AI feature toggles UI and persistence | Per-feature AI enable/disable toggles with master toggle, persisted to `local.yaml` under `ai.features` | TODO |
@@ -605,6 +651,9 @@ interface OnboardingStatus {
 | ONBOARD-037 | Dynamic model picker for task routing | Per-task model dropdown populated from `supportedModels()` (Claude) and hardcoded list (Codex). Users can assign any model to any task type | TODO |
 | ONBOARD-038 | Settings honoring behavior display | Show whether .claude/settings.json and codex.toml exist, explain override behavior, allow opt-in for project settings sources | TODO |
 | ONBOARD-039 | Agent chat settings UI | Chat-specific settings: default provider, approval policy, send-on-enter, per-provider sandbox/permission, session budget | TODO |
+| ONBOARD-040 | Memory settings UI | Memory budget level picker (lite/standard/deep), auto-promote toggle, read/write scope policy controls. Backend: `memoryService` with candidate promotion, shared facts, and scoped retrieval/writeback — all implemented. | TODO (UI) |
+| ONBOARD-041 | Compaction settings UI | Compaction threshold slider, fact writeback toggle. Backend: `compactionEngine` with `attempt_transcripts` table, compaction monitoring, fact writeback — all implemented. | TODO (UI) |
+| ONBOARD-042 | Context Budget Panel (Missions) | Context budget visibility in mission Details tab via `UsageDashboard.tsx`, showing memory usage and context window consumption during active missions | DONE |
 
 ### Dependency Notes
 

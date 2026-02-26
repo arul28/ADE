@@ -21,6 +21,57 @@ export type OrchestratorMetadata = Record<string, unknown>;
  *  instructions, missionGoal, laneId, etc. */
 export type MissionStepMetadata = Record<string, unknown>;
 
+// ---------------------------------------------------------------------------
+// Fan-out types — used by the meta-reasoner and orchestrator fan-out logic
+// ---------------------------------------------------------------------------
+
+/** Fan-out configuration stored in step metadata. */
+export type FanOutConfig = {
+  enabled: boolean;
+  maxChildren: number;
+  dispatchStrategy?: "auto" | "external_only" | "internal_only";
+  groupByFileOwnership?: boolean;
+};
+
+/** Fan-out tracking fields stored in step metadata. */
+export type FanOutTracking = {
+  fanOutParent?: string;
+  fanOutChildren?: string[];
+  fanOutStrategy?: string;
+  fanOutComplete?: boolean;
+};
+
+/** Decision returned by the meta-reasoner for fan-out dispatch. */
+export type FanOutDecision = {
+  strategy: "inline" | "internal_parallel" | "external_parallel" | "hybrid";
+  subtasks: Array<{
+    title: string;
+    instructions: string;
+    files: string[];
+    complexity: "trivial" | "simple" | "moderate" | "complex";
+    estimatedTokens?: number;
+  }>;
+  reasoning: string;
+  clusters?: Array<{
+    subtaskIndices: number[];
+    reason: string;
+  }>;
+};
+
+/** Emitted when the coordinator mutates the mission DAG. Streamed to UI for reactive updates. */
+export type DagMutationEvent = {
+  runId: string;
+  mutation:
+    | { type: "step_added"; step: OrchestratorStep }
+    | { type: "step_skipped"; stepKey: string; reason: string }
+    | { type: "steps_merged"; sourceKeys: string[]; targetStep: OrchestratorStep }
+    | { type: "step_split"; sourceKey: string; children: OrchestratorStep[] }
+    | { type: "dependency_changed"; stepKey: string; newDeps: string[] }
+    | { type: "status_changed"; stepKey: string; newStatus: string };
+  timestamp: string;
+  source: "coordinator" | "system" | "user";
+};
+
 export type AppInfo = {
   appVersion: string;
   isPackaged: boolean;
@@ -2848,39 +2899,7 @@ export type ListMissionsArgs = {
   limit?: number;
 };
 
-// ---------------------------------------------------------------------------
-// Orchestrator intelligence / per-call-type model configuration
-// ---------------------------------------------------------------------------
-
-/** The 7 call types the orchestrator AI uses to think */
-export type OrchestratorCallType =
-  | "coordinator"
-  | "worker_evaluation"
-  | "quality_gate"
-  | "failure_diagnosis"
-  | "plan_adjustment"
-  | "intervention_handling"
-  | "chat_response";
-
-/** Per-call-type model configuration */
-export type OrchestratorCallTypeModelConfig = {
-  provider: "claude" | "codex";
-  modelId: string;
-  thinkingLevel: "low" | "medium" | "high";
-};
-
-/** Map of call type -> model config. Used in mission launch metadata. */
-export type OrchestratorIntelligenceConfig = Partial<Record<OrchestratorCallType, OrchestratorCallTypeModelConfig>>;
-
-/** Full model config for a mission (includes per-call-type overrides + legacy fields) */
-export type MissionModelConfig = {
-  /** Legacy: single model for the whole orchestrator */
-  orchestratorModel?: string;
-  /** Per-call-type intelligence config */
-  intelligenceConfig?: OrchestratorIntelligenceConfig;
-  /** Per-call-type thinking budgets (tokens) */
-  thinkingBudgets?: Record<string, number>;
-};
+// Orchestrator intelligence types are defined further below (near ModelConfig)
 
 export type CreateMissionArgs = {
   prompt: string;
@@ -3331,7 +3350,9 @@ export type OrchestratorRuntimeEventType =
   | "coordinator_consolidate"
   | "coordinator_shutdown"
   | "step_dependencies_updated"
-  | "step_metadata_updated";
+  | "step_metadata_updated"
+  | "fan_out_dispatched"
+  | "fan_out_complete";
 
 export type OrchestratorRuntimeQuestionLink = {
   threadId: string;
@@ -5244,6 +5265,50 @@ export type GetAggregatedUsageArgs = {
   since?: string | null;
   limit?: number;
   missionId?: string | null;
+};
+
+// ── Inter-agent messaging types ──
+
+export type GetGlobalChatArgs = {
+  missionId: string;
+  since?: string | null;
+  limit?: number;
+};
+
+export type DeliverMessageArgs = {
+  missionId: string;
+  targetAttemptId: string;
+  content: string;
+  priority?: "normal" | "urgent";
+  fromAttemptId?: string | null;
+};
+
+export type GetActiveAgentsArgs = {
+  missionId: string;
+};
+
+export type ActiveAgentInfo = {
+  attemptId: string;
+  stepId: string;
+  stepKey: string | null;
+  runId: string;
+  sessionId: string | null;
+  state: OrchestratorWorkerStatus;
+  executorKind: OrchestratorExecutorKind;
+};
+
+export type ContextBudget = {
+  systemPromptTokens: number;
+  toolSchemaTokens: number;
+  historyTokens: number;
+  memoryTokens: number;
+  docsTokens: number;
+  totalTokens: number;
+  modelContextWindow: number;
+  utilizationPct: number;
+  truncationEvents: number;
+  compactionEvents: number;
+  lastCompactedAt?: string;
 };
 
 export const SLASH_COMMAND_TRANSLATIONS: Record<string, { prompt: string; interactive: boolean }> = {

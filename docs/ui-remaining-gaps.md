@@ -1,8 +1,36 @@
 # UI Overhaul — Consolidated Remaining Gaps
 
-> **Context:** Three rounds of agents have completed the foundation: theme system (deep blue-navy dark, warm off-white light), glassmorphism on all floating panes, semantic color tokens replacing all hardcoded zinc, input/card standardization across 30+ files, 3D graph scene with Bloom/Vignette/camera-fly/minimap/search/detail-panel/edge-particles, stagger animations (first-visit-only), spring physics in motion.ts, per-tab tint system, Phosphor icons, Geist fonts. All of that is DONE. This doc covers ONLY what is still missing.
+Last updated: 2026-02-26
+
+> **Context:** Three rounds of agents have completed the foundation: theme system (deep blue-navy dark, warm off-white light), glassmorphism on all floating panes, semantic color tokens replacing all hardcoded zinc, input/card standardization across 30+ files, 3D graph scene with Bloom/Vignette/camera-fly/minimap/search/detail-panel/edge-particles, stagger animations (first-visit-only), spring physics in motion.ts, per-tab tint system, Phosphor icons, Geist fonts. All of that is DONE. The Orchestrator Evolution (Project Hivemind) has additionally resolved several mission UI gaps. This doc covers ONLY what is still missing.
 
 > **CRITICAL WARNING — DISK SAFETY:** **NEVER spawn background bash tasks that run in loops.** Do NOT use `while true` or polling loops in background shell commands.
+
+---
+
+## Recently Resolved (Project Hivemind — Orchestrator Evolution)
+
+The following gaps were resolved as part of the Orchestrator Evolution workstreams:
+
+### RESOLVED: Mission Chat Redesign
+- **Old state:** Separate channels and transcript tabs with fragmented agent communication
+- **New state:** `MissionChatV2` component provides a unified Slack-like chat UI with @mention support, inline inter-agent messages, agent identity badges, and timestamps. The former `AgentChannels` separate tab is replaced by the integrated "chat" tab.
+
+### RESOLVED: Progress Bar Duplication
+- **Old state:** Multiple overlapping progress indicators in mission detail view
+- **New state:** Single `PhaseProgressBar` component replaces all duplicated progress bars with a clean, unified progress indicator.
+
+### RESOLVED: DAG Spinning Animation
+- **Old state:** DAG node animations were janky or missing
+- **New state:** `OrchestratorDAG` now uses SVG `animateTransform` for smooth, performant node state animations.
+
+### RESOLVED: ExecutionPlanPreview Clutter
+- **Old state:** `ExecutionPlanPreview` component added visual noise to mission detail
+- **New state:** Component removed entirely. Mission plan is visible through the DAG visualization and chat timeline.
+
+### RESOLVED: Tab Naming
+- **Old state:** Mission sub-tabs used "usage" and "channels" labels
+- **New state:** Renamed to "details" and "chat" respectively for clarity.
 
 ---
 
@@ -95,8 +123,8 @@ Still missing:
 - Scroll-driven line draw: SVG `stroke-dashoffset` animation tied to scroll position (the timeline line draws itself as you scroll)
 - Events leaving viewport: fade to 50% opacity (use `IntersectionObserver`)
 
-### 3E. Automations Tab — Flow & Sparklines
-**File:** `AutomationsPage.tsx`
+### 3E. Agents Tab — Flow & Sparklines
+**File:** `AgentsPage.tsx` (legacy implementations may still reference `AutomationsPage.tsx`)
 
 - Trigger→action connecting line: add animated flow particles (tiny dots moving left to right along the line)
 - Run history sparkline per automation: last 20 executions as small dots (green=success, red=failure) below each rule
@@ -112,14 +140,10 @@ Still missing:
 - Kanban columns exist but drag-and-drop between columns (manual override) is not implemented
 - Add drag support using native HTML drag API or a lightweight library
 
-### 4B. Agent Channels Refinement
-**File:** `AgentChannels.tsx`
+### ~~4B. Agent Channels Refinement~~ — RESOLVED
+**Replaced by:** `MissionChatV2` Slack-like unified chat (see Recently Resolved section above). The former `AgentChannels.tsx` component is superseded.
 
-- Channel sidebar: tighter spacing, active channels get a green dot indicator, unread messages show cyan dot with count
-- Message bubbles: coordinator messages full-width, worker messages indented with 2px left border color-coded by agent
-- Input placeholder: "Send to [Agent Name]" (dynamic based on selected channel)
-
-### 4C. Usage Dashboard
+### 4C. Usage Dashboard (now "Details" tab)
 **File:** `UsageDashboard.tsx`
 
 - Big metric cards at top: tokens, cost, duration displayed as `text-2xl font-mono` numbers
@@ -198,25 +222,69 @@ Replace linear CSS `animate-pulse` with Framer Motion spring-based opacity anima
 
 ---
 
+## Gap 8: New Gaps from Orchestrator Evolution
+
+### 8A. MissionChat Legacy Code Cleanup
+**Files:** `MissionChat.tsx` (old), `MissionChatV2.tsx` (new)
+
+The old `MissionChat.tsx` component is still present in the codebase but unused — `MissionChatV2` has replaced it. The old file should be removed to avoid confusion and reduce bundle size.
+
+### 8B. Agent Identity UI
+**Files:** Mission chat components, agent configuration
+
+Agents in the Slack-like chat currently show basic labels. Missing:
+- Agent avatar/icon system (distinct visual identity per agent type and instance)
+- Agent capability badges (what tools/permissions each agent has)
+- Agent status indicators in chat (typing, executing, idle, errored)
+
+### 8C. Context Budget Panel Polish
+**File:** Context Budget Panel component
+
+The scoped memory visualization is functional but could benefit from:
+- Scope usage bars with color-coded thresholds (green/amber/red)
+- Drag-to-promote gesture for moving context entries between scopes
+- Compaction history timeline showing when compaction events occurred and what was preserved vs. summarized
+
+### 8D. Meta-Reasoner Strategy Visibility
+**File:** Mission detail components
+
+When the AI meta-reasoner selects a dispatch strategy, the decision rationale is not yet surfaced in the UI. Missing:
+- Strategy badge on mission header (sequential/parallel/wave/adaptive)
+- Expandable rationale panel explaining why the strategy was chosen
+- Strategy change notifications when adaptive mode switches strategies mid-mission
+
+---
+
 ## Summary Table
 
-| # | Gap | Complexity | Files |
-|---|-----|-----------|-------|
-| 1 | Sidebar collapse jitter | Medium | index.css, AppShell.tsx |
-| 2 | 3D Graph advanced (ChromaticAberration, force sim, instancing, GPU detect) | High | Graph3DScene.tsx |
-| 3A | Lanes: 36px tabs, SVG rounded corners, breadcrumb | Medium | LanesPage.tsx, LaneRow.tsx |
-| 3B | Files: editor tabs, cyan dirty dot, fade-in, tree lines | Medium | FilesPage.tsx |
-| 3C | PRs: chain SVG particles, merge animation | High | PRsPage.tsx, LanePrPanel.tsx |
-| 3D | History: scroll-driven line draw, viewport fade | Medium | HistoryPage.tsx |
-| 3E | Automations: flow particles, sparklines, NL dialog | High | AutomationsPage.tsx |
-| 4A | Missions kanban DnD | Medium | MissionsPage.tsx |
-| 4B | Agent channels refinement | Low | AgentChannels.tsx |
-| 4C | Usage dashboard bar chart | Medium | UsageDashboard.tsx |
-| 5 | Missions 2.5D DAG (Z-pop, line-draw, flow) | Medium | OrchestratorDAG.tsx |
-| 6A | Celebration: mission complete | Medium | MissionsPage.tsx |
-| 6B | Celebration: all tests pass | Low | ProjectHomePage.tsx |
-| 6C | Celebration: PR merge | Medium | PRsPage.tsx |
-| 6D | First-time event animations | Low | TabNav.tsx, various |
-| 7A | Sidebar mission glow (needs IPC) | Medium | TabNav.tsx + main process |
-| 7B | Terminal output pulse (needs IPC) | High | TerminalsPage.tsx + main process |
-| 7C | Status dots spring animation | Low | Multiple files |
+| # | Gap | Status | Complexity | Files |
+|---|-----|--------|-----------|-------|
+| 1 | Sidebar collapse jitter | Open | Medium | index.css, AppShell.tsx |
+| 2 | 3D Graph advanced (ChromaticAberration, force sim, instancing, GPU detect) | Open | High | Graph3DScene.tsx |
+| 3A | Lanes: 36px tabs, SVG rounded corners, breadcrumb | Open | Medium | LanesPage.tsx, LaneRow.tsx |
+| 3B | Files: editor tabs, cyan dirty dot, fade-in, tree lines | Open | Medium | FilesPage.tsx |
+| 3C | PRs: chain SVG particles, merge animation | Open | High | PRsPage.tsx, LanePrPanel.tsx |
+| 3D | History: scroll-driven line draw, viewport fade | Open | Medium | HistoryPage.tsx |
+| 3E | Agents: flow particles, sparklines, NL dialog | Open | High | AgentsPage.tsx |
+| 4A | Missions kanban DnD | Open | Medium | MissionsPage.tsx |
+| ~~4B~~ | ~~Agent channels refinement~~ | **RESOLVED** | — | Replaced by MissionChatV2 |
+| 4C | Usage dashboard bar chart (now "Details" tab) | Open | Medium | UsageDashboard.tsx |
+| 5 | Missions 2.5D DAG (Z-pop, line-draw, flow) | Open | Medium | OrchestratorDAG.tsx |
+| 6A | Celebration: mission complete | Open | Medium | MissionsPage.tsx |
+| 6B | Celebration: all tests pass | Open | Low | ProjectHomePage.tsx |
+| 6C | Celebration: PR merge | Open | Medium | PRsPage.tsx |
+| 6D | First-time event animations | Open | Low | TabNav.tsx, various |
+| 7A | Sidebar mission glow (needs IPC) | Open | Medium | TabNav.tsx + main process |
+| 7B | Terminal output pulse (needs IPC) | Open | High | TerminalsPage.tsx + main process |
+| 7C | Status dots spring animation | Open | Low | Multiple files |
+| 8A | MissionChat legacy code cleanup | **NEW** | Low | MissionChat.tsx (remove) |
+| 8B | Agent identity UI (avatars, badges, status) | **NEW** | Medium | Mission chat components |
+| 8C | Context Budget Panel polish (bars, drag-promote, history) | **NEW** | Medium | Context Budget Panel |
+| 8D | Meta-reasoner strategy visibility (badge, rationale, notifications) | **NEW** | Medium | Mission detail components |
+
+### Resolved by Orchestrator Evolution (Project Hivemind)
+- Chat redesign (MissionChatV2 with Slack-like UI)
+- Progress bar duplication (single PhaseProgressBar)
+- DAG spinning animation (SVG animateTransform)
+- ExecutionPlanPreview clutter (removed entirely)
+- Tab naming (usage -> details, channels -> chat)

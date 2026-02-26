@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-24
+> Last updated: 2026-02-26
 
 ---
 
@@ -10,9 +10,16 @@
 
 - [Overview](#overview)
   - [Two Ways to Use the Agents Tab](#two-ways-to-use-the-agents-tab)
+  - [Agent-First Execution Contract](#agent-first-execution-contract)
+  - [Definition Runtime and Memory Model](#definition-runtime-and-memory-model)
+  - [Agent Home vs Runtime Threads](#agent-home-vs-runtime-threads)
+  - [Injected Runtime Profile Files](#injected-runtime-profile-files)
 - [Core Concepts](#core-concepts)
   - [Agent Types](#agent-types)
   - [Agent Identity](#agent-identity)
+  - [Inter-Agent Messaging](#inter-agent-messaging)
+  - [Agent Memory and Shared Facts](#agent-memory-and-shared-facts)
+  - [Context Compaction](#context-compaction)
   - [Agent Triggers](#agent-triggers)
   - [Agent Actions](#agent-actions)
   - [Agent Guardrails](#agent-guardrails)
@@ -56,13 +63,13 @@ The rebrand reflects a fundamental shift in scope. Automations provided trigger-
 Every agent in ADE follows a unified schema:
 
 ```
-Agent = Identity + Trigger + Behavior + Guardrails
+Agent System = AgentDefinition + AgentRuntime + AgentMemory + Guardrails
 ```
 
-- **Identity**: Persona name, system prompt overlay, model/provider preferences, risk policies, permission constraints. Reusable profiles with version history.
-- **Trigger**: When the agent activates — event-driven (commit, session-end), scheduled (cron/time), polling (watch a resource), or manual.
-- **Behavior**: What the agent does — run an automation pipeline, execute a mission, watch a repo/API and report findings, run code health scans.
-- **Guardrails**: Budget caps (time, tokens, steps, USD), stop conditions (first failure, intervention threshold, budget exhaustion), and approval requirements.
+- **AgentDefinition**: Identity, trigger, behavior template, tool policy, and default memory policy.
+- **AgentRuntime**: A concrete execution instance with mission/run/step/thread/session bindings.
+- **AgentMemory**: Durable scoped memory with explicit promotion and provenance.
+- **Guardrails**: Budget caps (time, tokens, steps, USD), stop conditions, and approval requirements.
 
 The five agent types are:
 
@@ -83,6 +90,47 @@ Missions are ad-hoc goal objects documented in [features/MISSIONS.md](features/M
 **Configure Once, Runs Automatically** — Automation, Night Shift, Watcher, and Review agents are configured once and then run on their triggers (events, schedules, polls). They appear as persistent cards in the Agents tab and execute repeatedly without user intervention.
 
 **Prompt Now, Runs Once** — Task Agents are launched on-demand with a real-time prompt. Users describe what they want done, configure where and how it runs, and the agent executes immediately as a background task. Task Agents are the general-purpose "just do this thing" entry point — any work that doesn't require the user to be actively involved can be launched as a Task Agent.
+
+### Agent-First Execution Contract
+
+Starting in Phase 4, ADE treats agents as the execution substrate for all **non-interactive** AI behavior.
+
+- Non-interactive AI paths (missions, PR AI actions, conflict AI actions, night shift, watcher/review checks, background tasks) execute as agent runtimes.
+- Interactive day-to-day coding in lane Work (`Terminal` + `Chat`) stays direct and user-driven.
+- Legacy one-shot AI paths are allowed only behind compatibility wrappers that emit standard agent runtime records.
+
+This keeps policy enforcement, context assembly, memory tracking, and observability consistent across every AI surface.
+
+### Definition Runtime and Memory Model
+
+Agent behavior is split into three explicit layers:
+
+- **Definition layer**: Stable identity and operating policy (persona, allowed/denied tools, default model, guardrails, trigger/behavior template).
+- **Runtime layer**: Invocation-specific state (`sourceSurface`, `missionId`, `runId`, `stepId`, `attemptId`, `threadId`, `sessionId`, `laneId`, backend/environment).
+- **Memory scopes**: Scoped persistence that survives beyond a runtime (runtime-thread, run, project, identity).
+
+Resident agents (schedule/poll/event driven) and task agents (on-demand one-shot) both use this same model.
+
+### Agent Home vs Runtime Threads
+
+ADE intentionally separates chat/thread topology:
+
+- **Agent Home thread**: persistent thread in the Agents tab for configuring/training the agent identity.
+- **Runtime threads**: execution-scoped mission/task threads attached to run/step/attempt/session state.
+
+Promotion from runtime thread state into long-term agent memory is policy-driven and auditable; raw transcript merging is not the default.
+
+### Injected Runtime Profile Files
+
+ADE uses OpenClaw-inspired runtime profile injection, but keeps source-of-truth in ADE-managed storage. At runtime, the context assembler materializes bounded profile blocks/files such as:
+
+- `IDENTITY` (role/persona/policy summary)
+- `TOOLS` (effective tool allow/deny policy)
+- `USER_PREFS` (project/user preferences relevant to this run)
+- `HEARTBEAT` (current status and active constraints)
+- `MEMORY_SUMMARY` (retrieved scoped memory snippets)
+
+These are rebuilt per run from durable state; they are not treated as an immortal model session.
 
 ---
 
@@ -125,6 +173,133 @@ Identity policy enforcement works as follows:
 - `riskPolicies.allowedTools` filters the MCP tool set available to the orchestrator for that run.
 - `riskPolicies.deniedTools` takes precedence over allowed tools (deny wins).
 - Budget caps from identity guardrails are enforced alongside project-level budget limits (lower of the two wins).
+
+**Database schema (Hivemind)**: The `agent_identities` table provides identity/profile storage in the database (`kvDb.ts`). It is used by Phase 4+ definition/runtime mapping and identity CRUD operations. The table includes `id`, `project_id`, `name`, `config` (JSON), `version`, `created_at`, and `updated_at` columns with a project index.
+
+### Inter-Agent Messaging
+
+**Inter-agent messaging** enables real-time communication between agents during mission execution. This is a foundational capability for multi-agent coordination, implemented in the Hivemind workstreams.
+
+#### Team Message Tool
+
+The `teamMessageTool` (`apps/desktop/src/main/services/ai/tools/teamMessageTool.ts`) is a Vercel AI SDK tool that agents can invoke to send messages to other participants:
+
+- **`@step-key`**: Target a specific worker agent by its step key.
+- **`@orchestrator`**: Target the orchestrator agent directly.
+- **`@all`**: Broadcast to all active agents in the mission.
+
+The tool is created with a `sendCallback` and the current attempt ID, ensuring message provenance is always tracked.
+
+#### Message Delivery
+
+Messages are delivered through two mechanisms depending on agent type:
+
+| Agent Type | Delivery Mechanism |
+|---|---|
+| **SDK agents** (Vercel AI SDK) | Messages delivered as tool results or injected into the conversation context |
+| **PTY agents** (CLI-based) | Messages delivered via PTY stdin injection with structured formatting |
+
+#### @Mention System
+
+Messages support `@mention` syntax for targeting and notification:
+
+- Users and agents type `@` followed by a participant name.
+- An autocomplete dropdown (`MentionInput` component) shows available participants.
+- Mentions are parsed from message content, highlighted in the UI, and used for routing.
+- The `MissionChatV2` component renders mentions with accent-colored highlighting.
+
+#### IPC and Backend Routing
+
+- `sendAgentMessage()` IPC handler receives messages from the renderer or from agents.
+- Backend routing logic delivers messages to the correct agent based on target parsing.
+- Messages are persisted in the chat transcript (JSONL files) for durability.
+
+#### Message Schema
+
+Each inter-agent message includes:
+
+| Field | Description |
+|---|---|
+| `target` | Recipient: step-key, `orchestrator`, or `all` |
+| `message` | The message content |
+| `fromAttemptId` | Source attempt ID for provenance tracking |
+
+### Agent Memory and Shared Facts
+
+Agents within a mission share knowledge through scoped memory namespaces and shared facts.
+
+#### Memory Namespaces
+
+| Namespace | Scope | Lifetime | Description |
+|---|---|---|---|
+| `runtime-thread` | One thread/session | Ephemeral | Working context inside a single runtime thread |
+| `run` | One mission run | Run lifetime | Facts discovered during this run and visible to participating agents |
+| `project` | Project-wide | Persistent | Promoted knowledge reused across missions/runs |
+| `identity` | One agent definition | Persistent | Agent-specific preferences/procedures that should not leak to other identities |
+| `daily-log` | Date-scoped | Rolling | Operational notes and checkpoints used for digesting/compaction |
+
+#### Memory Item Types
+
+| Type | Description |
+|---|---|
+| `fact` | Verified information about the codebase/project |
+| `preference` | User or team preference |
+| `pattern` | Reusable implementation or architecture pattern |
+| `decision` | Decision + rationale |
+| `procedure` | Repeatable runbook/step sequence |
+| `gotcha` | Pitfall, edge case, or workaround |
+
+#### Retrieval and Writeback Policy
+
+ADE does not inject full memory dumps by default.
+
+1. Context assembler retrieves bounded memory snippets by scope/tag/relevance.
+2. Runtime receives summarized memory blocks (`MEMORY_SUMMARY`) plus optional detail retrieval tools.
+3. On runtime completion (or pre-compaction), candidate memories are extracted with confidence and provenance.
+4. Promotion to persistent scopes is policy-driven (auto-promote threshold + user controls).
+
+#### Shared Facts in Prompts
+
+During a run, agents can emit shared facts that become immediately available to other run participants:
+
+| Fact Type | Description |
+|---|---|
+| `api_pattern` | API usage patterns discovered during execution |
+| `schema_change` | Database or API schema updates |
+| `config` | Configuration requirements or changes |
+| `architectural` | Architecture constraints or decisions |
+| `gotcha` | Runtime pitfalls that impact downstream steps |
+
+Shared facts are stored per-run/per-step and included in subsequent runtime context assembly.
+
+### Context Compaction
+
+**Context compaction** manages the limited context window of AI agents during long-running missions, implemented in the Hivemind workstreams.
+
+#### Compaction Engine
+
+The compaction engine (`apps/desktop/src/main/services/ai/compactionEngine.ts`) provides:
+
+- **Compaction monitor**: Tracks cumulative token usage against the model's context window. When usage exceeds 70% of the context window, compaction is triggered.
+- **Pre-compaction fact writeback**: Before compacting, the engine extracts important facts from the conversation and persists them to the memory service. This ensures knowledge is not lost during compaction.
+- **Compaction summary**: The full transcript is replaced with a concise summary that preserves key decisions, facts, and current task state.
+- **Compaction hints for CLI agents**: PTY-based agents receive hints about context limits so they can manage their own context.
+
+#### Transcript Persistence
+
+Agent session transcripts are persisted to the `attempt_transcripts` database table:
+
+- Each transcript entry includes role, content, timestamp, and estimated token count.
+- Transcripts support append-only writes during execution.
+- When compaction occurs, the `compacted_at` timestamp and `compaction_summary` are recorded.
+- JSONL chat transcript files provide additional durability for the MissionChatV2 message history.
+
+#### Session Resume
+
+SDK agents support session resume from compacted context:
+
+- When an agent session is interrupted and resumed, the compaction summary bootstraps the new session.
+- Shared facts from the run are included in the resumed session's prompt.
 
 ### Agent Triggers
 
@@ -729,6 +904,9 @@ The Agents tab is the unified launch pad for all background work. Task Agents se
 | `packService` | Exists | Implements `update-packs` action |
 | `conflictService` | Exists | Implements `predict-conflicts` action |
 | `aiIntegrationService` | Exists | Routes AI tasks via AgentExecutor interface. Also provides: `logUsage()` for recording every AI call to `ai_usage_log` table, daily budget enforcement via `checkBudget()`, feature flags, and subscription mode detection (guest/subscription). |
+| `memoryService` | Exists | Scoped memory namespaces (runtime-thread/run/project/identity/daily-log). Manages candidate promotion, shared facts, and memory queries for agent prompt injection. |
+| `compactionEngine` | Exists | SDK agent context compaction at 70% threshold, pre-compaction fact writeback, transcript persistence, session resume support. |
+| `metaReasoner` | Exists | AI meta-reasoner for dynamic fan-out decisions. Analyzes agent output and recommends parallelization strategies. |
 | `testService` | Exists | Implements `run-tests` action |
 | `ptyService` | Exists | Provides `session-end` events via terminal session lifecycle |
 
@@ -1311,15 +1489,22 @@ Per `docs/final-plan.md`, Phase 4 (Agents Hub, 5-6 weeks) is the rebrand of the 
 
 Phase 4 delivers:
 - **Agents Hub**: Rebrand Automations tab into Agents with card-based UI.
-- **Agent Identities**: Reusable persona + policy profiles with version history and enforcement.
+- **Agent Identities**: Reusable persona + policy profiles with version history and enforcement. Database identity schema already created and used for runtime profile assembly.
 - **Night Shift Agents**: Unattended overnight mission execution with strict guardrails and morning digest.
 - **Watcher and Review Agents**: External resource monitoring and PR pre-review capabilities.
 - **Morning Briefing UI**: Swipeable card interface for rapid review of overnight results.
 
 The existing Automations engine (trigger-action pipelines, NL-to-rule planner, trust enforcement, job engine) forms the complete foundation. All AUTO-001 through AUTO-029 items are implemented and become the `automation` agent type within the new Agents system.
 
+**Hivemind contributions to Phase 4 readiness**: The Orchestrator Evolution (Hivemind) workstreams delivered several capabilities that directly support Phase 4:
+- **Inter-agent messaging** (`teamMessageTool`, `sendAgentMessage()` IPC, @mention system) provides the communication infrastructure agents need.
+- **Memory service** with candidate promotion and shared facts gives agents persistent knowledge across runs.
+- **Context compaction engine** ensures long-running agent sessions (critical for Night Shift) can operate within context window limits.
+- **Agent identity schema** (`agent_identities` table) provides the storage foundation for identity CRUD.
+- **Dynamic fan-out** via meta-reasoner enables the parallelized execution model that Task Agents and Night Shift agents will rely on.
+
 Missions remain separate ad-hoc goal objects (documented in [features/MISSIONS.md](features/MISSIONS.md)). Agents is the recurring trigger layer that can launch missions — Night Shift agents specifically use the mission system to execute complex tasks overnight via the orchestrator.
 
 ---
 
-*This document describes the Agents feature for ADE. The foundation automation engine (AUTO-001 through AUTO-029) is fully implemented from Phase 8. Phase 4 extends this into a unified agent hub with five agent types (automation, night-shift, watcher, review, task), agent identities, Night Shift mode, Morning Briefing, and a card-based management UI.*
+*This document describes the Agents feature for ADE. The foundation automation engine (AUTO-001 through AUTO-029) is fully implemented from Phase 8. The Hivemind workstreams (Orchestrator Evolution) added inter-agent messaging, memory architecture, context compaction, dynamic fan-out, and agent identity schema. Phase 4 extends this into a unified agent hub with five agent types (automation, night-shift, watcher, review, task), agent identities, Night Shift mode, Morning Briefing, and a card-based management UI.*

@@ -55,7 +55,8 @@ import type {
   TerminalToolType,
   OrchestratorArtifact,
   OrchestratorArtifactKind,
-  OrchestratorWorkerCheckpoint
+  OrchestratorWorkerCheckpoint,
+  FanOutDecision
 } from "../../../shared/types";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
@@ -70,6 +71,7 @@ import type { createPtyService } from "../pty/ptyService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
+import type { createMemoryService } from "../memory/memoryService";
 
 type RunRow = {
   id: string;
@@ -320,6 +322,10 @@ export type OrchestratorExecutorStartArgs = {
   previousCheckpoint?: string;
   /** Summary/error from the previous attempt on the same step (for retry context). */
   previousAttemptSummary?: string;
+  /** Optional memory service for injecting shared facts and project memories into prompts. */
+  memoryService?: unknown;
+  /** Project ID for memory service scoping. */
+  memoryProjectId?: string;
 };
 
 export type OrchestratorExecutorAdapter = {
@@ -1199,6 +1205,7 @@ export function createOrchestratorService({
   ptyService,
   prService,
   projectConfigService,
+  memoryService,
   onEvent
 }: {
   db: AdeDb;
@@ -1209,6 +1216,7 @@ export function createOrchestratorService({
   ptyService?: ReturnType<typeof createPtyService>;
   prService?: ReturnType<typeof createPrService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
@@ -1348,6 +1356,23 @@ export function createOrchestratorService({
       detail: args.detail ?? null,
       createdAt
     };
+  };
+
+  const appendRunNarrative = (runId: string, stepKey: string, summary: string): void => {
+    const runRow = getRunRow(runId);
+    if (!runRow) return;
+    const meta = parseRecord(runRow.metadata_json) ?? {};
+    const narrative: Array<{ stepKey: string; summary: string; at: string }> = Array.isArray(meta.runNarrative)
+      ? (meta.runNarrative as Array<{ stepKey: string; summary: string; at: string }>)
+      : [];
+    narrative.push({ stepKey, summary, at: new Date().toISOString() });
+    // Keep only the last 20 entries
+    if (narrative.length > 20) narrative.splice(0, narrative.length - 20);
+    const updatedMeta = { ...meta, runNarrative: narrative };
+    db.run(
+      `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
+      [JSON.stringify(updatedMeta), nowIso(), runId, projectId]
+    );
   };
 
   const persistRuntimeEvent = (args: {
@@ -2410,6 +2435,53 @@ export function createOrchestratorService({
     }
 
     return evaluation.status;
+  };
+
+  /**
+   * Promote shared facts from a completed run into the memory system.
+   * High-confidence facts (>= 0.8 mapped from fact type) are auto-promoted;
+   * others are stored as candidates for manual review.
+   */
+  const promoteRunFactsToMemory = (runId: string, runProjectId: string): void => {
+    if (!memoryService) return;
+    const facts = memoryService.getSharedFacts(runId, 50);
+    if (!facts.length) return;
+
+    const factTypeConfidence: Record<string, number> = {
+      architectural: 0.9,
+      schema_change: 0.85,
+      config: 0.8,
+      api_pattern: 0.75,
+      gotcha: 0.7
+    };
+
+    for (const fact of facts) {
+      const confidence = factTypeConfidence[fact.factType] ?? 0.5;
+      const category = fact.factType === "gotcha" ? "gotcha" as const
+        : fact.factType === "config" ? "preference" as const
+        : "fact" as const;
+
+      if (confidence >= 0.8) {
+        memoryService.addMemory({
+          projectId: runProjectId,
+          scope: "project",
+          category,
+          content: fact.content,
+          importance: confidence >= 0.85 ? "high" : "medium",
+          sourceRunId: runId
+        });
+      } else {
+        memoryService.addCandidateMemory({
+          projectId: runProjectId,
+          scope: "project",
+          category,
+          content: fact.content,
+          importance: "medium",
+          confidence,
+          sourceRunId: runId
+        });
+      }
+    }
   };
 
   const createContextSnapshotForAttempt = async (args: {
@@ -5248,6 +5320,14 @@ export function createOrchestratorService({
       const current = normalizeRunStatus(run.status);
       if (next !== current) {
         updateRunStatus(args.runId, next);
+        // Auto-promote shared facts to memory when run succeeds
+        if (next === "succeeded" || next === "succeeded_with_risk") {
+          try {
+            promoteRunFactsToMemory(args.runId, projectId);
+          } catch {
+            // Memory promotion is best-effort; don't fail the tick
+          }
+        }
       } else if (current === "queued") {
         updateRunStatus(args.runId, "running");
       } else {
@@ -5696,50 +5776,7 @@ export function createOrchestratorService({
         acquiredClaims.push(claim);
       }
 
-      // Insert the attempt row first (with no snapshot yet) so that FK constraints
-      // on orchestrator_context_snapshots and orchestrator_timeline_events are satisfied
-      // when createContextSnapshotForAttempt calls appendTimelineEvent with attemptId.
-      db.run(
-        `
-          insert into orchestrator_attempts(
-            id,
-            run_id,
-            step_id,
-            project_id,
-            attempt_number,
-            status,
-            executor_kind,
-            executor_session_id,
-            tracked_session_enforced,
-            context_profile,
-            context_snapshot_id,
-            error_class,
-            error_message,
-            retry_backoff_ms,
-            result_envelope_json,
-            metadata_json,
-            created_at,
-            started_at,
-            completed_at
-          ) values (?, ?, ?, ?, ?, 'running', ?, null, 1, ?, null, 'none', null, 0, null, ?, ?, ?, null)
-        `,
-        [
-          attemptId,
-          run.id,
-          step.id,
-          projectId,
-          attemptNumber,
-          executorKind,
-          contextPolicy.id,
-          JSON.stringify({
-            ownerId: args.ownerId,
-            workerState: "initializing",
-            workerStartedAt: createdAt
-          }),
-          createdAt,
-          createdAt
-        ]
-      );
+      // (Attempt row already inserted above at the early-insert site for FK satisfaction.)
 
       // Budget guard: check total token budget before dispatching
       const tokensConsumed = Number(run.metadata?.tokensConsumed ?? 0);
@@ -5791,27 +5828,6 @@ export function createOrchestratorService({
           projectId
         ]
       );
-
-      // Budget guard: check total token budget before dispatching
-      const tokensConsumed = Number(run.metadata?.tokensConsumed ?? 0);
-      if (runtimeConfig.maxTotalTokenBudget != null && tokensConsumed >= runtimeConfig.maxTotalTokenBudget) {
-        releaseClaimsForAttempt({ attemptId, state: "released" });
-        updateRunStatus(run.id, "paused", {
-          last_error: `Total token budget exceeded: ${tokensConsumed} >= ${runtimeConfig.maxTotalTokenBudget}`
-        });
-        appendTimelineEvent({
-          runId: run.id,
-          stepId: step.id,
-          attemptId,
-          eventType: "budget_exceeded",
-          reason: "total_budget_limit",
-          detail: {
-            tokensConsumed,
-            maxTotalTokenBudget: runtimeConfig.maxTotalTokenBudget
-          }
-        });
-        throw new Error(`Total token budget exceeded: ${tokensConsumed} >= ${runtimeConfig.maxTotalTokenBudget}`);
-      }
 
       db.run(
         `
@@ -6053,7 +6069,8 @@ export function createOrchestratorService({
               tracked: true
             }),
           permissionConfig,
-          ...recoveryContext
+          ...recoveryContext,
+          ...(memoryService ? { memoryService, memoryProjectId: projectId } : {})
         });
         if (result.status === "accepted") {
           const sessionId = typeof result.sessionId === "string" ? result.sessionId.trim() : "";
@@ -6684,6 +6701,9 @@ export function createOrchestratorService({
         }
       }
 
+      // Append run narrative entry for step completion
+      appendRunNarrative(run.id, step.stepKey, `${status}: ${envelope.summary.slice(0, 200)}`);
+
       const updatedRun = this.tick({ runId: run.id });
       if (updatedRun.status === "succeeded" || updatedRun.status === "failed" || updatedRun.status === "canceled") {
         const latestAttempt = getAttemptRow(args.attemptId);
@@ -7166,6 +7186,268 @@ export function createOrchestratorService({
 
       // Delegate to addSteps which now operates on a non-terminal run
       return this.addSteps(args);
+    },
+
+    // ─── Fan-out Step Injection ────────────────────────────────────
+
+    /**
+     * Execute an external_parallel fan-out: create child steps from subtasks,
+     * wire them to depend on the parent step, and update any downstream
+     * successor steps to depend on ALL children (fan-in).
+     */
+    executeFanOutExternal(args: {
+      runId: string;
+      parentStepKey: string;
+      decision: FanOutDecision;
+    }): OrchestratorStep[] {
+      const { runId, parentStepKey, decision } = args;
+      if (!decision.subtasks.length) return [];
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const existingSteps = listStepRows(runId).map(toStep);
+      const maxIndex = existingSteps.reduce((max, s) => Math.max(max, s.stepIndex), -1);
+
+      // Find successor steps that depend on the parent
+      const parentStep = existingSteps.find((s) => s.stepKey === parentStepKey);
+      const parentId = parentStep?.id;
+      const successorSteps = parentId
+        ? existingSteps.filter((s) => s.dependencyStepIds.includes(parentId))
+        : [];
+
+      // Create child steps
+      const childStepKeys: string[] = [];
+      const childStepInputs: StartOrchestratorRunStepInput[] = decision.subtasks.map((subtask, i) => {
+        const childKey = `${parentStepKey}_fanout_${i}`;
+        childStepKeys.push(childKey);
+        return {
+          stepKey: childKey,
+          title: subtask.title,
+          stepIndex: maxIndex + 1 + i,
+          dependencyStepKeys: [parentStepKey],
+          retryLimit: 1,
+          metadata: {
+            fanOutParent: parentStepKey,
+            fanOutStrategy: decision.strategy,
+            instructions: subtask.instructions,
+            files: subtask.files,
+            complexity: subtask.complexity,
+            ...(subtask.estimatedTokens != null ? { estimatedTokens: subtask.estimatedTokens } : {})
+          }
+        };
+      });
+
+      const createdSteps = this.addSteps({ runId, steps: childStepInputs });
+
+      // Update parent step metadata with fan-out tracking
+      if (parentStep) {
+        const parentMeta = (parentStep.metadata ?? {}) as Record<string, unknown>;
+        const updatedMeta = {
+          ...parentMeta,
+          fanOut: { ...(typeof parentMeta.fanOut === "object" && parentMeta.fanOut ? parentMeta.fanOut : {}), enabled: true, maxChildren: 8 },
+          fanOutChildren: childStepKeys,
+          fanOutStrategy: decision.strategy,
+          fanOutComplete: false
+        };
+        db.run(
+          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
+          [JSON.stringify(updatedMeta), nowIso(), parentStep.id, runId, projectId]
+        );
+      }
+
+      // Rewire successors: each successor now depends on ALL children instead of the parent
+      for (const successor of successorSteps) {
+        const existingDepKeys = successor.dependencyStepIds
+          .map((depId) => existingSteps.find((s) => s.id === depId)?.stepKey)
+          .filter((key): key is string => key != null);
+        // Replace the parent key with all child keys
+        const newDepKeys = existingDepKeys
+          .filter((key) => key !== parentStepKey)
+          .concat(childStepKeys);
+        this.updateStepDependencies({
+          runId,
+          stepId: successor.id,
+          dependencyStepKeys: newDepKeys
+        });
+      }
+
+      appendTimelineEvent({
+        runId,
+        stepId: parentStep?.id ?? null,
+        eventType: "fan_out_dispatched",
+        reason: "external_parallel",
+        detail: {
+          parentStepKey,
+          strategy: decision.strategy,
+          childCount: createdSteps.length,
+          childStepKeys,
+          reasoning: decision.reasoning
+        }
+      });
+
+      return createdSteps;
+    },
+
+    /**
+     * Execute a hybrid fan-out: group subtasks into clusters, each cluster
+     * becomes one external agent. Within each cluster, the agent handles
+     * multiple subtasks using internal parallelism.
+     */
+    executeFanOutHybrid(args: {
+      runId: string;
+      parentStepKey: string;
+      decision: FanOutDecision;
+    }): OrchestratorStep[] {
+      const { runId, parentStepKey, decision } = args;
+      if (!decision.subtasks.length || !decision.clusters?.length) {
+        // Fallback to external parallel if no clusters defined
+        return this.executeFanOutExternal(args);
+      }
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const existingSteps = listStepRows(runId).map(toStep);
+      const maxIndex = existingSteps.reduce((max, s) => Math.max(max, s.stepIndex), -1);
+
+      const parentStep = existingSteps.find((s) => s.stepKey === parentStepKey);
+      const parentId = parentStep?.id;
+      const successorSteps = parentId
+        ? existingSteps.filter((s) => s.dependencyStepIds.includes(parentId))
+        : [];
+
+      // Create one step per cluster
+      const childStepKeys: string[] = [];
+      const childStepInputs: StartOrchestratorRunStepInput[] = decision.clusters.map((cluster, clusterIdx) => {
+        const childKey = `${parentStepKey}_fanout_cluster_${clusterIdx}`;
+        childStepKeys.push(childKey);
+        const clusterSubtasks = cluster.subtaskIndices
+          .filter((i) => i >= 0 && i < decision.subtasks.length)
+          .map((i) => decision.subtasks[i]);
+        const combinedInstructions = clusterSubtasks
+          .map((st, j) => `## Subtask ${j + 1}: ${st.title}\n${st.instructions}`)
+          .join("\n\n");
+        const allFiles = [...new Set(clusterSubtasks.flatMap((st) => st.files))];
+        return {
+          stepKey: childKey,
+          title: `Cluster ${clusterIdx + 1}: ${cluster.reason || clusterSubtasks.map((s) => s.title).join(", ")}`,
+          stepIndex: maxIndex + 1 + clusterIdx,
+          dependencyStepKeys: [parentStepKey],
+          retryLimit: 1,
+          metadata: {
+            fanOutParent: parentStepKey,
+            fanOutStrategy: "hybrid",
+            clusterIndex: clusterIdx,
+            clusterReason: cluster.reason,
+            instructions: combinedInstructions,
+            files: allFiles,
+            subtaskCount: clusterSubtasks.length
+          }
+        };
+      });
+
+      const createdSteps = this.addSteps({ runId, steps: childStepInputs });
+
+      // Update parent metadata
+      if (parentStep) {
+        const parentMeta = (parentStep.metadata ?? {}) as Record<string, unknown>;
+        const updatedMeta = {
+          ...parentMeta,
+          fanOut: { ...(typeof parentMeta.fanOut === "object" && parentMeta.fanOut ? parentMeta.fanOut : {}), enabled: true, maxChildren: 8 },
+          fanOutChildren: childStepKeys,
+          fanOutStrategy: "hybrid",
+          fanOutComplete: false
+        };
+        db.run(
+          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
+          [JSON.stringify(updatedMeta), nowIso(), parentStep.id, runId, projectId]
+        );
+      }
+
+      // Rewire successors to depend on all cluster steps
+      for (const successor of successorSteps) {
+        const existingDepKeys = successor.dependencyStepIds
+          .map((depId) => existingSteps.find((s) => s.id === depId)?.stepKey)
+          .filter((key): key is string => key != null);
+        const newDepKeys = existingDepKeys
+          .filter((key) => key !== parentStepKey)
+          .concat(childStepKeys);
+        this.updateStepDependencies({
+          runId,
+          stepId: successor.id,
+          dependencyStepKeys: newDepKeys
+        });
+      }
+
+      appendTimelineEvent({
+        runId,
+        stepId: parentStep?.id ?? null,
+        eventType: "fan_out_dispatched",
+        reason: "hybrid",
+        detail: {
+          parentStepKey,
+          strategy: "hybrid",
+          clusterCount: createdSteps.length,
+          childStepKeys,
+          reasoning: decision.reasoning
+        }
+      });
+
+      return createdSteps;
+    },
+
+    /**
+     * Check if all fan-out children of a parent step have completed.
+     * If so, mark fanOutComplete on the parent and emit a timeline event.
+     */
+    checkFanOutCompletion(args: { runId: string; completedStepKey: string }): boolean {
+      const { runId, completedStepKey } = args;
+      const allSteps = listStepRows(runId).map(toStep);
+      const completedStep = allSteps.find((s) => s.stepKey === completedStepKey);
+      if (!completedStep) return false;
+
+      // Find the parent via fanOutParent in metadata
+      const meta = (completedStep.metadata ?? {}) as Record<string, unknown>;
+      const parentStepKey = meta.fanOutParent as string | undefined;
+      if (!parentStepKey) return false;
+
+      const parentStep = allSteps.find((s) => s.stepKey === parentStepKey);
+      if (!parentStep) return false;
+
+      const parentMeta = (parentStep.metadata ?? {}) as Record<string, unknown>;
+      const childKeys = parentMeta.fanOutChildren as string[] | undefined;
+      if (!Array.isArray(childKeys) || childKeys.length === 0) return false;
+
+      // Check if all children are in a terminal state
+      const terminalStatuses = new Set<string>(["succeeded", "failed", "skipped", "canceled"]);
+      const allDone = childKeys.every((key) => {
+        const child = allSteps.find((s) => s.stepKey === key);
+        return child && terminalStatuses.has(child.status);
+      });
+
+      if (allDone && parentMeta.fanOutComplete !== true) {
+        const updatedMeta = { ...parentMeta, fanOutComplete: true };
+        db.run(
+          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
+          [JSON.stringify(updatedMeta), nowIso(), parentStep.id, runId, projectId]
+        );
+        appendTimelineEvent({
+          runId,
+          stepId: parentStep.id,
+          eventType: "fan_out_complete",
+          reason: "all_children_done",
+          detail: {
+            parentStepKey,
+            childKeys,
+            childCount: childKeys.length,
+            succeeded: childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "succeeded").length,
+            failed: childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "failed").length
+          }
+        });
+        emit({ type: "orchestrator-step-updated", runId, stepId: parentStep.id, reason: "fan_out_complete" });
+        return true;
+      }
+
+      return false;
     },
 
     skipStep(args: {

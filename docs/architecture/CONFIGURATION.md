@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-26
 
 The ADE configuration system manages project-level and workspace-level settings through a layered YAML-based approach. It supports shared team configuration, personal local overrides, and a trust model that prevents unauthorized command execution.
 
@@ -199,6 +199,61 @@ ai:
 ```
 
 The `ai` section belongs in `local.yaml` only, since it reflects the individual developer's installed CLI tools and preferences. ADE auto-detects available CLI tools (Claude Code, Codex) and populates provider information automatically. The `taskRouting` section allows per-task-type configuration of which provider and model to use.
+
+### Orchestrator Evolution Configuration
+
+The following configuration blocks extend the `ai` section in `local.yaml` with settings introduced by the orchestrator evolution workstreams:
+
+```yaml
+ai:
+  orchestrator:
+    # Meta-reasoner settings (WS5: Smart Fan-Out)
+    metaReasoner:
+      model: "sonnet"                    # Model for fan-out analysis
+      enabled: true                      # Enable/disable meta-reasoner
+      max_fan_out_breadth: 6             # Max parallel steps from a single fan-out
+      strategies:                        # Allowed fan-out strategies
+        - external_parallel              # Multiple agents in separate lanes
+        - internal_parallel              # Single agent handling sub-tasks
+        - hybrid                         # Combination of both
+
+    # Context compaction settings (WS6: Context Compaction)
+    compaction_threshold: 0.7            # Trigger compaction at 70% of context window
+    pre_compaction_writeback: true       # Extract facts before compacting
+    compaction_model: "haiku"            # Model for generating compaction summaries
+
+    # Session persistence settings (WS6: Session Persistence)
+    persist_transcripts: true            # Write attempt transcripts to DB
+    transcript_jsonl: true               # Also write JSONL files to .ade/transcripts/
+    enable_resume: true                  # Allow resuming interrupted sessions
+
+    # Memory settings (WS7: Scoped Memory Architecture)
+    memory:
+      auto_promote_on_completion: true   # Auto-promote high-confidence memories on run completion
+      auto_promote_threshold: 0.8        # Confidence threshold for auto-promotion
+      max_candidate_age_hours: 168       # Archive candidates older than 7 days
+      max_memories_in_context: 20        # Max promoted memories injected into agent prompts
+      search_relevance_threshold: 0.5    # Min relevance score for memory injection
+      read_scopes:                       # Memory namespaces allowed for retrieval
+        - run
+        - project
+        - identity
+      write_scopes:                      # Memory namespaces allowed for writeback
+        - run
+        - project
+
+    # Shared facts settings (WS4: Shared Facts)
+    shared_facts:
+      inject_in_prompts: true            # Inject run facts into agent prompts
+      max_facts_in_context: 50           # Max facts injected per prompt
+
+    # Run narrative settings (WS4/WS8: Run Narrative)
+    run_narrative:
+      enabled: true                      # Generate rolling narrative after each step
+      model: "haiku"                     # Model for narrative generation
+```
+
+These settings are all optional. ADE provides sensible defaults for all values.
 
 ### Trust Model
 
@@ -421,11 +476,15 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | `local.yaml` gitignore setup | Done | Added to `.git/info/exclude` on init |
 | AI provider auto-detection | Done | Detects Claude Code and Codex CLI tools |
 | Per-task model routing | Done | Task type → provider → model configuration |
+| Meta-reasoner configuration | Done | Fan-out strategies, model selection, breadth limits |
+| Compaction threshold configuration | Done | Token threshold, pre-compaction writeback toggle |
+| Memory promotion policies | Done | Auto-promotion threshold, max candidate age, context limits |
+| Run narrative configuration | Done | Enable/disable, model selection |
 | Lane profiles | Not started | Schema designed, runtime not implemented |
 | Lane overlay policies | Done | Implemented via `laneOverlayMatcher.ts` (Phase 4) |
 | Config migration (version upgrades) | Not started | Only version 1 exists currently |
 
-**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Lane profiles are NOT YET STARTED. Config migration system is NOT YET STARTED.
+**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Orchestrator evolution configuration (meta-reasoner, compaction, memory, shared facts, run narrative) is DONE. Lane profiles are NOT YET STARTED. Config migration system is NOT YET STARTED.
 
 ---
 

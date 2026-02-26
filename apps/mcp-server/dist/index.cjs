@@ -23,7 +23,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/index.ts
-var import_node_path14 = __toESM(require("path"), 1);
+var import_node_path15 = __toESM(require("path"), 1);
 
 // src/bootstrap.ts
 var import_node_fs13 = __toESM(require("fs"), 1);
@@ -33,30 +33,139 @@ var nodePty = __toESM(require("node-pty"), 1);
 // ../desktop/src/main/services/logging/logger.ts
 var import_node_fs = __toESM(require("fs"), 1);
 var import_node_path = __toESM(require("path"), 1);
-function writeLine(logFilePath, level, event, meta) {
-  const line = JSON.stringify({
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    level,
-    event,
-    ...meta ? { meta } : {}
-  });
-  try {
-    import_node_fs.default.mkdirSync(import_node_path.default.dirname(logFilePath), { recursive: true });
-    import_node_fs.default.appendFileSync(logFilePath, `${line}
-`, "utf8");
-  } catch {
+var LOG_LEVELS = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3
+};
+var MAX_LOG_FILE_BYTES = 10 * 1024 * 1024;
+var ROTATION_CHECK_WRITE_INTERVAL = 1e3;
+var ROTATION_CHECK_INTERVAL_MS = 6e4;
+var FLUSH_INTERVAL_MS = 500;
+var FLUSH_BATCH_SIZE = 100;
+function resolveMinLevel() {
+  const value = process.env.ADE_LOG_LEVEL?.trim().toLowerCase();
+  if (value === "debug" || value === "info" || value === "warn" || value === "error") {
+    return LOG_LEVELS[value];
   }
-  if (process.env.VITE_DEV_SERVER_URL) {
-    const fn = level === "error" ? console.error : level === "warn" ? console.warn : level === "debug" ? console.debug : console.log;
-    fn(`[${level}] ${event}`, meta ?? "");
-  }
+  return LOG_LEVELS.info;
+}
+function getRotatedLogFilePath(logFilePath) {
+  const parsed = import_node_path.default.parse(logFilePath);
+  return import_node_path.default.join(parsed.dir, `${parsed.name}.1${parsed.ext}`);
+}
+function createConsoleMirror(level, event, meta) {
+  if (!process.env.VITE_DEV_SERVER_URL) return;
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : level === "debug" ? console.debug : console.log;
+  fn(`[${level}] ${event}`, meta ?? "");
 }
 function createFileLogger(logFilePath) {
+  const minLevel = resolveMinLevel();
+  const logDir = import_node_path.default.dirname(logFilePath);
+  const rotatedLogFilePath = getRotatedLogFilePath(logFilePath);
+  let writesSinceRotateCheck = 0;
+  let lastRotateCheckAt = Date.now();
+  let estimatedFileSize = null;
+  let queuedLines = [];
+  let flushTimer = null;
+  let flushInProgress = false;
+  let flushRequested = false;
+  const shouldCheckRotation = () => {
+    if (writesSinceRotateCheck >= ROTATION_CHECK_WRITE_INTERVAL) return true;
+    return Date.now() - lastRotateCheckAt >= ROTATION_CHECK_INTERVAL_MS;
+  };
+  const refreshEstimatedFileSizeIfNeeded = async () => {
+    if (estimatedFileSize != null && !shouldCheckRotation()) return;
+    writesSinceRotateCheck = 0;
+    lastRotateCheckAt = Date.now();
+    try {
+      const stat = await import_node_fs.default.promises.stat(logFilePath);
+      estimatedFileSize = stat.size;
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        estimatedFileSize = 0;
+        return;
+      }
+      throw err;
+    }
+  };
+  const rotateIfNeeded = async (upcomingWriteBytes) => {
+    await refreshEstimatedFileSizeIfNeeded();
+    const currentFileSize = estimatedFileSize ?? 0;
+    if (currentFileSize < MAX_LOG_FILE_BYTES && currentFileSize + upcomingWriteBytes <= MAX_LOG_FILE_BYTES) return;
+    try {
+      await import_node_fs.default.promises.unlink(rotatedLogFilePath);
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+    try {
+      await import_node_fs.default.promises.rename(logFilePath, rotatedLogFilePath);
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+    await import_node_fs.default.promises.writeFile(logFilePath, "", "utf8");
+    estimatedFileSize = 0;
+  };
+  const flush = async () => {
+    if (flushInProgress) {
+      flushRequested = true;
+      return;
+    }
+    if (queuedLines.length === 0) return;
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    const lines = queuedLines.splice(0, FLUSH_BATCH_SIZE);
+    const payload = lines.join("");
+    const bytes = Buffer.byteLength(payload, "utf8");
+    flushInProgress = true;
+    try {
+      await import_node_fs.default.promises.mkdir(logDir, { recursive: true });
+      await rotateIfNeeded(bytes);
+      await import_node_fs.default.promises.appendFile(logFilePath, payload, "utf8");
+      estimatedFileSize = (estimatedFileSize ?? 0) + bytes;
+    } catch {
+    } finally {
+      flushInProgress = false;
+      if (flushRequested || queuedLines.length > 0) {
+        flushRequested = false;
+        void flush();
+      }
+    }
+  };
+  const scheduleFlush = () => {
+    if (queuedLines.length >= FLUSH_BATCH_SIZE) {
+      void flush();
+      return;
+    }
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      void flush();
+    }, FLUSH_INTERVAL_MS);
+  };
+  const writeLine = (level, event, meta) => {
+    if (LOG_LEVELS[level] < minLevel) return;
+    const line = JSON.stringify({
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      level,
+      event,
+      ...meta ? { meta } : {}
+    });
+    const payload = `${line}
+`;
+    queuedLines.push(payload);
+    writesSinceRotateCheck += 1;
+    scheduleFlush();
+    createConsoleMirror(level, event, meta);
+  };
   return {
-    debug: (event, meta) => writeLine(logFilePath, "debug", event, meta),
-    info: (event, meta) => writeLine(logFilePath, "info", event, meta),
-    warn: (event, meta) => writeLine(logFilePath, "warn", event, meta),
-    error: (event, meta) => writeLine(logFilePath, "error", event, meta)
+    debug: (event, meta) => writeLine("debug", event, meta),
+    info: (event, meta) => writeLine("info", event, meta),
+    warn: (event, meta) => writeLine("warn", event, meta),
+    error: (event, meta) => writeLine("error", event, meta)
   };
 }
 
@@ -66,6 +175,7 @@ var import_node_path2 = __toESM(require("path"), 1);
 var import_node_module = require("module");
 var import_sql = __toESM(require("sql.js"), 1);
 var require2 = (0, import_node_module.createRequire)(__filename);
+var FLUSH_DEBOUNCE_MS = 500;
 function resolveSqlJsWasmDir() {
   const wasmPath = require2.resolve("sql.js/dist/sql-wasm.wasm");
   return import_node_path2.default.dirname(wasmPath);
@@ -199,6 +309,7 @@ function migrate(db) {
   addColumnIfMissing(db, "lanes", "color text", "color");
   addColumnIfMissing(db, "lanes", "icon text", "icon");
   addColumnIfMissing(db, "lanes", "tags_json text", "tags_json");
+  addColumnIfMissing(db, "lanes", "folder text", "folder");
   createIndexIfColumnsExist(db, "create index if not exists idx_lanes_project_id on lanes(project_id)", "lanes", ["project_id"]);
   createIndexIfColumnsExist(
     db,
@@ -230,6 +341,7 @@ function migrate(db) {
       head_sha_end text,
       status text not null,
       last_output_preview text,
+      last_output_at text,
       summary text,
       resume_command text,
       foreign key(lane_id) references lanes(id)
@@ -240,6 +352,7 @@ function migrate(db) {
   addColumnIfMissing(db, "terminal_sessions", "tool_type text", "tool_type");
   addColumnIfMissing(db, "terminal_sessions", "pinned integer not null default 0", "pinned");
   addColumnIfMissing(db, "terminal_sessions", "summary text", "summary");
+  addColumnIfMissing(db, "terminal_sessions", "last_output_at text", "last_output_at");
   addColumnIfMissing(db, "terminal_sessions", "resume_command text", "resume_command");
   createIndexIfColumnsExist(
     db,
@@ -792,6 +905,68 @@ function migrate(db) {
   `);
   db.run("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)");
   db.run("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)");
+  addColumnIfMissing(db, "pr_groups", "name text", "name");
+  addColumnIfMissing(db, "pr_groups", "auto_rebase integer not null default 0", "auto_rebase");
+  addColumnIfMissing(db, "pr_groups", "ci_gating integer not null default 0", "ci_gating");
+  addColumnIfMissing(db, "pr_groups", "target_branch text", "target_branch");
+  db.run(`update pr_groups set group_type = 'queue' where group_type = 'stacked'`);
+  db.run(`
+    create table if not exists integration_proposals (
+      id text primary key,
+      project_id text not null,
+      source_lane_ids_json text not null,
+      base_branch text not null,
+      steps_json text not null,
+      overall_outcome text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)");
+  addColumnIfMissing(db, "integration_proposals", "title text default ''", "title");
+  addColumnIfMissing(db, "integration_proposals", "body text default ''", "body");
+  addColumnIfMissing(db, "integration_proposals", "draft integer not null default 0", "draft");
+  addColumnIfMissing(db, "integration_proposals", "integration_lane_name text default ''", "integration_lane_name");
+  addColumnIfMissing(db, "integration_proposals", "status text not null default 'proposed'", "status");
+  addColumnIfMissing(db, "integration_proposals", "integration_lane_id text", "integration_lane_id");
+  addColumnIfMissing(db, "integration_proposals", "resolution_state_json text", "resolution_state_json");
+  addColumnIfMissing(db, "integration_proposals", "pairwise_results_json text not null default '[]'", "pairwise_results_json");
+  addColumnIfMissing(db, "integration_proposals", "lane_summaries_json text not null default '[]'", "lane_summaries_json");
+  db.run(`
+    create table if not exists queue_landing_state (
+      id text primary key,
+      group_id text not null,
+      project_id text not null,
+      state text not null,
+      entries_json text not null,
+      current_position integer not null default 0,
+      started_at text not null,
+      completed_at text,
+      foreign key(group_id) references pr_groups(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_queue_landing_state_group on queue_landing_state(group_id)");
+  db.run(`
+    create table if not exists rebase_dismissed (
+      lane_id text not null,
+      project_id text not null,
+      dismissed_at text not null,
+      primary key(lane_id, project_id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_rebase_dismissed_project on rebase_dismissed(project_id)");
+  db.run(`
+    create table if not exists rebase_deferred (
+      lane_id text not null,
+      project_id text not null,
+      deferred_until text not null,
+      primary key(lane_id, project_id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_rebase_deferred_project on rebase_deferred(project_id)");
   db.run(`
     create table if not exists missions (
       id text primary key,
@@ -1082,6 +1257,78 @@ function migrate(db) {
     ["project_id", "created_at"]
   );
   db.run(`
+    create table if not exists orchestrator_attempt_runtime (
+      attempt_id text primary key,
+      session_id text,
+      runtime_state text,
+      last_signal_at text,
+      last_output_preview text,
+      last_preview_digest text,
+      digest_since_ms integer not null default 0,
+      repeat_count integer not null default 0,
+      last_waiting_intervention_at_ms integer not null default 0,
+      last_event_heartbeat_at_ms integer not null default 0,
+      last_waiting_notified_at_ms integer not null default 0,
+      updated_at text not null,
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_attempt_runtime_session on orchestrator_attempt_runtime(session_id)",
+    "orchestrator_attempt_runtime",
+    ["session_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_attempt_runtime_updated on orchestrator_attempt_runtime(updated_at)",
+    "orchestrator_attempt_runtime",
+    ["updated_at"]
+  );
+  db.run(`
+    create table if not exists orchestrator_runtime_events (
+      id text primary key,
+      project_id text not null,
+      run_id text not null,
+      step_id text,
+      attempt_id text,
+      session_id text,
+      event_type text not null,
+      event_key text not null,
+      occurred_at text not null,
+      payload_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runtime_events_run_occurred on orchestrator_runtime_events(run_id, occurred_at)",
+    "orchestrator_runtime_events",
+    ["run_id", "occurred_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runtime_events_attempt_occurred on orchestrator_runtime_events(attempt_id, occurred_at)",
+    "orchestrator_runtime_events",
+    ["attempt_id", "occurred_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runtime_events_session_occurred on orchestrator_runtime_events(session_id, occurred_at)",
+    "orchestrator_runtime_events",
+    ["session_id", "occurred_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)",
+    "orchestrator_runtime_events",
+    ["project_id", "event_key"]
+  );
+  db.run(`
     create table if not exists orchestrator_claims (
       id text primary key,
       project_id text not null,
@@ -1245,6 +1492,698 @@ function migrate(db) {
     "orchestrator_gate_reports",
     ["project_id", "generated_at"]
   );
+  db.run(`
+    create table if not exists orchestrator_chat_threads (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      thread_type text not null,
+      title text not null,
+      run_id text,
+      step_id text,
+      step_key text,
+      attempt_id text,
+      session_id text,
+      lane_id text,
+      status text not null default 'active',
+      unread_count integer not null default 0,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_threads_mission_updated on orchestrator_chat_threads(mission_id, updated_at)",
+    "orchestrator_chat_threads",
+    ["mission_id", "updated_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_threads_project_mission on orchestrator_chat_threads(project_id, mission_id)",
+    "orchestrator_chat_threads",
+    ["project_id", "mission_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_threads_mission_type on orchestrator_chat_threads(mission_id, thread_type)",
+    "orchestrator_chat_threads",
+    ["mission_id", "thread_type"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_threads_lane on orchestrator_chat_threads(lane_id)",
+    "orchestrator_chat_threads",
+    ["lane_id"]
+  );
+  db.run(`
+    create table if not exists orchestrator_chat_messages (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      thread_id text not null,
+      role text not null,
+      content text not null,
+      timestamp text not null,
+      step_key text,
+      target_json text,
+      visibility text not null default 'full',
+      delivery_state text not null default 'delivered',
+      source_session_id text,
+      attempt_id text,
+      lane_id text,
+      run_id text,
+      metadata_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(thread_id) references orchestrator_chat_threads(id),
+      foreign key(attempt_id) references orchestrator_attempts(id),
+      foreign key(lane_id) references lanes(id),
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_thread_ts on orchestrator_chat_messages(thread_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["thread_id", "timestamp"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_mission_ts on orchestrator_chat_messages(mission_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["mission_id", "timestamp"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_attempt_ts on orchestrator_chat_messages(attempt_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["attempt_id", "timestamp"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_lane_ts on orchestrator_chat_messages(lane_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["lane_id", "timestamp"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_delivery_queue on orchestrator_chat_messages(delivery_state, role, mission_id, thread_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["delivery_state", "role", "mission_id", "thread_id", "timestamp"]
+  );
+  db.run(`
+    create table if not exists orchestrator_worker_digests (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      step_id text not null,
+      step_key text,
+      attempt_id text not null,
+      lane_id text,
+      session_id text,
+      status text not null,
+      summary text not null,
+      files_changed_json text not null,
+      tests_run_json text not null,
+      warnings_json text not null,
+      tokens_json text,
+      cost_usd real,
+      suggested_next_actions_json text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_digests_mission_created on orchestrator_worker_digests(mission_id, created_at)",
+    "orchestrator_worker_digests",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_digests_run_created on orchestrator_worker_digests(run_id, created_at)",
+    "orchestrator_worker_digests",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_digests_attempt on orchestrator_worker_digests(attempt_id)",
+    "orchestrator_worker_digests",
+    ["attempt_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_digests_lane_created on orchestrator_worker_digests(lane_id, created_at)",
+    "orchestrator_worker_digests",
+    ["lane_id", "created_at"]
+  );
+  db.run(`
+    create table if not exists orchestrator_artifacts (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      step_id text not null,
+      attempt_id text not null,
+      artifact_key text not null,
+      kind text not null,
+      value text not null,
+      metadata_json text not null default '{}',
+      declared integer not null default 0,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_artifacts_mission_created on orchestrator_artifacts(mission_id, created_at)",
+    "orchestrator_artifacts",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_artifacts_step on orchestrator_artifacts(step_id)",
+    "orchestrator_artifacts",
+    ["step_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_artifacts_mission_key on orchestrator_artifacts(mission_id, artifact_key)",
+    "orchestrator_artifacts",
+    ["mission_id", "artifact_key"]
+  );
+  db.run(`
+    create table if not exists orchestrator_context_checkpoints (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text,
+      trigger text not null,
+      summary text not null,
+      source_json text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_context_checkpoints_mission_created on orchestrator_context_checkpoints(mission_id, created_at)",
+    "orchestrator_context_checkpoints",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_context_checkpoints_run_created on orchestrator_context_checkpoints(run_id, created_at)",
+    "orchestrator_context_checkpoints",
+    ["run_id", "created_at"]
+  );
+  db.run(`
+    create table if not exists orchestrator_worker_checkpoints (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      step_id text not null,
+      attempt_id text not null,
+      step_key text not null,
+      content text not null,
+      file_path text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_checkpoints_mission_step_key on orchestrator_worker_checkpoints(mission_id, step_key)",
+    "orchestrator_worker_checkpoints",
+    ["mission_id", "step_key"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_checkpoints_run on orchestrator_worker_checkpoints(run_id)",
+    "orchestrator_worker_checkpoints",
+    ["run_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_checkpoints_mission on orchestrator_worker_checkpoints(mission_id, updated_at)",
+    "orchestrator_worker_checkpoints",
+    ["mission_id", "updated_at"]
+  );
+  db.run(`
+    create table if not exists orchestrator_lane_decisions (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text,
+      step_id text,
+      step_key text,
+      lane_id text,
+      decision_type text not null,
+      validator_outcome text not null,
+      rule_hits_json text not null,
+      rationale text not null,
+      metadata_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_lane_decisions_mission_created on orchestrator_lane_decisions(mission_id, created_at)",
+    "orchestrator_lane_decisions",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_lane_decisions_run_created on orchestrator_lane_decisions(run_id, created_at)",
+    "orchestrator_lane_decisions",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_lane_decisions_step_created on orchestrator_lane_decisions(step_id, created_at)",
+    "orchestrator_lane_decisions",
+    ["step_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_lane_decisions_lane_created on orchestrator_lane_decisions(lane_id, created_at)",
+    "orchestrator_lane_decisions",
+    ["lane_id", "created_at"]
+  );
+  db.run(`
+    create table if not exists orchestrator_ai_decisions (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text,
+      step_id text,
+      attempt_id text,
+      call_type text not null,
+      provider text,
+      model text,
+      timeout_cap_ms integer,
+      decision_json text not null,
+      action_trace_json text,
+      validation_json text,
+      rationale text,
+      fallback_used integer not null default 0,
+      failure_reason text,
+      duration_ms integer,
+      prompt_tokens integer,
+      completion_tokens integer,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_mission_created on orchestrator_ai_decisions(mission_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_run_created on orchestrator_ai_decisions(run_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_step_created on orchestrator_ai_decisions(step_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["step_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_project_category_created on orchestrator_ai_decisions(project_id, call_type, created_at)",
+    "orchestrator_ai_decisions",
+    ["project_id", "call_type", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_created on orchestrator_ai_decisions(created_at)",
+    "orchestrator_ai_decisions",
+    ["created_at"]
+  );
+  db.run(`
+    create table if not exists mission_metrics_config (
+      mission_id text primary key,
+      project_id text not null,
+      toggles_json text not null,
+      updated_at text not null,
+      foreign key(mission_id) references missions(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_metrics_config_project_updated on mission_metrics_config(project_id, updated_at)",
+    "mission_metrics_config",
+    ["project_id", "updated_at"]
+  );
+  db.run(`
+    create table if not exists orchestrator_metrics_samples (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text,
+      attempt_id text,
+      metric text not null,
+      value real not null,
+      unit text,
+      metadata_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_metrics_samples_mission_created on orchestrator_metrics_samples(mission_id, created_at)",
+    "orchestrator_metrics_samples",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_metrics_samples_run_created on orchestrator_metrics_samples(run_id, created_at)",
+    "orchestrator_metrics_samples",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_metrics_samples_metric_created on orchestrator_metrics_samples(metric, created_at)",
+    "orchestrator_metrics_samples",
+    ["metric", "created_at"]
+  );
+  addColumnIfMissing(db, "orchestrator_runs", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
+  addColumnIfMissing(db, "orchestrator_runs", "scheduler_state text not null default 'queued'", "scheduler_state");
+  addColumnIfMissing(db, "orchestrator_runs", "runtime_cursor_json text", "runtime_cursor_json");
+  addColumnIfMissing(db, "orchestrator_runs", "last_error text", "last_error");
+  addColumnIfMissing(db, "orchestrator_runs", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_runs", "started_at text", "started_at");
+  addColumnIfMissing(db, "orchestrator_runs", "completed_at text", "completed_at");
+  addColumnIfMissing(db, "orchestrator_steps", "mission_step_id text", "mission_step_id");
+  addColumnIfMissing(db, "orchestrator_steps", "join_policy text not null default 'all_success'", "join_policy");
+  addColumnIfMissing(db, "orchestrator_steps", "quorum_count integer", "quorum_count");
+  addColumnIfMissing(db, "orchestrator_steps", "dependency_step_ids_json text not null default '[]'", "dependency_step_ids_json");
+  addColumnIfMissing(db, "orchestrator_steps", "retry_limit integer not null default 0", "retry_limit");
+  addColumnIfMissing(db, "orchestrator_steps", "retry_count integer not null default 0", "retry_count");
+  addColumnIfMissing(db, "orchestrator_steps", "last_attempt_id text", "last_attempt_id");
+  addColumnIfMissing(db, "orchestrator_steps", "policy_json text", "policy_json");
+  addColumnIfMissing(db, "orchestrator_steps", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_steps", "started_at text", "started_at");
+  addColumnIfMissing(db, "orchestrator_steps", "completed_at text", "completed_at");
+  addColumnIfMissing(db, "orchestrator_attempts", "executor_session_id text", "executor_session_id");
+  addColumnIfMissing(db, "orchestrator_attempts", "tracked_session_enforced integer not null default 1", "tracked_session_enforced");
+  addColumnIfMissing(db, "orchestrator_attempts", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
+  addColumnIfMissing(db, "orchestrator_attempts", "context_snapshot_id text", "context_snapshot_id");
+  addColumnIfMissing(db, "orchestrator_attempts", "error_class text not null default 'none'", "error_class");
+  addColumnIfMissing(db, "orchestrator_attempts", "error_message text", "error_message");
+  addColumnIfMissing(db, "orchestrator_attempts", "retry_backoff_ms integer not null default 0", "retry_backoff_ms");
+  addColumnIfMissing(db, "orchestrator_attempts", "result_envelope_json text", "result_envelope_json");
+  addColumnIfMissing(db, "orchestrator_attempts", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_attempts", "started_at text", "started_at");
+  addColumnIfMissing(db, "orchestrator_attempts", "completed_at text", "completed_at");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "session_id text", "session_id");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "runtime_state text", "runtime_state");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_signal_at text", "last_signal_at");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_output_preview text", "last_output_preview");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_preview_digest text", "last_preview_digest");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "digest_since_ms integer not null default 0", "digest_since_ms");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "repeat_count integer not null default 0", "repeat_count");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_waiting_intervention_at_ms integer not null default 0", "last_waiting_intervention_at_ms");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_event_heartbeat_at_ms integer not null default 0", "last_event_heartbeat_at_ms");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_waiting_notified_at_ms integer not null default 0", "last_waiting_notified_at_ms");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "updated_at text not null default ''", "updated_at");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "session_id text", "session_id");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "event_key text", "event_key");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "occurred_at text", "occurred_at");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "payload_json text", "payload_json");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "created_at text", "created_at");
+  createIndexIfColumnsExist(
+    db,
+    "create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)",
+    "orchestrator_runtime_events",
+    ["project_id", "event_key"]
+  );
+  addColumnIfMissing(db, "orchestrator_claims", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_claims", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_claims", "released_at text", "released_at");
+  addColumnIfMissing(db, "orchestrator_claims", "policy_json text", "policy_json");
+  addColumnIfMissing(db, "orchestrator_claims", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_context_snapshots", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_context_snapshots", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_context_snapshots", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
+  addColumnIfMissing(db, "orchestrator_context_snapshots", "cursor_json text not null default '{}'", "cursor_json");
+  addColumnIfMissing(db, "orchestrator_timeline_events", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_timeline_events", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_timeline_events", "claim_id text", "claim_id");
+  addColumnIfMissing(db, "orchestrator_timeline_events", "detail_json text", "detail_json");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "step_key text", "step_key");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "session_id text", "session_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "lane_id text", "lane_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "status text not null default 'active'", "status");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "unread_count integer not null default 0", "unread_count");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "updated_at text not null default ''", "updated_at");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "step_key text", "step_key");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "target_json text", "target_json");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "visibility text not null default 'full'", "visibility");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "delivery_state text not null default 'delivered'", "delivery_state");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "source_session_id text", "source_session_id");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "lane_id text", "lane_id");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "created_at text not null default ''", "created_at");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "step_key text", "step_key");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "lane_id text", "lane_id");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "session_id text", "session_id");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "tokens_json text", "tokens_json");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "cost_usd real", "cost_usd");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "suggested_next_actions_json text not null default '[]'", "suggested_next_actions_json");
+  addColumnIfMissing(db, "orchestrator_context_checkpoints", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "step_key text", "step_key");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "lane_id text", "lane_id");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "project_id text not null default ''", "project_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "mission_id text not null default ''", "mission_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "call_type text not null default 'unknown'", "call_type");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "provider text", "provider");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "model text", "model");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "timeout_cap_ms integer", "timeout_cap_ms");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "decision_json text not null default '{}'", "decision_json");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "action_trace_json text", "action_trace_json");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "validation_json text", "validation_json");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "rationale text", "rationale");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "fallback_used integer not null default 0", "fallback_used");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "failure_reason text", "failure_reason");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "duration_ms integer", "duration_ms");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "prompt_tokens integer", "prompt_tokens");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "completion_tokens integer", "completion_tokens");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "created_at text not null default ''", "created_at");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_mission_created on orchestrator_ai_decisions(mission_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_run_created on orchestrator_ai_decisions(run_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_step_created on orchestrator_ai_decisions(step_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["step_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_project_category_created on orchestrator_ai_decisions(project_id, call_type, created_at)",
+    "orchestrator_ai_decisions",
+    ["project_id", "call_type", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_created on orchestrator_ai_decisions(created_at)",
+    "orchestrator_ai_decisions",
+    ["created_at"]
+  );
+  addColumnIfMissing(db, "mission_metrics_config", "project_id text", "project_id");
+  addColumnIfMissing(db, "orchestrator_metrics_samples", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_metrics_samples", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_metrics_samples", "unit text", "unit");
+  addColumnIfMissing(db, "orchestrator_metrics_samples", "metadata_json text", "metadata_json");
+  db.run(`
+    create table if not exists memories (
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      category text not null,
+      content text not null,
+      importance text default 'medium',
+      source_session_id text,
+      source_pack_key text,
+      created_at text not null,
+      last_accessed_at text not null,
+      access_count integer default 0
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_project_scope on memories(project_id, scope)",
+    "memories",
+    ["project_id", "scope"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_project_importance on memories(project_id, importance)",
+    "memories",
+    ["project_id", "importance"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_last_accessed on memories(last_accessed_at)",
+    "memories",
+    ["last_accessed_at"]
+  );
+  addColumnIfMissing(db, "memories", "status text default 'promoted'", "status");
+  addColumnIfMissing(db, "memories", "agent_id text", "agent_id");
+  addColumnIfMissing(db, "memories", "confidence real default 1.0", "confidence");
+  addColumnIfMissing(db, "memories", "promoted_at text", "promoted_at");
+  addColumnIfMissing(db, "memories", "source_run_id text", "source_run_id");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_status on memories(project_id, status)",
+    "memories",
+    ["project_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_agent on memories(agent_id)",
+    "memories",
+    ["agent_id"]
+  );
+  db.run(`
+    create table if not exists agent_identities (
+      id text primary key,
+      project_id text not null,
+      name text not null,
+      profile_json text not null default '{}',
+      persona_json text not null default '{}',
+      tool_policy_json text not null default '{}',
+      user_preferences_json text not null default '{}',
+      heartbeat_json text,
+      model_preference text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_agent_identities_project on agent_identities(project_id)",
+    "agent_identities",
+    ["project_id"]
+  );
+  db.run(`
+    create table if not exists orchestrator_shared_facts (
+      id text primary key,
+      run_id text not null,
+      step_id text,
+      fact_type text not null,
+      content text not null,
+      created_at text not null
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_shared_facts_run on orchestrator_shared_facts(run_id)",
+    "orchestrator_shared_facts",
+    ["run_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_shared_facts_run_type on orchestrator_shared_facts(run_id, fact_type)",
+    "orchestrator_shared_facts",
+    ["run_id", "fact_type"]
+  );
+  db.run(`
+    create table if not exists attempt_transcripts (
+      id text primary key,
+      project_id text not null,
+      attempt_id text not null,
+      run_id text not null,
+      step_id text not null,
+      messages_json text not null,
+      token_count integer default 0,
+      compacted_at text,
+      compaction_summary text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_attempt_transcripts_attempt on attempt_transcripts(attempt_id)",
+    "attempt_transcripts",
+    ["attempt_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_attempt_transcripts_run on attempt_transcripts(run_id)",
+    "attempt_transcripts",
+    ["run_id"]
+  );
 }
 async function openKvDb(dbPath, logger) {
   const wasmDir = resolveSqlJsWasmDir();
@@ -1261,24 +2200,50 @@ async function openKvDb(dbPath, logger) {
   const data = import_node_fs2.default.existsSync(dbPath) ? import_node_fs2.default.readFileSync(dbPath) : null;
   const db = new SQL.Database(data);
   migrate(db);
+  db.run("pragma foreign_keys = on");
   let dirty = false;
   let flushTimer = null;
   const flushNow = () => {
     if (!dirty) return;
-    dirty = false;
+    let tempPath = null;
     try {
       const bytes = db.export();
       ensureParentDir(dbPath);
-      import_node_fs2.default.writeFileSync(dbPath, bytes);
-      logger.debug("db.flushed", { dbPath, bytes: bytes.length });
+      const dbDir = import_node_path2.default.dirname(dbPath);
+      const dbBase = import_node_path2.default.basename(dbPath);
+      tempPath = import_node_path2.default.join(dbDir, `.${dbBase}.${process.pid}.${Date.now()}.tmp`);
+      import_node_fs2.default.writeFileSync(tempPath, Buffer.from(bytes));
+      const tempFd = import_node_fs2.default.openSync(tempPath, "r");
+      try {
+        import_node_fs2.default.fsyncSync(tempFd);
+      } finally {
+        import_node_fs2.default.closeSync(tempFd);
+      }
+      import_node_fs2.default.renameSync(tempPath, dbPath);
+      try {
+        const dirFd = import_node_fs2.default.openSync(dbDir, "r");
+        try {
+          import_node_fs2.default.fsyncSync(dirFd);
+        } finally {
+          import_node_fs2.default.closeSync(dirFd);
+        }
+      } catch {
+      }
+      dirty = false;
     } catch (err) {
+      if (tempPath && import_node_fs2.default.existsSync(tempPath)) {
+        try {
+          import_node_fs2.default.unlinkSync(tempPath);
+        } catch {
+        }
+      }
       logger.error("db.flush_failed", { dbPath, err: String(err) });
     }
   };
   const scheduleFlush = () => {
     dirty = true;
     if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = setTimeout(flushNow, 125);
+    flushTimer = setTimeout(flushNow, FLUSH_DEBOUNCE_MS);
   };
   const getString = (key) => {
     const rows = db.exec("select value from kv where key = ? limit 1", [key]);
@@ -1332,34 +2297,105 @@ var import_node_crypto = require("crypto");
 
 // ../desktop/src/main/services/git/git.ts
 var import_node_child_process = require("child_process");
+var DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+function appendChunkWithCap(args) {
+  const { current, chunk, currentBytes, maxBytes } = args;
+  if (maxBytes <= 0 || currentBytes >= maxBytes) {
+    return { text: current, bytes: currentBytes, truncated: true };
+  }
+  const remaining = maxBytes - currentBytes;
+  if (chunk.length <= remaining) {
+    return {
+      text: current + chunk.toString("utf8"),
+      bytes: currentBytes + chunk.length,
+      truncated: false
+    };
+  }
+  return {
+    text: current + chunk.subarray(0, remaining).toString("utf8"),
+    bytes: maxBytes,
+    truncated: true
+  };
+}
 async function runGit(args, opts) {
   const timeoutMs = opts.timeoutMs ?? 3e4;
+  const maxOutputBytes = Number.isFinite(opts.maxOutputBytes) ? Math.max(0, Math.floor(opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES)) : DEFAULT_MAX_OUTPUT_BYTES;
   return await new Promise((resolve) => {
     const child = (0, import_node_child_process.spawn)("git", args, {
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env ?? {} },
       stdio: ["ignore", "pipe", "pipe"]
     });
+    let settled = false;
     let stdout = "";
     let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(onTimeout);
+      resolve(result);
+    };
     const onTimeout = setTimeout(() => {
       try {
         child.kill("SIGKILL");
       } catch {
       }
-      resolve({ exitCode: 124, stdout, stderr: stderr.length ? stderr : "git timed out" });
+      finish({
+        exitCode: 124,
+        stdout,
+        stderr: stderr.length ? stderr : "git timed out",
+        timedOut: true,
+        stdoutTruncated,
+        stderrTruncated
+      });
     }, timeoutMs);
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
     child.stdout.on("data", (d) => {
-      stdout += String(d);
+      if (stdoutTruncated) return;
+      const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
+      const next = appendChunkWithCap({
+        current: stdout,
+        chunk,
+        currentBytes: stdoutBytes,
+        maxBytes: maxOutputBytes
+      });
+      stdout = next.text;
+      stdoutBytes = next.bytes;
+      stdoutTruncated = next.truncated;
     });
     child.stderr.on("data", (d) => {
-      stderr += String(d);
+      if (stderrTruncated) return;
+      const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
+      const next = appendChunkWithCap({
+        current: stderr,
+        chunk,
+        currentBytes: stderrBytes,
+        maxBytes: maxOutputBytes
+      });
+      stderr = next.text;
+      stderrBytes = next.bytes;
+      stderrTruncated = next.truncated;
+    });
+    child.on("error", (error) => {
+      finish({
+        exitCode: 1,
+        stdout,
+        stderr: stderr.length ? stderr : error.message,
+        stdoutTruncated,
+        stderrTruncated
+      });
     });
     child.on("close", (code) => {
-      clearTimeout(onTimeout);
-      resolve({ exitCode: code ?? 1, stdout, stderr });
+      finish({
+        exitCode: code ?? 1,
+        stdout,
+        stderr,
+        stdoutTruncated,
+        stderrTruncated
+      });
     });
   });
 }
@@ -1381,8 +2417,8 @@ function normalizeConflictType(raw) {
 function parseMergeTreeConflicts(output) {
   const lines = output.split(/\r?\n/);
   const byPath = /* @__PURE__ */ new Map();
-  const addConflict = (path15, type, markerPreview) => {
-    const clean = path15.trim();
+  const addConflict = (path16, type, markerPreview) => {
+    const clean = path16.trim();
     if (!clean.length) return;
     if (byPath.has(clean)) return;
     byPath.set(clean, { path: clean, conflictType: type, markerPreview });
@@ -1392,9 +2428,9 @@ function parseMergeTreeConflicts(output) {
     const conflictMatch = line.match(/^CONFLICT \(([^)]+)\): .* in (.+)$/);
     if (conflictMatch) {
       const type = normalizeConflictType(conflictMatch[1] ?? "");
-      const path15 = (conflictMatch[2] ?? "").trim();
+      const path16 = (conflictMatch[2] ?? "").trim();
       const markerPreview = [lines[i], lines[i + 1], lines[i + 2]].filter(Boolean).join("\n");
-      addConflict(path15, type, markerPreview);
+      addConflict(path16, type, markerPreview);
       continue;
     }
     const autoMergingMatch = line.match(/^Auto-merging (.+)$/);
@@ -1402,9 +2438,9 @@ function parseMergeTreeConflicts(output) {
       const next = lines[i + 1] ?? "";
       const typeMatch = next.match(/^CONFLICT \(([^)]+)\):/);
       const type = normalizeConflictType(typeMatch?.[1] ?? "");
-      const path15 = (autoMergingMatch[1] ?? "").trim();
+      const path16 = (autoMergingMatch[1] ?? "").trim();
       const markerPreview = [line, next, lines[i + 2]].filter(Boolean).join("\n");
-      addConflict(path15, type, markerPreview);
+      addConflict(path16, type, markerPreview);
     }
   }
   return Array.from(byPath.values());
@@ -1664,6 +2700,7 @@ function toLaneSummary(args) {
     color: row.color,
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
+    folder: row.folder,
     createdAt: row.created_at,
     archivedAt: row.archived_at
   };
@@ -1698,7 +2735,22 @@ async function computeLaneStatus(worktreePath, baseRef, branchRef) {
     behind = Number.isFinite(left) ? left : 0;
     ahead = Number.isFinite(right) ? right : 0;
   }
-  return { dirty, ahead, behind };
+  let remoteBehind = -1;
+  const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
+    cwd: worktreePath,
+    timeoutMs: 5e3
+  });
+  if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
+    const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
+      cwd: worktreePath,
+      timeoutMs: 5e3
+    });
+    if (behindRes.exitCode === 0) {
+      const count = parseInt(behindRes.stdout.trim(), 10);
+      remoteBehind = Number.isFinite(count) ? count : 0;
+    }
+  }
+  return { dirty, ahead, behind, remoteBehind };
 }
 function computeStackDepth(args) {
   const { laneId, rowsById, memo } = args;
@@ -1804,8 +2856,16 @@ function createLaneService({
     );
   };
   const listLanes = async ({ includeArchived = false } = {}) => {
-    await ensurePrimaryLane();
-    await syncPrimaryLaneBranchRef();
+    try {
+      await ensurePrimaryLane();
+    } catch (err) {
+      console.warn("[laneService] ensurePrimaryLane failed, continuing with existing lanes:", err instanceof Error ? err.message : String(err));
+    }
+    try {
+      await syncPrimaryLaneBranchRef();
+    } catch (err) {
+      console.warn("[laneService] syncPrimaryLaneBranchRef failed, continuing:", err instanceof Error ? err.message : String(err));
+    }
     const rows = getAllLaneRows(includeArchived);
     const contextRows = getAllLaneRows(true);
     const activeRows = contextRows.filter((row) => row.status !== "archived");
@@ -1821,7 +2881,7 @@ function createLaneService({
       const cached = statusCache.get(laneId);
       if (cached) return cached;
       const row = rowsById.get(laneId);
-      if (!row) return { dirty: false, ahead: 0, behind: 0 };
+      if (!row) return { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
       const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
       let baseRef = parent?.branch_ref ?? row.base_ref;
       if (!parent && row.lane_type === "primary") {
@@ -1845,20 +2905,44 @@ function createLaneService({
       statusCache.set(laneId, status);
       return status;
     };
+    const defaultStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
     const out = [];
     for (const row of rows) {
-      const status = await resolveStatus(row.id);
-      const parentStatus = row.parent_lane_id ? await resolveStatus(row.parent_lane_id) : null;
-      const stackDepth = computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo });
-      out.push(
-        toLaneSummary({
-          row,
-          status,
-          parentStatus,
-          childCount: childCountMap.get(row.id) ?? 0,
-          stackDepth
-        })
-      );
+      try {
+        let status;
+        try {
+          status = await resolveStatus(row.id);
+        } catch {
+          console.warn(`[laneService] resolveStatus failed for lane ${row.id}, using default`);
+          status = defaultStatus;
+        }
+        let parentStatus = null;
+        if (row.parent_lane_id) {
+          try {
+            parentStatus = await resolveStatus(row.parent_lane_id);
+          } catch {
+            console.warn(`[laneService] resolveStatus failed for parent lane ${row.parent_lane_id}, using default`);
+            parentStatus = defaultStatus;
+          }
+        }
+        let stackDepth = 0;
+        try {
+          stackDepth = computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo });
+        } catch {
+          console.warn(`[laneService] computeStackDepth failed for lane ${row.id}, defaulting to 0`);
+        }
+        out.push(
+          toLaneSummary({
+            row,
+            status,
+            parentStatus,
+            childCount: childCountMap.get(row.id) ?? 0,
+            stackDepth
+          })
+        );
+      } catch (err) {
+        console.warn(`[laneService] Failed to build summary for lane ${row.id}, skipping:`, err instanceof Error ? err.message : String(err));
+      }
     }
     return out;
   };
@@ -1877,11 +2961,11 @@ function createLaneService({
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, 'active', ?, null)
+        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, 'active', ?, null)
       `,
-      [laneId, projectId, args.name, args.description ?? null, args.baseRef, branchRef, worktreePath, args.parentLaneId, now]
+      [laneId, projectId, args.name, args.description ?? null, args.baseRef, branchRef, worktreePath, args.parentLaneId, args.folder ?? null, now]
     );
     const row = getLaneRow(laneId);
     if (!row) throw new Error(`Failed to create lane: ${laneId}`);
@@ -1997,7 +3081,8 @@ function createLaneService({
         description: args.description,
         baseRef: parent.branch_ref,
         startPoint: parentHeadSha,
-        parentLaneId: parent.id
+        parentLaneId: parent.id,
+        folder: args.folder
       });
     },
     async importBranch(args) {
@@ -2064,13 +3149,56 @@ function createLaneService({
       });
     },
     async getChildren(laneId) {
-      const children = await listLanes({ includeArchived: false });
-      return children.filter((lane) => lane.parentLaneId === laneId).sort((a, b) => {
-        const aTs = Date.parse(a.createdAt);
-        const bTs = Date.parse(b.createdAt);
-        if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
-        return a.name.localeCompare(b.name);
-      });
+      const childRows = getChildrenRows(laneId, false);
+      if (childRows.length === 0) return [];
+      const allRows = getAllLaneRows(true);
+      const rowsById = new Map(allRows.map((row) => [row.id, row]));
+      const activeRows = allRows.filter((row) => row.status !== "archived");
+      const depthMemo = /* @__PURE__ */ new Map();
+      const childCountMap = /* @__PURE__ */ new Map();
+      for (const row of activeRows) {
+        if (!row.parent_lane_id) continue;
+        childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
+      }
+      const parentRow = rowsById.get(laneId);
+      let parentStatus = null;
+      if (parentRow) {
+        const grandParent = parentRow.parent_lane_id ? rowsById.get(parentRow.parent_lane_id) : null;
+        try {
+          parentStatus = await computeLaneStatus(
+            parentRow.worktree_path,
+            grandParent?.branch_ref ?? parentRow.base_ref,
+            parentRow.branch_ref
+          );
+        } catch {
+          parentStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+        }
+      }
+      const defaultStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+      const out = [];
+      for (const row of childRows) {
+        let status;
+        try {
+          const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
+          status = await computeLaneStatus(
+            row.worktree_path,
+            parent?.branch_ref ?? row.base_ref,
+            row.branch_ref
+          );
+        } catch {
+          status = defaultStatus;
+        }
+        out.push(
+          toLaneSummary({
+            row,
+            status,
+            parentStatus,
+            childCount: childCountMap.get(row.id) ?? 0,
+            stackDepth: computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo })
+          })
+        );
+      }
+      return out;
     },
     async getStackChain(laneId) {
       const start = getLaneRow(laneId);
@@ -2367,6 +3495,16 @@ function createLaneService({
       if (row.lane_type === "primary") {
         throw new Error("Primary lane cannot be archived");
       }
+      const activeGroupMember = db.get(
+        `select m.group_id from pr_group_members m
+         join pr_groups g on g.id = m.group_id
+         where m.lane_id = ? and g.project_id = ?
+         limit 1`,
+        [laneId, projectId]
+      );
+      if (activeGroupMember) {
+        throw new Error("Cannot archive a lane that is part of a PR group. Remove from the group first.");
+      }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
     },
@@ -2426,6 +3564,8 @@ function createLaneService({
       } catch {
       }
       db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
+      db.run("delete from pr_group_members where lane_id = ?", [laneId]);
+      db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
       db.run("delete from session_deltas where lane_id = ?", [laneId]);
       db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
       db.run("delete from operations where lane_id = ?", [laneId]);
@@ -2556,8 +3696,8 @@ function prefersTool(raw, preferredTool) {
   return cmdTool === preferredTool;
 }
 function defaultResumeCommandForTool(toolType) {
-  if (toolType === "claude") return "claude resume";
-  if (toolType === "codex") return "codex resume";
+  if (toolType === "claude" || toolType === "claude-orchestrated") return "claude resume";
+  if (toolType === "codex" || toolType === "codex-orchestrated") return "codex resume";
   return null;
 }
 function extractResumeCommandFromOutput(text, preferredTool) {
@@ -2598,7 +3738,19 @@ function createSessionService({ db }) {
   const normalizeToolType2 = (raw) => {
     const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
     if (!value) return null;
-    const allowed = ["shell", "claude", "codex", "codex-chat", "claude-chat", "cursor", "aider", "continue", "other"];
+    const allowed = [
+      "shell",
+      "claude",
+      "codex",
+      "claude-orchestrated",
+      "codex-orchestrated",
+      "codex-chat",
+      "claude-chat",
+      "cursor",
+      "aider",
+      "continue",
+      "other"
+    ];
     return allowed.includes(value) ? value : "other";
   };
   const list = ({ laneId, status, limit } = {}) => {
@@ -2771,8 +3923,8 @@ function createSessionService({ db }) {
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview, summary, tool_type, resume_command
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, ?, ?)
+            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?)
         `,
         [
           sessionId,
@@ -2806,7 +3958,10 @@ function createSessionService({ db }) {
       db.run("update terminal_sessions set head_sha_end = ? where id = ?", [sha, sessionId]);
     },
     setLastOutputPreview(sessionId, preview) {
-      db.run("update terminal_sessions set last_output_preview = ? where id = ?", [preview, sessionId]);
+      db.run(
+        "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
+        [preview, (/* @__PURE__ */ new Date()).toISOString(), sessionId]
+      );
     },
     setSummary(sessionId, summary) {
       db.run("update terminal_sessions set summary = ? where id = ?", [summary, sessionId]);
@@ -2892,6 +4047,20 @@ function asNumber(value) {
 }
 function asBool(value) {
   return typeof value === "boolean" ? value : void 0;
+}
+function coerceOrchestratorHookConfig(value) {
+  if (typeof value === "string") {
+    const command2 = value.trim();
+    return command2.length ? { command: command2 } : null;
+  }
+  if (!isRecord(value)) return null;
+  const command = asString(value.command)?.trim() ?? "";
+  if (!command.length) return null;
+  const timeoutMs = asNumber(value.timeoutMs) ?? asNumber(value.timeout_ms);
+  return {
+    command,
+    ...timeoutMs != null ? { timeoutMs: Math.max(1e3, Math.floor(timeoutMs)) } : {}
+  };
 }
 function asStringMap(value) {
   if (!isRecord(value)) return void 0;
@@ -3163,6 +4332,10 @@ function coerceAiConfig(value) {
       if (maxBudgetUsd != null && maxBudgetUsd > 0) entry.maxBudgetUsd = maxBudgetUsd;
       const sandbox = asBool(claude.sandbox);
       if (sandbox != null) entry.sandbox = sandbox;
+      const dangerouslySkipPermissions = asBool(claude.dangerouslySkipPermissions) ?? asBool(claude.dangerously_skip_permissions);
+      if (dangerouslySkipPermissions != null) entry.dangerouslySkipPermissions = dangerouslySkipPermissions;
+      const allowedTools = asStringArray(claude.allowedTools) ?? asStringArray(claude.allowed_tools);
+      if (allowedTools?.length) entry.allowedTools = allowedTools;
       if (Object.keys(entry).length) permissions.claude = entry;
     }
     const codex = isRecord(permissionsRaw.codex) ? permissionsRaw.codex : null;
@@ -3173,13 +4346,15 @@ function coerceAiConfig(value) {
         entry.sandboxPermissions = sandboxPermissions;
       }
       const approvalMode = (asString(codex.approvalMode) ?? asString(codex.approval_mode))?.trim();
-      if (approvalMode === "untrusted" || approvalMode === "on-request" || approvalMode === "on-failure" || approvalMode === "never") {
+      if (approvalMode === "untrusted" || approvalMode === "on-request" || approvalMode === "on-failure" || approvalMode === "never" || approvalMode === "suggest" || approvalMode === "auto-edit" || approvalMode === "full-auto") {
         entry.approvalMode = approvalMode;
       }
       const writablePaths = asStringArray(codex.writablePaths) ?? asStringArray(codex.writable_paths);
       if (writablePaths?.length) entry.writablePaths = writablePaths;
       const commandAllowlist = asStringArray(codex.commandAllowlist) ?? asStringArray(codex.command_allowlist);
       if (commandAllowlist?.length) entry.commandAllowlist = commandAllowlist;
+      const configPath = asString(codex.configPath) ?? asString(codex.config_path);
+      if (configPath) entry.configPath = configPath;
       if (Object.keys(entry).length) permissions.codex = entry;
     }
     if (Object.keys(permissions).length) out.permissions = permissions;
@@ -3207,6 +4382,76 @@ function coerceAiConfig(value) {
     if (threshold != null) conflict.autoApplyThreshold = threshold;
     if (Object.keys(conflict).length) out.conflictResolution = conflict;
   }
+  const orchestratorRaw = isRecord(value.orchestrator) ? value.orchestrator : null;
+  if (orchestratorRaw) {
+    const orchestrator = {};
+    const teammatePlanMode = (asString(orchestratorRaw.teammatePlanMode) ?? asString(orchestratorRaw.teammate_plan_mode))?.trim();
+    if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
+      orchestrator.teammatePlanMode = teammatePlanMode;
+    }
+    const requirePlanReview = asBool(orchestratorRaw.requirePlanReview) ?? asBool(orchestratorRaw.require_plan_review);
+    if (requirePlanReview != null) orchestrator.requirePlanReview = requirePlanReview;
+    const maxParallelWorkers = asNumber(orchestratorRaw.maxParallelWorkers) ?? asNumber(orchestratorRaw.max_parallel_workers);
+    if (maxParallelWorkers != null) orchestrator.maxParallelWorkers = Math.max(1, Math.floor(maxParallelWorkers));
+    const defaultMergePolicy = (asString(orchestratorRaw.defaultMergePolicy) ?? asString(orchestratorRaw.default_merge_policy))?.trim();
+    if (defaultMergePolicy === "sequential" || defaultMergePolicy === "batch-at-end" || defaultMergePolicy === "per-step") {
+      orchestrator.defaultMergePolicy = defaultMergePolicy;
+    }
+    const defaultConflictHandoff = (asString(orchestratorRaw.defaultConflictHandoff) ?? asString(orchestratorRaw.default_conflict_handoff))?.trim();
+    if (defaultConflictHandoff === "auto-resolve" || defaultConflictHandoff === "ask-user" || defaultConflictHandoff === "orchestrator-decides") {
+      orchestrator.defaultConflictHandoff = defaultConflictHandoff;
+    }
+    const workerHeartbeatIntervalMs = asNumber(orchestratorRaw.workerHeartbeatIntervalMs) ?? asNumber(orchestratorRaw.worker_heartbeat_interval_ms);
+    if (workerHeartbeatIntervalMs != null) orchestrator.workerHeartbeatIntervalMs = Math.max(1e3, Math.floor(workerHeartbeatIntervalMs));
+    const workerHeartbeatTimeoutMs = asNumber(orchestratorRaw.workerHeartbeatTimeoutMs) ?? asNumber(orchestratorRaw.worker_heartbeat_timeout_ms);
+    if (workerHeartbeatTimeoutMs != null) orchestrator.workerHeartbeatTimeoutMs = Math.max(1e3, Math.floor(workerHeartbeatTimeoutMs));
+    const workerIdleTimeoutMs = asNumber(orchestratorRaw.workerIdleTimeoutMs) ?? asNumber(orchestratorRaw.worker_idle_timeout_ms);
+    if (workerIdleTimeoutMs != null) orchestrator.workerIdleTimeoutMs = Math.max(1e3, Math.floor(workerIdleTimeoutMs));
+    const stepTimeoutDefaultMs = asNumber(orchestratorRaw.stepTimeoutDefaultMs) ?? asNumber(orchestratorRaw.step_timeout_default_ms);
+    if (stepTimeoutDefaultMs != null) orchestrator.stepTimeoutDefaultMs = Math.max(1e3, Math.floor(stepTimeoutDefaultMs));
+    const maxRetriesPerStep = asNumber(orchestratorRaw.maxRetriesPerStep) ?? asNumber(orchestratorRaw.max_retries_per_step);
+    if (maxRetriesPerStep != null) orchestrator.maxRetriesPerStep = Math.max(0, Math.floor(maxRetriesPerStep));
+    const contextPressureThreshold = asNumber(orchestratorRaw.contextPressureThreshold) ?? asNumber(orchestratorRaw.context_pressure_threshold);
+    if (contextPressureThreshold != null) orchestrator.contextPressureThreshold = Math.max(0.1, Math.min(0.99, contextPressureThreshold));
+    const progressiveLoading = asBool(orchestratorRaw.progressiveLoading) ?? asBool(orchestratorRaw.progressive_loading);
+    if (progressiveLoading != null) orchestrator.progressiveLoading = progressiveLoading;
+    const maxTotalTokenBudget = asNumber(orchestratorRaw.maxTotalTokenBudget) ?? asNumber(orchestratorRaw.max_total_token_budget);
+    if (maxTotalTokenBudget != null && maxTotalTokenBudget > 0) orchestrator.maxTotalTokenBudget = maxTotalTokenBudget;
+    const maxPerStepTokenBudget = asNumber(orchestratorRaw.maxPerStepTokenBudget) ?? asNumber(orchestratorRaw.max_per_step_token_budget);
+    if (maxPerStepTokenBudget != null && maxPerStepTokenBudget > 0) orchestrator.maxPerStepTokenBudget = maxPerStepTokenBudget;
+    const defaultExecutionPolicy = isRecord(orchestratorRaw.defaultExecutionPolicy) ? orchestratorRaw.defaultExecutionPolicy : isRecord(orchestratorRaw.default_execution_policy) ? orchestratorRaw.default_execution_policy : null;
+    if (defaultExecutionPolicy) {
+      orchestrator.defaultExecutionPolicy = defaultExecutionPolicy;
+    }
+    const defaultDepthTier = (asString(orchestratorRaw.defaultDepthTier) ?? asString(orchestratorRaw.default_depth_tier))?.trim();
+    if (defaultDepthTier === "light" || defaultDepthTier === "standard" || defaultDepthTier === "deep") {
+      orchestrator.defaultDepthTier = defaultDepthTier;
+    }
+    const defaultPlannerProvider = (asString(orchestratorRaw.defaultPlannerProvider) ?? asString(orchestratorRaw.default_planner_provider))?.trim();
+    if (defaultPlannerProvider === "auto" || defaultPlannerProvider === "claude" || defaultPlannerProvider === "codex") {
+      orchestrator.defaultPlannerProvider = defaultPlannerProvider;
+    }
+    const autoResolveInterventions = asBool(orchestratorRaw.autoResolveInterventions) ?? asBool(orchestratorRaw.auto_resolve_interventions);
+    if (autoResolveInterventions != null) orchestrator.autoResolveInterventions = autoResolveInterventions;
+    const interventionConfidenceThreshold = asNumber(orchestratorRaw.interventionConfidenceThreshold) ?? asNumber(orchestratorRaw.intervention_confidence_threshold);
+    if (interventionConfidenceThreshold != null) {
+      orchestrator.interventionConfidenceThreshold = Math.max(0, Math.min(1, interventionConfidenceThreshold));
+    }
+    const hooksRaw = isRecord(orchestratorRaw.hooks) ? orchestratorRaw.hooks : null;
+    if (hooksRaw) {
+      const hooks = {};
+      const teammateIdle = coerceOrchestratorHookConfig(
+        hooksRaw.TeammateIdle ?? hooksRaw.teammateIdle ?? hooksRaw.teammate_idle
+      );
+      if (teammateIdle) hooks.TeammateIdle = teammateIdle;
+      const taskCompleted = coerceOrchestratorHookConfig(
+        hooksRaw.TaskCompleted ?? hooksRaw.taskCompleted ?? hooksRaw.task_completed
+      );
+      if (taskCompleted) hooks.TaskCompleted = taskCompleted;
+      if (Object.keys(hooks).length) orchestrator.hooks = hooks;
+    }
+    if (Object.keys(orchestrator).length) out.orchestrator = orchestrator;
+  }
   return Object.keys(out).length ? out : void 0;
 }
 function mergeAiConfig(sharedAi, localAi) {
@@ -3231,6 +4476,10 @@ function mergeAiConfig(sharedAi, localAi) {
     ...sharedAi?.conflictResolution ?? {},
     ...localAi?.conflictResolution ?? {}
   };
+  const orchestrator = {
+    ...sharedAi?.orchestrator ?? {},
+    ...localAi?.orchestrator ?? {}
+  };
   const out = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
@@ -3238,7 +4487,8 @@ function mergeAiConfig(sharedAi, localAi) {
     ...Object.keys(features).length ? { features } : {},
     ...Object.keys(budgets).length ? { budgets } : {},
     ...Object.keys(permissions).length ? { permissions } : {},
-    ...Object.keys(conflictResolution).length ? { conflictResolution } : {}
+    ...Object.keys(conflictResolution).length ? { conflictResolution } : {},
+    ...Object.keys(orchestrator).length ? { orchestrator } : {}
   };
   return Object.keys(out).length ? out : void 0;
 }
@@ -3522,7 +4772,7 @@ function isDirectory(absPath) {
   }
 }
 function validateProcessCycles(processes, issues) {
-  const byId = new Map(processes.map((p) => [p.id, p]));
+  const byId2 = new Map(processes.map((p) => [p.id, p]));
   const visited = /* @__PURE__ */ new Set();
   const inStack = /* @__PURE__ */ new Set();
   const dfs = (id) => {
@@ -3530,17 +4780,17 @@ function validateProcessCycles(processes, issues) {
     if (visited.has(id)) return false;
     visited.add(id);
     inStack.add(id);
-    const proc = byId.get(id);
+    const proc = byId2.get(id);
     if (proc) {
       for (const dep of proc.dependsOn) {
-        if (!byId.has(dep)) continue;
+        if (!byId2.has(dep)) continue;
         if (dfs(dep)) return true;
       }
     }
     inStack.delete(id);
     return false;
   };
-  for (const id of byId.keys()) {
+  for (const id of byId2.keys()) {
     if (dfs(id)) {
       issues.push({ path: "effective.processes", message: `Cyclic dependsOn graph detected around '${id}'` });
       return;
@@ -9558,6 +10808,7 @@ var PREFILTER_MAX_PEERS_PER_LANE = 6;
 var PREFILTER_MAX_GLOBAL_PAIRS = 800;
 var PREFILTER_MAX_TOUCHED_FILES = 800;
 var STALE_MS = 5 * 6e4;
+var EXTERNAL_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 function isRecord2(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -9699,8 +10950,8 @@ function buildConflictFiles(conflicting, overlapFiles) {
       markerPreview: file.markerPreview ?? ""
     });
   }
-  for (const path15 of overlapFiles) {
-    const clean = path15.trim();
+  for (const path16 of overlapFiles) {
+    const clean = path16.trim();
     if (!clean || seen.has(clean)) continue;
     seen.add(clean);
     out.push({
@@ -9890,6 +11141,22 @@ function createConflictService({
 }) {
   const pairLocks = /* @__PURE__ */ new Map();
   const pairQueued = /* @__PURE__ */ new Set();
+  const rebaseDismissed = /* @__PURE__ */ new Map();
+  const rebaseDeferred = /* @__PURE__ */ new Map();
+  const activeRebaseLanes = /* @__PURE__ */ new Set();
+  try {
+    const dismissRows = db.all(
+      `select lane_id, dismissed_at from rebase_dismissed where project_id = ?`,
+      [projectId]
+    );
+    for (const row of dismissRows) rebaseDismissed.set(row.lane_id, row.dismissed_at);
+    const deferRows = db.all(
+      `select lane_id, deferred_until from rebase_deferred where project_id = ?`,
+      [projectId]
+    );
+    for (const row of deferRows) rebaseDeferred.set(row.lane_id, row.deferred_until);
+  } catch {
+  }
   const runSerializedPairTask = async (pairId, task) => {
     const active = pairLocks.get(pairId);
     if (active) {
@@ -10409,8 +11676,8 @@ function createConflictService({
     const foldRow = (row) => {
       const conflicting = safeJsonArray(row.conflicting_files_json);
       const overlapFiles = safeJsonArray(row.overlap_files_json);
-      for (const path15 of overlapFiles) {
-        const clean = path15.trim();
+      for (const path16 of overlapFiles) {
+        const clean = path16.trim();
         if (clean) overlapSet.add(clean);
       }
       for (const file of conflicting) {
@@ -12006,7 +13273,8 @@ ${stderr}
 `, "utf8");
     const diffResult = await runGit(["diff", "--binary"], {
       cwd: cwdLane.worktreePath,
-      timeoutMs: 45e3
+      timeoutMs: 45e3,
+      maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
     });
     const patchPath = import_node_path7.default.join(runDir, "changes.patch");
     let finalPatchPath = null;
@@ -12034,6 +13302,8 @@ ${stderr}
       contextGaps: [],
       warnings: [
         ...proc.signal ? [`process_signal:${proc.signal}`] : [],
+        ...diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : [],
+        ...diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : [],
         ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
       ],
       committedAt: null,
@@ -12290,7 +13560,14 @@ ${stderr}
     if (!targetLane) throw new Error(`Target lane not found: ${targetLaneId}`);
     const scenario = args.scenario ?? (sourceLaneIds.length === 1 ? "single-merge" : args.integrationLaneName ? "integration-merge" : "sequential-merge");
     const integrationLane = scenario === "integration-merge" ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName }) : null;
-    const cwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0] : integrationLane?.id ?? sourceLaneIds[0];
+    const requestedCwdLaneId = typeof args.cwdLaneId === "string" ? args.cwdLaneId.trim() : "";
+    const defaultCwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0] : integrationLane?.id ?? sourceLaneIds[0];
+    let cwdLaneId = defaultCwdLaneId;
+    if (sourceLaneIds.length > 1 && integrationLane?.id) {
+      cwdLaneId = integrationLane.id;
+    } else if (requestedCwdLaneId && (requestedCwdLaneId === targetLaneId || sourceLaneIds.includes(requestedCwdLaneId))) {
+      cwdLaneId = requestedCwdLaneId;
+    }
     const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
     if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
     const contexts = [];
@@ -12394,7 +13671,8 @@ ${stderr}
     const cwdLane = laneService.getLaneBaseAndBranch(run.cwdLaneId);
     const diffResult = await runGit(["diff", "--binary"], {
       cwd: cwdLane.worktreePath,
-      timeoutMs: 45e3
+      timeoutMs: 45e3,
+      maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
     });
     const runDir = import_node_path7.default.join(externalRunsRootDir, runId);
     const patchPath = import_node_path7.default.join(runDir, "changes.patch");
@@ -12410,6 +13688,11 @@ ${stderr}
       status,
       completedAt,
       patchPath: finalPatchPath,
+      warnings: [
+        ...run.warnings ?? [],
+        ...diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : [],
+        ...diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : []
+      ],
       error: args.exitCode === 0 ? null : `Exit code ${args.exitCode}`
     };
     writeExternalRunRecord(updatedRecord);
@@ -12435,6 +13718,265 @@ ${stderr}
       reason: `Low overlap count (${overlapCount}) suggests resolving in source for simpler integration.`
     };
   };
+  const simulateChainedMerge = async (args) => {
+    const lanes = await listActiveLanes();
+    const laneMap = new Map(lanes.map((l) => [l.id, l]));
+    const steps = [];
+    let accumulatedSha = await readHeadSha(projectRoot, args.baseBranch);
+    for (let i = 0; i < args.sourceLaneIds.length; i++) {
+      const laneId = args.sourceLaneIds[i];
+      const lane = laneMap.get(laneId);
+      if (!lane) {
+        steps.push({
+          laneId,
+          laneName: laneId,
+          position: i,
+          outcome: "blocked",
+          conflictingFiles: [],
+          diffStat: { insertions: 0, deletions: 0, filesChanged: 0 }
+        });
+        continue;
+      }
+      const laneHeadSha = await readHeadSha(lane.worktreePath, "HEAD");
+      const mergeBase = await readMergeBase(projectRoot, accumulatedSha, laneHeadSha);
+      const merge = await runGitMergeTree({
+        cwd: projectRoot,
+        mergeBase,
+        branchA: accumulatedSha,
+        branchB: laneHeadSha,
+        timeoutMs: 6e4
+      });
+      const conflictingFiles = merge.conflicts.map((c) => ({
+        path: c.path,
+        conflictMarkers: c.markerPreview,
+        oursExcerpt: null,
+        theirsExcerpt: null,
+        diffHunk: null
+      }));
+      const outcome = conflictingFiles.length > 0 ? "conflict" : merge.exitCode === 0 ? "clean" : "blocked";
+      const numstat = await readDiffNumstat(projectRoot, mergeBase, laneHeadSha);
+      steps.push({
+        laneId,
+        laneName: lane.name,
+        position: i,
+        outcome,
+        conflictingFiles,
+        diffStat: {
+          insertions: numstat.insertions,
+          deletions: numstat.deletions,
+          filesChanged: numstat.files.size
+        }
+      });
+      if (outcome === "clean" && merge.usedWriteTree && merge.stdout.trim()) {
+        const firstLine = merge.stdout.trim().split(/\r?\n/)[0].trim();
+        if (/^[0-9a-f]{40}$/.test(firstLine)) {
+          accumulatedSha = firstLine;
+        } else {
+          accumulatedSha = laneHeadSha;
+        }
+      } else if (outcome === "clean") {
+        accumulatedSha = laneHeadSha;
+      }
+    }
+    return steps;
+  };
+  const scanRebaseNeeds = async () => {
+    const lanes = await listActiveLanes();
+    const needs = [];
+    const nonPrimaryLanes = lanes.filter((l) => l.laneType !== "primary");
+    for (const lane of nonPrimaryLanes) {
+      try {
+        const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+        const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
+        const behindRes = await runGit(
+          ["rev-list", "--count", `${laneHead}..${baseHead}`],
+          { cwd: projectRoot, timeoutMs: 15e3 }
+        );
+        const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
+        if (behindBy === 0) continue;
+        const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
+        const merge = await runGitMergeTree({
+          cwd: projectRoot,
+          mergeBase,
+          branchA: baseHead,
+          branchB: laneHead,
+          timeoutMs: 6e4
+        });
+        const conflictingFiles = merge.conflicts.map((c) => c.path);
+        needs.push({
+          laneId: lane.id,
+          laneName: lane.name,
+          baseBranch: lane.baseRef,
+          behindBy,
+          conflictPredicted: conflictingFiles.length > 0,
+          conflictingFiles,
+          prId: null,
+          groupContext: null,
+          dismissedAt: rebaseDismissed.get(lane.id) ?? null,
+          deferredUntil: rebaseDeferred.get(lane.id) ?? null
+        });
+      } catch (err) {
+        logger.warn(`scanRebaseNeeds: failed for lane ${lane.id}`, { error: err });
+      }
+    }
+    if (onEvent) {
+      onEvent({ type: "rebase-needs-updated", needs, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+    }
+    return needs;
+  };
+  const getRebaseNeed = async (laneId) => {
+    const lanes = await listActiveLanes();
+    const lane = lanes.find((l) => l.id === laneId);
+    if (!lane || lane.laneType === "primary") return null;
+    try {
+      const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+      const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
+      const behindRes = await runGit(
+        ["rev-list", "--count", `${laneHead}..${baseHead}`],
+        { cwd: projectRoot, timeoutMs: 15e3 }
+      );
+      const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
+      if (behindBy === 0) return null;
+      const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
+      const merge = await runGitMergeTree({
+        cwd: projectRoot,
+        mergeBase,
+        branchA: baseHead,
+        branchB: laneHead,
+        timeoutMs: 6e4
+      });
+      const conflictingFiles = merge.conflicts.map((c) => c.path);
+      return {
+        laneId: lane.id,
+        laneName: lane.name,
+        baseBranch: lane.baseRef,
+        behindBy,
+        conflictPredicted: conflictingFiles.length > 0,
+        conflictingFiles,
+        prId: null,
+        groupContext: null,
+        dismissedAt: rebaseDismissed.get(lane.id) ?? null,
+        deferredUntil: rebaseDeferred.get(lane.id) ?? null
+      };
+    } catch (err) {
+      logger.warn(`getRebaseNeed: failed for lane ${laneId}`, { error: err });
+      return null;
+    }
+  };
+  const dismissRebase = (laneId) => {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    rebaseDismissed.set(laneId, now);
+    try {
+      db.run(
+        `insert into rebase_dismissed(lane_id, project_id, dismissed_at)
+         values (?, ?, ?)
+         on conflict(lane_id, project_id) do update set dismissed_at = excluded.dismissed_at`,
+        [laneId, projectId, now]
+      );
+    } catch {
+    }
+  };
+  const deferRebase = (laneId, until) => {
+    rebaseDeferred.set(laneId, until);
+    try {
+      db.run(
+        `insert into rebase_deferred(lane_id, project_id, deferred_until)
+         values (?, ?, ?)
+         on conflict(lane_id, project_id) do update set deferred_until = excluded.deferred_until`,
+        [laneId, projectId, until]
+      );
+    } catch {
+    }
+  };
+  const rebaseLane = async (args) => {
+    if (activeRebaseLanes.has(args.laneId)) {
+      return {
+        laneId: args.laneId,
+        success: false,
+        conflictingFiles: [],
+        error: `Rebase already in progress for lane ${args.laneId}`
+      };
+    }
+    activeRebaseLanes.add(args.laneId);
+    try {
+      const lanes = await listActiveLanes();
+      const lane = lanes.find((l) => l.id === args.laneId);
+      if (!lane) {
+        return {
+          laneId: args.laneId,
+          success: false,
+          conflictingFiles: [],
+          error: `Lane ${args.laneId} not found`
+        };
+      }
+      const dirtyCheck = await runGit(
+        ["status", "--porcelain"],
+        { cwd: lane.worktreePath, timeoutMs: 1e4 }
+      );
+      if (dirtyCheck.exitCode === 0 && dirtyCheck.stdout.trim().length > 0) {
+        return {
+          laneId: args.laneId,
+          success: false,
+          conflictingFiles: [],
+          error: "Worktree has uncommitted changes. Commit or stash before rebasing."
+        };
+      }
+      if (args.aiAssisted) {
+        logger.info(`rebaseLane: AI-assisted rebase requested for lane ${args.laneId}`, {
+          provider: args.provider ?? "codex",
+          autoApplyThreshold: args.autoApplyThreshold
+        });
+      }
+      if (onEvent) {
+        onEvent({ type: "rebase-started", laneId: args.laneId, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+      }
+      const rebaseRes = await runGit(
+        ["rebase", lane.baseRef],
+        { cwd: lane.worktreePath, timeoutMs: 12e4 }
+      );
+      if (rebaseRes.exitCode === 0) {
+        rebaseDismissed.delete(args.laneId);
+        rebaseDeferred.delete(args.laneId);
+        try {
+          db.run(`delete from rebase_dismissed where lane_id = ? and project_id = ?`, [args.laneId, projectId]);
+          db.run(`delete from rebase_deferred where lane_id = ? and project_id = ?`, [args.laneId, projectId]);
+        } catch {
+        }
+        if (onEvent) {
+          onEvent({ type: "rebase-completed", laneId: args.laneId, success: true, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+        }
+        return {
+          laneId: args.laneId,
+          success: true,
+          conflictingFiles: [],
+          resolvedByAi: false
+        };
+      }
+      const statusRes = await runGit(
+        ["diff", "--name-only", "--diff-filter=U"],
+        { cwd: lane.worktreePath, timeoutMs: 15e3 }
+      );
+      const conflictingFiles = statusRes.exitCode === 0 ? parseDiffNameOnly2(statusRes.stdout) : [];
+      const abortRes = await runGit(["rebase", "--abort"], { cwd: lane.worktreePath, timeoutMs: 15e3 });
+      if (abortRes.exitCode !== 0) {
+        logger.error(`rebaseLane: Failed to abort rebase for lane ${args.laneId}`, {
+          stderr: abortRes.stderr
+        });
+      }
+      if (onEvent) {
+        onEvent({ type: "rebase-completed", laneId: args.laneId, success: false, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+      }
+      return {
+        laneId: args.laneId,
+        success: false,
+        conflictingFiles,
+        error: rebaseRes.stderr.trim() || "Rebase failed with conflicts",
+        resolvedByAi: false
+      };
+    } finally {
+      activeRebaseLanes.delete(args.laneId);
+    }
+  };
   return {
     getLaneStatus,
     listOverlaps,
@@ -12452,7 +13994,13 @@ ${stderr}
     undoProposal,
     prepareResolverSession,
     finalizeResolverSession,
-    suggestResolverTarget
+    suggestResolverTarget,
+    simulateChainedMerge,
+    scanRebaseNeeds,
+    getRebaseNeed,
+    dismissRebase,
+    deferRebase,
+    rebaseLane
   };
 }
 
@@ -13013,6 +14561,18 @@ function createGitOperationsService({
       });
       return action;
     },
+    async pull(args) {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_pull",
+        reason: "pull_from_remote",
+        metadata: {},
+        fn: async (lane) => {
+          await runGitOrThrow(["pull", "--ff-only"], { cwd: lane.worktreePath, timeoutMs: 6e4 });
+        }
+      });
+      return action;
+    },
     async push(args) {
       const forceWithLease = Boolean(args.forceWithLease);
       const { action } = await runLaneOperation({
@@ -13247,7 +14807,11 @@ function readTextFileSafe(absPath, maxBytes) {
   }
 }
 async function gitShowText(cwd, spec, maxBytes) {
-  const res = await runGit(["show", spec], { cwd, timeoutMs: 1e4 });
+  const res = await runGit(["show", spec], {
+    cwd,
+    timeoutMs: 1e4,
+    maxOutputBytes: maxBytes + 64 * 1024
+  });
   if (res.exitCode !== 0) return { exists: false, text: "" };
   const buf = Buffer.from(res.stdout, "utf8");
   if (detectBinary(buf)) return { exists: true, text: "", isBinary: true };
@@ -13352,12 +14916,466 @@ function createDiffService({ laneService }) {
 // ../desktop/src/main/services/missions/missionService.ts
 var import_node_crypto7 = require("crypto");
 
+// ../desktop/src/shared/types.ts
+var SLASH_COMMAND_TRANSLATIONS = {
+  "/automate": {
+    prompt: "Run the /automate skill. This means: analyze the current project state, identify work that needs to be done based on the mission context, and execute it autonomously using agent teams. Use the Skill tool to invoke the 'automate' skill if available, otherwise carry out the automation workflow directly.",
+    interactive: false
+  },
+  "/finalize": {
+    prompt: "Run the /finalize skill. This means: perform end-of-cycle documentation audit - scan the codebase, verify docs are up to date, update the implementation plan, and run local checks. Use the Skill tool to invoke the 'finalize' skill if available, otherwise carry out the finalization workflow directly.",
+    interactive: false
+  }
+};
+
+// ../desktop/src/shared/modelRegistry.ts
+var ALL_CAPS = { tools: true, vision: true, reasoning: true, streaming: true };
+var NO_REASONING = { tools: true, vision: true, reasoning: false, streaming: true };
+var BASIC_CAPS = { tools: true, vision: false, reasoning: false, streaming: true };
+var MODEL_REGISTRY = [
+  // ---- Anthropic (CLI-wrapped via claude) ----
+  {
+    id: "anthropic/claude-opus-4-6",
+    shortId: "opus",
+    displayName: "Claude Opus 4.6",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 2e5,
+    maxOutputTokens: 32e3,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#D97706",
+    sdkProvider: "ai-sdk-provider-claude-code",
+    sdkModelId: "opus",
+    cliCommand: "claude",
+    isCliWrapped: true
+  },
+  {
+    id: "anthropic/claude-sonnet-4-6",
+    shortId: "sonnet",
+    displayName: "Claude Sonnet 4.6",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 2e5,
+    maxOutputTokens: 32e3,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#8B5CF6",
+    sdkProvider: "ai-sdk-provider-claude-code",
+    sdkModelId: "sonnet",
+    cliCommand: "claude",
+    isCliWrapped: true
+  },
+  {
+    id: "anthropic/claude-haiku-4-5",
+    shortId: "haiku",
+    displayName: "Claude Haiku 4.5",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 2e5,
+    maxOutputTokens: 32e3,
+    capabilities: NO_REASONING,
+    color: "#06B6D4",
+    sdkProvider: "ai-sdk-provider-claude-code",
+    sdkModelId: "haiku",
+    cliCommand: "claude",
+    isCliWrapped: true
+  },
+  // ---- Anthropic (API key direct) ----
+  {
+    id: "anthropic/claude-sonnet-4-6-api",
+    shortId: "sonnet-api",
+    displayName: "Claude Sonnet 4.6 (API)",
+    family: "anthropic",
+    authTypes: ["api-key"],
+    contextWindow: 2e5,
+    maxOutputTokens: 8192,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#8B5CF6",
+    sdkProvider: "@ai-sdk/anthropic",
+    sdkModelId: "claude-sonnet-4-6",
+    isCliWrapped: false
+  },
+  {
+    id: "anthropic/claude-haiku-4-5-api",
+    shortId: "haiku-api",
+    displayName: "Claude Haiku 4.5 (API)",
+    family: "anthropic",
+    authTypes: ["api-key"],
+    contextWindow: 2e5,
+    maxOutputTokens: 8192,
+    capabilities: NO_REASONING,
+    color: "#06B6D4",
+    sdkProvider: "@ai-sdk/anthropic",
+    sdkModelId: "claude-haiku-4-5-20251001",
+    isCliWrapped: false
+  },
+  // ---- OpenAI (CLI-wrapped via codex) ----
+  {
+    id: "openai/gpt-5.3-codex",
+    shortId: "gpt-5.3-codex",
+    displayName: "GPT-5.3 Codex",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "extra_high"],
+    color: "#10B981",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.3-codex",
+    cliCommand: "codex",
+    isCliWrapped: true
+  },
+  {
+    id: "openai/gpt-5.2-codex",
+    shortId: "gpt-5.2-codex",
+    displayName: "GPT-5.2 Codex",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "extra_high"],
+    color: "#10B981",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.2-codex",
+    cliCommand: "codex",
+    isCliWrapped: true
+  },
+  {
+    id: "openai/gpt-5.1-codex-max",
+    shortId: "gpt-5.1-codex-max",
+    displayName: "GPT-5.1 Codex Max",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "extra_high"],
+    color: "#10B981",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.1-codex-max",
+    cliCommand: "codex",
+    isCliWrapped: true
+  },
+  {
+    id: "openai/codex-mini-latest",
+    shortId: "codex-mini",
+    displayName: "Codex Mini",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: NO_REASONING,
+    color: "#34D399",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "codex-mini-latest",
+    cliCommand: "codex",
+    isCliWrapped: true
+  },
+  {
+    id: "openai/o4-mini",
+    shortId: "o4-mini",
+    displayName: "o4-mini",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    color: "#6EE7B7",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "o4-mini",
+    cliCommand: "codex",
+    isCliWrapped: true
+  },
+  {
+    id: "openai/o3",
+    shortId: "o3",
+    displayName: "o3",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    color: "#059669",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "o3",
+    cliCommand: "codex",
+    isCliWrapped: true
+  },
+  // ---- OpenAI (API key direct) ----
+  {
+    id: "openai/gpt-4.1",
+    shortId: "gpt-4.1",
+    displayName: "GPT-4.1",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 1e6,
+    maxOutputTokens: 32768,
+    capabilities: NO_REASONING,
+    color: "#10B981",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-4.1",
+    isCliWrapped: false
+  },
+  {
+    id: "openai/gpt-4.1-mini",
+    shortId: "gpt-4.1-mini",
+    displayName: "GPT-4.1 Mini",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 1e6,
+    maxOutputTokens: 32768,
+    capabilities: NO_REASONING,
+    color: "#34D399",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-4.1-mini",
+    isCliWrapped: false
+  },
+  {
+    id: "openai/o4-mini-api",
+    shortId: "o4-mini-api",
+    displayName: "o4-mini (API)",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 2e5,
+    maxOutputTokens: 1e5,
+    capabilities: ALL_CAPS,
+    color: "#6EE7B7",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "o4-mini",
+    isCliWrapped: false
+  },
+  // ---- Google ----
+  {
+    id: "google/gemini-2.5-pro",
+    shortId: "gemini-pro",
+    displayName: "Gemini 2.5 Pro",
+    family: "google",
+    authTypes: ["api-key", "cli-subscription"],
+    contextWindow: 1e6,
+    maxOutputTokens: 65536,
+    capabilities: ALL_CAPS,
+    color: "#F59E0B",
+    sdkProvider: "@ai-sdk/google",
+    sdkModelId: "gemini-2.5-pro",
+    isCliWrapped: false
+  },
+  {
+    id: "google/gemini-2.5-flash",
+    shortId: "gemini-flash",
+    displayName: "Gemini 2.5 Flash",
+    family: "google",
+    authTypes: ["api-key", "cli-subscription"],
+    contextWindow: 1e6,
+    maxOutputTokens: 65536,
+    capabilities: NO_REASONING,
+    color: "#FBBF24",
+    sdkProvider: "@ai-sdk/google",
+    sdkModelId: "gemini-2.5-flash",
+    isCliWrapped: false
+  },
+  // ---- DeepSeek ----
+  {
+    id: "deepseek/deepseek-r1",
+    shortId: "deepseek-r1",
+    displayName: "DeepSeek R1",
+    family: "deepseek",
+    authTypes: ["api-key"],
+    contextWindow: 128e3,
+    maxOutputTokens: 8192,
+    capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+    color: "#3B82F6",
+    sdkProvider: "@ai-sdk/deepseek",
+    sdkModelId: "deepseek-reasoner",
+    isCliWrapped: false
+  },
+  {
+    id: "deepseek/deepseek-chat",
+    shortId: "deepseek-chat",
+    displayName: "DeepSeek Chat",
+    family: "deepseek",
+    authTypes: ["api-key"],
+    contextWindow: 128e3,
+    maxOutputTokens: 8192,
+    capabilities: BASIC_CAPS,
+    color: "#60A5FA",
+    sdkProvider: "@ai-sdk/deepseek",
+    sdkModelId: "deepseek-chat",
+    isCliWrapped: false
+  },
+  // ---- Mistral ----
+  {
+    id: "mistral/codestral-latest",
+    shortId: "codestral",
+    displayName: "Codestral",
+    family: "mistral",
+    authTypes: ["api-key"],
+    contextWindow: 256e3,
+    maxOutputTokens: 8192,
+    capabilities: BASIC_CAPS,
+    color: "#F97316",
+    sdkProvider: "@ai-sdk/mistral",
+    sdkModelId: "codestral-latest",
+    isCliWrapped: false
+  },
+  // ---- xAI ----
+  {
+    id: "xai/grok-3",
+    shortId: "grok-3",
+    displayName: "Grok 3",
+    family: "xai",
+    authTypes: ["api-key"],
+    contextWindow: 131072,
+    maxOutputTokens: 8192,
+    capabilities: ALL_CAPS,
+    color: "#EF4444",
+    sdkProvider: "@ai-sdk/xai",
+    sdkModelId: "grok-3",
+    isCliWrapped: false
+  },
+  // ---- OpenRouter ----
+  {
+    id: "openrouter/auto",
+    shortId: "openrouter-auto",
+    displayName: "OpenRouter Auto",
+    family: "openrouter",
+    authTypes: ["openrouter"],
+    contextWindow: 2e5,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    color: "#A855F7",
+    sdkProvider: "@openrouter/ai-sdk-provider",
+    sdkModelId: "openrouter/auto",
+    isCliWrapped: false
+  },
+  // ---- Local (Ollama) ----
+  {
+    id: "ollama/llama-3.3",
+    shortId: "llama-3.3",
+    displayName: "Llama 3.3 (Local)",
+    family: "ollama",
+    authTypes: ["local"],
+    contextWindow: 128e3,
+    maxOutputTokens: 4096,
+    capabilities: BASIC_CAPS,
+    color: "#71717A",
+    sdkProvider: "@ai-sdk/openai-compatible",
+    sdkModelId: "llama-3.3",
+    isCliWrapped: false
+  }
+];
+var byId = /* @__PURE__ */ new Map();
+var byShortId = /* @__PURE__ */ new Map();
+for (const m of MODEL_REGISTRY) {
+  byId.set(m.id, m);
+  byShortId.set(m.shortId, m);
+}
+function getModelById(id) {
+  return byId.get(id);
+}
+
+// ../desktop/src/main/services/orchestrator/executionPolicy.ts
+var DEFAULT_EXECUTION_POLICY = {
+  planning: { mode: "auto", model: "anthropic/claude-sonnet-4-6" },
+  implementation: { model: "openai/gpt-5.3-codex" },
+  testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
+  validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
+  codeReview: { mode: "off" },
+  testReview: { mode: "off" },
+  integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
+  merge: { mode: "off" },
+  completion: { allowCompletionWithRisk: true },
+  prStrategy: { kind: "manual" }
+};
+function depthTierToPolicy(tier) {
+  switch (tier) {
+    case "light":
+      return {
+        planning: { mode: "off" },
+        implementation: { model: "openai/gpt-5.3-codex" },
+        testing: { mode: "none" },
+        validation: { mode: "off" },
+        codeReview: { mode: "off" },
+        testReview: { mode: "off" },
+        integration: { mode: "off" },
+        merge: { mode: "off" },
+        completion: { allowCompletionWithRisk: true },
+        prStrategy: { kind: "per-lane", draft: true, prDepth: "propose-only" }
+      };
+    case "deep":
+      return {
+        planning: { mode: "manual_review", model: "anthropic/claude-sonnet-4-6" },
+        implementation: { model: "openai/gpt-5.3-codex" },
+        testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
+        validation: { mode: "required", model: "openai/gpt-5.3-codex" },
+        codeReview: { mode: "required", model: "anthropic/claude-sonnet-4-6" },
+        testReview: { mode: "required", model: "openai/gpt-5.3-codex" },
+        integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
+        merge: { mode: "off" },
+        completion: { allowCompletionWithRisk: false },
+        prStrategy: { kind: "integration", targetBranch: "main", draft: false, prDepth: "open-and-comment" }
+      };
+    case "standard":
+    default:
+      return {
+        planning: { mode: "auto", model: "openai/gpt-5.3-codex" },
+        implementation: { model: "openai/gpt-5.3-codex" },
+        testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
+        validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
+        codeReview: { mode: "off" },
+        testReview: { mode: "off" },
+        integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
+        merge: { mode: "off" },
+        completion: { allowCompletionWithRisk: true },
+        prStrategy: { kind: "queue", targetBranch: "main", draft: true, autoRebase: true, ciGating: false, prDepth: "resolve-conflicts" }
+      };
+  }
+}
+var MODEL_TO_EXECUTOR = {
+  claude: "claude",
+  codex: "codex"
+};
+function phaseModelToExecutorKind(model, fallback = "codex") {
+  if (!model) return fallback;
+  if (model === "claude") return "claude";
+  if (model === "codex") return "codex";
+  const descriptor = getModelById(model);
+  if (descriptor) return "unified";
+  return MODEL_TO_EXECUTOR[model] ?? fallback;
+}
+
 // ../desktop/src/main/services/missions/missionPlanner.ts
 var ANALYSIS_WORDS = ["analyze", "analysis", "investigate", "research", "understand", "audit", "review", "plan"];
 var IMPLEMENT_WORDS = ["implement", "refactor", "fix", "build", "create", "update", "add", "remove", "migrate", "ship", "write"];
 var VALIDATION_WORDS = ["test", "verify", "validate", "check", "lint", "typecheck", "ci", "qa"];
 var INTEGRATION_WORDS = ["merge", "integrate", "reconcile", "combine", "conflict", "land", "cherry-pick"];
 var SUMMARY_WORDS = ["summary", "summarize", "handoff", "report", "pr", "pull request", "document"];
+var ACTION_HINT_WORDS = [
+  ...ANALYSIS_WORDS,
+  ...IMPLEMENT_WORDS,
+  ...VALIDATION_WORDS,
+  ...INTEGRATION_WORDS,
+  ...SUMMARY_WORDS,
+  "harden",
+  "instrument",
+  "expose",
+  "show",
+  "prove"
+];
+var NON_EXECUTABLE_LINE_RE = /^(?:goals?|plan requirements?|hard constraints?|constraints?|important|notes?|final output|output)\s*:?\s*$/i;
+var NON_EXECUTABLE_PHRASES = [
+  "keep changes minimal",
+  "changes minimal and focused",
+  "exercise real parallel fan-out",
+  "dependency-safe joins",
+  "clean terminal completion",
+  "no manual intervention",
+  "step titles must be descriptive",
+  "run roots concurrently when dependencies allow"
+];
 function normalizePrompt(prompt) {
   return prompt.replace(/\r\n/g, "\n").split("\n").map((line) => line.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
@@ -13383,13 +15401,44 @@ function dedupe(values) {
   }
   return out;
 }
+function hasActionHint(task) {
+  const lower = task.toLowerCase();
+  return ACTION_HINT_WORDS.some((word) => lower.includes(word));
+}
+function isActionableTask(task) {
+  const normalized = task.replace(/\s+/g, " ").trim().replace(/[.;]+$/g, "").trim();
+  if (normalized.length < 8) return false;
+  if (NON_EXECUTABLE_LINE_RE.test(normalized)) return false;
+  const lower = normalized.toLowerCase();
+  if (NON_EXECUTABLE_PHRASES.some((phrase) => lower.includes(phrase))) return false;
+  if (normalized.endsWith(":")) return false;
+  if (hasActionHint(lower)) return true;
+  return /^(?:backend|runtime|ui|frontend|api|docs?|tests?|review)\b/i.test(normalized);
+}
 function extractTaskCandidates(prompt) {
-  const lines = normalizePrompt(prompt).split("\n").map((line) => line.trim()).filter(Boolean);
-  const bulletTasks = lines.map((line) => line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/)?.[1]?.trim() ?? null).filter((entry) => Boolean(entry));
+  const lines = prompt.replace(/\r\n/g, "\n").split("\n").map((line) => line.replace(/\s+$/g, "")).filter((line) => line.trim().length > 0);
+  const bulletLineRe = /^(\s*)(?:[-*•]|\d+[.)])\s+(.+)$/;
+  const bulletTasks = lines.map((line, index) => {
+    const match = line.match(bulletLineRe);
+    if (!match?.[2]) return null;
+    return {
+      index,
+      indent: match[1]?.length ?? 0,
+      task: match[2].trim()
+    };
+  }).filter((entry) => Boolean(entry)).filter((entry) => {
+    if (!entry.task.endsWith(":")) return true;
+    const nextLine = lines[entry.index + 1];
+    if (!nextLine) return true;
+    const nextMatch = nextLine.match(bulletLineRe);
+    if (!nextMatch) return true;
+    const nextIndent = nextMatch[1]?.length ?? 0;
+    return nextIndent <= entry.indent;
+  }).map((entry) => entry.task.replace(/\s+/g, " ").trim()).filter((task) => isActionableTask(task));
   if (bulletTasks.length >= 2) {
     return dedupe(bulletTasks.map((task) => task.slice(0, 140)));
   }
-  const sentenceTasks = normalizePrompt(prompt).replace(/\n/g, " ").split(/(?<=[.!?;])\s+|\s+\band\b\s+/i).map((entry) => entry.trim()).filter((entry) => entry.length >= 8).map((entry) => entry.replace(/[.!?;]+$/g, "").trim()).filter(Boolean);
+  const sentenceTasks = normalizePrompt(prompt).replace(/\n/g, " ").split(/(?<=[.!?;])\s+|\s+\band\b\s+/i).map((entry) => entry.trim()).filter((entry) => entry.length >= 8).map((entry) => entry.replace(/[.!?;]+$/g, "").trim()).filter((entry) => isActionableTask(entry));
   return dedupe(sentenceTasks.slice(0, 8).map((task) => task.slice(0, 140)));
 }
 function classifyTask(task) {
@@ -13428,7 +15477,7 @@ function deriveJoinPolicy(prompt, branchCount) {
 }
 function buildPolicy(args) {
   const claimScopes = [];
-  if (args.laneId && (args.kind === "integration" || args.kind === "validation")) {
+  if (args.laneId && (args.kind === "integration" || args.kind === "merge" || args.kind === "validation")) {
     claimScopes.push({
       scopeKind: "lane",
       scopeValue: `lane:${args.laneId}`,
@@ -13449,6 +15498,8 @@ function buildPolicy(args) {
   };
 }
 function toPlannerStep(step, index, strategy, keywords) {
+  const rawStepType = String(step.extraMetadata?.stepType ?? step.extraMetadata?.taskType ?? step.kind ?? "").trim().toLowerCase();
+  const roleClass = step.kind === "analysis" ? "planning" : step.kind === "implementation" ? "implementation" : step.kind === "integration" ? "integration" : step.kind === "merge" ? "merge" : step.kind === "summary" ? "handoff" : rawStepType === "review" || rawStepType === "test_review" || rawStepType === "review_test" ? "review" : "testing";
   const metadata = {
     stepType: step.kind,
     dependencyIndices: step.dependencyIndices,
@@ -13463,8 +15514,19 @@ function toPlannerStep(step, index, strategy, keywords) {
       strategy,
       splitReason: step.splitReason,
       keywords
-    }
+    },
+    roleClass,
+    requiresDedicatedWorker: roleClass === "review" || roleClass === "testing" || roleClass === "integration",
+    role: step.kind === "analysis" ? "planning" : step.kind === "implementation" ? "implementation" : step.kind === "validation" ? "testing" : step.kind === "integration" ? "integration" : step.kind === "summary" ? "merge" : step.kind === "merge" ? "merge" : "implementation"
   };
+  if (Number.isFinite(step.timeoutMs ?? NaN) && (step.timeoutMs ?? 0) > 0) {
+    metadata.timeoutMs = Math.floor(step.timeoutMs);
+  }
+  if (step.extraMetadata) {
+    for (const [key, value] of Object.entries(step.extraMetadata)) {
+      metadata[key] = value;
+    }
+  }
   return {
     index,
     title: step.title,
@@ -13473,10 +15535,15 @@ function toPlannerStep(step, index, strategy, keywords) {
     metadata
   };
 }
+function detectSlashCommands(prompt) {
+  return prompt.split("\n").map((line) => line.trim()).filter((line) => /^\/[a-zA-Z]/.test(line));
+}
 function buildDeterministicMissionPlan(args) {
   const prompt = normalizePrompt(args.prompt);
+  const policy = args.policy;
   const laneId = typeof args.laneId === "string" && args.laneId.trim().length ? args.laneId.trim() : null;
   const taskCandidates = extractTaskCandidates(prompt);
+  const lowerPrompt = prompt.toLowerCase();
   const promptWords = toWords(prompt);
   const keywords = dedupe(promptWords.filter(
     (word) => ANALYSIS_WORDS.includes(word) || IMPLEMENT_WORDS.includes(word) || VALIDATION_WORDS.includes(word) || INTEGRATION_WORDS.includes(word) || SUMMARY_WORDS.includes(word)
@@ -13489,11 +15556,18 @@ function buildDeterministicMissionPlan(args) {
   const validationCandidates = classified.filter((entry) => entry.kind === "validation").map((entry) => entry.task);
   const summaryCandidates = classified.filter((entry) => entry.kind === "summary").map((entry) => entry.task);
   const explicitIntegration = classified.some((entry) => entry.kind === "integration");
+  const explicitParallelRootIntent = /\bparallel\b/.test(lowerPrompt) && (/\broot\b/.test(lowerPrompt) || /\bfan[-\s]?out\b/.test(lowerPrompt) || /\bbranches?\b/.test(lowerPrompt));
   const strategy = workCandidates.length >= 2 ? "parallel_execution_branches_with_join" : explicitIntegration ? "single_branch_with_explicit_integration_gate" : "single_branch_default";
+  const analysisExecutor = policy ? phaseModelToExecutorKind(policy.planning.model) : "codex";
+  const implExecutor = policy ? phaseModelToExecutorKind(policy.implementation.model) : "codex";
+  const testExecutor = policy ? phaseModelToExecutorKind(policy.testing.model) : "codex";
+  const reviewExecutor = policy?.codeReview.model ? phaseModelToExecutorKind(policy.codeReview.model) : "codex";
+  const testReviewExecutor = policy?.testReview.model ? phaseModelToExecutorKind(policy.testReview.model) : "codex";
+  const integrationExecutor = policy ? phaseModelToExecutorKind(policy.integration.model) : "codex";
   const rawSteps = [];
   let previousIndex = -1;
   let analysisIndex = -1;
-  const shouldSeedAnalysis = prompt.length >= 120 || hasAnyKeyword(prompt, ANALYSIS_WORDS) || taskCandidates.length >= 3;
+  const shouldSeedAnalysis = (!explicitParallelRootIntent || workCandidates.length < 2) && (prompt.length >= 120 || hasAnyKeyword(prompt, ANALYSIS_WORDS) || taskCandidates.length >= 3);
   if (shouldSeedAnalysis) {
     const index = rawSteps.length;
     analysisIndex = index;
@@ -13504,8 +15578,9 @@ function buildDeterministicMissionPlan(args) {
       dependencyIndices: [],
       joinPolicy: "all_success",
       quorumCount: null,
+      timeoutMs: 18e4,
       retryLimit: 0,
-      executorKind: "codex",
+      executorKind: analysisExecutor,
       doneCriteria: "Context baseline and explicit success criteria are recorded for downstream steps.",
       splitReason: "Mission prompt requires up-front deterministic scoping.",
       policy: buildPolicy({
@@ -13513,62 +15588,150 @@ function buildDeterministicMissionPlan(args) {
         laneId,
         title: "analysis",
         parallelBranch: false
-      })
+      }),
+      extraMetadata: policy?.planning.reasoningEffort ? { reasoningEffort: policy.planning.reasoningEffort } : void 0
     });
     previousIndex = index;
   }
   const effectiveWork = workCandidates.length > 0 ? workCandidates : ["Implement the mission objective"];
   const parallelBranches = effectiveWork.length >= 2 ? effectiveWork.slice(0, 3) : effectiveWork.slice(0, 1);
+  const fanOutDependencies = analysisIndex >= 0 ? [analysisIndex] : [];
   const workIndexes = [];
+  const isTdd = policy?.testing.mode === "tdd";
   for (const workTask of parallelBranches) {
+    const implDependencyIndices = parallelBranches.length > 1 ? [...fanOutDependencies] : analysisIndex >= 0 ? [analysisIndex] : previousIndex >= 0 ? [previousIndex] : [];
+    if (isTdd) {
+      const testIndex = rawSteps.length;
+      rawSteps.push({
+        title: `Write tests for: ${workTask}`,
+        detail: "Write test cases before implementation (TDD).",
+        kind: "validation",
+        dependencyIndices: [...implDependencyIndices],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 3e5,
+        retryLimit: 1,
+        executorKind: testExecutor,
+        doneCriteria: "Test cases are written and ready for implementation to satisfy.",
+        splitReason: "TDD policy requires test-first workflow.",
+        policy: buildPolicy({
+          kind: "validation",
+          laneId,
+          title: `tdd-test-${slugify2(workTask)}`,
+          parallelBranch: parallelBranches.length > 1
+        }),
+        extraMetadata: {
+          stepType: "test",
+          taskType: "test",
+          ...policy?.testing.reasoningEffort ? { reasoningEffort: policy.testing.reasoningEffort } : {}
+        }
+      });
+      const implIndex = rawSteps.length;
+      workIndexes.push(implIndex);
+      rawSteps.push({
+        title: workTask,
+        detail: "Execute this branch and keep outputs isolated for deterministic integration.",
+        kind: "implementation",
+        dependencyIndices: [testIndex],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 42e4,
+        retryLimit: 1,
+        executorKind: implExecutor,
+        doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
+        splitReason: parallelBranches.length > 1 ? "Prompt included multiple executable units that can run concurrently." : "Prompt maps to a single executable workstream.",
+        policy: buildPolicy({
+          kind: "implementation",
+          laneId,
+          title: workTask,
+          parallelBranch: parallelBranches.length > 1
+        }),
+        extraMetadata: policy?.implementation.reasoningEffort ? { reasoningEffort: policy.implementation.reasoningEffort } : void 0
+      });
+      previousIndex = implIndex;
+    } else {
+      const index = rawSteps.length;
+      workIndexes.push(index);
+      rawSteps.push({
+        title: workTask,
+        detail: "Execute this branch and keep outputs isolated for deterministic integration.",
+        kind: "implementation",
+        dependencyIndices: [...implDependencyIndices],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 42e4,
+        retryLimit: 1,
+        executorKind: implExecutor,
+        doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
+        splitReason: parallelBranches.length > 1 ? "Prompt included multiple executable units that can run concurrently." : "Prompt maps to a single executable workstream.",
+        policy: buildPolicy({
+          kind: "implementation",
+          laneId,
+          title: workTask,
+          parallelBranch: parallelBranches.length > 1
+        }),
+        extraMetadata: policy?.implementation.reasoningEffort ? { reasoningEffort: policy.implementation.reasoningEffort } : void 0
+      });
+      previousIndex = index;
+    }
+  }
+  if (policy && policy.codeReview.mode !== "off") {
     const index = rawSteps.length;
-    workIndexes.push(index);
     rawSteps.push({
-      title: workTask,
-      detail: "Execute this branch and keep outputs isolated for deterministic integration.",
-      kind: "implementation",
-      dependencyIndices: analysisIndex >= 0 ? [analysisIndex] : previousIndex >= 0 ? [previousIndex] : [],
+      title: "Code review gate",
+      detail: "Review implementation outputs for quality, correctness, and adherence to standards.",
+      kind: "validation",
+      dependencyIndices: workIndexes.length ? [...workIndexes] : previousIndex >= 0 ? [previousIndex] : [],
       joinPolicy: "all_success",
       quorumCount: null,
-      retryLimit: 1,
-      executorKind: "codex",
-      doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
-      splitReason: parallelBranches.length > 1 ? "Prompt included multiple executable units that can run concurrently." : "Prompt maps to a single executable workstream.",
+      timeoutMs: 6e5,
+      retryLimit: 0,
+      executorKind: reviewExecutor,
+      doneCriteria: "Review feedback is recorded and blocking issues are flagged.",
+      splitReason: "Execution policy requires code review before validation/summary.",
       policy: buildPolicy({
-        kind: "implementation",
+        kind: "validation",
         laneId,
-        title: workTask,
-        parallelBranch: parallelBranches.length > 1
-      })
+        title: "code-review",
+        parallelBranch: false
+      }),
+      extraMetadata: {
+        taskType: "review",
+        stepType: "review",
+        ...policy.codeReview.reasoningEffort ? { reasoningEffort: policy.codeReview.reasoningEffort } : {}
+      }
     });
     previousIndex = index;
   }
   const hasParallelJoin = workIndexes.length > 1 || explicitIntegration;
-  if (hasParallelJoin) {
+  const skipIntegration = policy?.integration.mode === "off";
+  if (hasParallelJoin && !skipIntegration) {
     const joinConfig = deriveJoinPolicy(prompt, workIndexes.length || 1);
     const index = rawSteps.length;
     rawSteps.push({
       title: "Integrate branch outputs",
-      detail: "Apply deterministic merge sequencing and finalize a single integration result.",
+      detail: "Verify cross-branch compatibility and consolidate a single integration result.",
       kind: "integration",
       dependencyIndices: workIndexes.length ? workIndexes : previousIndex >= 0 ? [previousIndex] : [],
       joinPolicy: joinConfig.joinPolicy,
       quorumCount: joinConfig.quorumCount,
+      timeoutMs: 9e5,
       retryLimit: 1,
-      executorKind: "codex",
-      doneCriteria: "Integration lane state is conflict-free or a deterministic policy block is produced.",
-      splitReason: "Multiple branches require deterministic join semantics before validation.",
+      executorKind: integrationExecutor,
+      doneCriteria: "Cross-branch contracts are validated and integration outputs are summarized for downstream gates.",
+      splitReason: "Parallel branches require a compatibility gate before validation.",
       policy: buildPolicy({
         kind: "integration",
         laneId,
         title: "integration",
         parallelBranch: false
-      })
+      }),
+      extraMetadata: policy?.integration.reasoningEffort ? { reasoningEffort: policy.integration.reasoningEffort } : void 0
     });
     previousIndex = index;
   }
-  const needsValidation = true;
-  if (needsValidation) {
+  const skipValidation = policy?.testing.mode === "none";
+  if (!skipValidation) {
     const validationTitle = validationCandidates[0] ?? "Run deterministic verification checks";
     const index = rawSteps.length;
     rawSteps.push({
@@ -13578,8 +15741,9 @@ function buildDeterministicMissionPlan(args) {
       dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
       joinPolicy: "all_success",
       quorumCount: null,
+      timeoutMs: 6e5,
       retryLimit: 1,
-      executorKind: "codex",
+      executorKind: testExecutor,
       doneCriteria: "Required checks complete and outcomes are attached to mission artifacts/handoffs.",
       splitReason: "Validation gate ensures deterministic completion criteria.",
       policy: buildPolicy({
@@ -13587,7 +15751,37 @@ function buildDeterministicMissionPlan(args) {
         laneId,
         title: validationTitle,
         parallelBranch: false
-      })
+      }),
+      extraMetadata: policy?.testing.reasoningEffort ? { reasoningEffort: policy.testing.reasoningEffort } : void 0
+    });
+    previousIndex = index;
+  }
+  if (policy && policy.testReview.mode !== "off" && policy.testing.mode !== "none") {
+    const index = rawSteps.length;
+    rawSteps.push({
+      title: "Test review gate",
+      detail: "Review test outcomes and failure diagnostics before final handoff/merge.",
+      kind: "validation",
+      dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
+      joinPolicy: "all_success",
+      quorumCount: null,
+      timeoutMs: 42e4,
+      retryLimit: 0,
+      executorKind: testReviewExecutor,
+      doneCriteria: "Test findings are reviewed and release blockers are called out explicitly.",
+      splitReason: "Execution policy requires a dedicated test review phase.",
+      policy: buildPolicy({
+        kind: "validation",
+        laneId,
+        title: "test-review",
+        parallelBranch: false
+      }),
+      extraMetadata: {
+        taskType: "test_review",
+        stepType: "test_review",
+        reviewTarget: "tests",
+        ...policy.testReview.reasoningEffort ? { reasoningEffort: policy.testReview.reasoningEffort } : {}
+      }
     });
     previousIndex = index;
   }
@@ -13599,6 +15793,7 @@ function buildDeterministicMissionPlan(args) {
     dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
     joinPolicy: "all_success",
     quorumCount: null,
+    timeoutMs: 18e4,
     retryLimit: 0,
     executorKind: "codex",
     doneCriteria: "Outcome summary and required artifact links are persisted for operators.",
@@ -13610,6 +15805,63 @@ function buildDeterministicMissionPlan(args) {
       parallelBranch: false
     })
   });
+  const slashCommands = detectSlashCommands(args.prompt);
+  for (const cmd of slashCommands) {
+    const depIndex = rawSteps.length - 1;
+    const cmdBase = cmd.split(/\s/)[0];
+    const translation = SLASH_COMMAND_TRANSLATIONS[cmdBase];
+    if (translation) {
+      rawSteps.push({
+        title: cmd,
+        detail: translation.prompt,
+        kind: "implementation",
+        dependencyIndices: depIndex >= 0 ? [depIndex] : [],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 3e5,
+        retryLimit: 0,
+        executorKind: "claude",
+        doneCriteria: "Slash command execution completed.",
+        splitReason: "Slash command detected in prompt.",
+        policy: buildPolicy({
+          kind: "implementation",
+          laneId,
+          title: cmd,
+          parallelBranch: false
+        }),
+        extraMetadata: {
+          stepType: "command",
+          slashCommand: cmd,
+          instructions: translation.prompt
+        }
+      });
+    } else {
+      rawSteps.push({
+        title: cmd,
+        detail: `Execute slash command: ${cmd}`,
+        kind: "implementation",
+        dependencyIndices: depIndex >= 0 ? [depIndex] : [],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 3e5,
+        retryLimit: 0,
+        executorKind: "claude",
+        doneCriteria: "Slash command execution completed.",
+        splitReason: "Slash command detected in prompt.",
+        policy: buildPolicy({
+          kind: "implementation",
+          laneId,
+          title: cmd,
+          parallelBranch: false
+        }),
+        extraMetadata: {
+          startupCommand: cmd,
+          stepType: "command",
+          slashCommand: cmd
+        }
+      });
+    }
+  }
   return {
     plannerVersion: "ade.missionPlanner.v1",
     strategy,
@@ -13620,13 +15872,26 @@ function buildDeterministicMissionPlan(args) {
 
 // ../desktop/src/main/services/missions/missionService.ts
 var TERMINAL_MISSION_STATUSES = /* @__PURE__ */ new Set(["completed", "failed", "canceled"]);
+var ACTIVE_MISSION_STATUSES = /* @__PURE__ */ new Set(["in_progress", "planning", "plan_review", "intervention_required"]);
+var DEFAULT_CONCURRENCY_CONFIG = {
+  maxConcurrentMissions: 3,
+  laneExclusivity: true
+};
+var PRIORITY_ORDER = {
+  urgent: 0,
+  high: 1,
+  normal: 2,
+  low: 3
+};
 var MISSION_TRANSITIONS = {
-  queued: /* @__PURE__ */ new Set(["queued", "in_progress", "canceled"]),
-  in_progress: /* @__PURE__ */ new Set(["in_progress", "intervention_required", "completed", "failed", "canceled"]),
-  intervention_required: /* @__PURE__ */ new Set(["intervention_required", "in_progress", "failed", "canceled"]),
+  queued: /* @__PURE__ */ new Set(["queued", "planning", "in_progress", "canceled"]),
+  planning: /* @__PURE__ */ new Set(["planning", "plan_review", "in_progress", "intervention_required", "failed", "canceled", "queued"]),
+  plan_review: /* @__PURE__ */ new Set(["plan_review", "in_progress", "queued", "failed", "canceled", "intervention_required"]),
+  in_progress: /* @__PURE__ */ new Set(["in_progress", "intervention_required", "completed", "failed", "canceled", "plan_review"]),
+  intervention_required: /* @__PURE__ */ new Set(["intervention_required", "in_progress", "failed", "canceled", "plan_review"]),
   completed: /* @__PURE__ */ new Set(["completed", "queued"]),
-  failed: /* @__PURE__ */ new Set(["failed", "queued", "in_progress", "canceled"]),
-  canceled: /* @__PURE__ */ new Set(["canceled", "queued", "in_progress"])
+  failed: /* @__PURE__ */ new Set(["failed", "queued", "planning", "in_progress", "canceled"]),
+  canceled: /* @__PURE__ */ new Set(["canceled", "queued", "planning", "in_progress"])
 };
 var STEP_TRANSITIONS = {
   pending: /* @__PURE__ */ new Set(["pending", "running", "skipped", "blocked", "canceled"]),
@@ -13653,7 +15918,7 @@ function safeParseRecord(raw) {
   }
 }
 function normalizeMissionStatus(value) {
-  if (value === "queued" || value === "in_progress" || value === "intervention_required" || value === "completed" || value === "failed" || value === "canceled") {
+  if (value === "queued" || value === "planning" || value === "plan_review" || value === "in_progress" || value === "intervention_required" || value === "completed" || value === "failed" || value === "canceled") {
     return value;
   }
   return "queued";
@@ -13719,6 +15984,20 @@ function truncateForMetadata(value, maxChars = 12e4) {
   return `${value.slice(0, maxChars)}
 ...<truncated>`;
 }
+function mergeWithDefaults(partial) {
+  const base = DEFAULT_EXECUTION_POLICY;
+  return {
+    planning: { ...base.planning, ...partial.planning },
+    implementation: { ...base.implementation, ...partial.implementation },
+    testing: { ...base.testing, ...partial.testing },
+    validation: { ...base.validation, ...partial.validation },
+    codeReview: { ...base.codeReview, ...partial.codeReview },
+    testReview: { ...base.testReview, ...partial.testReview },
+    integration: { ...base.integration, ...partial.integration },
+    merge: { ...base.merge, ...partial.merge },
+    completion: { ...base.completion, ...partial.completion }
+  };
+}
 function normalizeMissionExecutorPolicy(value) {
   const raw = typeof value === "string" ? value.trim() : "";
   if (raw === "codex" || raw === "claude" || raw === "both") return raw;
@@ -13751,12 +16030,14 @@ function toPlannerRunFromEvent(row) {
   const attemptsRaw = Array.isArray(payload.attempts) ? payload.attempts : [];
   const attempts = attemptsRaw.map((entry) => toPlannerAttempt(entry)).filter((entry) => entry != null);
   const validationErrors = Array.isArray(payload.validationErrors) ? payload.validationErrors.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
+  const rawResolvedEngine = String(payload.resolvedEngine ?? "").trim();
+  const resolvedEngine = rawResolvedEngine === "claude_cli" || rawResolvedEngine === "codex_cli" ? rawResolvedEngine : null;
   return {
     id: runId,
     missionId: row.mission_id,
     requestedEngine: String(payload.requestedEngine ?? "auto"),
-    resolvedEngine: String(payload.resolvedEngine ?? "deterministic_fallback"),
-    status: payload.degraded === true ? "fallback" : "succeeded",
+    resolvedEngine,
+    status: resolvedEngine != null && payload.degraded !== true ? "succeeded" : "skipped",
     degraded: payload.degraded === true,
     reasonCode: typeof payload.reasonCode === "string" ? payload.reasonCode : null,
     reasonDetail: typeof payload.reasonDetail === "string" ? payload.reasonDetail : null,
@@ -13865,8 +16146,14 @@ function isValidMissionStepTransition(from, to) {
 function createMissionService({
   db,
   projectId,
-  onEvent
+  onEvent,
+  concurrencyConfig
 }) {
+  let activeConcurrencyConfig = {
+    ...DEFAULT_CONCURRENCY_CONFIG,
+    ...concurrencyConfig
+  };
+  let serviceRef = null;
   const emit = (payload) => {
     try {
       onEvent?.({
@@ -13987,7 +16274,7 @@ function createMissionService({
     const updatedAt = args.updatedAt ?? nowIso();
     let startedAt = row.started_at;
     let completedAt = row.completed_at;
-    if (next === "in_progress") {
+    if (next === "planning" || next === "plan_review" || next === "in_progress") {
       if (!startedAt) startedAt = updatedAt;
       completedAt = null;
     } else if (next === "queued") {
@@ -14021,6 +16308,12 @@ function createMissionService({
           ...args.payload ?? {}
         }
       });
+      if (TERMINAL_MISSION_STATUSES.has(next) && serviceRef) {
+        try {
+          serviceRef.processQueue();
+        } catch {
+        }
+      }
     }
   };
   const insertArtifact = (args) => {
@@ -14134,7 +16427,7 @@ function createMissionService({
       metadata: args.metadata ?? null
     };
   };
-  return {
+  const service = {
     list(args = {}) {
       const where = [];
       const params = [projectId];
@@ -14144,7 +16437,7 @@ function createMissionService({
         params.push(laneId);
       }
       if (args.status === "active") {
-        where.push("m.status in ('queued', 'in_progress', 'intervention_required')");
+        where.push("m.status in ('queued', 'planning', 'plan_review', 'in_progress', 'intervention_required')");
       } else if (args.status) {
         where.push("m.status = ?");
         params.push(args.status);
@@ -14157,10 +16450,12 @@ function createMissionService({
            case m.status
              when 'intervention_required' then 0
              when 'in_progress' then 1
-             when 'queued' then 2
-             when 'failed' then 3
-             when 'completed' then 4
-             else 5
+             when 'plan_review' then 2
+             when 'planning' then 3
+             when 'queued' then 4
+             when 'failed' then 5
+             when 'completed' then 6
+             else 7
            end,
            m.updated_at desc,
            m.created_at desc
@@ -14317,6 +16612,23 @@ function createMissionService({
       const autopilotExecutor = args.autopilotExecutor ?? "codex";
       const executorPolicy = normalizeMissionExecutorPolicy(args.executorPolicy);
       const allowPlanningQuestions = args.allowPlanningQuestions === true;
+      const launchModelRaw = typeof args.orchestratorModel === "string" ? args.orchestratorModel.trim().toLowerCase() : "";
+      const launchModel = launchModelRaw === "opus" || launchModelRaw === "sonnet" || launchModelRaw === "haiku" ? launchModelRaw : null;
+      const launchThinkingBudgets = (() => {
+        if (!isRecord3(args.thinkingBudgets)) return null;
+        const out = {};
+        for (const [key, value] of Object.entries(args.thinkingBudgets)) {
+          const normalizedKey = String(key).trim();
+          const numeric = Number(value);
+          if (!normalizedKey.length || !Number.isFinite(numeric) || numeric < 0) continue;
+          out[normalizedKey] = Math.floor(numeric);
+        }
+        return Object.keys(out).length > 0 ? out : null;
+      })();
+      const missionDepthRaw = typeof args.missionDepth === "string" ? args.missionDepth.trim() : "";
+      const missionDepth = missionDepthRaw === "light" || missionDepthRaw === "standard" || missionDepthRaw === "deep" ? missionDepthRaw : null;
+      const executionPolicyArg = args.executionPolicy && typeof args.executionPolicy === "object" ? args.executionPolicy : null;
+      const resolvedExecutionPolicy = executionPolicyArg ? mergeWithDefaults(executionPolicyArg) : missionDepth ? depthTierToPolicy(missionDepth) : null;
       const legacyPlan = buildDeterministicMissionPlan({
         prompt,
         laneId
@@ -14338,8 +16650,16 @@ function createMissionService({
           runMode: launchMode,
           autopilotExecutor,
           executorPolicy,
-          allowPlanningQuestions
+          allowPlanningQuestions,
+          ...launchModel ? { orchestratorModel: launchModel } : {},
+          ...launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {},
+          ...args.modelConfig ? { modelConfig: args.modelConfig } : {},
+          ...args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {},
+          ...args.allowParallelSubagents != null ? { allowParallelSubagents: args.allowParallelSubagents } : {},
+          ...args.allowAgentTeams != null ? { allowAgentTeams: args.allowAgentTeams } : {}
         },
+        ...missionDepth ? { missionDepth } : {},
+        ...resolvedExecutionPolicy ? { executionPolicy: resolvedExecutionPolicy } : {},
         planner: plannerRun ? {
           id: plannerRun.id,
           requestedEngine: plannerRun.requestedEngine,
@@ -14368,11 +16688,11 @@ function createMissionService({
         } : {
           id: null,
           requestedEngine: args.plannerEngine ?? "auto",
-          resolvedEngine: "deterministic_fallback",
-          status: "fallback",
-          degraded: true,
+          resolvedEngine: null,
+          status: "skipped",
+          degraded: false,
           reasonCode: "planner_unavailable",
-          reasonDetail: "Planner run was not provided. Used deterministic fallback planner.",
+          reasonDetail: "Planner run was not provided.",
           planHash: null,
           normalizedPlanHash: null,
           commandPreview: null,
@@ -14478,8 +16798,8 @@ function createMissionService({
           plannerStepCount: stepsToPersist.length,
           plannerKeywords: legacyPlan.keywords,
           plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
-          plannerEngineResolved: plannerRun?.resolvedEngine ?? "deterministic_fallback",
-          plannerDegraded: plannerRun?.degraded ?? true,
+          plannerEngineResolved: plannerRun?.resolvedEngine ?? null,
+          plannerDegraded: plannerRun?.degraded ?? false,
           executorPolicy
         }
       });
@@ -14488,7 +16808,7 @@ function createMissionService({
           missionId: id,
           eventType: "mission_plan_generated",
           actor: "system",
-          summary: plannerRun.degraded ? `Planner fallback used (${plannerRun.reasonCode ?? "unknown_reason"}).` : `Planner completed with ${plannerRun.resolvedEngine}.`,
+          summary: `Planner completed with ${plannerRun.resolvedEngine ?? "unknown"}.`,
           payload: {
             plannerRunId: plannerRun.id,
             requestedEngine: plannerRun.requestedEngine,
@@ -14675,7 +16995,28 @@ function createMissionService({
       if (runIds.length) {
         db.run(
           `
-            delete from orchestrator_timeline_events
+            update orchestrator_attempts
+            set context_snapshot_id = null
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_attempt_runtime
+            where attempt_id in (
+              select id
+              from orchestrator_attempts
+              where project_id = ?
+                and run_id in (${runPlaceholders})
+            )
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_runtime_events
             where project_id = ?
               and run_id in (${runPlaceholders})
           `,
@@ -14691,7 +17032,63 @@ function createMissionService({
         );
         db.run(
           `
+            delete from orchestrator_chat_messages
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_worker_digests
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_lane_decisions
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_context_checkpoints
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_worker_checkpoints
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_metrics_samples
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
             delete from orchestrator_context_snapshots
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_chat_threads
             where project_id = ?
               and run_id in (${runPlaceholders})
           `,
@@ -14714,6 +17111,70 @@ function createMissionService({
           [projectId, ...runIds]
         );
       }
+      db.run(
+        `
+          delete from mission_metrics_config
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_chat_messages
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_chat_threads
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_worker_digests
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_lane_decisions
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_context_checkpoints
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_worker_checkpoints
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_metrics_samples
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
       db.run(
         `
           delete from orchestrator_runs
@@ -14938,7 +17399,9 @@ function createMissionService({
     addIntervention(args) {
       const missionId = args.missionId.trim();
       if (!missionId.length) throw new Error("missionId is required.");
-      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+      const missionRow = getMissionRow(missionId);
+      if (!missionRow) throw new Error(`Mission not found: ${missionId}`);
+      const missionStatus = normalizeMissionStatus(missionRow.status);
       const intervention = insertIntervention({
         missionId,
         interventionType: args.interventionType,
@@ -14958,11 +17421,14 @@ function createMissionService({
           interventionType: intervention.interventionType
         }
       });
-      upsertMissionStatus({
-        missionId,
-        nextStatus: "intervention_required",
-        summary: "Mission moved to intervention required."
-      });
+      const keepPlanReview = missionStatus === "plan_review" && intervention.status === "open" && intervention.interventionType === "approval_required";
+      if (!keepPlanReview) {
+        upsertMissionStatus({
+          missionId,
+          nextStatus: "intervention_required",
+          summary: "Mission moved to intervention required."
+        });
+      }
       db.run(
         "update missions set updated_at = ? where id = ? and project_id = ?",
         [nowIso(), missionId, projectId]
@@ -15084,8 +17550,88 @@ function createMissionService({
       );
       if (!updated) throw new Error("Intervention update failed");
       return toMissionIntervention(updated);
+    },
+    // ── Concurrency Guard ────────────────────────────────────────
+    canStartMission(missionId) {
+      const activeMissions = this.list({ status: "active" }).filter((m) => ACTIVE_MISSION_STATUSES.has(m.status) && m.id !== missionId);
+      const maxConcurrent = activeConcurrencyConfig.maxConcurrentMissions;
+      if (activeMissions.length >= maxConcurrent) {
+        const queuedMissions = this.list({}).filter((m) => m.status === "queued").sort(
+          (a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2) || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        );
+        const queuePosition = queuedMissions.findIndex((m) => m.id === missionId);
+        return {
+          allowed: false,
+          reason: `${activeMissions.length} missions already active (max: ${maxConcurrent})`,
+          queuePosition: queuePosition >= 0 ? queuePosition + 1 : void 0
+        };
+      }
+      return { allowed: true };
+    },
+    isLaneClaimed(laneId, excludeMissionId) {
+      if (!activeConcurrencyConfig.laneExclusivity) return { claimed: false };
+      if (!laneId) return { claimed: false };
+      const activeMissions = this.list({ status: "active" }).filter((m) => ACTIVE_MISSION_STATUSES.has(m.status) && m.id !== excludeMissionId);
+      for (const mission of activeMissions) {
+        if (mission.laneId === laneId) return { claimed: true, byMissionId: mission.id };
+        const detail = this.get(mission.id);
+        if (detail) {
+          const hasRunningStepOnLane = detail.steps.some(
+            (s) => s.laneId === laneId && s.status === "running"
+          );
+          if (hasRunningStepOnLane) return { claimed: true, byMissionId: mission.id };
+        }
+      }
+      return { claimed: false };
+    },
+    processQueue() {
+      const started = [];
+      const queuedMissions = this.list({}).filter((m) => m.status === "queued").sort(
+        (a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2) || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+      for (const mission of queuedMissions) {
+        const detail = this.get(mission.id);
+        const metadata = detail ? safeParseRecord(
+          db.get(
+            "select metadata_json from missions where id = ? and project_id = ? limit 1",
+            [mission.id, projectId]
+          )?.metadata_json ?? null
+        ) : null;
+        const launch = metadata && isRecord3(metadata.launch) ? metadata.launch : null;
+        if (launch && launch.autostart === false) continue;
+        const check = this.canStartMission(mission.id);
+        if (!check.allowed) break;
+        if (activeConcurrencyConfig.laneExclusivity && mission.laneId) {
+          const laneClaim = this.isLaneClaimed(mission.laneId, mission.id);
+          if (laneClaim.claimed) continue;
+        }
+        recordEvent({
+          missionId: mission.id,
+          eventType: "mission_ready_to_start",
+          actor: "system",
+          summary: "Mission eligible to start after concurrency slot opened.",
+          payload: { queuePosition: 1 }
+        });
+        emit({ missionId: mission.id, reason: "ready_to_start" });
+        started.push(mission.id);
+      }
+      return started;
+    },
+    getConcurrencyConfig() {
+      return { ...activeConcurrencyConfig };
+    },
+    setConcurrencyConfig(config) {
+      if (config.maxConcurrentMissions !== void 0) {
+        activeConcurrencyConfig.maxConcurrentMissions = Math.max(1, Math.floor(config.maxConcurrentMissions));
+      }
+      if (config.laneExclusivity !== void 0) {
+        activeConcurrencyConfig.laneExclusivity = config.laneExclusivity;
+      }
+      return { ...activeConcurrencyConfig };
     }
   };
+  serviceRef = service;
+  return service;
 }
 
 // ../desktop/src/main/services/pty/ptyService.ts
@@ -15280,9 +17826,23 @@ function runtimeFromStatus(status) {
 function normalizeToolType(raw) {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (!value) return null;
-  const allowed = ["shell", "claude", "codex", "codex-chat", "claude-chat", "cursor", "aider", "continue", "other"];
+  const allowed = [
+    "shell",
+    "claude",
+    "codex",
+    "claude-orchestrated",
+    "codex-orchestrated",
+    "codex-chat",
+    "claude-chat",
+    "cursor",
+    "aider",
+    "continue",
+    "other"
+  ];
   return allowed.includes(value) ? value : "other";
 }
+var MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+var TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
 function createPtyService({
   projectRoot,
   transcriptsDir,
@@ -15293,10 +17853,28 @@ function createPtyService({
   broadcastData,
   broadcastExit,
   onSessionEnded,
+  onSessionRuntimeSignal,
   loadPty
 }) {
   const ptys = /* @__PURE__ */ new Map();
   const runtimeStates = /* @__PURE__ */ new Map();
+  const toolAutoCloseTimers = /* @__PURE__ */ new Map();
+  const TOOL_TYPES_WITH_AUTO_CLOSE = /* @__PURE__ */ new Set([
+    "claude",
+    "codex",
+    "claude-orchestrated",
+    "codex-orchestrated",
+    "aider",
+    "cursor",
+    "continue"
+  ]);
+  const clearToolAutoCloseTimer = (ptyId) => {
+    const timer = toolAutoCloseTimers.get(ptyId);
+    if (timer) {
+      clearTimeout(timer);
+      toolAutoCloseTimers.delete(ptyId);
+    }
+  };
   const clearIdleTimer = (sessionId) => {
     const state = runtimeStates.get(sessionId);
     if (!state?.idleTimer) return;
@@ -15385,6 +17963,7 @@ function createPtyService({
     if (!entry) return;
     if (entry.disposed) return;
     entry.disposed = true;
+    clearToolAutoCloseTimer(ptyId);
     try {
       entry.transcriptStream?.end();
     } catch {
@@ -15394,8 +17973,19 @@ function createPtyService({
     const status = statusFromExit(exitCode);
     sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode, status });
     clearIdleTimer(entry.sessionId);
-    setRuntimeState(entry.sessionId, runtimeFromStatus(status), { touch: false });
+    const finalRuntimeState = runtimeFromStatus(status);
+    setRuntimeState(entry.sessionId, finalRuntimeState, { touch: false });
     runtimeStates.delete(entry.sessionId);
+    try {
+      onSessionRuntimeSignal?.({
+        laneId: entry.laneId,
+        sessionId: entry.sessionId,
+        runtimeState: finalRuntimeState,
+        lastOutputPreview: entry.latestPreviewLine ?? entry.lastPreviewWritten ?? null,
+        at: endedAt
+      });
+    } catch {
+    }
     summarizeSessionBestEffort(entry.sessionId);
     Promise.resolve().then(async () => {
       const { worktreePath } = laneService.getLaneBaseAndBranch(entry.laneId);
@@ -15414,8 +18004,24 @@ function createPtyService({
   };
   const writeTranscript = (entry, data) => {
     if (!entry.tracked || !entry.transcriptStream) return;
+    if (entry.transcriptLimitReached) return;
     try {
-      entry.transcriptStream.write(data);
+      const chunk = Buffer.from(data, "utf8");
+      const remaining = MAX_TRANSCRIPT_BYTES - entry.transcriptBytesWritten;
+      if (remaining <= 0) {
+        entry.transcriptLimitReached = true;
+        entry.transcriptStream.write(TRANSCRIPT_LIMIT_NOTICE);
+        return;
+      }
+      if (chunk.length > remaining) {
+        entry.transcriptStream.write(chunk.subarray(0, remaining));
+        entry.transcriptBytesWritten += remaining;
+        entry.transcriptLimitReached = true;
+        entry.transcriptStream.write(TRANSCRIPT_LIMIT_NOTICE);
+        return;
+      }
+      entry.transcriptStream.write(chunk);
+      entry.transcriptBytesWritten += chunk.length;
     } catch {
     }
   };
@@ -15440,6 +18046,29 @@ function createPtyService({
     entry.lastPreviewWriteAt = now;
     flushPreview(entry);
   };
+  const emitRuntimeSignalThrottled = (entry, runtimeState) => {
+    if (!entry.tracked || !onSessionRuntimeSignal) return;
+    const now = Date.now();
+    const preview = entry.latestPreviewLine ?? entry.lastPreviewWritten ?? null;
+    const stateChanged = runtimeState !== entry.lastRuntimeSignalState;
+    const previewChanged = preview !== entry.lastRuntimeSignalPreview;
+    const periodicHeartbeatDue = now - entry.lastRuntimeSignalAt >= 1e4;
+    const previewEmitDue = previewChanged && now - entry.lastRuntimeSignalAt >= 1200;
+    if (!stateChanged && !previewEmitDue && !periodicHeartbeatDue) return;
+    entry.lastRuntimeSignalAt = now;
+    entry.lastRuntimeSignalState = runtimeState;
+    entry.lastRuntimeSignalPreview = preview;
+    try {
+      onSessionRuntimeSignal({
+        laneId: entry.laneId,
+        sessionId: entry.sessionId,
+        runtimeState,
+        lastOutputPreview: preview,
+        at: new Date(now).toISOString()
+      });
+    } catch {
+    }
+  };
   return {
     async create(args) {
       const { laneId, title } = args;
@@ -15458,8 +18087,14 @@ function createPtyService({
       const initialResumeCommand = defaultResumeCommandForTool(toolTypeHint);
       const transcriptPath = safeTranscriptPathFor(sessionId);
       let transcriptStream = null;
+      let transcriptBytesWritten = 0;
       if (tracked) {
         import_node_fs11.default.mkdirSync(import_node_path11.default.dirname(transcriptPath), { recursive: true });
+        try {
+          transcriptBytesWritten = import_node_fs11.default.existsSync(transcriptPath) ? import_node_fs11.default.statSync(transcriptPath).size : 0;
+        } catch {
+          transcriptBytesWritten = 0;
+        }
         transcriptStream = import_node_fs11.default.createWriteStream(transcriptPath, { flags: "a" });
       }
       sessionService.create({
@@ -15528,6 +18163,8 @@ function createPtyService({
         tracked,
         transcriptPath,
         transcriptStream,
+        transcriptBytesWritten,
+        transcriptLimitReached: transcriptBytesWritten >= MAX_TRANSCRIPT_BYTES,
         lastPreviewWriteAt: 0,
         previewCurrentLine: "",
         latestPreviewLine: null,
@@ -15536,7 +18173,11 @@ function createPtyService({
         resumeCommand: initialResumeCommand,
         resumeCommandIsFallback: Boolean(initialResumeCommand),
         resumeScanBuffer: "",
-        disposed: false
+        lastRuntimeSignalAt: 0,
+        lastRuntimeSignalState: "running",
+        lastRuntimeSignalPreview: null,
+        disposed: false,
+        createdAt: Date.now()
       };
       ptys.set(ptyId, entry);
       let titleOutputBuffer = "";
@@ -15545,12 +18186,30 @@ function createPtyService({
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
         broadcastData({ ptyId, sessionId, data });
-        const runtimeState = runtimeStateFromOsc133Chunk(data, runtimeStates.get(sessionId)?.state ?? "running");
+        const prevState = runtimeStates.get(sessionId)?.state ?? "running";
+        const runtimeState = runtimeStateFromOsc133Chunk(data, prevState);
         setRuntimeState(sessionId, runtimeState);
         if (runtimeState === "running") {
           scheduleIdleTransition(sessionId);
+          clearToolAutoCloseTimer(ptyId);
         } else {
           clearIdleTimer(sessionId);
+        }
+        emitRuntimeSignalThrottled(entry, runtimeState);
+        if (runtimeState === "waiting-input" && (prevState === "running" || prevState === "idle") && entry.toolTypeHint && TOOL_TYPES_WITH_AUTO_CLOSE.has(entry.toolTypeHint) && !toolAutoCloseTimers.has(ptyId) && Date.now() - entry.createdAt > 5e3) {
+          toolAutoCloseTimers.set(
+            ptyId,
+            setTimeout(() => {
+              toolAutoCloseTimers.delete(ptyId);
+              if (entry.disposed) return;
+              logger.info("pty.tool_exit_auto_close", { ptyId, sessionId, toolType: entry.toolTypeHint });
+              try {
+                entry.pty.kill();
+              } catch {
+                closeEntry(ptyId, 0);
+              }
+            }, 1500)
+          );
         }
         if (!entry.resumeCommand || entry.resumeCommandIsFallback) {
           entry.resumeScanBuffer = `${entry.resumeScanBuffer}${data}`.slice(-12e3);
@@ -15662,6 +18321,16 @@ function createPtyService({
         clearIdleTimer(sessionId);
         setRuntimeState(sessionId, "killed", { touch: false });
         runtimeStates.delete(sessionId);
+        try {
+          onSessionRuntimeSignal?.({
+            laneId: session.laneId,
+            sessionId,
+            runtimeState: "killed",
+            lastOutputPreview: session.lastOutputPreview ?? null,
+            at: endedAt2
+          });
+        } catch {
+        }
         summarizeSessionBestEffort(sessionId);
         broadcastExit({ ptyId, sessionId, exitCode: null });
         if (session.tracked) {
@@ -15675,6 +18344,7 @@ function createPtyService({
       }
       if (entry.disposed) return;
       entry.disposed = true;
+      clearToolAutoCloseTimer(ptyId);
       try {
         entry.transcriptStream?.end();
       } catch {
@@ -15688,6 +18358,16 @@ function createPtyService({
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });
       runtimeStates.delete(entry.sessionId);
+      try {
+        onSessionRuntimeSignal?.({
+          laneId: entry.laneId,
+          sessionId: entry.sessionId,
+          runtimeState: "killed",
+          lastOutputPreview: entry.latestPreviewLine ?? entry.lastPreviewWritten ?? null,
+          at: endedAt
+        });
+      } catch {
+      }
       summarizeSessionBestEffort(entry.sessionId);
       broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);
@@ -15793,6 +18473,8 @@ function matchLaneOverlayPolicies(lane, policies) {
 }
 
 // ../desktop/src/main/services/tests/testService.ts
+var MAX_TEST_LOG_BYTES = 10 * 1024 * 1024;
+var TEST_LOG_LIMIT_NOTICE = "\n[ADE] test log limit reached (10MB). Further output omitted.\n";
 function clampMaxBytes(maxBytes, fallback) {
   if (typeof maxBytes !== "number" || !Number.isFinite(maxBytes)) return fallback;
   return Math.max(1024, Math.min(2e6, Math.floor(maxBytes)));
@@ -15825,6 +18507,34 @@ function createTestService({
 }) {
   const activeRuns = /* @__PURE__ */ new Map();
   const nowIso3 = () => (/* @__PURE__ */ new Date()).toISOString();
+  const writeRunLogChunk = (entry, chunk) => {
+    if (entry.logLimitReached) return;
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    const remaining = MAX_TEST_LOG_BYTES - entry.logBytesWritten;
+    if (remaining <= 0) {
+      entry.logLimitReached = true;
+      try {
+        entry.logStream.write(TEST_LOG_LIMIT_NOTICE);
+      } catch {
+      }
+      return;
+    }
+    if (data.length > remaining) {
+      try {
+        entry.logStream.write(data.subarray(0, remaining));
+        entry.logBytesWritten += remaining;
+        entry.logLimitReached = true;
+        entry.logStream.write(TEST_LOG_LIMIT_NOTICE);
+      } catch {
+      }
+      return;
+    }
+    try {
+      entry.logStream.write(data);
+      entry.logBytesWritten += data.length;
+    } catch {
+    }
+  };
   const persistRunStart = (runId, laneId, suiteId, startedAt, logPath) => {
     db.run(
       `
@@ -15917,12 +18627,9 @@ function createTestService({
     if (entry.stopIntent === "timed_out") status = "timed_out";
     else if (entry.stopIntent === "canceled") status = "canceled";
     else status = exitCode === 0 ? "passed" : "failed";
-    try {
-      entry.logStream.write(`
+    writeRunLogChunk(entry, `
 # test run ended at ${endedAt} status=${status} exit=${exitCode ?? "null"}
 `);
-    } catch {
-    }
     try {
       entry.logStream.end();
     } catch {
@@ -15951,9 +18658,13 @@ function createTestService({
     import_node_fs12.default.mkdirSync(suiteDir, { recursive: true });
     const logPath = import_node_path12.default.join(suiteDir, `${runId}.log`);
     const logStream = import_node_fs12.default.createWriteStream(logPath, { flags: "a" });
-    logStream.write(`
-# test run start ${startedAt} cmd=${JSON.stringify(suite.command)} cwd=${cwd}
-`);
+    const initialLogBytes = (() => {
+      try {
+        return import_node_fs12.default.existsSync(logPath) ? import_node_fs12.default.statSync(logPath).size : 0;
+      } catch {
+        return 0;
+      }
+    })();
     const child = (0, import_node_child_process3.spawn)(suite.command[0], suite.command.slice(1), {
       cwd,
       env: { ...process.env, ...suite.env, ...overlay.env ?? {} },
@@ -15969,10 +18680,15 @@ function createTestService({
       startedAt,
       logPath,
       logStream,
+      logBytesWritten: initialLogBytes,
+      logLimitReached: initialLogBytes >= MAX_TEST_LOG_BYTES,
       timeoutTimer: null,
       killTimer: null,
       stopIntent: null
     };
+    writeRunLogChunk(entry, `
+# test run start ${startedAt} cmd=${JSON.stringify(suite.command)} cwd=${cwd}
+`);
     activeRuns.set(runId, entry);
     persistRunStart(runId, laneId, suite.id, startedAt, logPath);
     const summary = {
@@ -15989,10 +18705,7 @@ function createTestService({
     };
     emitRun(summary);
     const onChunk = (stream, chunk) => {
-      try {
-        logStream.write(chunk);
-      } catch {
-      }
+      writeRunLogChunk(entry, chunk);
       emitLog(runId, suite.id, stream, chunk);
     };
     child.stdout.setEncoding("utf8");
@@ -16000,12 +18713,9 @@ function createTestService({
     child.stdout.on("data", (chunk) => onChunk("stdout", chunk));
     child.stderr.on("data", (chunk) => onChunk("stderr", chunk));
     child.on("error", (err) => {
-      try {
-        logStream.write(`
+      writeRunLogChunk(entry, `
 [test run error] ${String(err)}
 `);
-      } catch {
-      }
     });
     child.on("close", (code) => finishRun(entry, code ?? null));
     if (suite.timeoutMs && suite.timeoutMs > 0) {
@@ -16512,6 +19222,17 @@ async function dispatchPayload(args) {
       }, transport);
       return;
     }
+    if (parsed.length > MAX_BATCH_SIZE) {
+      writeMessage({
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: JsonRpcErrorCode.invalidRequest,
+          message: `JSON-RPC batch size ${parsed.length} exceeds maximum of ${MAX_BATCH_SIZE}`
+        }
+      }, transport);
+      return;
+    }
     const results = (await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler)))).filter((entry) => entry != null);
     if (results.length) {
       writeMessage(results, transport);
@@ -16523,6 +19244,8 @@ async function dispatchPayload(args) {
     writeMessage(response, transport);
   }
 }
+var MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+var MAX_BATCH_SIZE = 100;
 function startJsonRpcServer(handler) {
   let buffer = import_node_buffer.Buffer.alloc(0);
   let stopped = false;
@@ -16560,6 +19283,20 @@ function startJsonRpcServer(handler) {
     if (stopped) return;
     const part = typeof chunk === "string" ? import_node_buffer.Buffer.from(chunk, "utf8") : import_node_buffer.Buffer.from(chunk);
     buffer = buffer.length ? import_node_buffer.Buffer.concat([buffer, part]) : part;
+    if (buffer.length > MAX_BUFFER_BYTES) {
+      writeMessage({
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: JsonRpcErrorCode.parseError,
+          message: `Input buffer exceeded maximum size of ${MAX_BUFFER_BYTES} bytes`
+        }
+      }, responseTransport ?? "framed");
+      stopped = true;
+      process.stdin.off("data", onData);
+      process.nextTick(() => process.exit(1));
+      return;
+    }
     void drain();
   };
   process.stdin.on("data", onData);
@@ -16571,6 +19308,9 @@ function startJsonRpcServer(handler) {
 }
 
 // src/mcpServer.ts
+var import_node_crypto10 = require("crypto");
+var import_node_fs14 = __toESM(require("fs"), 1);
+var import_node_path14 = __toESM(require("path"), 1);
 var DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 var DEFAULT_PTY_COLS = 120;
 var DEFAULT_PTY_ROWS = 36;
@@ -16589,7 +19329,57 @@ var TOOL_SPECS = [
         provider: { type: "string", enum: ["codex", "claude"], default: "codex" },
         prompt: { type: "string" },
         model: { type: "string" },
-        title: { type: "string" }
+        title: { type: "string" },
+        runId: { type: "string" },
+        stepId: { type: "string" },
+        attemptId: { type: "string" },
+        permissionMode: { type: "string", enum: ["plan", "edit", "full-auto"], default: "edit" },
+        toolWhitelist: { type: "array", items: { type: "string" }, maxItems: 24 },
+        maxPromptChars: { type: "number", minimum: 256, maximum: 12e3 },
+        contextFilePath: { type: "string" },
+        context: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            profile: { type: "string" },
+            packs: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  scope: { type: "string" },
+                  packKey: { type: "string" },
+                  level: { type: "string" },
+                  approxTokens: { type: "number" },
+                  summary: { type: "string" }
+                }
+              }
+            },
+            docs: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  path: { type: "string" },
+                  sha256: { type: "string" },
+                  bytes: { type: "number" }
+                }
+              }
+            },
+            handoffDigest: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                summarizedCount: { type: "number" },
+                byType: { type: "object" },
+                oldestCreatedAt: { type: "string" },
+                newestCreatedAt: { type: "string" }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -16726,16 +19516,116 @@ var TOOL_SPECS = [
         stageAll: { type: "boolean", default: true }
       }
     }
+  },
+  {
+    name: "simulate_integration",
+    description: "Dry-merge N lanes sequentially using git merge-tree, returning per-step conflict analysis without creating any branches or PRs",
+    inputSchema: {
+      type: "object",
+      required: ["sourceLaneIds", "baseBranch"],
+      additionalProperties: false,
+      properties: {
+        sourceLaneIds: { type: "array", items: { type: "string", minLength: 1 } },
+        baseBranch: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "create_queue",
+    description: "Create a queue PR group with ordered lanes, each targeting the same branch for sequential landing",
+    inputSchema: {
+      type: "object",
+      required: ["laneIds", "targetBranch"],
+      additionalProperties: false,
+      properties: {
+        laneIds: { type: "array", items: { type: "string", minLength: 1 } },
+        targetBranch: { type: "string", minLength: 1 },
+        titles: { type: "object", additionalProperties: { type: "string" } },
+        draft: { type: "boolean" },
+        autoRebase: { type: "boolean" },
+        ciGating: { type: "boolean" },
+        queueName: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "create_integration",
+    description: "Create an integration lane, merge source lanes into it, and create a single integration PR",
+    inputSchema: {
+      type: "object",
+      required: ["sourceLaneIds", "integrationLaneName", "baseBranch", "title"],
+      additionalProperties: false,
+      properties: {
+        sourceLaneIds: { type: "array", items: { type: "string", minLength: 1 } },
+        integrationLaneName: { type: "string", minLength: 1 },
+        baseBranch: { type: "string", minLength: 1 },
+        title: { type: "string", minLength: 1 },
+        body: { type: "string" },
+        draft: { type: "boolean" }
+      }
+    }
+  },
+  {
+    name: "rebase_lane",
+    description: "Rebase a lane onto its base branch, optionally using AI to resolve conflicts",
+    inputSchema: {
+      type: "object",
+      required: ["laneId"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        aiAssisted: { type: "boolean" },
+        provider: { type: "string" },
+        autoApplyThreshold: { type: "number", minimum: 0, maximum: 1 }
+      }
+    }
+  },
+  {
+    name: "get_pr_health",
+    description: "Get unified health status for a PR including checks, reviews, conflicts, and rebase status",
+    inputSchema: {
+      type: "object",
+      required: ["prId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "land_queue_next",
+    description: "Land the next pending PR in a queue group sequentially",
+    inputSchema: {
+      type: "object",
+      required: ["groupId", "method"],
+      additionalProperties: false,
+      properties: {
+        groupId: { type: "string", minLength: 1 },
+        method: { type: "string", minLength: 1 },
+        autoResolve: { type: "boolean" },
+        confidenceThreshold: { type: "number", minimum: 0, maximum: 1 }
+      }
+    }
   }
 ];
 var READ_ONLY_TOOLS = /* @__PURE__ */ new Set([
   "read_context",
   "check_conflicts",
-  "run_tests",
   "get_lane_status",
-  "list_lanes"
+  "list_lanes",
+  "simulate_integration",
+  "get_pr_health"
 ]);
-var MUTATION_TOOLS = /* @__PURE__ */ new Set(["create_lane", "merge_lane", "commit_changes"]);
+var MUTATION_TOOLS = /* @__PURE__ */ new Set([
+  "create_lane",
+  "merge_lane",
+  "commit_changes",
+  "run_tests",
+  "create_queue",
+  "create_integration",
+  "rebase_lane",
+  "land_queue_next"
+]);
 function nowIso2() {
   return (/* @__PURE__ */ new Date()).toISOString();
 }
@@ -16808,6 +19698,12 @@ function sanitizeForAudit(value, depth = 0) {
   }
   return String(value);
 }
+function requirePrService(runtime) {
+  if (!runtime.prService) {
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "prService is not available in this MCP runtime configuration");
+  }
+  return runtime.prService;
+}
 function extractLaneId(args) {
   const fromPrimary = asOptionalTrimmedString(args.laneId);
   if (fromPrimary) return fromPrimary;
@@ -16815,10 +19711,116 @@ function extractLaneId(args) {
   if (fromParent) return fromParent;
   return null;
 }
+function stripInjectionChars(value) {
+  return value.replace(/[\n\r\0]/g, " ");
+}
 function shellEscapeArg(value) {
-  if (!value.length) return "''";
-  if (/^[a-zA-Z0-9_./:-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
+  const sanitized = stripInjectionChars(value);
+  if (!sanitized.length) return "''";
+  if (/^[a-zA-Z0-9_./:-]+$/.test(sanitized)) return sanitized;
+  return `'${sanitized.replace(/'/g, `'"'"'`)}'`;
+}
+function clipText(value, maxChars) {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 18))}
+...<truncated>`;
+}
+function sha256Text(value) {
+  return (0, import_node_crypto10.createHash)("sha256").update(value).digest("hex");
+}
+function parseSpawnPermissionMode(value) {
+  const normalized = asTrimmedString(value).toLowerCase();
+  if (normalized === "plan" || normalized === "full-auto") return normalized;
+  return "edit";
+}
+function normalizeToolWhitelist(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((entry) => asTrimmedString(entry)).filter(Boolean))].slice(0, 24);
+}
+function resolveSpawnContextFile(args) {
+  const contextFilePathRaw = args.contextFilePathRaw?.trim() ?? "";
+  const packList = Array.isArray(args.context.packs) ? args.context.packs : [];
+  const docsList = Array.isArray(args.context.docs) ? args.context.docs : [];
+  const hasContextPayload = packList.length > 0 || docsList.length > 0 || Object.keys(args.context).length > 0;
+  const approxTokens = packList.reduce((sum, item) => {
+    const record = safeObject(item);
+    const raw = Number(record.approxTokens ?? 0);
+    return sum + (Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0);
+  }, 0);
+  if (!contextFilePathRaw && !hasContextPayload) {
+    return { contextFilePath: null, contextDigest: null, contextBytes: null, approxTokens };
+  }
+  if (contextFilePathRaw.length) {
+    if (import_node_path14.default.isAbsolute(contextFilePathRaw)) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be a relative path within the project directory");
+    }
+    const abs = import_node_path14.default.resolve(args.runtime.projectRoot, contextFilePathRaw);
+    if (!abs.startsWith(args.runtime.projectRoot + import_node_path14.default.sep) && abs !== args.runtime.projectRoot) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be within the project directory");
+    }
+    if (!import_node_fs14.default.existsSync(abs)) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `contextFilePath does not exist: ${contextFilePathRaw}`);
+    }
+    const text = import_node_fs14.default.readFileSync(abs, "utf8");
+    return {
+      contextFilePath: abs,
+      contextDigest: sha256Text(text),
+      contextBytes: Buffer.byteLength(text, "utf8"),
+      approxTokens
+    };
+  }
+  const baseDir = import_node_path14.default.join(args.runtime.projectRoot, ".ade", "orchestrator", "mcp-context");
+  const runSegment = args.runId ?? "standalone";
+  const dir = import_node_path14.default.join(baseDir, runSegment);
+  import_node_fs14.default.mkdirSync(dir, { recursive: true });
+  const filename = `${Date.now()}-${(0, import_node_crypto10.randomUUID)()}.json`;
+  const contextFilePath = import_node_path14.default.join(dir, filename);
+  const payload = {
+    schema: "ade.mcp.spawnAgentContext.v1",
+    generatedAt: nowIso2(),
+    mission: {
+      runId: args.runId,
+      stepId: args.stepId,
+      attemptId: args.attemptId
+    },
+    worker: {
+      laneId: args.laneId,
+      provider: args.provider,
+      permissionMode: args.permissionMode
+    },
+    promptPreview: args.userPrompt ? clipText(args.userPrompt, 2e3) : null,
+    context: {
+      profile: asOptionalTrimmedString(args.context.profile),
+      packs: packList.slice(0, 24).map((item) => {
+        const record = safeObject(item);
+        return {
+          scope: asOptionalTrimmedString(record.scope),
+          packKey: asOptionalTrimmedString(record.packKey),
+          level: asOptionalTrimmedString(record.level),
+          approxTokens: Number.isFinite(Number(record.approxTokens)) ? Number(record.approxTokens) : null,
+          summary: clipText(asTrimmedString(record.summary), 800)
+        };
+      }),
+      docs: docsList.slice(0, 40).map((item) => {
+        const record = safeObject(item);
+        return {
+          path: asOptionalTrimmedString(record.path),
+          sha256: asOptionalTrimmedString(record.sha256),
+          bytes: Number.isFinite(Number(record.bytes)) ? Number(record.bytes) : null
+        };
+      }),
+      handoffDigest: safeObject(args.context.handoffDigest)
+    }
+  };
+  const serialized = `${JSON.stringify(payload, null, 2)}
+`;
+  import_node_fs14.default.writeFileSync(contextFilePath, serialized, "utf8");
+  return {
+    contextFilePath,
+    contextDigest: sha256Text(serialized),
+    contextBytes: Buffer.byteLength(serialized, "utf8"),
+    approxTokens
+  };
 }
 function mapLaneSummary(lane) {
   return {
@@ -17105,14 +20107,25 @@ function ensureSpawnAuthorized(session) {
     "Policy denied spawn_agent. Only orchestrator sessions may spawn agents."
   );
 }
+var GLOBAL_ASK_USER_RATE_LIMIT = {
+  maxCalls: 20,
+  windowMs: 6e4,
+  events: []
+};
 function ensureAskUserAllowed(session) {
   const now = Date.now();
-  const cutoff = now - session.askUserRateLimit.windowMs;
-  session.askUserEvents = session.askUserEvents.filter((ts) => ts >= cutoff);
+  const globalCutoff = now - GLOBAL_ASK_USER_RATE_LIMIT.windowMs;
+  GLOBAL_ASK_USER_RATE_LIMIT.events = GLOBAL_ASK_USER_RATE_LIMIT.events.filter((ts) => ts >= globalCutoff);
+  if (GLOBAL_ASK_USER_RATE_LIMIT.events.length >= GLOBAL_ASK_USER_RATE_LIMIT.maxCalls) {
+    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "ask_user global rate limit exceeded.");
+  }
+  const sessionCutoff = now - session.askUserRateLimit.windowMs;
+  session.askUserEvents = session.askUserEvents.filter((ts) => ts >= sessionCutoff);
   if (session.askUserEvents.length >= session.askUserRateLimit.maxCalls) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "ask_user rate limit exceeded.");
   }
   session.askUserEvents.push(now);
+  GLOBAL_ASK_USER_RATE_LIMIT.events.push(now);
 }
 async function runTool(args) {
   const { runtime, session, name, toolArgs } = args;
@@ -17256,6 +20269,7 @@ async function runTool(args) {
   }
   if (name === "run_tests") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    ensureMutationAuthorized({ runtime, session, laneId, toolName: name });
     const suiteId = asOptionalTrimmedString(toolArgs.suiteId);
     const command = asOptionalTrimmedString(toolArgs.command);
     const waitForCompletion = asBoolean(toolArgs.waitForCompletion, true);
@@ -17327,6 +20341,97 @@ async function runTool(args) {
       commit: latest[0] ?? null
     };
   }
+  if (name === "simulate_integration") {
+    const sourceLaneIds = Array.isArray(toolArgs.sourceLaneIds) ? toolArgs.sourceLaneIds.map((entry) => asTrimmedString(entry)).filter(Boolean) : [];
+    if (!sourceLaneIds.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "sourceLaneIds is required and must be non-empty");
+    }
+    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.simulateIntegration({ sourceLaneIds, baseBranch });
+    return result;
+  }
+  if (name === "create_queue") {
+    ensureMutationAuthorized({ runtime, session, toolName: name });
+    const laneIds = Array.isArray(toolArgs.laneIds) ? toolArgs.laneIds.map((entry) => asTrimmedString(entry)).filter(Boolean) : [];
+    if (!laneIds.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "laneIds is required and must be non-empty");
+    }
+    const targetBranch = assertNonEmptyString(toolArgs.targetBranch, "targetBranch");
+    const titles = isRecord4(toolArgs.titles) ? toolArgs.titles : void 0;
+    const draft = typeof toolArgs.draft === "boolean" ? toolArgs.draft : void 0;
+    const autoRebase = typeof toolArgs.autoRebase === "boolean" ? toolArgs.autoRebase : void 0;
+    const ciGating = typeof toolArgs.ciGating === "boolean" ? toolArgs.ciGating : void 0;
+    const queueName = asOptionalTrimmedString(toolArgs.queueName);
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.createQueuePrs({
+      laneIds,
+      targetBranch,
+      ...titles ? { titles } : {},
+      ...draft !== void 0 ? { draft } : {},
+      ...autoRebase !== void 0 ? { autoRebase } : {},
+      ...ciGating !== void 0 ? { ciGating } : {},
+      ...queueName ? { queueName } : {}
+    });
+    return result;
+  }
+  if (name === "create_integration") {
+    ensureMutationAuthorized({ runtime, session, toolName: name });
+    const sourceLaneIds = Array.isArray(toolArgs.sourceLaneIds) ? toolArgs.sourceLaneIds.map((entry) => asTrimmedString(entry)).filter(Boolean) : [];
+    if (!sourceLaneIds.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "sourceLaneIds is required and must be non-empty");
+    }
+    const integrationLaneName = assertNonEmptyString(toolArgs.integrationLaneName, "integrationLaneName");
+    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
+    const title = assertNonEmptyString(toolArgs.title, "title");
+    const body = asOptionalTrimmedString(toolArgs.body);
+    const draft = typeof toolArgs.draft === "boolean" ? toolArgs.draft : void 0;
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.createIntegrationPr({
+      sourceLaneIds,
+      integrationLaneName,
+      baseBranch,
+      title,
+      ...body ? { body } : {},
+      ...draft !== void 0 ? { draft } : {}
+    });
+    return result;
+  }
+  if (name === "rebase_lane") {
+    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    ensureMutationAuthorized({ runtime, session, laneId, toolName: name });
+    const aiAssisted = typeof toolArgs.aiAssisted === "boolean" ? toolArgs.aiAssisted : void 0;
+    const provider = asOptionalTrimmedString(toolArgs.provider);
+    const autoApplyThreshold = typeof toolArgs.autoApplyThreshold === "number" ? toolArgs.autoApplyThreshold : void 0;
+    const result = await runtime.conflictService.rebaseLane({
+      laneId,
+      ...aiAssisted !== void 0 ? { aiAssisted } : {},
+      ...provider ? { provider } : {},
+      ...autoApplyThreshold !== void 0 ? { autoApplyThreshold } : {}
+    });
+    return result;
+  }
+  if (name === "get_pr_health") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.getPrHealth(prId);
+    return result;
+  }
+  if (name === "land_queue_next") {
+    ensureMutationAuthorized({ runtime, session, toolName: name });
+    const groupId = assertNonEmptyString(toolArgs.groupId, "groupId");
+    const method = assertNonEmptyString(toolArgs.method, "method");
+    const autoResolve = typeof toolArgs.autoResolve === "boolean" ? toolArgs.autoResolve : void 0;
+    const confidenceThreshold = typeof toolArgs.confidenceThreshold === "number" ? toolArgs.confidenceThreshold : void 0;
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.landQueueNext({
+      groupId,
+      method,
+      ...autoResolve !== void 0 ? { autoResolve } : {},
+      ...confidenceThreshold !== void 0 ? { confidenceThreshold } : {}
+    });
+    return result;
+  }
   if (name === "read_context") {
     const scope = asTrimmedString(toolArgs.scope) || "project";
     const level = normalizeExportLevel(toolArgs.level, "standard");
@@ -17371,14 +20476,61 @@ async function runTool(args) {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
+    const permissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
+    const maxPromptChars = Math.max(256, Math.min(12e3, Math.floor(asNumber2(toolArgs.maxPromptChars, 2800))));
     const prompt = asOptionalTrimmedString(toolArgs.prompt);
-    const title = asOptionalTrimmedString(toolArgs.title) ?? `MCP Agent (${provider})`;
+    const runId = asOptionalTrimmedString(toolArgs.runId);
+    const stepId = asOptionalTrimmedString(toolArgs.stepId);
+    const attemptId = asOptionalTrimmedString(toolArgs.attemptId);
+    const toolWhitelist = normalizeToolWhitelist(toolArgs.toolWhitelist);
+    const title = stripInjectionChars(
+      asOptionalTrimmedString(toolArgs.title) ?? `MCP Agent (${provider}${permissionMode === "plan" ? " \xB7 plan" : ""})`
+    );
+    const context = safeObject(toolArgs.context);
+    const contextRef = resolveSpawnContextFile({
+      runtime,
+      laneId,
+      provider,
+      permissionMode,
+      runId,
+      stepId,
+      attemptId,
+      userPrompt: prompt,
+      context,
+      contextFilePathRaw: asOptionalTrimmedString(toolArgs.contextFilePath)
+    });
+    const promptSegments = [];
+    if (runId || stepId || attemptId) {
+      promptSegments.push(
+        `Mission context: run=${runId ?? "n/a"} step=${stepId ?? "n/a"} attempt=${attemptId ?? "n/a"}.`
+      );
+    }
+    if (contextRef.contextFilePath) {
+      promptSegments.push(`Read worker context from: ${contextRef.contextFilePath}`);
+    }
+    if (toolWhitelist.length > 0) {
+      promptSegments.push(`Allowed tools: ${toolWhitelist.join(", ")}`);
+    }
+    if (prompt) {
+      promptSegments.push(clipText(prompt, maxPromptChars));
+    }
+    const finalPrompt = promptSegments.join("\n").trim();
     const commandParts = [provider];
     if (model) {
       commandParts.push("--model", shellEscapeArg(model));
     }
-    if (prompt) {
-      commandParts.push(shellEscapeArg(prompt));
+    if (provider === "codex") {
+      const codexSandbox = permissionMode === "plan" ? "read-only" : permissionMode === "full-auto" ? "danger-full-access" : "workspace-write";
+      commandParts.push("--sandbox", codexSandbox);
+      if (permissionMode === "full-auto") {
+        commandParts.push("--full-auto");
+      }
+    } else {
+      const claudePermission = permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : "acceptEdits";
+      commandParts.push("--permission-mode", claudePermission);
+    }
+    if (finalPrompt) {
+      commandParts.push(shellEscapeArg(finalPrompt));
     }
     const startupCommand = commandParts.join(" ");
     const created = await runtime.ptyService.create({
@@ -17387,16 +20539,23 @@ async function runTool(args) {
       rows: DEFAULT_PTY_ROWS,
       title,
       tracked: true,
-      toolType: provider,
+      toolType: `${provider}-orchestrated`,
       startupCommand
     });
     return {
       provider,
       laneId,
       title,
+      permissionMode,
       startupCommand,
       ptyId: created.ptyId,
-      sessionId: created.sessionId
+      sessionId: created.sessionId,
+      contextRef: {
+        path: contextRef.contextFilePath,
+        digest: contextRef.contextDigest,
+        bytes: contextRef.contextBytes,
+        approxTokens: contextRef.approxTokens
+      }
     };
   }
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown MCP tool: ${name}`);
@@ -17659,14 +20818,6 @@ function createMcpRequestHandler(args) {
       const toolArgs = safeObject(params.arguments);
       try {
         const result = await auditToolCall(toolName, toolArgs, async () => {
-          if (MUTATION_TOOLS.has(toolName)) {
-            ensureMutationAuthorized({
-              runtime,
-              session,
-              laneId: extractLaneId(toolArgs),
-              toolName
-            });
-          }
           if (READ_ONLY_TOOLS.has(toolName) || MUTATION_TOOLS.has(toolName) || toolName === "spawn_agent" || toolName === "ask_user") {
             return await runTool({ runtime, session, name: toolName, toolArgs });
           }
@@ -17718,13 +20869,13 @@ function createMcpRequestHandler(args) {
 // src/index.ts
 function resolveProjectRoot() {
   const fromEnv = process.env.ADE_PROJECT_ROOT?.trim();
-  if (fromEnv) return import_node_path14.default.resolve(fromEnv);
+  if (fromEnv) return import_node_path15.default.resolve(fromEnv);
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 1) {
     const value = args[i];
     if (value === "--project-root") {
       const next = args[i + 1];
-      if (next?.trim()) return import_node_path14.default.resolve(next.trim());
+      if (next?.trim()) return import_node_path15.default.resolve(next.trim());
     }
   }
   return process.cwd();

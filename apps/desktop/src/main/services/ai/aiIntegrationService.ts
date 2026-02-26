@@ -14,7 +14,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { detectAllAuth, type DetectedAuth } from "./authDetector";
 import { resolveModel } from "./providerResolver";
-import { executeUnified, type UnifiedExecutorOpts } from "./unifiedExecutor";
+import { executeUnified, resumeUnified, type UnifiedExecutorOpts, type UnifiedResumeOpts } from "./unifiedExecutor";
 
 export type AiTaskType =
   | "planning"
@@ -958,6 +958,79 @@ export function createAiIntegrationService(args: {
         permissionMode: "read-only",
         oneShot: true
       });
+    },
+
+    async resumeTask(args: {
+      previousAttemptId: string;
+      feature: AiFeatureKey;
+      taskType: AiTaskType;
+      prompt: string;
+      cwd: string;
+      model?: string;
+      timeoutMs?: number;
+      projectId?: string;
+      attemptId?: string;
+      runId?: string;
+      stepId?: string;
+    }): Promise<ExecuteAiTaskResult> {
+      const modelId = args.model ? await resolveModelForTask(args.taskType, args.model) : await resolveModelForTask(args.taskType);
+      const start = Date.now();
+      let text = "";
+      let structuredOutput: unknown = null;
+      let sessionId: string | null = null;
+      let inputTokens: number | null = null;
+      let outputTokens: number | null = null;
+      let resultModel: string | null = null;
+
+      for await (const event of resumeUnified({
+        modelId,
+        prompt: args.prompt,
+        cwd: args.cwd,
+        timeout: args.timeoutMs,
+        tools: "coding",
+        previousAttemptId: args.previousAttemptId,
+        db,
+        projectId: args.projectId,
+        attemptId: args.attemptId,
+        runId: args.runId,
+        stepId: args.stepId,
+        enableCompaction: true,
+      })) {
+        if (event.type === "text") text += event.content;
+        if (event.type === "structured_output") structuredOutput = event.data;
+        if (event.type === "done") {
+          sessionId = event.sessionId;
+          inputTokens = event.usage?.inputTokens ?? null;
+          outputTokens = event.usage?.outputTokens ?? null;
+          resultModel = event.model ?? null;
+        }
+        if (event.type === "error") throw new Error(event.message);
+      }
+
+      const durationMs = Date.now() - start;
+      const descriptor = getModelById(modelId);
+
+      logUsage({
+        feature: args.feature,
+        provider: (descriptor?.family ?? "unknown") as any,
+        model: resultModel,
+        inputTokens,
+        outputTokens,
+        durationMs,
+        success: true,
+        sessionId
+      });
+
+      return {
+        text,
+        structuredOutput,
+        provider: (descriptor?.family ?? "unknown") as any,
+        model: resultModel,
+        sessionId,
+        inputTokens,
+        outputTokens,
+        durationMs
+      };
     }
   };
 }

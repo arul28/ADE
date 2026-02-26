@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-26
 
 This document describes the renderer architecture in `apps/desktop/src/renderer`, including routing, theme system, state model, layout patterns, and IPC integration constraints.
 
@@ -160,9 +160,10 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 - `prs/`: PR operations and status surfaces
 - `history/`: operations timeline surfaces
 - `agents/`: agent cards, builder wizard, findings, morning briefing, run history
-- `missions/`: mission intake, status board, interventions, artifacts, and outcomes
+- `missions/`: mission intake, status board, Slack-style chat (MissionChatV2), interventions, artifacts, outcomes, Details tab, run narrative
 - `onboarding/`: first-run setup flows
 - `settings/`: settings subsections (keybindings, terminal profiles, agents, data management)
+- `shared/`: shared interactive components (MentionInput)
 - `ui/`: shared presentation primitives
 
 ---
@@ -197,6 +198,33 @@ High-frequency event streams include:
 - `ade.project.missing`
 
 The complete live channel inventory is defined in `apps/desktop/src/shared/ipc.ts`.
+
+---
+
+## Recent Component Changes (Orchestrator Evolution)
+
+### New Components
+
+- **`MissionChatV2.tsx`** (`missions/`): Replaces the old inline MissionChat with a full Slack-style chat system. Features a sidebar with channel list (Global, Orchestrator, per-agent channels) and a main message area. Supports real-time message updates and agent-to-agent message rendering.
+
+- **`MentionInput.tsx`** (`shared/`): A shared @mention autocomplete input component used by MissionChatV2. Provides agent/channel mention suggestions as the user types, with keyboard navigation and selection.
+
+- **Context Budget Panel** (`context/` in UsageDashboard): Displays token breakdown bars (per-model utilization) and candidate memory lists. Part of the scoped memory UI — shows memory candidates awaiting promotion and current context budget consumption.
+
+### Removed Components
+
+- **`ExecutionPlanPreview`**: Deleted entirely. The execution plan preview functionality was removed as part of the UI cleanup.
+
+### Tab Renames
+
+- **"Usage" tab** renamed to **"Details"** in the mission detail view.
+- **"Channels" tab** renamed to **"Chat"** in the mission detail view.
+
+### UI Bug Fixes
+
+- Removed duplicate completion percentage bar (kept PhaseProgressBar only).
+- Fixed spinning white rectangle in DAG visualization (replaced CSS animation with SVG `animateTransform`).
+- Activity tab now uses a category dropdown filter instead of 12+ individual filter buttons.
 
 ---
 

@@ -1596,14 +1596,6 @@ button:active, [role="button"]:active {
   }
 }
 
-@keyframes ade-spin-slow {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
 
 @keyframes ade-radar-sweep {
   0% {
@@ -1681,8 +1673,6 @@ button:active, [role="button"]:active {
   .ade-glow-pulse-blue,
   .ade-glow-pulse-red,
   .ade-conflict-breathe,
-  .ade-spin-slow,
-  .ade-spin-4s,
   .ade-float {
     animation: none !important;
   }
@@ -2060,15 +2050,6 @@ button:active, [role="button"]:active {
   animation: ade-glow-pulse 2s ease-in-out infinite;
 }
 
-/* Spin slow utility */
-.ade-spin-slow {
-  animation: ade-spin-slow 20s linear infinite;
-}
-
-/* Spin 4s utility (DAG running ring) */
-.ade-spin-4s {
-  animation: ade-spin-slow 4s linear infinite;
-}
 
 /* Blue glow pulse for active missions */
 .ade-glow-pulse-blue {
@@ -2259,6 +2240,51 @@ button:active, [role="button"]:active {
   border-radius: 6px;
   animation: ade-glow-pulse-blue 2.5s ease-in-out infinite;
   pointer-events: none;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DAG Mutation Animations
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-dag-node-enter {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes ade-dag-node-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.6)); }
+}
+
+@keyframes ade-dag-node-exit {
+  from { opacity: 1; }
+  to { opacity: 0.35; }
+}
+
+@keyframes ade-dag-node-split {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 6px rgba(168, 85, 247, 0.5)); }
+}
+
+@keyframes ade-dag-edge-flash {
+  0% { stroke-opacity: 1; stroke-width: 3; }
+  100% { stroke-opacity: 0.4; stroke-width: 1.5; }
+}
+
+.ade-dag-entering {
+  animation: ade-dag-node-enter 400ms ease-out, ade-dag-node-glow 1s ease-in-out 400ms 2;
+}
+
+.ade-dag-exiting {
+  animation: ade-dag-node-exit 500ms ease-out forwards;
+}
+
+.ade-dag-splitting {
+  animation: ade-dag-node-split 800ms ease-in-out 2;
+}
+
+.ade-dag-edge-changed {
+  animation: ade-dag-edge-flash 600ms ease-out;
 }
 
 /* Spring-based status dot (replaces linear CSS pulse) */

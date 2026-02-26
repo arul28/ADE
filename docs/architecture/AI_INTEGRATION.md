@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-24
+> Last updated: 2026-02-26
 
 The AI integration layer replaces the previous hosted agent with a local-first, subscription-powered approach. Instead of a cloud backend with API keys and remote job queues, ADE spawns `claude` and `codex` CLI processes that inherit the user's existing subscriptions, coordinates them through an MCP server, and manages multi-step workflows via an AI orchestrator.
 
@@ -11,6 +11,7 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Agent-First Execution Contract](#agent-first-execution-contract)
 - [Design Decisions](#design-decisions)
   - [Why Subscription-Powered?](#why-subscription-powered)
   - [SDK Strategy](#sdk-strategy)
@@ -24,6 +25,12 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
   - [MCP Server](#mcp-server)
   - [Computer Use MCP Tools](#computer-use-mcp-tools)
   - [AI Orchestrator](#ai-orchestrator)
+  - [Meta-Reasoner and Smart Fan-Out](#meta-reasoner-and-smart-fan-out)
+  - [Context Compaction Engine](#context-compaction-engine)
+  - [Session Persistence and Resume](#session-persistence-and-resume)
+  - [Inter-Agent Messaging](#inter-agent-messaging)
+  - [Memory Tool Wiring](#memory-tool-wiring)
+  - [Shared Facts and Run Narrative](#shared-facts-and-run-narrative)
   - [Compute Backends for Agent Execution](#compute-backends-for-agent-execution)
   - [Compute Environment Types](#compute-environment-types)
   - [Per-Task-Type Configuration](#per-task-type-configuration)
@@ -53,6 +60,20 @@ The AI integration layer consists of four subsystems:
 - **AI Integration Service** -- the main-process service that routes tasks to the appropriate provider and model.
 - **MCP Server** -- the tool exposure layer that gives AI agents controlled access to ADE's capabilities.
 - **AI Orchestrator** -- the coordination layer that plans and executes multi-step missions.
+
+## Agent-First Execution Contract
+
+From Phase 4 onward, ADE treats agent runtimes as the mandatory substrate for all non-interactive AI execution:
+
+- Mission planning and step execution
+- Conflict and PR AI actions
+- Narrative generation and background summaries
+- Night Shift, watcher, and review workflows
+- Future mobile-triggered/background runs
+
+All of those paths are normalized into a runtime record (`agentDefinitionId` + run/step/session lineage + memory policy + guardrails), even when the UX appears "one-shot".
+
+Interactive lane development (`Terminals`, `Work` chat) remains direct user sessions and is not forced through mission runtime semantics.
 
 ### Key Contract
 
@@ -130,7 +151,7 @@ ADE chose MCP because:
 
 ### Why AI Orchestrator?
 
-Simple AI tasks (generate a narrative, draft a PR description) can be handled as one-shot requests. But missions -- multi-step workflows that span planning, implementation, testing, and integration -- require coordination:
+Simple AI tasks (generate a narrative, draft a PR description) still execute in a single pass, but are wrapped as **ephemeral task-agent runtimes**. Missions add orchestration on top of the same runtime substrate:
 
 - **Step sequencing**: Some steps depend on others (tests must run after implementation).
 - **Parallel execution**: Independent steps should run concurrently in separate lanes.
@@ -138,7 +159,7 @@ Simple AI tasks (generate a narrative, draft a PR description) can be handled as
 - **Failure handling**: Failed steps need retry logic, intervention routing, or graceful degradation.
 - **Conflict prevention**: Agents working in parallel must not create merge conflicts.
 
-The AI Orchestrator is a Claude session connected to the MCP server that handles this coordination. It receives a mission prompt, plans the execution strategy, spawns agents for each step, monitors progress through gate reports and claim heartbeats, and routes interventions to the user when human input is required.
+The AI Orchestrator is a Claude session using **in-process Vercel AI SDK coordinator tools** (13 tools defined in `coordinatorTools.ts`) that handles this coordination. It receives a mission prompt, plans the execution strategy, spawns agents for each step, monitors progress through gate reports and claim heartbeats, and routes interventions to the user when human input is required. The orchestrator does **not** use the MCP server — its tools are registered directly with the Vercel AI SDK `streamText()` call. The MCP server (`apps/mcp-server`) serves a different role: it is the **external tool interface** for spawned worker agents and external observers/evaluators.
 
 This is distinct from the orchestrator service (`orchestratorService.ts`), which is the deterministic state machine that tracks runs, steps, attempts, and claims. The AI Orchestrator is the intelligent layer on top that decides *what* to do next; the orchestrator service is the durable layer underneath that records *what happened*.
 
@@ -929,21 +950,110 @@ ai:
     max_per_step_budget_usd: 10.0     # Per-step budget cap
 ```
 
+### Meta-Reasoner and Smart Fan-Out
+
+The meta-reasoner (`metaReasoner.ts`) adds AI-driven dispatch intelligence to the orchestrator's autopilot loop. Rather than relying solely on the static step plan, the meta-reasoner analyzes in-flight mission state and dynamically injects or restructures steps.
+
+**`analyzeForFanOut()`**: The core entry point. Given the current run state, active steps, and completed results, the meta-reasoner:
+
+1. Evaluates whether remaining work can be parallelized.
+2. Selects a fan-out strategy: `external_parallel` (multiple agents in separate lanes), `internal_parallel` (single agent handling sub-tasks), or `hybrid` (combination).
+3. Dynamically injects new steps into the orchestrator's step DAG with appropriate dependency edges.
+4. Tracks fan-out completion via a fan-in pattern — the orchestrator waits for all fan-out steps to complete before proceeding to dependent steps.
+
+**Integration**: The meta-reasoner is invoked within the autopilot tick loop (`aiOrchestratorService.ts`). When the autopilot detects that multiple steps could run concurrently but are currently sequenced, it consults the meta-reasoner before dispatching.
+
+**Configuration**: The meta-reasoner model and fan-out limits are configurable in `.ade/local.yaml` under `ai.orchestrator.metaReasoner`.
+
+### Context Compaction Engine
+
+The compaction engine (`compactionEngine.ts`, integrated via `unifiedExecutor.ts`) prevents SDK agent sessions from exceeding context window limits during long-running orchestrated work.
+
+**Token Monitoring**: The engine tracks token consumption for each active agent session. When utilization reaches 70% of the model's context window, compaction is triggered.
+
+**Compaction Flow**:
+
+1. **Pre-compaction writeback**: Before compacting, the engine extracts durable facts (shared facts, discovered patterns, key decisions) from the conversation and writes them to the `orchestrator_shared_facts` table.
+2. **Self-summarization**: The agent generates a summary of the conversation so far, preserving key context, decisions, and current task state.
+3. **Conversation replacement**: The full conversation history is replaced with the summary, dramatically reducing token count while preserving essential context.
+4. **Post-compaction**: The compacted summary is written to the `attempt_transcripts` table with `compacted_at` and `compaction_summary` fields.
+
+**Threshold Configuration**: The 70% threshold is configurable via `ai.orchestrator.compaction_threshold` in `.ade/local.yaml`. The engine also respects per-model token limits from the model registry.
+
+### Session Persistence and Resume
+
+Agent sessions are now durable across interruptions and application restarts.
+
+**Transcript Persistence**: The `attempt_transcripts` DB table stores the full conversation history (as JSON message arrays) for each orchestrator attempt. Transcripts are written on every significant event (tool call, agent response, compaction) via JSONL-style append.
+
+**`resumeUnified()`**: When an orchestrator run is resumed after interruption, `resumeUnified()` in the unified executor:
+
+1. Loads the last `attempt_transcripts` row for the attempt.
+2. Reconstructs the conversation state from the stored messages.
+3. If a compaction summary exists, uses it as the conversation seed.
+4. Resumes the SDK agent session with the restored context.
+
+**Chat Transcript JSONL**: In addition to the DB-backed transcript, a JSONL file is written to `.ade/transcripts/` for each attempt, providing a human-readable audit trail of the conversation.
+
+### Inter-Agent Messaging
+
+A structured messaging system enables communication between the orchestrator, agents, and the user during mission execution.
+
+**Message Delivery** (`deliverMessageToAgent()` in `aiOrchestratorService.ts`):
+- Delivers messages to both PTY-based agents (via terminal write) and SDK-based agents (via conversation injection).
+- Messages can originate from the orchestrator, other agents, or the user.
+
+**@Mention Routing**:
+- `parseMentions()` extracts @-mentions from message text, identifying target agents by name or role.
+- `routeMessage()` determines which agents should receive a message based on mentions, channel context, and routing rules.
+
+**Team Message Tool** (`teamMessageTool.ts`): An MCP tool available to agents that allows them to send messages to other agents or the orchestrator. This enables agent-initiated communication (e.g., "I found a dependency issue that affects @testing-agent's work").
+
+**New IPC Endpoints**:
+- `getGlobalChat`: Retrieves the global mission chat channel messages.
+- `deliverMessage`: Sends a message from the UI to a specific agent or channel.
+- `getActiveAgents`: Lists currently active agents in a mission run with their status.
+
+### Memory Tool Wiring
+
+Memory tools are now wired into the agent coding tool set via `createCodingToolSet()`, giving agents the ability to:
+
+- **Search scoped memories**: Query relevant memory namespaces (`runtime-thread`, `run`, `project`, `identity`, `daily-log`).
+- **Create candidate memories**: Record new facts discovered during work with explicit scope + provenance.
+- **Promote memories**: Mark high-confidence memories for promotion to project/identity durable scopes.
+
+Memory tools follow the same MCP permission model as other agent tools. Read operations are always allowed; write operations require an active claim.
+
+### Shared Facts and Run Narrative
+
+**Shared Facts**: The `orchestrator_shared_facts` table stores facts discovered by agents during a mission run. Facts are typed (`discovery`, `decision`, `blocker`, `dependency`) and scoped to a run and optionally a step. Shared facts and retrieved scoped memories are injected into prompts via `buildFullPrompt()`.
+
+**Run Narrative**: `appendRunNarrative()` in `orchestratorService.ts` generates a rolling narrative after each step completion. The narrative summarizes what has been accomplished, what is in progress, and what remains. It is stored as `runNarrative` metadata on the orchestrator run and displayed in the Activity tab.
+
+**Compaction Hints**: A compaction hints section is added to agent prompts, providing the agent with guidance on what information to prioritize preserving if context compaction is triggered.
+
 ### Phase 3 Implementation Status
 
-**Shipped (~70%)**:
+**Shipped (~85%)**:
 - AI orchestrator service with mission lifecycle management
 - Fail-hard planner (300s timeout, MissionPlanningError, no deterministic fallback)
 - PR strategies (integration/per-lane/queue/manual) replacing merge phase
 - Team synthesis and recovery loops
 - Execution plan preview with approval gates
-- Inter-agent messaging (sendAgentMessage IPC)
-- AgentChannels UI (Slack-style agent communication)
+- Inter-agent messaging (sendAgentMessage IPC, deliverMessageToAgent, parseMentions, routeMessage)
+- Slack-style chat system (MissionChatV2, MentionInput, sidebar + main area layout)
 - Model selection per-mission with per-model thinking budgets
-- Activity feed with category dropdown
+- Activity feed with category dropdown and run narrative
 - missionId-filtered queries across all views
+- Meta-reasoner with AI-driven fan-out dispatch (external_parallel, internal_parallel, hybrid)
+- Context compaction engine (70% threshold, self-summarization, pre-compaction writeback)
+- Session persistence via attempt_transcripts table and JSONL files
+- Session resume via resumeUnified()
+- Shared facts injection and run narrative generation
+- Memory tool wiring into agent coding tool set
+- Memory architecture (scoped namespaces, candidate/promoted/archived lifecycle, auto-promotion, context budget panel)
 
-**Remaining (~30%)**:
+**Remaining (~15%)**:
 - Live multi-agent orchestration (concurrent agent coordination)
 - Real-time coordination patterns
 - File conflict prevention at merge time
@@ -1088,32 +1198,28 @@ When determining which provider to use for a task:
 5. Built-in default for the task type (as listed in the table above).
 6. First available CLI tool on the system (fallback).
 
-If no CLI tool is available, the task either falls back to deterministic processing (for planning) or is skipped with a clear message to the user (for generation tasks).
+If no CLI tool is available, the runtime cannot start; ADE surfaces a clear failure and recommended setup action. Deterministic fallback is only used where explicitly configured.
 
 ### One-Shot AI Task Patterns
 
-Most Phase 1 AI tasks are one-shot: send a prompt with context, receive a result, done. No multi-turn conversation is needed.
+Most Phase 1-style tasks still appear one-shot to users, but now run through ephemeral task-agent runtimes so memory/guardrails/audit stay consistent.
 
-#### Pattern: One-Shot via AgentExecutor
+#### Pattern: Ephemeral Task-Agent Runtime
 
 ```typescript
-// Narrative generation — one-shot, no follow-up
+// Narrative generation — one execution pass via an ephemeral task-agent runtime
 async function generateNarrative(lanePack: LaneExportStandard): Promise<string> {
-  const executor = this.getExecutor("narrative"); // resolves to ClaudeExecutor or CodexExecutor
-  const events = executor.execute(
-    buildNarrativePrompt(lanePack),
-    {
-      cwd: lanePack.worktreePath,
-      contextPack: lanePack,
-      oneShot: true,
-      timeoutMs: 15000,
-      permissions: { mode: "read-only" },
-      jsonSchema: narrativeOutputSchema,
-    }
-  );
+  const runtime = await agentRuntimeService.invoke({
+    source: "narrative",
+    executionClass: "task",
+    agentDefinitionId: "ade.system.narrative",
+    prompt: buildNarrativePrompt(lanePack),
+    contextPack: lanePack,
+    oneShot: true,
+  });
 
   let result = "";
-  for await (const event of events) {
+  for await (const event of runtime.events) {
     if (event.type === "structured_output") return event.data as string;
     if (event.type === "text") result += event.content;
   }
@@ -1130,13 +1236,13 @@ async function generateNarrative(lanePack: LaneExportStandard): Promise<string> 
 | PR descriptions | `LaneExportStandard` with commit history | PR title + body markdown | One-shot, no follow-up |
 | Terminal summaries | Session transcript + metadata | Structured summary (intent, outcome, findings, next steps) | One-shot, no follow-up |
 | Initial context generation | Repository scan results | PRD/architecture doc drafts | One-shot, no follow-up |
-| Mission planning | Mission prompt + project context | Step plan JSON | One-shot (may become multi-turn in Phase 3) |
+| Mission planning | Mission prompt + project context | Step plan JSON | Runtime-backed execution (planner may use multi-turn) |
 
-None of these tasks require a conversational back-and-forth. The AI receives context, produces a result, and the session ends. Multi-turn orchestration is deferred to Phase 3 (AI Orchestrator).
+These tasks can complete in one pass, but are still tracked as runtimes so they share the same policy and memory surface as missions.
 
 #### CLI vs SDK Boundary
 
-**SDK (programmatic, invisible to user)**: All one-shot AI tasks listed above. The user never sees a terminal or CLI output -- results are processed by ADE services and displayed in the appropriate UI surface.
+**SDK runtime path (programmatic, invisible to user)**: All non-interactive AI tasks listed above. The user never sees raw CLI output -- results are processed by ADE services and displayed in the appropriate UI surface.
 
 **CLI (interactive, visible in Terminals tab)**: Only used when the user explicitly launches an AI terminal session from the Terminals tab or the Work Pane in the Lanes tab. The CLI runs in a PTY with full terminal interaction. This is the user's direct conversation with Claude/Codex, not ADE-orchestrated work.
 
@@ -1382,7 +1488,7 @@ Agent chat sessions integrate into ADE's existing session tracking infrastructur
    → Claude: messages[] persisted to JSON (can resume)
    → Captures head_sha_end
    → Session delta computed (same as terminal sessions)
-   → onSessionEnded callback fires → job engine, pack refresh, automations
+   → onSessionEnded callback fires → job engine, pack refresh, agents
 
 5. Resume
    → User clicks resume in Terminals tab or reopens Chat view
@@ -1499,7 +1605,8 @@ interface LearningEntry {
 | Chat UI components | Complete | AgentChatPane, AgentChatMessageList, AgentChatComposer |
 | Chat session integration | Complete | `codex-chat` and `claude-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 stdio server with Phase 2 tool/resource surface |
-| AI orchestrator (Claude + MCP) | ~70% Complete | Phase 3 -- missions overhaul shipped (fail-hard planner, PR strategies, inter-agent messaging, AgentChannels UI); remaining: live multi-agent orchestration, real-time coordination, file conflict prevention, worker transcript tailing, end-to-end validation |
+| AI orchestrator (Claude + MCP) | ~85% Complete | Hivemind features shipped; remaining items are live multi-agent stress validation and coordination hardening |
+| Agent-first runtime migration | In Progress | Non-interactive AI call paths are being normalized through runtime creation and policy enforcement |
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
 | Chat reasoning effort (Claude) | Complete | Reasoning effort forwarded to Claude provider when supported; validated for Codex |
@@ -1511,4 +1618,189 @@ interface LearningEntry {
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 (AI Orchestrator) is ~70% complete — missions overhaul shipped (fail-hard planner, PR strategies replacing merge phase, inter-agent messaging, AgentChannels UI, model selection per-mission, activity feed with category dropdown, missionId-filtered queries). Remaining Phase 3 work: live multi-agent orchestration, real-time coordination patterns, file conflict prevention at merge time, worker transcript tailing, and end-to-end validation. Phase 4 (planned) expands scope to include: E2B compute backend, compute environment types (terminal/browser/desktop), computer use MCP tools, learning packs, task agents with lane artifacts, and chat-to-mission escalation.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration is largely shipped. Phase 4 focuses on agent-first runtime unification: all non-interactive AI surfaces execute through standardized agent runtimes with consistent memory policy, context assembly, and audit lineage.
+
+---
+
+## MCP Server as External Orchestration API
+
+The MCP server (`apps/mcp-server`) has been overhauled from a 16-tool agent interface into a full **headless orchestration API** with 35 tools. This enables external consumers -- Claude Code, CI/CD pipelines, evaluation harnesses, and custom scripts -- to create, drive, observe, and evaluate missions without the desktop UI.
+
+**Important architectural distinction**: The AI orchestrator does **not** use the MCP server. The orchestrator uses in-process Vercel AI SDK coordinator tools (13 tools in `coordinatorTools.ts`) registered directly with `streamText()`. The MCP server is the external-facing tool surface for:
+
+1. **Spawned worker agents** -- agents launched by the orchestrator that need to interact with ADE's lane, git, and context systems.
+2. **External observers** -- tools like Claude Code that want to monitor mission progress without participating.
+3. **Evaluators** -- automated or human evaluation workflows that score completed mission runs.
+
+### Tool Categories (35 Total)
+
+#### Existing Tools (16)
+
+| Tool | Description |
+|------|-------------|
+| `spawn_agent` | Launch a new AI agent in a specified lane |
+| `read_context` | Read pack exports, lane state, or project context |
+| `create_lane` | Create a new lane with a worktree for agent work |
+| `check_conflicts` | Run conflict prediction against other active lanes |
+| `merge_lane` | Merge a lane back to its parent |
+| `ask_user` | Route an intervention to the ADE UI for human input |
+| `run_tests` | Execute test suites in a lane's worktree |
+| `get_lane_status` | Get current status of a specific lane |
+| `list_lanes` | List all active lanes with summary status |
+| `commit_changes` | Stage and commit changes in a lane |
+| `get_project_info` | Get project metadata and configuration |
+| `list_files` | List files in a lane or project directory |
+| `read_file` | Read file contents |
+| `write_file` | Write file contents |
+| `search_code` | Search code across the project |
+| `get_git_log` | Get git log for a lane or branch |
+
+#### Mission Lifecycle Tools (8)
+
+| Tool | Description |
+|------|-------------|
+| `create_mission` | Create a new mission from a prompt |
+| `start_mission` | Start planning and execution of a mission |
+| `pause_mission` | Pause a running mission |
+| `resume_mission` | Resume a paused mission |
+| `cancel_mission` | Cancel a mission |
+| `steer_mission` | Send a steering message to adjust mission direction |
+| `approve_plan` | Approve a mission execution plan |
+| `resolve_intervention` | Resolve a pending intervention |
+
+#### Observation Tools (8)
+
+| Tool | Description |
+|------|-------------|
+| `get_mission` | Get full mission state including steps, artifacts, and interventions |
+| `get_run_graph` | Get the DAG visualization data for a mission run |
+| `stream_events` | Poll for new mission/orchestrator events since a cursor |
+| `get_step_output` | Get the output/transcript of a specific step attempt |
+| `get_worker_states` | Get current state of all worker agents in a mission |
+| `get_timeline` | Get the full timeline of events for a mission run |
+| `get_mission_metrics` | Get usage metrics (tokens, cost, duration) for a mission |
+| `get_final_diff` | Get the combined diff of all changes made during a mission |
+
+#### Evaluation Tools (3)
+
+| Tool | Description |
+|------|-------------|
+| `evaluate_run` | Score a completed mission run with structured evaluation criteria |
+| `list_evaluations` | List all evaluations for a mission |
+| `get_evaluation_report` | Get a detailed evaluation report with scores and commentary |
+
+---
+
+## Evaluator Workflow
+
+The MCP server supports a complete **create, start, stream, evaluate** loop for automated mission evaluation. This enables external tools (Claude Code, CI pipelines, test harnesses) to drive missions end-to-end and score the results.
+
+### Workflow Steps
+
+1. **Connect as evaluator role**: Connect to the MCP server via stdio. The connecting process acts as an external observer.
+
+2. **Create mission**: Use `create_mission` with a prompt describing the desired work.
+   ```
+   create_mission({ prompt: "Implement rate limiting middleware for the API", title: "Rate Limiter" })
+   ```
+
+3. **Start mission**: Trigger planning and execution.
+   ```
+   start_mission({ missionId: "<id>" })
+   ```
+
+4. **Poll for progress**: Use `stream_events` with a cursor to receive incremental updates.
+   ```
+   stream_events({ missionId: "<id>", cursor: 0 })
+   ```
+   Returns events like `step_started`, `step_completed`, `agent_spawned`, `intervention_requested`, etc. The cursor advances with each poll.
+
+5. **Inspect with observation tools**: Use `get_worker_states`, `get_step_output`, `get_timeline`, and `get_mission_metrics` to inspect mission state at any point.
+
+6. **Evaluate the run**: After the mission completes (or fails), use `evaluate_run` to score the result.
+   ```
+   evaluate_run({
+     missionId: "<id>",
+     scores: { correctness: 0.9, completeness: 0.8, code_quality: 0.85 },
+     commentary: "Rate limiter implementation is correct but missing Redis backend support.",
+     verdict: "pass"
+   })
+   ```
+
+7. **Retrieve evaluation reports**: Use `get_evaluation_report` for detailed scoring breakdowns.
+
+---
+
+## Claude Code Integration
+
+The MCP server can be used directly from Claude Code as an MCP tool provider, enabling Claude Code to create and manage ADE missions conversationally.
+
+### MCP Configuration
+
+Add to your Claude Code MCP configuration (`~/.claude/mcp.json` or project-level):
+
+```json
+{
+  "mcpServers": {
+    "ade": {
+      "command": "npx",
+      "args": [
+        "tsx",
+        "/path/to/ADE/apps/mcp-server/src/index.ts",
+        "--project-root", "/path/to/target-repo"
+      ]
+    }
+  }
+}
+```
+
+### Launch
+
+```bash
+claude --dangerously-skip-permissions
+```
+
+The `--dangerously-skip-permissions` flag is required because ADE's MCP tools perform filesystem mutations (creating lanes, committing changes, writing files) that Claude Code's default permission model would block.
+
+### Usage
+
+Once configured, Claude Code can use ADE tools naturally:
+
+- "Create a mission to refactor the authentication module"
+- "Show me the current mission status"
+- "What are the worker agents doing?"
+- "Evaluate the last mission run"
+
+Claude Code will invoke the appropriate MCP tools (`create_mission`, `get_mission`, `get_worker_states`, `evaluate_run`) based on the conversational context.
+
+---
+
+## Known Limitations
+
+### 1. No AI Planning in MCP Mode
+
+When the MCP server runs standalone (outside the desktop app), `aiIntegrationService` is null because it requires the `ai` package and full Electron main-process context. This means:
+
+- Mission planning falls back to **deterministic planning only** (keyword classification, rule-based step decomposition).
+- AI-powered planning (fail-hard Claude/Codex planner) is not available.
+- The meta-reasoner (dynamic fan-out) is not available.
+
+### 2. No Agent Chat Participation
+
+`agentChatService` is null in MCP mode. External consumers cannot participate in agent chat sessions. Mission progress can only be observed via:
+
+- `stream_events` (event polling)
+- `get_worker_states` (agent state snapshots)
+- `get_step_output` (step transcripts)
+- `get_timeline` (full event timeline)
+
+### 3. Event Buffer is In-Memory
+
+The `stream_events` tool uses an in-memory event buffer with a **10,000 event cap**. Events are lost on process restart. For durable event history, use `get_timeline` which reads from the SQLite database. The in-memory buffer is designed for real-time polling during active mission execution, not long-term storage.
+
+### 4. Single Process Database Access
+
+ADE uses SQLite (via sql.js WASM) with a single-writer model. If the desktop app and MCP server run simultaneously against the same project database, **SQLite write conflicts** will occur. To avoid this:
+
+- Stop the desktop app before running the MCP server standalone, or
+- Use the MCP server only through the desktop app's built-in MCP integration (which shares the same database connection).

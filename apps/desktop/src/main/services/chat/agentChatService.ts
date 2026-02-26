@@ -380,8 +380,10 @@ export function createAgentChatService(args: {
   } = args;
 
   const chatSessionsDir = path.join(adeDir, "chat-sessions");
+  const chatTranscriptsDir = path.join(adeDir, "chat-transcripts");
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
+  fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
   const claudeProvider = createClaudeCode();
   const managedSessions = new Map<string, ManagedChatSession>();
@@ -562,6 +564,19 @@ export function createAgentChatService(args: {
       });
     } catch {
       // ignore transcript write failures
+    }
+
+    // Also write to the dedicated chat-transcripts directory for persistence
+    writeChatTranscriptLine(managed.session.id, envelope);
+  };
+
+  const writeChatTranscriptLine = (sessionId: string, envelope: AgentChatEventEnvelope): void => {
+    try {
+      const transcriptFile = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
+      const line = `${JSON.stringify(envelope)}\n`;
+      void fs.promises.appendFile(transcriptFile, line, "utf8").catch(() => {});
+    } catch {
+      // ignore chat transcript write failures
     }
   };
 
@@ -1672,6 +1687,22 @@ export function createAgentChatService(args: {
       endedNotified: false
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
+
+    // Init dedicated chat transcript file for persistence
+    try {
+      const chatTranscriptFile = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
+      const header = JSON.stringify({
+        type: "session_init",
+        sessionId,
+        laneId,
+        provider,
+        model: managed.session.model,
+        createdAt: startedAt,
+      });
+      fs.writeFileSync(chatTranscriptFile, `${header}\n`, "utf8");
+    } catch {
+      // Non-fatal — chat transcript init failure should not block session creation
+    }
 
     managedSessions.set(sessionId, managed);
 

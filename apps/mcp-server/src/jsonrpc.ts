@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import type { JsonRpcTransport } from "./transport";
 
 export type JsonRpcId = string | number | null;
 
@@ -52,14 +53,14 @@ export class JsonRpcError extends Error {
 
 type TransportMode = "jsonl" | "framed";
 
-function writeMessage(message: JsonRpcResponse | JsonRpcResponse[], mode: TransportMode): void {
+function writeMessage(message: JsonRpcResponse | JsonRpcResponse[], mode: TransportMode, writeFn: (data: string) => void): void {
   const payload = JSON.stringify(message);
   if (mode === "jsonl") {
-    process.stdout.write(`${payload}\n`);
+    writeFn(`${payload}\n`);
     return;
   }
   const framed = `Content-Length: ${Buffer.byteLength(payload, "utf8")}\r\n\r\n${payload}`;
-  process.stdout.write(framed);
+  writeFn(framed);
 }
 
 function toErrorResponse(id: JsonRpcId, error: unknown): JsonRpcFailure {
@@ -259,8 +260,9 @@ async function dispatchPayload(args: {
   payloadText: string;
   handler: JsonRpcHandler;
   transport: TransportMode;
+  writeFn: (data: string) => void;
 }): Promise<void> {
-  const { payloadText, handler, transport } = args;
+  const { payloadText, handler, transport, writeFn } = args;
   const trimmed = payloadText.trim();
   if (!trimmed.length) return;
 
@@ -276,7 +278,7 @@ async function dispatchPayload(args: {
         message: "Failed to parse JSON input",
         data: error instanceof Error ? error.message : String(error)
       }
-    }, transport);
+    }, transport, writeFn);
     return;
   }
 
@@ -289,7 +291,7 @@ async function dispatchPayload(args: {
           code: JsonRpcErrorCode.invalidRequest,
           message: "JSON-RPC batch requests cannot be empty"
         }
-      }, transport);
+      }, transport, writeFn);
       return;
     }
 
@@ -301,7 +303,7 @@ async function dispatchPayload(args: {
           code: JsonRpcErrorCode.invalidRequest,
           message: `JSON-RPC batch size ${parsed.length} exceeds maximum of ${MAX_BATCH_SIZE}`
         }
-      }, transport);
+      }, transport, writeFn);
       return;
     }
 
@@ -310,21 +312,22 @@ async function dispatchPayload(args: {
     ).filter((entry): entry is JsonRpcResponse => entry != null);
 
     if (results.length) {
-      writeMessage(results, transport);
+      writeMessage(results, transport, writeFn);
     }
     return;
   }
 
   const response = await handleSingleMessage(parsed, handler);
   if (response) {
-    writeMessage(response, transport);
+    writeMessage(response, transport, writeFn);
   }
 }
 
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
 const MAX_BATCH_SIZE = 100;
 
-export function startJsonRpcServer(handler: JsonRpcHandler): () => void {
+export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTransport): () => void {
+  const writeFn = transport.write.bind(transport);
   let buffer: Buffer = Buffer.alloc(0);
   let stopped = false;
   let draining = false;
@@ -344,14 +347,15 @@ export function startJsonRpcServer(handler: JsonRpcHandler): () => void {
         }
 
         if (parsed.kind === "frame_error") {
-          writeMessage(parsed.response, responseTransport ?? "framed");
+          writeMessage(parsed.response, responseTransport ?? "framed", writeFn);
           continue;
         }
 
         await dispatchPayload({
           payloadText: parsed.payloadText,
           handler,
-          transport: responseTransport ?? "framed"
+          transport: responseTransport ?? "framed",
+          writeFn
         });
       }
     } finally {
@@ -376,9 +380,9 @@ export function startJsonRpcServer(handler: JsonRpcHandler): () => void {
           code: JsonRpcErrorCode.parseError,
           message: `Input buffer exceeded maximum size of ${MAX_BUFFER_BYTES} bytes`
         }
-      }, responseTransport ?? "framed");
+      }, responseTransport ?? "framed", writeFn);
       stopped = true;
-      process.stdin.off("data", onData);
+      transport.close();
       process.nextTick(() => process.exit(1));
       return;
     }
@@ -386,11 +390,10 @@ export function startJsonRpcServer(handler: JsonRpcHandler): () => void {
     void drain();
   };
 
-  process.stdin.on("data", onData);
-  process.stdin.resume();
+  transport.onData(onData);
 
   return () => {
     stopped = true;
-    process.stdin.off("data", onData);
+    transport.close();
   };
 }

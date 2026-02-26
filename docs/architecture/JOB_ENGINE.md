@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-26
 
 ---
 
@@ -172,7 +172,7 @@ type RefreshRequest = {
 | `RefreshLanePack` | Session end, HEAD change | Compute session delta, regenerate lane pack markdown, update project pack |
 | `AutoNarrative` | After `RefreshLanePack` (when subscription CLI tool is available) | Generate AI narrative via Vercel AI SDK, apply via marker-based replacement |
 | `PredictConflicts` | HEAD change, lane dirty change (debounced 900-1500ms), periodic (120s) | Run dry-merge simulation across lane pairs via conflictService |
-| `RunAutomation` | User-defined trigger (HEAD change, manual, etc.) | Execute agent action scripts via automationService (Phase 8) |
+| `RunAutomation` | User-defined trigger (HEAD change, manual, etc.) | Execute agent action scripts via `agentService` automation pipeline |
 
 #### Not Yet Implemented
 
@@ -324,7 +324,7 @@ try {
 | File Service / Git Service | Lane dirty state changed | `jobEngine.onLaneDirtyChanged({ laneId, reason })` |
 | IPC (Renderer) | Manual conflict prediction | `jobEngine.runConflictPredictionNow({ laneId? })` |
 
-The PTY service fires `onSessionEnded` after recording the session end in the database. The head watcher in `main.ts` polls for HEAD changes and routes them to `jobEngine.onHeadChanged`, `automationService`, and `restackSuggestionService`. Lane dirty changes trigger conflict prediction with a shorter debounce (900ms).
+The PTY service fires `onSessionEnded` after recording the session end in the database. The head watcher in `main.ts` polls for HEAD changes and routes them to `jobEngine.onHeadChanged`, `agentService` (automation pipeline), and `restackSuggestionService`. Lane dirty changes trigger conflict prediction with a shorter debounce (900ms).
 
 ### Job Executors (Downstream)
 
@@ -360,7 +360,7 @@ const ptyService = createPtyService({
 // Head watcher in main.ts routes HEAD changes to multiple consumers:
 const handleHeadChanged = ({ laneId, reason }) => {
   jobEngine.onHeadChanged({ laneId, reason });
-  automationService.onHeadChanged({ laneId, reason });
+  agentService.onHeadChanged({ laneId, reason });
   restackSuggestionService?.evaluate({ laneId });
 };
 ```
@@ -369,7 +369,7 @@ const handleHeadChanged = ({ laneId, reason }) => {
 
 | Service | Direction | Purpose |
 |---------|-----------|---------|
-| Automation Service | Downstream | `RunAutomation` job executes agent-defined scripts |
+| Agent Service | Downstream | `RunAutomation` job executes automation-agent scripts |
 | Checkpoint Service | Downstream | `CreateCheckpoint` job creates immutable snapshots |
 
 ---
@@ -395,7 +395,7 @@ const handleHeadChanged = ({ laneId, reason }) => {
 - `dispose()` method for cleaning up timers on shutdown
 - Structured error logging for failed jobs
 - Integration wiring in `main.ts` with head watcher routing
-- Agent jobs: `automationService` triggers job execution on HEAD changes and other events (Phase 8)
+- Agent jobs: `agentService` triggers job execution on HEAD changes and other events
 - Auto-narrative pipeline: deterministic pack refresh followed by async AI narrative generation via Vercel AI SDK
 
 ### Not Yet Implemented

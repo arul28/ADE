@@ -245,6 +245,7 @@ import type {
   OrchestratorGateReport,
   OrchestratorRuntimeEvent,
   OrchestratorThreadEvent,
+  DagMutationEvent,
   OrchestratorRun,
   OrchestratorRunGraph,
   OrchestratorStep,
@@ -303,7 +304,11 @@ import type {
   ExecutionPlanPreview,
   GetAggregatedUsageArgs,
   AggregatedUsageStats,
-  SendAgentMessageArgs
+  SendAgentMessageArgs,
+  GetGlobalChatArgs,
+  DeliverMessageArgs,
+  GetActiveAgentsArgs,
+  ActiveAgentInfo
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -486,6 +491,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
     sendAgentMessage: async (args: SendAgentMessageArgs): Promise<OrchestratorChatMessage> =>
       ipcRenderer.invoke(IPC.orchestratorSendAgentMessage, args),
+    getGlobalChat: async (args: GetGlobalChatArgs): Promise<OrchestratorChatMessage[]> =>
+      ipcRenderer.invoke(IPC.orchestratorGetGlobalChat, args),
+    getActiveAgents: async (args: GetActiveAgentsArgs): Promise<ActiveAgentInfo[]> =>
+      ipcRenderer.invoke(IPC.orchestratorGetActiveAgents, args),
     getAggregatedUsage: async (args: GetAggregatedUsageArgs): Promise<AggregatedUsageStats> =>
       ipcRenderer.invoke(IPC.getAggregatedUsage, args),
     onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => {
@@ -497,6 +506,11 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: OrchestratorThreadEvent) => cb(payload);
       ipcRenderer.on(IPC.orchestratorThreadEvent, listener);
       return () => ipcRenderer.removeListener(IPC.orchestratorThreadEvent, listener);
+    },
+    onDagMutation: (cb: (ev: DagMutationEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: DagMutationEvent) => cb(payload);
+      ipcRenderer.on(IPC.orchestratorDagMutation, listener);
+      return () => ipcRenderer.removeListener(IPC.orchestratorDagMutation, listener);
     }
   },
   lanes: {
@@ -918,5 +932,17 @@ contextBridge.exposeInMainWorld("ade", {
     getLevel: (): number => webFrame.getZoomLevel(),
     setLevel: (level: number): void => webFrame.setZoomLevel(level),
     getFactor: (): number => webFrame.getZoomFactor()
+  },
+  memory: {
+    getBudget: async (args: { projectId?: string; level?: string } = {}): Promise<unknown[]> =>
+      ipcRenderer.invoke(IPC.memoryGetBudget, args),
+    getCandidates: async (args: { projectId?: string; limit?: number } = {}): Promise<unknown[]> =>
+      ipcRenderer.invoke(IPC.memoryGetCandidates, args),
+    promote: async (args: { id: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.memoryPromote, args),
+    archive: async (args: { id: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.memoryArchive, args),
+    search: async (args: { query: string; projectId?: string; limit?: number }): Promise<unknown[]> =>
+      ipcRenderer.invoke(IPC.memorySearch, args)
   }
 });

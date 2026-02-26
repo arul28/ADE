@@ -2,12 +2,12 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-26
 
 This document is the **authoritative contract** for ADE context artifacts used by:
 
 - long-running, parallel "orchestrator mode" workflows
-- spawning new agents with clean context windows
+- spawning new agent runtimes with clean context windows
 - AI integration service consuming bounded exports via Vercel AI SDK
 - Guest-mode, deterministic-only workflows (no AI providers)
 
@@ -46,6 +46,24 @@ This is intentionally deterministic and observable:
 
 - Pack events like `narrative_requested` record the delivery mode and metadata.
 - The export level, approximate token count, and provider information are tracked.
+
+### Runtime Profile File Injection (OpenClaw-Inspired, ADE-Owned)
+
+For agent runtimes, ADE assembles profile files on every run rather than persisting full transcript state in model memory.
+
+Injected profile blocks:
+
+- `IDENTITY` (persona, role, policy defaults, allowed tool classes)
+- `TOOLS` (effective tool policy after identity + project policy merge)
+- `USER_PREFS` (project/user preferences relevant to the runtime)
+- `HEARTBEAT` (run-local status, blockers, and recent transitions)
+- `MEMORY_SUMMARY` (bounded retrieved snippets from scoped memory namespaces)
+
+Contract rules:
+
+- Profile files are reconstructed per runtime launch or resume.
+- Profile files are bounded by export budget and redaction policy.
+- Runtime profile assembly must be replayable from DB + pack/export state (no hidden in-memory dependency).
 
 ### Expected Behavior Matrix
 
@@ -446,6 +464,44 @@ Other pack types have similar tiered budgets, but lane exports are the primary o
 `Deep` may additionally include:
 
 - `## Narrative (Deep)` with narrative markers (bounded)
+
+---
+
+## 2026-02-26 Addendum — Scoped Memory and Runtime Context Assembly
+
+### Scoped Memory Namespaces
+
+ADE replaces the old layer labels with explicit scopes:
+
+| Namespace | Scope | Persistence | Primary source |
+|-----------|-------|-------------|----------------|
+| `runtime-thread` | Current runtime session | Ephemeral (compacted) | Active transcript/session state |
+| `run` | Current mission/run | Run-scoped | `orchestrator_shared_facts`, run metadata |
+| `project` | Project-wide reusable knowledge | Durable | `memories` (`status = promoted`) |
+| `identity` | Agent-definition owned memory | Durable | `memories` + `agent_identities` mapping |
+| `daily-log` | Time-window operational continuity | Bounded durable | Briefings/checkpoint summaries |
+
+### Runtime Context Assembly Contract
+
+`buildFullPrompt()`-style assembly follows:
+
+1. System instructions + step/task policy
+2. Bounded pack export (`lite`/`standard`/`deep`)
+3. Retrieved scoped memories (`project` + `identity` + optional `daily-log`)
+4. Shared run facts (`run` namespace)
+5. Runtime profile files (`IDENTITY`, `TOOLS`, `USER_PREFS`, `HEARTBEAT`, `MEMORY_SUMMARY`)
+6. Active conversation (`runtime-thread`, subject to compaction)
+
+### Writeback and Compaction Contract
+
+When context pressure reaches threshold:
+
+1. Extract durable facts/decisions with provenance and write to `run`/`project`/`identity` targets by policy.
+2. Produce compaction summary for the runtime-thread.
+3. Replace high-volume transcript content with summary while retaining current task anchors.
+4. Persist transcript + compaction metadata to `attempt_transcripts`.
+
+Continuity is achieved by deterministic reconstruction from scoped stores, not by assuming a model process is permanently "always on."
 
 ---
 

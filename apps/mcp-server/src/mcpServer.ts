@@ -14,12 +14,14 @@ type ToolSpec = {
 
 type SessionIdentity = {
   callerId: string;
-  role: "orchestrator" | "agent" | "external";
+  role: "orchestrator" | "agent" | "external" | "evaluator";
   runId: string | null;
   attemptId: string | null;
   ownerId: string | null;
   allowMutations: boolean;
   allowSpawnAgent: boolean;
+  allowOrchestration: boolean;
+  allowEvaluation: boolean;
 };
 
 type SessionState = {
@@ -330,6 +332,293 @@ const TOOL_SPECS: ToolSpec[] = [
         confidenceThreshold: { type: "number", minimum: 0, maximum: 1 }
       }
     }
+  },
+  // ── Mission Lifecycle Tools ──────────────────────────────────────
+  {
+    name: "create_mission",
+    description: "Create a new mission from a prompt.",
+    inputSchema: {
+      type: "object",
+      required: ["prompt"],
+      additionalProperties: false,
+      properties: {
+        prompt: { type: "string", minLength: 1 },
+        title: { type: "string" },
+        laneId: { type: "string" },
+        priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        executionMode: { type: "string", enum: ["autopilot", "manual"] },
+        prStrategy: { type: "string", enum: ["integration", "per-lane", "manual"] },
+        executorPolicy: { type: "object" }
+      }
+    }
+  },
+  {
+    name: "start_mission",
+    description: "Start a mission run, triggering planning and execution.",
+    inputSchema: {
+      type: "object",
+      required: ["missionId"],
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", minLength: 1 },
+        runMode: { type: "string", enum: ["autopilot", "manual"] },
+        defaultExecutorKind: { type: "string" },
+        coordinatorModel: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "pause_mission",
+    description: "Pause an active mission run.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        reason: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "resume_mission",
+    description: "Resume a paused mission run.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "cancel_mission",
+    description: "Cancel an active mission run gracefully.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        reason: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "steer_mission",
+    description: "Inject a steering directive into an active mission.",
+    inputSchema: {
+      type: "object",
+      required: ["missionId", "directive"],
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", minLength: 1 },
+        directive: { type: "string", minLength: 1 },
+        targetStepKey: { type: "string" },
+        priority: { type: "string", enum: ["suggestion", "instruction", "override"] }
+      }
+    }
+  },
+  {
+    name: "approve_plan",
+    description: "Approve or reject a mission's execution plan.",
+    inputSchema: {
+      type: "object",
+      required: ["missionId", "approved"],
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", minLength: 1 },
+        approved: { type: "boolean" },
+        feedback: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "resolve_intervention",
+    description: "Resolve an open mission intervention.",
+    inputSchema: {
+      type: "object",
+      required: ["missionId", "interventionId", "status"],
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", minLength: 1 },
+        interventionId: { type: "string", minLength: 1 },
+        status: { type: "string", enum: ["resolved", "dismissed"] },
+        note: { type: "string" }
+      }
+    }
+  },
+  // ── Observation Tools ────────────────────────────────────────────
+  {
+    name: "get_mission",
+    description: "Get full mission details including steps, interventions, and metadata.",
+    inputSchema: {
+      type: "object",
+      required: ["missionId"],
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "get_run_graph",
+    description: "Get the full run graph: run, steps, attempts, claims, timeline.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        timelineLimit: { type: "number", minimum: 0, maximum: 1000 }
+      }
+    }
+  },
+  {
+    name: "stream_events",
+    description: "Poll buffered orchestrator events using a cursor for incremental streaming.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        cursor: { type: "number", minimum: 0 },
+        limit: { type: "number", minimum: 1, maximum: 1000 },
+        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "mission"] }
+      }
+    }
+  },
+  {
+    name: "get_step_output",
+    description: "Get the output/result of a specific step in a run.",
+    inputSchema: {
+      type: "object",
+      required: ["runId", "stepKey"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        stepKey: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "get_worker_states",
+    description: "Get the current state of all workers in a run.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "get_timeline",
+    description: "Get timeline events for a run, optionally filtered by step.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        limit: { type: "number", minimum: 1, maximum: 1000 },
+        stepId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "get_mission_metrics",
+    description: "Get aggregated metrics for a mission.",
+    inputSchema: {
+      type: "object",
+      required: ["missionId"],
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "get_final_diff",
+    description: "Get the final diff output for a completed run.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  // ── Evaluation Tools ─────────────────────────────────────────────
+  {
+    name: "evaluate_run",
+    description: "Submit a structured evaluation of a mission run.",
+    inputSchema: {
+      type: "object",
+      required: ["runId", "missionId", "scores", "issues", "summary"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        missionId: { type: "string", minLength: 1 },
+        scores: {
+          type: "object",
+          required: ["planQuality", "parallelism", "coordinatorDecisions", "resourceEfficiency", "outcomeQuality"],
+          additionalProperties: false,
+          properties: {
+            planQuality: { type: "number", minimum: 0, maximum: 10 },
+            parallelism: { type: "number", minimum: 0, maximum: 10 },
+            coordinatorDecisions: { type: "number", minimum: 0, maximum: 10 },
+            resourceEfficiency: { type: "number", minimum: 0, maximum: 10 },
+            outcomeQuality: { type: "number", minimum: 0, maximum: 10 }
+          }
+        },
+        issues: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["category", "severity", "description", "recommendation"],
+            additionalProperties: false,
+            properties: {
+              category: { type: "string", enum: ["planning", "execution", "coordination", "recovery", "output"] },
+              severity: { type: "string", enum: ["minor", "major", "critical"] },
+              description: { type: "string", minLength: 1 },
+              stepKey: { type: "string" },
+              recommendation: { type: "string", minLength: 1 }
+            }
+          }
+        },
+        summary: { type: "string", minLength: 1 },
+        improvements: { type: "array", items: { type: "string" } },
+        metadata: { type: "object" }
+      }
+    }
+  },
+  {
+    name: "list_evaluations",
+    description: "List evaluations for a mission or run.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string" },
+        runId: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      }
+    }
+  },
+  {
+    name: "get_evaluation_report",
+    description: "Get a full evaluation report with run context.",
+    inputSchema: {
+      type: "object",
+      required: ["evaluationId"],
+      additionalProperties: false,
+      properties: {
+        evaluationId: { type: "string", minLength: 1 }
+      }
+    }
   }
 ];
 
@@ -351,6 +640,37 @@ const MUTATION_TOOLS = new Set([
   "create_integration",
   "rebase_lane",
   "land_queue_next"
+]);
+
+const ORCHESTRATION_TOOLS = new Set([
+  "create_mission",
+  "start_mission",
+  "pause_mission",
+  "resume_mission",
+  "cancel_mission",
+  "steer_mission",
+  "approve_plan",
+  "resolve_intervention"
+]);
+
+const OBSERVATION_TOOLS = new Set([
+  "get_mission",
+  "get_run_graph",
+  "stream_events",
+  "get_step_output",
+  "get_worker_states",
+  "get_timeline",
+  "get_mission_metrics",
+  "get_final_diff"
+]);
+
+const EVALUATOR_TOOLS = new Set([
+  "evaluate_run"
+]);
+
+const EVALUATION_READ_TOOLS = new Set([
+  "list_evaluations",
+  "get_evaluation_report"
 ]);
 
 function nowIso(): string {
@@ -605,15 +925,30 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const role = asTrimmedString(identity.role);
+  const validRole: SessionIdentity["role"] =
+    role === "orchestrator" || role === "agent" || role === "evaluator" ? role : "external";
 
+  // Default permissions by role
+  const roleDefaults = {
+    external:     { mutations: false, spawn: false, orchestration: false, evaluation: false },
+    agent:        { mutations: false, spawn: false, orchestration: false, evaluation: false },
+    orchestrator: { mutations: true,  spawn: true,  orchestration: true,  evaluation: false },
+    evaluator:    { mutations: false, spawn: false, orchestration: true,  evaluation: true }
+  };
+  const defaults = roleDefaults[validRole];
+
+  // Role defaults are enforced as ceilings — clients cannot self-elevate
+  // beyond what their role permits. A client can only *reduce* permissions.
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? "unknown",
-    role: role === "orchestrator" || role === "agent" ? role : "external",
+    role: validRole,
     runId: asOptionalTrimmedString(identity.runId),
     attemptId: asOptionalTrimmedString(identity.attemptId),
     ownerId: asOptionalTrimmedString(identity.ownerId),
-    allowMutations: asBoolean(identity.allowMutations, false),
-    allowSpawnAgent: asBoolean(identity.allowSpawnAgent, false)
+    allowMutations: defaults.mutations && asBoolean(identity.allowMutations, defaults.mutations),
+    allowSpawnAgent: defaults.spawn && asBoolean(identity.allowSpawnAgent, defaults.spawn),
+    allowOrchestration: defaults.orchestration && asBoolean(identity.allowOrchestration, defaults.orchestration),
+    allowEvaluation: defaults.evaluation && asBoolean(identity.allowEvaluation, defaults.evaluation)
   };
 }
 
@@ -975,6 +1310,22 @@ function ensureAskUserAllowed(session: SessionState): void {
 
   session.askUserEvents.push(now);
   GLOBAL_ASK_USER_RATE_LIMIT.events.push(now);
+}
+
+function ensureOrchestrationAuthorized(session: SessionState, toolName: string): void {
+  if (session.identity.allowOrchestration) return;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.policyDenied,
+    `Policy denied orchestration tool '${toolName}'. Requires allowOrchestration.`
+  );
+}
+
+function ensureEvaluationAuthorized(session: SessionState, toolName: string): void {
+  if (session.identity.allowEvaluation) return;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.policyDenied,
+    `Policy denied evaluation tool '${toolName}'. Requires allowEvaluation.`
+  );
 }
 
 async function runTool(args: {
@@ -1488,6 +1839,383 @@ async function runTool(args: {
     };
   }
 
+  // ── Mission Lifecycle Tools ──────────────────────────────────────
+
+  if (name === "create_mission") {
+    ensureOrchestrationAuthorized(session, name);
+    const prompt = assertNonEmptyString(toolArgs.prompt, "prompt");
+    const title = asOptionalTrimmedString(toolArgs.title);
+    const laneId = asOptionalTrimmedString(toolArgs.laneId);
+    const priority = asOptionalTrimmedString(toolArgs.priority);
+    const executionMode = asOptionalTrimmedString(toolArgs.executionMode);
+    const prStrategy = asOptionalTrimmedString(toolArgs.prStrategy);
+    const executorPolicy = isRecord(toolArgs.executorPolicy) ? toolArgs.executorPolicy : undefined;
+
+    const createArgs: Record<string, unknown> = { prompt };
+    if (title) createArgs.title = title;
+    if (laneId) createArgs.laneId = laneId;
+    if (priority) createArgs.priority = priority;
+    if (executionMode) createArgs.executionMode = executionMode;
+    if (prStrategy) createArgs.prStrategy = prStrategy;
+    if (executorPolicy) createArgs.executionPolicy = executorPolicy;
+    const mission = runtime.missionService.create(createArgs as any);
+
+    runtime.eventBuffer.push({
+      timestamp: nowIso(),
+      category: "mission",
+      payload: { type: "mission_created", missionId: mission.id }
+    });
+
+    return { mission };
+  }
+
+  if (name === "start_mission") {
+    ensureOrchestrationAuthorized(session, name);
+    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const runMode = asOptionalTrimmedString(toolArgs.runMode) as "autopilot" | "manual" | null;
+    const defaultExecutorKind = asOptionalTrimmedString(toolArgs.defaultExecutorKind);
+    const coordinatorModel = asOptionalTrimmedString(toolArgs.coordinatorModel);
+
+    const startArgs: Record<string, unknown> = { missionId };
+    if (runMode) startArgs.runMode = runMode;
+    if (defaultExecutorKind) startArgs.defaultExecutorKind = defaultExecutorKind;
+    if (coordinatorModel) startArgs.defaultModelId = coordinatorModel;
+    const result = await runtime.aiOrchestratorService.startMissionRun(startArgs as any);
+
+    const runId = result.started?.run.id ?? null;
+
+    runtime.eventBuffer.push({
+      timestamp: nowIso(),
+      category: "mission",
+      payload: { type: "mission_started", missionId, runId }
+    });
+
+    return { ...result, runId };
+  }
+
+  if (name === "pause_mission") {
+    ensureOrchestrationAuthorized(session, name);
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const reason = asOptionalTrimmedString(toolArgs.reason);
+    const run = runtime.orchestratorService.pauseRun({
+      runId,
+      ...(reason ? { reason } : {})
+    });
+    return { run };
+  }
+
+  if (name === "resume_mission") {
+    ensureOrchestrationAuthorized(session, name);
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const run = runtime.orchestratorService.resumeRun({ runId });
+    return { run };
+  }
+
+  if (name === "cancel_mission") {
+    ensureOrchestrationAuthorized(session, name);
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const reason = asOptionalTrimmedString(toolArgs.reason);
+    const result = await runtime.aiOrchestratorService.cancelRunGracefully({
+      runId,
+      ...(reason ? { reason } : {})
+    });
+    return result;
+  }
+
+  if (name === "steer_mission") {
+    ensureOrchestrationAuthorized(session, name);
+    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const directive = assertNonEmptyString(toolArgs.directive, "directive");
+    const targetStepKey = asOptionalTrimmedString(toolArgs.targetStepKey);
+    const priorityRaw = asOptionalTrimmedString(toolArgs.priority);
+    const validPriorities = new Set(["suggestion", "instruction", "override"]);
+    const priority: "suggestion" | "instruction" | "override" =
+      priorityRaw && validPriorities.has(priorityRaw)
+        ? (priorityRaw as "suggestion" | "instruction" | "override")
+        : "suggestion";
+    const result = runtime.aiOrchestratorService.steerMission({
+      missionId,
+      directive,
+      priority,
+      ...(targetStepKey ? { targetStepKey } : {})
+    });
+    return result;
+  }
+
+  if (name === "approve_plan") {
+    ensureOrchestrationAuthorized(session, name);
+    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const approved = toolArgs.approved === true;
+    const feedback = asOptionalTrimmedString(toolArgs.feedback);
+
+    if (!approved) {
+      // Rejection: add intervention and cancel any active run for this mission
+      const intervention = runtime.missionService.addIntervention({
+        missionId,
+        interventionType: "manual_input",
+        title: "Plan rejected",
+        body: feedback ?? "Plan was rejected by evaluator."
+      });
+      // Cancel the most recent active run if one exists
+      const runs = runtime.orchestratorService.listRuns({ missionId, status: "running", limit: 1 });
+      let cancelledRunId: string | null = null;
+      if (runs.length > 0) {
+        try {
+          await runtime.aiOrchestratorService.cancelRunGracefully({ runId: runs[0]!.id, reason: "Plan rejected" });
+          cancelledRunId = runs[0]!.id;
+        } catch {
+          // Run may already be in a terminal state
+        }
+      }
+      return { approved: false, intervention, cancelledRunId };
+    }
+
+    // Approval: start the mission run via approveMissionPlan
+    const result = await runtime.aiOrchestratorService.approveMissionPlan({
+      missionId
+    });
+    return { approved: true, ...result };
+  }
+
+  if (name === "resolve_intervention") {
+    ensureOrchestrationAuthorized(session, name);
+    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const interventionId = assertNonEmptyString(toolArgs.interventionId, "interventionId");
+    const statusRaw = assertNonEmptyString(toolArgs.status, "status");
+    const status = statusRaw === "dismissed" ? "dismissed" as const : "resolved" as const;
+    const note = asOptionalTrimmedString(toolArgs.note);
+    const intervention = runtime.missionService.resolveIntervention({
+      missionId,
+      interventionId,
+      status,
+      ...(note ? { note } : {})
+    });
+    return { intervention };
+  }
+
+  // ── Observation Tools ────────────────────────────────────────────
+
+  if (name === "get_mission") {
+    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const mission = runtime.missionService.get(missionId);
+    if (!mission) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Mission not found: ${missionId}`);
+    }
+    return { mission };
+  }
+
+  if (name === "get_run_graph") {
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const timelineLimit = asNumber(toolArgs.timelineLimit, 300);
+    try {
+      const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit });
+      return { graph };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Run not found or inaccessible: ${runId}. ${msg}`);
+    }
+  }
+
+  if (name === "stream_events") {
+    const cursor = asNumber(toolArgs.cursor, 0);
+    const limit = asNumber(toolArgs.limit, 100);
+    const category = asOptionalTrimmedString(toolArgs.category);
+    if (category) {
+      // When filtering by category, drain a larger batch and filter client-side.
+      // Use the last matching event's ID as nextCursor so no events are skipped.
+      const batchSize = Math.min(1000, limit * 10);
+      const result = runtime.eventBuffer.drain(cursor, batchSize);
+      const filtered = result.events.filter((e) => e.category === category);
+      const sliced = filtered.slice(0, limit);
+      const lastId = sliced.length > 0 ? sliced[sliced.length - 1]!.id : cursor;
+      return {
+        events: sliced,
+        nextCursor: lastId,
+        hasMore: filtered.length > limit || result.hasMore
+      };
+    }
+    return runtime.eventBuffer.drain(cursor, limit);
+  }
+
+  if (name === "get_step_output") {
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const stepKey = assertNonEmptyString(toolArgs.stepKey, "stepKey");
+    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+    const step = graph.steps.find((s) => s.stepKey === stepKey);
+    if (!step) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Step not found: ${stepKey}`);
+    }
+    const attempts = graph.attempts.filter((a) => a.stepId === step.id);
+    return { step, attempts };
+  }
+
+  if (name === "get_worker_states") {
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const states = runtime.aiOrchestratorService.getWorkerStates({ runId });
+    return { runId, workers: states };
+  }
+
+  if (name === "get_timeline") {
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const limit = asNumber(toolArgs.limit, 300);
+    const stepId = asOptionalTrimmedString(toolArgs.stepId);
+    const timeline = runtime.orchestratorService.listTimeline({ runId, limit });
+    if (stepId) {
+      const filtered = timeline.filter((e) => e.stepId === stepId);
+      return { timeline: filtered };
+    }
+    return { timeline };
+  }
+
+  if (name === "get_mission_metrics") {
+    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const metrics = runtime.aiOrchestratorService.getMissionMetrics({ missionId });
+    return { metrics };
+  }
+
+  if (name === "get_final_diff") {
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+    const laneIds = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+    const diffs: Record<string, unknown> = {};
+    for (const laneId of laneIds) {
+      diffs[laneId] = await runtime.diffService.getChanges(laneId);
+    }
+    return { runId, diffs };
+  }
+
+  // ── Evaluation Tools ─────────────────────────────────────────────
+
+  if (name === "evaluate_run") {
+    ensureEvaluationAuthorized(session, name);
+    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const scores = safeObject(toolArgs.scores);
+    const issues = Array.isArray(toolArgs.issues) ? toolArgs.issues : [];
+    const summary = assertNonEmptyString(toolArgs.summary, "summary");
+    const improvements = Array.isArray(toolArgs.improvements) ? toolArgs.improvements : [];
+    const metadata = isRecord(toolArgs.metadata) ? toolArgs.metadata : {};
+
+    const id = randomUUID();
+    const evaluatedAt = nowIso();
+
+    runtime.db.run(
+      `INSERT INTO orchestrator_evaluations (id, project_id, run_id, mission_id, evaluator_id, scores_json, issues_json, summary, improvements_json, metadata_json, evaluated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        runtime.projectId,
+        runId,
+        missionId,
+        session.identity.callerId,
+        JSON.stringify(scores),
+        JSON.stringify(issues),
+        summary,
+        JSON.stringify(improvements),
+        JSON.stringify(metadata),
+        evaluatedAt
+      ]
+    );
+
+    return {
+      id,
+      runId,
+      missionId,
+      evaluatorId: session.identity.callerId,
+      scores,
+      issues,
+      summary,
+      improvements,
+      evaluatedAt
+    };
+  }
+
+  if (name === "list_evaluations") {
+    const missionId = asOptionalTrimmedString(toolArgs.missionId);
+    const runId = asOptionalTrimmedString(toolArgs.runId);
+    const limit = Math.max(1, Math.min(100, Math.floor(asNumber(toolArgs.limit, 20))));
+
+    const where: string[] = ["project_id = ?"];
+    const params: Array<string | number> = [runtime.projectId];
+    if (missionId) { where.push("mission_id = ?"); params.push(missionId); }
+    if (runId) { where.push("run_id = ?"); params.push(runId); }
+    params.push(limit);
+
+    const rows = runtime.db.all<{
+      id: string; run_id: string; mission_id: string; evaluator_id: string;
+      scores_json: string; issues_json: string; summary: string;
+      improvements_json: string | null; metadata_json: string | null; evaluated_at: string;
+    }>(
+      `SELECT id, run_id, mission_id, evaluator_id, scores_json, issues_json, summary, improvements_json, metadata_json, evaluated_at
+       FROM orchestrator_evaluations
+       WHERE ${where.join(" AND ")}
+       ORDER BY evaluated_at DESC
+       LIMIT ?`,
+      params
+    );
+
+    const evaluations = rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      missionId: row.mission_id,
+      evaluatorId: row.evaluator_id,
+      scores: JSON.parse(row.scores_json),
+      issueCount: JSON.parse(row.issues_json).length,
+      summary: row.summary,
+      evaluatedAt: row.evaluated_at
+    }));
+
+    return { evaluations };
+  }
+
+  if (name === "get_evaluation_report") {
+    const evaluationId = assertNonEmptyString(toolArgs.evaluationId, "evaluationId");
+
+    const row = runtime.db.get<{
+      id: string; run_id: string; mission_id: string; evaluator_id: string;
+      scores_json: string; issues_json: string; summary: string;
+      improvements_json: string | null; metadata_json: string | null; evaluated_at: string;
+    }>(
+      `SELECT id, run_id, mission_id, evaluator_id, scores_json, issues_json, summary, improvements_json, metadata_json, evaluated_at
+       FROM orchestrator_evaluations
+       WHERE id = ? AND project_id = ?`,
+      [evaluationId, runtime.projectId]
+    );
+
+    if (!row) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Evaluation not found: ${evaluationId}`);
+    }
+
+    let runContext: Record<string, unknown> | null = null;
+    try {
+      const graph = runtime.orchestratorService.getRunGraph({ runId: row.run_id, timelineLimit: 50 });
+      runContext = {
+        run: graph.run,
+        stepCount: graph.steps.length,
+        attemptCount: graph.attempts.length,
+        completionEvaluation: graph.completionEvaluation
+      };
+    } catch {
+      // Run may no longer exist
+    }
+
+    return {
+      evaluation: {
+        id: row.id,
+        runId: row.run_id,
+        missionId: row.mission_id,
+        evaluatorId: row.evaluator_id,
+        scores: JSON.parse(row.scores_json),
+        issues: JSON.parse(row.issues_json),
+        summary: row.summary,
+        improvements: row.improvements_json ? JSON.parse(row.improvements_json) : [],
+        metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {},
+        evaluatedAt: row.evaluated_at
+      },
+      runContext
+    };
+  }
+
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown MCP tool: ${name}`);
 }
 
@@ -1642,7 +2370,9 @@ export function createMcpRequestHandler(args: {
       attemptId: null,
       ownerId: null,
       allowMutations: false,
-      allowSpawnAgent: false
+      allowSpawnAgent: false,
+      allowOrchestration: false,
+      allowEvaluation: false
     },
     askUserEvents: [],
     askUserRateLimit: {
@@ -1758,7 +2488,16 @@ export function createMcpRequestHandler(args: {
           // tool calls ensureMutationAuthorized() with the correct lane context.
           // No blanket pre-check here — that caused double-checks with inconsistent scope.
 
-          if (READ_ONLY_TOOLS.has(toolName) || MUTATION_TOOLS.has(toolName) || toolName === "spawn_agent" || toolName === "ask_user") {
+          if (
+            READ_ONLY_TOOLS.has(toolName) ||
+            MUTATION_TOOLS.has(toolName) ||
+            ORCHESTRATION_TOOLS.has(toolName) ||
+            OBSERVATION_TOOLS.has(toolName) ||
+            EVALUATOR_TOOLS.has(toolName) ||
+            EVALUATION_READ_TOOLS.has(toolName) ||
+            toolName === "spawn_agent" ||
+            toolName === "ask_user"
+          ) {
             return await runTool({ runtime, session, name: toolName, toolArgs });
           }
 

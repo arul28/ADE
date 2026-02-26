@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-02-24
+Last updated: 2026-02-26
 
 Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -51,7 +51,7 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
 
 ## 1. Product Overview
 
-ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its Packs system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-agent workflows through its AI Integration Layer -- native agent SDKs unified behind an AgentExecutor interface, a local MCP server, and an AI orchestrator that coordinates agents (Claude Code, Codex) using the developer's existing CLI subscriptions.
+ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its Packs system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-agent workflows through its AI Integration Layer -- native agent SDKs unified behind an AgentExecutor interface, a local MCP server, and an AI orchestrator that coordinates agents (Claude Code, Codex) using the developer's existing CLI subscriptions. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-agent communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across agents and missions.
 
 ADE is built with Electron and ships as a cross-platform desktop application for macOS, Windows, and Linux.
 
@@ -71,11 +71,11 @@ Software teams increasingly use AI coding agents (Claude Code, Codex, Cursor, an
 
 ### The Vision
 
-ADE is the orchestration layer for agentic development. It watches what each agent does, tracks context through immutable checkpoints and durable packs, predicts conflicts between parallel work, and surfaces integration risks before they become merge nightmares. Its AI orchestrator -- powered by native agent SDKs and a local MCP server -- can plan multi-step missions, spawn agents into isolated lanes, inject context packs into agent prompts, and route human interventions back through the ADE UI. All AI execution is subscription-powered: developers use their existing Claude Pro/Max or ChatGPT Plus subscriptions through CLI tools spawned as subprocesses, with no separate accounts or credentials required.
+ADE is the orchestration layer for agentic development. It watches what each agent does, tracks context through immutable checkpoints and durable packs, predicts conflicts between parallel work, and surfaces integration risks before they become merge nightmares. Its AI orchestrator -- powered by native agent SDKs and a local MCP server -- can plan multi-step missions, spawn agents into isolated lanes, inject context packs into agent prompts, and route human interventions back through the ADE UI. The orchestrator acts as a smart PM: an AI meta-reasoner selects optimal dispatch strategies (sequential, parallel, wave, or adaptive fan-out), agents communicate in real time through @mentions, a compaction engine prevents context overflow in long-running missions, and a scoped memory architecture enables knowledge to flow between agents and persist across missions. All AI execution is subscription-powered: developers use their existing Claude Pro/Max or ChatGPT Plus subscriptions through CLI tools spawned as subprocesses, with no separate accounts or credentials required.
 
 Think of ADE as "mission control for agentic development."
 
-ADE does not replace the IDE or the git CLI. It integrates deeply with external agent CLIs via tracked sessions, automation flows, and first-class mission/orchestrator execution as defined in `docs/final-plan.md`.
+ADE does not replace the IDE or the git CLI. It integrates deeply with external agent CLIs via tracked sessions, agent flows, and first-class mission/orchestrator execution as defined in `docs/final-plan.md`.
 
 ---
 
@@ -132,6 +132,22 @@ The AI Integration Layer replaces the former cloud-based agent model with a full
 
 The AI Integration Layer never mutates the repository directly. All file changes, git operations, and test runs are performed by the agents it spawns or by the user through the existing local core.
 
+### Inter-Agent Communication
+
+Agents within a mission can communicate with each other in real time using @mention syntax. Messages are routed through the orchestrator's message bus and delivered via dual-path delivery: PTY injection for CLI-based agents and SDK message API for SDK-managed agents. All inter-agent messages appear in the mission's Slack-like chat UI alongside orchestrator decisions and user messages.
+
+### AI Meta-Reasoner
+
+The orchestrator's intelligence layer that analyzes mission structure to select the optimal dispatch strategy before spawning agents. Four strategies are available: sequential, parallel, wave (phased groups), and adaptive (dynamically adjusted). The meta-reasoner considers mission complexity, inter-step dependencies, available resources, and budget constraints.
+
+### Context Compaction
+
+An automatic process that prevents context overflow in long-running agent sessions. When context usage reaches a configurable threshold (default 70%), the compaction engine persists critical state via pre-compaction writeback, then summarizes prior context. Sessions resume from compacted state without loss of essential knowledge.
+
+### Memory Scopes
+
+A scoped memory architecture organizes mission context into `runtime-thread`, `run`, `project`, `identity`, and `daily-log` namespaces. Context entries are promoted by policy and confidence, with provenance retained for auditability.
+
 ### Per-Task-Type Model Routing
 
 Users can configure which AI model and provider to use for each task type. Task types include planning, implementation, review, conflict resolution, narratives, and PR descriptions. For example, a user might configure Claude for planning and code review while using Codex for implementation tasks.
@@ -150,7 +166,10 @@ ADE follows a strict trust boundary model with three process layers plus an AI I
 ADE Desktop (Electron)
 +-- Renderer (React UI)
 |   +-- Missions tab (AI orchestrator control center)
-|   +-- Activity feed (real-time agent output)
+|   |   +-- MissionChatV2 (Slack-like unified chat with @mentions)
+|   |   +-- PhaseProgressBar (single progress indicator)
+|   |   +-- OrchestratorDAG (SVG animated step visualization)
+|   |   +-- Context Budget Panel (scoped memory visibility)
 |   +-- Intervention panel (human-in-the-loop)
 |   +-- All other tabs unchanged
 +-- Main Process (Node.js, trusted)
@@ -159,6 +178,10 @@ ADE Desktop (Electron)
 |   |   |   +-- ClaudeExecutor (ai-sdk-provider-claude-code, subscription)
 |   |   |   +-- CodexExecutor (@openai/codex-sdk, subscription)
 |   |   +-- AI Orchestrator (Claude session + MCP tools)
+|   |   |   +-- AI Meta-Reasoner (dispatch strategy selection)
+|   |   |   +-- Inter-Agent Message Bus (@mention routing)
+|   |   |   +-- Context Compaction Engine (threshold-based summarization)
+|   |   |   +-- Scoped Memory (`runtime-thread` -> `run` -> `project`/`identity`)
 |   |   +-- Per-task-type model routing
 |   +-- MCP Server (exposes ADE tools to AI)
 |   +-- Existing Services (unchanged)
@@ -193,7 +216,7 @@ The AI Integration Layer runs within the main process and provides all AI capabi
 
 - **Agent SDK executors**: ADE's `AgentExecutor` interface unifies two native SDKs behind a common `execute()` / `resume()` contract. The `ClaudeExecutor` uses `ai-sdk-provider-claude-code` (a community Vercel AI SDK provider that wraps `@anthropic-ai/claude-agent-sdk`) to spawn the `claude` CLI as a subprocess, inheriting the user's Claude Pro/Max subscription. The `CodexExecutor` uses `@openai/codex-sdk` (the official OpenAI SDK) to spawn the `codex` CLI directly, inheriting the user's ChatGPT Plus subscription. Both executors support streaming output, session management, and tool interception.
 - **MCP Server**: A local server (`apps/mcp-server`) exposing ADE tools via JSON-RPC 2.0 over stdio transport. This gives the AI orchestrator programmatic access to ADE's lane management, context packs, conflict detection, test execution, and user intervention infrastructure.
-- **AI Orchestrator**: A long-running Claude session connected to the MCP server. The orchestrator receives mission prompts enriched with context packs, decomposes them into steps, spawns agents in isolated lanes, monitors execution through checkpoints and session events, and escalates decisions to the user via the intervention panel.
+- **AI Orchestrator**: A long-running Claude session connected to the MCP server. The orchestrator receives mission prompts enriched with context packs, uses an AI meta-reasoner to select optimal dispatch strategy, decomposes them into steps, spawns agents in isolated lanes, facilitates inter-agent communication via @mentions, manages context lifecycle through compaction and scoped memory, monitors execution through checkpoints and session events, and escalates decisions to the user via the intervention panel.
 
 ### Provider Model
 
@@ -321,11 +344,23 @@ The Missions tab is the AI orchestrator control center. It provides quick missio
 
 Mission detail supports starting orchestrator runs from mission steps. Operators can tick/resume/cancel runs, start attempts, and complete running attempts. Step DAG state, attempt history, and timeline events are visible from mission detail. Mission intake applies a deterministic planner split pass (dependencies, join policy, done criteria metadata). Autopilot launch mode persists executor/run-mode metadata and can auto-advance after tracked session completion.
 
+**Slack-like Mission Chat (MissionChatV2)**: Mission detail includes a unified chat view that replaces the former separate channels and transcript tabs. The chat surfaces all mission activity in a single Slack-style timeline: orchestrator decisions, agent output, user messages, and inter-agent @mentions. Messages are displayed with agent identity badges, timestamps, and @mention highlighting. Users can send messages to specific agents or broadcast to all agents in the mission.
+
+**Inter-Agent Communication**: Agents within a mission can communicate with each other in real time via @mentions. Messages are routed through the orchestrator's message bus and delivered via both PTY injection and SDK message APIs. The chat UI renders inter-agent messages inline, enabling transparency into how agents coordinate.
+
+**AI Meta-Reasoner**: The orchestrator uses an AI meta-reasoner to determine optimal fan-out strategy for each mission. Four dispatch strategies are available: sequential (one agent at a time), parallel (all agents simultaneously), wave (phased groups), and adaptive (dynamically adjusted based on progress). The meta-reasoner considers mission complexity, resource availability, and dependency structure when selecting a strategy.
+
+**Context Compaction Engine**: Long-running missions benefit from automatic context compaction. When an agent's context reaches 70% of its window limit, the compaction engine triggers a pre-compaction writeback (persisting important state to memory) followed by context summarization. Sessions can be resumed from compacted state, preventing context overflow during extended missions.
+
+**Scoped Memory Architecture**: Mission context is organized into explicit scopes (`runtime-thread`, `run`, `project`, `identity`, `daily-log`). A Context Budget Panel in the UI provides visibility into retrieved/promoted context and allows manual promotion/archival workflows.
+
+**Mission UI Improvements**: The DAG visualization uses SVG `animateTransform` for smooth node animations. A single `PhaseProgressBar` replaces the former duplicated progress indicators. The `ExecutionPlanPreview` component has been removed to reduce visual clutter. Tab naming has been updated: "usage" is now "details" and "channels" is now "chat".
+
 See: [features/MISSIONS.md](features/MISSIONS.md)
 
 ### 7.12 Settings
 
-The Settings tab provides application preferences including AI provider configuration (guest mode or subscription-powered via installed CLI tools), per-task-type model routing (which model/provider handles planning, implementation, review, conflict resolution, narratives, and PR descriptions), per-feature AI toggles (enable/disable individual AI capabilities: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator), AI usage dashboard (per-feature usage bars, subscription status with rate limits, budget controls with daily limits, usage history trends), detected CLI tools status and health, process/test configuration export/import, keyboard shortcuts reference, theme selection (Clean Paper light or Bloomberg Terminal dark), and automation enable/disable with last-run status. Budget controls defined here tie into Night Shift (Phase 4), which reuses the same per-feature limits and counters for unattended batch execution.
+The Settings tab provides application preferences including AI provider configuration (guest mode or subscription-powered via installed CLI tools), per-task-type model routing (which model/provider handles planning, implementation, review, conflict resolution, narratives, and PR descriptions), per-feature AI toggles (enable/disable individual AI capabilities: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator), AI usage dashboard (per-feature usage bars, subscription status with rate limits, budget controls with daily limits, usage history trends), detected CLI tools status and health, process/test configuration export/import, keyboard shortcuts reference, theme selection (Clean Paper light or Bloomberg Terminal dark), and agent enable/disable with last-run status. Budget controls defined here tie into Night Shift (Phase 4), which reuses the same per-feature limits and counters for unattended batch execution.
 
 See: [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md)
 
@@ -438,11 +473,29 @@ The AI Integration Layer provides narrative augmentation, conflict resolution pr
 **AI Orchestrator**: A long-running Claude session (via the AgentExecutor interface) connected to the MCP server. The orchestrator:
 
 1. Receives a mission prompt enriched with bounded context pack exports.
-2. Decomposes the mission into a step DAG with dependencies, join policies, and done criteria.
-3. Spawns agents (Claude Code, Codex) into isolated lanes via MCP tools.
-4. Monitors agent progress through session events, checkpoints, and pack updates.
-5. Routes human-in-the-loop decisions through the intervention panel.
-6. Advances the step DAG deterministically based on session outcomes (success/failure/canceled).
+2. Uses the AI meta-reasoner to determine optimal dispatch strategy (sequential, parallel, wave, or adaptive fan-out).
+3. Decomposes the mission into a step DAG with dependencies, join policies, and done criteria.
+4. Spawns agents (Claude Code, Codex) into isolated lanes via MCP tools.
+5. Monitors agent progress through session events, checkpoints, and pack updates.
+6. Facilitates inter-agent communication via @mention routing and the mission message bus.
+7. Manages context lifecycle through the compaction engine and scoped memory architecture.
+8. Routes human-in-the-loop decisions through the intervention panel.
+9. Advances the step DAG deterministically based on session outcomes (success/failure/canceled).
+
+**AI Meta-Reasoner**: Before dispatching agents, the orchestrator's meta-reasoner analyzes the mission to select the best fan-out strategy. The four dispatch strategies are: sequential (agents execute one at a time, suitable for dependent tasks), parallel (all agents launch simultaneously, suitable for independent tasks), wave (agents launch in phased groups, balancing parallelism with coordination), and adaptive (strategy adjusts dynamically based on real-time progress and resource pressure). The meta-reasoner considers mission complexity, inter-step dependencies, available compute resources, and budget constraints.
+
+**Inter-Agent Communication**: Agents within a mission can communicate with each other in real time. Messages use @mention syntax and are routed through the orchestrator's message bus. Delivery is dual-path: PTY injection for CLI-based agents and SDK message API for SDK-managed agents. The orchestrator can also broadcast messages to all agents or relay messages between specific pairs. All inter-agent messages are logged in the mission timeline and visible in the Slack-like chat UI.
+
+**Context Compaction Engine**: Long-running agent sessions accumulate context that can exceed model window limits. The compaction engine monitors context usage and triggers at a configurable threshold (default 70%). Before compaction, a writeback phase persists critical state (decisions, partial results, key findings) to the memory layer. The compacted context retains a summary of prior work plus the most recent detailed context. Sessions can resume from compacted state, enabling arbitrarily long missions without context overflow.
+
+**Scoped Memory Architecture**: Mission context flows through explicit namespaces:
+- **`runtime-thread`**: Current runtime context window. Volatile, managed by compaction.
+- **`run`**: Shared mission/run context across agents in the same run.
+- **`project`**: Long-term cross-mission knowledge.
+- **`identity`**: Agent-definition-owned durable memory.
+- **`daily-log`**: Bounded operational continuity snapshots for briefing/resume.
+
+Candidate entries are promoted by relevance/confidence and policy. The Context Budget Panel in the mission UI shows real-time memory retrieval and promotion status.
 
 **Per-task-type model routing**: Users configure which model/provider handles each task type in Settings. The AI Integration Layer routes requests accordingly, allowing mixed-provider workflows (e.g., Claude for planning, Codex for implementation).
 
@@ -552,9 +605,8 @@ ADE configuration lives in the `.ade/` folder at the project root, which is git-
 
 | File | Purpose | Shareable |
 |------|---------|-----------|
-| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults) | Yes (opt-in) |
+| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, `agents:` definitions) | Yes (opt-in) |
 | `.ade/local.yaml` | Machine-specific overrides (including local AI provider preferences and CLI tool paths) | No |
-| `.ade/actions.yaml` | Automation trigger-action definitions | Yes (opt-in) |
 | `.ade/packs/` | Pack versions and materialized views | No |
 | `.ade/history/` | Checkpoints and events | No |
 | `.ade/transcripts/` | Terminal session transcripts | No |
@@ -615,6 +667,9 @@ When a configured CLI tool is not installed or not authenticated, ADE falls back
 | Mission orchestration | End-to-end mission execution with minimal manual intervention | Multi-step missions complete with agent spawning, context injection, and conflict checking through the orchestrator |
 | AI provider flexibility | Users can mix providers per task type | Per-task-type routing works correctly with at least two different CLI providers simultaneously |
 | AI usage visibility | Users can see per-feature AI consumption at a glance | Usage dashboard loads in <1s, per-feature breakdown is accurate within 5% of actual token usage |
+| Inter-agent coordination | Agents share relevant context without manual intervention | @mention messages are delivered within 2s; mission chat shows full agent communication history |
+| Context longevity | Long-running missions do not lose critical context | Compaction triggers before overflow; sessions resume from compacted state with key findings preserved |
+| Smart dispatch | Orchestrator selects appropriate fan-out strategy | Meta-reasoner correctly identifies parallelizable vs. sequential tasks in >80% of missions |
 
 ---
 
@@ -624,7 +679,7 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan.md`
 
-Current status: Phase 1 (Agent SDK Integration) and Phase 1.5 (Agent Chat Integration) are complete. Phase 2 (MCP Server) is the next implementation target.
+Current status: Phase 1 (Agent SDK Integration), Phase 1.5 (Agent Chat Integration), Phase 2 (MCP Server), and Phase 3 (AI Orchestrator) are complete. The Orchestrator Evolution (Project Hivemind) is complete, delivering inter-agent communication, AI meta-reasoner for smart fan-out, context compaction, and scoped memory architecture.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 
@@ -644,6 +699,9 @@ This PRD intentionally focuses on product scope and behavior, while roadmap exec
 | **Scope creep toward IDE** | Pressure to add code intelligence, debugging, or full editing could dilute the product | Non-goals are explicitly documented. Monaco is scoped to focused edits and diff review. Users are expected to use their preferred IDE alongside ADE. |
 | **Multi-agent coordination complexity** | Orchestrator managing multiple concurrent agents across lanes introduces scheduling, conflict, and resource contention challenges | Deterministic step DAG with explicit dependencies and join policies. Session-backed attempts with clear success/failure/canceled outcomes. Conservative concurrency defaults with user-configurable limits. |
 | **Claude subscription auth policy uncertainty** | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; AgentExecutor interface enables quick switch to official SDK if policy changes. |
+| **Inter-agent message delivery reliability** | Messages between agents could be lost or delayed, causing coordination failures | Dual-path delivery (PTY + SDK API) with message acknowledgment. All messages logged to mission timeline for audit. Orchestrator monitors delivery status. |
+| **Context compaction information loss** | Aggressive compaction could discard critical context, causing agents to repeat work or make incorrect decisions | Pre-compaction writeback persists key state before summarization. Configurable threshold (default 70%). User can review and promote important context entries to higher memory layers. |
+| **Memory scope promotion accuracy** | Automatic promotion of context entries could surface irrelevant information or miss important findings | Conservative default (manual promotion). Relevance scoring based on reference frequency and recency. Users can review, confirm, or delete promoted entries via the Context Budget Panel. |
 
 ---
 

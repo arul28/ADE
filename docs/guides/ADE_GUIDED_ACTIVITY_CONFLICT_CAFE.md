@@ -10,7 +10,7 @@ This is a guided, end-to-end activity designed to exercise (nearly) every surfac
 - graph orchestration
 - PR creation + status + land flows (multiple merge methods)
 - history timeline
-- automations (natural language rule drafts + execution history)
+- agents (natural language rule drafts + execution history)
 
 The repo you build is intentionally tiny, and intentionally conflict-prone.
 
@@ -94,17 +94,17 @@ What to look for:
 - Test run history and log output
 - (If you have Claude Code installed) the presence of `.claude/commands/*` should show up under agent tooling surfaces.
 
-## Step 4: Automations Tab (Make Packs + Conflicts “Feel Alive”)
+## Step 4: Agents Tab (Make Packs + Conflicts “Feel Alive”)
 
-In **Automations**:
-1. Create an automation rule from natural language, for example:
+In **Agents**:
+1. Create an automation agent from natural language, for example:
    - “When a session ends, refresh packs and predict conflicts.”
 2. Create another:
    - “On commit, run the unit tests.”
-3. Trigger at least one automation manually and check the run history.
+3. Trigger at least one agent manually and check the run history.
 
 What to look for:
-- Automation run rows, status, per-action results, and timestamps.
+- Agent run rows, status, per-action results, and timestamps.
 
 ## Step 5: Create 4 Lanes (Worktrees) In Lanes Tab
 
@@ -353,7 +353,7 @@ After all integrations:
 If you are not seeing conflicts:
 - Ensure every lane edited the same lines in `src/receipt.js` and `src/router.js`
 - Ensure you committed changes per lane (conflict prediction runs off real git state)
-- Ensure conflict prediction is enabled (automations can help keep it up to date)
+- Ensure conflict prediction is enabled (automation agents can help keep it up to date)
 
 ## Step 14: Pack + Context Hardening Verification (Refined)
 

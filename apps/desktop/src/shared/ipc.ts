@@ -200,6 +200,7 @@ export const IPC = {
   orchestratorGetGateReport: "ade.orchestrator.getGateReport",
   orchestratorEvent: "ade.orchestrator.event",
   orchestratorThreadEvent: "ade.orchestrator.threadEvent",
+  orchestratorDagMutation: "ade.orchestrator.dagMutation",
   keybindingsGet: "ade.keybindings.get",
   keybindingsSet: "ade.keybindings.set",
   aiGetStatus: "ade.ai.getStatus",
@@ -304,7 +305,15 @@ export const IPC = {
   orchestratorSetMissionMetricsConfig: "ade.orchestrator.setMissionMetricsConfig",
   orchestratorGetExecutionPlanPreview: "ade.orchestrator.getExecutionPlanPreview",
   orchestratorSendAgentMessage: "ade.orchestrator.sendAgentMessage",
-  getAggregatedUsage: "ade.usage.getAggregated"
+  orchestratorGetGlobalChat: "ade.orchestrator.getGlobalChat",
+  orchestratorDeliverMessage: "ade.orchestrator.deliverMessage",
+  orchestratorGetActiveAgents: "ade.orchestrator.getActiveAgents",
+  getAggregatedUsage: "ade.usage.getAggregated",
+  memoryGetBudget: "ade.memory.getBudget",
+  memoryGetCandidates: "ade.memory.getCandidates",
+  memoryPromote: "ade.memory.promote",
+  memoryArchive: "ade.memory.archive",
+  memorySearch: "ade.memory.search"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

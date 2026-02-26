@@ -57,11 +57,26 @@ function createRuntime() {
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     db: {
-      get: vi.fn(() => ({ count: 0 })),
+      get: vi.fn((sql: string) => {
+        if (sql.includes("orchestrator_evaluations") && sql.includes("SELECT")) {
+          return {
+            id: "eval-1", run_id: "run-1", mission_id: "mission-1", evaluator_id: "evaluator-1",
+            scores_json: '{"planQuality":8}', issues_json: '[]', summary: "Good run",
+            improvements_json: '[]', metadata_json: '{}', evaluated_at: new Date().toISOString()
+          };
+        }
+        return { count: 0 };
+      }),
       all: vi.fn((sql: string) => {
         if (sql.includes("from missions")) return [{ id: "mission-1" }];
+        if (sql.includes("orchestrator_evaluations")) return [{
+          id: "eval-1", run_id: "run-1", mission_id: "mission-1", evaluator_id: "evaluator-1",
+          scores_json: '{"planQuality":8}', issues_json: '[]', summary: "Good run",
+          improvements_json: null, metadata_json: null, evaluated_at: new Date().toISOString()
+        }];
         return [];
-      })
+      }),
+      run: vi.fn()
     },
     laneService: {
       list: vi.fn(async () => laneRows),
@@ -123,7 +138,16 @@ function createRuntime() {
         title,
         body
       })),
-      get: vi.fn()
+      get: vi.fn((missionId: string) => ({
+        id: missionId,
+        prompt: "test mission",
+        status: "running",
+        interventions: []
+      })),
+      create: vi.fn(({ prompt }: any) => ({ id: "mission-new", prompt, status: "planned" })),
+      resolveIntervention: vi.fn(({ missionId, interventionId, status }: any) => ({
+        id: interventionId, missionId, status
+      }))
     },
     ptyService: {
       create: vi.fn(async () => ({ ptyId: "pty-1", sessionId: "session-1" })),
@@ -142,6 +166,58 @@ function createRuntime() {
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
       landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" }))
     },
+    memoryService: {} as any,
+    orchestratorService: {
+      listRuns: vi.fn(() => []),
+      pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
+      resumeRun: vi.fn(({ runId }: any) => ({ id: runId, status: "running" })),
+      getRunGraph: vi.fn(({ runId }: any) => ({
+        run: { id: runId, status: "running" },
+        steps: [{ id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "completed" }],
+        attempts: [{ id: "attempt-1", stepId: "step-1", status: "completed" }],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [{ id: "tl-1", runId, eventType: "step_started", reason: "started" }],
+        runtimeEvents: [],
+        completionEvaluation: { complete: true }
+      })),
+      listTimeline: vi.fn(({ runId }: any) => [
+        { id: "tl-1", runId, stepId: null, eventType: "run_started", reason: "started" },
+        { id: "tl-2", runId, stepId: "step-1", eventType: "step_started", reason: "started" }
+      ]),
+      listAttempts: vi.fn(() => [])
+    } as any,
+    aiOrchestratorService: {
+      startMissionRun: vi.fn(async ({ missionId }: any) => ({
+        blockedByPlanReview: false,
+        started: { run: { id: "run-1", missionId, status: "running" }, steps: [] },
+        mission: { id: missionId }
+      })),
+      cancelRunGracefully: vi.fn(async ({ runId }: any) => ({ cancelled: true, runId })),
+      steerMission: vi.fn(({ missionId }: any) => ({ acknowledged: true, appliedAt: new Date().toISOString() })),
+      approveMissionPlan: vi.fn(async ({ missionId }: any) => ({
+        blockedByPlanReview: false,
+        started: { run: { id: "run-1", missionId, status: "running" }, steps: [] },
+        mission: { id: missionId }
+      })),
+      getWorkerStates: vi.fn(({ runId }: any) => [
+        { attemptId: "a-1", stepId: "s-1", runId, state: "running" }
+      ]),
+      getMissionMetrics: vi.fn(({ missionId }: any) => ({ missionId, samples: [] })),
+      dispose: vi.fn()
+    } as any,
+    eventBuffer: {
+      push: vi.fn(),
+      drain: vi.fn((cursor: number, limit?: number) => ({
+        events: [
+          { id: cursor + 1, timestamp: new Date().toISOString(), category: "orchestrator", payload: { type: "test" } }
+        ],
+        nextCursor: cursor + 1,
+        hasMore: false
+      })),
+      size: vi.fn(() => 1)
+    } as any,
     dispose: vi.fn()
   } as any;
 
@@ -178,7 +254,7 @@ async function callTool(
 }
 
 describe("mcpServer", () => {
-  it("lists the full Phase 2 tool surface", async () => {
+  it("lists the full tool surface (35 tools)", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
 
@@ -197,9 +273,29 @@ describe("mcpServer", () => {
         "run_tests",
         "get_lane_status",
         "list_lanes",
-        "commit_changes"
+        "commit_changes",
+        "create_mission",
+        "start_mission",
+        "pause_mission",
+        "resume_mission",
+        "cancel_mission",
+        "steer_mission",
+        "approve_plan",
+        "resolve_intervention",
+        "get_mission",
+        "get_run_graph",
+        "stream_events",
+        "get_step_output",
+        "get_worker_states",
+        "get_timeline",
+        "get_mission_metrics",
+        "get_final_diff",
+        "evaluate_run",
+        "list_evaluations",
+        "get_evaluation_report"
       ])
     );
+    expect(names.length).toBe(35);
   });
 
   it("supports read_context contracts for all pack scopes", async () => {
@@ -756,5 +852,642 @@ describe("mcpServer", () => {
 
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.structuredContent ?? {})).toContain("suiteId or command");
+  });
+
+  // ---------- Mission Lifecycle Tools ----------
+
+  it("routes create_mission with orchestration authorization", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "create_mission", {
+      prompt: "Build the authentication module",
+      title: "Auth Module",
+      priority: "high"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.mission.id).toBe("mission-new");
+    expect(response.structuredContent.mission.prompt).toBe("Build the authentication module");
+    expect(response.structuredContent.mission.status).toBe("planned");
+    expect(fixture.runtime.missionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "Build the authentication module", title: "Auth Module", priority: "high" })
+    );
+    expect(fixture.runtime.eventBuffer.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "mission",
+        payload: expect.objectContaining({ type: "mission_created", missionId: "mission-new" })
+      })
+    );
+  });
+
+  it("routes start_mission and returns run info", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "start_mission", {
+      missionId: "mission-1",
+      runMode: "autopilot"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.runId).toBe("run-1");
+    expect(response.structuredContent.started.run.status).toBe("running");
+    expect(fixture.runtime.aiOrchestratorService.startMissionRun).toHaveBeenCalledWith(
+      expect.objectContaining({ missionId: "mission-1", runMode: "autopilot" })
+    );
+    expect(fixture.runtime.eventBuffer.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "mission",
+        payload: expect.objectContaining({ type: "mission_started", missionId: "mission-1", runId: "run-1" })
+      })
+    );
+  });
+
+  it("routes pause_mission to orchestratorService.pauseRun", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "pause_mission", {
+      runId: "run-1",
+      reason: "User requested pause"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.run.id).toBe("run-1");
+    expect(response.structuredContent.run.status).toBe("paused");
+    expect(fixture.runtime.orchestratorService.pauseRun).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", reason: "User requested pause" })
+    );
+  });
+
+  it("routes resume_mission to orchestratorService.resumeRun", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "resume_mission", { runId: "run-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.run.id).toBe("run-1");
+    expect(response.structuredContent.run.status).toBe("running");
+    expect(fixture.runtime.orchestratorService.resumeRun).toHaveBeenCalledWith({ runId: "run-1" });
+  });
+
+  it("routes cancel_mission to aiOrchestratorService.cancelRunGracefully", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "cancel_mission", {
+      runId: "run-1",
+      reason: "No longer needed"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.cancelled).toBe(true);
+    expect(response.structuredContent.runId).toBe("run-1");
+    expect(fixture.runtime.aiOrchestratorService.cancelRunGracefully).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", reason: "No longer needed" })
+    );
+  });
+
+  it("routes steer_mission with directive", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "steer_mission", {
+      missionId: "mission-1",
+      directive: "Focus on API layer first",
+      targetStepKey: "step-a",
+      priority: "instruction"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.acknowledged).toBe(true);
+    expect(fixture.runtime.aiOrchestratorService.steerMission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-1",
+        directive: "Focus on API layer first",
+        priority: "instruction",
+        targetStepKey: "step-a"
+      })
+    );
+  });
+
+  it("routes approve_plan for approved plans", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "approve_plan", {
+      missionId: "mission-1",
+      approved: true
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.approved).toBe(true);
+    expect(fixture.runtime.aiOrchestratorService.approveMissionPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ missionId: "mission-1" })
+    );
+  });
+
+  it("routes approve_plan rejection with feedback", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "approve_plan", {
+      missionId: "mission-1",
+      approved: false,
+      feedback: "Plan needs more detail"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.approved).toBe(false);
+    expect(response.structuredContent.intervention).toBeDefined();
+    expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-1",
+        title: "Plan rejected",
+        body: "Plan needs more detail"
+      })
+    );
+  });
+
+  it("routes resolve_intervention with status", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "resolve_intervention", {
+      missionId: "mission-1",
+      interventionId: "intervention-1",
+      status: "resolved",
+      note: "Issue addressed"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.intervention.id).toBe("intervention-1");
+    expect(response.structuredContent.intervention.status).toBe("resolved");
+    expect(fixture.runtime.missionService.resolveIntervention).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-1",
+        interventionId: "intervention-1",
+        status: "resolved",
+        note: "Issue addressed"
+      })
+    );
+  });
+
+  // ---------- Observation Tools ----------
+
+  it("routes get_mission to missionService.get", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_mission", { missionId: "mission-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.mission.id).toBe("mission-1");
+    expect(fixture.runtime.missionService.get).toHaveBeenCalledWith("mission-1");
+  });
+
+  it("routes get_run_graph to orchestratorService.getRunGraph", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_run_graph", { runId: "run-1", timelineLimit: 50 });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.graph.run.id).toBe("run-1");
+    expect(response.structuredContent.graph.steps).toHaveLength(1);
+    expect(response.structuredContent.graph.completionEvaluation.complete).toBe(true);
+    expect(fixture.runtime.orchestratorService.getRunGraph).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", timelineLimit: 50 })
+    );
+  });
+
+  it("routes stream_events to eventBuffer.drain", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "stream_events", { cursor: 0, limit: 50 });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.events).toHaveLength(1);
+    expect(response.structuredContent.nextCursor).toBe(1);
+    expect(response.structuredContent.hasMore).toBe(false);
+    expect(fixture.runtime.eventBuffer.drain).toHaveBeenCalledWith(0, 50);
+  });
+
+  it("routes get_step_output and filters attempts by step", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_step_output", {
+      runId: "run-1",
+      stepKey: "step-a"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.step.stepKey).toBe("step-a");
+    expect(response.structuredContent.attempts).toHaveLength(1);
+    expect(response.structuredContent.attempts[0].stepId).toBe("step-1");
+    expect(fixture.runtime.orchestratorService.getRunGraph).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", timelineLimit: 0 })
+    );
+  });
+
+  it("routes get_step_output returns error for unknown step", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_step_output", {
+      runId: "run-1",
+      stepKey: "nonexistent-step"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Step not found");
+  });
+
+  it("routes get_worker_states to aiOrchestratorService.getWorkerStates", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_worker_states", { runId: "run-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.runId).toBe("run-1");
+    expect(response.structuredContent.workers).toHaveLength(1);
+    expect(response.structuredContent.workers[0].state).toBe("running");
+    expect(fixture.runtime.aiOrchestratorService.getWorkerStates).toHaveBeenCalledWith({ runId: "run-1" });
+  });
+
+  it("routes get_timeline to orchestratorService.listTimeline", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_timeline", { runId: "run-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.timeline).toHaveLength(2);
+    expect(response.structuredContent.timeline[0].eventType).toBe("run_started");
+    expect(fixture.runtime.orchestratorService.listTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", limit: 300 })
+    );
+  });
+
+  it("routes get_timeline with stepId filter", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_timeline", { runId: "run-1", stepId: "step-1" });
+
+    expect(response?.isError).toBeUndefined();
+    // Only the entry with stepId "step-1" should be returned
+    expect(response.structuredContent.timeline).toHaveLength(1);
+    expect(response.structuredContent.timeline[0].stepId).toBe("step-1");
+  });
+
+  it("routes get_mission_metrics to aiOrchestratorService.getMissionMetrics", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_mission_metrics", { missionId: "mission-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.metrics.missionId).toBe("mission-1");
+    expect(response.structuredContent.metrics.samples).toEqual([]);
+    expect(fixture.runtime.aiOrchestratorService.getMissionMetrics).toHaveBeenCalledWith({ missionId: "mission-1" });
+  });
+
+  it("routes get_final_diff with per-lane diffs", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_final_diff", { runId: "run-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.runId).toBe("run-1");
+    // The mock graph has one step with laneId "lane-1", so we should get diffs for that lane
+    expect(response.structuredContent.diffs["lane-1"]).toBeDefined();
+    expect(fixture.runtime.diffService.getChanges).toHaveBeenCalledWith("lane-1");
+  });
+
+  // ---------- Evaluation Tools ----------
+
+  it("routes evaluate_run with evaluator authorization and writes to DB", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "evaluate_run", {
+      runId: "run-1",
+      missionId: "mission-1",
+      scores: {
+        planQuality: 8,
+        parallelism: 7,
+        coordinatorDecisions: 9,
+        resourceEfficiency: 6,
+        outcomeQuality: 8
+      },
+      issues: [
+        {
+          category: "planning",
+          severity: "minor",
+          description: "Could have parallelized more",
+          recommendation: "Use wider lanes"
+        }
+      ],
+      summary: "Good overall execution with minor planning gaps",
+      improvements: ["Increase lane parallelism"],
+      metadata: { evaluatorVersion: "1.0" }
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.runId).toBe("run-1");
+    expect(response.structuredContent.missionId).toBe("mission-1");
+    expect(response.structuredContent.scores.planQuality).toBe(8);
+    expect(response.structuredContent.summary).toBe("Good overall execution with minor planning gaps");
+    expect(response.structuredContent.id).toBeTruthy();
+    expect(response.structuredContent.evaluatedAt).toBeTruthy();
+    expect(fixture.runtime.db.run).toHaveBeenCalledTimes(1);
+    // Verify the INSERT call has the correct SQL and the run_id parameter
+    const runCallArgs = fixture.runtime.db.run.mock.calls[0];
+    expect(runCallArgs[0]).toContain("INSERT INTO orchestrator_evaluations");
+    expect(runCallArgs[1]).toContain("run-1");
+    expect(runCallArgs[1]).toContain("mission-1");
+  });
+
+  it("routes list_evaluations and returns summaries", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "list_evaluations", {
+      missionId: "mission-1",
+      limit: 10
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.evaluations).toHaveLength(1);
+    expect(response.structuredContent.evaluations[0].id).toBe("eval-1");
+    expect(response.structuredContent.evaluations[0].scores.planQuality).toBe(8);
+    expect(response.structuredContent.evaluations[0].issueCount).toBe(0);
+    expect(response.structuredContent.evaluations[0].summary).toBe("Good run");
+    expect(fixture.runtime.db.all).toHaveBeenCalled();
+  });
+
+  it("routes get_evaluation_report with run context", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "get_evaluation_report", { evaluationId: "eval-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.evaluation.id).toBe("eval-1");
+    expect(response.structuredContent.evaluation.runId).toBe("run-1");
+    expect(response.structuredContent.evaluation.scores.planQuality).toBe(8);
+    expect(response.structuredContent.evaluation.summary).toBe("Good run");
+    // run context should be populated from orchestratorService.getRunGraph
+    expect(response.structuredContent.runContext).toBeDefined();
+    expect(response.structuredContent.runContext.run.id).toBe("run-1");
+    expect(response.structuredContent.runContext.stepCount).toBe(1);
+    expect(response.structuredContent.runContext.attemptCount).toBe(1);
+  });
+
+  it("denies evaluate_run for non-evaluator role", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "evaluate_run", {
+      runId: "run-1",
+      missionId: "mission-1",
+      scores: {
+        planQuality: 8,
+        parallelism: 7,
+        coordinatorDecisions: 9,
+        resourceEfficiency: 6,
+        outcomeQuality: 8
+      },
+      issues: [],
+      summary: "Good run"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  // ---------- Authorization Tests ----------
+
+  it("evaluator gets reads + orchestration + evaluation", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+
+    // Read-only observation tool should work
+    const readResponse = await callTool(handler, "get_mission", { missionId: "mission-1" });
+    expect(readResponse?.isError).toBeUndefined();
+
+    // Orchestration tool should work
+    const orchResponse = await callTool(handler, "pause_mission", { runId: "run-1" });
+    expect(orchResponse?.isError).toBeUndefined();
+
+    // Evaluation tool should work
+    const evalResponse = await callTool(handler, "evaluate_run", {
+      runId: "run-1",
+      missionId: "mission-1",
+      scores: { planQuality: 8, parallelism: 7, coordinatorDecisions: 9, resourceEfficiency: 6, outcomeQuality: 8 },
+      issues: [],
+      summary: "Test"
+    });
+    expect(evalResponse?.isError).toBeUndefined();
+  });
+
+  it("evaluator denied mutations", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "commit_changes", {
+      laneId: "lane-1",
+      message: "should fail"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  it("evaluator denied spawn", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "evaluator" });
+    const response = await callTool(handler, "spawn_agent", {
+      laneId: "lane-1",
+      provider: "claude",
+      prompt: "test"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  it("external denied orchestration tools", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+
+    // All orchestration tools should be denied
+    const tools = [
+      { name: "create_mission", args: { prompt: "test" } },
+      { name: "start_mission", args: { missionId: "mission-1" } },
+      { name: "pause_mission", args: { runId: "run-1" } },
+      { name: "resume_mission", args: { runId: "run-1" } },
+      { name: "cancel_mission", args: { runId: "run-1" } },
+      { name: "steer_mission", args: { missionId: "mission-1", directive: "test" } },
+      { name: "approve_plan", args: { missionId: "mission-1", approved: true } },
+      { name: "resolve_intervention", args: { missionId: "mission-1", interventionId: "int-1", status: "resolved" } }
+    ];
+
+    for (const tool of tools) {
+      const response = await callTool(handler, tool.name, tool.args);
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+    }
+  });
+
+  it("external denied evaluation tools", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "evaluate_run", {
+      runId: "run-1",
+      missionId: "mission-1",
+      scores: { planQuality: 8, parallelism: 7, coordinatorDecisions: 9, resourceEfficiency: 6, outcomeQuality: 8 },
+      issues: [],
+      summary: "Test"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  it("external can access read-only observation tools", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+
+    // Observation tools should be accessible
+    const missionResp = await callTool(handler, "get_mission", { missionId: "mission-1" });
+    expect(missionResp?.isError).toBeUndefined();
+
+    const graphResp = await callTool(handler, "get_run_graph", { runId: "run-1" });
+    expect(graphResp?.isError).toBeUndefined();
+
+    const timelineResp = await callTool(handler, "get_timeline", { runId: "run-1" });
+    expect(timelineResp?.isError).toBeUndefined();
+
+    // Evaluation read tools should also be accessible
+    const listResp = await callTool(handler, "list_evaluations", {});
+    expect(listResp?.isError).toBeUndefined();
+
+    const reportResp = await callTool(handler, "get_evaluation_report", { evaluationId: "eval-1" });
+    expect(reportResp?.isError).toBeUndefined();
+  });
+
+  // ---------- Event Streaming Tests ----------
+
+  it("stream_events returns events after cursor", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "stream_events", { cursor: 5, limit: 100 });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.eventBuffer.drain).toHaveBeenCalledWith(5, 100);
+    // The drain mock returns cursor + 1 as the event id
+    expect(response.structuredContent.events[0].id).toBe(6);
+    expect(response.structuredContent.nextCursor).toBe(6);
+  });
+
+  it("stream_events with empty drain returns same cursor", async () => {
+    const fixture = createRuntime();
+    // Override drain to return empty events
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+      events: [],
+      nextCursor: cursor,
+      hasMore: false
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "stream_events", { cursor: 10 });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.events).toHaveLength(0);
+    expect(response.structuredContent.nextCursor).toBe(10);
+    expect(response.structuredContent.hasMore).toBe(false);
+  });
+
+  it("stream_events respects category filter", async () => {
+    const fixture = createRuntime();
+    // Return events with different categories
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+      events: [
+        { id: cursor + 1, timestamp: new Date().toISOString(), category: "orchestrator", payload: { type: "step_started" } },
+        { id: cursor + 2, timestamp: new Date().toISOString(), category: "mission", payload: { type: "mission_created" } },
+        { id: cursor + 3, timestamp: new Date().toISOString(), category: "orchestrator", payload: { type: "step_completed" } }
+      ],
+      nextCursor: cursor + 3,
+      hasMore: false
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "stream_events", {
+      cursor: 0,
+      limit: 100,
+      category: "orchestrator"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    // Should only return orchestrator events (2 out of 3)
+    expect(response.structuredContent.events).toHaveLength(2);
+    expect(response.structuredContent.events.every((e: any) => e.category === "orchestrator")).toBe(true);
+  });
+
+  it("stream_events defaults cursor to 0 and limit to 100", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "stream_events", {});
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.eventBuffer.drain).toHaveBeenCalledWith(0, 100);
   });
 });

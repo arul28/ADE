@@ -54,7 +54,6 @@ import type {
   ProjectConfigSnapshot,
   StartOrchestratorRunFromMissionArgs,
   SteerMissionResult,
-  ExecutionPlanPreview as ExecutionPlanPreviewType,
   PrStrategy,
   MissionModelConfig,
   OrchestratorIntelligenceConfig,
@@ -74,9 +73,9 @@ import { PolicyEditor, PRESET_STANDARD } from "./PolicyEditor";
 import { CompletionBanner } from "./CompletionBanner";
 import { PhaseProgressBar } from "./PhaseProgressBar";
 import { MissionPolicyBadge } from "./MissionPolicyBadge";
-import { ExecutionPlanPreview } from "./ExecutionPlanPreview";
 import { UsageDashboard } from "./UsageDashboard";
 import { AgentChannels } from "./AgentChannels";
+import { MissionChatV2 } from "./MissionChatV2";
 import { MissionControlPage } from "./MissionControlPage";
 import { ModelProfileSelector } from "./ModelProfileSelector";
 import { ModelSelector } from "./ModelSelector";
@@ -152,7 +151,7 @@ const EXECUTOR_BADGE_HEX: Record<string, string> = {
   manual: "#3B82F6",
 };
 
-type WorkspaceTab = "board" | "dag" | "channels" | "activity" | "usage";
+type WorkspaceTab = "board" | "dag" | "chat" | "activity" | "details";
 type MissionListViewMode = "list" | "board";
 
 const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: string }> = [
@@ -832,6 +831,14 @@ function MissionChat({
   const workerRailRefreshTimerRef = useRef<number | null>(null);
   const messageRefreshTimerRef = useRef<number | null>(null);
   const queuedMessageThreadRef = useRef<string | null>(null);
+  const visibleRef = useRef(true);
+
+  // Pause polling when tab/window is not visible
+  useEffect(() => {
+    const onVisChange = () => { visibleRef.current = document.visibilityState === "visible"; };
+    document.addEventListener("visibilitychange", onVisChange);
+    return () => document.removeEventListener("visibilitychange", onVisChange);
+  }, []);
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
@@ -958,6 +965,7 @@ function MissionChat({
     void refreshThreads();
     void refreshWorkerRail();
     const interval = setInterval(() => {
+      if (!visibleRef.current) return; // skip poll when backgrounded
       void refreshThreads();
       void refreshWorkerRail();
     }, 12_000);
@@ -966,7 +974,10 @@ function MissionChat({
 
   useEffect(() => {
     void refreshMessages(selectedThreadId);
-    const interval = setInterval(() => void refreshMessages(selectedThreadIdRef.current), 8_000);
+    const interval = setInterval(() => {
+      if (!visibleRef.current) return; // skip poll when backgrounded
+      void refreshMessages(selectedThreadIdRef.current);
+    }, 8_000);
     return () => clearInterval(interval);
   }, [refreshMessages, selectedThreadId]);
 
@@ -2094,8 +2105,6 @@ export default function MissionsPage() {
   const [steeringLog, setSteeringLog] = useState<SteeringEntry[]>([]);
   const graphRefreshTimerRef = useRef<number | null>(null);
 
-  /* ── Execution plan preview state ── */
-  const [executionPlanPreview, setExecutionPlanPreview] = useState<ExecutionPlanPreviewType | null>(null);
 
   /* ── Track original step count for dynamic step indicator ── */
   const [originalStepCount, setOriginalStepCount] = useState<number | null>(null);
@@ -2344,14 +2353,6 @@ export default function MissionsPage() {
     }, delayMs);
   }, [loadOrchestratorGraph]);
 
-  const loadExecutionPlanPreview = useCallback(async (runId: string) => {
-    try {
-      const preview = await window.ade.orchestrator.getExecutionPlanPreview({ runId });
-      setExecutionPlanPreview(preview);
-    } catch {
-      setExecutionPlanPreview(null);
-    }
-  }, []);
 
   useEffect(() => {
     void refreshMissionList({ preserveSelection: true });
@@ -2369,7 +2370,6 @@ export default function MissionsPage() {
       }
       setSelectedMission(null);
       setRunGraph(null);
-      setExecutionPlanPreview(null);
       setSteeringLog([]);
       setChatJumpTarget(null);
       setOriginalStepCount(null);
@@ -2377,20 +2377,10 @@ export default function MissionsPage() {
     }
     setSteeringLog([]);
     setChatJumpTarget(null);
-    setExecutionPlanPreview(null);
     void loadMissionDetail(selectedMissionId);
     void loadOrchestratorGraph(selectedMissionId);
   }, [selectedMissionId, loadMissionDetail, loadOrchestratorGraph]);
 
-  /* ── Load execution plan preview when run graph changes ── */
-  useEffect(() => {
-    const activeRunId = runGraph?.run.id ?? null;
-    if (!activeRunId) {
-      setExecutionPlanPreview(null);
-      return;
-    }
-    void loadExecutionPlanPreview(activeRunId);
-  }, [runGraph?.run.id, loadExecutionPlanPreview]);
 
   useEffect(() => {
     const unsub = window.ade.missions.onEvent((payload) => {
@@ -3015,9 +3005,9 @@ export default function MissionsPage() {
                 {([
                   { key: "board" as WorkspaceTab, num: "01", label: "BOARD", icon: SquaresFour },
                   { key: "dag" as WorkspaceTab, num: "02", label: "DAG", icon: Graph },
-                  { key: "channels" as WorkspaceTab, num: "03", label: "CHANNELS", icon: Hash },
+                  { key: "chat" as WorkspaceTab, num: "03", label: "CHAT", icon: ChatCircle },
                   { key: "activity" as WorkspaceTab, num: "04", label: "ACTIVITY", icon: Pulse },
-                  { key: "usage" as WorkspaceTab, num: "05", label: "USAGE", icon: Lightning }
+                  { key: "details" as WorkspaceTab, num: "05", label: "DETAILS", icon: Lightning }
                 ]).map((tab) => {
                   const isActive = activeTab === tab.key;
                   return (
@@ -3075,27 +3065,11 @@ export default function MissionsPage() {
                     evaluation={runGraph.completionEvaluation}
                   />
                   <PhaseProgressBar steps={runGraph.steps} />
-                  {runGraph.steps.length > 0 && (() => {
-                    const completed = runGraph.steps.filter(s => s.status === "succeeded").length;
-                    const total = runGraph.steps.length;
-                    const pct = Math.round((completed / total) * 100);
-                    return (
-                      <div className="text-[10px] flex items-center gap-2" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        <span>{completed} of {total} steps complete ({pct}%)</span>
-                        {originalStepCount !== null && originalStepCount !== total && (
-                          <span style={{ color: `${COLORS.warning}70` }}>(plan adjusted from {originalStepCount} steps)</span>
-                        )}
-                      </div>
-                    );
-                  })()}
-                  {isActiveMission && (
-                    <ExecutionPlanPreview preview={executionPlanPreview} />
-                  )}
                 </div>
               )}
 
               {/* ── Tab Content ── */}
-              <div className={cn("flex-1 min-h-0", activeTab === "channels" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
+              <div className={cn("flex-1 min-h-0", activeTab === "chat" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
                 {activeTab === "board" && (
                   <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
                     <div className="min-h-0 min-w-0 flex-1 overflow-auto">
@@ -3113,7 +3087,7 @@ export default function MissionsPage() {
                       claims={runGraph?.claims ?? []}
                       onOpenWorkerThread={(target) => {
                         setChatJumpTarget(target);
-                        setActiveTab("channels");
+                        setActiveTab("chat");
                       }}
                     />
                   </div>
@@ -3128,6 +3102,7 @@ export default function MissionsPage() {
                       claims={runGraph?.claims ?? []}
                       selectedStepId={selectedStepId}
                       onStepClick={setSelectedStepId}
+                      runId={runGraph?.run?.id}
                     />
                     </div>
                     <StepDetailPanel
@@ -3137,7 +3112,7 @@ export default function MissionsPage() {
                       claims={runGraph?.claims ?? []}
                       onOpenWorkerThread={(target) => {
                         setChatJumpTarget(target);
-                        setActiveTab("channels");
+                        setActiveTab("chat");
                       }}
                     />
                   </div>
@@ -3153,50 +3128,42 @@ export default function MissionsPage() {
                       runId={runGraph?.run.id ?? ""}
                       initialTimeline={runGraph?.timeline ?? []}
                     />
-                  </div>
-                )}
 
-                {activeTab === "channels" && selectedMissionId && (
-                  <div className="flex h-full min-h-0 flex-col overflow-hidden">
-                    <div className={cn("min-h-0", selectedMission ? "flex-1" : "h-full")}>
-                      <MissionChat
-                        missionId={selectedMissionId}
-                        runId={runGraph?.run.id ?? null}
-                        jumpTarget={chatJumpTarget}
-                        onJumpHandled={() => setChatJumpTarget(null)}
-                      />
-                    </div>
-
-                    {selectedMission && (
-                      <div className="shrink-0" style={{ borderTop: `1px solid ${COLORS.border}` }}>
-                        <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}>
-                          Mission Control Surface
+                    {/* Run Narrative - shown when available */}
+                    {runGraph?.run?.metadata?.runNarrative && Array.isArray(runGraph.run.metadata.runNarrative) && (runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).length > 0 && (
+                      <div className="space-y-1.5 mt-4">
+                        <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: COLORS.textMuted }}>
+                          RUN NARRATIVE
                         </div>
-                        <div className="h-[320px]">
-                          {runGraph ? (
-                            <MissionControlWrapper
-                              missionId={selectedMission.id}
-                              missionTitle={selectedMission.title}
-                              graph={runGraph}
-                            />
-                          ) : (
-                            <div className="flex h-full items-center justify-center text-xs" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, background: COLORS.pageBg }}>
-                              No active run. Start a mission to see Mission Control.
+                        <div className="space-y-1">
+                          {(runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).map((entry, i: number) => (
+                            <div key={i} className="text-[11px] flex gap-2 items-start" style={{ fontFamily: MONO_FONT }}>
+                              <span className="shrink-0" style={{ color: COLORS.accent }}>{entry.stepKey}</span>
+                              <span style={{ color: COLORS.textSecondary }}>{entry.summary}</span>
                             </div>
-                          )}
+                          ))}
                         </div>
                       </div>
                     )}
                   </div>
                 )}
 
-                {activeTab === "usage" && selectedMission && (
+                {activeTab === "chat" && selectedMissionId && (
+                  <MissionChatV2
+                    missionId={selectedMissionId}
+                    runId={runGraph?.run.id ?? null}
+                    jumpTarget={chatJumpTarget}
+                    onJumpHandled={() => setChatJumpTarget(null)}
+                  />
+                )}
+
+                {activeTab === "details" && selectedMission && (
                   <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
                 )}
               </div>
 
-              {/* ── Bottom Steering Bar (hidden on Channels tab since channels include steering + control) ── */}
-              {isActiveMission && activeTab !== "channels" && (
+              {/* ── Bottom Steering Bar (hidden on Chat tab since chat includes steering + control) ── */}
+              {isActiveMission && activeTab !== "chat" && (
                 <div className="px-4 py-2.5" style={{ borderTop: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
                   {steerAck && (
                     <div className="mb-2 px-3 py-1.5 text-[10px] flex items-center justify-between" style={{ background: `${COLORS.success}18`, border: `1px solid ${COLORS.success}30`, color: COLORS.success }}>

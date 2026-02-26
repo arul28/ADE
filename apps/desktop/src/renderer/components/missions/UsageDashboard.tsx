@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Pulse, Cpu, CurrencyDollar, Clock, CheckCircle, XCircle, SpinnerGap } from "@phosphor-icons/react";
-import type { AggregatedUsageStats } from "../../../shared/types";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Pulse, Cpu, CurrencyDollar, Clock, CheckCircle, XCircle, SpinnerGap, Brain, ArrowUp, Archive } from "@phosphor-icons/react";
+import type { AggregatedUsageStats, ContextBudget } from "../../../shared/types";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 
 const DEFAULT_MODEL_COLOR = "#71717A";
@@ -51,10 +51,20 @@ type UsageDashboardProps = {
   missionTitle?: string | null;
 };
 
+type CandidateMemory = {
+  id: string;
+  content: string;
+  category: string;
+  confidence: number;
+  createdAt: string;
+};
+
 export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps) {
   const [stats, setStats] = useState<AggregatedUsageStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<CandidateMemory[]>([]);
+  const [contextBudget, setContextBudget] = useState<ContextBudget | null>(null);
 
   const fetchUsage = useCallback(async () => {
     try {
@@ -70,11 +80,57 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
     }
   }, [missionId]);
 
+  const fetchMemoryData = useCallback(async () => {
+    try {
+      if (window.ade.memory) {
+        const rawCandidates = await window.ade.memory.getCandidates({ limit: 10 });
+        setCandidates(rawCandidates as CandidateMemory[]);
+      }
+    } catch {
+      // Memory data is best-effort
+    }
+  }, []);
+
+  const handlePromote = useCallback(async (id: string) => {
+    try {
+      if (window.ade.memory) {
+        await window.ade.memory.promote({ id });
+        setCandidates((prev) => prev.filter((c) => c.id !== id));
+      }
+    } catch {
+      // best-effort
+    }
+  }, []);
+
+  const handleDismiss = useCallback(async (id: string) => {
+    try {
+      if (window.ade.memory) {
+        await window.ade.memory.archive({ id });
+        setCandidates((prev) => prev.filter((c) => c.id !== id));
+      }
+    } catch {
+      // best-effort
+    }
+  }, []);
+
+  // Pause polling when tab/window is not visible
+  const visibleRef = useRef(true);
+  useEffect(() => {
+    const onVisChange = () => { visibleRef.current = document.visibilityState === "visible"; };
+    document.addEventListener("visibilitychange", onVisChange);
+    return () => document.removeEventListener("visibilitychange", onVisChange);
+  }, []);
+
   useEffect(() => {
     fetchUsage();
-    const interval = setInterval(fetchUsage, 10_000);
+    fetchMemoryData();
+    const interval = setInterval(() => {
+      if (!visibleRef.current) return; // skip poll when backgrounded
+      fetchUsage();
+      fetchMemoryData();
+    }, 10_000);
     return () => clearInterval(interval);
-  }, [fetchUsage]);
+  }, [fetchUsage, fetchMemoryData]);
 
   if (loading && !stats) {
     return (
@@ -93,7 +149,10 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
     );
   }
 
-  const maxTokens = Math.max(1, ...stats.byModel.map((m) => m.inputTokens + m.outputTokens));
+  const maxTokens = useMemo(
+    () => Math.max(1, ...stats.byModel.map((m) => m.inputTokens + m.outputTokens)),
+    [stats.byModel]
+  );
 
   const scopeLabel = missionId
     ? `Usage for: ${missionTitle ?? "Selected Mission"}`
@@ -240,6 +299,69 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       )}
       </>
       )}
+
+      {/* Context Budget Panel */}
+      {contextBudget && (
+        <section>
+          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>
+            <Brain size={12} weight="regular" style={{ display: "inline", marginRight: "4px", verticalAlign: "middle", color: "#71717A" }} />
+            Context Budget
+          </h3>
+          <div className="flex flex-col gap-1" style={{ background: "#13101A", border: "1px solid #1E1B26", padding: "12px" }}>
+            <div className="flex items-center justify-between" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", marginBottom: "4px" }}>
+              <span>{formatTokens(contextBudget.totalTokens)} / {formatTokens(contextBudget.modelContextWindow)}</span>
+              <span>{contextBudget.utilizationPct.toFixed(0)}% utilized</span>
+            </div>
+            <ContextBudgetBar label="System Prompt" tokens={contextBudget.systemPromptTokens} total={contextBudget.modelContextWindow} color="#8B5CF6" />
+            <ContextBudgetBar label="Tool Schemas" tokens={contextBudget.toolSchemaTokens} total={contextBudget.modelContextWindow} color="#3B82F6" />
+            <ContextBudgetBar label="History" tokens={contextBudget.historyTokens} total={contextBudget.modelContextWindow} color="#22C55E" />
+            <ContextBudgetBar label="Memory/Facts" tokens={contextBudget.memoryTokens} total={contextBudget.modelContextWindow} color="#F59E0B" />
+            <ContextBudgetBar label="Docs" tokens={contextBudget.docsTokens} total={contextBudget.modelContextWindow} color="#EC4899" />
+            <div className="flex items-center gap-4 mt-1" style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+              <span>Truncations: {contextBudget.truncationEvents}</span>
+              <span>Compactions: {contextBudget.compactionEvents}</span>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Candidate Memories */}
+      {candidates.length > 0 && (
+        <section>
+          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>
+            Candidate Memories ({candidates.length})
+          </h3>
+          <div className="flex flex-col gap-0.5">
+            {candidates.map((c) => (
+              <div key={c.id} className="flex items-start gap-2 px-2.5 py-1.5 text-[11px]" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
+                <span className="shrink-0 px-1 py-0.5" style={{ background: "#F59E0B18", color: "#F59E0B", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+                  {c.category}
+                </span>
+                <span className="flex-1 truncate" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{c.content}</span>
+                <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", whiteSpace: "nowrap" }}>
+                  {(c.confidence * 100).toFixed(0)}%
+                </span>
+                <button
+                  onClick={() => handlePromote(c.id)}
+                  className="shrink-0 p-0.5 hover:opacity-80"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#22C55E" }}
+                  title="Promote to permanent memory"
+                >
+                  <ArrowUp size={12} weight="bold" />
+                </button>
+                <button
+                  onClick={() => handleDismiss(c.id)}
+                  className="shrink-0 p-0.5 hover:opacity-80"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#71717A" }}
+                  title="Dismiss"
+                >
+                  <Archive size={12} weight="regular" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -253,6 +375,21 @@ function SummaryCard({ icon: Icon, label, value, sub }: { icon: React.ElementTyp
       </div>
       <span style={{ color: "#FAFAFA", fontFamily: "'Space Grotesk', sans-serif", fontSize: "28px", fontWeight: 700 }}>{value}</span>
       {sub && <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{sub}</span>}
+    </div>
+  );
+}
+
+function ContextBudgetBar({ label, tokens, total, color }: { label: string; tokens: number; total: number; color: string }) {
+  const pct = total > 0 ? Math.max(1, (tokens / total) * 100) : 0;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center justify-between">
+        <span style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{label}</span>
+        <span style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatTokens(tokens)}</span>
+      </div>
+      <div className="h-1 overflow-hidden" style={{ background: "#1E1B26", borderRadius: 0 }}>
+        <div className="h-full transition-all" style={{ width: `${pct}%`, backgroundColor: color, borderRadius: 0 }} />
+      </div>
     </div>
   );
 }

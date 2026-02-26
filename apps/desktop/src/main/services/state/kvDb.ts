@@ -49,7 +49,9 @@ export type AdeDb = {
   close: () => void;
 };
 
-const require = createRequire(__filename);
+const require = createRequire(
+  typeof __filename !== "undefined" ? __filename : import.meta.url
+);
 const FLUSH_DEBOUNCE_MS = 500;
 
 function resolveSqlJsWasmDir(): string {
@@ -2074,6 +2076,48 @@ function migrate(db: Database) {
     ["last_accessed_at"]
   );
 
+  // WS7 Memory promotion flow: add status, agent_id, confidence, promoted_at, source_run_id columns.
+  addColumnIfMissing(db, "memories", "status text default 'promoted'", "status");
+  addColumnIfMissing(db, "memories", "agent_id text", "agent_id");
+  addColumnIfMissing(db, "memories", "confidence real default 1.0", "confidence");
+  addColumnIfMissing(db, "memories", "promoted_at text", "promoted_at");
+  addColumnIfMissing(db, "memories", "source_run_id text", "source_run_id");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_status on memories(project_id, status)",
+    "memories",
+    ["project_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_agent on memories(agent_id)",
+    "memories",
+    ["agent_id"]
+  );
+
+  // WS7 Agent identities table (schema placeholder for future).
+  db.run(`
+    create table if not exists agent_identities (
+      id text primary key,
+      project_id text not null,
+      name text not null,
+      profile_json text not null default '{}',
+      persona_json text not null default '{}',
+      tool_policy_json text not null default '{}',
+      user_preferences_json text not null default '{}',
+      heartbeat_json text,
+      model_preference text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_agent_identities_project on agent_identities(project_id)",
+    "agent_identities",
+    ["project_id"]
+  );
+
   db.run(`
     create table if not exists orchestrator_shared_facts (
       id text primary key,
@@ -2095,6 +2139,35 @@ function migrate(db: Database) {
     "create index if not exists idx_orchestrator_shared_facts_run_type on orchestrator_shared_facts(run_id, fact_type)",
     "orchestrator_shared_facts",
     ["run_id", "fact_type"]
+  );
+
+  // Context compaction engine — transcript persistence for SDK agent sessions.
+  db.run(`
+    create table if not exists attempt_transcripts (
+      id text primary key,
+      project_id text not null,
+      attempt_id text not null,
+      run_id text not null,
+      step_id text not null,
+      messages_json text not null,
+      token_count integer default 0,
+      compacted_at text,
+      compaction_summary text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_attempt_transcripts_attempt on attempt_transcripts(attempt_id)",
+    "attempt_transcripts",
+    ["attempt_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_attempt_transcripts_run on attempt_transcripts(run_id)",
+    "attempt_transcripts",
+    ["run_id"]
   );
 }
 

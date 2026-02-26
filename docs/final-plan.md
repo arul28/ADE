@@ -1,6 +1,6 @@
 # ADE Final Plan (Canonical Roadmap)
 
-Last updated: 2026-02-24
+Last updated: 2026-02-26
 Owner: ADE
 Status: Active
 
@@ -59,6 +59,16 @@ Baseline derived from code in `apps/desktop`.
 - Model selection per-mission with per-model thinking budgets
 - Activity feed with category dropdown (replaces 12+ filter buttons)
 - Mission workspace with missionId-filtered queries
+- **MCP Server Overhaul (shipped 2026-02-26):** MCP server expanded to 35 tools as full headless orchestration API — mission lifecycle (8), observation (8), evaluation (3), plus 16 existing tools. Enables external evaluators and Claude Code integration.
+- **Project Hivemind features (shipped 2026-02-25):**
+  - Slack-like mission chat with sidebar channels, global view, @mentions, real-time updates (`MissionChatV2.tsx`, `MentionInput.tsx`)
+  - Inter-agent message delivery to PTY and SDK agents (`deliverMessageToAgent`, `teamMessageTool`)
+  - Shared facts, project memories, and run narrative in agent prompts (`buildFullPrompt`, `appendRunNarrative`)
+  - Smart fan-out via meta-reasoner: dynamic step injection, fan-out completion tracking, autopilot integration (`metaReasoner.ts`)
+  - Context compaction engine: 70% threshold, pre-compaction writeback, transcript JSONL, attempt resume (`compactionEngine.ts`, `attempt_transcripts` table)
+  - Memory architecture: agent identities table, promotion flow (candidate/promoted/archived), auto-promotion, Context Budget Panel
+  - Activity narrative: Run Narrative section in Activity tab
+  - UI bug fixes: removed `ExecutionPlanPreview`, fixed duplicate progress bar, fixed DAG SVG spinning animation, tab renames (usage->details, channels->chat)
 
 ### 2.3 Architectural leverage and constraints
 
@@ -73,7 +83,7 @@ Baseline derived from code in `apps/desktop`.
 Not implemented yet:
 
 - Agents hub (unified autonomous agent system — automation, Night Shift, watcher, review agents)
-- Agent identities (persona/policy bundles)
+- Agent identities as full persona/policy bundles (schema exists in `agent_identities` table from Hivemind WS7, but full Phase 4 identity system not yet built)
 - Morning Briefing (swipeable card review for overnight results)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
 - Compute backend abstraction (local/VPS/Daytona)
@@ -90,7 +100,7 @@ ADE becomes the execution control plane for parallel agentic development:
 
 1. Users execute AI tasks via existing CLI subscriptions (Claude Pro/Max, ChatGPT Plus) -- no API keys, no sign-up.
 2. ADE's `AgentExecutor` interface unifies agent SDKs -- `ai-sdk-provider-claude-code` for Claude and `@openai/codex-sdk` for Codex -- spawning CLIs against user subscriptions.
-3. An MCP server exposes ADE capabilities as tools; a Claude session acts as AI orchestrator on top of the deterministic runtime.
+3. The AI orchestrator uses in-process Vercel AI SDK coordinator tools for mission coordination; the MCP server exposes ADE capabilities as a full headless orchestration API for external agents, evaluators, and CI/CD integration.
 4. Missions, lanes, packs, conflicts, and PRs share one coherent execution model.
 5. Desktop, relay machines, and iOS share one mission/audit state model.
 6. All core features work in `guest` mode (no AI) -- AI orchestration is additive, never mandatory.
@@ -106,7 +116,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | ~70% |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | ~90% (Hivemind complete, MCP server overhaul shipped, live multi-agent remaining) |
 | Agents hub (Automations → Agents rebrand) | Phase 4 | Phase 3 | Planned |
 | Agent identities | Phase 4 | Phase 3 | Planned |
 | Night Shift agents | Phase 4 | Phase 3 | Planned |
@@ -187,7 +197,7 @@ Goal: Replace all legacy AI call paths with subscription-powered agent SDKs unif
 #### W4: CodexExecutor Implementation
 - Wrap `@openai/codex-sdk` directly → `codex` CLI subprocess via JSONL over stdin/stdout.
 - **Thread API** for complex tasks: `codex.startThread({ workingDirectory, config })`, `thread.run()`, `thread.runStreamed()`, `codex.resumeThread()`.
-- **`codex exec`** for one-shot tasks: spawn `codex exec --full-auto --sandbox read-only --json` via `child_process` for narrative generation, PR descriptions, terminal summaries.
+- **`codex exec`** for one-pass tasks: spawn `codex exec --full-auto --sandbox read-only --json` via `child_process` for narrative generation, PR descriptions, terminal summaries (Phase 4+ wraps these calls in ephemeral task-agent runtimes).
 - Map ADE's unified permission model to Codex-specific options:
   - `read-only` → `sandbox_permissions: "read-only"`, `approval_mode: "untrusted"`
   - `edit` → `sandbox_permissions: "workspace-write"`, `approval_mode: "on-request"`
@@ -200,7 +210,7 @@ Goal: Replace all legacy AI call paths with subscription-powered agent SDKs unif
 - Create `aiIntegrationService` as the single AI execution surface for all main-process callers.
 - Provider model: `guest` (no AI, all local features work) and `subscription` (uses existing CLI subscriptions via agent SDKs).
 - Per-task-type model/provider routing with resolution order: step-level hint → task config → mission policy → global default → built-in default → first available CLI.
-- All Phase 1 AI tasks are **one-shot** (no multi-turn): send prompt + context, receive result, session ends. Multi-turn orchestration is deferred to Phase 3.
+- All Phase 1 AI tasks were initially one-pass (no multi-turn): send prompt + context, receive result, session ends. Phase 4+ preserves this UX while routing through standardized agent runtime records.
 
 #### W6: Migration — Narrative Generation
 - Migrate pack narrative generation from direct CLI spawn to `AgentExecutor.execute()`.
@@ -424,7 +434,7 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
   - `last_output_preview`: last agent message text (truncated).
   - `resume_command`: stored as provider + threadId/sessionId for resume.
 - Session delta computation: same algorithm as terminal sessions — diff `head_sha_start` vs current state, scan chat events for `file_change` items, extract failure lines from `command` events.
-- Wire into `onSessionEnded` callback chain: job engine, automation service, orchestrator all receive chat session end events.
+- Wire into `onSessionEnded` callback chain: job engine, agent service (automation pipeline), and orchestrator all receive chat session end events.
 - Chat sessions appear in both:
   - **Terminals tab** session list (with "codex-chat" or "claude-chat" tool type badge)
   - **Lanes tab** Work Pane (in the agent chat view)
@@ -611,9 +621,11 @@ Goal: Expose ADE capabilities as MCP tools for AI orchestrator consumption. The 
 
 ---
 
-## Phase 3 -- AI Orchestrator (~70% Complete)
+## Phase 3 -- AI Orchestrator (~90% Complete — Project Hivemind Shipped)
 
-Goal: Full AI-powered mission orchestration via a Claude session connected to the MCP server. The AI orchestrator sits on top of the existing deterministic runtime (DAG scheduling, claims, context snapshots) and makes intelligent decisions about what to do, when, and how.
+Goal: Full AI-powered mission orchestration via a Claude session with in-process Vercel AI SDK coordinator tools. The AI orchestrator sits on top of the existing deterministic runtime (DAG scheduling, claims, context snapshots) and makes intelligent decisions about what to do, when, and how. The MCP server has been overhauled to serve as a full headless orchestration API (35 tools) for external observers, evaluators, and spawned agents.
+
+> **Project Hivemind** (shipped 2026-02-25) delivered 8 workstreams that evolved the orchestrator from a basic runtime into an intelligent, collaborative multi-agent system. See [Phase 3 Hivemind Workstreams](#phase-3-hivemind-workstreams-shipped-2026-02-25) below for details.
 
 ### Reference docs
 
@@ -688,6 +700,58 @@ Goal: Full AI-powered mission orchestration via a Claude session connected to th
 - Context packs serve as compressed memory for the orchestrator session.
 - Progressive context loading: start with mission pack + project pack, load worker result summaries on demand.
 
+### Phase 3 Hivemind Workstreams (Shipped 2026-02-25)
+
+Project Hivemind was a coordinated 8-workstream effort to evolve the ADE orchestrator from a basic mission runtime into an intelligent, collaborative multi-agent system — making it behave like a "really smart PM" that proactively communicates, makes autonomous decisions, and coordinates agents effectively.
+
+#### HW1: UI Bug Fixes — SHIPPED
+- Removed deprecated `ExecutionPlanPreview` component.
+- Fixed duplicate progress bar rendering in mission detail.
+- Fixed DAG spinning animation using SVG `animateTransform`.
+- Renamed tabs: "usage" to "details", "channels" to "chat".
+
+#### HW2: Slack-Like Chat — SHIPPED
+- `MentionInput.tsx`: Shared component for @mention input with agent/user autocomplete.
+- `MissionChatV2.tsx`: Full redesign of mission chat with sidebar channels (per-agent DMs), global view, @mention support, and real-time message updates.
+- Replaces the previous flat chat interface with a structured, Slack-style experience.
+
+#### HW3: Inter-Agent Messaging — SHIPPED
+- `deliverMessageToAgent()`: Delivers messages to agents via both PTY (terminal injection) and SDK (tool-based) channels.
+- `parseMentions()` and `routeMessage()`: Parse @mentions from chat input and route messages to the correct agent(s).
+- New IPC endpoints: `getGlobalChat`, `deliverMessage`, `getActiveAgents`.
+- `teamMessageTool.ts`: MCP tool that agents can invoke to send messages to other agents or the orchestrator.
+
+#### HW4: Shared Facts & Narrative — SHIPPED
+- Shared facts and project memories injected into agent prompts via `buildFullPrompt()` in `baseOrchestratorAdapter.ts`.
+- `appendRunNarrative()`: Appends structured narrative entries to a running mission log, providing agents with context about what other agents have accomplished.
+- Compaction hints: system automatically suggests when context should be compacted based on narrative length.
+- Memory tools added to `createCodingToolSet()` so agents can read/write shared facts during execution.
+
+#### HW5: Smart Fan-Out — SHIPPED
+- `metaReasoner.ts`: Analyzes mission plans for fan-out opportunities using `analyzeForFanOut()`.
+- Dynamic step injection: can inject new steps into a running mission plan (external/internal/hybrid fan-out patterns).
+- Fan-out completion tracking: monitors parallel step groups and triggers join logic when all fan-out branches complete.
+- Autopilot integration: meta-reasoner decisions feed into the autopilot loop for hands-free execution.
+
+#### HW6: Context Compaction — SHIPPED
+- `attempt_transcripts` table in SQLite: stores per-attempt transcript data for durable recovery.
+- `compactionEngine.ts`: Monitors context window utilization and triggers compaction at 70% threshold.
+- Pre-compaction writeback: ensures all pending state is written to durable storage before context is compacted.
+- `resumeUnified()`: Resumes compacted sessions from durable transcript state.
+- Chat transcript JSONL format for efficient streaming and replay.
+
+#### HW7: Memory Architecture — SHIPPED
+- Schema evolution: added `status` (candidate/promoted/archived), `confidence`, and `agent_id` columns to memory tables.
+- `agent_identities` table: stores agent identity records with metadata.
+- Promotion flow: memories progress from `candidate` (auto-generated) to `promoted` (validated) to `archived` (deprecated), with auto-promotion based on confidence thresholds.
+- Context Budget Panel: UI component showing real-time context window utilization, token counts, and compaction status.
+- Memory IPC endpoints for CRUD operations on memories and identities.
+
+#### HW8: Activity Narrative — SHIPPED
+- Run Narrative section added to the Activity tab in mission detail.
+- Displays a chronological narrative of what happened during a mission run, including agent actions, decisions, fan-out events, and completion summaries.
+- Integrates with the `appendRunNarrative()` data from HW4.
+
 ### Remaining Workstreams
 
 #### W13: Live Multi-Agent Orchestration
@@ -718,37 +782,80 @@ Goal: Full AI-powered mission orchestration via a Claude session connected to th
 
 ### Exit criteria
 
-- Missions launch AI-powered orchestration from plain-English prompts.
-- AI orchestrator plans and executes multi-step, multi-lane workflows using MCP tools.
-- Worker agents operate in isolated lane worktrees with scoped permissions and context.
+- Missions launch AI-powered orchestration from plain-English prompts. **(Satisfied)**
+- AI orchestrator plans and executes multi-step, multi-lane workflows using MCP tools. **(Partially satisfied — planning and execution work; live multi-agent coordination is WIP)**
+- Worker agents operate in isolated lane worktrees with scoped permissions and context. **(Satisfied)**
 - File conflict prevention works at planning time (claim validation) and at merge time (pre-merge checks).
-- Plan approval gates work for complex steps: workers plan in read-only mode, orchestrator reviews.
-- All six coordination patterns function: sequential, parallel fan-out, fan-in, plan-then-implement, review-and-revise, speculative parallel.
-- Orchestrator decisions flow through the deterministic runtime with full audit trail.
-- Interventions route from orchestrator to UI and back with correct lifecycle transitions.
-- Activity feed, DAG visualization, and worker transcript tailing provide real-time mission observability.
-- Orchestrator session survives restart via deterministic runtime state recovery.
+- Plan approval gates work for complex steps: workers plan in read-only mode, orchestrator reviews. **(Satisfied)**
+- All six coordination patterns function: sequential, parallel fan-out, fan-in, plan-then-implement, review-and-revise, speculative parallel. **(Partially satisfied — fan-out via meta-reasoner shipped in Hivemind HW5; remaining patterns in W14)**
+- Orchestrator decisions flow through the deterministic runtime with full audit trail. **(Satisfied)**
+- Interventions route from orchestrator to UI and back with correct lifecycle transitions. **(Satisfied)**
+- Activity feed, DAG visualization, and worker transcript tailing provide real-time mission observability. **(Activity feed + run narrative satisfied via Hivemind HW8/HW9; transcript tailing in W16)**
+- Orchestrator session survives restart via deterministic runtime state recovery. **(Satisfied — compaction engine + attempt_transcripts in Hivemind HW6)**
 - Worker lifecycle (spawn, heartbeat, idle, shutdown) operates reliably under normal and failure conditions.
-- Orchestrator configuration is fully controllable from Settings UI.
+- Orchestrator configuration is fully controllable from Settings UI. **(Satisfied)**
+- Inter-agent communication works via Slack-like chat UI with @mentions and message routing. **(Satisfied — Hivemind HW2/HW3)**
+- Agents share facts, narrative context, and project memories during execution. **(Satisfied — Hivemind HW4)**
+- Smart fan-out dynamically injects parallel steps when meta-reasoner detects opportunities. **(Satisfied — Hivemind HW5)**
+- Context compaction prevents context overflow and supports session resume from durable state. **(Satisfied — Hivemind HW6)**
+- Memory system supports promotion flow with confidence scoring and agent identity tracking. **(Satisfied — Hivemind HW7)**
 
 ---
 
 ## Phase 4 -- Agents Hub (5-6 weeks)
 
-Goal: Rebrand Automations into a unified **Agents** tab — the control center for all autonomous ADE behavior. Users create, configure, and monitor agents that perform work on their behalf: running automations, executing Night Shift tasks, watching repos, and more. Each agent combines an identity (persona + policy), a trigger (when to run), a behavior (what to do), and guardrails (budget + stop conditions).
+Goal: Rebrand Automations into a unified **Agents** tab and make ADE **agent-first** for all non-interactive AI execution. Users create, configure, and monitor agents that perform work on their behalf: running automations, executing Night Shift tasks, watching repos, handling PR/conflict workflows, and more.
 
 ### Core Concept: What Is an Agent?
 
-An **Agent** in ADE is a configured autonomous unit that performs work on the user's behalf. Every agent follows the same schema:
+An **Agent** in ADE is not just a prompt preset. It is a durable unit with explicit definition, runtime, and memory boundaries:
 
 ```
-Agent = Identity + Trigger + Behavior + Guardrails
+Agent System = AgentDefinition + AgentRuntime + AgentMemory + Guardrails
 ```
 
-- **Identity**: Persona name, system prompt overlay, model/provider preferences, risk policies, permission constraints.
-- **Trigger**: When the agent activates — event-driven (commit, session-end), scheduled (cron/time), polling (watch a resource), or manual.
-- **Behavior**: What the agent does — run an automation pipeline, execute a mission, watch a repo/API and report findings, run code health scans.
-- **Guardrails**: Budget caps (time, tokens, steps, USD), stop conditions (first failure, intervention threshold, budget exhaustion), and approval requirements.
+- **AgentDefinition**: Identity, policy, trigger, behavior template, profile files, and default memory policy.
+- **AgentRuntime**: A concrete execution instance bound to mission/run/thread/session IDs, compute backend, and lane scope.
+- **AgentMemory**: Scoped persistence (runtime-thread, run, project, identity) with explicit promotion and provenance.
+- **Guardrails**: Budget caps (time, tokens, steps, USD), stop conditions, tool restrictions, and approval requirements.
+
+### Phase 4 Foundational Decision — Agent-First AI Runtime
+
+From Phase 4 forward, ADE routes AI execution as follows:
+
+- **All non-interactive AI calls run via agent runtimes** (missions, PR AI actions, conflict AI actions, night shift, watcher/review checks, background task execution, and future mobile-triggered runs).
+- **Interactive development remains direct** in Lanes Work (`Terminal` + `Chat`) for normal day-to-day coding.
+- Legacy one-shot AI call paths must be wrapped by a compatibility adapter that creates an ephemeral task-agent runtime and writes standard runtime records.
+
+This keeps observability, memory, and policy enforcement consistent across every AI surface.
+
+### Execution Classes
+
+ADE supports two execution classes:
+
+- **Resident agents**: Triggered by schedule/event/poll; always available as durable definitions with persistent memory namespaces.
+- **Task agents**: On-demand, short-lived runtimes created from a definition/template for one job.
+
+Resident agents are "always-on" at the infrastructure/scheduler level, not a continuously thinking model process.
+
+### Chat and Thread Topology
+
+Agent communication is explicitly split:
+
+- **Agent Home Thread** (Agents tab): trains/configures the agent identity and long-term behavior.
+- **Runtime Threads** (missions/tasks): execution-local chat tied to run/step/attempt/session IDs.
+
+Memory promotion across these thread types is policy-driven, not automatic transcript merging.
+
+### Context and Memory Architecture (OpenClaw-Inspired, ADE-Owned)
+
+ADE adopts the useful OpenClaw-style ideas while keeping local deterministic control:
+
+- Each run assembles context from bounded layers, not full transcript dumps.
+- Agent profile/context files are injected per runtime (identity, tools, user prefs, heartbeat, memory summary).
+- Long-term memory stays outside model sessions in ADE-managed storage, with retrieval tools and writeback policy.
+- Compaction writes durable facts before replacing large conversation state.
+- "Always-on continuity" is achieved by state reconstruction, not immortal model processes.
 
 ### Agent Types
 
@@ -772,9 +879,18 @@ All agent types share the same underlying schema, identity system, and guardrail
 
 ### Dependencies
 
-- Phase 3 complete.
+- Phase 3 complete (remaining W13-W17 can run in parallel).
+- **Hivemind infrastructure available**: `agent_identities` table (HW7), inter-agent messaging (HW3), shared facts/memories (HW4), Slack-like chat (HW2), context compaction (HW6), smart fan-out (HW5). Phase 4 should build on these rather than re-implementing.
+- AI call-site inventory complete: every non-interactive AI path has a migration target into `agentRuntimeService`.
 
 ### Workstreams
+
+#### W0: Agent-First Migration Gate
+
+- Inventory and classify all current AI entry points as `interactive` or `non-interactive`.
+- Migrate non-interactive call paths to `agentRuntimeService.invoke(...)`.
+- Add enforcement checks so new non-interactive AI code paths cannot bypass runtime tracking/policy layers.
+- Preserve current UX with compatibility wrappers during migration.
 
 #### W1: Rebrand Automations → Agents
 
@@ -790,6 +906,10 @@ All agent types share the same underlying schema, identity system, and guardrail
 #### W2: Agent Schema + Data Model
 
 - Extend the existing `AutomationRule` schema into a unified `Agent` schema:
+- Add explicit separation between definition and runtime records.
+- Add `executionClass` (`resident` | `task`) and `runtimeSource` metadata to support consistent tracking across all AI surfaces.
+- Add memory policy config (`readScopes`, `writeScopes`, promotion rules, compaction behavior).
+- Add runtime profile file definitions for context assembly (`IDENTITY`, `TOOLS`, `USER_PREFS`, `HEARTBEAT`, `MEMORY_SUMMARY`).
 
 ```typescript
 interface Agent {
@@ -1359,6 +1479,13 @@ Bridge between the interactive agent chat (Work Tab) and the mission system. Whe
 - **Reverse flow**: Mission results can be summarized back into the originating chat session.
 - **IPC**: `ade.agentChat.escalateToMission(sessionId)` → opens mission launcher with context.
 
+#### W13A: Agent Chain Missions and Surface Unification
+
+- Mission launcher supports a chain of agent definitions instead of only fixed Planning/Implementation/Test toggles.
+- Default mission templates still ship as presets, but resolve to explicit agent-chain configs.
+- PR/Conflict "Resolve with AI" flows become named task-agent invocations with standard runtime/memory records.
+- Runtime thread links are preserved so agent output remains traceable across missions, PRs, conflicts, and Agents tab history.
+
 #### W14: Validation
 
 - Agent schema validation tests (all five types, all trigger types, all behavior configs).
@@ -1400,12 +1527,15 @@ Phase 4 introduces Task Agents with `computeBackend`, `computeEnvironment`, and 
 - When Phase 5.5 ships, the grayed-out options in the Task Agent builder activate automatically — no schema migration needed.
 - Computer Use MCP tools (`screenshot_environment`, `record_environment`, etc.) become available to all agent types, not just Task Agents.
 - Daytona and E2B backends become selectable for any agent type that declares a compute backend preference.
+- All compute backends mount runtime profile/context files consistently so behavior is portable across local/VPS/Daytona/E2B.
 
 ### Exit criteria
 
 - Automations tab is fully rebranded as Agents with card-based UI following the ADE design system.
+- All non-interactive AI surfaces execute through agent runtimes with unified audit and policy enforcement.
 - Users can create agents of all five types via the guided wizard or natural language.
 - Agent identities provide reusable persona/policy profiles that constrain agent behavior.
+- Agent runtime records preserve source surface (`mission`, `pr`, `conflict`, `agents`, `mobile`) and thread lineage.
 - Identity policy is consistently enforced by both AI orchestrator and deterministic runtime.
 - Identity changes are versioned and auditable.
 - Night Shift agents execute unattended with hard guardrails (budget caps, stop conditions).
@@ -1421,13 +1551,14 @@ Phase 4 introduces Task Agents with `computeBackend`, `computeEnvironment`, and 
 - Learning packs accumulate project knowledge from agent interactions with confidence scoring and scope matching.
 - Learning pack entries are visible and editable in Settings; export/import to CLAUDE.md format is supported.
 - Chat-to-mission escalation packages chat context into a pre-filled mission launcher; mission results can be summarized back into the originating chat.
+- Agent Home threads and Runtime threads are distinct with explicit memory promotion policy between them.
 - Task Agents execute successfully with local/terminal-only defaults. Compute backend and environment selectors display Phase 5.5 options as "coming soon" with graceful fallback.
 
 ---
 
 ## Phase 5 -- Play Runtime Isolation (5-6 weeks)
 
-Goal: Concurrent lane runtimes without collisions. Full lane environment initialization, port isolation, hostname-based routing, and preview URL generation.
+Goal: Concurrent lane runtimes without collisions. Full lane environment initialization, port isolation, hostname-based routing, preview URL generation, and deterministic runtime workspace mounts for agent execution.
 
 ### Reference docs
 
@@ -1448,6 +1579,7 @@ Goal: Concurrent lane runtimes without collisions. Full lane environment initial
 - Environment file copying/templating with lane-specific values (ports, hostnames, API keys).
 - Docker service startup for lane-specific Docker Compose services (databases, caches, queues).
 - Dependency installation (`npm install`, `pip install`, etc.).
+- Standardized runtime mount points for agent profile/context files.
 
 #### W2: Port Allocation & Lease
 - Dynamic port range per lane (e.g., 3000-3099 for lane 1, 3100-3199 for lane 2).
@@ -1540,6 +1672,7 @@ Goal: Abstract lane execution behind a pluggable compute backend interface, enab
 - Abstract backend interface with `create`, `destroy`, `exec`, `getPreviewUrl` methods.
 - Typed configuration per backend.
 - Backend capability discovery (supports Docker, supports preview URLs, etc.).
+- Runtime context/profile file mount contract so agent definitions behave consistently across backends.
 
 #### W2: Local Backend Adapter
 - Implements `ComputeBackend` for local Docker/process execution.
@@ -1750,6 +1883,7 @@ Goal: Remote machine execution with explicit routing and ownership.
   - VPS is source of truth for all mission/audit state.
   - Clients receive state via WebSocket push.
   - Clients cache state locally for instant screen loads.
+  - Resident agent schedules, queues, and memory namespaces sync as first-class state.
 - Renderer:
   - Add `Machines` tab (health, assignment, sync diagnostics).
   - Add local vs relay execution mode controls.
@@ -1764,6 +1898,7 @@ Goal: Remote machine execution with explicit routing and ownership.
 - Desktop can target local or relay machines predictably.
 - Machine health and assignment are visible and actionable.
 - Cross-machine mission state remains consistent under reconnect/failure.
+- Resident agents continue schedule/event execution on relay hosts with deterministic handoff after reconnect.
 - QR code / manual pairing completes in a single step with no re-auth required.
 - VPS headless deployment runs ADE core, MCP server, and relay with no desktop dependency.
 - Notification relay skeleton is in place with documented deployment options.
@@ -1790,6 +1925,7 @@ Goal: Mobile mission control and intervention handling.
 - App:
   - Add SwiftUI shell + relay auth/session handling.
   - Add mission inbox, intervention cards, and outcome summary views.
+  - Add resident-agent inbox (Night Shift, Watcher, Review) and per-agent briefing queue.
   - Add pack/PR/conflict summary surfaces.
   - Add push notifications for intervention-required/completed runs.
   - Add preview URL viewer per backend (Local proxy, Daytona workspace URL, VPS relay).
@@ -1824,6 +1960,7 @@ Goal: Mobile mission control and intervention handling.
 ### Exit criteria
 
 - Users can monitor missions and resolve interventions from iOS.
+- Users can inspect resident-agent queues and morning briefing actions from iOS.
 - Mobile actions are reflected in desktop/relay state in near real time.
 - Token-by-token streaming provides native-feeling responsiveness for agent output.
 - Push notifications reliably surface intervention requests and mission completions.
@@ -1839,7 +1976,7 @@ Base build order:
 1. Phase 1 (Agent SDK Integration + AgentExecutor Interface) — **Complete**
 1.5. Phase 1.5 (Agent Chat Integration) — **Complete**
 2. Phase 2 (MCP Server) — **Complete**
-3. Phase 3 (AI Orchestrator) — **~70% Complete**
+3. Phase 3 (AI Orchestrator) — **~90% Complete** (Project Hivemind shipped 2026-02-25; MCP server overhaul shipped; live multi-agent orchestration remaining)
 4. Phase 4 (Agents Hub)
 5. Phase 5 (Play Runtime Isolation)
 5.5. Phase 5.5 (Compute Backend Abstraction)
@@ -1856,6 +1993,9 @@ Pull-forward rules:
 - Daytona SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration.
 - E2B SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration alongside Daytona.
 - Computer use tool prototyping may begin during Phase 4 (task agents) since task agents reference compute environments and completion behaviors that depend on computer use capabilities.
+- Phase 4 agent identity system can build on the `agent_identities` table and memory promotion flow shipped in Hivemind WS7.
+- Phase 4 inter-agent communication can build on the `teamMessageTool`, `deliverMessageToAgent`, and Slack-like chat infrastructure shipped in Hivemind WS2/WS3.
+- Phase 3 remaining workstreams (W13-W17: live multi-agent orchestration) can proceed in parallel with early Phase 4 work since they are independent of the Agents Hub UI.
 
 ---
 
@@ -1878,7 +2018,7 @@ Each phase must satisfy:
 | CLI subscription availability varies by user | Some users may lack Claude or Codex subscriptions | `guest` mode preserves full local functionality; clear subscription detection in onboarding |
 | CLI tool stability and breaking changes | Two different SDKs (`ai-sdk-provider-claude-code` and `@openai/codex-sdk`) are in play; provider SDK or CLI updates may break execution paths | Pin provider package versions; `AgentExecutor` interface isolates the orchestrator from SDK-level changes; executor implementations are the only code that touches SDK internals |
 | Claude subscription auth policy uncertainty | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; `AgentExecutor` interface enables quick switch to official SDK if policy changes |
-| Context window limits under large missions | Orchestrator may lose coherence on complex multi-step missions | Progressive context loading; context pressure management; pack compression |
+| Context window limits under large missions | Orchestrator may lose coherence on complex multi-step missions | Progressive context loading; context pressure management; pack compression; **compaction engine (Hivemind HW6) triggers at 70% threshold with durable resume** |
 | Monolithic IPC concentration | Slows core extraction and relay work | Domain adapter split in Phase 7 with parity test gates |
 | Unsafe unattended execution | High blast radius in Night Shift | Hard budgets, explicit policy gates, intervention states, identity-level constraints |
 | Runtime isolation brittleness | Play instability | Deterministic lease model + diagnostics + fallback mode |
@@ -1905,6 +2045,15 @@ Each phase must satisfy:
 - Pre-merge issue discovery rate before merge attempt
 - Integration sandbox pass rate before land
 - Mobile intervention completion rate
+
+### Orchestrator Intelligence KPIs (Project Hivemind)
+
+- Fan-out detection accuracy (meta-reasoner correctly identifies parallelizable work)
+- Context compaction trigger accuracy (compaction at 70% prevents context overflow without premature loss)
+- Inter-agent message delivery success rate (PTY + SDK channels)
+- Memory promotion accuracy (auto-promoted facts are confirmed vs. rejected by users)
+- Run narrative usefulness (agents reference shared narrative in subsequent decisions)
+- Smart fan-out step injection success rate (dynamically injected steps complete without errors)
 
 ### Reliability KPIs
 
@@ -1944,6 +2093,10 @@ The program is complete when:
 - Missions launch complex workflows from plain language with AI-powered orchestration and auditable outcomes.
 - AI orchestrator executes across lanes/processes/tests/PRs via MCP tools with robust recovery.
 - Orchestrator decisions flow through the deterministic runtime with full context provenance.
+- Agents collaborate via inter-agent messaging, shared facts, and run narrative (Hivemind infrastructure).
+- Smart fan-out dynamically parallelizes work when meta-reasoner detects opportunities.
+- Context compaction prevents overflow and supports durable session resume.
+- Memory system tracks agent identities and promotes validated knowledge with confidence scoring.
 - Play supports deterministic lane isolation and integration sandbox verification.
 - Agents tab provides unified autonomous agent system with automation, Night Shift, watcher, review, and task agent types.
 - Agent identities provide reusable persona/policy profiles that constrain agent and orchestrator behavior.

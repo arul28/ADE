@@ -16,6 +16,59 @@ import { createMissionService } from "../../desktop/src/main/services/missions/m
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createPrService } from "../../desktop/src/main/services/prs/prService";
+import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
+import { createOrchestratorService } from "../../desktop/src/main/services/orchestrator/orchestratorService";
+import { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
+import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
+
+// ── Event Buffer ─────────────────────────────────────────────────
+// In-memory ring buffer for event streaming (10K cap, FIFO eviction).
+// Stores orchestrator events, DAG mutations, and runtime events with monotonic cursor IDs.
+
+export type BufferedEvent = {
+  id: number;
+  timestamp: string;
+  category: "orchestrator" | "dag_mutation" | "runtime" | "mission";
+  payload: Record<string, unknown>;
+};
+
+export type EventBuffer = {
+  push(event: Omit<BufferedEvent, "id">): void;
+  drain(cursor: number, limit?: number): { events: BufferedEvent[]; nextCursor: number; hasMore: boolean };
+  size(): number;
+};
+
+export function createEventBuffer(capacity = 10_000): EventBuffer {
+  const events: BufferedEvent[] = [];
+  let nextId = 1;
+
+  return {
+    push(event) {
+      const entry: BufferedEvent = { id: nextId++, ...event };
+      events.push(entry);
+      while (events.length > capacity) {
+        events.shift();
+      }
+    },
+    drain(cursor, limit = 100) {
+      const clamped = Math.max(1, Math.min(1000, limit));
+      const startIdx = events.findIndex((e) => e.id > cursor);
+      if (startIdx === -1) {
+        return { events: [], nextCursor: cursor, hasMore: false };
+      }
+      const slice = events.slice(startIdx, startIdx + clamped);
+      const lastId = slice.length > 0 ? slice[slice.length - 1]!.id : cursor;
+      return {
+        events: slice,
+        nextCursor: lastId,
+        hasMore: startIdx + clamped < events.length
+      };
+    },
+    size() {
+      return events.length;
+    }
+  };
+}
 
 export type AdeMcpPaths = {
   adeDir: string;
@@ -47,6 +100,10 @@ export type AdeMcpRuntime = {
   ptyService: ReturnType<typeof createPtyService>;
   testService: ReturnType<typeof createTestService>;
   prService?: ReturnType<typeof createPrService>;
+  memoryService: ReturnType<typeof createMemoryService>;
+  orchestratorService: ReturnType<typeof createOrchestratorService>;
+  aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
+  eventBuffer: EventBuffer;
   dispose: () => void;
 };
 
@@ -120,6 +177,8 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     logger
   });
 
+  const aiIntegrationService = createAiIntegrationService({ db, logger, projectConfigService });
+
   const packService = createPackService({
     db,
     logger,
@@ -182,6 +241,81 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     broadcastEvent: () => {}
   });
 
+  // Ensure MCP-specific tables exist (evaluation framework)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS orchestrator_evaluations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      mission_id TEXT NOT NULL,
+      evaluator_id TEXT NOT NULL,
+      scores_json TEXT NOT NULL,
+      issues_json TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      improvements_json TEXT,
+      metadata_json TEXT,
+      evaluated_at TEXT NOT NULL
+    )
+  `);
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_evaluations_mission
+    ON orchestrator_evaluations(mission_id, evaluated_at)
+  `);
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_evaluations_run
+    ON orchestrator_evaluations(run_id, evaluated_at)
+  `);
+
+  const eventBuffer = createEventBuffer();
+
+  const memoryService = createMemoryService(db);
+
+  const orchestratorService = createOrchestratorService({
+    db,
+    projectId,
+    projectRoot,
+    packService,
+    conflictService,
+    ptyService,
+    prService: undefined,
+    projectConfigService,
+    memoryService,
+    onEvent: (e) => {
+      eventBuffer.push({
+        timestamp: new Date().toISOString(),
+        category: "orchestrator",
+        payload: e as unknown as Record<string, unknown>
+      });
+    }
+  });
+
+  const aiOrchestratorService = createAiOrchestratorService({
+    db,
+    logger,
+    missionService,
+    orchestratorService,
+    agentChatService: null,
+    laneService,
+    projectConfigService,
+    aiIntegrationService,
+    prService: undefined,
+    projectRoot,
+    onThreadEvent: (e) => {
+      eventBuffer.push({
+        timestamp: new Date().toISOString(),
+        category: "runtime",
+        payload: e as unknown as Record<string, unknown>
+      });
+    },
+    onDagMutation: (e) => {
+      eventBuffer.push({
+        timestamp: new Date().toISOString(),
+        category: "dag_mutation",
+        payload: e as unknown as Record<string, unknown>
+      });
+    }
+  });
+
   return {
     projectRoot,
     projectId,
@@ -200,7 +334,16 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     missionService,
     ptyService,
     testService,
+    memoryService,
+    orchestratorService,
+    aiOrchestratorService,
+    eventBuffer,
     dispose: () => {
+      try {
+        aiOrchestratorService.dispose();
+      } catch {
+        // ignore
+      }
       try {
         testService.disposeAll();
       } catch {

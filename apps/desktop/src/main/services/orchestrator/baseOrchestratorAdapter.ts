@@ -4,6 +4,7 @@ import type {
   OrchestratorExecutorStartResult
 } from "./orchestratorService";
 import type { OrchestratorWorkerRole, OrchestratorContextView, OrchestratorStep, OrchestratorExecutorKind, TerminalToolType } from "../../../shared/types";
+import type { createMemoryService } from "../memory/memoryService";
 import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "../../../shared/types";
 
 // ─────────────────────────────────────────────────────
@@ -108,7 +109,11 @@ export interface BaseAdapterConfig {
  * Builds the full prompt (system parts + user parts) from the executor start args.
  * This is the shared logic extracted from both Claude and Codex adapters.
  */
-export function buildFullPrompt(args: OrchestratorExecutorStartArgs, executorKind?: OrchestratorExecutorKind): {
+export function buildFullPrompt(
+  args: OrchestratorExecutorStartArgs,
+  executorKind?: OrchestratorExecutorKind,
+  opts?: { memoryService?: ReturnType<typeof createMemoryService>; projectId?: string }
+): {
   prompt: string;
   filePatterns: string[];
   steeringDirectiveCount: number;
@@ -271,6 +276,34 @@ export function buildFullPrompt(args: OrchestratorExecutorStartArgs, executorKin
     systemParts.push(`Context from upstream steps:\n${handoffSummaries.map((s) => `- ${s}`).join("\n")}`);
   }
 
+  // Shared facts from other agents in this run
+  const memoryService = opts?.memoryService;
+  const sharedFacts = memoryService?.getSharedFacts?.(run.id, 20) ?? [];
+  if (sharedFacts.length > 0) {
+    systemParts.push(
+      [
+        "## Shared Team Knowledge",
+        "Facts discovered by other agents in this run:",
+        ...sharedFacts.map((fact) => `- [${fact.factType}] ${fact.content}`)
+      ].join("\n")
+    );
+  }
+
+  // Project memories (high importance only)
+  const memProjectId = opts?.projectId;
+  if (memoryService && memProjectId) {
+    const projectMemories = memoryService.getMemoryBudget(memProjectId, "lite");
+    const promoted = projectMemories.filter((m) => m.importance === "high");
+    if (promoted.length > 0) {
+      systemParts.push(
+        [
+          "## Project Knowledge",
+          ...promoted.map((mem) => `- [${mem.category}] ${mem.content}`)
+        ].join("\n")
+      );
+    }
+  }
+
   // Advisory dependency note
   if (step.joinPolicy === "advisory" && step.dependencyStepIds.length > 0) {
     systemParts.push(
@@ -394,6 +427,30 @@ export function buildFullPrompt(args: OrchestratorExecutorStartArgs, executorKin
     ].join("\n")
   );
 
+  // Compaction context — preserved across context summarization
+  {
+    const completedSteps = args.allSteps.filter((s) => s.status === "succeeded").length;
+    const totalSteps = args.allSteps.length;
+    const claimScopes = Array.isArray(step.metadata?.claimScopes)
+      ? (step.metadata.claimScopes as Array<{ scopeValue?: string }>)
+          .map((c) => c.scopeValue ?? "")
+          .filter(Boolean)
+          .join(", ")
+      : filePatterns.join(", ");
+    systemParts.push(
+      [
+        "## COMPACTION CONTEXT (preserve across context summarization)",
+        `- Mission: "${missionGoal.slice(0, 200)}"`,
+        `- Your step: "${step.metadata?.stepKey ?? step.stepKey}" (${step.title})`,
+        `- Files you own: ${claimScopes || "none"}`,
+        `- Shared facts count: ${sharedFacts.length}`,
+        `- Run progress: ${completedSteps}/${totalSteps} steps complete`,
+        "When your context is summarized/compacted, preserve this section and any important discoveries.",
+        "Before compaction, write important discoveries as shared facts using the memoryAdd tool."
+      ].join("\n")
+    );
+  }
+
   // 2. Build user prompt from context snapshot
   const userParts: string[] = [];
 
@@ -486,7 +543,10 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
         }
 
         // 1-2. Build full prompt (shared logic, executor-aware)
-        const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, executorKind);
+        const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, executorKind, {
+          memoryService: args.memoryService as ReturnType<typeof createMemoryService> | undefined,
+          projectId: args.memoryProjectId,
+        });
 
         // 3. Determine model
         const model =

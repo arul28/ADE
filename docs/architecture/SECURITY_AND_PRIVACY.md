@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-26
 
 This document describes how ADE protects user data, source code, and development workflows. ADE is a fully local-first desktop application — all code, configuration, and AI processing remain on the user's machine.
 
@@ -261,6 +261,44 @@ The audit trail provides a complete record of significant operations for debuggi
 
 **Queryable fields**: Operations can be queried by lane, time range, operation type, or SHA reference. The History page in the UI provides a visual timeline of operations.
 
+### Memory Scoping and Promotion Policy
+
+The memory architecture introduces scoped knowledge namespaces that agents can read and write under policy. Security controls ensure memory cannot leak across projects, runs, or identity boundaries.
+
+#### Memory Scoping Rules
+
+| Scope | Visibility | Write Access | Examples |
+|-------|-----------|-------------|----------|
+| `project` | All runtimes in the project (policy filtered) | Agents with active claims and policy grant | Conventions, architecture decisions, dependency notes |
+| `run` | Runtimes in the current mission/run | Agents in the run | Shared facts, blockers, dependencies |
+| `identity` | Runtimes using the same agent definition/identity | Policy-filtered by identity ownership | Agent-specific preferences and procedures |
+| `runtime-thread` | Current runtime only | Current runtime only | Ephemeral working context and intermediate reasoning |
+| `daily-log` | Time-window continuity readers | Controlled writeback jobs | Briefing snapshots, shift summaries |
+
+**Cross-project isolation**: Memories are strictly scoped to a single project via `project_id`. There is no mechanism for memories to leak between projects. Each project's `.ade/ade.db` contains its own independent memory store.
+
+**Agent identity scoping**: Memories tagged with an `agent_id` are injected only for runtimes bound to that identity (subject to policy). This prevents one identity's learned biases from affecting unrelated agents.
+
+**Home vs runtime threads**: Agent "home" conversations (Agents tab) are not automatically merged into mission/runtime transcripts. Promotion into durable memory requires explicit scoped writeback rules.
+
+#### Candidate Memory Promotion Policy
+
+Memories follow a lifecycle: `candidate` --> `promoted` --> `archived`. This prevents low-quality or speculative information from being permanently injected into runtime context.
+
+| Status | Injected into Prompts | Source | Transition Criteria |
+|--------|----------------------|--------|-------------------|
+| `candidate` | No (unless explicitly requested) | Agent-created during runs | Auto-promoted if confidence >= threshold, or manually promoted |
+| `promoted` | Yes (scope/policy filtered) | Auto-promotion or user action | Archived by user/policy when stale or superseded |
+| `archived` | No | User action or system policy | Can be restored by explicit user action |
+
+**Confidence scoring**: Candidate memories include a `confidence` field (0.0-1.0) set by the creating agent. Only memories with confidence >= the configurable threshold (`ai.orchestrator.memory.auto_promote_threshold`, default 0.8) are auto-promoted. This prevents speculative or uncertain observations from entering the project knowledge base.
+
+**Staleness policy**: Candidate memories older than `max_candidate_age_hours` (default 168 hours / 7 days) are automatically archived. This prevents accumulation of stale, unreviewed candidate memories.
+
+**User oversight**: The Context Budget Panel in the UI displays candidate memories awaiting promotion. Users can review, promote, or archive candidates manually. All promotion and archival actions are logged for audit.
+
+**Redaction**: Memory content is subject to the same secret redaction rules applied to all AI context exports. Memories containing detected secret patterns are redacted before injection into prompts.
+
 ---
 
 ## Integration Points
@@ -282,6 +320,8 @@ The audit trail provides a complete record of significant operations for debuggi
 - **MCP Server**: Exposes ADE tools to the AI orchestrator
 - **Redaction**: Secret patterns stripped from context exports before AI invocation
 - **Bounded exports**: Token-budgeted context payloads prevent excessive data exposure
+- **Memory scoping**: Promoted memories and shared facts injected into agent prompts with project/run-level isolation
+- **Compaction writeback**: Facts extracted before context compaction to prevent knowledge loss
 
 ### Git Operations
 
@@ -306,8 +346,12 @@ The audit trail provides a complete record of significant operations for debuggi
 | Force push safety (`--force-with-lease`) | Done | Hard-coded in git service |
 | Secret redaction rules | Done | `redactSecrets()` and `redactSecretsDeep()` in `apps/desktop/src/main/utils/redaction.ts`; applied to all outbound AI context payloads |
 | Confidence heuristics for proposals | Done | Confidence scoring (high/medium/low) displayed in ConflictsPage proposal list |
+| Memory scoping (project-level isolation) | Done | Memories scoped by project_id, no cross-project leakage |
+| Candidate memory promotion policy | Done | Confidence-based auto-promotion, staleness archival, user oversight via Context Budget Panel |
+| Memory content redaction | Done | Secret redaction rules applied to memory content before prompt injection |
+| Shared facts scoping (run-level isolation) | Done | Shared facts scoped to orchestrator run via run_id |
 
-**Overall status**: DONE. Core local security model (process isolation, preload bridge, config trust, operation tracking, path validation, force push safety, secret redaction, proposal confidence) is fully implemented. ADE is a local-only application with no cloud backend — AI features are powered by local CLI tools via the agent SDKs (AgentExecutor interface).
+**Overall status**: DONE. Core local security model (process isolation, preload bridge, config trust, operation tracking, path validation, force push safety, secret redaction, proposal confidence, memory scoping, memory promotion policy) is fully implemented. ADE is a local-only application with no cloud backend — AI features are powered by local CLI tools via the agent SDKs (AgentExecutor interface).
 
 ---
 

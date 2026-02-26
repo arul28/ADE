@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-26
 >
 > Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan.md`.
 
@@ -102,7 +102,7 @@ Key UI subsystems:
 | PRs | PR creation/linking, checks/reviews, stacked + integration flows |
 | History | Operation/checkpoint/pack event timeline |
 | Agents | Autonomous agent system: automation, Night Shift, watcher, and review agents with identity/policy profiles |
-| Missions | AI orchestrator control center: mission intake, lifecycle board, interventions, artifacts, outcomes |
+| Missions | AI orchestrator control center: mission intake, lifecycle board, Slack-style chat (MissionChatV2 + MentionInput), Details tab, run narrative, interventions, artifacts, outcomes |
 | Settings | Subscription provider config, trust levels, keybindings, terminal profiles, and data controls |
 
 ### 2. Local Core Engine
@@ -130,6 +130,9 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 | `missionPlanningService` | `missionPlanningService.ts` | AI-powered and deterministic mission planning |
 | `orchestratorService` | `orchestratorService.ts` | Run/step/attempt state machine, claim management, context snapshots |
 | `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, ChatEvent streaming |
+| `metaReasoner` | `metaReasoner.ts` | AI-driven fan-out dispatch analysis, dynamic step injection, fan-out strategy selection |
+| `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, pre-compaction writeback, conversation replacement |
+| `messageDelivery` | (in `aiOrchestratorService.ts`) | Inter-agent messaging: `deliverMessageToAgent()`, `parseMentions()`, `routeMessage()`, @mention routing |
 | `laneEnvironmentService` | *Planned* | Lane environment initialization (env files, ports, Docker, deps) |
 | `laneProxyService` | *Planned* | Per-lane hostname proxy (*.localhost routing) |
 | `previewLaunchService` | *Planned* | Preview URL generation and browser launch |
@@ -172,7 +175,7 @@ The MCP server (`apps/mcp-server`) exposes ADE's internal tools to AI processes 
 
 #### AI Orchestrator
 
-The AI Orchestrator coordinates multi-step mission execution using a Claude session connected to the MCP server:
+The AI Orchestrator coordinates multi-step mission execution using a Claude session with **in-process Vercel AI SDK coordinator tools** (13 tools in `coordinatorTools.ts`), not the MCP server:
 
 - Receives mission prompt and context packs from the mission service.
 - Plans execution strategy (sequential, parallel-lite, parallel-first) based on mission complexity.
@@ -206,13 +209,19 @@ The primary data flow through ADE follows this pipeline:
 
 ```
 User creates mission (plain-English prompt)
-  --> AI orchestrator plans execution via claude/codex CLI
-    --> Orchestrator spawns agents in separate lane worktrees
-      --> Agents work in lanes using MCP tools (read context, run tests, commit)
-        --> Context packs track progress at each step
-          --> Orchestrator monitors via gate reports and claim heartbeats
-            --> Interventions route to ADE UI when human input needed
-              --> Results (artifacts, PRs, outcomes) presented to user
+  --> AI orchestrator plans execution via claude/codex CLI (fail-hard planner, 300s timeout)
+    --> Meta-reasoner analyzes for fan-out opportunities (external/internal/hybrid parallel)
+      --> Orchestrator spawns agents in separate lane worktrees
+        --> Agents work in lanes using MCP tools (read context, run tests, commit, memory tools)
+          --> Shared facts + project memories injected into agent prompts via buildFullPrompt()
+            --> Compaction engine monitors token usage, self-summarizes at 70% threshold
+              --> Run narrative appended after each step completion
+                --> Inter-agent messaging via @mentions and teamMessageTool
+                  --> Context packs track progress; attempt transcripts persisted for resume
+                    --> Orchestrator monitors via gate reports and claim heartbeats
+                      --> Interventions route to ADE UI when human input needed
+                        --> PR strategy (integration/per-lane/manual) replaces merge phase
+                          --> Results (artifacts, PRs, outcomes) presented to user
 ```
 
 For non-mission workflows, the standard context pipeline continues:
@@ -243,6 +252,8 @@ Communication between the renderer and main process is organized into a broad ty
 | Missions / Orchestrator | `ade.missions.*`, `ade.orchestrator.*` | invoke/handle + lifecycle events |
 | AI Integration | `ade.ai.*` | invoke/handle + streaming events |
 | Agent Chat | `ade.agentChat.*` | invoke/handle + ChatEvent stream |
+| Memory | `ade.memory.*` | invoke/handle (getBudget, getCandidates, promote, archive, search, scoped retrieval) |
+| Mission Chat | `ade.missions.getGlobalChat`, `ade.missions.deliverMessage`, `ade.missions.getActiveAgents` | invoke/handle + real-time message events |
 | Config / Settings | `ade.projectConfig.*`, `ade.keybindings.*`, `ade.terminalProfiles.*`, `ade.agentTools.*`, `ade.github.*` | invoke/handle + provider/state events |
 
 These per-subsystem counts are illustrative and can drift; `apps/desktop/src/shared/ipc.ts` is the canonical live channel inventory.
@@ -280,11 +291,21 @@ Pack refresh completes --> packService
 
 Mission created --> missionService
   --> missionPlanningService.planMission()
-    --> spawns claude/codex CLI for AI planning (or deterministic fallback)
+    --> spawns claude/codex CLI for AI planning (fail-hard, no deterministic fallback)
     --> orchestratorService.startRun()
       --> orchestrator tick loop begins
+        --> metaReasoner.analyzeForFanOut() injects parallel steps dynamically
         --> spawns agents per step via executor adapters
           --> agents use MCP tools to interact with ADE services
+            --> compactionEngine monitors token usage per session
+              --> appendRunNarrative() generates rolling narrative after step completion
+                --> deliverMessageToAgent() routes inter-agent @mention messages
+
+Agent step completed --> orchestratorService
+  --> appendRunNarrative() updates run narrative
+  --> shared facts extracted and stored in orchestrator_shared_facts
+  --> attempt transcript persisted to attempt_transcripts table
+  --> memory candidates promoted if high-confidence on run completion
 ```
 
 Real-time events (PTY data, process status changes, test run updates, AI streaming tokens) are broadcast to all renderer windows via a `broadcast()` utility that iterates over `BrowserWindow.getAllWindows()`.
@@ -319,9 +340,15 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | MCP server (`apps/mcp-server`) | Complete |
 | MCP permission/policy layer | Complete |
 | MCP call audit logging | Complete |
-| AI orchestrator (Claude session + MCP) | ~70% Complete (Phase 3) — missions overhaul shipped |
+| AI orchestrator (Claude session + MCP) | ~85% Complete (Phase 3) — orchestrator evolution shipped |
+| Meta-reasoner + smart fan-out | Complete |
+| Context compaction engine | Complete |
+| Session persistence + resume | Complete |
+| Inter-agent messaging | Complete |
+| Memory architecture (scoped namespaces + candidate/promoted lifecycle) | Complete |
+| Shared facts + run narrative | Complete |
 | Compute backend abstraction (Phase 5.5) | Planned |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~70% complete — missions overhaul shipped (fail-hard planner, PR strategies, inter-agent messaging, AgentChannels UI). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~85% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). Phase 4 focuses on agent-first runtime unification. Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan.md`

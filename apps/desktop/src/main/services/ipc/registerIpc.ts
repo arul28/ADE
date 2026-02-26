@@ -290,7 +290,11 @@ import type {
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
-  SendAgentMessageArgs
+  SendAgentMessageArgs,
+  GetGlobalChatArgs,
+  DeliverMessageArgs,
+  GetActiveAgentsArgs,
+  ActiveAgentInfo
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -327,6 +331,7 @@ import type { createMissionService } from "../missions/missionService";
 import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionPlanningService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
+import type { createMemoryService } from "../memory/memoryService";
 import { redactSecrets } from "../../utils/redaction";
 
 export type AppContext = {
@@ -367,6 +372,9 @@ export type AppContext = {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
   testService: ReturnType<typeof createTestService>;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
+  mcpSocketServer?: import("node:net").Server;
+  mcpSocketPath?: string;
 };
 
 function clampLayout(layout: DockLayout): DockLayout {
@@ -1851,6 +1859,30 @@ export function registerIpc({
     }
   );
 
+  ipcMain.handle(
+    IPC.orchestratorGetGlobalChat,
+    async (_event, arg: GetGlobalChatArgs): Promise<OrchestratorChatMessage[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getGlobalChat(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorDeliverMessage,
+    async (_event, arg: DeliverMessageArgs): Promise<{ delivered: boolean; method: string }> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.deliverMessageToAgent(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetActiveAgents,
+    async (_event, arg: GetActiveAgentsArgs): Promise<ActiveAgentInfo[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getActiveAgents(arg);
+    }
+  );
+
   ipcMain.handle(IPC.getAggregatedUsage, (_e, arg) => {
     const ctx = getCtx();
     return ctx.aiOrchestratorService.getAggregatedUsage(arg ?? {});
@@ -3055,5 +3087,41 @@ export function registerIpc({
   ipcMain.handle(IPC.projectConfigConfirmTrust, async (_event, arg: { sharedHash?: string } = {}): Promise<ProjectConfigTrust> => {
     const ctx = getCtx();
     return ctx.projectConfigService.confirmTrust(arg);
+  });
+
+  // ── Memory service IPC ──────────────────────────────────────────────
+
+  ipcMain.handle(IPC.memoryGetBudget, async (_event, arg: { projectId?: string; level?: string }) => {
+    const ctx = getCtx();
+    if (!ctx.memoryService) return [];
+    const pid = arg?.projectId ?? ctx.projectId;
+    const level = (arg?.level === "lite" || arg?.level === "standard" || arg?.level === "deep") ? arg.level : "standard";
+    return ctx.memoryService.getMemoryBudget(pid, level);
+  });
+
+  ipcMain.handle(IPC.memoryGetCandidates, async (_event, arg: { projectId?: string; limit?: number }) => {
+    const ctx = getCtx();
+    if (!ctx.memoryService) return [];
+    const pid = arg?.projectId ?? ctx.projectId;
+    return ctx.memoryService.getCandidateMemories(pid, arg?.limit ?? 20);
+  });
+
+  ipcMain.handle(IPC.memoryPromote, async (_event, arg: { id: string }) => {
+    const ctx = getCtx();
+    if (!ctx.memoryService) return;
+    ctx.memoryService.promoteMemory(arg.id);
+  });
+
+  ipcMain.handle(IPC.memoryArchive, async (_event, arg: { id: string }) => {
+    const ctx = getCtx();
+    if (!ctx.memoryService) return;
+    ctx.memoryService.archiveMemory(arg.id);
+  });
+
+  ipcMain.handle(IPC.memorySearch, async (_event, arg: { query: string; projectId?: string; limit?: number }) => {
+    const ctx = getCtx();
+    if (!ctx.memoryService) return [];
+    const pid = arg?.projectId ?? ctx.projectId;
+    return ctx.memoryService.searchMemories(arg.query, pid, undefined, arg?.limit ?? 10);
   });
 }

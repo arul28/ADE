@@ -220,6 +220,7 @@ import type {
   OrchestratorRunGraph,
   OrchestratorRuntimeEvent,
   OrchestratorThreadEvent,
+  DagMutationEvent,
   OrchestratorStep,
   OrchestratorTimelineEvent,
   MissionStep,
@@ -282,7 +283,10 @@ import type {
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
-  SendAgentMessageArgs
+  SendAgentMessageArgs,
+  GetGlobalChatArgs,
+  GetActiveAgentsArgs,
+  ActiveAgentInfo
 } from "../shared/types";
 
 export {};
@@ -407,9 +411,12 @@ declare global {
         setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
         getExecutionPlanPreview: (args: { runId: string }) => Promise<ExecutionPlanPreview | null>;
         sendAgentMessage: (args: SendAgentMessageArgs) => Promise<OrchestratorChatMessage>;
+        getGlobalChat: (args: GetGlobalChatArgs) => Promise<OrchestratorChatMessage[]>;
+        getActiveAgents: (args: GetActiveAgentsArgs) => Promise<ActiveAgentInfo[]>;
         getAggregatedUsage: (args: import("../shared/types").GetAggregatedUsageArgs) => Promise<import("../shared/types").AggregatedUsageStats>;
         onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => () => void;
         onThreadEvent: (cb: (ev: OrchestratorThreadEvent) => void) => () => void;
+        onDagMutation: (cb: (ev: DagMutationEvent) => void) => () => void;
       };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
@@ -672,6 +679,13 @@ declare global {
         getLevel: () => number;
         setLevel: (level: number) => void;
         getFactor: () => number;
+      };
+      memory?: {
+        getBudget: (args?: { projectId?: string; level?: string }) => Promise<unknown[]>;
+        getCandidates: (args?: { projectId?: string; limit?: number }) => Promise<unknown[]>;
+        promote: (args: { id: string }) => Promise<void>;
+        archive: (args: { id: string }) => Promise<void>;
+        search: (args: { query: string; projectId?: string; limit?: number }) => Promise<unknown[]>;
       };
     };
   }

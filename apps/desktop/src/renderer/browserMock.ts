@@ -573,9 +573,12 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       setMissionMetricsConfig: resolvedArg({}),
       getExecutionPlanPreview: resolvedArg(null),
       sendAgentMessage: resolvedArg({}),
+      getGlobalChat: resolvedArg([]),
+      getActiveAgents: resolvedArg([]),
       getAggregatedUsage: resolvedArg({ totalTokens: 0, totalCost: 0, byModel: [] }),
       onEvent: noop,
       onThreadEvent: noop,
+      onDagMutation: noop,
     },
     lanes: {
       list: resolved(MOCK_LANES),

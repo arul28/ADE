@@ -533,20 +533,21 @@ async function createFixture(args: {
 describe("aiOrchestratorService", () => {
   it("blocks mission run at plan review when configured and opens approval intervention", async () => {
     const fixture = await createFixture({ requirePlanReview: true });
+    let started: any;
     try {
       const mission = fixture.missionService.create({
         prompt: "Implement orchestration startup policy and summarize outcomes.",
         laneId: fixture.laneId
       });
 
-      const started = await fixture.aiOrchestratorService.startMissionRun({
+      started = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
         defaultExecutorKind: "codex"
       });
+      await started.planningComplete;
 
-      expect(started.blockedByPlanReview).toBe(true);
-      expect(started.started).toBeNull();
+      expect(started.started).toBeTruthy();
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("plan_review");
       expect(refreshed?.openInterventions).toBeGreaterThan(0);
@@ -555,28 +556,32 @@ describe("aiOrchestratorService", () => {
           (entry) => entry.status === "open" && entry.interventionType === "approval_required"
         )
       ).toBe(true);
-      expect(fixture.orchestratorService.listRuns({ missionId: mission.id }).length).toBe(0);
+      expect(fixture.orchestratorService.listRuns({ missionId: mission.id }).length).toBe(1);
     } finally {
+      await started?.planningComplete?.catch(() => {});
       fixture.dispose();
     }
   });
 
   it("approves mission plan and starts execution", async () => {
     const fixture = await createFixture({ requirePlanReview: true });
+    let blocked: any;
+    let approved: any;
     try {
       const mission = fixture.missionService.create({
         prompt: "Plan and implement runtime resiliency improvements.",
         laneId: fixture.laneId
       });
 
-      const blocked = await fixture.aiOrchestratorService.startMissionRun({
+      blocked = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
         defaultExecutorKind: "codex"
       });
-      expect(blocked.blockedByPlanReview).toBe(true);
+      await blocked.planningComplete;
+      expect(blocked.started).toBeTruthy();
 
-      const approved = await fixture.aiOrchestratorService.approveMissionPlan({
+      approved = await fixture.aiOrchestratorService.approveMissionPlan({
         missionId: mission.id,
         runMode: "manual",
         defaultExecutorKind: "manual"
@@ -589,6 +594,8 @@ describe("aiOrchestratorService", () => {
       expect(refreshed?.openInterventions).toBe(0);
       expect(fixture.orchestratorService.listRuns({ missionId: mission.id }).length).toBe(1);
     } finally {
+      await blocked?.planningComplete?.catch(() => {});
+      await approved?.planningComplete?.catch(() => {});
       fixture.dispose();
     }
   });
@@ -606,6 +613,7 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -615,7 +623,7 @@ describe("aiOrchestratorService", () => {
       // Tick to get ready steps
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       // Start attempt → fire event → worker should be "working"
@@ -676,12 +684,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1003,12 +1012,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((step) => step.status === "ready");
+      const readyStep = graph.steps.find((step) => step.status === "ready" && step.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1085,12 +1095,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((step) => step.status === "ready");
+      const readyStep = graph.steps.find((step) => step.status === "ready" && step.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1171,12 +1182,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((step) => step.status === "ready");
+      const readyStep = graph.steps.find((step) => step.status === "ready" && step.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       expect(() => {
@@ -1221,12 +1233,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1273,12 +1286,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1362,12 +1376,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1452,12 +1467,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((step) => step.status === "ready");
+      const readyStep = graph.steps.find((step) => step.status === "ready" && step.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1506,12 +1522,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1585,12 +1602,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1647,7 +1665,7 @@ describe("aiOrchestratorService", () => {
         )
       ).toBe(true);
       expect(String(waitingIntervention?.metadata?.threadId ?? "")).toBe(`question:${attempt.id}`);
-      expect(String(waitingIntervention?.metadata?.messageId ?? "")).toContain(`question_msg:${attempt.id}:`);
+      expect(String(waitingIntervention?.metadata?.messageId ?? "")).toContain(`question:${attempt.id}:`);
 
       const questionEvent = fixture.orchestratorService
         .listRuntimeEvents({
@@ -1657,7 +1675,7 @@ describe("aiOrchestratorService", () => {
         })
         .find((entry) => entry.eventType === "question");
       expect(questionEvent?.questionLink?.threadId).toBe(`question:${attempt.id}`);
-      expect(questionEvent?.questionLink?.messageId.startsWith(`question_msg:${attempt.id}:`)).toBe(true);
+      expect(questionEvent?.questionLink?.messageId.startsWith(`question:${attempt.id}:`)).toBe(true);
       expect(questionEvent?.questionLink?.replyTo).toBeNull();
 
       const states = fixture.aiOrchestratorService.getWorkerStates({ runId });
@@ -1681,12 +1699,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1769,12 +1788,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1895,12 +1915,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1993,7 +2014,7 @@ describe("aiOrchestratorService", () => {
       expect(firstCallArgs).toBeTruthy();
       expect(typeof firstCallArgs.prompt).toBe("string");
       expect(firstCallArgs.prompt.length).toBeLessThan(9_000);
-      expect(firstCallArgs.prompt).toContain("...[truncated]");
+      expect(firstCallArgs.prompt).toContain("... (truncated)");
       expect(firstCallArgs.prompt.includes("x".repeat(5_000))).toBe(false);
     } finally {
       fixture.dispose();
@@ -2275,15 +2296,16 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
-      // Planning failure should pause startup for intervention and not start a run
-      expect(launch.started).toBeNull();
+      await launch.planningComplete;
+      // Planning failure: run is created but planner step failed
+      expect(launch.started).toBeTruthy();
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("intervention_required");
       expect(refreshed?.lastError).toBeTruthy();
       expect(refreshed?.openInterventions ?? 0).toBeGreaterThan(0);
 
       const chat = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
-      expect(chat.some((entry) => entry.content.includes("AI mission planning failed"))).toBe(true);
+      expect(chat.some((entry) => entry.content.includes("Planning failed") || entry.content.includes("AI mission planning failed"))).toBe(true);
     } finally {
       fixture.dispose();
     }
@@ -2418,7 +2440,7 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("evaluateWorkerPlan gracefully degrades when AI is unavailable", async () => {
+  it("evaluateWorkerPlan flags for manual review when AI is unavailable", async () => {
     const fixture = await createFixture({ aiIntegrationService: null });
     try {
       const result = await fixture.aiOrchestratorService.evaluateWorkerPlan({
@@ -2426,14 +2448,14 @@ describe("aiOrchestratorService", () => {
         workerPlan: { action: "edit files" },
         provider: "claude"
       });
-      expect(result.approved).toBe(true);
-      expect(result.feedback).toContain("not available");
+      expect(result.approved).toBe(false);
+      expect(result.feedback).toContain("unavailable");
     } finally {
       fixture.dispose();
     }
   });
 
-  it("evaluateWorkerPlan gracefully degrades when AI throws", async () => {
+  it("evaluateWorkerPlan flags for manual review when AI throws", async () => {
     const mockAi = createMockAiIntegrationService({
       executeTask: vi.fn().mockRejectedValue(new Error("AI service timeout"))
     });
@@ -2445,7 +2467,7 @@ describe("aiOrchestratorService", () => {
         workerPlan: { action: "edit files" },
         provider: "claude"
       });
-      expect(result.approved).toBe(true);
+      expect(result.approved).toBe(false);
       expect(result.feedback).toContain("failed");
     } finally {
       fixture.dispose();
@@ -2570,9 +2592,10 @@ describe("aiOrchestratorService", () => {
         defaultExecutorKind: "manual",
         plannerProvider: "claude"
       });
+      await result.planningComplete;
 
       expect(result.blockedByPlanReview).toBe(false);
-      expect(result.started).toBeNull();
+      expect(result.started).toBeTruthy();
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("intervention_required");
       expect(refreshed?.openInterventions ?? 0).toBeGreaterThan(0);
@@ -2661,6 +2684,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "autopilot",
 	        defaultExecutorKind: "manual",
 	      });
+	      await started.planningComplete;
       expect(started.blockedByPlanReview).toBe(false);
       expect(laneService.createChild).toHaveBeenCalledTimes(1);
 
@@ -2789,6 +2813,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "autopilot",
 	        defaultExecutorKind: "manual",
 	      });
+	      await started.planningComplete;
       expect(started.blockedByPlanReview).toBe(false);
       expect(laneService.createChild).toHaveBeenCalledTimes(0);
 
@@ -2842,7 +2867,8 @@ describe("aiOrchestratorService", () => {
 	        runMode: "autopilot",
 	        defaultExecutorKind: "manual",
       });
-      expect(started.started).toBeNull();
+      await started.planningComplete;
+      expect(started.started).toBeTruthy();
       expect(started.blockedByPlanReview).toBe(false);
 
       const refreshed = fixture.missionService.get(mission.id);
@@ -2860,7 +2886,7 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("pauses mission start when AI parallelism decision fails instead of applying a fallback cap", async () => {
+  it("gracefully degrades when AI parallelism decision fails by using default cap", async () => {
     const executeTask = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
       const prompt = String(request?.prompt ?? "");
       if (prompt.toLowerCase().includes("decision: parallelism cap")) {
@@ -2892,21 +2918,15 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await started.planningComplete;
 
-      expect(started.started).toBeNull();
+      expect(started.started).toBeTruthy();
       expect(started.blockedByPlanReview).toBe(false);
 
+      // Parallelism decision failure is now a soft failure — the run proceeds
+      // with a default parallelism cap instead of pausing for intervention.
       const refreshedMission = fixture.missionService.get(mission.id);
-      expect(refreshedMission?.status).toBe("intervention_required");
-      expect(
-        refreshedMission?.interventions.some(
-          (entry) =>
-            entry.status === "open"
-            && entry.interventionType === "failed_step"
-            && entry.title === "AI parallelism decision failed"
-            && String(entry.metadata?.source ?? "") === "planning_decision"
-        )
-      ).toBe(true);
+      expect(refreshedMission?.status).toBe("in_progress");
     } finally {
       fixture.dispose();
     }
@@ -2925,12 +2945,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -2977,6 +2998,7 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) {
         throw new Error("Expected mission run to start");
       }
@@ -2989,7 +3011,7 @@ describe("aiOrchestratorService", () => {
         if (graph.run.status === "succeeded" || graph.run.status === "failed" || graph.run.status === "canceled") {
           break;
         }
-        const readySteps = graph.steps.filter((step) => step.status === "ready");
+        const readySteps = graph.steps.filter((step) => step.status === "ready" && step.stepKey !== "planner");
         if (!readySteps.length) {
           fixture.orchestratorService.tick({ runId });
           continue;
@@ -3236,6 +3258,7 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       expect(launch.started?.run.id).toBeTruthy();
 
       fixture.aiOrchestratorService.sendChat({
@@ -4069,6 +4092,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "manual",
 	        defaultExecutorKind: "manual",
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -4157,6 +4181,7 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -4256,6 +4281,7 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -4384,6 +4410,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "manual",
 	        defaultExecutorKind: "manual",
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -4554,6 +4581,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "manual",
 	        defaultExecutorKind: "manual",
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -4682,6 +4710,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "manual",
 	        defaultExecutorKind: "manual",
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -4774,6 +4803,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "manual",
 	        defaultExecutorKind: "manual",
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -4916,6 +4946,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "manual",
 	        defaultExecutorKind: "manual",
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -4953,7 +4984,7 @@ describe("aiOrchestratorService", () => {
       while (remaining > 0) {
         fixture.orchestratorService.tick({ runId });
         const currentGraph = fixture.orchestratorService.getRunGraph({ runId });
-        const readySteps = currentGraph.steps.filter((s) => s.status === "ready");
+        const readySteps = currentGraph.steps.filter((s) => s.status === "ready" && s.stepKey !== "planner");
         if (readySteps.length === 0) break;
         for (const step of readySteps) {
           const attempt = await fixture.orchestratorService.startAttempt({
@@ -5061,6 +5092,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "manual",
 	        defaultExecutorKind: "manual",
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -5093,7 +5125,7 @@ describe("aiOrchestratorService", () => {
         while (rem > 0) {
           fixture.orchestratorService.tick({ runId });
           const g = fixture.orchestratorService.getRunGraph({ runId });
-          const ready = g.steps.filter((s) => s.status === "ready");
+          const ready = g.steps.filter((s) => s.status === "ready" && s.stepKey !== "planner");
           if (ready.length === 0) break;
           for (const step of ready) {
             const attempt = await fixture.orchestratorService.startAttempt({
@@ -5184,6 +5216,7 @@ describe("aiOrchestratorService", () => {
 	        runMode: "manual",
 	        defaultExecutorKind: "manual",
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
@@ -5193,7 +5226,7 @@ describe("aiOrchestratorService", () => {
         while (rem > 0) {
           fixture.orchestratorService.tick({ runId });
           const g = fixture.orchestratorService.getRunGraph({ runId });
-          const ready = g.steps.filter((s) => s.status === "ready");
+          const ready = g.steps.filter((s) => s.status === "ready" && s.stepKey !== "planner");
           if (ready.length === 0) break;
           for (const step of ready) {
             const attempt = await fixture.orchestratorService.startAttempt({
@@ -5271,12 +5304,13 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "codex"
       });
+      await launch.planningComplete;
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
+      const readyStep = graph.steps.find((s) => s.status === "ready" && s.stepKey !== "planner");
       if (!readyStep) throw new Error("Expected a ready step");
 
       const attempt = await fixture.orchestratorService.startAttempt({

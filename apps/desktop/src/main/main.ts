@@ -29,6 +29,9 @@ import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo
 import { IPC } from "../shared/ipc";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
+import net from "node:net";
+import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
+import { createEventBuffer, type AdeMcpRuntime, type AdeMcpPaths } from "../../../mcp-server/src/bootstrap";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createTerminalProfilesService } from "./services/terminalProfiles/terminalProfilesService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
@@ -39,6 +42,7 @@ import { createCiService } from "./services/ci/ciService";
 import { createRestackSuggestionService } from "./services/lanes/restackSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
+import { createMemoryService } from "./services/memory/memoryService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createClaudeOrchestratorAdapter } from "./services/orchestrator/claudeOrchestratorAdapter";
@@ -519,6 +523,8 @@ app.whenReady().then(async () => {
       onEvent: (event) => broadcast(IPC.missionsEvent, event)
     });
 
+    const memoryService = createMemoryService(db);
+
     const orchestratorService = createOrchestratorService({
       db,
       projectId,
@@ -528,6 +534,7 @@ app.whenReady().then(async () => {
       ptyService,
       prService,
       projectConfigService,
+      memoryService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         broadcast(IPC.orchestratorEvent, event);
@@ -545,7 +552,8 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       prService,
       projectRoot,
-      onThreadEvent: (event) => broadcast(IPC.orchestratorThreadEvent, event)
+      onThreadEvent: (event) => broadcast(IPC.orchestratorThreadEvent, event),
+      onDagMutation: (event) => broadcast(IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
     orchestratorService.registerExecutorAdapter(createClaudeOrchestratorAdapter());
@@ -674,6 +682,68 @@ app.whenReady().then(async () => {
       logger.warn("packs.project_init_failed", { err: String(err) });
     });
 
+    // ── MCP Socket Server (embedded mode) ─────────────────────────
+    const mcpEventBuffer = createEventBuffer();
+    const mcpRuntime: AdeMcpRuntime = {
+      projectRoot,
+      projectId,
+      project,
+      paths: adePaths as unknown as AdeMcpPaths,
+      logger,
+      db,
+      laneService,
+      sessionService,
+      operationService,
+      projectConfigService,
+      packService,
+      conflictService,
+      gitService,
+      diffService,
+      missionService,
+      ptyService,
+      testService,
+      prService,
+      memoryService,
+      orchestratorService,
+      aiOrchestratorService,
+      eventBuffer: mcpEventBuffer,
+      dispose: () => {} // desktop manages service lifecycle
+    };
+
+    const mcpHandler = createMcpRequestHandler({ runtime: mcpRuntime, serverVersion: app.getVersion() });
+    const mcpSocketPath = path.join(adePaths.adeDir, "mcp.sock");
+
+    // Clean stale socket from prior crash
+    try { fs.unlinkSync(mcpSocketPath); } catch {}
+
+    const mcpSocketServer = net.createServer((conn) => {
+      let buf = "";
+      conn.on("data", (chunk) => {
+        buf += chunk.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let parsed: any;
+          try { parsed = JSON.parse(line); } catch { continue; }
+          const id = parsed.id ?? null;
+          void mcpHandler(parsed).then((result) => {
+            if (id !== null && id !== undefined) {
+              conn.write(JSON.stringify({ jsonrpc: "2.0", id, result: result ?? {} }) + "\n");
+            }
+          }).catch((err: any) => {
+            if (id !== null && id !== undefined) {
+              conn.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: err?.message ?? String(err) } }) + "\n");
+            }
+          });
+        }
+      });
+      conn.on("error", () => {}); // ignore connection errors
+    });
+    mcpSocketServer.listen(mcpSocketPath);
+    logger.info("mcp.socket_server_started", { socketPath: mcpSocketPath });
+
     return {
       db,
       logger,
@@ -711,7 +781,9 @@ app.whenReady().then(async () => {
       packService,
       projectConfigService,
       processService,
-      testService
+      testService,
+      mcpSocketServer,
+      mcpSocketPath
     };
   };
 
@@ -771,6 +843,16 @@ app.whenReady().then(async () => {
       }
       try {
         await ctx.agentChatService.disposeAll();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.mcpSocketServer?.close();
+      } catch {
+        // ignore
+      }
+      try {
+        if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
       } catch {
         // ignore
       }
