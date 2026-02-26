@@ -168,6 +168,8 @@ app.whenReady().then(async () => {
     ensureExclude: boolean;
   }): Promise<AppContext> => {
     const adePaths = ensureAdeDirs(projectRoot);
+    const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
+    initApiKeyStore(adePaths.adeDir);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
 
     logger.info("project.init", { projectRoot, baseRef, ensureExclude });

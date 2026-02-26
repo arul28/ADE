@@ -53,10 +53,13 @@ import type {
   StartOrchestratorRunFromMissionArgs,
   SteerMissionResult,
   ExecutionPlanPreview as ExecutionPlanPreviewType,
-  PrStrategy
+  PrStrategy,
+  PrDepth
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { MODEL_REGISTRY, MODEL_FAMILIES, getModelById, type ProviderFamily } from "../../../shared/modelRegistry";
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
 import { PolicyEditor, PRESET_STANDARD } from "./PolicyEditor";
@@ -66,7 +69,7 @@ import { MissionPolicyBadge } from "./MissionPolicyBadge";
 import { ExecutionPlanPreview } from "./ExecutionPlanPreview";
 import { UsageDashboard } from "./UsageDashboard";
 import { AgentChannels } from "./AgentChannels";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
 
@@ -129,6 +132,7 @@ const STEP_STATUS_HEX: Record<string, string> = {
 };
 
 const EXECUTOR_BADGE_HEX: Record<string, string> = {
+  unified: "#6366F1",
   claude: "#A78BFA",
   codex: "#22C55E",
   shell: "#F59E0B",
@@ -146,12 +150,10 @@ const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: str
   { key: "completed", label: "DONE", hex: "#22C55E" },
   { key: "failed", label: "FAILED", hex: "#EF4444" },
 ];
-type PlannerProvider = "auto" | "claude" | "codex";
-
 type MissionSettingsDraft = {
   defaultExecutionPolicy: MissionExecutionPolicy;
   defaultPrStrategy: PrStrategy;
-  defaultPlannerProvider: PlannerProvider;
+  defaultPlannerProvider: string;
   requirePlanReview: boolean;
   claudePermissionMode: string;
   claudeDangerouslySkip: boolean;
@@ -208,8 +210,14 @@ function mergeExecutionPolicyWithDefaults(source: unknown, defaults: MissionExec
   };
 }
 
-function toPlannerProvider(value: string): PlannerProvider {
-  return value === "claude" || value === "codex" || value === "auto" ? value : "auto";
+function toPlannerProvider(value: string): string {
+  // Accept "auto", legacy "claude"/"codex", or any model ID from the registry
+  if (value === "auto") return "auto";
+  if (getModelById(value)) return value;
+  // Backward compat: map old "claude"/"codex" to model IDs
+  if (value === "claude") return "anthropic/claude-sonnet-4-6";
+  if (value === "codex") return "openai/gpt-5.3-codex";
+  return "auto";
 }
 
 function toClaudePermissionMode(value: string): "plan" | "acceptEdits" | "bypassPermissions" {
@@ -1236,10 +1244,10 @@ type CreateDraft = {
 };
 
 const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
-  "claude-sonnet": 16384,
-  "claude-opus": 32768,
-  "claude-haiku": 4096,
-  "codex": 16384
+  "anthropic/claude-sonnet-4-6": 16384,
+  "anthropic/claude-opus-4-6": 32768,
+  "anthropic/claude-haiku-4-5": 4096,
+  "openai/gpt-5.3-codex": 16384
 };
 
 function CreateMissionDialog({
@@ -1263,7 +1271,7 @@ function CreateMissionDialog({
     laneId: "",
     priority: "normal",
     executionPolicy: defaultExecutionPolicy,
-    orchestratorModel: "sonnet",
+    orchestratorModel: "anthropic/claude-sonnet-4-6",
     thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
     prStrategy: { kind: "integration", targetBranch: "main", draft: true },
     prTargetBranch: "main",
@@ -1278,7 +1286,7 @@ function CreateMissionDialog({
       laneId: "",
       priority: "normal",
       executionPolicy: defaultExecutionPolicy,
-      orchestratorModel: "sonnet",
+      orchestratorModel: "anthropic/claude-sonnet-4-6",
       thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
       prStrategy: { kind: "integration", targetBranch: "main", draft: true },
       prTargetBranch: "main",
@@ -1356,9 +1364,17 @@ function CreateMissionDialog({
               className="h-8 w-full px-2 text-xs outline-none"
               style={dlgInputStyle}
             >
-              <option value="sonnet">Claude Sonnet (default)</option>
-              <option value="opus">Claude Opus</option>
-              <option value="haiku">Claude Haiku</option>
+              {([...new Set(MODEL_REGISTRY.map((m) => m.family))] as ProviderFamily[]).map((family) => {
+                const familyModels = MODEL_REGISTRY.filter((m) => m.family === family && !m.deprecated);
+                if (!familyModels.length) return null;
+                return (
+                  <optgroup key={family} label={MODEL_FAMILIES[family]?.displayName ?? family}>
+                    {familyModels.map((m) => (
+                      <option key={m.id} value={m.id}>{m.displayName}</option>
+                    ))}
+                  </optgroup>
+                );
+              })}
             </select>
           </label>
 
@@ -1368,7 +1384,7 @@ function CreateMissionDialog({
             <div className="grid grid-cols-2 gap-2">
               {Object.entries(draft.thinkingBudgets).map(([model, budget]) => (
                 <label key={model} className="flex items-center gap-2 text-[10px]">
-                  <span className="w-[90px] shrink-0" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{model.replace("claude-", "Claude ").replace("codex", "Codex")}</span>
+                  <span className="w-[130px] shrink-0" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{getModelById(model)?.displayName ?? model}</span>
                   <input
                     type="number"
                     step={1024}
@@ -1443,6 +1459,54 @@ function CreateMissionDialog({
                   />
                   Draft PR
                 </label>
+              </div>
+            )}
+            {draft.prStrategy.kind !== "manual" && (
+              <div className="mt-2 space-y-1">
+                <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
+                  PR DEPTH
+                </span>
+                <div className="flex flex-col gap-0.5">
+                  {([
+                    { value: "propose-only" as PrDepth, label: "PROPOSE ONLY", desc: "Create draft PRs, flag conflicts" },
+                    { value: "resolve-conflicts" as PrDepth, label: "RESOLVE CONFLICTS", desc: "Also resolve conflicts with AI workers" },
+                    { value: "open-and-comment" as PrDepth, label: "OPEN & COMMENT", desc: "Also open PRs and add review comments" },
+                  ] as const).map((opt) => {
+                    const currentDepth = (draft.prStrategy.kind !== "manual" && draft.prStrategy.prDepth) || "resolve-conflicts";
+                    const isSelected = currentDepth === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => {
+                          setDraft((p) => ({
+                            ...p,
+                            prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
+                          }));
+                        }}
+                        className="flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
+                        style={{
+                          background: isSelected ? `${COLORS.accent}18` : "transparent",
+                          border: isSelected ? `1px solid ${COLORS.accent}30` : `1px solid ${COLORS.border}`,
+                          fontFamily: MONO_FONT,
+                        }}
+                      >
+                        <span
+                          className="font-bold uppercase tracking-[1px]"
+                          style={{ fontSize: 10, color: isSelected ? COLORS.accent : COLORS.textPrimary, minWidth: 130 }}
+                        >
+                          {opt.label}
+                        </span>
+                        <span style={{ fontSize: 10, color: COLORS.textMuted }}>
+                          {opt.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 4 }}>
+                  Orchestrator never merges — always requires human approval
+                </div>
               </div>
             )}
           </div>
@@ -1534,16 +1598,27 @@ function MissionSettingsDialog({
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
               <label className="text-xs">
-                <div style={settingsLabelStyle}>DEFAULT PLANNER PROVIDER</div>
-                <select
-                  style={settingsInputStyle}
-                  value={draft.defaultPlannerProvider}
-                  onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value as PlannerProvider })}
-                >
-                  <option value="auto">Auto</option>
-                  <option value="claude">Claude</option>
-                  <option value="codex">Codex</option>
-                </select>
+                <div style={settingsLabelStyle}>DEFAULT PLANNER MODEL</div>
+                <div className="mt-1">
+                  <select
+                    style={settingsInputStyle}
+                    value={draft.defaultPlannerProvider}
+                    onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value })}
+                  >
+                    <option value="auto">Auto</option>
+                    {([...new Set(MODEL_REGISTRY.map((m) => m.family))] as ProviderFamily[]).map((family) => {
+                      const familyModels = MODEL_REGISTRY.filter((m) => m.family === family && !m.deprecated);
+                      if (!familyModels.length) return null;
+                      return (
+                        <optgroup key={family} label={MODEL_FAMILIES[family]?.displayName ?? family}>
+                          {familyModels.map((m) => (
+                            <option key={m.id} value={m.id}>{m.displayName}</option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
+                  </select>
+                </div>
               </label>
               <label className="flex items-center gap-2 text-xs pt-5" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
                 <input
@@ -2043,7 +2118,7 @@ export default function MissionsPage() {
         thinkingBudgets: draft.thinkingBudgets,
         autostart: true,
         launchMode: "autopilot",
-        autopilotExecutor: "codex"
+        autopilotExecutor: draft.executionPolicy.implementation?.model ?? "openai/gpt-5.3-codex"
       });
       setSelectedMissionId(created.id);
       await refreshMissionList({ preserveSelection: true, silent: true });
@@ -2063,9 +2138,9 @@ export default function MissionsPage() {
     setRunBusy(true);
     try {
       const fallbackExecutor: OrchestratorExecutorKind =
-        runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex"
+        runAutopilotState.executor && runAutopilotState.executor.length > 0
           ? (runAutopilotState.executor as OrchestratorExecutorKind)
-          : "codex";
+          : "unified";
       await startRunForMission({
         missionId: selectedMission.id,
         laneId: selectedMission.laneId,
@@ -2157,6 +2232,45 @@ export default function MissionsPage() {
     for (const col of STEP_STATUS_COLUMNS) {
       map.set(col.status, []);
     }
+
+    // Synthetic planning step — always shown so users see planning as a visible phase
+    const missionStatus = selectedMission?.status;
+    const planningStepStatus: MissionStepStatus =
+      missionStatus === "planning" || missionStatus === "plan_review"
+        ? "running"
+        : (steps.length > 0 || missionStatus === "in_progress" || missionStatus === "completed")
+          ? "succeeded"
+          : missionStatus === "failed" && steps.length === 0
+            ? "failed"
+            : "pending";
+    if (selectedMission) {
+      const planningStep: OrchestratorStep = {
+        id: "planning-synthetic",
+        runId: runGraph?.run?.id ?? "",
+        missionStepId: null,
+        stepKey: "planning",
+        stepIndex: -1,
+        title: "Mission Planning",
+        laneId: null,
+        status: planningStepStatus as OrchestratorStep["status"],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        dependencyStepIds: [],
+        retryLimit: 0,
+        retryCount: 0,
+        lastAttemptId: null,
+        createdAt: selectedMission.createdAt,
+        updatedAt: selectedMission.updatedAt,
+        startedAt: selectedMission.startedAt,
+        completedAt: planningStepStatus === "succeeded" ? (selectedMission.startedAt ?? selectedMission.updatedAt) : null,
+        metadata: { planStep: { description: "AI planner decomposes the mission into executable steps." }, stepType: "planning" },
+      };
+      const bucket = map.get(planningStepStatus);
+      if (bucket) {
+        bucket.unshift(planningStep);
+      }
+    }
+
     for (const step of steps) {
       const key = step.status as MissionStepStatus;
       const bucket = map.get(key);
@@ -2169,7 +2283,7 @@ export default function MissionsPage() {
       }
     }
     return map;
-  }, [runGraph]);
+  }, [runGraph, selectedMission]);
 
   const attemptsByStep = useMemo(() => {
     const map = new Map<string, OrchestratorAttempt[]>();
@@ -2183,9 +2297,18 @@ export default function MissionsPage() {
   }, [runGraph]);
 
   const selectedStep = useMemo(() => {
-    if (!runGraph?.steps?.length || !selectedStepId) return null;
+    if (!selectedStepId) return null;
+    // Check synthetic planning step from stepsByStatus
+    if (selectedStepId === "planning-synthetic") {
+      for (const bucket of stepsByStatus.values()) {
+        const found = bucket.find((s) => s.id === "planning-synthetic");
+        if (found) return found;
+      }
+      return null;
+    }
+    if (!runGraph?.steps?.length) return null;
     return runGraph.steps.find((step) => step.id === selectedStepId) ?? null;
-  }, [runGraph, selectedStepId]);
+  }, [runGraph, selectedStepId, stepsByStatus]);
 
   const selectedStepAttempts = useMemo(() => {
     if (!selectedStep) return [];
@@ -2539,6 +2662,35 @@ export default function MissionsPage() {
                   );
                 })}
               </div>
+
+              {/* ── Original Mission Prompt ── */}
+              {selectedMission?.prompt && (
+                <div style={{
+                  background: COLORS.cardBg,
+                  border: `1px solid ${COLORS.border}`,
+                  padding: '12px 16px',
+                  margin: '12px 16px 0',
+                }}>
+                  <div style={{
+                    ...LABEL_STYLE,
+                    color: COLORS.textMuted,
+                    marginBottom: 6,
+                  }}>
+                    MISSION PROMPT
+                  </div>
+                  <div style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 12,
+                    color: COLORS.textPrimary,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                  }}>
+                    {selectedMission.prompt}
+                  </div>
+                </div>
+              )}
 
               {/* ── Completion Banner + Phase Progress + Execution Plan Preview ── */}
               {runGraph && (

@@ -25,7 +25,9 @@ export function useSessionDelta(sessionId: string | null, enabled: boolean) {
       .getDelta(sessionId)
       .then((result) => {
         if (cancelled) return;
-        deltaCache.set(sessionId, result);
+        if (result) {
+          deltaCache.set(sessionId, result);
+        }
         setDelta(result);
       })
       .catch(() => {

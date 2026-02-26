@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentChatComposer } from "./AgentChatComposer";
 
 function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChatComposer>> = {}) {
-  const onProviderChange = vi.fn();
   const onModelChange = vi.fn();
   const onReasoningEffortChange = vi.fn();
   const onDraftChange = vi.fn();
@@ -20,24 +19,8 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
   const onClearEvents = vi.fn();
 
   const props: React.ComponentProps<typeof AgentChatComposer> = {
-    provider: "codex",
-    providerOptions: [
-      { value: "codex", label: "Codex", enabled: true },
-      { value: "claude", label: "Claude", enabled: true }
-    ],
-    model: "gpt-5.3-codex",
-    models: [
-      {
-        id: "gpt-5.3-codex",
-        displayName: "gpt-5.3-codex",
-        isDefault: true,
-        reasoningEfforts: [
-          { effort: "medium", description: "balanced" },
-          { effort: "high", description: "deeper" }
-        ]
-      },
-      { id: "gpt-5.2-codex", displayName: "gpt-5.2-codex", isDefault: false }
-    ],
+    modelId: "openai/gpt-5.3-codex",
+    availableModelIds: ["openai/gpt-5.3-codex", "anthropic/claude-sonnet-4-6"],
     reasoningEffort: "medium",
     draft: "hello",
     attachments: [],
@@ -45,7 +28,6 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
     turnActive: false,
     sendOnEnter: true,
     busy: false,
-    onProviderChange,
     onModelChange,
     onReasoningEffortChange,
     onDraftChange,
@@ -65,7 +47,6 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
   return {
     ...utils,
     props,
-    onProviderChange,
     onModelChange,
     onReasoningEffortChange,
     onDraftChange,
@@ -88,7 +69,7 @@ describe("AgentChatComposer", () => {
   it("sends message on Enter when send-on-Enter is enabled", () => {
     const { onSubmit } = renderComposer({ sendOnEnter: true, draft: "send me" });
 
-    const textarea = screen.getByPlaceholderText("Ask Codex or Claude to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -97,7 +78,7 @@ describe("AgentChatComposer", () => {
   it("sends message on Cmd/Ctrl+Enter when send-on-Enter is disabled", () => {
     const { onSubmit } = renderComposer({ sendOnEnter: false, draft: "send me" });
 
-    const textarea = screen.getByPlaceholderText("Ask Codex or Claude to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
@@ -115,7 +96,7 @@ describe("AgentChatComposer", () => {
   it("opens @ attachment picker when @ key is pressed", async () => {
     renderComposer();
 
-    const textarea = screen.getByPlaceholderText("Ask Codex or Claude to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "@", shiftKey: true, code: "Digit2" });
 
     await waitFor(() => {
@@ -141,21 +122,7 @@ describe("AgentChatComposer", () => {
 
   it("shows reasoning dropdown for Claude provider", () => {
     renderComposer({
-      provider: "claude",
-      model: "sonnet",
-      models: [
-        {
-          id: "sonnet",
-          displayName: "Sonnet",
-          isDefault: true,
-          reasoningEfforts: [
-            { effort: "low", description: "Quick" },
-            { effort: "medium", description: "Balanced" },
-            { effort: "high", description: "Deep" },
-            { effort: "max", description: "Maximum" }
-          ]
-        }
-      ],
+      modelId: "anthropic/claude-sonnet-4-6",
       reasoningEffort: "medium"
     });
 
@@ -173,7 +140,7 @@ describe("AgentChatComposer", () => {
   it("opens slash picker when / is typed at start of empty draft", async () => {
     const { onDraftChange } = renderComposer({ draft: "" });
 
-    const textarea = screen.getByPlaceholderText("Ask Codex or Claude to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "/" });
 
     await waitFor(() => {
@@ -184,7 +151,7 @@ describe("AgentChatComposer", () => {
   it("opens context picker when # is typed", () => {
     renderComposer({ draft: "" });
 
-    const textarea = screen.getByPlaceholderText("Ask Codex or Claude to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "#" });
 
     expect(screen.getByText("Context Packs")).toBeTruthy();
@@ -198,20 +165,16 @@ describe("AgentChatComposer", () => {
     expect(screen.getByText("context")).toBeTruthy();
   });
 
-  it("switches provider and model from dropdowns", () => {
-    const { onProviderChange, onModelChange, onReasoningEffortChange } = renderComposer();
-
-    const providerSelect = screen.getByLabelText("Provider") as HTMLSelectElement;
-    fireEvent.change(providerSelect, { target: { value: "claude" } });
+  it("switches model and reasoning effort from dropdowns", () => {
+    const { onModelChange, onReasoningEffortChange } = renderComposer();
 
     const modelSelect = screen.getByLabelText("Model") as HTMLSelectElement;
-    fireEvent.change(modelSelect, { target: { value: "gpt-5.2-codex" } });
+    fireEvent.change(modelSelect, { target: { value: "anthropic/claude-sonnet-4-6" } });
 
     const reasoningSelect = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
     fireEvent.change(reasoningSelect, { target: { value: "high" } });
 
-    expect(onProviderChange).toHaveBeenCalledWith("claude");
-    expect(onModelChange).toHaveBeenCalledWith("gpt-5.2-codex");
+    expect(onModelChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-6");
     expect(onReasoningEffortChange).toHaveBeenCalledWith("high");
   });
 });

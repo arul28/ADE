@@ -5,8 +5,11 @@ import type {
   CreateMissionArgs,
   GetPlannerAttemptArgs,
   ListPlannerRunsArgs,
+  MissionConcurrencyCheckResult,
+  MissionConcurrencyConfig,
   MissionExecutionPolicy,
   MissionExecutorPolicy,
+  MissionLaneClaimCheckResult,
   MissionPlannerAttempt,
   MissionPlannerRun,
   ListMissionsArgs,
@@ -37,6 +40,20 @@ import { buildDeterministicMissionPlan } from "./missionPlanner";
 import type { MissionPlanStepDraft } from "./missionPlanningService";
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
+
+const ACTIVE_MISSION_STATUSES = new Set<MissionStatus>(["in_progress", "planning", "plan_review", "intervention_required"]);
+
+const DEFAULT_CONCURRENCY_CONFIG: MissionConcurrencyConfig = {
+  maxConcurrentMissions: 3,
+  laneExclusivity: true
+};
+
+const PRIORITY_ORDER: Record<MissionPriority, number> = {
+  urgent: 0,
+  high: 1,
+  normal: 2,
+  low: 3
+};
 
 const MISSION_TRANSITIONS: Record<MissionStatus, Set<MissionStatus>> = {
   queued: new Set(["queued", "planning", "in_progress", "canceled"]),
@@ -449,12 +466,24 @@ export function isValidMissionStepTransition(from: MissionStepStatus, to: Missio
 export function createMissionService({
   db,
   projectId,
-  onEvent
+  onEvent,
+  concurrencyConfig
 }: {
   db: AdeDb;
   projectId: string;
   onEvent?: (payload: MissionsEventPayload) => void;
+  concurrencyConfig?: Partial<MissionConcurrencyConfig>;
 }) {
+  let activeConcurrencyConfig: MissionConcurrencyConfig = {
+    ...DEFAULT_CONCURRENCY_CONFIG,
+    ...concurrencyConfig
+  };
+
+  // Late-bound reference to the service object for use in internal helpers.
+  // Assigned after the return object is created. Uses a minimal interface
+  // to avoid circular type dependency.
+  let serviceRef: { processQueue(): string[] } | null = null;
+
   const emit = (payload: Omit<MissionsEventPayload, "type" | "at">) => {
     try {
       onEvent?.({
@@ -637,6 +666,17 @@ export function createMissionService({
           ...(args.payload ?? {})
         }
       });
+
+      // When a mission reaches a terminal status, process the queue to
+      // start the next eligible queued mission.
+      if (TERMINAL_MISSION_STATUSES.has(next) && serviceRef) {
+        try {
+          serviceRef.processQueue();
+        } catch {
+          // Ignore queue processing failures — they should not break
+          // the status transition that already succeeded.
+        }
+      }
     }
   };
 
@@ -777,7 +817,7 @@ export function createMissionService({
     };
   };
 
-  return {
+  const service = {
     list(args: ListMissionsArgs = {}): MissionSummary[] {
       const where: string[] = [];
       const params: Array<string | number> = [projectId];
@@ -1045,7 +1085,10 @@ export function createMissionService({
           executorPolicy,
           allowPlanningQuestions,
           ...(launchModel ? { orchestratorModel: launchModel } : {}),
-          ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {})
+          ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {}),
+          ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
+          ...(args.allowParallelSubagents != null ? { allowParallelSubagents: args.allowParallelSubagents } : {}),
+          ...(args.allowAgentTeams != null ? { allowAgentTeams: args.allowAgentTeams } : {})
         },
         ...(missionDepth ? { missionDepth } : {}),
         ...(resolvedExecutionPolicy ? { executionPolicy: resolvedExecutionPolicy } : {}),
@@ -1493,6 +1536,14 @@ export function createMissionService({
         );
         db.run(
           `
+            delete from orchestrator_worker_checkpoints
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
             delete from orchestrator_metrics_samples
             where project_id = ?
               and run_id in (${runPlaceholders})
@@ -1576,6 +1627,14 @@ export function createMissionService({
       db.run(
         `
           delete from orchestrator_context_checkpoints
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_worker_checkpoints
           where project_id = ?
             and mission_id = ?
         `,
@@ -2005,6 +2064,102 @@ export function createMissionService({
       );
       if (!updated) throw new Error("Intervention update failed");
       return toMissionIntervention(updated);
+    },
+
+    // ── Concurrency Guard ────────────────────────────────────────
+    canStartMission(missionId: string): MissionConcurrencyCheckResult {
+      const activeMissions = this.list({ status: "active" })
+        .filter(m => ACTIVE_MISSION_STATUSES.has(m.status) && m.id !== missionId);
+      const maxConcurrent = activeConcurrencyConfig.maxConcurrentMissions;
+      if (activeMissions.length >= maxConcurrent) {
+        const queuedMissions = this.list({})
+          .filter(m => m.status === "queued")
+          .sort((a, b) =>
+            (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2)
+            || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+        const queuePosition = queuedMissions.findIndex(m => m.id === missionId);
+        return {
+          allowed: false,
+          reason: `${activeMissions.length} missions already active (max: ${maxConcurrent})`,
+          queuePosition: queuePosition >= 0 ? queuePosition + 1 : undefined
+        };
+      }
+      return { allowed: true };
+    },
+
+    isLaneClaimed(laneId: string, excludeMissionId?: string): MissionLaneClaimCheckResult {
+      if (!activeConcurrencyConfig.laneExclusivity) return { claimed: false };
+      if (!laneId) return { claimed: false };
+      const activeMissions = this.list({ status: "active" })
+        .filter(m => ACTIVE_MISSION_STATUSES.has(m.status) && m.id !== excludeMissionId);
+      for (const mission of activeMissions) {
+        if (mission.laneId === laneId) return { claimed: true, byMissionId: mission.id };
+        const detail = this.get(mission.id);
+        if (detail) {
+          const hasRunningStepOnLane = detail.steps.some(
+            s => s.laneId === laneId && s.status === "running"
+          );
+          if (hasRunningStepOnLane) return { claimed: true, byMissionId: mission.id };
+        }
+      }
+      return { claimed: false };
+    },
+
+    processQueue(): string[] {
+      const started: string[] = [];
+      const queuedMissions = this.list({})
+        .filter(m => m.status === "queued")
+        .sort((a, b) =>
+          (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2)
+          || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        );
+      for (const mission of queuedMissions) {
+        const detail = this.get(mission.id);
+        const metadata = detail
+          ? safeParseRecord(
+              db.get<{ metadata_json: string | null }>(
+                "select metadata_json from missions where id = ? and project_id = ? limit 1",
+                [mission.id, projectId]
+              )?.metadata_json ?? null
+            )
+          : null;
+        const launch = metadata && isRecord(metadata.launch) ? metadata.launch : null;
+        if (launch && launch.autostart === false) continue;
+        const check = this.canStartMission(mission.id);
+        if (!check.allowed) break;
+        if (activeConcurrencyConfig.laneExclusivity && mission.laneId) {
+          const laneClaim = this.isLaneClaimed(mission.laneId, mission.id);
+          if (laneClaim.claimed) continue;
+        }
+        recordEvent({
+          missionId: mission.id,
+          eventType: "mission_ready_to_start",
+          actor: "system",
+          summary: "Mission eligible to start after concurrency slot opened.",
+          payload: { queuePosition: 1 }
+        });
+        emit({ missionId: mission.id, reason: "ready_to_start" });
+        started.push(mission.id);
+      }
+      return started;
+    },
+
+    getConcurrencyConfig(): MissionConcurrencyConfig {
+      return { ...activeConcurrencyConfig };
+    },
+
+    setConcurrencyConfig(config: Partial<MissionConcurrencyConfig>): MissionConcurrencyConfig {
+      if (config.maxConcurrentMissions !== undefined) {
+        activeConcurrencyConfig.maxConcurrentMissions = Math.max(1, Math.floor(config.maxConcurrentMissions));
+      }
+      if (config.laneExclusivity !== undefined) {
+        activeConcurrencyConfig.laneExclusivity = config.laneExclusivity;
+      }
+      return { ...activeConcurrencyConfig };
     }
   };
+
+  serviceRef = service;
+  return service;
 }

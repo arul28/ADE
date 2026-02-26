@@ -32,6 +32,13 @@ import type {
   TerminalSessionStatus,
   TerminalToolType
 } from "../../../shared/types";
+import {
+  getModelById,
+  getAvailableModels as getRegistryModels,
+  MODEL_REGISTRY,
+  type ModelDescriptor,
+} from "../../../shared/modelRegistry";
+import { detectAllAuth } from "../ai/authDetector";
 
 type JsonRpcEnvelope = {
   jsonrpc?: string;
@@ -378,6 +385,35 @@ export function createAgentChatService(args: {
 
   const claudeProvider = createClaudeCode();
   const managedSessions = new Map<string, ManagedChatSession>();
+
+  // Unified session support — gradual migration path for model registry IDs.
+  // For CLI-wrapped models, we fall through to the existing Claude/Codex runtimes.
+  // For API-key models, this will be fully implemented once WS3 is complete.
+  const startUnifiedSession = async (managed: ManagedChatSession, _message: string): Promise<"handled" | "fallthrough"> => {
+    const modelId = managed.session.modelId;
+    if (!modelId) return "fallthrough";
+
+    const descriptor = getModelById(modelId);
+    if (!descriptor) return "fallthrough";
+
+    // CLI-wrapped Anthropic models -> fall through to Claude runtime
+    if (descriptor.isCliWrapped && descriptor.family === "anthropic") {
+      return "fallthrough";
+    }
+    // CLI-wrapped OpenAI models -> fall through to Codex runtime
+    if (descriptor.isCliWrapped && descriptor.family === "openai") {
+      return "fallthrough";
+    }
+
+    // For API-key models, log that the unified path was requested but
+    // fall through for now. Full implementation arrives with WS3.
+    logger.info("agent_chat.unified_session_requested", {
+      sessionId: managed.session.id,
+      modelId,
+      family: descriptor.family,
+    });
+    return "fallthrough";
+  };
 
   const resolveChatConfig = (): ResolvedChatConfig => {
     const snapshot = projectConfigService.get();
@@ -1582,7 +1618,7 @@ export function createAgentChatService(args: {
     return CLAUDE_FALLBACK_MODELS;
   };
 
-  const createSession = async ({ laneId, provider, model, reasoningEffort }: AgentChatCreateArgs): Promise<AgentChatSession> => {
+  const createSession = async ({ laneId, provider, model, modelId, reasoningEffort }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const lane = laneService.getLaneBaseAndBranch(laneId);
     const sessionId = randomUUID();
     const startedAt = toIso();
@@ -1592,10 +1628,14 @@ export function createAgentChatService(args: {
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
 
     const normalizedModel = model.trim() || (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL);
-    const rawEffort = provider === "codex"
+    const legacyProvider: "codex" | "claude" = provider === "codex" ? "codex" : "claude";
+    const rawEffort = legacyProvider === "codex"
       ? normalizeReasoningEffort(reasoningEffort) ?? DEFAULT_REASONING_EFFORT
       : normalizeReasoningEffort(reasoningEffort);
-    const normalizedReasoningEffort = validateReasoningEffort(provider, rawEffort);
+    const normalizedReasoningEffort = validateReasoningEffort(legacyProvider, rawEffort);
+
+    // Resolve modelId from registry if provided
+    const resolvedModelId = modelId && getModelById(modelId) ? modelId : undefined;
 
     sessionService.create({
       sessionId,
@@ -1615,6 +1655,7 @@ export function createAgentChatService(args: {
         laneId,
         provider,
         model: normalizedModel,
+        ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
         status: "idle",
         createdAt: startedAt,
@@ -1944,7 +1985,31 @@ export function createAgentChatService(args: {
     if (provider === "codex") {
       return listCodexModelsFromAppServer();
     }
-    return listClaudeModelsFromSdk();
+    if (provider === "claude") {
+      return listClaudeModelsFromSdk();
+    }
+
+    // For non-legacy providers, try to resolve from the model registry
+    try {
+      const auth = await detectAllAuth();
+      const available = getRegistryModels(auth);
+      const familyModels = available.filter(m => m.family === provider);
+      if (familyModels.length > 0) {
+        return familyModels.map((m, i) => ({
+          id: m.sdkModelId,
+          displayName: m.displayName,
+          description: `${m.displayName} (${m.family})`,
+          isDefault: i === 0,
+          reasoningEfforts: m.reasoningTiers?.map(tier => ({
+            effort: tier,
+            description: `${tier} reasoning`
+          })) ?? [],
+        }));
+      }
+    } catch {
+      // fallback to empty
+    }
+    return [];
   };
 
   const dispose = async ({ sessionId }: AgentChatDisposeArgs): Promise<void> => {

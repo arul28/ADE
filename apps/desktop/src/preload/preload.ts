@@ -339,7 +339,13 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.keybindingsSet, { overrides })
   },
   ai: {
-    getStatus: async (): Promise<AiSettingsStatus> => ipcRenderer.invoke(IPC.aiGetStatus)
+    getStatus: async (): Promise<AiSettingsStatus> => ipcRenderer.invoke(IPC.aiGetStatus),
+    storeApiKey: async (provider: string, key: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.aiStoreApiKey, { provider, key }),
+    deleteApiKey: async (provider: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.aiDeleteApiKey, { provider }),
+    listApiKeys: async (): Promise<string[]> =>
+      ipcRenderer.invoke(IPC.aiListApiKeys),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)

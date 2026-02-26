@@ -4,26 +4,7 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentChatPane } from "./AgentChatPane";
-import type { AgentChatModelInfo, AgentChatSessionSummary, AgentChatEventEnvelope } from "../../../shared/types";
-
-const CODEX_MODELS: AgentChatModelInfo[] = [
-  {
-    id: "gpt-5.3-codex",
-    displayName: "gpt-5.3-codex",
-    isDefault: true,
-    reasoningEfforts: [
-      { effort: "low", description: "Fast" },
-      { effort: "medium", description: "Balanced" },
-      { effort: "high", description: "Deep" }
-    ]
-  },
-  { id: "gpt-5.2-codex", displayName: "gpt-5.2-codex", isDefault: false }
-];
-
-const CLAUDE_MODELS: AgentChatModelInfo[] = [
-  { id: "sonnet", displayName: "Sonnet", isDefault: true },
-  { id: "opus", displayName: "Opus", isDefault: false }
-];
+import type { AgentChatSessionSummary, AgentChatEventEnvelope } from "../../../shared/types";
 
 function mockSession(overrides: Partial<AgentChatSessionSummary> = {}): AgentChatSessionSummary {
   return {
@@ -31,6 +12,7 @@ function mockSession(overrides: Partial<AgentChatSessionSummary> = {}): AgentCha
     laneId: "lane-1",
     provider: "codex",
     model: "gpt-5.3-codex",
+    modelId: "openai/gpt-5.3-codex",
     reasoningEffort: "medium",
     status: "idle",
     startedAt: "2026-02-20T10:00:00Z",
@@ -46,24 +28,32 @@ let eventCallback: ((envelope: AgentChatEventEnvelope) => void) | null = null;
 
 function setupWindowAde(overrides: {
   sessions?: AgentChatSessionSummary[];
-  codexModels?: AgentChatModelInfo[];
-  claudeModels?: AgentChatModelInfo[];
+  codexAvailable?: boolean;
+  claudeAvailable?: boolean;
 } = {}) {
   const sessions = overrides.sessions ?? [];
-  const codexModels = overrides.codexModels ?? CODEX_MODELS;
-  const claudeModels = overrides.claudeModels ?? CLAUDE_MODELS;
+  const codexAvailable = overrides.codexAvailable ?? true;
+  const claudeAvailable = overrides.claudeAvailable ?? true;
 
   (window as any).ade = {
     agentChat: {
       models: vi.fn(async ({ provider }: { provider: string }) => {
-        return provider === "codex" ? codexModels : claudeModels;
+        if (provider === "codex") {
+          return codexAvailable
+            ? [{ id: "gpt-5.3-codex", displayName: "gpt-5.3-codex", isDefault: true }]
+            : [];
+        }
+        return claudeAvailable
+          ? [{ id: "sonnet", displayName: "Sonnet", isDefault: true }]
+          : [];
       }),
       list: vi.fn(async () => sessions),
-      create: vi.fn(async ({ provider, model }: any) => ({
+      create: vi.fn(async ({ provider, model, modelId }: any) => ({
         id: "new-session-1",
         laneId: "lane-1",
         provider,
         model,
+        modelId,
         status: "idle",
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString()
@@ -129,7 +119,8 @@ describe("AgentChatPane", () => {
     render(<AgentChatPane laneId="lane-1" />);
 
     await waitFor(() => {
-      expect(screen.getByText(/codex · gpt-5\.3-codex/)).toBeTruthy();
+      // The session displays displayName from the registry: "GPT-5.3 Codex"
+      expect(screen.getByText(/GPT-5\.3 Codex/)).toBeTruthy();
     });
   });
 
@@ -148,53 +139,44 @@ describe("AgentChatPane", () => {
     await waitFor(() => {
       const ade = (window as any).ade;
       expect(ade.agentChat.create).toHaveBeenCalled();
+      // New API passes modelId
+      expect(ade.agentChat.create).toHaveBeenCalledWith(
+        expect.objectContaining({ modelId: expect.any(String) })
+      );
     });
   });
 
-  it("persists last used provider to localStorage", async () => {
+  it("persists last used model ID to localStorage", async () => {
     setupWindowAde();
     render(<AgentChatPane laneId="lane-1" />);
 
     await waitFor(() => {
-      const stored = window.localStorage.getItem("ade.chat.lastProvider");
-      expect(stored).toBe("codex");
-    });
-  });
-
-  it("persists last used model to localStorage", async () => {
-    setupWindowAde();
-    render(<AgentChatPane laneId="lane-1" />);
-
-    await waitFor(() => {
-      const stored = window.localStorage.getItem("ade.chat.lastModel:codex");
+      const stored = window.localStorage.getItem("ade.chat.lastModelId");
       expect(stored).toBeTruthy();
     });
   });
 
-  it("falls back to available provider when current has no models", async () => {
-    setupWindowAde({ codexModels: [], claudeModels: CLAUDE_MODELS });
+  it("falls back to available model when current model is not available", async () => {
+    // Only claude available, no codex
+    setupWindowAde({ codexAvailable: false, claudeAvailable: true });
     render(<AgentChatPane laneId="lane-1" />);
 
     await waitFor(() => {
-      const stored = window.localStorage.getItem("ade.chat.lastProvider");
-      expect(stored).toBe("claude");
+      const stored = window.localStorage.getItem("ade.chat.lastModelId");
+      // Should fall back to an anthropic model
+      expect(stored).toMatch(/^anthropic\//);
     });
   });
 
-  it("reads last used provider from localStorage on boot", async () => {
-    window.localStorage.setItem("ade.chat.lastProvider", "claude");
-    window.localStorage.setItem("ade.chat.lastModel:claude", "opus");
+  it("reads last used model ID from localStorage on boot", async () => {
+    window.localStorage.setItem("ade.chat.lastModelId", "anthropic/claude-sonnet-4-6");
 
     setupWindowAde();
-    (window as any).ade.projectConfig.get = vi.fn(async () => ({
-      effective: { ai: { chat: { defaultProvider: "last_used", sendOnEnter: true } } }
-    }));
-
     render(<AgentChatPane laneId="lane-1" />);
 
     await waitFor(() => {
-      const modelStored = window.localStorage.getItem("ade.chat.lastModel:claude");
-      expect(modelStored).toBe("opus");
+      const stored = window.localStorage.getItem("ade.chat.lastModelId");
+      expect(stored).toBe("anthropic/claude-sonnet-4-6");
     });
   });
 
@@ -216,7 +198,8 @@ describe("AgentChatPane", () => {
     render(<AgentChatPane laneId="lane-1" lockSessionId="session-1" />);
 
     await waitFor(() => {
-      expect(screen.getByText(/codex · gpt-5\.3-codex/)).toBeTruthy();
+      // In lock mode, displayName from the registry is shown
+      expect(screen.getByText(/GPT-5\.3 Codex/)).toBeTruthy();
     });
 
     // Lock mode hides the "New chat" button
@@ -247,11 +230,11 @@ describe("AgentChatPane", () => {
 
     // Wait for boot to complete
     await waitFor(() => {
-      expect(screen.getByText(/codex · gpt-5\.3-codex/)).toBeTruthy();
+      expect(screen.getByText(/GPT-5\.3 Codex/)).toBeTruthy();
     });
 
     // Type into the composer
-    const textarea = screen.getByPlaceholderText("Ask Codex or Claude to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
     await act(async () => {
       fireEvent.change(textarea, { target: { value: "Run the tests" } });
     });

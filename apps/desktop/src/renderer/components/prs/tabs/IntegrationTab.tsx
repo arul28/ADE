@@ -1,8 +1,6 @@
 import React from "react";
-import { GitMerge, GitBranch, Lightning, Eye, Sparkle, Trash, ArrowRight, ArrowSquareOut, CheckCircle, Warning, XCircle, Clock, GithubLogo, CircleNotch, ArrowsClockwise, CaretDown, CaretRight, Robot, ShieldCheck, Gear } from "@phosphor-icons/react";
+import { GitMerge, GitBranch, Lightning, Eye, Sparkle, Trash, ArrowRight, ArrowSquareOut, CheckCircle, Warning, XCircle, Clock, GithubLogo, CircleNotch, ArrowsClockwise, CaretDown, CaretRight, Robot, Gear } from "@phosphor-icons/react";
 import type {
-  AgentChatModelInfo,
-  AgentChatProvider,
   IntegrationProposal,
   IntegrationResolutionState,
   LaneSummary,
@@ -17,7 +15,6 @@ import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
-import { AgentChatPane } from "../../chat/AgentChatPane";
 import { ConflictFilePreview } from "../ConflictFilePreview";
 
 const TILING_TREE: PaneSplit = {
@@ -289,14 +286,9 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   // New integration resolution state
   const [expandedPairKeys, setExpandedPairKeys] = React.useState<string[]>([]);
   const [resolutionState, setResolutionState] = React.useState<IntegrationResolutionState | null>(null);
-  const [activeChatLaneId, setActiveChatLaneId] = React.useState<string | null>(null);
-  const [activeChatSessionId, setActiveChatSessionId] = React.useState<string | null>(null);
+  const [activeWorkerStepId, setActiveWorkerStepId] = React.useState<string | null>(null);
   const [createLaneBusy, setCreateLaneBusy] = React.useState(false);
   const [resolvingLaneId, setResolvingLaneId] = React.useState<string | null>(null);
-  const [aiProvider, setAiProvider] = React.useState<AgentChatProvider>("claude");
-  const [aiModels, setAiModels] = React.useState<AgentChatModelInfo[]>([]);
-  const [aiModel, setAiModel] = React.useState<string>("sonnet");
-  const [aiReasoningEffort, setAiReasoningEffort] = React.useState<string>("medium");
 
   const loadProposals = React.useCallback(async () => {
     try {
@@ -427,8 +419,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     if (!selectedProposal) {
       setResolutionState(null);
       setExpandedPairKeys([]);
-      setActiveChatLaneId(null);
-      setActiveChatSessionId(null);
+      setActiveWorkerStepId(null);
       return;
     }
     // If the proposal carries inline resolutionState, use it
@@ -687,39 +678,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     return proposalConflictSteps.reduce((sum, step) => sum + step.conflictingFiles.length, 0);
   }, [proposalConflictSteps, proposalConflictingPairs]);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    window.ade.agentChat.models({ provider: aiProvider })
-      .then((result) => {
-        if (cancelled) return;
-        setAiModels(result);
-        setAiModel((prev) => {
-          if (result.length > 0 && !result.some((model) => model.id === prev)) {
-            return result[0].id;
-          }
-          return prev;
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setAiModels([]);
-      });
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- aiModel intentionally excluded to avoid re-fetch loop
-  }, [aiProvider]);
-
-  const selectedAiModelInfo = React.useMemo(
-    () => aiModels.find((model) => model.id === aiModel),
-    [aiModel, aiModels],
-  );
-  const reasoningOptions = selectedAiModelInfo?.reasoningEfforts ?? [];
-
-  React.useEffect(() => {
-    if (reasoningOptions.length === 0) return;
-    if (!reasoningOptions.some((effort) => effort.effort === aiReasoningEffort)) {
-      setAiReasoningEffort(reasoningOptions[0]?.effort ?? "medium");
-    }
-  }, [aiReasoningEffort, reasoningOptions]);
-
   const ensureIntegrationLaneForResolution = React.useCallback(async (): Promise<IntegrationResolutionState | null> => {
     if (!selectedProposal) return null;
     if (resolutionState?.integrationLaneId) return resolutionState;
@@ -731,7 +689,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       const nextState: IntegrationResolutionState = {
         integrationLaneId: result.integrationLaneId,
         stepResolutions: {},
-        activeChatSessionId: null,
+        activeWorkerStepId: null,
         activeLaneId: null,
         updatedAt: new Date().toISOString(),
       };
@@ -751,37 +709,26 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     }
   }, [resolutionState, selectedProposal]);
 
-  const handleResolveWithAI = async (
-    stepLaneId: string,
-    provider: AgentChatProvider,
-    model: string,
-    reasoningEffort?: string,
-    autoApprove = false,
-  ) => {
+  const handleResolveWithAI = async (stepLaneId: string) => {
     if (!selectedProposal) return;
     setResolvingLaneId(stepLaneId);
     try {
       const resState = await ensureIntegrationLaneForResolution();
       if (!resState?.integrationLaneId) return;
 
-      const result = await window.ade.prs.startIntegrationResolution({
+      await window.ade.prs.startIntegrationResolution({
         proposalId: selectedProposal.proposalId,
         laneId: stepLaneId,
-        provider,
-        model,
-        reasoningEffort,
-        autoApprove,
       });
 
       setResolutionState((prev) => prev ? {
         ...prev,
         stepResolutions: { ...prev.stepResolutions, [stepLaneId]: "resolving" },
-        activeChatSessionId: result.chatSessionId,
+        activeWorkerStepId: stepLaneId,
         activeLaneId: stepLaneId,
       } : prev);
 
-      setActiveChatLaneId(result.integrationLaneId);
-      setActiveChatSessionId(result.chatSessionId);
+      setActiveWorkerStepId(stepLaneId);
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -817,22 +764,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     for (const laneId of conflictLaneIds) {
       setResolvingLaneId(laneId);
       try {
-        const result = await window.ade.prs.startIntegrationResolution({
+        await window.ade.prs.startIntegrationResolution({
           proposalId: selectedProposal.proposalId,
           laneId,
-          provider: aiProvider,
-          model: aiModel,
-          reasoningEffort: reasoningOptions.length > 0 ? aiReasoningEffort : undefined,
-          autoApprove: true,
         });
         setResolutionState((prev) => prev ? {
           ...prev,
           stepResolutions: { ...prev.stepResolutions, [laneId]: "resolving" },
-          activeChatSessionId: result.chatSessionId,
+          activeWorkerStepId: laneId,
           activeLaneId: laneId,
         } : prev);
-        setActiveChatLaneId(result.integrationLaneId);
-        setActiveChatSessionId(result.chatSessionId);
+        setActiveWorkerStepId(laneId);
       } catch (err: unknown) {
         setCommitError(err instanceof Error ? err.message : String(err));
         break;
@@ -877,13 +819,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
   const handleStartManualResolution = () => {
     if (!nextManualResolutionLaneId) return;
-    void handleResolveWithAI(
-      nextManualResolutionLaneId,
-      aiProvider,
-      aiModel,
-      reasoningOptions.length > 0 ? aiReasoningEffort : undefined,
-      false,
-    );
+    void handleResolveWithAI(nextManualResolutionLaneId);
   };
 
   // Compute whether all steps are resolved
@@ -2197,139 +2133,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 </span>
               </div>
               <div className="font-mono" style={{ fontSize: 10, color: "#71717A", marginTop: 6 }}>
-                {totalProposalConflictFiles} conflict file{totalProposalConflictFiles === 1 ? "" : "s"} across {proposalConflictingPairs.length} lane pair{proposalConflictingPairs.length !== 1 ? "s" : ""}. Choose a resolution mode below.
+                {totalProposalConflictFiles} conflict file{totalProposalConflictFiles === 1 ? "" : "s"} across {proposalConflictingPairs.length} lane pair{proposalConflictingPairs.length !== 1 ? "s" : ""}.
+                The orchestrator will spawn workers to resolve conflicts automatically. Model and provider are configured via the mission execution policy.
               </div>
             </div>
 
-            {/* Resolution mode descriptions */}
+            {/* Action buttons */}
             <div style={{ padding: "12px 16px" }}>
-              <div className="flex" style={{ gap: 12, marginBottom: 14 }}>
-                <div
-                  style={{
-                    flex: 1,
-                    padding: "10px 12px",
-                    background: "#0C0A10",
-                    border: "1px solid #1E1B26",
-                  }}
-                >
-                  <div className="flex items-center" style={{ gap: 6, marginBottom: 6 }}>
-                    <ShieldCheck size={14} weight="fill" style={{ color: "#F59E0B" }} />
-                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#F59E0B" }}>
-                      MANUAL MODE
-                    </span>
-                  </div>
-                  <div className="font-mono" style={{ fontSize: 10, color: "#71717A", lineHeight: "16px" }}>
-                    You review each AI-proposed change before it is applied. Best for critical code.
-                  </div>
-                </div>
-                <div
-                  style={{
-                    flex: 1,
-                    padding: "10px 12px",
-                    background: "#0C0A10",
-                    border: "1px solid #1E1B26",
-                  }}
-                >
-                  <div className="flex items-center" style={{ gap: 6, marginBottom: 6 }}>
-                    <Robot size={14} weight="fill" style={{ color: "#A78BFA" }} />
-                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#A78BFA" }}>
-                      AUTOMATIC MODE
-                    </span>
-                  </div>
-                  <div className="font-mono" style={{ fontSize: 10, color: "#71717A", lineHeight: "16px" }}>
-                    AI resolves all conflicts automatically. You can review the results after.
-                  </div>
-                </div>
-              </div>
-
-              {/* AI configuration row */}
-              <div
-                className="font-mono font-bold uppercase tracking-[1px]"
-                style={{ fontSize: 9, color: "#52525B", marginBottom: 8 }}
-              >
-                AI CONFIGURATION
-              </div>
-              <div className="flex items-center flex-wrap" style={{ gap: 8, marginBottom: 14 }}>
-                <div className="flex items-center" style={{ gap: 4 }}>
-                  <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 8, color: "#52525B" }}>
-                    PROVIDER
-                  </span>
-                  <select
-                    value={aiProvider}
-                    onChange={(e) => setAiProvider(e.target.value as AgentChatProvider)}
-                    className="font-mono"
-                    style={{
-                      fontSize: 10,
-                      height: 28,
-                      padding: "0 8px",
-                      background: "#0C0A10",
-                      color: "#FAFAFA",
-                      border: "1px solid #A78BFA30",
-                      outline: "none",
-                    }}
-                  >
-                    <option value="claude">CLAUDE</option>
-                    <option value="codex">CODEX</option>
-                  </select>
-                </div>
-
-                <div className="flex items-center" style={{ gap: 4 }}>
-                  <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 8, color: "#52525B" }}>
-                    MODEL
-                  </span>
-                  <select
-                    value={aiModel}
-                    onChange={(e) => setAiModel(e.target.value)}
-                    className="font-mono"
-                    style={{
-                      fontSize: 10,
-                      height: 28,
-                      padding: "0 8px",
-                      background: "#0C0A10",
-                      color: "#FAFAFA",
-                      border: "1px solid #A78BFA30",
-                      outline: "none",
-                    }}
-                  >
-                    {aiModels.map((model) => (
-                      <option key={`ai-model-${model.id}`} value={model.id}>
-                        {model.displayName}
-                      </option>
-                    ))}
-                    {aiModels.length === 0 && <option value={aiModel}>{aiModel}</option>}
-                  </select>
-                </div>
-
-                {reasoningOptions.length > 0 && (
-                  <div className="flex items-center" style={{ gap: 4 }}>
-                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 8, color: "#52525B" }}>
-                      REASONING
-                    </span>
-                    <select
-                      value={aiReasoningEffort}
-                      onChange={(e) => setAiReasoningEffort(e.target.value)}
-                      className="font-mono"
-                      style={{
-                        fontSize: 10,
-                        height: 28,
-                        padding: "0 8px",
-                        background: "#0C0A10",
-                        color: "#FAFAFA",
-                        border: "1px solid #A78BFA30",
-                        outline: "none",
-                      }}
-                    >
-                      {reasoningOptions.map((option) => (
-                        <option key={`reasoning-${option.effort}`} value={option.effort}>
-                          {option.description}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-
-              {/* Action buttons */}
               <div className="flex items-center" style={{ gap: 10 }}>
                 <button
                   type="button"
@@ -2347,8 +2157,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   }}
                   onClick={() => handleStartManualResolution()}
                 >
-                  <ShieldCheck size={12} weight="fill" style={{ marginRight: 6 }} />
-                  {createLaneBusy ? "PREPARING..." : "RESOLVE MANUALLY"}
+                  <Robot size={12} weight="fill" style={{ marginRight: 6 }} />
+                  {createLaneBusy ? "PREPARING..." : "RESOLVE NEXT LANE"}
                 </button>
 
                 <button
@@ -2371,12 +2181,33 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   {resolvingLaneId ? "RESOLVING..." : "AUTO-RESOLVE ALL"}
                 </button>
               </div>
+
+              {activeWorkerStepId && (
+                <div
+                  className="flex items-center"
+                  style={{
+                    gap: 8,
+                    marginTop: 12,
+                    padding: "10px 12px",
+                    background: "#A78BFA08",
+                    border: "1px solid #A78BFA20",
+                  }}
+                >
+                  <Gear size={12} weight="fill" style={{ color: "#A78BFA" }} className="animate-spin" />
+                  <span className="font-mono" style={{ fontSize: 11, color: "#A78BFA" }}>
+                    Orchestrator worker running
+                  </span>
+                  <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 4 }}>
+                    View worker progress in the Work tab
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* ---- Embedded chat (when resolving) ---- */}
-        {activeChatSessionId && activeChatLaneId && (
+        {/* ---- Worker resolution progress (when resolving) ---- */}
+        {resolutionState && Object.keys(resolutionState.stepResolutions).length > 0 && selectedProposal && (
           <div
             style={{
               background: "#13101A",
@@ -2397,8 +2228,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               }}
             >
               <div className="flex items-center" style={{ gap: 10 }}>
-                <Sparkle size={14} weight="fill" style={{ color: "#A78BFA" }} />
-                <SectionHeader>AI CONFLICT RESOLUTION</SectionHeader>
+                <Robot size={14} weight="fill" style={{ color: "#A78BFA" }} />
+                <SectionHeader>WORKER RESOLUTION PROGRESS</SectionHeader>
               </div>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <Button
@@ -2416,107 +2247,93 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => {
-                    setActiveChatSessionId(null);
-                    setActiveChatLaneId(null);
-                  }}
+                  onClick={() => setActiveWorkerStepId(null)}
                 >
-                  CLOSE
+                  DISMISS
                 </Button>
               </div>
             </div>
 
             {/* Resolution progress panel */}
-            {resolutionState && selectedProposal && (
-              <div
-                style={{
-                  padding: "10px 16px",
-                  borderBottom: "1px solid #1E1B26",
-                  background: "#0C0A10",
-                }}
-              >
-                <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
-                  <span
-                    className="font-mono font-bold uppercase tracking-[1px]"
-                    style={{ fontSize: 9, color: "#52525B" }}
-                  >
-                    RESOLUTION PROGRESS
-                  </span>
-                  <span className="font-mono" style={{ fontSize: 10, color: "#71717A" }}>
-                    {Object.values(resolutionState.stepResolutions).filter((s) => s === "resolved" || s === "merged-clean").length}
-                    {" / "}
-                    {Object.keys(resolutionState.stepResolutions).length} lanes processed
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center" style={{ gap: 6 }}>
-                  {selectedProposal.steps.map((step) => {
-                    const status = resolutionState.stepResolutions[step.laneId];
-                    const isActive = resolutionState.activeLaneId === step.laneId;
-                    const statusConfig = {
-                      "resolved":     { label: "RESOLVED",    color: "#22C55E", bg: "#22C55E18" },
-                      "merged-clean": { label: "CLEAN",       color: "#22C55E", bg: "#22C55E18" },
-                      "resolving":    { label: "RESOLVING...",color: "#A78BFA", bg: "#A78BFA18" },
-                      "failed":       { label: "FAILED",      color: "#EF4444", bg: "#EF444418" },
-                      "pending":      { label: "PENDING",     color: "#71717A", bg: "#71717A18" },
-                    }[status ?? "pending"] ?? { label: "PENDING", color: "#71717A", bg: "#71717A18" };
-                    return (
-                      <div
-                        key={`progress-${step.laneId}`}
-                        className="flex items-center"
+            <div
+              style={{
+                padding: "10px 16px",
+                background: "#0C0A10",
+              }}
+            >
+              <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+                <span
+                  className="font-mono font-bold uppercase tracking-[1px]"
+                  style={{ fontSize: 9, color: "#52525B" }}
+                >
+                  RESOLUTION PROGRESS
+                </span>
+                <span className="font-mono" style={{ fontSize: 10, color: "#71717A" }}>
+                  {Object.values(resolutionState.stepResolutions).filter((s) => s === "resolved" || s === "merged-clean").length}
+                  {" / "}
+                  {Object.keys(resolutionState.stepResolutions).length} lanes processed
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center" style={{ gap: 6 }}>
+                {selectedProposal.steps.map((step) => {
+                  const status = resolutionState.stepResolutions[step.laneId];
+                  const isActive = resolutionState.activeLaneId === step.laneId;
+                  const statusConfig = {
+                    "resolved":     { label: "RESOLVED",    color: "#22C55E", bg: "#22C55E18" },
+                    "merged-clean": { label: "CLEAN",       color: "#22C55E", bg: "#22C55E18" },
+                    "resolving":    { label: "WORKER RUNNING", color: "#A78BFA", bg: "#A78BFA18" },
+                    "failed":       { label: "FAILED",      color: "#EF4444", bg: "#EF444418" },
+                    "pending":      { label: "PENDING",     color: "#71717A", bg: "#71717A18" },
+                  }[status ?? "pending"] ?? { label: "PENDING", color: "#71717A", bg: "#71717A18" };
+                  return (
+                    <div
+                      key={`progress-${step.laneId}`}
+                      className="flex items-center"
+                      style={{
+                        gap: 6,
+                        padding: "4px 8px",
+                        background: isActive ? "#A78BFA12" : "#0F0D14",
+                        border: isActive ? "1px solid #A78BFA40" : "1px solid #1E1B26",
+                      }}
+                    >
+                      <span className="font-mono font-semibold truncate" style={{ fontSize: 10, color: "#FAFAFA", maxWidth: 100 }}>
+                        {step.laneName}
+                      </span>
+                      <span
+                        className="font-mono font-bold uppercase tracking-[1px]"
                         style={{
-                          gap: 6,
-                          padding: "4px 8px",
-                          background: isActive ? "#A78BFA12" : "#0F0D14",
-                          border: isActive ? "1px solid #A78BFA40" : "1px solid #1E1B26",
+                          fontSize: 8,
+                          padding: "1px 4px",
+                          background: statusConfig.bg,
+                          color: statusConfig.color,
                         }}
                       >
-                        <span className="font-mono font-semibold truncate" style={{ fontSize: 10, color: "#FAFAFA", maxWidth: 100 }}>
-                          {step.laneName}
-                        </span>
-                        <span
-                          className="font-mono font-bold uppercase tracking-[1px]"
-                          style={{
-                            fontSize: 8,
-                            padding: "1px 4px",
-                            background: statusConfig.bg,
-                            color: statusConfig.color,
-                          }}
-                        >
-                          {statusConfig.label}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-                {/* Active lane status bar */}
-                {resolutionState.activeLaneId && (
-                  <div
-                    className="flex items-center"
-                    style={{
-                      gap: 6,
-                      marginTop: 8,
-                      paddingTop: 8,
-                      borderTop: "1px solid #1E1B2680",
-                    }}
-                  >
-                    <Gear size={10} weight="fill" style={{ color: "#A78BFA" }} className="animate-spin" />
-                    <span className="font-mono" style={{ fontSize: 10, color: "#A78BFA" }}>
-                      Resolving: {proposalLaneCards.find((l) => l.laneId === resolutionState.activeLaneId)?.laneName ?? resolutionState.activeLaneId}
-                    </span>
-                    <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 8 }}>
-                      Mode: {resolutionState.stepResolutions[resolutionState.activeLaneId] === "resolving" ? "active" : "idle"}
-                    </span>
-                  </div>
-                )}
+                        {statusConfig.label}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
-            )}
-
-            {/* Chat pane with increased height */}
-            <div style={{ height: 640 }}>
-              <AgentChatPane
-                laneId={activeChatLaneId}
-                lockSessionId={activeChatSessionId}
-              />
+              {/* Active lane status bar */}
+              {resolutionState.activeLaneId && (
+                <div
+                  className="flex items-center"
+                  style={{
+                    gap: 6,
+                    marginTop: 8,
+                    paddingTop: 8,
+                    borderTop: "1px solid #1E1B2680",
+                  }}
+                >
+                  <Gear size={10} weight="fill" style={{ color: "#A78BFA" }} className="animate-spin" />
+                  <span className="font-mono" style={{ fontSize: 10, color: "#A78BFA" }}>
+                    Orchestrator worker resolving: {proposalLaneCards.find((l) => l.laneId === resolutionState.activeLaneId)?.laneName ?? resolutionState.activeLaneId}
+                  </span>
+                  <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 8 }}>
+                    View worker progress in the Work tab
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -2687,7 +2504,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeChatLaneId, activeChatSessionId, createLaneBusy, resolvingLaneId, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, aiProvider, aiModels, aiModel, aiReasoningEffort, reasoningOptions, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
 
   return <PaneTilingLayout layoutId="prs:integration:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

@@ -25,9 +25,9 @@ type RebaseTabProps = {
   lanes: LaneSummary[];
   selectedItemId: string | null;
   onSelectItem: (id: string | null) => void;
-  resolverModel: "codex" | "claude";
+  resolverModel: string;
   resolverReasoningLevel: string;
-  onResolverChange: (model: "codex" | "claude", level: string) => void;
+  onResolverChange: (model: string, level: string) => void;
   onRefresh: () => Promise<void>;
 };
 

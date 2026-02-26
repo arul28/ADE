@@ -5,11 +5,10 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatFileRef,
-  AgentChatModelInfo,
-  AgentChatProvider,
   AgentChatSessionSummary,
   ContextPackOption
 } from "../../../shared/types";
+import { MODEL_REGISTRY, getModelById } from "../../../shared/modelRegistry";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
@@ -22,13 +21,14 @@ type PendingApproval = {
   kind: "command" | "file_change" | "tool_call";
 };
 
-const LAST_PROVIDER_KEY = "ade.chat.lastProvider";
-const LAST_MODEL_KEY_PREFIX = "ade.chat.lastModel";
+const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 
-function defaultModel(provider: AgentChatProvider): string {
-  return provider === "codex" ? "gpt-5.3-codex" : "sonnet";
-}
+// Migration: old localStorage keys for backward compatibility
+const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
+const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
+
+const DEFAULT_MODEL_ID = "anthropic/claude-sonnet-4-6";
 
 function parseChatTranscript(raw: string): AgentChatEventEnvelope[] {
   const out: AgentChatEventEnvelope[] = [];
@@ -95,36 +95,42 @@ function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   };
 }
 
-function readLastUsedProvider(): AgentChatProvider | null {
+/** Migrate old provider+model localStorage to unified modelId. */
+function migrateOldPrefs(): string | null {
   try {
-    const raw = window.localStorage.getItem(LAST_PROVIDER_KEY);
-    if (raw === "codex" || raw === "claude") return raw;
+    const oldProvider = window.localStorage.getItem(LEGACY_PROVIDER_KEY);
+    const oldModel = oldProvider ? window.localStorage.getItem(`${LEGACY_MODEL_KEY_PREFIX}:${oldProvider}`) : null;
+    if (oldProvider && oldModel) {
+      // Try to map old model shortIds to new full IDs
+      const match = MODEL_REGISTRY.find((m) => m.shortId === oldModel || m.sdkModelId === oldModel);
+      if (match) {
+        window.localStorage.setItem(LAST_MODEL_ID_KEY, match.id);
+        // Clean up legacy keys
+        window.localStorage.removeItem(LEGACY_PROVIDER_KEY);
+        window.localStorage.removeItem(`${LEGACY_MODEL_KEY_PREFIX}:codex`);
+        window.localStorage.removeItem(`${LEGACY_MODEL_KEY_PREFIX}:claude`);
+        return match.id;
+      }
+    }
   } catch {
     // ignore
   }
   return null;
 }
 
-function writeLastUsedProvider(provider: AgentChatProvider) {
+function readLastUsedModelId(): string | null {
   try {
-    window.localStorage.setItem(LAST_PROVIDER_KEY, provider);
+    const raw = window.localStorage.getItem(LAST_MODEL_ID_KEY);
+    if (raw && raw.trim().length) return raw.trim();
   } catch {
     // ignore
   }
+  return migrateOldPrefs();
 }
 
-function readLastUsedModel(provider: AgentChatProvider): string | null {
+function writeLastUsedModelId(modelId: string) {
   try {
-    const raw = window.localStorage.getItem(`${LAST_MODEL_KEY_PREFIX}:${provider}`);
-    return raw && raw.trim().length ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeLastUsedModel(provider: AgentChatProvider, model: string) {
-  try {
-    window.localStorage.setItem(`${LAST_MODEL_KEY_PREFIX}:${provider}`, model);
+    window.localStorage.setItem(LAST_MODEL_ID_KEY, modelId);
   } catch {
     // ignore
   }
@@ -132,12 +138,11 @@ function writeLastUsedModel(provider: AgentChatProvider, model: string) {
 
 function readLastUsedReasoningEffort(args: {
   laneId: string | null;
-  provider: AgentChatProvider;
-  model: string;
+  modelId: string;
 }): string | null {
   if (!args.laneId) return null;
   try {
-    const raw = window.localStorage.getItem(`${LAST_REASONING_KEY_PREFIX}:${args.laneId}:${args.provider}:${args.model}`);
+    const raw = window.localStorage.getItem(`${LAST_REASONING_KEY_PREFIX}:${args.laneId}:${args.modelId}`);
     return raw && raw.trim().length ? raw.trim() : null;
   } catch {
     return null;
@@ -146,13 +151,12 @@ function readLastUsedReasoningEffort(args: {
 
 function writeLastUsedReasoningEffort(args: {
   laneId: string | null;
-  provider: AgentChatProvider;
-  model: string;
+  modelId: string;
   effort: string | null;
 }) {
-  if (!args.laneId || !args.model.trim().length) return;
+  if (!args.laneId || !args.modelId.trim().length) return;
   try {
-    const key = `${LAST_REASONING_KEY_PREFIX}:${args.laneId}:${args.provider}:${args.model}`;
+    const key = `${LAST_REASONING_KEY_PREFIX}:${args.laneId}:${args.modelId}`;
     if (!args.effort || !args.effort.trim().length) {
       window.localStorage.removeItem(key);
       return;
@@ -164,14 +168,14 @@ function writeLastUsedReasoningEffort(args: {
 }
 
 function selectReasoningEffort(args: {
-  options: Array<{ effort: string; description: string }>;
+  tiers: string[];
   preferred: string | null;
 }): string | null {
-  if (!args.options.length) return null;
-  if (args.preferred && args.options.some((entry) => entry.effort === args.preferred)) {
+  if (!args.tiers.length) return null;
+  if (args.preferred && args.tiers.includes(args.preferred)) {
     return args.preferred;
   }
-  return args.options.find((entry) => entry.effort === "medium")?.effort ?? args.options[0]!.effort;
+  return args.tiers.includes("medium") ? "medium" : args.tiers[0]!;
 }
 
 function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): number {
@@ -179,7 +183,7 @@ function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): 
 }
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 function inferAttachmentType(filePath: string): AgentChatFileRef["type"] {
@@ -200,10 +204,9 @@ export function AgentChatPane({
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [approvalsBySession, setApprovalsBySession] = useState<Record<string, PendingApproval[]>>({});
-  const [provider, setProvider] = useState<AgentChatProvider>("codex");
-  const [model, setModel] = useState<string>(defaultModel("codex"));
+  const [modelId, setModelId] = useState<string>(DEFAULT_MODEL_ID);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
-  const [modelsByProvider, setModelsByProvider] = useState<Record<AgentChatProvider, AgentChatModelInfo[]>>({ codex: [], claude: [] });
+  const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [selectedContextPacks, setSelectedContextPacks] = useState<ContextPackOption[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
@@ -222,17 +225,32 @@ export function AgentChatPane({
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const pendingApproval = selectedSessionId ? (approvalsBySession[selectedSessionId]?.[0] ?? null) : null;
-  const activeModels = modelsByProvider[provider];
-  const selectedModel = activeModels.find((entry) => entry.id === model) ?? activeModels[0] ?? null;
-  const reasoningOptions = selectedModel?.reasoningEfforts ?? [];
+  const selectedModelDesc = getModelById(modelId);
+  const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
 
-  const refreshModels = useCallback(async (nextProvider: AgentChatProvider): Promise<AgentChatModelInfo[]> => {
+  const refreshAvailableModels = useCallback(async () => {
     try {
-      const models = await window.ade.agentChat.models({ provider: nextProvider });
-      setModelsByProvider((prev) => ({ ...prev, [nextProvider]: models }));
-      return models;
+      // Fetch available model lists from both providers for backward compat
+      const [codexModels, claudeModels] = await Promise.all([
+        window.ade.agentChat.models({ provider: "codex" }).catch(() => []),
+        window.ade.agentChat.models({ provider: "claude" }).catch(() => []),
+      ]);
+      // Build available model IDs from the registry, including all models whose
+      // family has at least one model available from the backend
+      const hasCodex = codexModels.length > 0;
+      const hasClaude = claudeModels.length > 0;
+      const available = MODEL_REGISTRY.filter((m) => {
+        if (m.deprecated) return false;
+        if (m.family === "openai" && hasCodex) return true;
+        if (m.family === "anthropic" && hasClaude) return true;
+        // API-key and other models are always available
+        if (!m.isCliWrapped) return true;
+        return false;
+      }).map((m) => m.id);
+      setAvailableModelIds(available);
+      return available;
     } catch {
-      setModelsByProvider((prev) => ({ ...prev, [nextProvider]: [] }));
+      setAvailableModelIds([]);
       return [];
     }
   }, []);
@@ -289,8 +307,11 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!selectedSession) return;
-    setProvider(selectedSession.provider);
-    setModel(selectedSession.model);
+    // Prefer the unified modelId if present, otherwise reconstruct from provider+model
+    const sessionModelId = selectedSession.modelId
+      ?? MODEL_REGISTRY.find((m) => m.shortId === selectedSession.model || m.sdkModelId === selectedSession.model)?.id
+      ?? modelId;
+    setModelId(sessionModelId);
     setReasoningEffort(selectedSession.reasoningEffort ?? null);
   }, [selectedSession?.sessionId]);
 
@@ -302,15 +323,9 @@ export function AgentChatPane({
       try {
         const snapshot = await window.ade.projectConfig.get();
         const chat = snapshot.effective.ai?.chat;
-        const configuredProvider = chat?.defaultProvider === "codex" || chat?.defaultProvider === "claude"
-          ? chat.defaultProvider
-          : chat?.defaultProvider === "last_used"
-            ? (readLastUsedProvider() ?? "codex")
-            : "codex";
-        const configuredModel = readLastUsedModel(configuredProvider) ?? defaultModel(configuredProvider);
+        const savedModelId = readLastUsedModelId();
         if (!cancelled) {
-          setProvider(configuredProvider);
-          setModel(configuredModel);
+          setModelId(savedModelId ?? DEFAULT_MODEL_ID);
           setSendOnEnter(chat?.sendOnEnter ?? true);
         }
       } catch {
@@ -318,7 +333,7 @@ export function AgentChatPane({
       }
 
       try {
-        await Promise.all([refreshModels("codex"), refreshModels("claude"), refreshSessions()]);
+        await Promise.all([refreshAvailableModels(), refreshSessions()]);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -328,46 +343,30 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [refreshModels, refreshSessions]);
+  }, [refreshAvailableModels, refreshSessions]);
 
+  // If the selected model is not in the available list, fall back
   useEffect(() => {
-    if (loading) return;
-    if (modelsByProvider[provider].length) return;
-    const fallback = (["codex", "claude"] as AgentChatProvider[]).find((entry) => modelsByProvider[entry].length > 0);
-    if (!fallback || fallback === provider) return;
-    setProvider(fallback);
-    const fallbackModel = readLastUsedModel(fallback);
-    setModel(fallbackModel ?? (modelsByProvider[fallback][0]?.id ?? defaultModel(fallback)));
-  }, [loading, modelsByProvider, provider]);
+    if (loading || !availableModelIds.length) return;
+    if (availableModelIds.includes(modelId)) return;
+    const preferred = readLastUsedModelId();
+    if (preferred && availableModelIds.includes(preferred)) {
+      setModelId(preferred);
+    } else {
+      setModelId(availableModelIds[0]!);
+    }
+  }, [loading, availableModelIds, modelId]);
 
+  // Sync reasoning effort when model changes
   useEffect(() => {
-    const providerModels = modelsByProvider[provider];
-    if (!providerModels.length) return;
-    if (providerModels.some((entry) => entry.id === model)) return;
-    const preferred = readLastUsedModel(provider);
-    const defaultChoice = preferred && providerModels.some((entry) => entry.id === preferred)
-      ? preferred
-      : providerModels.find((entry) => entry.isDefault)?.id ?? providerModels[0]!.id;
-    setModel(defaultChoice);
-  }, [model, modelsByProvider, provider]);
-
-  useEffect(() => {
-    if (!reasoningOptions.length) {
+    if (!reasoningTiers.length) {
       if (reasoningEffort !== null) setReasoningEffort(null);
       return;
     }
-
-    if (reasoningEffort && reasoningOptions.some((entry) => entry.effort === reasoningEffort)) {
-      return;
-    }
-
-    const preferred = readLastUsedReasoningEffort({
-      laneId,
-      provider,
-      model
-    });
-    setReasoningEffort(selectReasoningEffort({ options: reasoningOptions, preferred }));
-  }, [laneId, model, provider, reasoningEffort, reasoningOptions]);
+    if (reasoningEffort && reasoningTiers.includes(reasoningEffort)) return;
+    const preferred = readLastUsedReasoningEffort({ laneId, modelId });
+    setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred }));
+  }, [laneId, modelId, reasoningEffort, reasoningTiers]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -403,22 +402,17 @@ export function AgentChatPane({
   }, [lockSessionId, refreshSessions]);
 
   useEffect(() => {
-    writeLastUsedProvider(provider);
-  }, [provider]);
-
-  useEffect(() => {
-    if (!model.trim().length) return;
-    writeLastUsedModel(provider, model);
-  }, [provider, model]);
+    if (!modelId.trim().length) return;
+    writeLastUsedModelId(modelId);
+  }, [modelId]);
 
   useEffect(() => {
     writeLastUsedReasoningEffort({
       laneId,
-      provider,
-      model,
+      modelId,
       effort: reasoningEffort
     });
-  }, [laneId, model, provider, reasoningEffort]);
+  }, [laneId, modelId, reasoningEffort]);
 
   const searchAttachments = useCallback(async (query: string): Promise<AgentChatFileRef[]> => {
     if (!laneId) return [];
@@ -448,17 +442,22 @@ export function AgentChatPane({
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (!laneId) return null;
+    const desc = getModelById(modelId);
+    // Derive provider from the model family for backward compatibility with the backend
+    const provider = desc?.family === "openai" ? "codex" : "claude";
+    const model = desc?.shortId ?? modelId;
     const created = await window.ade.agentChat.create({
       laneId,
       provider,
       model,
+      modelId,
       reasoningEffort
     });
     loadedHistoryRef.current.delete(created.id);
     setSelectedSessionId(created.id);
     await refreshSessions();
     return created.id;
-  }, [laneId, model, provider, reasoningEffort, refreshSessions]);
+  }, [laneId, modelId, reasoningEffort, refreshSessions]);
 
   const submit = useCallback(async () => {
     const text = draft.trim();
@@ -552,22 +551,6 @@ export function AgentChatPane({
     }
   }, [approvalsBySession, selectedSessionId]);
 
-  const providerOptions = useMemo(
-    () => [
-      {
-        value: "codex" as const,
-        label: "Codex",
-        enabled: loading || modelsByProvider.codex.length > 0
-      },
-      {
-        value: "claude" as const,
-        label: "Claude",
-        enabled: loading || modelsByProvider.claude.length > 0
-      }
-    ],
-    [loading, modelsByProvider]
-  );
-
   if (!laneId) {
     return <EmptyState title="No lane selected" description="Select a lane to use agent chat." />;
   }
@@ -584,15 +567,21 @@ export function AgentChatPane({
             className="h-7 min-w-[220px] flex-1 rounded border border-border/40 bg-bg/65 px-2 text-xs"
           >
             <option value="">No session selected</option>
-            {sessions.map((session) => (
-              <option key={session.sessionId} value={session.sessionId}>
-                {session.provider} · {session.model} · {new Date(session.startedAt).toLocaleString()}
-              </option>
-            ))}
+            {sessions.map((session) => {
+              const desc = session.modelId ? getModelById(session.modelId) : MODEL_REGISTRY.find((m) => m.shortId === session.model);
+              const label = desc?.displayName ?? `${session.provider}/${session.model}`;
+              return (
+                <option key={session.sessionId} value={session.sessionId}>
+                  {label} · {new Date(session.startedAt).toLocaleString()}
+                </option>
+              );
+            })}
           </select>
         ) : (
           <div className="min-w-[220px] flex-1 text-xs text-muted-fg">
-            {selectedSession ? `${selectedSession.provider} · ${selectedSession.model}` : lockSessionId}
+            {selectedSession
+              ? (getModelById(selectedSession.modelId ?? "")?.displayName ?? `${selectedSession.provider}/${selectedSession.model}`)
+              : lockSessionId}
           </div>
         )}
 
@@ -633,7 +622,7 @@ export function AgentChatPane({
 
         {selectedSession ? (
           <>
-            <Chip className="text-[11px]">{selectedSession.provider}</Chip>
+            <Chip className="text-[11px]">{getModelById(selectedSession.modelId ?? "")?.displayName ?? selectedSession.model}</Chip>
             <Chip className="text-[11px]">{selectedSession.status}</Chip>
             {turnActive ? <Chip className="bg-accent/20 text-[10px] text-fg/90">active turn</Chip> : null}
           </>
@@ -650,16 +639,14 @@ export function AgentChatPane({
         ) : (
           <EmptyState
             title="No chat session"
-            description="Create a new chat session or choose an existing one to start working with Codex or Claude."
+            description="Create a new chat session or choose an existing one to start working with an AI agent."
           />
         )}
       </div>
 
       <AgentChatComposer
-        provider={provider}
-        providerOptions={providerOptions}
-        model={model}
-        models={activeModels.length ? activeModels : [{ id: defaultModel(provider), displayName: defaultModel(provider), isDefault: true }]}
+        modelId={modelId}
+        availableModelIds={availableModelIds.length ? availableModelIds : undefined}
         reasoningEffort={reasoningEffort}
         draft={draft}
         attachments={attachments}
@@ -669,37 +656,12 @@ export function AgentChatPane({
         busy={busy}
         selectedContextPacks={selectedContextPacks}
         laneId={laneId ?? undefined}
-        onProviderChange={(nextProvider) => {
-          setProvider(nextProvider);
-          if (!modelsByProvider[nextProvider].length) {
-            void refreshModels(nextProvider);
-          }
-          const providerModels = modelsByProvider[nextProvider];
-          const preferredModel = readLastUsedModel(nextProvider);
-          const nextModel = preferredModel && providerModels.some((entry) => entry.id === preferredModel)
-            ? preferredModel
-            : providerModels.find((entry) => entry.isDefault)?.id
-              ?? providerModels[0]?.id
-              ?? defaultModel(nextProvider);
-          setModel(nextModel);
-
-          const options = (providerModels.find((entry) => entry.id === nextModel)?.reasoningEfforts ?? []);
-          const preferredReasoning = readLastUsedReasoningEffort({
-            laneId,
-            provider: nextProvider,
-            model: nextModel
-          });
-          setReasoningEffort(selectReasoningEffort({ options, preferred: preferredReasoning }));
-        }}
-        onModelChange={(nextModel) => {
-          setModel(nextModel);
-          const options = (modelsByProvider[provider].find((entry) => entry.id === nextModel)?.reasoningEfforts ?? []);
-          const preferred = readLastUsedReasoningEffort({
-            laneId,
-            provider,
-            model: nextModel
-          });
-          setReasoningEffort(selectReasoningEffort({ options, preferred }));
+        onModelChange={(nextModelId) => {
+          setModelId(nextModelId);
+          const nextDesc = getModelById(nextModelId);
+          const tiers = nextDesc?.reasoningTiers ?? [];
+          const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
+          setReasoningEffort(selectReasoningEffort({ tiers, preferred }));
         }}
         onReasoningEffortChange={setReasoningEffort}
         onDraftChange={setDraft}

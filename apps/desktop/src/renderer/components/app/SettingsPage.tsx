@@ -1,7 +1,8 @@
 import React, { useState } from "react";
-import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning } from "@phosphor-icons/react";
+import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { GeneralSection } from "../settings/GeneralSection";
+import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
 import { AutomationsSection } from "../settings/AutomationsSection";
@@ -11,6 +12,7 @@ import { UsageDashboard } from "../missions/UsageDashboard";
 
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
+  { id: "providers", label: "Providers", icon: Plugs },
   { id: "github", label: "GitHub", icon: GitBranch },
   { id: "context", label: "Context & Docs", icon: BookOpenText },
   { id: "automations", label: "Automations", icon: Robot },
@@ -50,6 +52,7 @@ export function SettingsPage() {
       {/* Right content */}
       <div className="flex-1 overflow-auto p-4">
         {section === "general" && <GeneralSection />}
+        {section === "providers" && <ProvidersSection />}
         {section === "github" && <GitHubSection />}
         {section === "context" && <ContextSection />}
         {section === "automations" && <AutomationsSection />}

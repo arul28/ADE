@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { KeybindingsSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
+import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -54,6 +55,7 @@ type AppState = {
   focusedSessionId: string | null;
   theme: ThemeId;
   providerMode: ProviderMode;
+  availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
   keybindings: KeybindingsSnapshot | null;
   terminalAttention: TerminalAttentionSnapshot;
@@ -85,6 +87,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   focusedSessionId: null,
   theme: readInitialTheme(),
   providerMode: "guest",
+  availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,

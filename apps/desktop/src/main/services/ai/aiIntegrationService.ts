@@ -6,6 +6,15 @@ import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentE
 import { createClaudeExecutor } from "./claudeExecutor";
 import { createCodexExecutor } from "./codexExecutor";
 import { commandExists } from "./utils";
+import {
+  getModelById,
+  getAvailableModels,
+  resolveModelAlias,
+  type ModelDescriptor,
+} from "../../../shared/modelRegistry";
+import { detectAllAuth, type DetectedAuth } from "./authDetector";
+import { resolveModel } from "./providerResolver";
+import { executeUnified, type UnifiedExecutorOpts } from "./unifiedExecutor";
 
 export type AiTaskType =
   | "planning"
@@ -267,10 +276,20 @@ export function createAiIntegrationService(args: {
     codex: createCodexExecutor()
   };
 
-  const getAvailability = () => ({
+  const getAvailabilitySync = () => ({
     claude: commandExists("claude"),
     codex: commandExists("codex")
   });
+
+  const getAvailabilityAsync = async () => {
+    const auth = await detectAllAuth();
+    return {
+      claude: auth.some(a => a.type === "cli-subscription" && a.cli === "claude"),
+      codex: auth.some(a => a.type === "cli-subscription" && a.cli === "codex"),
+      detectedAuth: auth,
+      availableModels: getAvailableModels(auth),
+    };
+  };
 
   const getMode = (): AiProviderMode => {
     const snapshot = projectConfigService.get();
@@ -361,6 +380,94 @@ export function createAiIntegrationService(args: {
     );
   };
 
+  const resolveModelForTask = async (taskType: AiTaskType, modelIdHint?: string): Promise<string> => {
+    // If explicit model ID provided and valid, use it
+    if (modelIdHint && getModelById(modelIdHint)) return modelIdHint;
+
+    // Resolve from alias (e.g. "sonnet" -> "anthropic/claude-sonnet-4-6")
+    if (modelIdHint) {
+      const resolved = resolveModelAlias(modelIdHint);
+      if (resolved) return resolved.id;
+    }
+
+    // Check task defaults for legacy provider, map to model ID
+    const defaults = TASK_DEFAULTS[taskType];
+    const auth = await detectAllAuth();
+    const available = getAvailableModels(auth);
+
+    if (!available.length) {
+      throw new Error("No AI providers detected. Install Claude Code CLI, Codex CLI, or configure an API key.");
+    }
+
+    // Try to match the legacy default provider
+    const legacyProvider = defaults.provider;
+    const familyMatch = available.find(m =>
+      (legacyProvider === "claude" && m.family === "anthropic") ||
+      (legacyProvider === "codex" && m.family === "openai")
+    );
+    if (familyMatch) return familyMatch.id;
+
+    // Fall back to first available
+    return available[0].id;
+  };
+
+  const executeViaUnifiedPath = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
+    const modelId = args.model!;
+    const start = Date.now();
+    let text = "";
+    let structuredOutput: unknown = null;
+    let sessionId: string | null = null;
+    let inputTokens: number | null = null;
+    let outputTokens: number | null = null;
+    let model: string | null = null;
+
+    for await (const event of executeUnified({
+      modelId,
+      prompt: args.prompt,
+      system: args.systemPrompt,
+      cwd: args.cwd,
+      tools: args.permissionMode === "read-only" ? "none" : "coding",
+      timeout: args.timeoutMs,
+      jsonSchema: args.jsonSchema,
+      reasoningEffort: args.reasoningEffort,
+    })) {
+      if (event.type === "text") text += event.content;
+      if (event.type === "structured_output") structuredOutput = event.data;
+      if (event.type === "done") {
+        sessionId = event.sessionId;
+        inputTokens = event.usage?.inputTokens ?? null;
+        outputTokens = event.usage?.outputTokens ?? null;
+        model = event.model ?? null;
+      }
+      if (event.type === "error") throw new Error(event.message);
+    }
+
+    const durationMs = Date.now() - start;
+    const descriptor = getModelById(modelId);
+
+    logUsage({
+      feature: args.feature,
+      provider: (descriptor?.family ?? "unknown") as any,
+      model,
+      inputTokens,
+      outputTokens,
+      durationMs,
+      success: true,
+      sessionId
+    });
+
+    return {
+      text,
+      structuredOutput,
+      provider: (descriptor?.family ?? "unknown") as any,
+      model,
+      sessionId,
+      inputTokens,
+      outputTokens,
+      durationMs
+    };
+  };
+
   const resolveProviderForTask = (taskType: AiTaskType, providerHint?: AgentProvider | null): AgentProvider => {
     const snapshot = projectConfigService.get();
     const defaults = TASK_DEFAULTS[taskType];
@@ -369,7 +476,7 @@ export function createAiIntegrationService(args: {
     const preferred = providerHint ?? toStringOrNull(override.provider);
     const normalizedPreferred = preferred?.toLowerCase() ?? "";
 
-    const availability = getAvailability();
+    const availability = getAvailabilitySync();
 
     const preferredProvider =
       normalizedPreferred === "claude" || normalizedPreferred === "codex"
@@ -516,6 +623,11 @@ export function createAiIntegrationService(args: {
     }
 
     checkBudget(args.feature);
+
+    // Try unified path if a model registry ID is provided
+    if (args.model && getModelById(args.model)) {
+      return executeViaUnifiedPath(args);
+    }
 
     const provider = resolveProviderForTask(args.taskType, args.provider ?? null);
     const executor = executors[provider];
@@ -693,7 +805,7 @@ export function createAiIntegrationService(args: {
     getMode,
 
     getStatus: async (): Promise<AiIntegrationStatus> => {
-      const availability = getAvailability();
+      const availability = getAvailabilitySync();
       return {
         mode: getMode(),
         availableProviders: availability,
@@ -716,7 +828,12 @@ export function createAiIntegrationService(args: {
 
     getDailyBudgetLimit,
 
-    getAvailability,
+    getAvailability: getAvailabilitySync,
+
+    // New unified methods
+    getAvailabilityAsync,
+    resolveModelForTask,
+    executeViaUnified: executeViaUnifiedPath,
 
     // Backward-compatible convenience methods used by migrated services.
     async generateNarrative(args: {
@@ -805,6 +922,7 @@ export function createAiIntegrationService(args: {
       model?: string;
       provider?: AgentProvider;
       jsonSchema?: unknown;
+      permissionMode?: ExecutorOpts["permissions"]["mode"];
     }): Promise<ExecuteAiTaskResult> {
       return await executeTask({
         feature: "mission_planning",
@@ -815,7 +933,7 @@ export function createAiIntegrationService(args: {
         timeoutMs: args.timeoutMs,
         model: args.model,
         jsonSchema: args.jsonSchema,
-        permissionMode: "read-only",
+        permissionMode: args.permissionMode ?? "read-only",
         oneShot: true
       });
     },
