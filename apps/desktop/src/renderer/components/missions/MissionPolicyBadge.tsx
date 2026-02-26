@@ -1,5 +1,6 @@
 import React from "react";
 import type { MissionExecutionPolicy } from "../../../shared/types";
+import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 
 type MissionPolicyBadgeProps = {
@@ -94,7 +95,12 @@ export function MissionPolicyBadge({ policy, className }: MissionPolicyBadgeProp
               textTransform: "uppercase"
             }}
           >
-            {policy.implementation.model === "claude" ? "C" : "X"}
+            {(() => {
+              const m = policy.implementation.model;
+              const desc = m ? getModelById(m) : undefined;
+              if (desc) return desc.family === "anthropic" ? "C" : desc.family === "openai" ? "X" : desc.shortId.charAt(0).toUpperCase();
+              return m === "claude" ? "C" : m === "codex" ? "X" : (m ?? "?").charAt(0).toUpperCase();
+            })()}
           </span>
         )}
       </div>

@@ -56,6 +56,7 @@ export type AgentEvent =
   | {
       type: "done";
       sessionId: string;
+      modelId?: string;
       usage?: {
         inputTokens?: number | null;
         outputTokens?: number | null;
@@ -76,3 +77,6 @@ export interface AgentExecutor {
   resume(sessionId: string, prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent>;
   listModels?(): Promise<AgentModelDescriptor[]>;
 }
+
+// Re-export unified executor types for callers migrating to the new path.
+export type { UnifiedExecutorOpts } from "./unifiedExecutor";

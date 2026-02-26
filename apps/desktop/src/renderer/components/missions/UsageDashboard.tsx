@@ -1,24 +1,31 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Pulse, Cpu, CurrencyDollar, Clock, CheckCircle, XCircle, SpinnerGap } from "@phosphor-icons/react";
 import type { AggregatedUsageStats } from "../../../shared/types";
+import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 
-const MODEL_COLORS: Record<string, string> = {
-  "claude-opus": "#1D4ED8",
-  "claude-sonnet": "#3B82F6",
-  "claude-haiku": "#60A5FA",
-  "codex": "#22C55E",
-  "codex-mini": "#4ADE80",
-  "default": "#71717A"
-};
+const DEFAULT_MODEL_COLOR = "#71717A";
 
 function getModelColor(model: string): string {
-  const lower = model.toLowerCase();
-  if (lower.includes("opus")) return MODEL_COLORS["claude-opus"];
-  if (lower.includes("sonnet")) return MODEL_COLORS["claude-sonnet"];
-  if (lower.includes("haiku")) return MODEL_COLORS["claude-haiku"];
-  if (lower.includes("codex") && lower.includes("mini")) return MODEL_COLORS["codex-mini"];
-  if (lower.includes("codex")) return MODEL_COLORS["codex"];
-  return MODEL_COLORS["default"];
+  const descriptor = getModelById(model) ?? resolveModelAlias(model);
+  return descriptor?.color ?? DEFAULT_MODEL_COLOR;
+}
+
+function modelBadgeStyle(model: string): React.CSSProperties {
+  const color = getModelColor(model);
+  return {
+    background: `${color}18`,
+    color,
+    fontFamily: "JetBrains Mono, monospace",
+    fontSize: "9px",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "1px",
+  };
+}
+
+function getModelDisplayName(model: string, provider?: string): string {
+  const desc = getModelById(model) ?? resolveModelAlias(model);
+  return desc?.displayName ?? provider ?? model;
 }
 
 function formatTokens(n: number): string {
@@ -140,14 +147,10 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
                 </span>
                 <span
                   className="px-1.5 py-0.5"
-                  style={s.provider === "codex"
-                    ? { background: "#22C55E18", color: "#22C55E", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
-                    : { background: "#A78BFA18", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
-                  }
+                  style={modelBadgeStyle(s.model)}
                 >
-                  {s.provider}
+                  {getModelDisplayName(s.model, s.provider)}
                 </span>
-                <span className="text-xs truncate" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{s.model}</span>
                 <span className="ml-auto" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{s.feature}</span>
                 <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatDuration(s.elapsedMs)}</span>
               </div>
@@ -170,14 +173,10 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
                     <div className="flex items-center gap-1.5">
                       <span
                         className="px-1.5 py-0.5"
-                        style={m.provider === "codex"
-                          ? { background: "#22C55E18", color: "#22C55E", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
-                          : { background: "#A78BFA18", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
-                        }
+                        style={modelBadgeStyle(m.model)}
                       >
-                        {m.provider}
+                        {getModelDisplayName(m.model, m.provider)}
                       </span>
-                      <span style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{m.model}</span>
                     </div>
                     <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
                       <span>{m.sessions} sessions</span>
@@ -227,12 +226,9 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
                 )}
                 <span
                   className="px-1 py-0.5"
-                  style={s.provider === "codex"
-                    ? { background: "#22C55E18", color: "#22C55E", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
-                    : { background: "#A78BFA18", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
-                  }
+                  style={modelBadgeStyle(s.model)}
                 >
-                  {s.provider}
+                  {getModelDisplayName(s.model, s.provider)}
                 </span>
                 <span className="truncate" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>{s.feature}</span>
                 <span className="ml-auto" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatTokens(s.inputTokens + s.outputTokens)}</span>

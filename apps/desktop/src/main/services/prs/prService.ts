@@ -2428,7 +2428,7 @@ export function createPrService({
     const resolutionState: IntegrationResolutionState = {
       integrationLaneId: integrationLane.id,
       stepResolutions,
-      activeChatSessionId: null,
+      activeWorkerStepId: null,
       activeLaneId: null,
       updatedAt: nowIso()
     };
@@ -2441,12 +2441,10 @@ export function createPrService({
     return { integrationLaneId: integrationLane.id, mergedCleanLanes, conflictingLanes };
   };
 
-  // B2: Start AI-assisted resolution for a conflicting step
+  // B2: Start integration resolution — attempt merge, detect conflicts, return result for orchestrator
   const startIntegrationResolution = async (
     args: StartIntegrationResolutionArgs
   ): Promise<StartIntegrationResolutionResult> => {
-    if (!agentChatService) throw new Error("Agent chat service not available");
-
     const proposalRow = db.get<{
       id: string; integration_lane_id: string | null; resolution_state_json: string | null;
       steps_json: string;
@@ -2465,18 +2463,18 @@ export function createPrService({
     const sourceLane = allLanes.find((l) => l.id === args.laneId);
     if (!sourceLane) throw new Error(`Source lane not found: ${args.laneId}`);
 
-    // Attempt merge (will leave conflict markers in files)
+    // Attempt merge
     const sourceBranch = branchNameFromRef(sourceLane.branchRef);
     const mergeRes = await runGit(
       ["merge", "--no-ff", "-m", `Merge ${sourceLane.name} into integration`, sourceBranch],
       { cwd: integrationLane.worktreePath, timeoutMs: 60_000 }
     );
 
-    // If merge succeeded without conflicts, mark step as resolved and return early
+    // If merge succeeded without conflicts, mark step as merged-clean and return
     if (mergeRes.exitCode === 0) {
       const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
         ? JSON.parse(String(proposalRow.resolution_state_json))
-        : { integrationLaneId, stepResolutions: {}, activeChatSessionId: null, activeLaneId: null, updatedAt: nowIso() };
+        : { integrationLaneId, stepResolutions: {}, activeWorkerStepId: null, activeLaneId: null, updatedAt: nowIso() };
 
       resolutionState.stepResolutions[args.laneId] = "merged-clean";
       resolutionState.updatedAt = nowIso();
@@ -2492,7 +2490,7 @@ export function createPrService({
         message: "Merge succeeded without conflicts; no AI resolution needed"
       });
 
-      return { chatSessionId: null as unknown as string, integrationLaneId };
+      return { conflictFiles: [], integrationLaneId, mergedClean: true };
     }
 
     // Get conflicting files from git status
@@ -2511,51 +2509,16 @@ export function createPrService({
       })
       .map((line) => line.slice(3).trim());
 
-    // Create agent chat session
-    let session: Awaited<ReturnType<typeof agentChatService.createSession>>;
-    try {
-      session = await agentChatService.createSession({
-        laneId: integrationLaneId,
-        provider: args.provider,
-        model: args.model,
-        reasoningEffort: args.reasoningEffort
-      });
+    // Abort the failed merge so the orchestrator worker can re-attempt in a controlled way
+    await runGit(["merge", "--abort"], { cwd: integrationLane.worktreePath, timeoutMs: 10_000 });
 
-      // Build and send resolution prompt
-      const prompt = buildIntegrationResolutionPrompt(conflictFiles, sourceLane.name, args.autoApprove);
-      await agentChatService.sendMessage({ sessionId: session.id, text: prompt });
-    } catch (error) {
-      // Fix 6: If AI provider call fails, update resolution state to "error" so UI can show the failure
-      const errorResolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
-        ? JSON.parse(String(proposalRow.resolution_state_json))
-        : { integrationLaneId, stepResolutions: {}, activeChatSessionId: null, activeLaneId: null, updatedAt: nowIso() };
-
-      errorResolutionState.stepResolutions[args.laneId] = "pending";
-      errorResolutionState.activeChatSessionId = null;
-      errorResolutionState.activeLaneId = null;
-      errorResolutionState.updatedAt = nowIso();
-
-      db.run(
-        `update integration_proposals set resolution_state_json = ? where id = ?`,
-        [JSON.stringify(errorResolutionState), args.proposalId]
-      );
-
-      logger.error("prs.integration_resolution.ai_failed", {
-        proposalId: args.proposalId,
-        laneId: args.laneId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-
-      throw error;
-    }
-
-    // Update resolution state
+    // Update resolution state — mark as pending, worker step will be set by orchestrator via markResolutionWorkerActive
     const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
       ? JSON.parse(String(proposalRow.resolution_state_json))
-      : { integrationLaneId, stepResolutions: {}, activeChatSessionId: null, activeLaneId: null, updatedAt: nowIso() };
+      : { integrationLaneId, stepResolutions: {}, activeWorkerStepId: null, activeLaneId: null, updatedAt: nowIso() };
 
-    resolutionState.stepResolutions[args.laneId] = "resolving";
-    resolutionState.activeChatSessionId = session.id;
+    resolutionState.stepResolutions[args.laneId] = "pending";
+    resolutionState.activeWorkerStepId = null;
     resolutionState.activeLaneId = args.laneId;
     resolutionState.updatedAt = nowIso();
 
@@ -2564,43 +2527,39 @@ export function createPrService({
       [JSON.stringify(resolutionState), args.proposalId]
     );
 
-    return { chatSessionId: session.id, integrationLaneId };
+    logger.info("prs.integration_resolution.conflicts_detected", {
+      proposalId: args.proposalId,
+      laneId: args.laneId,
+      conflictFileCount: conflictFiles.length,
+      message: "Merge had conflicts; aborted merge, awaiting orchestrator worker"
+    });
+
+    return { conflictFiles, integrationLaneId, mergedClean: false };
   };
 
-  // B3: Build prompt for AI resolution
-  const buildIntegrationResolutionPrompt = (
-    conflictFiles: string[],
-    sourceLaneName: string,
-    autoApprove?: boolean
-  ): string => {
-    const fileList = conflictFiles.map((f) => `  - ${f}`).join("\n");
-    const modeInstruction = autoApprove
-      ? `Mode: AUTOMATIC — Apply changes directly. Resolve all conflicts, stage with \`git add\`, and commit to finalize the merge. Report what you did after.`
-      : `Mode: MANUAL — Show your proposed resolution for each file and explain your reasoning. Wait for explicit approval before running \`git add\` and \`git commit\`. Present changes one file at a time so the user can review each.`;
+  // B3: Mark resolution worker active — called by orchestrator after spawning a worker
+  const markResolutionWorkerActive = (proposalId: string, laneId: string, workerStepId: string): void => {
+    const proposalRow = db.get<{
+      id: string; resolution_state_json: string | null;
+    }>(
+      `select id, resolution_state_json from integration_proposals where id = ?`,
+      [proposalId]
+    );
+    if (!proposalRow) throw new Error(`Proposal not found: ${proposalId}`);
 
-    return [
-      `# Integration Lane Conflict Resolution`,
-      ``,
-      `You are working in an **integration lane** — a temporary branch that combines code from multiple feature lanes (branches) into one cohesive codebase. Important context:`,
-      ``,
-      `- The **original feature lanes are NOT modified**. All changes happen only in this integration lane.`,
-      `- Your job is to produce a clean merge that preserves ALL functionality from every lane.`,
-      `- The branch "${sourceLaneName}" is being merged into the integration lane and has conflicts.`,
-      ``,
-      `## Conflicting Files`,
-      fileList,
-      ``,
-      `## Resolution Strategy`,
-      `1. **Read each conflicting file** to understand both sides of every conflict marker (\`<<<<<<<\`, \`=======\`, \`>>>>>>>\`).`,
-      `2. **Understand the intent** of each side — what feature or fix does each change implement?`,
-      `3. **Resolve by combining both sides** when possible. If changes are in different parts of the file, include both. If they modify the same code, create a version that preserves the functionality of both.`,
-      `4. **Never drop functionality** from either side. If in doubt, keep both implementations and ensure they work together.`,
-      `5. **After resolving each file**, run \`git add <file>\` to mark it resolved.`,
-      `6. **After all files are resolved**, run \`git commit --no-edit\` to finalize the merge.`,
-      `7. **Report what you changed** and why for each file.`,
-      ``,
-      modeInstruction
-    ].join("\n");
+    const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
+      ? JSON.parse(String(proposalRow.resolution_state_json))
+      : { integrationLaneId: "", stepResolutions: {}, activeWorkerStepId: null, activeLaneId: null, updatedAt: nowIso() };
+
+    resolutionState.stepResolutions[laneId] = "resolving";
+    resolutionState.activeWorkerStepId = workerStepId;
+    resolutionState.activeLaneId = laneId;
+    resolutionState.updatedAt = nowIso();
+
+    db.run(
+      `update integration_proposals set resolution_state_json = ? where id = ?`,
+      [JSON.stringify(resolutionState), proposalId]
+    );
   };
 
   // B4: Recheck integration step after resolution
@@ -2640,14 +2599,14 @@ export function createPrService({
 
     const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
       ? JSON.parse(String(proposalRow.resolution_state_json))
-      : { integrationLaneId, stepResolutions: {}, activeChatSessionId: null, activeLaneId: null, updatedAt: nowIso() };
+      : { integrationLaneId, stepResolutions: {}, activeWorkerStepId: null, activeLaneId: null, updatedAt: nowIso() };
 
     let resolution: IntegrationStepResolution;
     if (conflictFiles.length === 0) {
       resolution = "resolved";
       resolutionState.stepResolutions[args.laneId] = "resolved";
       if (resolutionState.activeLaneId === args.laneId) {
-        resolutionState.activeChatSessionId = null;
+        resolutionState.activeWorkerStepId = null;
         resolutionState.activeLaneId = null;
       }
     } else {
@@ -2842,6 +2801,10 @@ export function createPrService({
 
     async recheckIntegrationStep(args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult> {
       return await recheckIntegrationStep(args);
+    },
+
+    markResolutionWorkerActive(proposalId: string, laneId: string, workerStepId: string): void {
+      return markResolutionWorkerActive(proposalId, laneId, workerStepId);
     },
 
     setAgentChatService(svc: ReturnType<typeof createAgentChatService>): void {

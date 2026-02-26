@@ -1156,6 +1156,21 @@ export function registerIpc({
     };
   });
 
+  ipcMain.handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {
+    const { storeApiKey } = await import("../ai/apiKeyStore");
+    storeApiKey(arg.provider, arg.key);
+  });
+
+  ipcMain.handle(IPC.aiDeleteApiKey, async (_event, arg: { provider: string }): Promise<void> => {
+    const { deleteApiKey } = await import("../ai/apiKeyStore");
+    deleteApiKey(arg.provider);
+  });
+
+  ipcMain.handle(IPC.aiListApiKeys, async (): Promise<string[]> => {
+    const { listStoredProviders } = await import("../ai/apiKeyStore");
+    return listStoredProviders();
+  });
+
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
     return ctx.agentToolsService.detect();

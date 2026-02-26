@@ -28,7 +28,7 @@ type PrTab = "normal" | "queue" | "integration" | "rebase";
 type InlineTerminalState = {
   ptyId: string;
   sessionId: string;
-  provider: "codex" | "claude";
+  provider: string;
   startedAt: string;
   exitCode: number | null;
   minimized: boolean;
@@ -64,7 +64,7 @@ type PrsState = {
   inlineTerminal: InlineTerminalState;
 
   // Resolver preferences
-  resolverModel: "codex" | "claude";
+  resolverModel: string;
   resolverReasoningLevel: string;
 };
 
@@ -74,7 +74,7 @@ type PrsContextValue = PrsState & {
   setSelectedQueueGroupId: (id: string | null) => void;
   setSelectedRebaseItemId: (id: string | null) => void;
   setMergeMethod: (method: MergeMethod) => void;
-  setResolverModel: (model: "codex" | "claude") => void;
+  setResolverModel: (model: string) => void;
   setResolverReasoningLevel: (level: string) => void;
   setInlineTerminal: (terminal: InlineTerminalState) => void;
   refresh: () => Promise<void>;
@@ -84,14 +84,14 @@ const PrsContext = createContext<PrsContextValue | null>(null);
 
 const LS_MODEL_KEY = "ade:prs:resolverModel";
 
-function readPersistedModel(): "codex" | "claude" {
+function readPersistedModel(): string {
   try {
     const v = localStorage.getItem(LS_MODEL_KEY);
-    if (v === "codex" || v === "claude") return v;
+    if (v && v.trim().length) return v;
   } catch {
     /* ignore */
   }
-  return "claude";
+  return "anthropic/claude-sonnet-4-6";
 }
 
 function readInitialTab(): PrTab {
@@ -138,10 +138,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(null);
 
   // Resolver preferences
-  const [resolverModel, setResolverModelRaw] = useState<"codex" | "claude">(readPersistedModel);
+  const [resolverModel, setResolverModelRaw] = useState<string>(readPersistedModel);
   const [resolverReasoningLevel, setResolverReasoningLevel] = useState("medium");
 
-  const setResolverModel = useCallback((model: "codex" | "claude") => {
+  const setResolverModel = useCallback((model: string) => {
     setResolverModelRaw(model);
     try {
       localStorage.setItem(LS_MODEL_KEY, model);

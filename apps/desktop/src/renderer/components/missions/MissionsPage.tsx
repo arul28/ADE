@@ -60,11 +60,14 @@ import type {
   OrchestratorIntelligenceConfig,
   SmartBudgetConfig,
   ModelConfig,
-  OrchestratorDecisionTimeoutCapHours
+  OrchestratorDecisionTimeoutCapHours,
+  PrDepth
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES, getProfileById } from "../../../shared/modelProfiles";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { MODEL_REGISTRY, MODEL_FAMILIES, getModelById, type ProviderFamily } from "../../../shared/modelRegistry";
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
 import { PolicyEditor, PRESET_STANDARD } from "./PolicyEditor";
@@ -79,7 +82,7 @@ import { ModelProfileSelector } from "./ModelProfileSelector";
 import { ModelSelector } from "./ModelSelector";
 import { OrchestratorIntelligencePanel } from "./OrchestratorIntelligencePanel";
 import { SmartBudgetPanel } from "./SmartBudgetPanel";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
 
@@ -142,6 +145,7 @@ const STEP_STATUS_HEX: Record<string, string> = {
 };
 
 const EXECUTOR_BADGE_HEX: Record<string, string> = {
+  unified: "#6366F1",
   claude: "#A78BFA",
   codex: "#22C55E",
   shell: "#F59E0B",
@@ -224,8 +228,14 @@ function mergeExecutionPolicyWithDefaults(source: unknown, defaults: MissionExec
   };
 }
 
-function toPlannerProvider(value: string): PlannerProvider {
-  return value === "claude" || value === "codex" || value === "auto" ? value : "auto";
+function toPlannerProvider(value: string): string {
+  // Accept "auto", legacy "claude"/"codex", or any model ID from the registry
+  if (value === "auto") return "auto";
+  if (getModelById(value)) return value;
+  // Backward compat: map old "claude"/"codex" to model IDs
+  if (value === "claude") return "anthropic/claude-sonnet-4-6";
+  if (value === "codex") return "openai/gpt-5.3-codex";
+  return "auto";
 }
 
 function toTeammatePlanMode(value: string): TeammatePlanMode {
@@ -1439,10 +1449,10 @@ type CreateDraft = {
 };
 
 const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
-  "claude-sonnet": 16384,
-  "claude-opus": 32768,
-  "claude-haiku": 4096,
-  "codex": 16384
+  "anthropic/claude-sonnet-4-6": 16384,
+  "anthropic/claude-opus-4-6": 32768,
+  "anthropic/claude-haiku-4-5": 4096,
+  "openai/gpt-5.3-codex": 16384
 };
 
 const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
@@ -1480,7 +1490,7 @@ function CreateMissionDialog({
     laneId: "",
     priority: "normal",
     executionPolicy: defaultExecutionPolicy,
-    orchestratorModel: "sonnet",
+    orchestratorModel: "anthropic/claude-sonnet-4-6",
     thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
     prStrategy: { kind: "integration", targetBranch: "main", draft: true },
     prTargetBranch: "main",
@@ -1497,7 +1507,7 @@ function CreateMissionDialog({
       laneId: "",
       priority: "normal",
       executionPolicy: defaultExecutionPolicy,
-      orchestratorModel: "sonnet",
+      orchestratorModel: "anthropic/claude-sonnet-4-6",
       thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
       prStrategy: { kind: "integration", targetBranch: "main", draft: true },
       prTargetBranch: "main",
@@ -1584,6 +1594,53 @@ function CreateMissionDialog({
             {selectedLane
               ? `Base lane: ${selectedLane.name}. Mission lanes branch from this base lane, and each step still gets a dedicated lane.`
               : "Base lane defaults to your primary lane. Mission lanes branch from this base lane, and each step still gets a dedicated lane."}
+          </div>
+
+          {/* Unified Model Selector */}
+          <label className="block space-y-1">
+            <span style={dlgLabelStyle}>MODEL</span>
+            <select
+              value={draft.laneId}
+              onChange={(e) => setDraft((p) => ({ ...p, laneId: e.target.value }))}
+              className="h-8 w-full px-3 text-xs outline-none"
+              style={dlgInputStyle}
+            >
+              {([...new Set(MODEL_REGISTRY.map((m) => m.family))] as ProviderFamily[]).map((family) => {
+                const familyModels = MODEL_REGISTRY.filter((m) => m.family === family && !m.deprecated);
+                if (!familyModels.length) return null;
+                return (
+                  <optgroup key={family} label={MODEL_FAMILIES[family]?.displayName ?? family}>
+                    {familyModels.map((m) => (
+                      <option key={m.id} value={m.id}>{m.displayName}</option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </label>
+
+          {/* Thinking Budgets */}
+          <div className="space-y-1">
+            <span style={dlgLabelStyle}>THINKING BUDGETS</span>
+            <div className="grid grid-cols-2 gap-2">
+              {Object.entries(draft.thinkingBudgets).map(([model, budget]) => (
+                <label key={model} className="flex items-center gap-2 text-[10px]">
+                  <span className="w-[130px] shrink-0" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{getModelById(model)?.displayName ?? model}</span>
+                  <input
+                    type="number"
+                    step={1024}
+                    value={budget}
+                    onChange={(e) => setDraft((p) => ({
+                      ...p,
+                      thinkingBudgets: { ...p.thinkingBudgets, [model]: Number(e.target.value) || 0 }
+                    }))}
+                    className="h-7 w-full px-2 text-xs outline-none"
+                    style={dlgInputStyle}
+                  />
+                  <span className="text-[9px] shrink-0" style={{ color: COLORS.textDim }}>tokens</span>
+                </label>
+              ))}
+            </div>
           </div>
 
           {/* Model Profile */}
@@ -1733,6 +1790,54 @@ function CreateMissionDialog({
                 </label>
               </div>
             )}
+            {draft.prStrategy.kind !== "manual" && (
+              <div className="mt-2 space-y-1">
+                <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
+                  PR DEPTH
+                </span>
+                <div className="flex flex-col gap-0.5">
+                  {([
+                    { value: "propose-only" as PrDepth, label: "PROPOSE ONLY", desc: "Create draft PRs, flag conflicts" },
+                    { value: "resolve-conflicts" as PrDepth, label: "RESOLVE CONFLICTS", desc: "Also resolve conflicts with AI workers" },
+                    { value: "open-and-comment" as PrDepth, label: "OPEN & COMMENT", desc: "Also open PRs and add review comments" },
+                  ] as const).map((opt) => {
+                    const currentDepth = (draft.prStrategy.kind !== "manual" && draft.prStrategy.prDepth) || "resolve-conflicts";
+                    const isSelected = currentDepth === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => {
+                          setDraft((p) => ({
+                            ...p,
+                            prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
+                          }));
+                        }}
+                        className="flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
+                        style={{
+                          background: isSelected ? `${COLORS.accent}18` : "transparent",
+                          border: isSelected ? `1px solid ${COLORS.accent}30` : `1px solid ${COLORS.border}`,
+                          fontFamily: MONO_FONT,
+                        }}
+                      >
+                        <span
+                          className="font-bold uppercase tracking-[1px]"
+                          style={{ fontSize: 10, color: isSelected ? COLORS.accent : COLORS.textPrimary, minWidth: 130 }}
+                        >
+                          {opt.label}
+                        </span>
+                        <span style={{ fontSize: 10, color: COLORS.textMuted }}>
+                          {opt.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 4 }}>
+                  Orchestrator never merges — always requires human approval
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Execution Policy */}
@@ -1822,16 +1927,27 @@ function MissionSettingsDialog({
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
               <label className="text-xs">
-                <div style={settingsLabelStyle}>DEFAULT PLANNER PROVIDER</div>
-                <select
-                  style={settingsInputStyle}
-                  value={draft.defaultPlannerProvider}
-                  onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value as PlannerProvider })}
-                >
-                  <option value="auto">Auto</option>
-                  <option value="claude">Claude</option>
-                  <option value="codex">Codex</option>
-                </select>
+                <div style={settingsLabelStyle}>DEFAULT PLANNER MODEL</div>
+                <div className="mt-1">
+                  <select
+                    style={settingsInputStyle}
+                    value={draft.defaultPlannerProvider}
+                    onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value })}
+                  >
+                    <option value="auto">Auto</option>
+                    {([...new Set(MODEL_REGISTRY.map((m) => m.family))] as ProviderFamily[]).map((family) => {
+                      const familyModels = MODEL_REGISTRY.filter((m) => m.family === family && !m.deprecated);
+                      if (!familyModels.length) return null;
+                      return (
+                        <optgroup key={family} label={MODEL_FAMILIES[family]?.displayName ?? family}>
+                          {familyModels.map((m) => (
+                            <option key={m.id} value={m.id}>{m.displayName}</option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
+                  </select>
+                </div>
               </label>
               <label className="text-xs">
                 <div style={settingsLabelStyle}>TEAMMATE PLAN MODE</div>
@@ -2357,7 +2473,7 @@ export default function MissionsPage() {
         },
         autostart: true,
         launchMode: "autopilot",
-        autopilotExecutor: "codex"
+        autopilotExecutor: draft.executionPolicy.implementation?.model ?? "openai/gpt-5.3-codex"
       });
       setSelectedMissionId(created.id);
       await refreshMissionList({ preserveSelection: true, silent: true });
@@ -2377,9 +2493,9 @@ export default function MissionsPage() {
     setRunBusy(true);
     try {
       const fallbackExecutor: OrchestratorExecutorKind =
-        runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex"
+        runAutopilotState.executor && runAutopilotState.executor.length > 0
           ? (runAutopilotState.executor as OrchestratorExecutorKind)
-          : "codex";
+          : "unified";
       // Derive planner provider from the executor selection — if user chose "claude" executor,
       // they likely want Claude as the planner too. Pass it through so IPC carries it to the backend.
       // The backend will also check the mission's stored modelConfig as a further fallback.
@@ -2491,6 +2607,45 @@ export default function MissionsPage() {
     for (const col of STEP_STATUS_COLUMNS) {
       map.set(col.status, []);
     }
+
+    // Synthetic planning step — always shown so users see planning as a visible phase
+    const missionStatus = selectedMission?.status;
+    const planningStepStatus: MissionStepStatus =
+      missionStatus === "planning" || missionStatus === "plan_review"
+        ? "running"
+        : (steps.length > 0 || missionStatus === "in_progress" || missionStatus === "completed")
+          ? "succeeded"
+          : missionStatus === "failed" && steps.length === 0
+            ? "failed"
+            : "pending";
+    if (selectedMission) {
+      const planningStep: OrchestratorStep = {
+        id: "planning-synthetic",
+        runId: runGraph?.run?.id ?? "",
+        missionStepId: null,
+        stepKey: "planning",
+        stepIndex: -1,
+        title: "Mission Planning",
+        laneId: null,
+        status: planningStepStatus as OrchestratorStep["status"],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        dependencyStepIds: [],
+        retryLimit: 0,
+        retryCount: 0,
+        lastAttemptId: null,
+        createdAt: selectedMission.createdAt,
+        updatedAt: selectedMission.updatedAt,
+        startedAt: selectedMission.startedAt,
+        completedAt: planningStepStatus === "succeeded" ? (selectedMission.startedAt ?? selectedMission.updatedAt) : null,
+        metadata: { planStep: { description: "AI planner decomposes the mission into executable steps." }, stepType: "planning" },
+      };
+      const bucket = map.get(planningStepStatus);
+      if (bucket) {
+        bucket.unshift(planningStep);
+      }
+    }
+
     for (const step of steps) {
       const key = step.status as MissionStepStatus;
       const bucket = map.get(key);
@@ -2503,7 +2658,7 @@ export default function MissionsPage() {
       }
     }
     return map;
-  }, [runGraph]);
+  }, [runGraph, selectedMission]);
 
   const attemptsByStep = useMemo(() => {
     const map = new Map<string, OrchestratorAttempt[]>();
@@ -2517,9 +2672,18 @@ export default function MissionsPage() {
   }, [runGraph]);
 
   const selectedStep = useMemo(() => {
-    if (!runGraph?.steps?.length || !selectedStepId) return null;
+    if (!selectedStepId) return null;
+    // Check synthetic planning step from stepsByStatus
+    if (selectedStepId === "planning-synthetic") {
+      for (const bucket of stepsByStatus.values()) {
+        const found = bucket.find((s) => s.id === "planning-synthetic");
+        if (found) return found;
+      }
+      return null;
+    }
+    if (!runGraph?.steps?.length) return null;
     return runGraph.steps.find((step) => step.id === selectedStepId) ?? null;
-  }, [runGraph, selectedStepId]);
+  }, [runGraph, selectedStepId, stepsByStatus]);
 
   const selectedStepAttempts = useMemo(() => {
     if (!selectedStep) return [];
@@ -2873,6 +3037,35 @@ export default function MissionsPage() {
                   );
                 })}
               </div>
+
+              {/* ── Original Mission Prompt ── */}
+              {selectedMission?.prompt && (
+                <div style={{
+                  background: COLORS.cardBg,
+                  border: `1px solid ${COLORS.border}`,
+                  padding: '12px 16px',
+                  margin: '12px 16px 0',
+                }}>
+                  <div style={{
+                    ...LABEL_STYLE,
+                    color: COLORS.textMuted,
+                    marginBottom: 6,
+                  }}>
+                    MISSION PROMPT
+                  </div>
+                  <div style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 12,
+                    color: COLORS.textPrimary,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                  }}>
+                    {selectedMission.prompt}
+                  </div>
+                </div>
+              )}
 
               {/* ── Completion Banner + Phase Progress + Execution Plan Preview ── */}
               {runGraph && (

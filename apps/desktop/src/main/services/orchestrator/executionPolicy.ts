@@ -7,6 +7,7 @@ import type {
   OrchestratorStep,
   OrchestratorStepStatus,
   OrchestratorWorkerRole,
+  OrchestratorExecutorKind,
   RoleIsolationRule,
   RoleIsolationValidation,
   TeamManifest,
@@ -19,7 +20,8 @@ import type {
   ExecutionPlanPreview,
   ExecutionPlanPhase,
   ExecutionPlanStepPreview,
-  ModelConfig
+  ModelConfig,
+  PrDepth
 } from "../../../shared/types";
 
 import {
@@ -28,18 +30,20 @@ import {
   DEFAULT_INTEGRATION_PR_POLICY
 } from "../../../shared/types";
 
+import { getModelById } from "../../../shared/modelRegistry";
+
 // ─────────────────────────────────────────────────────
 // Default policy
 // ─────────────────────────────────────────────────────
 
 export const DEFAULT_EXECUTION_POLICY: MissionExecutionPolicy = {
-  planning: { mode: "auto", model: "codex" },
-  implementation: { model: "codex" },
-  testing: { mode: "post_implementation", model: "codex" },
-  validation: { mode: "optional", model: "codex" },
+  planning: { mode: "auto", model: "anthropic/claude-sonnet-4-6" },
+  implementation: { model: "openai/gpt-5.3-codex" },
+  testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
+  validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
   codeReview: { mode: "off" },
   testReview: { mode: "off" },
-  integration: { mode: "auto", model: "codex" },
+  integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
   merge: { mode: "off" },
   completion: { allowCompletionWithRisk: true },
   prStrategy: { kind: "manual" }
@@ -54,7 +58,7 @@ export function depthTierToPolicy(tier: MissionDepthTier): MissionExecutionPolic
     case "light":
       return {
         planning: { mode: "off" },
-        implementation: { model: "codex" },
+        implementation: { model: "openai/gpt-5.3-codex" },
         testing: { mode: "none" },
         validation: { mode: "off" },
         codeReview: { mode: "off" },
@@ -62,34 +66,34 @@ export function depthTierToPolicy(tier: MissionDepthTier): MissionExecutionPolic
         integration: { mode: "off" },
         merge: { mode: "off" },
         completion: { allowCompletionWithRisk: true },
-        prStrategy: { kind: "manual" }
+        prStrategy: { kind: "per-lane", draft: true, prDepth: "propose-only" as PrDepth }
       };
     case "deep":
       return {
-        planning: { mode: "manual_review", model: "claude" },
-        implementation: { model: "codex" },
-        testing: { mode: "post_implementation", model: "codex" },
-        validation: { mode: "required", model: "codex" },
-        codeReview: { mode: "required", model: "claude" },
-        testReview: { mode: "required", model: "codex" },
-        integration: { mode: "auto", model: "codex" },
+        planning: { mode: "manual_review", model: "anthropic/claude-sonnet-4-6" },
+        implementation: { model: "openai/gpt-5.3-codex" },
+        testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
+        validation: { mode: "required", model: "openai/gpt-5.3-codex" },
+        codeReview: { mode: "required", model: "anthropic/claude-sonnet-4-6" },
+        testReview: { mode: "required", model: "openai/gpt-5.3-codex" },
+        integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
         merge: { mode: "off" },
         completion: { allowCompletionWithRisk: false },
-        prStrategy: { kind: "integration", targetBranch: "main", draft: false }
+        prStrategy: { kind: "integration", targetBranch: "main", draft: false, prDepth: "open-and-comment" as PrDepth }
       };
     case "standard":
     default:
       return {
-        planning: { mode: "auto", model: "codex" },
-        implementation: { model: "codex" },
-        testing: { mode: "post_implementation", model: "codex" },
-        validation: { mode: "optional", model: "codex" },
+        planning: { mode: "auto", model: "openai/gpt-5.3-codex" },
+        implementation: { model: "openai/gpt-5.3-codex" },
+        testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
+        validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
         codeReview: { mode: "off" },
         testReview: { mode: "off" },
-        integration: { mode: "auto", model: "codex" },
+        integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
         merge: { mode: "off" },
         completion: { allowCompletionWithRisk: true },
-        prStrategy: { kind: "queue", targetBranch: "main", draft: true, autoRebase: true, ciGating: false }
+        prStrategy: { kind: "queue", targetBranch: "main", draft: true, autoRebase: true, ciGating: false, prDepth: "resolve-conflicts" as PrDepth }
       };
   }
 }
@@ -392,9 +396,20 @@ function hasMultipleLanes(steps: OrchestratorStep[]): boolean {
 // Model/executor helpers
 // ─────────────────────────────────────────────────────
 
-export function phaseModelToExecutorKind(model?: string | null): "claude" | "codex" {
+const MODEL_TO_EXECUTOR: Record<string, OrchestratorExecutorKind> = {
+  claude: "claude",
+  codex: "codex",
+};
+
+export function phaseModelToExecutorKind(model?: string | null, fallback: OrchestratorExecutorKind = "codex"): OrchestratorExecutorKind {
+  if (!model) return fallback;
+  // Legacy bare values → preserve legacy executor routing
   if (model === "claude") return "claude";
-  return "codex";
+  if (model === "codex") return "codex";
+  // Full model IDs (e.g. "anthropic/claude-sonnet-4-6") → unified adapter
+  const descriptor = getModelById(model);
+  if (descriptor) return "unified";
+  return MODEL_TO_EXECUTOR[model] ?? fallback;
 }
 
 /** Convert a ModelConfig to executor kind */

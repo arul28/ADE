@@ -1,16 +1,22 @@
 import React, { useState } from "react";
-import { GearSix, GitBranch, BookOpenText, Lightning } from "@phosphor-icons/react";
+import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs } from "@phosphor-icons/react";
+import { cn } from "../ui/cn";
 import { GeneralSection } from "../settings/GeneralSection";
+import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
 import { UsageDashboard } from "../missions/UsageDashboard";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 const SECTIONS = [
-  { id: "general", label: "GENERAL", icon: GearSix },
-  { id: "github", label: "GITHUB", icon: GitBranch },
-  { id: "context", label: "CONTEXT", icon: BookOpenText },
-  { id: "usage", label: "USAGE", icon: Lightning },
+  { id: "general", label: "General", icon: GearSix },
+  { id: "providers", label: "Providers", icon: Plugs },
+  { id: "github", label: "GitHub", icon: GitBranch },
+  { id: "context", label: "Context & Docs", icon: BookOpenText },
+  { id: "automations", label: "Automations", icon: Robot },
+  { id: "terminals", label: "Terminals", icon: Terminal },
+  { id: "keybindings", label: "Keybindings", icon: Keyboard },
+  { id: "usage", label: "Usage", icon: Lightning },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -96,6 +102,7 @@ export function SettingsPage() {
         }}
       >
         {section === "general" && <GeneralSection />}
+        {section === "providers" && <ProvidersSection />}
         {section === "github" && <GitHubSection />}
         {section === "context" && <ContextSection />}
         {section === "usage" && <UsageDashboard missionId={null} />}

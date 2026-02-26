@@ -319,6 +319,9 @@ declare global {
       };
       ai: {
         getStatus: () => Promise<AiSettingsStatus>;
+        storeApiKey: (provider: string, key: string) => Promise<void>;
+        deleteApiKey: (provider: string) => Promise<void>;
+        listApiKeys: () => Promise<string[]>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;

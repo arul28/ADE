@@ -3,21 +3,14 @@ import { At, Image, Pause, Play, Square, X, Hash } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
   AgentChatFileRef,
-  AgentChatModelInfo,
-  AgentChatProvider,
   ContextPackOption
 } from "../../../shared/types";
+import { getModelById } from "../../../shared/modelRegistry";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { Kbd } from "../ui/Kbd";
-
-type ProviderOption = {
-  value: AgentChatProvider;
-  label: string;
-  enabled: boolean;
-  reason?: string | null;
-};
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 
 const SLASH_COMMANDS = [
   { command: "/plan", label: "Plan", description: "Create a development plan", category: "Generate" },
@@ -29,10 +22,8 @@ const SLASH_COMMANDS = [
 ];
 
 export function AgentChatComposer({
-  provider,
-  providerOptions,
-  model,
-  models,
+  modelId,
+  availableModelIds,
   reasoningEffort,
   draft,
   attachments,
@@ -42,7 +33,6 @@ export function AgentChatComposer({
   busy,
   selectedContextPacks,
   laneId,
-  onProviderChange,
   onModelChange,
   onReasoningEffortChange,
   onDraftChange,
@@ -55,10 +45,8 @@ export function AgentChatComposer({
   onContextPacksChange,
   onClearEvents
 }: {
-  provider: AgentChatProvider;
-  providerOptions: ProviderOption[];
-  model: string;
-  models: AgentChatModelInfo[];
+  modelId: string;
+  availableModelIds?: string[];
   reasoningEffort: string | null;
   draft: string;
   attachments: AgentChatFileRef[];
@@ -72,8 +60,7 @@ export function AgentChatComposer({
   busy: boolean;
   selectedContextPacks: ContextPackOption[];
   laneId?: string;
-  onProviderChange: (provider: AgentChatProvider) => void;
-  onModelChange: (model: string) => void;
+  onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
@@ -104,12 +91,8 @@ export function AgentChatComposer({
   const canAttach = !turnActive;
 
   const attachedPaths = useMemo(() => new Set(attachments.map((attachment) => attachment.path)), [attachments]);
-  const selectedModel = useMemo(
-    () => models.find((entry) => entry.id === model) ?? models[0] ?? null,
-    [model, models]
-  );
-  const reasoningOptions = selectedModel?.reasoningEfforts ?? [];
-  const selectedReasoning = reasoningOptions.find((entry) => entry.effort === reasoningEffort) ?? null;
+  const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
+  const reasoningTiers = selectedModel?.reasoningTiers ?? [];
 
   /* ── Slash command filtering ── */
   const filteredSlashCommands = useMemo(() => {
@@ -246,52 +229,16 @@ export function AgentChatComposer({
     <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 shadow-[0_1px_0_rgba(255,255,255,0.03)]">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <label className="inline-flex items-center gap-1 text-xs text-muted-fg">
-          Provider
-          <select
-            value={provider}
-            onChange={(event) => onProviderChange(event.target.value as AgentChatProvider)}
-            className="h-7 min-w-[140px] rounded border border-border/40 bg-bg/70 px-2 text-xs"
-          >
-            {providerOptions.map((option) => (
-              <option key={option.value} value={option.value} disabled={!option.enabled}>
-                {option.enabled ? option.label : `${option.label} (Unavailable)`}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="inline-flex min-w-[220px] flex-1 items-center gap-1 text-xs text-muted-fg">
           Model
-          <select
-            value={model}
-            onChange={(event) => onModelChange(event.target.value)}
-            className="h-7 min-w-0 flex-1 rounded border border-border/40 bg-bg/70 px-2 text-xs"
-          >
-            {models.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.displayName}
-              </option>
-            ))}
-          </select>
+          <UnifiedModelSelector
+            value={modelId}
+            onChange={onModelChange}
+            availableModelIds={availableModelIds}
+            showReasoning
+            reasoningEffort={reasoningEffort}
+            onReasoningEffortChange={onReasoningEffortChange}
+          />
         </label>
-
-        {reasoningOptions.length ? (
-          <label className="inline-flex items-center gap-1 text-xs text-muted-fg">
-            Reasoning
-            <select
-              aria-label="Reasoning effort"
-              value={reasoningEffort ?? ""}
-              onChange={(event) => onReasoningEffortChange(event.target.value || null)}
-              className="h-7 min-w-[140px] rounded border border-border/40 bg-bg/70 px-2 text-xs"
-            >
-              {reasoningOptions.map((option) => (
-                <option key={option.effort} value={option.effort}>
-                  {option.effort}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
 
         {turnActive ? (
           <Chip className="bg-accent/20 text-[11px] text-fg/90">
@@ -316,15 +263,12 @@ export function AgentChatComposer({
         </Button>
       </div>
 
-      {selectedModel?.description ? (
+      {selectedModel ? (
         <div className="mb-2 rounded border border-border/30 bg-bg/40 px-2 py-1 text-[11px] text-muted-fg">
+          <span className="inline-block h-2 w-2 rounded-full mr-1" style={{ backgroundColor: selectedModel.color }} />
           <span className="font-medium text-fg/80">{selectedModel.displayName}</span>
-          <span className="ml-1">{selectedModel.description}</span>
-          {selectedReasoning?.description ? <span className="ml-1">• {selectedReasoning.description}</span> : null}
-        </div>
-      ) : selectedReasoning?.description ? (
-        <div className="mb-2 rounded border border-border/30 bg-bg/40 px-2 py-1 text-[11px] text-muted-fg">
-          {selectedReasoning.description}
+          <span className="ml-1">{selectedModel.family} &middot; {selectedModel.contextWindow.toLocaleString()} ctx</span>
+          {reasoningEffort && reasoningTiers.length > 0 ? <span className="ml-1">&middot; reasoning: {reasoningEffort}</span> : null}
         </div>
       ) : null}
 
@@ -550,7 +494,7 @@ export function AgentChatComposer({
               "min-h-[64px] flex-1 resize-y rounded border border-border/40 bg-bg/70 px-2 py-1.5 text-xs leading-relaxed",
               "outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/30"
             )}
-            placeholder={turnActive ? "Steer the active turn..." : "Ask Codex or Claude to work in this lane..."}
+            placeholder={turnActive ? "Steer the active turn..." : "Ask the AI agent to work in this lane..."}
             onKeyDown={(event) => {
               const commandModified = event.metaKey || event.ctrlKey;
 

@@ -51,7 +51,11 @@ import type {
   RoleIsolationRule,
   RoleIsolationValidation,
   TeamManifest,
-  IntegrationPrPolicy
+  IntegrationPrPolicy,
+  TerminalToolType,
+  OrchestratorArtifact,
+  OrchestratorArtifactKind,
+  OrchestratorWorkerCheckpoint
 } from "../../../shared/types";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
@@ -59,6 +63,7 @@ import {
   DEFAULT_ROLE_ISOLATION_RULES
 } from "../../../shared/types";
 import { evaluateRunCompletion } from "./executionPolicy";
+import { createUnifiedOrchestratorAdapter } from "./unifiedOrchestratorAdapter";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
@@ -196,6 +201,21 @@ type GateReportRow = {
   id: string;
   generated_at: string;
   report_json: string;
+};
+
+type ArtifactRow = {
+  id: string;
+  project_id: string;
+  mission_id: string;
+  run_id: string;
+  step_id: string;
+  attempt_id: string;
+  artifact_key: string;
+  kind: string;
+  value: string;
+  metadata_json: string;
+  declared: number;
+  created_at: string;
 };
 
 type StepPolicy = {
@@ -491,7 +511,7 @@ function normalizeAttemptStatus(value: string): OrchestratorAttemptStatus {
 }
 
 function normalizeExecutorKind(value: string): OrchestratorExecutorKind {
-  if (value === "claude" || value === "codex" || value === "shell" || value === "manual") return value;
+  if (value === "unified" || value === "claude" || value === "codex" || value === "shell" || value === "manual") return value;
   return "manual";
 }
 
@@ -580,7 +600,7 @@ function normalizeDependencyStepKeys(dependencyStepKeys: string[] | undefined): 
 }
 
 function validateStepGraphIntegrity(args: {
-  context: "startRun" | "addSteps";
+  context: "startRun" | "addSteps" | "updateStepDependencies" | "consolidateSteps";
   steps: StepGraphValidationStep[];
 }): void {
   const byKey = new Map<string, StepGraphValidationStep>();
@@ -792,6 +812,24 @@ function toHandoff(row: HandoffRow): MissionStepHandoff {
     handoffType: row.handoff_type,
     producer: row.producer,
     payload: parseRecord(row.payload_json) ?? {},
+    createdAt: row.created_at
+  };
+}
+
+function toArtifact(row: ArtifactRow): OrchestratorArtifact {
+  const kind = row.kind as OrchestratorArtifactKind;
+  const validKinds: OrchestratorArtifactKind[] = ["file", "branch", "pr", "test_report", "checkpoint", "custom"];
+  return {
+    id: row.id,
+    missionId: row.mission_id,
+    runId: row.run_id,
+    stepId: row.step_id,
+    attemptId: row.attempt_id,
+    artifactKey: row.artifact_key,
+    kind: validKinds.includes(kind) ? kind : "custom",
+    value: row.value,
+    metadata: parseRecord(row.metadata_json) ?? {},
+    declared: row.declared === 1,
     createdAt: row.created_at
   };
 }
@@ -1174,6 +1212,8 @@ export function createOrchestratorService({
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
+  // Register the unified adapter that handles all model providers
+  adapters.set("unified", createUnifiedOrchestratorAdapter());
   const autopilotRunLocks = new Set<string>();
   const recoveryLoopStates = new Map<string, RecoveryLoopState>();
   const getRuntimeConfig = (): ResolvedOrchestratorRuntimeConfig => {
@@ -3633,7 +3673,7 @@ export function createOrchestratorService({
   };
 
   const defaultAdapterFor = (kind: OrchestratorExecutorKind): OrchestratorExecutorAdapter | null => {
-    if (kind !== "claude" && kind !== "codex") return null;
+    if (kind !== "claude" && kind !== "codex" && kind !== "unified") return null;
     return {
       kind,
       start: async (args) => {
@@ -3760,7 +3800,7 @@ export function createOrchestratorService({
             cols: 120,
             rows: 36,
             title,
-            toolType: `${kind}-orchestrated`,
+            toolType: `${kind}-orchestrated` as TerminalToolType,
             startupCommand
           });
           return {
@@ -4009,6 +4049,18 @@ export function createOrchestratorService({
       return listTimelineRows(args).map(toTimelineEvent);
     },
 
+    appendTimelineEvent(args: {
+      runId: string;
+      stepId?: string | null;
+      attemptId?: string | null;
+      claimId?: string | null;
+      eventType: string;
+      reason: string;
+      detail?: Record<string, unknown> | null;
+    }): OrchestratorTimelineEvent {
+      return appendTimelineEvent(args);
+    },
+
     appendRuntimeEvent(args: {
       runId: string;
       stepId?: string | null;
@@ -4100,8 +4152,8 @@ export function createOrchestratorService({
         [missionId, projectId]
       );
       const requestedRunMode = args.runMode === "manual" ? "manual" : "autopilot";
-      const requestedExecutor = normalizeExecutorKind(String(args.defaultExecutorKind ?? "codex"));
-      const fallbackExecutor = requestedRunMode === "manual" ? "manual" : requestedExecutor === "manual" ? "codex" : requestedExecutor;
+      const requestedExecutor = normalizeExecutorKind(String(args.defaultExecutorKind ?? "unified"));
+      const fallbackExecutor = requestedRunMode === "manual" ? "manual" : requestedExecutor === "manual" ? "unified" : requestedExecutor;
       const autopilotEnabled = requestedRunMode === "autopilot" && fallbackExecutor !== "manual";
       const autopilotOwnerId = String(args.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
       const missionMetadata = parseRecord(mission.metadata_json) ?? {};
@@ -4342,7 +4394,14 @@ export function createOrchestratorService({
             executorKind: autopilotEnabled ? fallbackExecutor : "manual",
             ownerId: autopilotOwnerId,
             parallelismCap: autopilotParallelismCap
-          }
+          },
+          agentCapabilities: (() => {
+            const launch = asRecord(missionMetadata.launch);
+            return {
+              parallelSubagents: launch?.allowParallelSubagents === true,
+              agentTeams: launch?.allowAgentTeams === true,
+            };
+          })()
         },
         steps: normalized
       });
@@ -5293,9 +5352,118 @@ export function createOrchestratorService({
       if (!stepRow || stepRow.run_id !== args.runId) throw new Error(`Step not found in run: ${args.stepId}`);
 
       const run = toRun(runRow);
-      const step = toStep(stepRow);
+      let step = toStep(stepRow);
       if (step.status !== "ready") {
         throw new Error(`Step is not ready: ${step.id} (${step.status})`);
+      }
+
+      // ── Populate handoff summaries from predecessor worker digests ──
+      if (step.dependencyStepIds.length > 0) {
+        const HANDOFF_SUMMARY_MAX_CHARS = 500;
+        const depIds = step.dependencyStepIds;
+        const placeholders = depIds.map(() => "?").join(", ");
+
+        // For each dependency step, get the latest succeeded/failed worker digest.
+        // We use a subquery with ROW_NUMBER to pick the most recent digest per step.
+        const digestRows = db.all<{
+          step_id: string;
+          step_key: string | null;
+          status: string;
+          summary: string;
+          files_changed_json: string | null;
+          tests_run_json: string | null;
+        }>(
+          `
+            select d.step_id, d.step_key, d.status, d.summary, d.files_changed_json, d.tests_run_json
+            from orchestrator_worker_digests d
+            inner join (
+              select step_id, max(created_at) as max_created
+              from orchestrator_worker_digests
+              where project_id = ?
+                and mission_id = ?
+                and run_id = ?
+                and step_id in (${placeholders})
+                and status in ('succeeded', 'failed')
+              group by step_id
+            ) latest on d.step_id = latest.step_id and d.created_at = latest.max_created
+            where d.project_id = ?
+              and d.mission_id = ?
+              and d.run_id = ?
+          `,
+          [
+            projectId, run.missionId, run.id,
+            ...depIds,
+            projectId, run.missionId, run.id
+          ]
+        );
+
+        if (digestRows.length > 0) {
+          const handoffSummaries: string[] = digestRows.map((row) => {
+            const stepLabel = row.step_key ?? row.step_id.slice(0, 8);
+            const status = String(row.status ?? "unknown").trim();
+            const summaryText = clipText(String(row.summary ?? "").trim(), HANDOFF_SUMMARY_MAX_CHARS);
+
+            const filesChanged: string[] = (() => {
+              if (!row.files_changed_json) return [];
+              try {
+                const parsed = JSON.parse(row.files_changed_json);
+                return Array.isArray(parsed) ? parsed.map((f: unknown) => String(f ?? "").trim()).filter(Boolean) : [];
+              } catch { return []; }
+            })();
+
+            const testsRun: { passed?: number; failed?: number; skipped?: number; summary?: string | null } = (() => {
+              if (!row.tests_run_json) return {};
+              try {
+                const parsed = JSON.parse(row.tests_run_json);
+                return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+              } catch { return {}; }
+            })();
+
+            const parts: string[] = [`[${stepLabel}] (${status}) ${summaryText}`];
+
+            if (filesChanged.length > 0) {
+              const fileList = filesChanged.length <= 5
+                ? filesChanged.join(", ")
+                : `${filesChanged.slice(0, 5).join(", ")} (+${filesChanged.length - 5} more)`;
+              parts.push(`Files: ${fileList}`);
+            }
+
+            const testPassed = Number(testsRun.passed ?? 0);
+            const testFailed = Number(testsRun.failed ?? 0);
+            const testSkipped = Number(testsRun.skipped ?? 0);
+            if (testPassed > 0 || testFailed > 0 || testSkipped > 0) {
+              const testParts: string[] = [];
+              if (testPassed > 0) testParts.push(`${testPassed} passed`);
+              if (testFailed > 0) testParts.push(`${testFailed} failed`);
+              if (testSkipped > 0) testParts.push(`${testSkipped} skipped`);
+              parts.push(`Tests: ${testParts.join(", ")}`);
+            }
+
+            return clipText(parts.join(" | "), HANDOFF_SUMMARY_MAX_CHARS);
+          });
+
+          // Persist updated metadata with handoff summaries so the adapter can read them
+          const updatedMetadata = {
+            ...(step.metadata ?? {}),
+            handoffSummaries
+          };
+          db.run(
+            `
+              update orchestrator_steps
+              set metadata_json = ?,
+                  updated_at = ?
+              where id = ?
+                and run_id = ?
+                and project_id = ?
+            `,
+            [JSON.stringify(updatedMetadata), nowIso(), step.id, run.id, projectId]
+          );
+          // Re-read the step so downstream code sees the updated metadata
+          const refreshedStepRow = getStepRow(step.id);
+          if (refreshedStepRow) {
+            step = toStep(refreshedStepRow);
+          }
+        }
       }
 
       const attemptNumRow = db.get<{ max_attempt: number }>(
@@ -5528,12 +5696,50 @@ export function createOrchestratorService({
         acquiredClaims.push(claim);
       }
 
-      const snapshot = await createContextSnapshotForAttempt({
-        run,
-        step,
-        attemptId,
-        contextProfile: contextPolicy
-      });
+      // Insert the attempt row first (with no snapshot yet) so that FK constraints
+      // on orchestrator_context_snapshots and orchestrator_timeline_events are satisfied
+      // when createContextSnapshotForAttempt calls appendTimelineEvent with attemptId.
+      db.run(
+        `
+          insert into orchestrator_attempts(
+            id,
+            run_id,
+            step_id,
+            project_id,
+            attempt_number,
+            status,
+            executor_kind,
+            executor_session_id,
+            tracked_session_enforced,
+            context_profile,
+            context_snapshot_id,
+            error_class,
+            error_message,
+            retry_backoff_ms,
+            result_envelope_json,
+            metadata_json,
+            created_at,
+            started_at,
+            completed_at
+          ) values (?, ?, ?, ?, ?, 'running', ?, null, 1, ?, null, 'none', null, 0, null, ?, ?, ?, null)
+        `,
+        [
+          attemptId,
+          run.id,
+          step.id,
+          projectId,
+          attemptNumber,
+          executorKind,
+          contextPolicy.id,
+          JSON.stringify({
+            ownerId: args.ownerId,
+            workerState: "initializing",
+            workerStartedAt: createdAt
+          }),
+          createdAt,
+          createdAt
+        ]
+      );
 
       // Budget guard: check total token budget before dispatching
       const tokensConsumed = Number(run.metadata?.tokensConsumed ?? 0);
@@ -5556,8 +5762,14 @@ export function createOrchestratorService({
         throw new Error(`Total token budget exceeded: ${tokensConsumed} >= ${runtimeConfig.maxTotalTokenBudget}`);
       }
 
-      // Update the attempt row with the snapshot ID and full metadata now that
-      // the context snapshot has been created.
+      const snapshot = await createContextSnapshotForAttempt({
+        run,
+        step,
+        attemptId,
+        contextProfile: contextPolicy
+      });
+
+      // Update attempt with the resolved snapshot id and full metadata
       db.run(
         `
           update orchestrator_attempts
@@ -5579,6 +5791,27 @@ export function createOrchestratorService({
           projectId
         ]
       );
+
+      // Budget guard: check total token budget before dispatching
+      const tokensConsumed = Number(run.metadata?.tokensConsumed ?? 0);
+      if (runtimeConfig.maxTotalTokenBudget != null && tokensConsumed >= runtimeConfig.maxTotalTokenBudget) {
+        releaseClaimsForAttempt({ attemptId, state: "released" });
+        updateRunStatus(run.id, "paused", {
+          last_error: `Total token budget exceeded: ${tokensConsumed} >= ${runtimeConfig.maxTotalTokenBudget}`
+        });
+        appendTimelineEvent({
+          runId: run.id,
+          stepId: step.id,
+          attemptId,
+          eventType: "budget_exceeded",
+          reason: "total_budget_limit",
+          detail: {
+            tokensConsumed,
+            maxTotalTokenBudget: runtimeConfig.maxTotalTokenBudget
+          }
+        });
+        throw new Error(`Total token budget exceeded: ${tokensConsumed} >= ${runtimeConfig.maxTotalTokenBudget}`);
+      }
 
       db.run(
         `
@@ -5723,7 +5956,7 @@ export function createOrchestratorService({
           if (attemptNumber <= 1) return {};
           const result: { previousCheckpoint?: string; previousAttemptSummary?: string } = {};
 
-          // 1. Read .ade-checkpoint.md from the lane worktree if available
+          // 1. Read .ade-checkpoint.md from the lane worktree if available, fall back to DB
           if (step.laneId) {
             const laneRow = db.get<{ worktree_path: string | null }>(
               `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
@@ -5744,8 +5977,18 @@ export function createOrchestratorService({
                     : content;
                 }
               } catch {
-                // File does not exist or is unreadable — expected for first attempts or after cleanup
+                // File does not exist or is unreadable — fall back to DB
               }
+            }
+          }
+
+          // 1b. Fall back to DB-persisted checkpoint if filesystem read did not yield one
+          if (!result.previousCheckpoint) {
+            const dbCheckpoint = this.getWorkerCheckpoint({ missionId: run.missionId, stepKey: step.stepKey });
+            if (dbCheckpoint && dbCheckpoint.content.trim().length > 0) {
+              result.previousCheckpoint = dbCheckpoint.content.length > 12_000
+                ? dbCheckpoint.content.slice(0, 12_000) + "\n\n[checkpoint truncated]"
+                : dbCheckpoint.content;
             }
           }
 
@@ -6116,6 +6359,37 @@ export function createOrchestratorService({
         state: status === "failed" ? "released" : "released"
       });
 
+      // Sync worker checkpoint file to DB for all completion states
+      if (step.laneId) {
+        const ckLaneRow = db.get<{ worktree_path: string | null }>(
+          `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+          [step.laneId, projectId]
+        );
+        const ckWorktreePath = typeof ckLaneRow?.worktree_path === "string" && ckLaneRow.worktree_path.trim().length
+          ? ckLaneRow.worktree_path.trim()
+          : null;
+        if (ckWorktreePath) {
+          const ckSanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+          const ckPath = path.join(ckWorktreePath, `.ade-checkpoint-${ckSanitizedStepKey}.md`);
+          try {
+            const ckContent = fs.readFileSync(ckPath, "utf8");
+            if (ckContent.trim().length > 0) {
+              this.upsertWorkerCheckpoint({
+                missionId: run.missionId,
+                runId: run.id,
+                stepId: step.id,
+                attemptId: args.attemptId,
+                stepKey: step.stepKey,
+                content: ckContent,
+                filePath: ckPath
+              });
+            }
+          } catch {
+            // File may not exist — expected when no checkpoint was written
+          }
+        }
+      }
+
       if (status === "succeeded") {
         db.run(
           `
@@ -6131,7 +6405,7 @@ export function createOrchestratorService({
           [completedAt, completedAt, args.attemptId, step.id, run.id, projectId]
         );
 
-        // Clean up checkpoint file on success to avoid stale data in future runs
+        // Clean up checkpoint file on success (DB sync already done above)
         if (step.laneId) {
           const laneRow = db.get<{ worktree_path: string | null }>(
             `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
@@ -6863,6 +7137,37 @@ export function createOrchestratorService({
       });
     },
 
+    /**
+     * Like addSteps, but allows adding steps to a terminal (succeeded/failed) run.
+     * Transitions the run back to "running" before inserting steps, enabling
+     * post-completion workflows like conflict resolution workers.
+     */
+    addPostCompletionSteps(args: {
+      runId: string;
+      steps: StartOrchestratorRunStepInput[];
+    }): OrchestratorStep[] {
+      const runId = String(args.runId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+
+      // If the run is terminal, transition back to running so new steps can be scheduled
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        updateRunStatus(runId, "running");
+        appendTimelineEvent({
+          runId,
+          eventType: "run_reopened",
+          reason: "post_completion_steps",
+          detail: { previousStatus: run.status, newStepCount: args.steps.length }
+        });
+        emit({ type: "orchestrator-run-updated", runId, reason: "run_reopened" });
+      }
+
+      // Delegate to addSteps which now operates on a non-terminal run
+      return this.addSteps(args);
+    },
+
     skipStep(args: {
       runId: string;
       stepId: string;
@@ -6924,6 +7229,363 @@ export function createOrchestratorService({
       const updatedRow = getStepRow(stepId);
       if (!updatedRow) throw new Error(`Step not found after skip: ${stepId}`);
       return toStep(updatedRow);
+    },
+
+    // ─── Step Dependency & Consolidation ──────────────────────────
+
+    updateStepDependencies(args: {
+      runId: string;
+      stepId: string;
+      dependencyStepKeys: string[];
+    }): OrchestratorStep {
+      const runId = String(args.runId ?? "").trim();
+      const stepId = String(args.stepId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      if (!stepId) throw new Error("stepId is required.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Cannot update step dependencies in a terminal run (status: ${run.status}).`);
+      }
+
+      const stepRow = getStepRow(stepId);
+      if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
+      const step = toStep(stepRow);
+      if (TERMINAL_STEP_STATUSES.has(step.status)) {
+        throw new Error(`Step is already terminal (status: ${step.status}).`);
+      }
+
+      // Build key<->id maps from all steps in this run
+      const allStepRows = listStepRows(runId);
+      const allSteps = allStepRows.map(toStep);
+      const keyToId = new Map<string, string>();
+      const idToKey = new Map<string, string>();
+      for (const s of allSteps) {
+        keyToId.set(s.stepKey, s.id);
+        idToKey.set(s.id, s.stepKey);
+      }
+
+      // Normalize and resolve dependency keys to IDs
+      const dependencyStepKeys = normalizeDependencyStepKeys(args.dependencyStepKeys);
+      const depIds = dependencyStepKeys.map((key) => {
+        const depId = keyToId.get(key);
+        if (!depId) {
+          throw new Error(`Unknown dependency stepKey '${key}' referenced by step '${step.stepKey}'.`);
+        }
+        return depId;
+      });
+
+      // Validate the full graph with updated dependencies
+      const graphSteps: StepGraphValidationStep[] = allSteps.map((s) => ({
+        stepKey: s.stepKey,
+        dependencyStepKeys: s.id === stepId
+          ? dependencyStepKeys
+          : s.dependencyStepIds
+              .map((depId) => idToKey.get(depId) ?? "")
+              .filter((depKey): depKey is string => depKey.length > 0),
+        joinPolicy: s.joinPolicy,
+        quorumCount: s.quorumCount
+      }));
+      validateStepGraphIntegrity({
+        context: "updateStepDependencies",
+        steps: graphSteps
+      });
+
+      // Persist the updated dependency list
+      const now = nowIso();
+      db.run(
+        `
+          update orchestrator_steps
+          set dependency_step_ids_json = ?,
+              updated_at = ?
+          where id = ?
+            and run_id = ?
+            and project_id = ?
+        `,
+        [JSON.stringify(depIds), now, stepId, runId, projectId]
+      );
+
+      appendTimelineEvent({
+        runId,
+        stepId,
+        eventType: "step_dependencies_updated",
+        reason: "update_step_dependencies",
+        detail: { dependencyStepKeys, dependencyStepIds: depIds }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId, reason: "dependencies_updated" });
+
+      // Refresh readiness so newly-unblocked steps can proceed
+      refreshStepReadiness(runId);
+
+      const resultRow = getStepRow(stepId);
+      if (!resultRow) throw new Error(`Step not found after dependency update: ${stepId}`);
+      return toStep(resultRow);
+    },
+
+    consolidateSteps(args: {
+      runId: string;
+      keepStepId: string;
+      removeStepId: string;
+      mergedInstructions: string;
+    }): OrchestratorStep {
+      const runId = String(args.runId ?? "").trim();
+      const keepStepId = String(args.keepStepId ?? "").trim();
+      const removeStepId = String(args.removeStepId ?? "").trim();
+      const mergedInstructions = String(args.mergedInstructions ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      if (!keepStepId) throw new Error("keepStepId is required.");
+      if (!removeStepId) throw new Error("removeStepId is required.");
+      if (!mergedInstructions) throw new Error("mergedInstructions is required.");
+      if (keepStepId === removeStepId) throw new Error("keepStepId and removeStepId must be different.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Cannot consolidate steps in a terminal run (status: ${run.status}).`);
+      }
+
+      const keepRow = getStepRow(keepStepId);
+      if (!keepRow || keepRow.run_id !== runId) throw new Error(`Keep step not found in run: ${keepStepId}`);
+      const keepStep = toStep(keepRow);
+      if (TERMINAL_STEP_STATUSES.has(keepStep.status)) {
+        throw new Error(`Keep step is already terminal (status: ${keepStep.status}).`);
+      }
+
+      const removeRow = getStepRow(removeStepId);
+      if (!removeRow || removeRow.run_id !== runId) throw new Error(`Remove step not found in run: ${removeStepId}`);
+      const removeStep = toStep(removeRow);
+      if (TERMINAL_STEP_STATUSES.has(removeStep.status)) {
+        throw new Error(`Remove step is already terminal (status: ${removeStep.status}).`);
+      }
+
+      const now = nowIso();
+
+      // Build key<->id maps from all steps in this run
+      const allStepRows = listStepRows(runId);
+      const allSteps = allStepRows.map(toStep);
+      const idToKey = new Map<string, string>();
+      for (const s of allSteps) {
+        idToKey.set(s.id, s.stepKey);
+      }
+
+      // 1. Skip the removeStep with a consolidation reason
+      db.run(
+        `
+          update orchestrator_steps
+          set status = 'skipped',
+              updated_at = ?,
+              completed_at = ?
+          where id = ?
+            and run_id = ?
+            and project_id = ?
+        `,
+        [now, now, removeStepId, runId, projectId]
+      );
+      appendTimelineEvent({
+        runId,
+        stepId: removeStepId,
+        eventType: "step_skipped",
+        reason: "consolidate_steps",
+        detail: { reason: `consolidated into ${keepStep.stepKey}` }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId: removeStepId, reason: "skipped" });
+
+      // 2. Update keepStep metadata with merged instructions
+      const keepMeta: Record<string, unknown> = parseRecord(keepRow.metadata_json) ?? {};
+      keepMeta.mergedInstructions = mergedInstructions;
+      keepMeta.consolidatedFrom = removeStep.stepKey;
+      db.run(
+        `
+          update orchestrator_steps
+          set metadata_json = ?,
+              updated_at = ?
+          where id = ?
+            and run_id = ?
+            and project_id = ?
+        `,
+        [JSON.stringify(keepMeta), now, keepStepId, runId, projectId]
+      );
+      appendTimelineEvent({
+        runId,
+        stepId: keepStepId,
+        eventType: "step_consolidated",
+        reason: "consolidate_steps",
+        detail: { mergedInstructions, consolidatedFrom: removeStep.stepKey }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId: keepStepId, reason: "consolidated" });
+
+      // 3. Re-wire dependencies: any step that depended on removeStepId now depends on keepStepId
+      for (const s of allSteps) {
+        if (s.id === removeStepId || s.id === keepStepId) continue;
+        if (!s.dependencyStepIds.includes(removeStepId)) continue;
+
+        const updatedDepIds = s.dependencyStepIds.map((depId) =>
+          depId === removeStepId ? keepStepId : depId
+        );
+        // De-duplicate in case the step already depended on keepStepId
+        const uniqueDepIds = [...new Set(updatedDepIds)];
+
+        db.run(
+          `
+            update orchestrator_steps
+            set dependency_step_ids_json = ?,
+                updated_at = ?
+            where id = ?
+              and run_id = ?
+              and project_id = ?
+          `,
+          [JSON.stringify(uniqueDepIds), now, s.id, runId, projectId]
+        );
+        appendTimelineEvent({
+          runId,
+          stepId: s.id,
+          eventType: "step_dependencies_updated",
+          reason: "consolidate_steps",
+          detail: {
+            previousDependencyStepIds: s.dependencyStepIds,
+            updatedDependencyStepIds: uniqueDepIds,
+            rewiredFrom: removeStep.stepKey,
+            rewiredTo: keepStep.stepKey
+          }
+        });
+      }
+
+      // 4. Validate the full graph after all changes
+      const postAllSteps = listStepRows(runId).map(toStep);
+      const postIdToKey = new Map<string, string>();
+      for (const s of postAllSteps) {
+        postIdToKey.set(s.id, s.stepKey);
+      }
+      const graphSteps: StepGraphValidationStep[] = postAllSteps
+        .filter((s) => !TERMINAL_STEP_STATUSES.has(s.status))
+        .map((s) => ({
+          stepKey: s.stepKey,
+          dependencyStepKeys: s.dependencyStepIds
+            .map((depId) => postIdToKey.get(depId) ?? "")
+            .filter((depKey): depKey is string => depKey.length > 0),
+          joinPolicy: s.joinPolicy,
+          quorumCount: s.quorumCount
+        }));
+      // Include terminal steps that are referenced as dependencies
+      const nonTerminalKeys = new Set(graphSteps.map((s) => s.stepKey));
+      for (const s of postAllSteps) {
+        if (!nonTerminalKeys.has(s.stepKey)) {
+          graphSteps.push({
+            stepKey: s.stepKey,
+            dependencyStepKeys: [],
+            joinPolicy: s.joinPolicy,
+            quorumCount: s.quorumCount
+          });
+        }
+      }
+      validateStepGraphIntegrity({
+        context: "consolidateSteps",
+        steps: graphSteps
+      });
+
+      // 5. Refresh readiness and re-evaluate run status
+      refreshStepReadiness(runId);
+
+      const nextRunStatus = evaluateRunStatusWithPolicy(runId);
+      const currentRunStatus = normalizeRunStatus(runRow.status);
+      if (nextRunStatus !== currentRunStatus) {
+        updateRunStatus(runId, nextRunStatus);
+      }
+
+      const resultRow = getStepRow(keepStepId);
+      if (!resultRow) throw new Error(`Keep step not found after consolidation: ${keepStepId}`);
+      return toStep(resultRow);
+    },
+
+    updateStepMetadata(args: {
+      runId: string;
+      stepId: string;
+      metadata: Record<string, unknown>;
+    }): OrchestratorStep {
+      const runId = String(args.runId ?? "").trim();
+      const stepId = String(args.stepId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      if (!stepId) throw new Error("stepId is required.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Cannot update step metadata in a terminal run (status: ${run.status}).`);
+      }
+
+      const stepRow = getStepRow(stepId);
+      if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
+      const step = toStep(stepRow);
+      if (TERMINAL_STEP_STATUSES.has(step.status)) {
+        throw new Error(`Step is already terminal (status: ${step.status}).`);
+      }
+
+      const existingMeta = (step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)) ? step.metadata as Record<string, unknown> : {};
+      const mergedMeta = { ...existingMeta, ...args.metadata };
+
+      const now = nowIso();
+      db.run(
+        `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
+        [JSON.stringify(mergedMeta), now, stepId, runId, projectId]
+      );
+
+      appendTimelineEvent({
+        runId,
+        stepId,
+        eventType: "step_metadata_updated",
+        reason: "update_step_metadata",
+        detail: { updatedKeys: Object.keys(args.metadata) }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId, reason: "metadata_updated" });
+
+      const updatedRow = getStepRow(stepId);
+      if (!updatedRow) throw new Error(`Step not found after metadata update: ${stepId}`);
+      return toStep(updatedRow);
+    },
+
+    updateStepExecutorKind(args: {
+      runId: string;
+      stepId: string;
+      executorKind: string;
+    }): OrchestratorStep {
+      const runId = String(args.runId ?? "").trim();
+      const stepId = String(args.stepId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      if (!stepId) throw new Error("stepId is required.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      if (TERMINAL_RUN_STATUSES.has(toRun(runRow).status)) {
+        throw new Error(`Cannot update step in a terminal run.`);
+      }
+
+      const stepRow = getStepRow(stepId);
+      if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
+      if (TERMINAL_STEP_STATUSES.has(toStep(stepRow).status)) {
+        throw new Error(`Step is already terminal (status: ${toStep(stepRow).status}).`);
+      }
+
+      const now = nowIso();
+      db.run(
+        `update orchestrator_steps set executor_kind = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
+        [args.executorKind, now, stepId, runId, projectId]
+      );
+      appendTimelineEvent({
+        runId,
+        stepId,
+        eventType: "step_metadata_updated",
+        reason: "executor_kind_updated",
+        detail: { newExecutorKind: args.executorKind }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId, reason: "executor_kind_updated" });
+
+      const result = getStepRow(stepId);
+      if (!result) throw new Error(`Step not found after executor kind update: ${stepId}`);
+      return toStep(result);
     },
 
     // ─── Recovery Loop ────────────────────────────────────────────
@@ -7223,6 +7885,181 @@ export function createOrchestratorService({
       return result;
     },
 
+    // ─── Worker Checkpoint Persistence ──────────────────────────────
+
+    upsertWorkerCheckpoint(args: {
+      missionId: string;
+      runId: string;
+      stepId: string;
+      attemptId: string;
+      stepKey: string;
+      content: string;
+      filePath: string;
+    }): OrchestratorWorkerCheckpoint {
+      const now = nowIso();
+      const existingRow = db.get<{ id: string }>(
+        `select id from orchestrator_worker_checkpoints where mission_id = ? and step_key = ? and project_id = ? limit 1`,
+        [args.missionId, args.stepKey, projectId]
+      );
+      if (existingRow) {
+        db.run(
+          `
+            update orchestrator_worker_checkpoints
+            set run_id = ?,
+                step_id = ?,
+                attempt_id = ?,
+                content = ?,
+                file_path = ?,
+                updated_at = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [args.runId, args.stepId, args.attemptId, args.content, args.filePath, now, existingRow.id, projectId]
+        );
+        return {
+          id: existingRow.id,
+          missionId: args.missionId,
+          runId: args.runId,
+          stepId: args.stepId,
+          attemptId: args.attemptId,
+          stepKey: args.stepKey,
+          content: args.content,
+          filePath: args.filePath,
+          createdAt: now,
+          updatedAt: now
+        };
+      }
+      const id = randomUUID();
+      db.run(
+        `
+          insert into orchestrator_worker_checkpoints(
+            id, project_id, mission_id, run_id, step_id, attempt_id,
+            step_key, content, file_path, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [id, projectId, args.missionId, args.runId, args.stepId, args.attemptId, args.stepKey, args.content, args.filePath, now, now]
+      );
+      return {
+        id,
+        missionId: args.missionId,
+        runId: args.runId,
+        stepId: args.stepId,
+        attemptId: args.attemptId,
+        stepKey: args.stepKey,
+        content: args.content,
+        filePath: args.filePath,
+        createdAt: now,
+        updatedAt: now
+      };
+    },
+
+    getWorkerCheckpoint(args: { missionId: string; stepKey: string }): OrchestratorWorkerCheckpoint | null {
+      const row = db.get<{
+        id: string;
+        mission_id: string;
+        run_id: string;
+        step_id: string;
+        attempt_id: string;
+        step_key: string;
+        content: string;
+        file_path: string;
+        created_at: string;
+        updated_at: string;
+      }>(
+        `
+          select id, mission_id, run_id, step_id, attempt_id, step_key, content, file_path, created_at, updated_at
+          from orchestrator_worker_checkpoints
+          where mission_id = ? and step_key = ? and project_id = ?
+          order by updated_at desc
+          limit 1
+        `,
+        [args.missionId, args.stepKey, projectId]
+      );
+      if (!row) return null;
+      return {
+        id: row.id,
+        missionId: row.mission_id,
+        runId: row.run_id,
+        stepId: row.step_id,
+        attemptId: row.attempt_id,
+        stepKey: row.step_key,
+        content: row.content,
+        filePath: row.file_path,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      };
+    },
+
+    getWorkerCheckpointsForMission(args: { missionId: string }): OrchestratorWorkerCheckpoint[] {
+      const rows = db.all<{
+        id: string;
+        mission_id: string;
+        run_id: string;
+        step_id: string;
+        attempt_id: string;
+        step_key: string;
+        content: string;
+        file_path: string;
+        created_at: string;
+        updated_at: string;
+      }>(
+        `
+          select id, mission_id, run_id, step_id, attempt_id, step_key, content, file_path, created_at, updated_at
+          from orchestrator_worker_checkpoints
+          where mission_id = ? and project_id = ?
+          order by updated_at desc
+        `,
+        [args.missionId, projectId]
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        missionId: row.mission_id,
+        runId: row.run_id,
+        stepId: row.step_id,
+        attemptId: row.attempt_id,
+        stepKey: row.step_key,
+        content: row.content,
+        filePath: row.file_path,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }));
+    },
+
+    getWorkerCheckpointsForRun(args: { runId: string }): OrchestratorWorkerCheckpoint[] {
+      const rows = db.all<{
+        id: string;
+        mission_id: string;
+        run_id: string;
+        step_id: string;
+        attempt_id: string;
+        step_key: string;
+        content: string;
+        file_path: string;
+        created_at: string;
+        updated_at: string;
+      }>(
+        `
+          select id, mission_id, run_id, step_id, attempt_id, step_key, content, file_path, created_at, updated_at
+          from orchestrator_worker_checkpoints
+          where run_id = ? and project_id = ?
+          order by updated_at desc
+        `,
+        [args.runId, projectId]
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        missionId: row.mission_id,
+        runId: row.run_id,
+        stepId: row.step_id,
+        attemptId: row.attempt_id,
+        stepKey: row.step_key,
+        content: row.content,
+        filePath: row.file_path,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }));
+    },
+
     // ─── Integration PR Trigger ───────────────────────────────────
 
     triggerIntegrationPr(args: {
@@ -7281,7 +8118,7 @@ export function createOrchestratorService({
             laneIds: Array.from(laneIds),
             policy: {
               createIntegrationLane: policy.createIntegrationLane,
-              autoResolveConflicts: policy.autoResolveConflicts,
+              prDepth: policy.prDepth,
               draft: policy.draft,
               baseBranch: policy.baseBranch ?? null
             }
@@ -7301,7 +8138,7 @@ export function createOrchestratorService({
           dependencyCount: allStepIds.length,
           policy: {
             createIntegrationLane: policy.createIntegrationLane,
-            autoResolveConflicts: policy.autoResolveConflicts,
+            prDepth: policy.prDepth,
             draft: policy.draft
           }
         }
@@ -7311,6 +8148,105 @@ export function createOrchestratorService({
       refreshStepReadiness(runId);
 
       return { stepId };
+    },
+
+    // ── Artifact Registry ──────────────────────────────────────────────
+
+    registerArtifact(artifact: {
+      id?: string;
+      missionId: string;
+      runId: string;
+      stepId: string;
+      attemptId: string;
+      artifactKey: string;
+      kind: OrchestratorArtifactKind;
+      value: string;
+      metadata?: Record<string, unknown>;
+      declared?: boolean;
+    }): OrchestratorArtifact {
+      const id = artifact.id ?? randomUUID();
+      const now = nowIso();
+      db.run(
+        `
+          insert or ignore into orchestrator_artifacts(
+            id, project_id, mission_id, run_id, step_id, attempt_id,
+            artifact_key, kind, value, metadata_json, declared, created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          artifact.missionId,
+          artifact.runId,
+          artifact.stepId,
+          artifact.attemptId,
+          artifact.artifactKey,
+          artifact.kind,
+          artifact.value,
+          JSON.stringify(artifact.metadata ?? {}),
+          artifact.declared ? 1 : 0,
+          now
+        ]
+      );
+      return {
+        id,
+        missionId: artifact.missionId,
+        runId: artifact.runId,
+        stepId: artifact.stepId,
+        attemptId: artifact.attemptId,
+        artifactKey: artifact.artifactKey,
+        kind: artifact.kind,
+        value: artifact.value,
+        metadata: artifact.metadata ?? {},
+        declared: artifact.declared ?? false,
+        createdAt: now
+      };
+    },
+
+    getArtifactsForStep(stepId: string): OrchestratorArtifact[] {
+      const rows = db.all<ArtifactRow>(
+        `
+          select id, project_id, mission_id, run_id, step_id, attempt_id,
+                 artifact_key, kind, value, metadata_json, declared, created_at
+          from orchestrator_artifacts
+          where step_id = ?
+            and project_id = ?
+          order by created_at asc
+        `,
+        [stepId, projectId]
+      );
+      return rows.map(toArtifact);
+    },
+
+    getArtifactsForMission(missionId: string): OrchestratorArtifact[] {
+      const rows = db.all<ArtifactRow>(
+        `
+          select id, project_id, mission_id, run_id, step_id, attempt_id,
+                 artifact_key, kind, value, metadata_json, declared, created_at
+          from orchestrator_artifacts
+          where mission_id = ?
+            and project_id = ?
+          order by created_at asc
+        `,
+        [missionId, projectId]
+      );
+      return rows.map(toArtifact);
+    },
+
+    getArtifactsByKey(missionId: string, artifactKey: string): OrchestratorArtifact[] {
+      const rows = db.all<ArtifactRow>(
+        `
+          select id, project_id, mission_id, run_id, step_id, attempt_id,
+                 artifact_key, kind, value, metadata_json, declared, created_at
+          from orchestrator_artifacts
+          where mission_id = ?
+            and artifact_key = ?
+            and project_id = ?
+          order by created_at asc
+        `,
+        [missionId, artifactKey, projectId]
+      );
+      return rows.map(toArtifact);
     }
   };
 }

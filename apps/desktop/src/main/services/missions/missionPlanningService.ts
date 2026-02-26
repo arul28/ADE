@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type {
   MissionExecutionPolicy,
   MissionExecutorPolicy,
@@ -75,6 +78,7 @@ export type MissionPlanningRequest = {
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   logger?: MissionPlanningLogger;
   policy?: MissionExecutionPolicy;
+  agentCapabilities?: { parallelSubagents?: boolean; agentTeams?: boolean };
 };
 
 export type MissionPlanStepDraft = {
@@ -203,6 +207,39 @@ function extractFirstJsonObject(text: string): string | null {
   return null;
 }
 
+function getPlanOutputPath(missionId: string): string {
+  return path.join(os.tmpdir(), `ade-mission-plan-${missionId}.json`);
+}
+
+/**
+ * Clean up any leftover plan output temp files. Safe to call at any time.
+ */
+export function cleanupPlanTempFiles(missionId?: string): void {
+  try {
+    if (missionId) {
+      const filePath = getPlanOutputPath(missionId);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } else {
+      // Clean up all ade-mission-plan-*.json files in tmpdir
+      const tmpDir = os.tmpdir();
+      const entries = fs.readdirSync(tmpDir);
+      for (const entry of entries) {
+        if (entry.startsWith("ade-mission-plan-") && entry.endsWith(".json")) {
+          try {
+            fs.unlinkSync(path.join(tmpDir, entry));
+          } catch {
+            // best-effort cleanup
+          }
+        }
+      }
+    }
+  } catch {
+    // best-effort cleanup — never throw
+  }
+}
+
 function plannerSchemaJson(): Record<string, unknown> {
   const stepProperties = {
     stepId: { type: "string" },
@@ -326,6 +363,8 @@ function buildPlannerPrompt(args: {
   allowPlanningQuestions: boolean;
   contextBundle?: MissionPlanningContextBundle;
   policy?: MissionExecutionPolicy;
+  planOutputPath: string;
+  agentCapabilities?: { parallelSubagents?: boolean; agentTeams?: boolean };
 }): string {
   const MAX_DOC_CONTENT_CHARS = 12_000;
   const MAX_TOTAL_DOCS_CHARS = 200_000;
@@ -351,7 +390,8 @@ function buildPlannerPrompt(args: {
   const docsSection = docsBlocks.length > 0 ? docsBlocks.join("\n\n") : "- none";
   const constraints = [
     "AI is only for initial planning. Runtime transitions are deterministic.",
-    "Return valid JSON only. No markdown. No explanations outside JSON.",
+    `IMPORTANT: Write your final plan as a JSON file. Use your file writing tool to create the file at the path provided in the PLAN_OUTPUT_PATH variable below. The file must contain ONLY valid JSON — no markdown, no comments, no explanations. After writing the file, respond with exactly: PLAN_WRITTEN`,
+    `PLAN_OUTPUT_PATH: ${args.planOutputPath}`,
     "Use stable deterministic step IDs suitable for resume/replay.",
     "Do not use generic names such as 'Step 1' or 'Task 2'. Step names must be specific and action-oriented.",
     "Each step description must include concrete deliverables and verification intent.",
@@ -364,6 +404,8 @@ function buildPlannerPrompt(args: {
   ];
 
   const lines = [
+    "You are a PLANNING agent. Your job is to analyze the request and produce a structured mission plan. You have READ-ONLY access to the codebase to understand the project structure. You MUST NOT write any code, create any source files, or modify any project files. The ONLY file you write is the plan JSON at PLAN_OUTPUT_PATH.",
+    "",
     "You are ADE mission planner.",
     "Generate a deterministic mission plan object that matches the provided JSON schema exactly.",
     "",
@@ -403,6 +445,27 @@ function buildPlannerPrompt(args: {
     ""
   ];
 
+  if (args.agentCapabilities?.parallelSubagents) {
+    lines.push(
+      "## Parallel Sub-Agents (ENABLED)",
+      "Worker agents can spawn parallel sub-agents for independent research or subtasks.",
+      "- **Claude workers**: Use the Task tool to spawn sub-agents. Each runs in its own context window, does work, and reports results back. Sub-agents cannot communicate with each other.",
+      "- **Codex workers**: Multi-agent mode is enabled. Sub-agents run in separate threads with built-in roles (worker, explorer, monitor).",
+      "Plan accordingly — individual steps can internally parallelize work, so you can design larger, more ambitious steps when the work within them is parallelizable.",
+      ""
+    );
+  }
+  if (args.agentCapabilities?.agentTeams) {
+    lines.push(
+      "## Agent Teams (ENABLED — Claude workers only)",
+      "Claude Code agent teams are enabled for this mission. This is a Claude-only capability (Codex does not support agent teams).",
+      "Unlike sub-agents, teammates share a task list, claim work independently, and communicate directly with each other.",
+      "Best for: research with competing hypotheses, cross-layer coordination (frontend + backend + tests), parallel code review, complex debugging.",
+      "Consider this when designing steps assigned to Claude — a single step can leverage an internal team of agents for complex coordinated work.",
+      ""
+    );
+  }
+
   if (args.policy) {
     const p = args.policy;
     lines.push(
@@ -433,7 +496,7 @@ function buildPlannerPrompt(args: {
     ""
   );
 
-  lines.push("Output: one JSON object only.");
+  lines.push(`Output: Write one JSON object to ${args.planOutputPath}. Then reply with PLAN_WRITTEN.`);
   return lines.join("\n");
 }
 
@@ -770,6 +833,7 @@ async function runPlannerAdapter(args: {
   prompt: string;
   timeoutMs: number;
   model?: string;
+  planOutputPath: string;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
 }): Promise<PlannerAdapterResult> {
   if (!args.aiIntegrationService || args.aiIntegrationService.getMode() === "guest") {
@@ -778,13 +842,17 @@ async function runPlannerAdapter(args: {
 
   if (args.engine === "codex_cli" || args.engine === "claude_cli") {
     const provider = args.engine === "codex_cli" ? "codex" : "claude";
+    // Use "edit" permission mode so the planner can write its plan JSON to the
+    // temp file at planOutputPath. The planner prompt explicitly constrains the
+    // agent to only write that single file — no project files.
     const aiResult = await args.aiIntegrationService.planMission({
       cwd: args.cwd,
       prompt: args.prompt,
       timeoutMs: args.timeoutMs,
       model: args.model,
       provider,
-      jsonSchema: plannerSchemaJson()
+      jsonSchema: plannerSchemaJson(),
+      permissionMode: "edit"
     });
     const rawResponse =
       aiResult.structuredOutput != null && typeof aiResult.structuredOutput === "object"
@@ -991,10 +1059,12 @@ export function plannerPlanToMissionSteps(args: {
 export async function planMissionOnce(args: MissionPlanningRequest): Promise<MissionPlanningResult> {
   const startedAt = Date.now();
   const plannerRunId = randomUUID();
+  const missionId = args.missionId ?? randomUUID();
   const timeoutMs = Math.max(5_000, Math.min(600_000, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS)));
   const requestedEngine: MissionPlannerEngine = args.plannerEngine ?? "auto";
   const order = plannerEngineOrder(requestedEngine, args.aiIntegrationService);
   const plannerAttempts: MissionPlannerAttempt[] = [];
+  const planOutputPath = getPlanOutputPath(missionId);
 
   const prompt = buildPlannerPrompt({
     prompt: args.prompt,
@@ -1002,7 +1072,9 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
     laneId: args.laneId,
     allowPlanningQuestions: args.allowPlanningQuestions === true,
     contextBundle: args.contextBundle,
-    policy: args.policy
+    policy: args.policy,
+    planOutputPath,
+    agentCapabilities: args.agentCapabilities
   });
 
   const runtimeErrors: PlannerRuntimeError[] = [];
@@ -1022,17 +1094,92 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         prompt,
         timeoutMs,
         model: args.model,
+        planOutputPath,
         aiIntegrationService: args.aiIntegrationService
       });
 
-      let rawJson = extractFirstJsonObject(adapterResult.rawResponse);
+      // --- Multi-strategy plan extraction ---
+      let rawJson: string | null = null;
+      let planSource: "file" | "text" | "recovery" | null = null;
+
+      // Strategy 1: Read plan JSON from the temp file the planner was instructed to write
+      try {
+        if (fs.existsSync(planOutputPath)) {
+          const fileContent = fs.readFileSync(planOutputPath, "utf-8").trim();
+          if (fileContent.startsWith("{")) {
+            rawJson = fileContent;
+            planSource = "file";
+            args.logger?.info?.("ai_orchestrator.planner_plan_from_file", {
+              missionId,
+              path: planOutputPath
+            });
+          }
+        }
+      } catch {
+        // file read failed — fall through to text extraction
+      }
+
+      // Strategy 2: Extract JSON from the planner's text output (existing fallback)
+      if (!rawJson && adapterResult.rawResponse) {
+        rawJson = extractFirstJsonObject(adapterResult.rawResponse);
+        if (rawJson) {
+          planSource = "text";
+          args.logger?.info?.("ai_orchestrator.planner_plan_from_text", { missionId });
+        }
+      }
+
+      // Strategy 3: Recovery — ask planner to re-output the plan to the file
+      if (!rawJson) {
+        args.logger?.warn?.("ai_orchestrator.planner_plan_recovery", { missionId });
+        try {
+          const recoveryResult = await runPlannerAdapter({
+            engine,
+            cwd: args.projectRoot,
+            prompt: `Your plan was not saved correctly. Write ONLY the JSON plan object to ${planOutputPath}. No other text. Use your file writing tool to create the file. After writing, respond with: PLAN_WRITTEN`,
+            timeoutMs: Math.min(timeoutMs, 60_000), // shorter timeout for recovery
+            model: args.model,
+            planOutputPath,
+            aiIntegrationService: args.aiIntegrationService
+          });
+          // Try reading the file again after recovery
+          try {
+            if (fs.existsSync(planOutputPath)) {
+              const recoveryFileContent = fs.readFileSync(planOutputPath, "utf-8").trim();
+              if (recoveryFileContent.startsWith("{")) {
+                rawJson = recoveryFileContent;
+                planSource = "recovery";
+                args.logger?.info?.("ai_orchestrator.planner_plan_from_recovery_file", { missionId });
+              }
+            }
+          } catch {
+            // file read failed after recovery
+          }
+          // Try extracting from recovery text output
+          if (!rawJson && recoveryResult.rawResponse) {
+            rawJson = extractFirstJsonObject(recoveryResult.rawResponse);
+            if (rawJson) {
+              planSource = "recovery";
+              args.logger?.info?.("ai_orchestrator.planner_plan_from_recovery_text", { missionId });
+            }
+          }
+        } catch (recoveryError) {
+          args.logger?.warn?.("ai_orchestrator.planner_recovery_failed", {
+            missionId,
+            error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+          });
+        }
+      }
+
+      // Clean up temp file after extraction
+      try { if (fs.existsSync(planOutputPath)) fs.unlinkSync(planOutputPath); } catch { /* best-effort */ }
+
       if (!rawJson) {
         plannerAttempts.push({
           id: randomUUID(),
           engine,
           status: "failed",
           reasonCode: "planner_parse_error",
-          detail: "Planner output did not contain a JSON object.",
+          detail: "Planner output did not contain a valid JSON plan after all extraction strategies (file, text, recovery).",
           commandPreview: adapterResult.commandPreview,
           rawResponse: adapterResult.rawResponse,
           validationErrors: [],
@@ -1041,7 +1188,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         runtimeErrors.push({
           engine,
           reasonCode: "planner_parse_error",
-          detail: "Planner output did not contain a JSON object.",
+          detail: "Planner output did not contain a valid JSON plan after all extraction strategies (file, text, recovery).",
           rawResponse: adapterResult.rawResponse,
           commandPreview: adapterResult.commandPreview
         });
@@ -1243,6 +1390,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         plannerRunId,
         requestedEngine,
         resolvedEngine: engine,
+        planSource,
         durationMs: run.durationMs
       });
       return { plan, run };
@@ -1269,6 +1417,9 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
       });
     }
   }
+
+  // Clean up temp file on failure path too
+  try { if (fs.existsSync(planOutputPath)) fs.unlinkSync(planOutputPath); } catch { /* best-effort */ }
 
   // All engines exhausted — throw with summary of failures
   const allValidationErrors = runtimeErrors.flatMap((e) => e.validationErrors ?? []);

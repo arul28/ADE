@@ -1605,6 +1605,46 @@ function migrate(db: Database) {
   );
 
   db.run(`
+    create table if not exists orchestrator_artifacts (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      step_id text not null,
+      attempt_id text not null,
+      artifact_key text not null,
+      kind text not null,
+      value text not null,
+      metadata_json text not null default '{}',
+      declared integer not null default 0,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_artifacts_mission_created on orchestrator_artifacts(mission_id, created_at)",
+    "orchestrator_artifacts",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_artifacts_step on orchestrator_artifacts(step_id)",
+    "orchestrator_artifacts",
+    ["step_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_artifacts_mission_key on orchestrator_artifacts(mission_id, artifact_key)",
+    "orchestrator_artifacts",
+    ["mission_id", "artifact_key"]
+  );
+
+  db.run(`
     create table if not exists orchestrator_context_checkpoints (
       id text primary key,
       project_id text not null,
@@ -1630,6 +1670,45 @@ function migrate(db: Database) {
     "create index if not exists idx_orchestrator_context_checkpoints_run_created on orchestrator_context_checkpoints(run_id, created_at)",
     "orchestrator_context_checkpoints",
     ["run_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_worker_checkpoints (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      step_id text not null,
+      attempt_id text not null,
+      step_key text not null,
+      content text not null,
+      file_path text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_checkpoints_mission_step_key on orchestrator_worker_checkpoints(mission_id, step_key)",
+    "orchestrator_worker_checkpoints",
+    ["mission_id", "step_key"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_checkpoints_run on orchestrator_worker_checkpoints(run_id)",
+    "orchestrator_worker_checkpoints",
+    ["run_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_checkpoints_mission on orchestrator_worker_checkpoints(mission_id, updated_at)",
+    "orchestrator_worker_checkpoints",
+    ["mission_id", "updated_at"]
   );
 
   db.run(`
@@ -1959,6 +2038,64 @@ function migrate(db: Database) {
   addColumnIfMissing(db, "orchestrator_metrics_samples", "attempt_id text", "attempt_id");
   addColumnIfMissing(db, "orchestrator_metrics_samples", "unit text", "unit");
   addColumnIfMissing(db, "orchestrator_metrics_samples", "metadata_json text", "metadata_json");
+
+  // WS8 Memory & Context Enhancement System.
+  db.run(`
+    create table if not exists memories (
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      category text not null,
+      content text not null,
+      importance text default 'medium',
+      source_session_id text,
+      source_pack_key text,
+      created_at text not null,
+      last_accessed_at text not null,
+      access_count integer default 0
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_project_scope on memories(project_id, scope)",
+    "memories",
+    ["project_id", "scope"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_project_importance on memories(project_id, importance)",
+    "memories",
+    ["project_id", "importance"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_memories_last_accessed on memories(last_accessed_at)",
+    "memories",
+    ["last_accessed_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_shared_facts (
+      id text primary key,
+      run_id text not null,
+      step_id text,
+      fact_type text not null,
+      content text not null,
+      created_at text not null
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_shared_facts_run on orchestrator_shared_facts(run_id)",
+    "orchestrator_shared_facts",
+    ["run_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_shared_facts_run_type on orchestrator_shared_facts(run_id, fact_type)",
+    "orchestrator_shared_facts",
+    ["run_id", "fact_type"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

@@ -70,6 +70,9 @@ export type LaneType = "primary" | "worktree" | "attached";
 
 export type ProviderMode = "guest" | "subscription";
 
+/** Universal model identifier, e.g. "anthropic/claude-sonnet-4-6" or "openai/gpt-5.3-codex" */
+export type ModelId = string;
+
 export type LaneStatus = {
   dirty: boolean;
   ahead: number;
@@ -773,7 +776,8 @@ export type ContextOpenDocArgs = {
   path?: string;
 };
 
-export type AgentChatProvider = "codex" | "claude";
+/** @deprecated Use ModelId directly. Kept for backward compatibility. */
+export type AgentChatProvider = "codex" | "claude" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 
@@ -898,6 +902,7 @@ export type AgentChatSession = {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
+  modelId?: ModelId;
   reasoningEffort?: string | null;
   status: AgentChatSessionStatus;
   threadId?: string;
@@ -910,6 +915,7 @@ export type AgentChatSessionSummary = {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
+  modelId?: ModelId;
   reasoningEffort?: string | null;
   status: AgentChatSessionStatus;
   startedAt: string;
@@ -927,12 +933,19 @@ export type AgentChatModelInfo = {
   isDefault: boolean;
   reasoningEfforts?: Array<{ effort: string; description: string }>;
   maxThinkingTokens?: number | null;
+  // New unified fields
+  modelId?: ModelId;
+  family?: string;
+  supportsReasoning?: boolean;
+  supportsTools?: boolean;
+  color?: string;
 };
 
 export type AgentChatCreateArgs = {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
+  modelId?: ModelId;
   reasoningEffort?: string | null;
 };
 
@@ -1012,6 +1025,7 @@ export type TerminalToolType =
   | "codex"
   | "claude-orchestrated"
   | "codex-orchestrated"
+  | "ai-orchestrated"
   | "codex-chat"
   | "claude-chat"
   | "cursor"
@@ -1614,7 +1628,8 @@ export type AiTaskRoutingKey =
   | "mission_planning"
   | "initial_context";
 
-export type AiTaskProvider = "auto" | "claude" | "codex";
+/** @deprecated Use ModelId for routing. Kept for backward compatibility. */
+export type AiTaskProvider = "auto" | "claude" | "codex" | (string & {});
 
 // TODO(config-naming): AiTaskRoutingRule and all AI config types below accept both camelCase
 // and snake_case variants for backwards compatibility with YAML/JSON config files authored in
@@ -1720,6 +1735,13 @@ export type AiPermissionSettings = {
   codex?: AiCodexPermissionSettings;
 };
 
+export type WorkerSafetyPolicy = {
+  permissionLevel: "read-only" | "edit" | "full-auto";
+  sandbox?: boolean;
+  allowedTools?: string[];
+  deniedTools?: string[];
+};
+
 export type AiConflictResolutionConfig = {
   changeTarget?: "target" | "source" | "ai_decides";
   /** @deprecated Use changeTarget */
@@ -1804,6 +1826,12 @@ export type AiOrchestratorConfig = {
   /** @deprecated Use interventionConfidenceThreshold */
   intervention_confidence_threshold?: number;
   hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;
+  maxConcurrentMissions?: number;
+  /** @deprecated Use maxConcurrentMissions */
+  max_concurrent_missions?: number;
+  laneExclusivity?: boolean;
+  /** @deprecated Use laneExclusivity */
+  lane_exclusivity?: boolean;
 };
 
 export type AiChatConfig = {
@@ -1842,6 +1870,26 @@ export type AiConfig = {
   conflict_resolution?: AiConflictResolutionConfig;
   orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
+  // New unified fields
+  defaultModel?: ModelId;
+  apiKeys?: Record<string, string>;
+  workerSafety?: WorkerSafetyPolicy;
+  mcpServers?: Record<string, unknown>;
+};
+
+export type AiIntegrationStatus = {
+  mode: ProviderMode;
+  availableProviders: {
+    claude: boolean;
+    codex: boolean;
+  };
+  models: {
+    claude: AgentChatModelInfo[];
+    codex: AgentChatModelInfo[];
+  };
+  // New unified fields
+  detectedAuth?: Array<{ type: string; cli?: string; provider?: string }>;
+  availableModelIds?: ModelId[];
 };
 
 export type ProjectConfigFile = {
@@ -2585,7 +2633,8 @@ export type MissionInterventionType =
   | "manual_input"
   | "conflict"
   | "policy_block"
-  | "failed_step";
+  | "failed_step"
+  | "orchestrator_escalation";
 
 export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
 
@@ -2799,6 +2848,40 @@ export type ListMissionsArgs = {
   limit?: number;
 };
 
+// ---------------------------------------------------------------------------
+// Orchestrator intelligence / per-call-type model configuration
+// ---------------------------------------------------------------------------
+
+/** The 7 call types the orchestrator AI uses to think */
+export type OrchestratorCallType =
+  | "coordinator"
+  | "worker_evaluation"
+  | "quality_gate"
+  | "failure_diagnosis"
+  | "plan_adjustment"
+  | "intervention_handling"
+  | "chat_response";
+
+/** Per-call-type model configuration */
+export type OrchestratorCallTypeModelConfig = {
+  provider: "claude" | "codex";
+  modelId: string;
+  thinkingLevel: "low" | "medium" | "high";
+};
+
+/** Map of call type -> model config. Used in mission launch metadata. */
+export type OrchestratorIntelligenceConfig = Partial<Record<OrchestratorCallType, OrchestratorCallTypeModelConfig>>;
+
+/** Full model config for a mission (includes per-call-type overrides + legacy fields) */
+export type MissionModelConfig = {
+  /** Legacy: single model for the whole orchestrator */
+  orchestratorModel?: string;
+  /** Per-call-type intelligence config */
+  intelligenceConfig?: OrchestratorIntelligenceConfig;
+  /** Per-call-type thinking budgets (tokens) */
+  thinkingBudgets?: Record<string, number>;
+};
+
 export type CreateMissionArgs = {
   prompt: string;
   title?: string;
@@ -2819,6 +2902,17 @@ export type CreateMissionArgs = {
   thinkingBudgets?: Record<string, number>;
   /** New granular model configuration (takes precedence over orchestratorModel) */
   modelConfig?: MissionModelConfig;
+  /**
+   * Enable parallel sub-agents within worker sessions.
+   * Claude: Task tool for spawning sub-agents (report back only).
+   * Codex: multi_agent mode for parallel threads (worker/explorer/monitor).
+   */
+  allowParallelSubagents?: boolean;
+  /**
+   * Enable agent teams — Claude workers ONLY (Codex does not support this).
+   * Full Claude Code instances with shared task list + direct messaging.
+   */
+  allowAgentTeams?: boolean;
 };
 
 export type PlanMissionArgs = {
@@ -2905,6 +2999,22 @@ export type DeleteMissionArgs = {
   missionId: string;
 };
 
+export type MissionConcurrencyCheckResult = {
+  allowed: boolean;
+  reason?: string;
+  queuePosition?: number;
+};
+
+export type MissionLaneClaimCheckResult = {
+  claimed: boolean;
+  byMissionId?: string;
+};
+
+export type MissionConcurrencyConfig = {
+  maxConcurrentMissions: number;
+  laneExclusivity: boolean;
+};
+
 export type MissionsEventPayload = {
   type: "missions-updated";
   missionId?: string;
@@ -2941,7 +3051,9 @@ export type OrchestratorAttemptStatus =
 
 export type OrchestratorJoinPolicy = "all_success" | "any_success" | "quorum" | "advisory";
 
-export type OrchestratorExecutorKind = "claude" | "codex" | "shell" | "manual";
+// Built-in executor kinds. Third-party adapters can register any string.
+export type BuiltInExecutorKind = "unified" | "claude" | "codex" | "shell" | "manual";
+export type OrchestratorExecutorKind = BuiltInExecutorKind | (string & {});
 
 export type OrchestratorErrorClass =
   | "none"
@@ -3142,6 +3254,7 @@ export type OrchestratorAttempt = {
   completedAt: string | null;
   resultEnvelope: OrchestratorAttemptResultEnvelope | null;
   metadata: OrchestratorMetadata | null;
+  modelId?: ModelId;
 };
 
 export type OrchestratorClaim = {
@@ -3208,7 +3321,17 @@ export type OrchestratorRuntimeEventType =
   | "claim_conflict"
   | "session_ended"
   | "intervention_opened"
-  | "intervention_resolved";
+  | "intervention_resolved"
+  | "coordinator_steering"
+  | "coordinator_broadcast"
+  | "coordinator_skip"
+  | "coordinator_add_step"
+  | "coordinator_pause"
+  | "coordinator_parallelize"
+  | "coordinator_consolidate"
+  | "coordinator_shutdown"
+  | "step_dependencies_updated"
+  | "step_metadata_updated";
 
 export type OrchestratorRuntimeQuestionLink = {
   threadId: string;
@@ -3904,7 +4027,7 @@ export type IntegrationStepResolution = "pending" | "merged-clean" | "resolving"
 export type IntegrationResolutionState = {
   integrationLaneId: string;
   stepResolutions: Record<string, IntegrationStepResolution>; // keyed by laneId
-  activeChatSessionId: string | null;
+  activeWorkerStepId: string | null;
   activeLaneId: string | null;
   updatedAt: string;
 };
@@ -3922,14 +4045,11 @@ export type CreateIntegrationLaneForProposalResult = {
 export type StartIntegrationResolutionArgs = {
   proposalId: string;
   laneId: string; // the conflicting source lane to resolve
-  provider: AgentChatProvider;
-  model: string;
-  reasoningEffort?: string;
-  autoApprove?: boolean;
 };
 
 export type StartIntegrationResolutionResult = {
-  chatSessionId: string;
+  conflictFiles: string[];
+  mergedClean: boolean;
   integrationLaneId: string;
 };
 
@@ -4160,7 +4280,7 @@ export type GetOrchestratorWorkerStatesArgs = {
   runId: string;
 };
 
-export type OrchestratorPlannerProvider = "claude" | "codex" | "deterministic";
+export type OrchestratorPlannerProvider = "claude" | "codex" | "deterministic" | (string & {});
 
 export type StartMissionRunWithAIArgs = {
   missionId: string;
@@ -4171,6 +4291,7 @@ export type StartMissionRunWithAIArgs = {
   metadata?: Record<string, unknown> | null;
   forcePlanReviewBypass?: boolean;
   plannerProvider?: OrchestratorPlannerProvider;
+  defaultModelId?: ModelId;
 };
 
 export type StartMissionRunWithAIResult = {
@@ -4226,7 +4347,14 @@ export type TestingPhaseMode = "none" | "post_implementation" | "tdd";
 export type GatePhaseMode = "required" | "optional" | "off";
 export type IntegrationPhaseMode = "off" | "auto";
 export type MergePhaseMode = "off";
-export type PhaseModelChoice = "claude" | "codex";
+/** @deprecated Use ModelId string directly. Kept for backward compatibility. */
+export type PhaseModelChoice = string;
+
+/** Controls how deep the orchestrator goes with PR lifecycle management. Never merges — enforced at orchestrator level. */
+export type PrDepth =
+  | "propose-only"       // Create PR proposals/drafts, flag conflicts but don't resolve
+  | "resolve-conflicts"  // Also resolve conflicts via orchestrator workers
+  | "open-and-comment";  // Also open the PR and add review summary comments
 
 // ─────────────────────────────────────────────────────
 // Model Configuration (granular model selection)
@@ -4334,9 +4462,9 @@ export type MissionModelConfig = {
 };
 
 export type PrStrategy =
-  | { kind: "integration"; targetBranch?: string; draft?: boolean }
-  | { kind: "per-lane"; targetBranch?: string; draft?: boolean }
-  | { kind: "queue"; targetBranch?: string; draft?: boolean; autoRebase?: boolean; ciGating?: boolean }
+  | { kind: "integration"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
+  | { kind: "per-lane"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
+  | { kind: "queue"; targetBranch?: string; draft?: boolean; autoRebase?: boolean; ciGating?: boolean; prDepth?: PrDepth }
   | { kind: "manual" };
 
 export type MissionExecutionPolicy = {
@@ -4353,6 +4481,10 @@ export type MissionExecutionPolicy = {
   integrationPr?: IntegrationPrPolicy;
   prStrategy?: PrStrategy;
   useAgentTeams?: boolean;
+  /** Parallel sub-agents: Claude (Task tool) + Codex (multi_agent threads) */
+  parallelSubagents?: boolean;
+  /** Agent teams: Claude-only. Full instances with shared task list + messaging */
+  agentTeams?: boolean;
 };
 
 export type CompletionDiagnostic = {
@@ -4375,7 +4507,7 @@ export type RunCompletionEvaluation = {
 };
 
 export type ModelCapabilityProfile = {
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | (string & {});
   modelId: string;
   displayName: string;
   strengths: string[];
@@ -4601,6 +4733,36 @@ export type OrchestratorContextCheckpoint = {
 export type GetOrchestratorContextCheckpointArgs = {
   missionId: string;
   checkpointId?: string;
+};
+
+/** A worker recovery checkpoint persisted to DB from `.ade-checkpoint-{stepKey}.md` files. */
+export type OrchestratorWorkerCheckpoint = {
+  id: string;
+  missionId: string;
+  runId: string;
+  stepId: string;
+  attemptId: string;
+  stepKey: string;
+  content: string;
+  filePath: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OrchestratorArtifactKind = "file" | "branch" | "pr" | "test_report" | "checkpoint" | "custom";
+
+export type OrchestratorArtifact = {
+  id: string;
+  missionId: string;
+  runId: string;
+  stepId: string;
+  attemptId: string;
+  artifactKey: string;
+  kind: OrchestratorArtifactKind;
+  value: string;
+  metadata: Record<string, unknown>;
+  declared: boolean;
+  createdAt: string;
 };
 
 export type OrchestratorLaneDecision = {
@@ -4936,18 +5098,20 @@ export type IntegrationPrPolicy = {
   enabled: boolean;
   /** Create integration lane to merge parallel lanes */
   createIntegrationLane: boolean;
-  /** Resolve merge conflicts before opening PR */
-  autoResolveConflicts: boolean;
+  /** How deep the orchestrator goes with PR lifecycle */
+  prDepth: PrDepth;
   /** Open PR as draft */
   draft: boolean;
   /** Base branch for integration PR */
   baseBranch?: string;
+  /** Optional model override for conflict resolution workers */
+  conflictResolverModel?: string;
 };
 
 export const DEFAULT_INTEGRATION_PR_POLICY: IntegrationPrPolicy = {
   enabled: false,
   createIntegrationLane: true,
-  autoResolveConflicts: true,
+  prDepth: "resolve-conflicts" as PrDepth,
   draft: true
 };
 

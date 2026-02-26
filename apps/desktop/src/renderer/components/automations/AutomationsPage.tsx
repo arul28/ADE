@@ -688,26 +688,20 @@ function CreateWithNaturalLanguageDialog({
               </div>
 
               <div className="rounded-lg border border-border/10 bg-card/80 backdrop-blur-sm shadow-card p-3">
-                <div className="text-xs font-semibold">Planner Provider</div>
-                <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      checked={provider === "codex"}
-                      disabled={!codexTool?.installed}
-                      onChange={() => setProvider("codex")}
-                    />
-                    Codex CLI
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      checked={provider === "claude"}
-                      disabled={!claudeTool?.installed}
-                      onChange={() => setProvider("claude")}
-                    />
-                    Claude Code CLI
-                  </label>
+                <div className="text-xs font-semibold">Planner CLI</div>
+                <div className="mt-2">
+                  <select
+                    className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-3 text-xs text-fg"
+                    value={provider}
+                    onChange={(e) => setProvider(e.target.value as AutomationPlannerConfig["provider"])}
+                  >
+                    <option value="codex" disabled={!codexTool?.installed}>
+                      Codex CLI {!codexTool?.installed ? "(not installed)" : ""}
+                    </option>
+                    <option value="claude" disabled={!claudeTool?.installed}>
+                      Claude Code CLI {!claudeTool?.installed ? "(not installed)" : ""}
+                    </option>
+                  </select>
                 </div>
 
                 <div className="mt-2 rounded-lg border border-border/10 bg-card/50 p-2 text-xs text-muted-fg">

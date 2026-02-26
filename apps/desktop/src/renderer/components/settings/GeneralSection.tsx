@@ -638,6 +638,14 @@ export function GeneralSection() {
             {saving ? "SAVING..." : "SAVE"}
           </button>
         </div>
+
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
+          <div className="text-xs text-muted-fg">Provider Mode</div>
+          <div className="mt-2 text-sm">{providerMode}</div>
+          <div className="mt-2 text-xs text-muted-fg">
+            For API key and CLI provider configuration, see the <span className="text-accent">Providers</span> section in the sidebar.
+          </div>
+        </div>
       </section>
 
       {/* ------------------------------------------------------------ */}

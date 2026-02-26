@@ -1,0 +1,266 @@
+// ---------------------------------------------------------------------------
+// Provider Resolver — maps model descriptors + auth to AI SDK instances
+// ---------------------------------------------------------------------------
+
+import type { LanguageModel } from "ai";
+import {
+  getModelById,
+  resolveModelAlias,
+  type ModelDescriptor,
+} from "../../../shared/modelRegistry";
+import type { DetectedAuth } from "./authDetector";
+
+// ---------------------------------------------------------------------------
+// Lazy provider loaders — avoids importing unused SDK packages at startup.
+// Optional packages may not have type declarations installed, so we use a
+// generic dynamic-import helper that returns `any` for the module namespace.
+// The try/catch ensures a clear error message when the package is missing.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function tryImport(pkg: string): Promise<any> {
+  try {
+    return await (Function("p", "return import(p)")(pkg) as Promise<unknown>);
+  } catch {
+    throw new Error(`Package ${pkg} is not installed. Run: npm install ${pkg}`);
+  }
+}
+
+async function loadClaudeCodeProvider() {
+  const mod = await import("ai-sdk-provider-claude-code");
+  return mod.createClaudeCode;
+}
+
+async function loadAnthropicProvider() {
+  const mod = await tryImport("@ai-sdk/anthropic");
+  return mod.createAnthropic as (opts: { apiKey: string }) => (model: string) => unknown;
+}
+
+async function loadOpenAIProvider() {
+  const mod = await tryImport("@ai-sdk/openai");
+  return mod.createOpenAI as (opts: { apiKey: string }) => (model: string) => unknown;
+}
+
+async function loadGoogleProvider() {
+  const mod = await tryImport("@ai-sdk/google");
+  return mod.createGoogleGenerativeAI as (opts: { apiKey: string }) => (model: string) => unknown;
+}
+
+async function loadOpenAICompatibleProvider() {
+  const mod = await tryImport("@ai-sdk/openai-compatible");
+  return mod.createOpenAICompatible as (opts: { name: string; baseURL: string; apiKey?: string }) => (model: string) => unknown;
+}
+
+async function loadMistralProvider() {
+  const mod = await tryImport("@ai-sdk/mistral");
+  return mod.createMistral as (opts: { apiKey: string }) => (model: string) => unknown;
+}
+
+async function loadXaiProvider() {
+  const mod = await tryImport("@ai-sdk/xai");
+  return mod.createXai as (opts: { apiKey: string }) => (model: string) => unknown;
+}
+
+async function loadOpenRouterProvider() {
+  const mod = await tryImport("@openrouter/ai-sdk-provider");
+  return mod.createOpenRouter as (opts: { apiKey: string }) => (model: string) => unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Auth matching
+// ---------------------------------------------------------------------------
+
+function findApiKey(auth: DetectedAuth[], provider: string): string | undefined {
+  for (const a of auth) {
+    if (a.type === "api-key" && a.provider === provider) return a.key;
+  }
+  return undefined;
+}
+
+function findOpenRouterKey(auth: DetectedAuth[]): string | undefined {
+  for (const a of auth) {
+    if (a.type === "openrouter") return a.key;
+  }
+  return undefined;
+}
+
+function findLocalEndpoint(auth: DetectedAuth[], provider: string): string | undefined {
+  for (const a of auth) {
+    if (a.type === "local" && a.provider === provider) return a.endpoint;
+  }
+  return undefined;
+}
+
+function hasCliSubscription(auth: DetectedAuth[], cli: string): boolean {
+  return auth.some((a) => a.type === "cli-subscription" && a.cli === cli);
+}
+
+// ---------------------------------------------------------------------------
+// Base URL map for OpenAI-compatible providers
+// ---------------------------------------------------------------------------
+
+const COMPATIBLE_BASE_URLS: Record<string, string> = {
+  deepseek: "https://api.deepseek.com/v1",
+  groq: "https://api.groq.com/openai/v1",
+  together: "https://api.together.xyz/v1",
+};
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export type ResolveModelOpts = {
+  cwd?: string;
+};
+
+export async function resolveModel(
+  modelId: string,
+  auth: DetectedAuth[],
+  opts?: ResolveModelOpts,
+): Promise<LanguageModel> {
+  const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
+  if (!descriptor) {
+    throw new Error(`Unknown model: "${modelId}". Check the model registry for available models.`);
+  }
+
+  // CLI-wrapped providers
+  if (descriptor.isCliWrapped) {
+    return resolveCliWrapped(descriptor, auth, opts);
+  }
+
+  // API-key / direct providers
+  return resolveDirectProvider(descriptor, auth);
+}
+
+async function resolveCliWrapped(
+  descriptor: ModelDescriptor,
+  auth: DetectedAuth[],
+  opts?: ResolveModelOpts,
+): Promise<LanguageModel> {
+  const cli = descriptor.cliCommand;
+
+  if (cli === "claude") {
+    if (!hasCliSubscription(auth, "claude")) {
+      throw new Error(
+        "Claude CLI is required for this model but was not detected. Install and authenticate Claude Code.",
+      );
+    }
+    const createClaudeCode = await loadClaudeCodeProvider();
+    const provider = createClaudeCode({
+      defaultSettings: { cwd: opts?.cwd ?? process.cwd() },
+    });
+    return provider(descriptor.sdkModelId) as LanguageModel;
+  }
+
+  if (cli === "codex") {
+    if (!hasCliSubscription(auth, "codex")) {
+      throw new Error(
+        "Codex CLI is required for this model but was not detected. Install and authenticate Codex.",
+      );
+    }
+    throw new Error(
+      `Codex CLI AI SDK provider is not yet available. Model "${descriptor.id}" cannot be resolved at this time.`,
+    );
+  }
+
+  throw new Error(`Unknown CLI command "${cli}" for model "${descriptor.id}".`);
+}
+
+async function resolveDirectProvider(
+  descriptor: ModelDescriptor,
+  auth: DetectedAuth[],
+): Promise<LanguageModel> {
+  const { sdkProvider, sdkModelId, family } = descriptor;
+
+  switch (sdkProvider) {
+    case "@ai-sdk/anthropic": {
+      const apiKey = findApiKey(auth, "anthropic");
+      if (!apiKey) throw new Error("Anthropic API key is required. Set ANTHROPIC_API_KEY or add it in settings.");
+      const createAnthropic = await loadAnthropicProvider();
+      return createAnthropic({ apiKey })(sdkModelId) as LanguageModel;
+    }
+
+    case "@ai-sdk/openai": {
+      const apiKey = findApiKey(auth, "openai");
+      if (!apiKey) throw new Error("OpenAI API key is required. Set OPENAI_API_KEY or add it in settings.");
+      const createOpenAI = await loadOpenAIProvider();
+      return createOpenAI({ apiKey })(sdkModelId) as LanguageModel;
+    }
+
+    case "@ai-sdk/google": {
+      const apiKey = findApiKey(auth, "google");
+      if (!apiKey) throw new Error("Google API key is required. Set GOOGLE_API_KEY or add it in settings.");
+      const createGoogle = await loadGoogleProvider();
+      return createGoogle({ apiKey })(sdkModelId) as LanguageModel;
+    }
+
+    case "@ai-sdk/mistral": {
+      const apiKey = findApiKey(auth, "mistral");
+      if (!apiKey) throw new Error("Mistral API key is required. Set MISTRAL_API_KEY or add it in settings.");
+      const createMistral = await loadMistralProvider();
+      return createMistral({ apiKey })(sdkModelId) as LanguageModel;
+    }
+
+    case "@ai-sdk/xai": {
+      const apiKey = findApiKey(auth, "xai");
+      if (!apiKey) throw new Error("xAI API key is required. Set XAI_API_KEY or add it in settings.");
+      const createXai = await loadXaiProvider();
+      return createXai({ apiKey })(sdkModelId) as LanguageModel;
+    }
+
+    case "@ai-sdk/deepseek": {
+      const apiKey = findApiKey(auth, "deepseek");
+      if (!apiKey) throw new Error("DeepSeek API key is required. Set DEEPSEEK_API_KEY or add it in settings.");
+      const baseURL = COMPATIBLE_BASE_URLS.deepseek;
+      const createCompatible = await loadOpenAICompatibleProvider();
+      const provider = createCompatible({ name: "deepseek", baseURL, apiKey });
+      return provider(sdkModelId) as LanguageModel;
+    }
+
+    case "@openrouter/ai-sdk-provider": {
+      const apiKey = findOpenRouterKey(auth);
+      if (!apiKey) throw new Error("OpenRouter API key is required. Set OPENROUTER_API_KEY or add it in settings.");
+      const createOpenRouter = await loadOpenRouterProvider();
+      return createOpenRouter({ apiKey })(sdkModelId) as LanguageModel;
+    }
+
+    case "@ai-sdk/openai-compatible": {
+      // Local providers (ollama, lmstudio, vllm)
+      if (family === "ollama") {
+        const endpoint = findLocalEndpoint(auth, "ollama") ?? "http://localhost:11434";
+        const createCompatible = await loadOpenAICompatibleProvider();
+        const provider = createCompatible({
+          name: "ollama",
+          baseURL: `${endpoint}/v1`,
+        });
+        return provider(sdkModelId) as LanguageModel;
+      }
+
+      // Generic compatible provider via base URL
+      const baseURL = COMPATIBLE_BASE_URLS[family];
+      if (baseURL) {
+        const apiKey = findApiKey(auth, family);
+        if (!apiKey) {
+          throw new Error(`API key required for ${family}. Check your settings or environment variables.`);
+        }
+        const createCompatible = await loadOpenAICompatibleProvider();
+        const provider = createCompatible({ name: family, baseURL, apiKey });
+        return provider(sdkModelId) as LanguageModel;
+      }
+
+      throw new Error(`No base URL configured for OpenAI-compatible provider "${family}".`);
+    }
+
+    default:
+      throw new Error(`Unsupported SDK provider "${sdkProvider}" for model "${descriptor.id}".`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience helpers
+// ---------------------------------------------------------------------------
+
+export function isModelCliWrapped(modelId: string): boolean {
+  const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
+  return descriptor?.isCliWrapped ?? false;
+}

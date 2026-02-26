@@ -9,6 +9,7 @@ import type {
   PrStrategy
 } from "../../../shared/types";
 import { CLAUDE_MODELS, CODEX_MODELS } from "../../../shared/modelProfiles";
+import { MODEL_REGISTRY, MODEL_FAMILIES, getModelById, type ProviderFamily, type ModelDescriptor } from "../../../shared/modelRegistry";
 type PolicyEditorProps = {
   value: MissionExecutionPolicy;
   onChange: (policy: MissionExecutionPolicy) => void;
@@ -17,7 +18,7 @@ type PolicyEditorProps = {
 
 const PRESET_QUICK: MissionExecutionPolicy = {
   planning: { mode: "off" },
-  implementation: { model: "codex" },
+  implementation: { model: "openai/gpt-5.3-codex" },
   testing: { mode: "none" },
   validation: { mode: "off" },
   codeReview: { mode: "off" },
@@ -29,26 +30,26 @@ const PRESET_QUICK: MissionExecutionPolicy = {
 };
 
 const PRESET_STANDARD: MissionExecutionPolicy = {
-  planning: { mode: "auto", model: "codex" },
-  implementation: { model: "codex" },
-  testing: { mode: "post_implementation", model: "codex" },
-  validation: { mode: "optional", model: "codex" },
+  planning: { mode: "auto", model: "openai/gpt-5.3-codex" },
+  implementation: { model: "openai/gpt-5.3-codex" },
+  testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
+  validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
   codeReview: { mode: "off" },
-  testReview: { mode: "optional", model: "codex" },
-  integration: { mode: "auto", model: "codex" },
+  testReview: { mode: "optional", model: "openai/gpt-5.3-codex" },
+  integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
   merge: { mode: "off" },
   completion: { allowCompletionWithRisk: true },
   prStrategy: { kind: "queue", targetBranch: "main", draft: true, autoRebase: true, ciGating: false }
 };
 
 const PRESET_THOROUGH: MissionExecutionPolicy = {
-  planning: { mode: "manual_review", model: "claude" },
-  implementation: { model: "codex" },
-  testing: { mode: "post_implementation", model: "codex" },
-  validation: { mode: "required", model: "claude" },
-  codeReview: { mode: "required", model: "claude" },
-  testReview: { mode: "required", model: "codex" },
-  integration: { mode: "auto", model: "codex" },
+  planning: { mode: "manual_review", model: "anthropic/claude-sonnet-4-6" },
+  implementation: { model: "openai/gpt-5.3-codex" },
+  testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
+  validation: { mode: "required", model: "openai/gpt-5.3-codex" },
+  codeReview: { mode: "required", model: "anthropic/claude-sonnet-4-6" },
+  testReview: { mode: "required", model: "openai/gpt-5.3-codex" },
+  integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
   merge: { mode: "off" },
   completion: { allowCompletionWithRisk: false },
   prStrategy: { kind: "integration", targetBranch: "main", draft: false }
@@ -119,6 +120,16 @@ function isCodexModel(m?: string): boolean {
   return m === "codex" || CODEX_MODEL_IDS.includes(m);
 }
 
+function getReasoningTiers(modelId?: string): Array<{ value: string; label: string }> {
+  if (!modelId) return [{ value: "medium", label: "Medium" }];
+  const descriptor = getModelById(modelId);
+  if (!descriptor?.reasoningTiers?.length) return [{ value: "medium", label: "Medium" }];
+  return descriptor.reasoningTiers.map((t) => ({
+    value: t,
+    label: t.charAt(0).toUpperCase() + t.slice(1).replace("_", " "),
+  }));
+}
+
 function PhaseRow({
   label,
   mode,
@@ -140,20 +151,7 @@ function PhaseRow({
   onReasoningEffortChange?: (value: string) => void;
   showModel: boolean;
 }) {
-  const codex = isCodexModel(model);
-  const thinkingLevels = codex
-    ? [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium" },
-        { value: "high", label: "High" },
-        { value: "extra_high", label: "Extra High" }
-      ]
-    : [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium" },
-        { value: "high", label: "High" },
-        { value: "max", label: "Max" }
-      ];
+  const thinkingLevels = getReasoningTiers(model);
 
   return (
     <div className="flex items-center gap-2 py-1">
@@ -182,21 +180,22 @@ function PhaseRow({
       </select>
       {showModel && onModelChange ? (
         <select
-          className="w-28"
+          className="w-36"
           style={selectStyle}
-          value={model ?? "codex"}
+          value={model ?? "openai/gpt-5.3-codex"}
           onChange={(e) => onModelChange(e.target.value as PhaseModelChoice)}
         >
-          <optgroup label="Claude">
-            {CLAUDE_MODELS.map((m) => (
-              <option key={m.modelId} value={m.modelId}>{m.displayName}{m.recommended ? " *" : ""}</option>
-            ))}
-          </optgroup>
-          <optgroup label="Codex">
-            {CODEX_MODELS.map((m) => (
-              <option key={m.modelId} value={m.modelId}>{m.displayName}{m.recommended ? " *" : ""}</option>
-            ))}
-          </optgroup>
+          {([...new Set(MODEL_REGISTRY.map((m) => m.family))] as ProviderFamily[]).map((family) => {
+            const familyModels = MODEL_REGISTRY.filter((m) => m.family === family && !m.deprecated);
+            if (!familyModels.length) return null;
+            return (
+              <optgroup key={family} label={MODEL_FAMILIES[family]?.displayName ?? family}>
+                {familyModels.map((m) => (
+                  <option key={m.id} value={m.id}>{m.displayName}{isCodexModel(m.shortId) && CODEX_MODELS.find((c) => m.sdkModelId === c.modelId)?.recommended ? " *" : ""}</option>
+                ))}
+              </optgroup>
+            );
+          })}
         </select>
       ) : (
         <div className="w-28" />
@@ -293,7 +292,7 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
             MODE
           </span>
           <span
-            className="w-28"
+            className="w-36"
             style={{
               fontFamily: "JetBrains Mono, monospace",
               fontSize: 10,

@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import type { TerminalSessionSummary, TerminalSessionStatus } from "../../../shared/types";
+import type { TerminalSessionSummary, TerminalSessionStatus, TerminalToolType } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
-function inferToolFromResumeCommand(command: string): "claude" | "codex" | null {
+function inferToolFromResumeCommand(command: string): string | null {
   const n = command.trim().toLowerCase();
   if (n.startsWith("claude ")) return "claude";
   if (n.startsWith("codex ")) return "codex";
+  if (n.startsWith("gemini ")) return "gemini";
   return null;
 }
 
@@ -223,7 +224,7 @@ export function useWorkSessions() {
       if (!command || resumingSessionId) return;
       setResumingSessionId(session.id);
       try {
-        const toolType = session.toolType ?? inferToolFromResumeCommand(command) ?? null;
+        const toolType = (session.toolType ?? inferToolFromResumeCommand(command) ?? null) as TerminalToolType | null;
         const started = await window.ade.pty.create({
           laneId: session.laneId,
           cols: 100,
@@ -283,9 +284,26 @@ export function useWorkSessions() {
   );
 
   const handleLaunchChat = useCallback(
-    async (laneId: string, provider: "claude" | "codex") => {
-      const defaultModel = provider === "codex" ? "gpt-5.3-codex" : "sonnet";
-      const session = await window.ade.agentChat.create({ laneId, provider, model: defaultModel });
+    async (laneId: string, modelIdOrProvider?: string) => {
+      // Accept either a model ID (e.g. "anthropic/claude-sonnet-4-6") or legacy provider ("claude"/"codex")
+      let provider: "claude" | "codex" = "claude";
+      let model = "sonnet";
+      let modelId: string | undefined;
+      if (modelIdOrProvider === "codex") {
+        provider = "codex";
+        model = "gpt-5.3-codex";
+        modelId = "openai/gpt-5.3-codex";
+      } else if (modelIdOrProvider === "claude") {
+        provider = "claude";
+        model = "sonnet";
+        modelId = "anthropic/claude-sonnet-4-6";
+      } else if (modelIdOrProvider && modelIdOrProvider.includes("/")) {
+        modelId = modelIdOrProvider;
+        // Derive provider from model family prefix
+        provider = modelIdOrProvider.startsWith("openai/") ? "codex" : "claude";
+        model = modelIdOrProvider.split("/").pop() ?? model;
+      }
+      const session = await window.ade.agentChat.create({ laneId, provider, model, modelId });
       selectLane(laneId);
       focusSession(session.id);
       setSelectedSessionId(session.id);
