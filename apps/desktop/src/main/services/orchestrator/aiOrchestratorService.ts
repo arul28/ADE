@@ -82,6 +82,9 @@ import type {
   OrchestratorTeamMember,
   OrchestratorTeamRuntimeState,
   TeamRuntimeConfig,
+  TeamTemplate,
+  RoleDefinition,
+  MissionPolicyFlags,
   FinalizeRunArgs,
   FinalizeRunResult,
   RunCompletionBlocker,
@@ -530,6 +533,197 @@ export function createAiOrchestratorService(args: {
     return defaults;
   };
 
+  const DEFAULT_MISSION_POLICY_FLAGS: MissionPolicyFlags = {
+    clarificationMode: "auto_if_uncertain",
+    maxClarificationQuestions: 5,
+    strictTdd: false,
+    requireValidatorPass: true,
+    maxParallelWorkers: 4,
+    riskApprovalMode: "confirm_high_risk"
+  };
+
+  const REQUIRED_TEAM_CAPABILITIES = ["coordinator", "planner", "validator"] as const;
+
+  const DEFAULT_TEAM_TEMPLATE: TeamTemplate = {
+    id: "default-autonomy-template",
+    name: "Autonomous Team",
+    roles: [
+      {
+        name: "coordinator",
+        description: "Mission lead that plans, delegates, and decides recovery strategy.",
+        capabilities: ["coordinator", "planner"],
+        defaultModel: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "high" },
+        maxInstances: 1,
+        toolProfile: {
+          allowedTools: [
+            "spawn_worker",
+            "request_specialist",
+            "revise_plan",
+            "retry_step",
+            "skip_step",
+            "read_mission_status",
+            "message_worker",
+            "read_file",
+            "search_files",
+            "get_project_context",
+            "report_status",
+            "report_result",
+            "report_validation",
+            "update_tool_profiles",
+            "transfer_lane"
+          ]
+        }
+      },
+      {
+        name: "implementer",
+        description: "Executes implementation tasks and reports structured progress/results.",
+        capabilities: ["implementation"],
+        defaultModel: { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
+        maxInstances: 12
+      },
+      {
+        name: "validator",
+        description: "Validates outputs at gates and returns actionable remediation guidance.",
+        capabilities: ["validator", "review", "testing"],
+        defaultModel: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+        maxInstances: 4
+      }
+    ],
+    policyDefaults: DEFAULT_MISSION_POLICY_FLAGS,
+    constraints: {
+      maxWorkers: 20,
+      requiredRoles: [...REQUIRED_TEAM_CAPABILITIES]
+    }
+  };
+
+  const toClampedToolProfileMap = (value: unknown): TeamRuntimeConfig["toolProfiles"] => {
+    if (!isRecord(value)) return undefined;
+    const out: Record<string, { allowedTools: string[]; blockedTools?: string[]; mcpServers?: string[]; notes?: string }> = {};
+    for (const [key, raw] of Object.entries(value)) {
+      if (!isRecord(raw)) continue;
+      const allowedTools = Array.isArray(raw.allowedTools)
+        ? raw.allowedTools.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+        : [];
+      if (!allowedTools.length) continue;
+      const blockedTools = Array.isArray(raw.blockedTools)
+        ? raw.blockedTools.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+        : undefined;
+      const mcpServers = Array.isArray(raw.mcpServers)
+        ? raw.mcpServers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+        : undefined;
+      out[key] = {
+        allowedTools,
+        ...(blockedTools && blockedTools.length > 0 ? { blockedTools } : {}),
+        ...(mcpServers && mcpServers.length > 0 ? { mcpServers } : {}),
+        ...(typeof raw.notes === "string" && raw.notes.trim().length > 0 ? { notes: raw.notes.trim() } : {})
+      };
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
+
+  const parsePolicyFlags = (value: unknown): MissionPolicyFlags | undefined => {
+    if (!isRecord(value)) return undefined;
+    const maxQuestions = Number(value.maxClarificationQuestions);
+    const maxParallelWorkers = Number(value.maxParallelWorkers);
+    return {
+      clarificationMode:
+        value.clarificationMode === "always" ||
+        value.clarificationMode === "auto_if_uncertain" ||
+        value.clarificationMode === "off"
+          ? value.clarificationMode
+          : undefined,
+      maxClarificationQuestions: Number.isFinite(maxQuestions) ? Math.max(1, Math.min(20, Math.floor(maxQuestions))) : undefined,
+      strictTdd: typeof value.strictTdd === "boolean" ? value.strictTdd : undefined,
+      requireValidatorPass: typeof value.requireValidatorPass === "boolean" ? value.requireValidatorPass : undefined,
+      maxParallelWorkers: Number.isFinite(maxParallelWorkers) ? Math.max(1, Math.min(32, Math.floor(maxParallelWorkers))) : undefined,
+      riskApprovalMode:
+        value.riskApprovalMode === "auto" ||
+        value.riskApprovalMode === "confirm_high_risk" ||
+        value.riskApprovalMode === "confirm_all"
+          ? value.riskApprovalMode
+          : undefined
+    };
+  };
+
+  const parseRoleDefinition = (value: unknown): RoleDefinition | null => {
+    if (!isRecord(value)) return null;
+    const name = typeof value.name === "string" ? value.name.trim() : "";
+    if (!name.length) return null;
+    const description = typeof value.description === "string" ? value.description.trim() : "";
+    const capabilities = Array.isArray(value.capabilities)
+      ? value.capabilities.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+      : [];
+    const defaultModel = isRecord(value.defaultModel) ? value.defaultModel : null;
+    const provider = defaultModel?.provider === "claude" || defaultModel?.provider === "codex" ? defaultModel.provider : null;
+    const modelId = typeof defaultModel?.modelId === "string" ? defaultModel.modelId.trim() : "";
+    if (!provider || !modelId.length) return null;
+    const maxInstancesRaw = Number(value.maxInstances);
+    return {
+      name,
+      description: description.length ? description : `${name} role`,
+      capabilities,
+      defaultModel: {
+        provider,
+        modelId,
+        ...(defaultModel?.thinkingLevel && typeof defaultModel.thinkingLevel === "string"
+          ? { thinkingLevel: defaultModel.thinkingLevel as ModelConfig["thinkingLevel"] }
+          : {})
+      },
+      ...(Number.isFinite(maxInstancesRaw) && maxInstancesRaw > 0
+        ? { maxInstances: Math.max(1, Math.min(100, Math.floor(maxInstancesRaw))) }
+        : {})
+    };
+  };
+
+  const parseTeamTemplate = (value: unknown): TeamTemplate | null => {
+    if (!isRecord(value)) return null;
+    const id = typeof value.id === "string" && value.id.trim().length > 0
+      ? value.id.trim()
+      : DEFAULT_TEAM_TEMPLATE.id;
+    const name = typeof value.name === "string" && value.name.trim().length > 0
+      ? value.name.trim()
+      : DEFAULT_TEAM_TEMPLATE.name;
+    const roles = Array.isArray(value.roles)
+      ? value.roles.map((entry) => parseRoleDefinition(entry)).filter((entry): entry is RoleDefinition => !!entry)
+      : [];
+    const constraints = isRecord(value.constraints) ? value.constraints : null;
+    const maxWorkersRaw = Number(constraints?.maxWorkers);
+    const requiredRoles = Array.isArray(constraints?.requiredRoles)
+      ? constraints.requiredRoles.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+      : [...REQUIRED_TEAM_CAPABILITIES];
+    return {
+      id,
+      name,
+      roles: roles.length > 0 ? roles : DEFAULT_TEAM_TEMPLATE.roles,
+      policyDefaults: {
+        ...DEFAULT_MISSION_POLICY_FLAGS,
+        ...(parsePolicyFlags(value.policyDefaults) ?? {})
+      },
+      constraints: {
+        maxWorkers: Number.isFinite(maxWorkersRaw) ? Math.max(1, Math.min(100, Math.floor(maxWorkersRaw))) : DEFAULT_TEAM_TEMPLATE.constraints.maxWorkers,
+        requiredRoles
+      }
+    };
+  };
+
+  const missingRequiredCapabilities = (template: TeamTemplate): string[] => {
+    const roleNames = new Set(template.roles.map((role) => role.name.toLowerCase()));
+    const roleCapabilities = new Set(
+      template.roles.flatMap((role) => role.capabilities.map((capability) => capability.toLowerCase()))
+    );
+    const required = template.constraints.requiredRoles.length
+      ? template.constraints.requiredRoles
+      : [...REQUIRED_TEAM_CAPABILITIES];
+    const missing: string[] = [];
+    for (const requiredEntry of required) {
+      const normalized = requiredEntry.toLowerCase();
+      if (roleNames.has(normalized)) continue;
+      if (roleCapabilities.has(normalized)) continue;
+      missing.push(requiredEntry);
+    }
+    return missing;
+  };
+
   /** Resolve team runtime config from mission launch metadata */
   const resolveMissionTeamRuntime = (missionId: string): TeamRuntimeConfig | null => {
     try {
@@ -542,15 +736,72 @@ export function createAiOrchestratorService(args: {
         const launch = isRecord(metadata.launch) ? metadata.launch : null;
         const teamRuntime = launch && isRecord(launch.teamRuntime) ? launch.teamRuntime : null;
         if (teamRuntime && teamRuntime.enabled === true) {
+          const parsedTemplate = parseTeamTemplate(teamRuntime.template);
+          const template = parsedTemplate ?? DEFAULT_TEAM_TEMPLATE;
+          const missing = missingRequiredCapabilities(template);
+          if (missing.length > 0) {
+            throw new Error(`teamRuntime template missing required roles/capabilities: ${missing.join(", ")}`);
+          }
+          const teammateCount = typeof teamRuntime.teammateCount === "number"
+            ? Math.max(0, Math.min(20, Math.floor(teamRuntime.teammateCount)))
+            : 2;
+          const boundedTeammateCount = Math.min(teammateCount, Math.max(0, template.constraints.maxWorkers - 1));
           return {
             enabled: true,
             targetProvider: (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "codex") ? teamRuntime.targetProvider : "auto",
-            teammateCount: typeof teamRuntime.teammateCount === "number" ? Math.max(0, Math.min(20, Math.floor(teamRuntime.teammateCount))) : 2,
+            teammateCount: boundedTeammateCount,
+            template,
+            toolProfiles: toClampedToolProfileMap(teamRuntime.toolProfiles),
+            mcpServerAllowlist: Array.isArray(teamRuntime.mcpServerAllowlist)
+              ? (teamRuntime.mcpServerAllowlist as unknown[])
+                  .map((entry: unknown) => String(entry ?? "").trim())
+                  .filter((entry) => entry.length > 0)
+              : undefined,
+            policyOverrides: parsePolicyFlags(teamRuntime.policyOverrides)
           };
         }
       }
-    } catch { /* ignore parse errors */ }
+    } catch (error) {
+      logger.warn("ai_orchestrator.team_runtime_config_invalid", {
+        missionId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
     return null;
+  };
+
+  const normalizeTeamRuntimeConfig = (missionId: string, config: TeamRuntimeConfig): TeamRuntimeConfig => {
+    if (!config.enabled) return config;
+    const template = parseTeamTemplate(config.template) ?? DEFAULT_TEAM_TEMPLATE;
+    const missing = missingRequiredCapabilities(template);
+    if (missing.length > 0) {
+      throw new Error(`teamRuntime template missing required roles/capabilities: ${missing.join(", ")}`);
+    }
+    const teammateCount = Math.max(
+      0,
+      Math.min(
+        20,
+        Math.min(
+          Number.isFinite(Number(config.teammateCount)) ? Math.floor(Number(config.teammateCount)) : 2,
+          Math.max(0, template.constraints.maxWorkers - 1)
+        )
+      )
+    );
+    const policyOverrides = {
+      ...DEFAULT_MISSION_POLICY_FLAGS,
+      ...(config.policyOverrides ?? {})
+    };
+    return {
+      ...config,
+      targetProvider:
+        config.targetProvider === "claude" || config.targetProvider === "codex" || config.targetProvider === "auto"
+          ? config.targetProvider
+          : "auto",
+      teammateCount,
+      template,
+      policyOverrides
+    };
   };
 
   const emitThreadEvent = (event: Omit<OrchestratorThreadEvent, "at">) => {
@@ -1829,7 +2080,14 @@ Check all worker statuses and continue managing the mission from here. Read work
       | "coordinator_pause"
       | "coordinator_parallelize"
       | "coordinator_consolidate"
-      | "coordinator_shutdown";
+      | "coordinator_shutdown"
+      | "worker_status_report"
+      | "worker_result_report"
+      | "worker_message"
+      | "plan_revised"
+      | "lane_transfer"
+      | "validation_report"
+      | "tool_profiles_updated";
     eventKey?: string | null;
     occurredAt?: string | null;
     payload?: Record<string, unknown> | null;
@@ -4778,24 +5036,48 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     // 2. Spawn teammates
     const teammateIds: string[] = [];
-    const teammateCount = Math.max(0, Math.min(20, config.teammateCount));
+    const template = config.template ?? DEFAULT_TEAM_TEMPLATE;
+    const teammateCount = Math.max(
+      0,
+      Math.min(
+        20,
+        Math.min(config.teammateCount, Math.max(0, template.constraints.maxWorkers - 1))
+      )
+    );
+    const assignableRoles = template.roles.filter((role) => role.name.toLowerCase() !== "coordinator");
     const targetProvider = config.targetProvider === "auto"
       ? coordinatorModelConfig.provider
       : config.targetProvider;
 
     for (let i = 0; i < teammateCount; i++) {
+      const roleDef = assignableRoles.length > 0
+        ? assignableRoles[i % assignableRoles.length]
+        : null;
+      const roleProvider = roleDef?.defaultModel.provider ?? targetProvider;
+      const roleModel = roleDef?.defaultModel.modelId ?? modelConfigToServiceModel(coordinatorModelConfig);
+      const roleName = roleDef?.name ?? "teammate";
+      const configuredToolProfile =
+        config.toolProfiles && roleName in config.toolProfiles
+          ? config.toolProfiles[roleName]
+          : roleDef?.toolProfile;
       const memberId = randomUUID();
       registerTeamMember({
         id: memberId,
         runId,
         missionId,
-        provider: targetProvider,
-        model: modelConfigToServiceModel(coordinatorModelConfig),
+        provider: roleProvider,
+        model: roleModel,
         role: "teammate",
         sessionId: null,
         status: "spawning",
         claimedTaskIds: [],
-        metadata: { index: i },
+        metadata: {
+          index: i,
+          roleName,
+          roleCapabilities: roleDef?.capabilities ?? [],
+          toolProfile: configuredToolProfile ?? null,
+          mcpServerAllowlist: config.mcpServerAllowlist ?? []
+        },
         createdAt: now,
         updatedAt: now,
       });
@@ -4814,6 +5096,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       coordinatorAlive: !!coordinatorAgent,
       teammateCount: teammateIds.length,
       provider: targetProvider,
+      templateId: template.id
     });
 
     return { coordinatorAgent, teammateIds };
@@ -4842,7 +5125,12 @@ Check all worker statuses and continue managing the mission from here. Read work
     // Soft gate: tasks not done — only block if NOT force (coordinator already skipped remaining steps)
     if (!force) {
       const notDoneSteps = graph.steps.filter(
-        (s) => s.status !== "succeeded" && s.status !== "skipped" && s.status !== "canceled" && s.status !== "failed"
+        (s) =>
+          s.status !== "succeeded" &&
+          s.status !== "skipped" &&
+          s.status !== "superseded" &&
+          s.status !== "canceled" &&
+          s.status !== "failed"
       );
       if (notDoneSteps.length > 0) {
         blockers.push({ code: "claimed_tasks", message: `${notDoneSteps.length} tasks not yet complete` });
@@ -4868,7 +5156,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     // Determine final status
     const failedSteps = graph.steps.filter((s) => s.status === "failed");
     const allSucceededOrSkipped = graph.steps.every(
-      (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "canceled"
+      (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "superseded" || s.status === "canceled"
     );
     let finalStatus: OrchestratorRunStatus;
     if (allSucceededOrSkipped) {
@@ -4893,12 +5181,86 @@ Check all worker statuses and continue managing the mission from here. Read work
     // End coordinator
     endCoordinatorAgentV2(runId);
 
+    const buildRecoveryHandoffPayload = () => {
+      const doneSteps = graph.steps
+        .filter((step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded" || step.status === "canceled")
+        .map((step) => ({
+          stepId: step.id,
+          stepKey: step.stepKey,
+          title: step.title,
+          status: step.status,
+          laneId: step.laneId
+        }));
+      const remainingSteps = graph.steps
+        .filter((step) => step.status !== "succeeded" && step.status !== "skipped" && step.status !== "superseded" && step.status !== "canceled")
+        .map((step) => ({
+          stepId: step.id,
+          stepKey: step.stepKey,
+          title: step.title,
+          status: step.status,
+          laneId: step.laneId
+        }));
+      const laneMap = graph.steps.reduce<Record<string, string[]>>((acc, step) => {
+        const laneKey = step.laneId ?? "unassigned";
+        const list = acc[laneKey] ?? [];
+        list.push(step.stepKey);
+        acc[laneKey] = list;
+        return acc;
+      }, {});
+      const validations = graph.runtimeEvents
+        ?.filter((event) => event.eventType === "validation_report")
+        .slice(-25)
+        .map((event) => ({
+          stepId: event.stepId,
+          attemptId: event.attemptId,
+          verdict: isRecord(event.payload) && typeof event.payload.verdict === "string" ? event.payload.verdict : "unknown",
+          summary: isRecord(event.payload) && typeof event.payload.summary === "string" ? event.payload.summary : null,
+          occurredAt: event.occurredAt
+        })) ?? [];
+      return {
+        schema: "ade.recoveryHandoff.v1",
+        runId,
+        missionId,
+        finalStatus,
+        generatedAt: ts,
+        doneSteps,
+        remainingSteps,
+        laneMap,
+        completedValidations: validations
+      };
+    };
+
+    const persistRecoveryHandoff = (handoffType: "partial_completion_handoff" | "recovery_handoff") => {
+      const payload = buildRecoveryHandoffPayload();
+      try {
+        orchestratorService.createHandoff({
+          missionId,
+          runId,
+          handoffType,
+          producer: "coordinator",
+          payload
+        });
+      } catch (error) {
+        logger.debug("ai_orchestrator.recovery_handoff_persist_failed", {
+          runId,
+          missionId,
+          handoffType,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return payload;
+    };
+
     // Transition mission status
     if (finalStatus === "succeeded") {
       transitionMissionStatus(missionId, "completed");
     } else if (finalStatus === "succeeded_with_risk") {
-      transitionMissionStatus(missionId, "completed", { outcomeSummary: `Completed with ${failedSteps.length} failed step(s)` });
+      const payload = persistRecoveryHandoff("partial_completion_handoff");
+      transitionMissionStatus(missionId, "partially_completed", {
+        outcomeSummary: `Done ${payload.doneSteps.length}, remaining ${payload.remainingSteps.length}.`
+      });
     } else {
+      persistRecoveryHandoff("recovery_handoff");
       transitionMissionStatus(missionId, "failed");
     }
 
@@ -5375,7 +5737,8 @@ Check all worker statuses and continue managing the mission from here. Read work
           })
         : aiIntegrationService ?? undefined;
 
-      const teamRuntimeCfg = resolveMissionTeamRuntime(args.missionId);
+      const teamRuntimeCfgRaw = resolveMissionTeamRuntime(args.missionId);
+      const teamRuntimeCfg = teamRuntimeCfgRaw ? normalizeTeamRuntimeConfig(args.missionId, teamRuntimeCfgRaw) : null;
       const planning = await planMissionOnce({
         missionId: args.missionId,
         title: mission.title,
@@ -6508,6 +6871,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     value === "in_progress" ||
     value === "intervention_required" ||
     value === "completed" ||
+    value === "partially_completed" ||
     value === "failed" ||
     value === "canceled";
 
@@ -6518,10 +6882,15 @@ Check all worker statuses and continue managing the mission from here. Read work
     );
     const hasFailures = graph.steps.some((step) => step.status === "failed" || step.status === "blocked");
 
-    if (runStatus === "succeeded" || runStatus === "succeeded_with_risk") {
-      return missionStatus === "completed"
+    if (runStatus === "succeeded") {
+      return missionStatus === "completed" || missionStatus === "partially_completed"
         ? { ok: true, reason: "terminal_success" }
-        : { ok: false, reason: `Run is ${runStatus}; mission status must be completed.` };
+        : { ok: false, reason: `Run is succeeded; mission status must be completed or partially_completed.` };
+    }
+    if (runStatus === "succeeded_with_risk") {
+      return missionStatus === "partially_completed" || missionStatus === "completed"
+        ? { ok: true, reason: "terminal_success_with_risk" }
+        : { ok: false, reason: "Run is succeeded_with_risk; mission status must be partially_completed." };
     }
     if (runStatus === "failed") {
       return missionStatus === "failed" || missionStatus === "intervention_required"
@@ -6539,10 +6908,12 @@ Check all worker statuses and continue managing the mission from here. Read work
         : { ok: false, reason: "Run is paused; mission status must be intervention_required." };
     }
 
-    if (missionStatus === "completed") {
+    if (missionStatus === "completed" || missionStatus === "partially_completed") {
       return allTerminal && !hasFailures
         ? { ok: true, reason: "all_steps_terminal_success" }
-        : { ok: false, reason: "Mission cannot be completed while run is still active or contains failures." };
+        : missionStatus === "partially_completed" && allTerminal
+          ? { ok: true, reason: "all_steps_terminal_partial" }
+          : { ok: false, reason: "Mission cannot be completed while run is still active or contains failures." };
     }
     if (missionStatus === "failed") {
       return allTerminal && hasFailures
@@ -8839,8 +9210,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     );
 
     // ── Start Coordinator Agent + Team Runtime ──
-    const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
-    const teamRuntimeConfig = resolveMissionTeamRuntime(missionId) ?? policy.teamRuntime ?? null;
+      const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
+      const teamRuntimeConfigRaw = resolveMissionTeamRuntime(missionId) ?? policy.teamRuntime ?? null;
+      const teamRuntimeConfig = teamRuntimeConfigRaw ? normalizeTeamRuntimeConfig(missionId, teamRuntimeConfigRaw) : null;
 
     if (teamRuntimeConfig?.enabled) {
       // Full team runtime: coordinator + teammates
@@ -13541,7 +13913,7 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
 
       // ────────────────────────────────────────────────────────────────────
       // COORDINATOR RECOVERY: If coordinator existed but died, attempt to
-      // restart it before falling through to legacy handlers.
+      // restart it. We do NOT fall back to deterministic decision handlers.
       // ────────────────────────────────────────────────────────────────────
       if (coordAgent && !coordAgent.isAlive) {
         const recovered = attemptCoordinatorRecovery(runId);
@@ -13558,97 +13930,46 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
           }
           return; // Recovered coordinator handles it
         }
-        // Recovery failed — fall through to legacy handlers as last resort
       }
 
       // ────────────────────────────────────────────────────────────────────
-      // LEGACY FALLBACK: No coordinator agent — use deterministic handlers.
-      // This path only runs for old-style runs or when coordinator recovery fails.
+      // STRICT AUTONOMY: If no live coordinator is available, pause and
+      // escalate. We do not execute legacy deterministic strategy logic.
       // ────────────────────────────────────────────────────────────────────
-
-      if (isStepCompletionEvent && event.stepId) {
-        void handleStepCompletionTransition({
-          runId,
-          stepId: event.stepId
-        }).catch((error) => {
+      if (!coordAgent || !coordAgent.isAlive) {
+        if (event.reason !== "completed" && event.reason !== "run_failed") {
           const missionId = getMissionIdForRun(runId);
           if (missionId) {
             pauseRunWithIntervention({
               runId,
               missionId,
-              stepId: event.stepId,
+              stepId: event.stepId ?? null,
               source: "transition_decision",
-              reasonCode: "ai_transition_handler_failed",
-              title: "AI transition handler failed",
-              body: `Transition handler crashed while processing step completion: ${error instanceof Error ? error.message : String(error)}`,
-              requestedAction: "Inspect the transition handler failure and resume when ready."
+              reasonCode: coordAgent ? "coordinator_recovery_failed" : "coordinator_unavailable",
+              title: coordAgent ? "Coordinator recovery failed" : "Coordinator unavailable",
+              body: coordAgent
+                ? "Coordinator agent terminated and could not be recovered. Mission paused to prevent non-autonomous fallback logic."
+                : "Coordinator agent is not available for this run. Mission paused to prevent non-autonomous fallback logic.",
+              requestedAction: "Resume after coordinator runtime is healthy, or restart the mission run.",
+              metadata: {
+                runtimeEventType: event.type,
+                runtimeEventReason: event.reason,
+                attemptId: event.attemptId ?? null
+              }
             });
           }
-          logger.debug("ai_orchestrator.transition_handler_failed", {
-            runId,
-            stepId: event.stepId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-      }
-      // Quality gate evaluation for completed attempts (legacy only)
-      if (event.reason === "attempt_completed" && event.stepId) {
-        void evaluateQualityGateForStep(runId, event.stepId).catch((error) => {
-          logger.debug("ai_orchestrator.quality_gate_event_handler_failed", {
-            runId,
-            stepId: event.stepId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-      }
-      // Smart recovery diagnosis for failed attempts (legacy only)
-      if (event.type === "orchestrator-attempt-updated" && event.reason === "completed" && event.attemptId && event.stepId) {
-        void applyAiRetryDecisionForFailedAttempt({
+        }
+        logger.warn("ai_orchestrator.coordinator_unavailable", {
           runId,
-          stepId: event.stepId,
-          attemptId: event.attemptId
-        }).catch((error) => {
-          logger.debug("ai_orchestrator.retry_decision_event_failed", {
-            runId,
-            stepId: event.stepId,
-            attemptId: event.attemptId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-        void handleFailedAttemptRecovery({
-          runId,
-          stepId: event.stepId,
-          attemptId: event.attemptId
-        }).catch((error) => {
-          logger.debug("ai_orchestrator.recovery_diagnosis_event_failed", {
-            runId,
-            stepId: event.stepId,
-            attemptId: event.attemptId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-      }
-      // Event-driven coordinator trigger (legacy only)
-      if (event.reason === "step_blocked" || event.reason === "blocked") {
-        triggerCoordinatorEvaluation(event.runId, `step_blocked:${event.stepId ?? "unknown"}`);
-      }
-      if (event.reason === "session_ended" || event.reason === "worker_session_ended") {
-        triggerCoordinatorEvaluation(event.runId, `worker_session_ended:${event.attemptId ?? "unknown"}`);
-      }
-
-      const missionId = getMissionIdForRun(runId);
-      if (!missionId) return;
-
-      void replayQueuedWorkerMessages({
-        reason: `runtime_event:${event.reason}`,
-        missionId
-      }).catch((error) => {
-        logger.debug("ai_orchestrator.worker_delivery_runtime_event_replay_failed", {
-          runId: event.runId,
+          eventType: event.type,
           reason: event.reason,
-          error: error instanceof Error ? error.message : String(error)
+          recovered: false
         });
-      });
+        return;
+      }
+
+      // Unreachable guard: all non-coordinator-owned paths return above.
+      return;
     },
 
     onSessionRuntimeSignal,

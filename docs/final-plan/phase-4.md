@@ -6,6 +6,7 @@ Goal: Add the CTO agent as a persistent project-aware assistant. Absorb Night Sh
 
 ### Reference docs
 
+- [features/CTO.md](../features/CTO.md) — CTO agent design, memory architecture, OpenClaw integration architecture
 - [features/MISSIONS.md](../features/MISSIONS.md) — mission launch flow, executor policy, autopilot mode
 - [features/AUTOMATIONS.md](../features/AUTOMATIONS.md) — automation rules, trigger-action engine (Night Shift absorbed here)
 - [features/ONBOARDING_AND_SETTINGS.md](../features/ONBOARDING_AND_SETTINGS.md) — AI usage dashboard and budget controls
@@ -466,7 +467,60 @@ ADE agents (mission workers and the CTO agent) can consume external MCP servers,
 - **Lifecycle management**: ADE manages the lifecycle of external MCP server connections — starting them on demand, health-checking, reconnecting on failure, and shutting down when no agents need them.
 - **Security**: External MCP tools are subject to the same guardrail enforcement as built-in tools. Budget enforcement applies to external tool invocations that incur costs.
 
-#### W6: Validation & Testing
+#### W6: OpenClaw Bridge (External Agent Gateway Integration)
+
+Connect ADE's CTO agent to OpenClaw (or similar external agent gateways), enabling bidirectional communication between the user's personal agent network and ADE's tech-focused CTO.
+
+- **Conceptual model**:
+  - OpenClaw is the user's personal life gateway — multiple agents (virtual self, CFO, marketing lead, etc.) handling different domains via messaging platforms.
+  - ADE CTO is the entire tech department — one persistent agent with deep project knowledge.
+  - The bridge makes CTO accessible as a specialist within the user's OpenClaw agent network.
+
+- **Bridge service** (`openclawBridgeService.ts` in `src/main/services/`):
+  - **HTTP server** (port 3742, configurable): Receives inbound requests from OpenClaw hooks and skills. Acknowledges immediately, forwards to CTO via IPC, returns response.
+  - **WebSocket operator client**: Connects to OpenClaw's Gateway (`ws://127.0.0.1:18789`) as an `operator` role client for bidirectional, low-latency communication.
+  - Handles OpenClaw's device pairing protocol: challenge-nonce handshake, `connect` request with auth token, `deviceToken` persistence for reconnection.
+  - Subscribes to `agent` and `chat` events for real-time message routing.
+
+- **Inbound flow (OpenClaw → CTO)**:
+  1. OpenClaw agent calls `sessions_send` targeting a `hook:ade-cto` session key.
+  2. Gateway hook triggers `message:received`, POSTs to ADE bridge HTTP endpoint.
+  3. Bridge forwards to CTO via IPC, CTO processes with full memory + MCP tools.
+  4. Bridge POSTs reply back via OpenClaw's `POST /hooks/agent` endpoint.
+
+- **Outbound flow (CTO → OpenClaw)**:
+  1. CTO (or orchestrator) wants to proactively message an OpenClaw agent.
+  2. Bridge calls `sessions_send` over the WebSocket operator connection.
+  3. Target OpenClaw agent receives the message; replies stream back as `agent` events.
+
+- **OpenClaw-side configuration** (documented for users, not implemented by ADE):
+  - `~/.openclaw/openclaw.json`: Enable `agentToAgent`, configure hooks token and `allowRequestSessionKey`.
+  - `~/.openclaw/workspace/skills/ade-cto/SKILL.md`: Custom skill teaching OpenClaw agents how to invoke CTO.
+
+- **Fallback: skill-only bridge** (no WebSocket):
+  - Simpler one-directional integration where OpenClaw agents use `exec` + `curl` to hit ADE's HTTP endpoint.
+  - Suitable for initial setup; the full bidirectional bridge is recommended for production.
+
+- **IPC channels**:
+  - `openclaw:message-received` — inbound message from OpenClaw to CTO.
+  - `cto:forward-to-openclaw` — outbound message from CTO to an OpenClaw agent.
+  - `openclaw:connection-status` — bridge connection state for UI indicator.
+
+- **Configuration** (in `.ade/local.yaml`, gitignored — contains secrets):
+  ```yaml
+  openclaw:
+    enabled: false
+    gatewayUrl: ws://127.0.0.1:18789
+    gatewayToken: ${OPENCLAW_GATEWAY_TOKEN}
+    bridgePort: 3742
+    hooksToken: <shared-secret>
+    deviceToken: <persisted-after-first-handshake>
+  ```
+
+- **Dependency**: W1 (CTO Agent) must be functional — the bridge routes to CTO.
+- **Scope boundary**: ADE implements the bridge service and HTTP/WS endpoints. OpenClaw-side configuration (hooks, skills, agent setup) is user-managed and documented in `docs/features/CTO.md`.
+
+#### W7: Validation & Testing
 
 Comprehensive test coverage for all Phase 4 workstreams.
 
@@ -506,6 +560,13 @@ Comprehensive test coverage for all Phase 4 workstreams.
   - Permission enforcement on external tools.
   - Configuration parsing (.ade/local.yaml, stdio and SSE transport support).
 
+- **OpenClaw bridge tests** (W6):
+  - HTTP endpoint: inbound message acceptance, async CTO forwarding, response delivery.
+  - WebSocket operator: handshake (challenge-nonce, connect, hello-ok), reconnection with persisted deviceToken.
+  - Outbound: `sessions_send` over WebSocket delivers to OpenClaw and receives reply events.
+  - Configuration: `.ade/local.yaml` openclaw section parsing, enabled/disabled toggle, secret isolation.
+  - Error handling: OpenClaw gateway unavailable (graceful degradation), CTO unavailable (queued retry), malformed inbound requests (reject with error).
+
 ### Phase 4 / Phase 5.5 Bridge Notes
 
 Phase 4 does not introduce compute backend selection (VPS/Daytona/E2B) — that remains Phase 5.5 scope. Mission workers run locally in Phase 4. When Phase 5.5 ships, remote compute backends become available for mission phases, and the CTO agent can leverage remote environments for exploration and testing.
@@ -528,6 +589,8 @@ Phase 4 does not introduce compute backend selection (VPS/Daytona/E2B) — that 
 - Learning pack entries are visible and editable in Settings; export/import to CLAUDE.md format is supported.
 - ADE agents (mission workers and CTO) can consume external MCP servers for extended capabilities.
 - External MCP tools are subject to the same guardrail enforcement as built-in tools.
+- OpenClaw bridge service provides bidirectional communication between ADE CTO and OpenClaw agents via HTTP + WebSocket.
+- OpenClaw-side configuration (hooks, skills, agent setup) is documented in `docs/features/CTO.md` for user self-service.
 
 ### What Was Removed from the Original Phase 4
 

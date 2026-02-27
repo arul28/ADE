@@ -163,7 +163,9 @@ Simple AI tasks (generate a narrative, draft a PR description) still execute in 
 - **Failure handling**: Failed steps need retry logic, intervention routing, or graceful degradation.
 - **Conflict prevention**: Agents working in parallel must not create merge conflicts.
 
-The AI Orchestrator is a Claude session using **in-process Vercel AI SDK coordinator tools** (13 tools defined in `coordinatorTools.ts`) that handles this coordination. It receives a mission prompt, plans the execution strategy, spawns agents for each step, monitors progress through gate reports and claim heartbeats, and routes interventions to the user when human input is required. The orchestrator does **not** use the MCP server — its tools are registered directly with the Vercel AI SDK `streamText()` call. The MCP server (`apps/mcp-server`) serves a different role: it is the **external tool interface** for spawned worker agents and external observers/evaluators.
+The AI Orchestrator is a Claude session using **in-process Vercel AI SDK coordinator tools** (defined in `coordinatorTools.ts`) that handles this coordination. It receives a mission prompt, plans the execution strategy, spawns agents for each step, monitors progress through structured worker reports, and routes interventions to the user when human input is required. The orchestrator does **not** use the MCP server — its tools are registered directly with the Vercel AI SDK `streamText()` call. The MCP server (`apps/mcp-server`) serves a different role: it is the **external tool interface** for spawned worker agents and external observers/evaluators.
+
+Autonomy boundary: the coordinator owns strategic decisions (spawn, replan, validation routing, lane transfer, escalation). The deterministic runtime only enforces state integrity and policy constraints. For example, `revise_plan` requires explicit dependency patches from the coordinator; runtime validation does not auto-rewire dependencies. If the coordinator is unavailable, runs pause/escalate instead of falling back to deterministic strategy handlers.
 
 This is distinct from the orchestrator service (`orchestratorService.ts`), which is the deterministic state machine that tracks runs, steps, attempts, and claims. The AI Orchestrator is the intelligent layer on top that decides *what* to do next; the orchestrator service is the durable layer underneath that records *what happened*.
 
@@ -1858,7 +1860,7 @@ interface LearningEntry {
 
 The MCP server (`apps/mcp-server`) has been overhauled from a 16-tool agent interface into a full **headless orchestration API** with 35 tools. This enables external consumers -- Claude Code, CI/CD pipelines, evaluation harnesses, and custom scripts -- to create, drive, observe, and evaluate missions without the desktop UI.
 
-**Important architectural distinction**: The AI orchestrator does **not** use the MCP server. The orchestrator uses in-process Vercel AI SDK coordinator tools (13 tools in `coordinatorTools.ts`) registered directly with `streamText()`. The MCP server is the external-facing tool surface for:
+**Important architectural distinction**: The AI orchestrator does **not** use the MCP server. The orchestrator uses in-process Vercel AI SDK coordinator tools (in `coordinatorTools.ts`) registered directly with `streamText()`. The MCP server is the external-facing tool surface for:
 
 1. **Spawned worker agents** -- agents launched by the orchestrator that need to interact with ADE's lane, git, and context systems.
 2. **External observers** -- tools like Claude Code that want to monitor mission progress without participating.

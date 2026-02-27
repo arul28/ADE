@@ -42,7 +42,7 @@ function stepTypeToPhase(stepType: string, taskType?: string): ExecutionPhase {
   return "other";
 }
 
-const TERMINAL = new Set(["succeeded", "failed", "skipped", "canceled"]);
+const TERMINAL = new Set(["succeeded", "failed", "skipped", "superseded", "canceled"]);
 
 export function PhaseProgressBar({ steps, className }: PhaseProgressBarProps) {
   const phaseGroups = new Map<ExecutionPhase, { total: number; completed: number; failed: number }>();
@@ -53,7 +53,7 @@ export function PhaseProgressBar({ steps, className }: PhaseProgressBarProps) {
     const phase = stepTypeToPhase(stepType, taskType);
     const group = phaseGroups.get(phase) ?? { total: 0, completed: 0, failed: 0 };
     group.total += 1;
-    if (step.status === "succeeded" || step.status === "skipped") group.completed += 1;
+    if (step.status === "succeeded" || step.status === "skipped" || step.status === "superseded") group.completed += 1;
     if (step.status === "failed") group.failed += 1;
     phaseGroups.set(phase, group);
   }
@@ -67,7 +67,7 @@ export function PhaseProgressBar({ steps, className }: PhaseProgressBarProps) {
 
   if (phases.length === 0) return null;
 
-  const totalCompleted = steps.filter(s => s.status === "succeeded" || s.status === "skipped").length;
+  const totalCompleted = steps.filter(s => s.status === "succeeded" || s.status === "skipped" || s.status === "superseded").length;
   const totalSteps = steps.length;
   const overallPct = totalSteps > 0 ? Math.round((totalCompleted / totalSteps) * 100) : 0;
 

@@ -150,7 +150,7 @@ export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionP
 // Completion evaluator
 // ─────────────────────────────────────────────────────
 
-const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "canceled"]);
+const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "superseded", "canceled"]);
 
 export function evaluateRunCompletion(
   steps: OrchestratorStep[],
@@ -223,7 +223,7 @@ export function evaluateRunCompletion(
     const statuses = stepsInPhase.map((s) => s.status);
     const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
     const anyFailed = statuses.some((s) => s === "failed");
-    const allSucceededOrSkipped = statuses.every((s) => s === "succeeded" || s === "skipped");
+    const allSucceededOrSkipped = statuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
     const anyBlocked = statuses.some((s) => s === "blocked");
     const anyInProgress = statuses.some((s) => s === "running" || s === "ready" || s === "pending");
 
@@ -284,7 +284,7 @@ export function evaluateRunCompletion(
     status = "succeeded_with_risk";
     completionReady = true;
   } else if (allStepsTerminal && !hasBlockingDiagnostics) {
-    const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped");
+    const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
     status = allSucceeded ? "succeeded" : "failed";
     completionReady = true;
   } else if (hasBlockingDiagnostics && !policy.completion.allowCompletionWithRisk) {

@@ -38,7 +38,7 @@ import type { AdeDb } from "../state/kvDb";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import type { MissionPlanStepDraft } from "./missionPlanningService";
 
-const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
+const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "partially_completed", "failed", "canceled"]);
 
 const ACTIVE_MISSION_STATUSES = new Set<MissionStatus>(["in_progress", "planning", "plan_review", "intervention_required"]);
 
@@ -58,9 +58,10 @@ const MISSION_TRANSITIONS: Record<MissionStatus, Set<MissionStatus>> = {
   queued: new Set(["queued", "planning", "in_progress", "canceled"]),
   planning: new Set(["planning", "plan_review", "in_progress", "intervention_required", "failed", "canceled", "queued"]),
   plan_review: new Set(["plan_review", "in_progress", "queued", "failed", "canceled", "intervention_required"]),
-  in_progress: new Set(["in_progress", "intervention_required", "completed", "failed", "canceled", "plan_review"]),
+  in_progress: new Set(["in_progress", "intervention_required", "completed", "partially_completed", "failed", "canceled", "plan_review"]),
   intervention_required: new Set(["intervention_required", "in_progress", "failed", "canceled", "plan_review"]),
   completed: new Set(["completed", "queued"]),
+  partially_completed: new Set(["partially_completed", "queued"]),
   failed: new Set(["failed", "queued", "planning", "in_progress", "canceled"]),
   canceled: new Set(["canceled", "queued", "planning", "in_progress"])
 };
@@ -185,6 +186,7 @@ function normalizeMissionStatus(value: string): MissionStatus {
     value === "in_progress" ||
     value === "intervention_required" ||
     value === "completed" ||
+    value === "partially_completed" ||
     value === "failed" ||
     value === "canceled"
   ) {
@@ -848,7 +850,8 @@ export function createMissionService({
              when 'queued' then 4
              when 'failed' then 5
              when 'completed' then 6
-             else 7
+             when 'partially_completed' then 7
+             else 8
            end,
            m.updated_at desc,
            m.created_at desc

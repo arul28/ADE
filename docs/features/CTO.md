@@ -317,6 +317,129 @@ External agent reports back to user
 
 The CTO's persistent memory means routing improves over time. If a user consistently wants TypeScript refactoring routed to a specific agent identity or prefers a particular PR strategy, the CTO learns these patterns and applies them automatically.
 
+#### OpenClaw Integration Architecture
+
+OpenClaw (https://github.com/openclaw/openclaw) is a self-hosted personal AI assistant that runs as a local-first gateway daemon connecting to messaging platforms (WhatsApp, Telegram, Slack, Discord, iMessage, etc.). It supports multiple isolated agents, each with their own workspace, persona, and memory. The CTO agent is designed to integrate with OpenClaw as a specialized "tech department" — one of several agents in the user's personal agent network.
+
+**Conceptual relationship:**
+- OpenClaw = personal life gateway. Multiple agents handle different domains (virtual self, CFO, marketing lead, etc.).
+- ADE CTO = the entire tech department. One persistent agent with deep project knowledge, mission orchestration, and memory.
+- They are complementary, not competing. OpenClaw is the outer shell (your life); CTO is a specialized department within that shell.
+
+**How CTO appears in OpenClaw:**
+CTO is not a native OpenClaw agent (those run inside OpenClaw's own runtime). Instead, CTO is exposed to OpenClaw via a bridge — either as a custom skill, a webhook endpoint, or a Gateway WebSocket operator client. From the user's perspective, messaging "CTO" through OpenClaw feels native, but under the hood OpenClaw forwards to ADE.
+
+##### Bridge Architecture
+
+The bridge service runs inside ADE's Electron main process and provides bidirectional communication:
+
+```
+┌─────────────────────────────────────┐
+│         ADE Electron App            │
+│                                     │
+│  ┌──────────────┐  ┌─────────────┐  │
+│  │  CTO Agent   │  │  OpenClaw   │  │
+│  │  (Vercel AI) │◄─┤  Bridge     │  │
+│  └──────────────┘  │  Service    │  │
+│                    │             │  │
+│                    │ HTTP :3742  │  │
+│                    │ WS client   │  │
+│                    └──────┬──────┘  │
+└───────────────────────────┼─────────┘
+                            │
+                    localhost network
+                            │
+┌───────────────────────────┼─────────┐
+│     OpenClaw Gateway                │
+│   ws://127.0.0.1:18789              │
+│                           │         │
+│  ┌────────────────────────▼──────┐  │
+│  │  Gateway WS API (operator)   │  │
+│  │  + /hooks/agent endpoint     │  │
+│  └──────────────┬────────────────┘  │
+│                 │                   │
+│  ┌──────────────▼──────────────┐    │
+│  │  Multi-Agent Router         │    │
+│  │  ┌─────────┐ ┌───────────┐  │    │
+│  │  │  main   │ │ cfo, etc. │  │    │
+│  │  │  agent  │ │           │  │    │
+│  │  └────┬────┘ └───────────┘  │    │
+│  └───────┼──────────────────────┘   │
+│          │ sessions_send            │
+│          └──────────────────────    │
+└─────────────────────────────────────┘
+```
+
+##### OpenClaw → CTO Flow (Inbound)
+
+1. An OpenClaw agent (e.g., the user's "main" virtual self agent) calls `sessions_send` targeting a `hook:ade-cto` session key.
+2. OpenClaw's Gateway routes to that session and triggers a `message:received` hook.
+3. The hook handler POSTs the message to ADE's bridge HTTP server at `http://127.0.0.1:3742/cto`.
+4. ADE's bridge forwards via IPC to the CTO agent, which processes the request with full project memory and MCP tool access.
+5. The bridge POSTs the CTO's reply back via `POST http://127.0.0.1:18789/hooks/agent` with the appropriate `sessionKey`.
+6. OpenClaw delivers the reply back to the original session, and the `sessions_send` call resolves.
+
+##### CTO → OpenClaw Flow (Proactive Outbound)
+
+1. CTO (or the ADE mission orchestrator) wants to proactively message an OpenClaw agent (e.g., notify the user's virtual self about a completed mission).
+2. ADE's bridge service, connected as a WebSocket `operator` client to OpenClaw's Gateway, calls `sessions_send` directly over the WebSocket.
+3. The target OpenClaw agent receives the message in its active session.
+4. Any reply comes back as streamed `agent` events to ADE's WebSocket connection.
+
+##### OpenClaw Configuration
+
+The OpenClaw side requires:
+
+```json5
+// ~/.openclaw/openclaw.json
+{
+  agents: {
+    defaults: {
+      tools: {
+        agentToAgent: {
+          enabled: true,
+          allow: ["main", "cfo", "marketing"]
+        }
+      }
+    }
+  },
+  hooks: {
+    token: "<ade-bridge-secret>",
+    allowRequestSessionKey: true,
+    allowedAgentIds: ["main"]
+  }
+}
+```
+
+And a custom skill at `~/.openclaw/workspace/skills/ade-cto/SKILL.md` that teaches OpenClaw agents when and how to invoke CTO (either via the bridge HTTP endpoint or via `sessions_send` to the hook session).
+
+##### Alternative: Simpler Skill-Only Bridge
+
+For a minimal integration without the full WebSocket bridge, a custom OpenClaw skill can use the `exec` tool to `curl` ADE's HTTP endpoint directly:
+
+```markdown
+---
+name: ade-cto
+description: Consult the ADE CTO agent for technical decisions and code questions
+---
+# ADE CTO Agent
+Use the exec tool to consult the ADE CTO:
+curl -s -X POST "http://127.0.0.1:3742/cto" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "<question>", "context": "<context>"}'
+```
+
+This approach is one-directional (OpenClaw → CTO only) but requires no WebSocket integration. The full bidirectional bridge is recommended for production use.
+
+##### Key Technical Constraints
+
+- OpenClaw's `sessions_send` is blocked via the HTTP `/tools/invoke` endpoint (hardcoded deny list). Must use the WebSocket API or gateway hooks instead.
+- OpenClaw has no native MCP client — it cannot connect to ADE's MCP server directly. The bridge must translate between OpenClaw's protocol and ADE's MCP/IPC surface.
+- OpenClaw's `agentToAgent` tool is disabled by default and must be explicitly enabled with an allow-list.
+- Sub-agents spawned via `sessions_spawn` do not get session tools — only depth-1 orchestrators can use `sessions_send`.
+- The ADE bridge must handle OpenClaw's device pairing protocol (challenge-nonce, `connect` handshake, `deviceToken` persistence) for WebSocket operator connections.
+- OpenClaw webhook handlers must be non-blocking (fire-and-forget). The bridge HTTP server should acknowledge immediately and process asynchronously.
+
 ---
 
 ## Relationship to Missions

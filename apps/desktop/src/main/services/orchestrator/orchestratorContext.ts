@@ -944,6 +944,7 @@ export function mapOrchestratorStepStatus(status: OrchestratorStepStatus): Missi
     case "succeeded": return "succeeded";
     case "failed": return "failed";
     case "skipped": return "skipped";
+    case "superseded": return "skipped";
     case "blocked": return "blocked";
     case "canceled": return "canceled";
     default: return "pending";
@@ -954,8 +955,11 @@ export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission:
   if (graph.run.status === "active" || graph.run.status === "bootstrapping" || graph.run.status === "queued" || graph.run.status === "completing") return "in_progress";
   if (graph.run.status === "paused") return "intervention_required";
   const hasFailedSteps = graph.steps.some((step) => step.status === "failed");
-  if (graph.run.status === "succeeded" || graph.run.status === "succeeded_with_risk") {
-    return hasFailedSteps ? "failed" : "completed";
+  if (graph.run.status === "succeeded_with_risk") {
+    return "partially_completed";
+  }
+  if (graph.run.status === "succeeded") {
+    return hasFailedSteps ? "partially_completed" : "completed";
   }
   if (graph.run.status === "failed") return "failed";
   return mission.status;
@@ -964,11 +968,16 @@ export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission:
 export function buildOutcomeSummary(graph: OrchestratorRunGraph): string {
   const total = graph.steps.length;
   const succeeded = graph.steps.filter((step) => step.status === "succeeded").length;
+  const superseded = graph.steps.filter((step) => step.status === "superseded").length;
   const failed = graph.steps.filter((step) => step.status === "failed").length;
   const blocked = graph.steps.filter((step) => step.status === "blocked").length;
+  const done = succeeded + superseded;
+  const remaining = total - done;
   const attempts = graph.attempts.length;
   const parts = [
-    `${succeeded}/${total} steps succeeded`,
+    `${done}/${total} done`,
+    remaining > 0 ? `${remaining} remaining` : null,
+    superseded > 0 ? `${superseded} superseded` : null,
     failed > 0 ? `${failed} failed` : null,
     blocked > 0 ? `${blocked} blocked` : null,
     `${attempts} total attempts`

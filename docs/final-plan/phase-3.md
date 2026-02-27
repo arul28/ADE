@@ -26,7 +26,7 @@ Phase 3 delivers two things: (1) autonomous orchestration foundations that make 
 
 ## What's Shipped
 
-Phase 3 has already delivered 20 workstreams across two waves. The orchestrator is operational — it plans, spawns workers, executes multi-lane missions, recovers from failures, and provides real-time observability. What's missing is the autonomy to make strategic decisions (re-plan, validate, manage budget) and the user-facing missions overhaul (configurable phases, pre-flight, tiered validation).
+Phase 3 has already delivered 20 workstreams across two waves. The orchestrator is operational — it plans, spawns workers, executes multi-lane missions, recovers from failures, and provides real-time observability. Task 1/2 autonomy primitives are now in baseline; remaining work is focused on phase profiles/UX, budget-pressure behavior, and end-to-end coverage.
 
 ### Wave 1: Core Orchestrator (W1-W12)
 
@@ -38,8 +38,8 @@ Evolved the orchestrator into an intelligent multi-agent system. Slack-like miss
 
 ### What's Still Missing
 
-1. **Strategic autonomy**: Workers can't report status structurally; coordinator can't revise plans; no validation contracts or validator loop.
-2. **Team model**: No role definitions, no policy flags, no structured escalation chain.
+1. **Strategic autonomy hardening**: Task 1/2 primitives are implemented, but remaining work includes deeper budget-aware strategy shifts and broader soak-test coverage.
+2. **Mission phases/UX layer**: Configurable phase profiles and mission surfaces still need full rollout.
 3. **Budget awareness**: Budget pressure doesn't influence orchestration decisions.
 4. **Configurable phases**: Missions use a fixed internal pipeline — users can't customize the workflow.
 5. **Mission UI**: No Plan tab (hierarchical task list), no Work tab (follow worker output), no home dashboard.
@@ -72,6 +72,44 @@ These principles govern all remaining Phase 3 work.
 8. **One orchestrator, no sub-orchestrators.** Workers can spawn sub-workers internally if needed, but there's only one coordinator. Workers that need specialization use `request_specialist` and let the coordinator decide.
 
 9. **Per-phase model selection applies to workers only.** The orchestrator stays on one pre-selected model for the entire mission. Each phase card specifies which model its workers use.
+
+---
+
+## Task 1-2 Implementation Snapshot (2026-02-27)
+
+Task 1 and Task 2 are implemented in the runtime baseline. This section records the contract so later phases do not regress autonomy.
+
+### Delivered in Task 1 (Orchestrator Autonomy Core)
+
+- **Team runtime foundations**:
+  - Team template and role definition schema is live in shared types/runtime config.
+  - Required role-capability enforcement is active at run boot (coordinator/planner/validator capabilities must exist).
+  - Role-aware specialist spawning is available through `request_specialist`.
+- **Structured worker reporting**:
+  - `report_status`, `report_result`, `report_validation`, `read_mission_status`, and `message_worker` are live coordinator tools.
+  - Mission status reads include active/completed steps, per-worker report snapshots, staleness signals, and open validation obligations.
+- **Autonomous replanning**:
+  - `revise_plan` supports partial/full replans with supersede semantics (`superseded`, not delete).
+  - Replan changes are emitted to timeline/runtime events for DAG + audit visibility.
+  - **Important autonomy boundary**: runtime does not auto-infer dependency rewires; coordinator must provide explicit `dependencyPatches`.
+- **Tool profile runtime**:
+  - Role-scoped tool profiles are mutable mid-run via `update_tool_profiles`.
+- **Partial completion and recovery**:
+  - Mission status `partially_completed` is live.
+  - Recovery/partial-completion handoff artifacts are persisted for restart or follow-on missions.
+
+### Delivered in Task 2 (Validation & Lane Continuity)
+
+- **Validation contracts**:
+  - `ValidationContract` is represented at step metadata level and surfaced via mission status reads.
+  - Validation outcomes are persisted through `report_validation`.
+- **Validator loop primitives**:
+  - Validators publish structured pass/fail findings and remediation through runtime tools.
+  - Runtime tracks open obligations; coordinator owns routing/retry/escalation decisions.
+- **Lane continuity**:
+  - Replacement workers can inherit lane ownership plus structured handoff package.
+  - Explicit lane transfer is available only through coordinator `transfer_lane`, with timeline + handoff audit trail.
+  - Supersede/rework flows preserve step history rather than mutating history in place.
 
 ---
 
@@ -459,6 +497,17 @@ The rework cycle when validation fails:
 
 **Why this is one task**: The data model, execution engine, and profile system are one feature. They share types, storage, and UI components.
 
+**Readiness (2026-02-27): Ready for development**
+
+- Upstream prerequisites are in place from Task 1/2:
+  - Coordinator-owned runtime contracts and structured reporting events are live.
+  - Validation contracts exist and can be consumed by phase gates.
+  - Lane continuity and partial completion semantics are available for phase-loop recovery.
+- Development guardrails for Task 3:
+  - Keep orchestration strategy AI-owned; phase engine should provide context/gates, not hard-coded strategy.
+  - Treat phase cards as declarative constraints/config, not imperative workflow code.
+  - Maintain compatibility with existing mission metadata (migration-safe schema evolution).
+
 #### 3A: Phase Engine Data Model & Storage
 
 - Implement `PhaseCard` and `PhaseProfile` TypeScript interfaces (defined above in Core Concepts).
@@ -565,6 +614,17 @@ In Settings → Missions → Phase Profiles:
 **Combines**: Plan tab, Work tab, DAG tab updates, Activity/Details tab fixes, Home Dashboard.
 
 **Why this is one task**: These are all renderer components within the mission detail view. They share the same IPC event stream and mission state model.
+
+**Readiness (2026-02-27): Ready for development**
+
+- Data signals required by Task 4 are available:
+  - Structured worker reports (`report_status`, `report_result`, `report_validation`) are persisted.
+  - Replan/supersede/lane-transfer timeline events are emitted and queryable.
+  - `read_mission_status` exposes active/completed work, staleness, and open obligations.
+- Development guardrails for Task 4:
+  - Render runtime truth directly; do not infer hidden deterministic state in the UI.
+  - Preserve auditability (superseded edges/nodes and validation outcomes must remain visible).
+  - Keep tabs resilient to long-running missions and high event volume.
 
 #### 4A: Plan Tab (NEW)
 

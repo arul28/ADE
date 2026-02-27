@@ -94,6 +94,7 @@ const STATUS_BADGE_STYLES: Record<MissionStatus, { background: string; color: st
   in_progress: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
   intervention_required: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
   completed: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
+  partially_completed: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
   failed: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" },
   canceled: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
 };
@@ -105,6 +106,7 @@ const STATUS_DOT_HEX: Record<MissionStatus, string> = {
   in_progress: "#22C55E",
   intervention_required: "#F59E0B",
   completed: "#22C55E",
+  partially_completed: "#F59E0B",
   failed: "#EF4444",
   canceled: "#71717A",
 };
@@ -116,6 +118,7 @@ const STATUS_LABELS: Record<MissionStatus, string> = {
   in_progress: "Running",
   intervention_required: "Action",
   completed: "Done",
+  partially_completed: "Partial",
   failed: "Failed",
   canceled: "Canceled"
 };
@@ -141,6 +144,7 @@ const STEP_STATUS_HEX: Record<string, string> = {
   succeeded: "#22C55E",
   failed: "#EF4444",
   skipped: "#71717A",
+  superseded: "#F59E0B",
   blocked: "#F59E0B",
   canceled: "#71717A",
 };
@@ -162,6 +166,7 @@ const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: str
   { key: "plan_review", label: "REVIEW", hex: "#06B6D4" },
   { key: "in_progress", label: "RUNNING", hex: "#22C55E" },
   { key: "completed", label: "DONE", hex: "#22C55E" },
+  { key: "partially_completed", label: "PARTIAL", hex: "#F59E0B" },
   { key: "failed", label: "FAILED", hex: "#EF4444" },
 ];
 type PlannerProvider = "auto" | (string & {});

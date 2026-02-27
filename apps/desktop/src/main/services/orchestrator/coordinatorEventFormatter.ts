@@ -37,6 +37,7 @@ const TERMINAL_STATUSES = new Set<string>([
   "succeeded",
   "failed",
   "skipped",
+  "superseded",
   "canceled",
 ]);
 
@@ -75,6 +76,8 @@ function stepStatusIcon(status: OrchestratorStepStatus): string {
       return "\u26A0";
     case "skipped":
       return "\u2192";
+    case "superseded":
+      return "\u2248";
     case "canceled":
       return "\u2205";
     default:

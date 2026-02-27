@@ -17,6 +17,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   failed: { icon: "\u2717", color: COLORS.danger },
   blocked: { icon: "\u23F8", color: COLORS.warning },
   skipped: { icon: "\u25CB", color: COLORS.textMuted },
+  superseded: { icon: "\u2248", color: COLORS.warning },
   canceled: { icon: "\u25CB", color: COLORS.textMuted },
   ready: { icon: "\u25CB", color: COLORS.info }
 };
@@ -51,7 +52,8 @@ export function AgentPresencePanel({
         succeeded: 4,
         failed: 5,
         skipped: 6,
-        canceled: 7
+        superseded: 7,
+        canceled: 8
       };
       return (order[a.status] ?? 9) - (order[b.status] ?? 9);
     });

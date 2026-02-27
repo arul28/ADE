@@ -362,7 +362,7 @@ const CONTEXT_PROFILES: Record<OrchestratorContextProfileId, OrchestratorContext
   }
 };
 
-const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "canceled"]);
+const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "superseded", "canceled"]);
 const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "succeeded_with_risk", "failed", "canceled"]);
 const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
   "transient",
@@ -505,6 +505,7 @@ function normalizeStepStatus(value: string): OrchestratorStepStatus {
     value === "failed" ||
     value === "blocked" ||
     value === "skipped" ||
+    value === "superseded" ||
     value === "canceled"
   ) {
     return value;
@@ -548,7 +549,7 @@ function normalizeErrorClass(value: string): OrchestratorErrorClass {
 }
 
 function normalizeJoinPolicy(value: string): OrchestratorJoinPolicy {
-  if (value === "all_success" || value === "any_success" || value === "quorum") return value;
+  if (value === "all_success" || value === "any_success" || value === "quorum" || value === "advisory") return value;
   return "all_success";
 }
 
@@ -574,7 +575,26 @@ function normalizeRuntimeEventType(value: string): OrchestratorRuntimeEventType 
     value === "claim_conflict" ||
     value === "session_ended" ||
     value === "intervention_opened" ||
-    value === "intervention_resolved"
+    value === "intervention_resolved" ||
+    value === "coordinator_steering" ||
+    value === "coordinator_broadcast" ||
+    value === "coordinator_skip" ||
+    value === "coordinator_add_step" ||
+    value === "coordinator_pause" ||
+    value === "coordinator_parallelize" ||
+    value === "coordinator_consolidate" ||
+    value === "coordinator_shutdown" ||
+    value === "step_dependencies_updated" ||
+    value === "step_metadata_updated" ||
+    value === "fan_out_dispatched" ||
+    value === "fan_out_complete" ||
+    value === "worker_status_report" ||
+    value === "worker_result_report" ||
+    value === "worker_message" ||
+    value === "plan_revised" ||
+    value === "lane_transfer" ||
+    value === "validation_report" ||
+    value === "tool_profiles_updated"
   ) {
     return value;
   }
@@ -1694,7 +1714,7 @@ export function createOrchestratorService({
     handoffType: string;
     producer: string;
     payload: Record<string, unknown>;
-  }) => {
+  }): MissionStepHandoff => {
     const id = randomUUID();
     const createdAt = nowIso();
     db.run(
@@ -1727,6 +1747,18 @@ export function createOrchestratorService({
         createdAt
       ]
     );
+    return {
+      id,
+      missionId: args.missionId,
+      missionStepId: args.missionStepId,
+      runId: args.runId,
+      stepId: args.stepId,
+      attemptId: args.attemptId,
+      handoffType: args.handoffType,
+      producer: args.producer,
+      payload: args.payload,
+      createdAt
+    };
   };
 
   const updateRunStatus = (runId: string, status: OrchestratorRunStatus, patch: Record<string, SqlValue> = {}) => {
@@ -2309,7 +2341,7 @@ export function createOrchestratorService({
     }
     const depSteps = step.dependencyStepIds.map((id) => stepsById.get(id) ?? null);
     const depStatuses = depSteps.map((dep) => dep?.status ?? "pending");
-    const successCount = depStatuses.filter((status) => status === "succeeded" || status === "skipped").length;
+    const successCount = depStatuses.filter((status) => status === "succeeded" || status === "skipped" || status === "superseded").length;
     const allTerminal = depSteps.every((dep) => isTerminalForDependencyGate(dep));
     if (step.joinPolicy === "any_success") {
       if (successCount >= 1) return { satisfied: true, permanentlyBlocked: false };
@@ -2321,7 +2353,7 @@ export function createOrchestratorService({
       return { satisfied: false, permanentlyBlocked: allTerminal };
     }
     // all_success
-    const allSucceeded = depStatuses.every((status) => status === "succeeded" || status === "skipped");
+    const allSucceeded = depStatuses.every((status) => status === "succeeded" || status === "skipped" || status === "superseded");
     if (allSucceeded) return { satisfied: true, permanentlyBlocked: false };
     return { satisfied: false, permanentlyBlocked: allTerminal };
   };
@@ -4144,6 +4176,34 @@ export function createOrchestratorService({
         [...params, limit]
       );
       return rows.map(toHandoff);
+    },
+
+    createHandoff(args: {
+      missionId: string;
+      missionStepId?: string | null;
+      runId?: string | null;
+      stepId?: string | null;
+      attemptId?: string | null;
+      handoffType: string;
+      producer: string;
+      payload: Record<string, unknown>;
+    }): MissionStepHandoff {
+      const missionId = String(args.missionId ?? "").trim();
+      if (!missionId) throw new Error("missionId is required.");
+      const handoffType = String(args.handoffType ?? "").trim();
+      if (!handoffType) throw new Error("handoffType is required.");
+      const producer = String(args.producer ?? "").trim();
+      if (!producer) throw new Error("producer is required.");
+      return insertHandoff({
+        missionId,
+        missionStepId: args.missionStepId ?? null,
+        runId: args.runId ?? null,
+        stepId: args.stepId ?? null,
+        attemptId: args.attemptId ?? null,
+        handoffType,
+        producer,
+        payload: args.payload ?? {}
+      });
     },
 
     listTimeline(args: { runId: string; limit?: number }): OrchestratorTimelineEvent[] {
@@ -7447,7 +7507,7 @@ export function createOrchestratorService({
       if (!Array.isArray(childKeys) || childKeys.length === 0) return false;
 
       // Check if all children are in a terminal state
-      const terminalStatuses = new Set<string>(["succeeded", "failed", "skipped", "canceled"]);
+      const terminalStatuses = new Set<string>(["succeeded", "failed", "skipped", "superseded", "canceled"]);
       const allDone = childKeys.every((key) => {
         const child = allSteps.find((s) => s.stepKey === key);
         return child && terminalStatuses.has(child.status);
@@ -7539,6 +7599,230 @@ export function createOrchestratorService({
 
       const updatedRow = getStepRow(stepId);
       if (!updatedRow) throw new Error(`Step not found after skip: ${stepId}`);
+      return toStep(updatedRow);
+    },
+
+    supersedeStep(args: {
+      runId: string;
+      stepId: string;
+      replacementStepId?: string | null;
+      replacementStepKey?: string | null;
+      reason?: string;
+    }): OrchestratorStep {
+      const runId = String(args.runId ?? "").trim();
+      const stepId = String(args.stepId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      if (!stepId) throw new Error("stepId is required.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Cannot supersede step in a terminal run (status: ${run.status}).`);
+      }
+
+      const stepRow = getStepRow(stepId);
+      if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
+      const step = toStep(stepRow);
+      if (step.status === "superseded") return step;
+      if (TERMINAL_STEP_STATUSES.has(step.status)) {
+        throw new Error(`Step is already terminal (status: ${step.status}).`);
+      }
+
+      const runningAttempts = listAttemptRows(runId)
+        .filter((attempt) => attempt.step_id === stepId && attempt.status === "running")
+        .map(toAttempt);
+      for (const runningAttempt of runningAttempts) {
+        this.completeAttempt({
+          attemptId: runningAttempt.id,
+          status: "canceled",
+          errorClass: "canceled",
+          errorMessage: "Step superseded by plan revision."
+        });
+      }
+
+      const now = nowIso();
+      const reason = args.reason?.trim() || "Superseded by revised plan.";
+      const replacementStepId = args.replacementStepId ? String(args.replacementStepId).trim() : null;
+      const replacementStepKey = args.replacementStepKey ? String(args.replacementStepKey).trim() : null;
+      const existingMeta =
+        step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
+          ? (step.metadata as Record<string, unknown>)
+          : {};
+      const metadata = {
+        ...existingMeta,
+        superseded: true,
+        supersededAt: now,
+        supersededReason: reason,
+        supersededByStepId: replacementStepId,
+        supersededByStepKey: replacementStepKey,
+        priorStatus: step.status
+      };
+
+      db.run(
+        `
+          update orchestrator_steps
+          set status = 'superseded',
+              metadata_json = ?,
+              updated_at = ?,
+              completed_at = ?
+          where id = ?
+            and run_id = ?
+            and project_id = ?
+        `,
+        [JSON.stringify(metadata), now, now, stepId, runId, projectId]
+      );
+
+      insertHandoff({
+        missionId: run.missionId,
+        missionStepId: step.missionStepId,
+        runId: run.id,
+        stepId: step.id,
+        attemptId: null,
+        handoffType: "step_superseded",
+        producer: "coordinator",
+        payload: {
+          reason,
+          replacementStepId,
+          replacementStepKey
+        }
+      });
+
+      appendTimelineEvent({
+        runId,
+        stepId,
+        eventType: "step_superseded",
+        reason: "supersede_step",
+        detail: {
+          reason,
+          replacementStepId,
+          replacementStepKey
+        }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId, reason: "superseded" });
+
+      refreshStepReadiness(runId);
+      const nextRunStatus = evaluateRunStatusWithPolicy(runId);
+      const currentRunStatus = normalizeRunStatus(runRow.status);
+      if (nextRunStatus !== currentRunStatus) {
+        updateRunStatus(runId, nextRunStatus);
+      }
+
+      const updatedRow = getStepRow(stepId);
+      if (!updatedRow) throw new Error(`Step not found after supersede: ${stepId}`);
+      return toStep(updatedRow);
+    },
+
+    transferStepLane(args: {
+      runId: string;
+      stepId: string;
+      laneId: string | null;
+      reason: string;
+      transferredBy?: string;
+      allowTerminal?: boolean;
+    }): OrchestratorStep {
+      const runId = String(args.runId ?? "").trim();
+      const stepId = String(args.stepId ?? "").trim();
+      const laneId = args.laneId == null ? null : String(args.laneId).trim();
+      const reason = String(args.reason ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      if (!stepId) throw new Error("stepId is required.");
+      if (!reason) throw new Error("reason is required.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Cannot transfer lane in a terminal run (status: ${run.status}).`);
+      }
+
+      const stepRow = getStepRow(stepId);
+      if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
+      const step = toStep(stepRow);
+      if (TERMINAL_STEP_STATUSES.has(step.status) && args.allowTerminal !== true) {
+        throw new Error(`Step is already terminal (status: ${step.status}).`);
+      }
+      if ((step.laneId ?? null) === laneId) {
+        return step;
+      }
+      if (laneId) {
+        const laneExists = db.get<{ id: string }>(
+          `select id from lanes where id = ? and project_id = ? limit 1`,
+          [laneId, projectId]
+        );
+        if (!laneExists?.id) {
+          throw new Error(`Lane not found: ${laneId}`);
+        }
+      }
+
+      const now = nowIso();
+      const actor = args.transferredBy?.trim() || "coordinator";
+      const existingMeta =
+        step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
+          ? (step.metadata as Record<string, unknown>)
+          : {};
+      const history = Array.isArray(existingMeta.laneTransferHistory)
+        ? [...existingMeta.laneTransferHistory]
+        : [];
+      history.push({
+        fromLaneId: step.laneId ?? null,
+        toLaneId: laneId,
+        reason,
+        transferredBy: actor,
+        at: now
+      });
+      const metadata = {
+        ...existingMeta,
+        laneTransferHistory: history.slice(-20),
+        laneTransferReason: reason,
+        lastTransferredBy: actor,
+        lastTransferredAt: now
+      };
+
+      db.run(
+        `
+          update orchestrator_steps
+          set lane_id = ?,
+              metadata_json = ?,
+              updated_at = ?
+          where id = ?
+            and run_id = ?
+            and project_id = ?
+        `,
+        [laneId, JSON.stringify(metadata), now, stepId, runId, projectId]
+      );
+
+      insertHandoff({
+        missionId: run.missionId,
+        missionStepId: step.missionStepId,
+        runId: run.id,
+        stepId: step.id,
+        attemptId: null,
+        handoffType: "lane_transfer",
+        producer: actor,
+        payload: {
+          fromLaneId: step.laneId ?? null,
+          toLaneId: laneId,
+          reason
+        }
+      });
+
+      appendTimelineEvent({
+        runId,
+        stepId,
+        eventType: "lane_transfer",
+        reason: "transfer_step_lane",
+        detail: {
+          fromLaneId: step.laneId ?? null,
+          toLaneId: laneId,
+          reason,
+          transferredBy: actor
+        }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId, reason: "lane_transferred" });
+
+      const updatedRow = getStepRow(stepId);
+      if (!updatedRow) throw new Error(`Step not found after lane transfer: ${stepId}`);
       return toStep(updatedRow);
     },
 
@@ -8671,7 +8955,7 @@ export function createOrchestratorService({
       let finalStatus: OrchestratorRunStatus;
       const allStepStatuses = steps.map((s) => s.status);
       const anyFailed = allStepStatuses.some((s) => s === "failed");
-      const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped");
+      const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
 
       if (anyFailed) {
         finalStatus = "failed";

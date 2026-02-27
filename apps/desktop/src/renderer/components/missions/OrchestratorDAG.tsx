@@ -20,6 +20,7 @@ const STATUS_COLORS: Record<string, string> = {
   failed: "#ef4444",
   blocked: "#f59e0b",
   skipped: "#9ca3af",
+  superseded: "#f59e0b",
   canceled: "#6b7280",
 };
 
@@ -520,6 +521,7 @@ export function OrchestratorDAG({ steps, attempts, claims, selectedStepId, onSte
             const isMergeNode = MERGE_NODE_KINDS.has(phaseKind);
             const isGateNode = phaseKind === "review" || phaseKind === "validation";
             const isSkipped = node.step.status === "skipped";
+            const isSuperseded = node.step.status === "superseded";
 
             const isFailed = node.step.status === "failed";
             const isSucceeded = node.step.status === "succeeded";
@@ -652,16 +654,16 @@ export function OrchestratorDAG({ steps, attempts, claims, selectedStepId, onSte
                   fill={statusColor}
                 />
 
-                {/* Title text -- strikethrough for skipped steps */}
+                {/* Title text -- strikethrough for skipped/superseded steps */}
                 <text
                   x={nodeW / 2}
                   y={26}
                   textAnchor="middle"
-                  fill={isSkipped ? "#71717A" : "#FAFAFA"}
+                  fill={isSkipped || isSuperseded ? "#71717A" : "#FAFAFA"}
                   fontSize={11}
                   fontWeight={500}
                   fontFamily="'Space Grotesk', sans-serif"
-                  textDecoration={isSkipped ? "line-through" : undefined}
+                  textDecoration={isSkipped || isSuperseded ? "line-through" : undefined}
                 >
                   {truncateTitle(node.step.title)}
                 </text>

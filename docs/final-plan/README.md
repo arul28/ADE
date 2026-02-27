@@ -101,7 +101,7 @@ Baseline derived from code in `apps/desktop`.
 
 Not implemented yet:
 
-- Phase 3 completion package for full autonomous orchestration (team runtime model, validator loop contracts, policy flags, structured worker reporting, lane-affinity rework continuity)
+- Remaining Phase 3 package after Task 1/2 (phase cards engine, missions UI overhaul, pre-flight, budget pressure orchestration, reflection protocol, full integration soak coverage)
 - Missions phases engine (configurable phase pipelines with drag-and-drop)
 - CTO agent (persistent project-aware assistant, replaces Concierge)
 - Night Shift mode in Automations (overnight execution with morning briefing)
@@ -119,18 +119,25 @@ Not implemented yet:
 - Subscription usage tracking via local CLI session data
 - Missions home dashboard (aggregate stats, mission history)
 
-### 2.5 Phase 3 Remaining Work (2026-02-27 update)
+### 2.5 Phase 3 Status Snapshot (2026-02-27 update)
 
-Phase 3 encompasses both orchestrator autonomy and the missions overhaul. The remaining work is organized into 8 self-contained tasks (see `phase-3.md` for full detail):
+Phase 3 encompasses both orchestrator autonomy and the missions overhaul.
 
-1. **Task 1: Orchestrator Autonomy Core** — team runtime, worker reporting, replanning, tool profiles, partial completion
-2. **Task 2: Validation & Lane Continuity** — validation contracts, validator loop, lane affinity, rework continuity
+Implemented in baseline:
+
+1. **Task 1: Orchestrator Autonomy Core** — team runtime schema/capability enforcement, structured reporting tools, autonomous `revise_plan` with supersede semantics, role tool profiles, `partially_completed` + recovery handoff
+2. **Task 2: Validation & Lane Continuity** — validation contract/reporting primitives, open-obligation surfacing, lane continuity for replacement/rework, explicit lane transfer audit trail
+
+Remaining execution tracks (see `phase-3.md` for full detail):
+
 3. **Task 3: Mission Phases Engine & Profiles** — phase cards, profiles, drag-and-drop, constraint engine
 4. **Task 4: Mission UI Overhaul** — Plan tab, Work tab, existing tab fixes, Home Dashboard
 5. **Task 5: Pre-Flight, Intervention & HITL** — pre-flight checklist, granular intervention, escalation chain
 6. **Task 6: Budget & Usage Tracking** — budget-aware orchestration, dual-mode budget, subscription usage
 7. **Task 7: Reflection Protocol** — reflection logs, retrospectives, improvement changelog
 8. **Task 8: Integration Testing** — orchestrator soak tests, missions overhaul tests
+
+Task 3 and Task 4 have explicit readiness notes in `phase-3.md` and can be started immediately against the current Task 1/2 runtime contract.
 
 ---
 
@@ -158,12 +165,12 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Hivemind shipped; Tasks 1-8 remaining) |
-| Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Planned (Task 1) |
-| Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Planned (Task 2) |
-| Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Planned (Task 1) |
-| Structured worker reporting + mission status read | Phase 3 | Phases 1 and 2 | Planned (Task 1) |
-| Lane-affinity rework continuity + partial completion | Phase 3 | Phases 1 and 2 | Planned (Task 2) |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Hivemind + Task 1/2 shipped; Tasks 3-8 remaining) |
+| Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
+| Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Implemented (Task 2 baseline, coordinator-driven loop) |
+| Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
+| Structured worker reporting + mission status read | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
+| Lane-affinity rework continuity + partial completion | Phase 3 | Phases 1 and 2 | Implemented (Task 1/2 baseline) |
 | Mission Phases Engine (configurable phase pipelines) | Phase 3 | Phase 3 | Planned |
 | Phase Profiles (settings-based mission templates) | Phase 3 | Phase 3 | Planned |
 | Mission Plan Tab (hierarchical task list, real-time) | Phase 3 | Phase 3 | Planned |
@@ -186,6 +193,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Planned |
 | .ade/ Portable State | Phase 4 | Phase 3 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned |
+| OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) | Planned |
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Planned |
 | Memory Consolidation | Phase 4 | Phase 3 | Planned |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |

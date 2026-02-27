@@ -2679,6 +2679,7 @@ export type MissionStatus =
   | "in_progress"
   | "intervention_required"
   | "completed"
+  | "partially_completed"
   | "failed"
   | "canceled";
 
@@ -3078,6 +3079,7 @@ export const LEGACY_STEP_TO_TASK_STATUS: Record<string, OrchestratorTaskStatus> 
   failed: "blocked",
   blocked: "blocked",
   skipped: "done",
+  superseded: "done",
   canceled: "canceled",
 };
 
@@ -3089,6 +3091,7 @@ export type OrchestratorStepStatus =
   | "failed"
   | "blocked"
   | "skipped"
+  | "superseded"
   | "canceled";
 
 export type OrchestratorAttemptStatus =
@@ -3378,6 +3381,118 @@ export type TeamRuntimeConfig = {
   enabled: boolean;
   targetProvider: "claude" | "codex" | "auto";
   teammateCount: number;
+  template?: TeamTemplate;
+  toolProfiles?: Record<string, RoleToolProfile>;
+  mcpServerAllowlist?: string[];
+  policyOverrides?: MissionPolicyFlags;
+};
+
+export type MissionPolicyFlags = {
+  clarificationMode?: "always" | "auto_if_uncertain" | "off";
+  maxClarificationQuestions?: number;
+  strictTdd?: boolean;
+  requireValidatorPass?: boolean;
+  maxParallelWorkers?: number;
+  riskApprovalMode?: "auto" | "confirm_high_risk" | "confirm_all";
+};
+
+export type RoleToolProfile = {
+  allowedTools: string[];
+  blockedTools?: string[];
+  mcpServers?: string[];
+  notes?: string;
+};
+
+export type RoleDefinition = {
+  name: string;
+  description: string;
+  capabilities: string[];
+  defaultModel: ModelConfig;
+  maxInstances?: number;
+  toolProfile?: RoleToolProfile;
+};
+
+export type TeamTemplate = {
+  id: string;
+  name: string;
+  roles: RoleDefinition[];
+  policyDefaults: MissionPolicyFlags;
+  constraints: {
+    maxWorkers: number;
+    requiredRoles: string[];
+  };
+};
+
+export type ValidationContract = {
+  level: "step" | "milestone" | "mission";
+  tier: "self" | "spot-check" | "dedicated";
+  required: boolean;
+  criteria: string;
+  evidence: string[];
+  maxRetries: number;
+};
+
+export type ValidationFinding = {
+  code: string;
+  severity: "low" | "medium" | "high";
+  message: string;
+  remediation?: string;
+  references?: string[];
+};
+
+export type ValidationResultReport = {
+  validationId: string;
+  scope: {
+    runId: string;
+    stepId?: string | null;
+    stepKey?: string | null;
+    missionId: string;
+    laneId?: string | null;
+  };
+  contract: ValidationContract;
+  verdict: "pass" | "fail";
+  summary: string;
+  findings: ValidationFinding[];
+  remediationInstructions: string[];
+  retriesUsed: number;
+  createdAt: string;
+  validatorWorkerId?: string | null;
+};
+
+export type WorkerStatusReport = {
+  workerId: string;
+  stepId?: string | null;
+  stepKey?: string | null;
+  runId: string;
+  missionId: string;
+  progressPct: number;
+  blockers: string[];
+  confidence: number | null;
+  nextAction: string;
+  laneId?: string | null;
+  details?: string | null;
+  reportedAt: string;
+};
+
+export type WorkerResultReport = {
+  workerId: string;
+  stepId?: string | null;
+  stepKey?: string | null;
+  runId: string;
+  missionId: string;
+  outcome: "succeeded" | "failed" | "partial";
+  summary: string;
+  artifacts: Array<{ type: string; title: string; uri?: string | null; metadata?: Record<string, unknown> }>;
+  filesChanged: string[];
+  testsRun: {
+    command?: string;
+    passed?: number;
+    failed?: number;
+    skipped?: number;
+    raw?: string | null;
+  } | null;
+  laneId?: string | null;
+  reportedAt: string;
 };
 
 export type OrchestratorContextSnapshot = {
@@ -3439,7 +3554,14 @@ export type OrchestratorRuntimeEventType =
   | "step_dependencies_updated"
   | "step_metadata_updated"
   | "fan_out_dispatched"
-  | "fan_out_complete";
+  | "fan_out_complete"
+  | "worker_status_report"
+  | "worker_result_report"
+  | "worker_message"
+  | "plan_revised"
+  | "lane_transfer"
+  | "validation_report"
+  | "tool_profiles_updated";
 
 export type OrchestratorRuntimeQuestionLink = {
   threadId: string;

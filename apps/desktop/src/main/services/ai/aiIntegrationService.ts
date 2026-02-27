@@ -395,8 +395,11 @@ export function createAiIntegrationService(args: {
 
     const apiEntry =
       normalizedProvider === "openrouter"
-        ? auth.find((entry) => entry.type === "openrouter")
-        : auth.find((entry) => entry.type === "api-key" && entry.provider === normalizedProvider);
+        ? auth.find((entry): entry is Extract<DetectedAuth, { type: "openrouter" }> => entry.type === "openrouter")
+        : auth.find(
+            (entry): entry is Extract<DetectedAuth, { type: "api-key" }> =>
+              entry.type === "api-key" && entry.provider === normalizedProvider
+          );
 
     if (!apiEntry) {
       return {
