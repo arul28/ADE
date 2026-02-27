@@ -44,7 +44,7 @@
   - [Mission Memory Integration](#mission-memory-integration)
   - [Mission History Portability](#mission-history-portability)
   - [Cross-Machine Mission Execution](#cross-machine-mission-execution)
-  - [Concierge to Mission Flow](#concierge-to-mission-flow)
+  - [CTO to Mission Flow](#cto-to-mission-flow)
 
 ---
 
@@ -628,7 +628,7 @@ Lifecycle/transition coverage:
 
 - Non-interactive mission execution is being routed through `agentRuntimeService`-style runtime creation semantics.
 - Mission steps map to explicit agent definitions and execution classes (`resident` or `task`) with auditable runtime source metadata.
-- Runtime threads stay mission-local; agent home threads remain in Agents tab.
+- Runtime threads stay mission-local; CTO maintains its own persistent conversation thread in the CTO tab.
 - Memory writeback and retrieval are policy-bound by scope instead of transcript merge.
 
 ### Mission Memory Integration
@@ -666,15 +666,15 @@ When a mission starts, the orchestrator receives a rich memory context to inform
 - Interventions are routable to any connected device (laptop, phone via mobile-first UI, or another desktop instance). The first device to resolve an intervention wins; others see the resolution.
 - Mission history is accessible from any machine with the repo, enabling seamless context continuity when switching between devices.
 
-### Concierge to Mission Flow
+### CTO to Mission Flow
 
-External agents can launch missions via the Concierge Agent, enabling programmatic mission creation from outside ADE:
+External agents can launch missions via the CTO, ADE's persistent project-aware agent that routes requests, creates missions, and monitors progress:
 
-- **Flow**: External agent → MCP tool call → Concierge Agent → classifies request as dev task → launches mission with prompt + context.
-- **Context enrichment**: The Concierge adds context from its own memory before launching — user preferences (preferred PR strategy, default lane assignments), past routing patterns (similar requests and their outcomes), and project-specific conventions.
-- **Mission lifecycle**: The launched mission follows the standard mission lifecycle (planning → execution → PR). The Concierge monitors progress and can relay status back to the external agent.
+- **Flow**: External agent → MCP tool call → CTO → classifies request as dev task → launches mission with prompt + context.
+- **Context enrichment**: The CTO adds context from its own memory before launching — user preferences (preferred PR strategy, default lane assignments), past routing patterns (similar requests and their outcomes), and project-specific conventions.
+- **Mission lifecycle**: The launched mission follows the standard mission lifecycle (planning → execution → PR). The CTO monitors progress and can relay status back to the external agent.
 - **Result delivery**: Mission results (PR URLs, summaries, artifacts) are returned via MCP response to the external agent that initiated the request.
-- **Example flow**: An external agent (e.g., OpenClaw) says "Add authentication to the API" → Concierge receives via MCP → classifies as multi-step dev task → launches mission with phased plan → workers execute across lanes → PR opened → result summary returned to OpenClaw via MCP response.
+- **Example flow**: An external agent (e.g., OpenClaw) says "Add authentication to the API" → CTO receives via MCP → classifies as multi-step dev task → launches mission with phased plan → workers execute across lanes → PR opened → result summary returned to OpenClaw via MCP response.
 
 ### Remaining Work
 

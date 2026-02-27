@@ -14,7 +14,7 @@ Goal: Validate lane combinations before merge/land.
 ### Dependencies
 
 - Phase 5 complete.
-- Phase 3 completion package complete (W13-W22 in `phases-1-3.md`).
+- Phase 3 complete (orchestrator autonomy + missions overhaul — see `phase-3.md`).
 
 ### Workstreams
 

@@ -13,8 +13,8 @@ Goal: Abstract lane execution behind a pluggable compute backend interface, enab
 ### Dependencies
 
 - Phase 5 complete.
-- Phase 3 completion package complete (W13-W22 in `phases-1-3.md`).
-- Phase 4 complete (Task Agents, lane artifacts, and agent schema with compute backend/environment fields are shipped — Phase 5.5 activates the full compute infrastructure these fields reference).
+- Phase 3 complete (orchestrator autonomy + missions overhaul — see `phase-3.md`).
+- Phase 4 complete (CTO agent, memory architecture, learning packs — see `phase-4.md`).
 
 ### Workstreams
 

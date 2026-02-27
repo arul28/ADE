@@ -1,5 +1,7 @@
 # Agents — Autonomous Work Units
 
+> **DEPRECATED**: The Agents Hub concept has been eliminated. This document is retained for historical reference only. See `CTO.md` for the CTO agent, `MISSIONS.md` for configurable mission phases, and the Automations section in `ONBOARDING_AND_SETTINGS.md` for Night Shift mode. Last updated: 2026-02-27.
+
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
 > Last updated: 2026-02-26

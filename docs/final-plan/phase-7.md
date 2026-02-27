@@ -13,7 +13,7 @@ Goal: Decouple core runtime from Electron transport.
 
 ### Dependencies
 
-- Phase 3 completion package complete (W13-W22 in `phases-1-3.md`).
+- Phase 3 complete (orchestrator autonomy + missions overhaul — see `phase-3.md`).
 - Phases 5 and 6 complete.
 
 ### Workstreams

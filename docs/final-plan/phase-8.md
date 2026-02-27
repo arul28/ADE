@@ -15,7 +15,7 @@ Goal: Remote machine execution with explicit routing and ownership. Git IS the s
 ### Dependencies
 
 - Phase 7 complete.
-- Phase 3 completion package complete (W13-W22 in `phases-1-3.md`).
+- Phase 3 complete (orchestrator autonomy + missions overhaul — see `phase-3.md`).
 
 ### Key Insight: Git-Based State Sync
 

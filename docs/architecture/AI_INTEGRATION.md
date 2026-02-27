@@ -33,7 +33,7 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
   - [Shared Facts and Run Narrative](#shared-facts-and-run-narrative)
   - [Memory Architecture](#memory-architecture)
   - [External MCP Consumption](#external-mcp-consumption)
-  - [Concierge Agent Architecture](#concierge-agent-architecture)
+  - [CTO Agent Architecture](#cto-agent-architecture)
   - [Cross-Machine Portability](#cross-machine-portability)
   - [Compute Backends for Agent Execution](#compute-backends-for-agent-execution)
   - [Compute Environment Types](#compute-environment-types)
@@ -1170,59 +1170,65 @@ externalMcp:
 
 **Tool discovery**: When an agent session starts, ADE queries all configured external MCP servers for their tool manifests. These tools are merged with ADE's internal tool set and presented to the agent as a unified tool list. The agent does not need to know whether a tool is internal or external.
 
-### Concierge Agent Architecture
+### CTO Agent Architecture
 
-The Concierge Agent is a specialized agent type that bridges external systems to ADE's internal surfaces. It acts as an intelligent router, receiving requests from external MCP clients and dispatching them to the appropriate ADE subsystem.
+The CTO Agent is a persistent, always-on, project-aware agent that serves as ADE's Chief Technical Officer. Unlike a simple router, the CTO maintains full memory and context about the project, can create missions, spin up lanes, check project state, and make autonomous decisions. It bridges external systems to ADE's internal surfaces while also acting as the primary interface for high-level project orchestration.
 
 **Architecture**:
 
 ```
-External MCP Request
-        │
-        ▼
-┌─────────────────────────┐
-│   MCP Server (incoming)  │
-│   (stdio or socket)      │
-└─────────┬───────────────┘
-          │
-          ▼
-┌─────────────────────────┐
-│   Concierge Agent        │
-│   (agent runtime)        │
-│                          │
-│   Intent Classification  │
-│   ┌───────────────────┐  │
-│   │ Mission launcher  │  │
-│   │ Task agent        │  │
-│   │ Review agent      │  │
-│   │ State reader      │  │
-│   │ Chat relay        │  │
-│   └───────────────────┘  │
-│                          │
-│   Identity Memory        │
-│   (learned routing)      │
-└─────────┬───────────────┘
+External MCP Request           User (CTO Tab)
+        │                           │
+        ▼                           ▼
+┌─────────────────────────┐  ┌──────────────┐
+│   MCP Server (incoming)  │  │  CTO Chat UI  │
+│   (stdio or socket)      │  │  (always-on)  │
+└─────────┬───────────────┘  └──────┬───────┘
+          │                         │
+          └────────────┬────────────┘
+                       ▼
+┌──────────────────────────────────┐
+│   CTO Agent                       │
+│   (persistent agent runtime)      │
+│                                   │
+│   Project Context & Memory        │
+│   ┌────────────────────────────┐  │
+│   │ Mission creation & mgmt   │  │
+│   │ Lane orchestration        │  │
+│   │ Project state queries     │  │
+│   │ Intent classification     │  │
+│   │ Code review coordination  │  │
+│   │ Chat relay                │  │
+│   └────────────────────────────┘  │
+│                                   │
+│   CTO State (.ade/cto/)           │
+│   (persistent memory & context)   │
+└─────────┬────────────────────────┘
           │
           ▼
   ADE Internal Surface
-  (mission, agent, query)
+  (mission, lane, agent, query)
           │
           ▼
-  Result → MCP Response
+  Result → MCP Response / UI Update
 ```
 
-**Routing**:
-- The Concierge classifies incoming requests into intents: `create_mission`, `run_task`, `review_code`, `query_state`, `relay_chat`
-- Routing decisions are informed by the Concierge's identity memory — it learns which request patterns map to which handlers over time
-- Complex requests that span multiple surfaces are decomposed into sub-requests and coordinated by the Concierge
+**Capabilities**:
+- The CTO classifies incoming requests into intents: `create_mission`, `run_task`, `review_code`, `query_state`, `relay_chat`
+- Routing decisions are informed by the CTO's persistent memory — it learns which request patterns map to which handlers over time
+- Complex requests that span multiple surfaces are decomposed into sub-requests and coordinated by the CTO
+- The CTO can proactively create missions, spin up lanes, and orchestrate work based on project context without explicit user direction
+- It maintains awareness of all active missions, lane states, and recent agent outputs
 
-**Identity Memory**: The Concierge maintains its own identity-scoped memory namespace. It records successful routing patterns, failed classifications, and user corrections. Over time, this makes the Concierge more accurate at dispatching requests without explicit intent markers.
+**CTO State**: The CTO maintains its state in `.ade/cto/`, separate from worker agent memory in `.ade/memory/agents/`. This includes persistent project context, learned routing patterns, decision history, and user corrections. Over time, the CTO becomes more effective at anticipating project needs and dispatching work autonomously.
 
 **Use Cases**:
+- Primary interface for project-level AI interactions via the CTO tab
 - CI/CD pipelines invoking ADE missions via MCP
 - External AI agents (Claude Code, Cursor, etc.) requesting ADE to perform work
 - Slack/Discord bots routing developer requests to ADE
 - Monitoring systems triggering automated review or testing
+- Proactive project management: detecting issues, suggesting next steps, coordinating agents
 
 ### Cross-Machine Portability
 
@@ -1838,7 +1844,7 @@ interface LearningEntry {
 | Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
 | Learning packs | Planned | Phase 4 -- auto-accumulating project knowledge from agent interactions, failures, and PR review patterns |
 | Memory architecture upgrade (sqlite-vec, hybrid search, composite scoring) | Planned | Phase 4 -- three-tier memory with vector search, pre-compaction flush, consolidation |
-| Concierge Agent | Planned | Phase 4 -- MCP entry point for external agent systems, intent classification, identity-based routing |
+| CTO Agent | Planned | Phase 4 -- persistent project-aware agent, mission/lane orchestration, MCP entry point, intent classification, autonomous project management |
 | External MCP consumption | Planned | Phase 4 -- agents connect to external MCP servers for extended capabilities |
 | `.ade/` portable state | Planned | Phase 4 -- git-based cross-machine state sync, embedding regeneration on clone |
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |

@@ -279,7 +279,7 @@ The memory architecture introduces scoped knowledge namespaces that agents can r
 
 **Agent identity scoping**: Memories tagged with an `agent_id` are injected only for runtimes bound to that identity (subject to policy). This prevents one identity's learned biases from affecting unrelated agents.
 
-**Home vs runtime threads**: Agent "home" conversations (Agents tab) are not automatically merged into mission/runtime transcripts. Promotion into durable memory requires explicit scoped writeback rules.
+**CTO and worker threads**: CTO conversations (CTO tab) and worker runtime threads are not automatically merged into mission transcripts. Promotion into durable memory requires explicit scoped writeback rules.
 
 #### Candidate Memory Promotion Policy
 

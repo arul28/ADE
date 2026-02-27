@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-02-26
+Last updated: 2026-02-27
 
 Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -24,25 +24,25 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
    - 7.7 [Graph](#77-graph)
    - 7.8 [PRs](#78-prs)
    - 7.9 [History](#79-history)
-   - 7.10 [Agents](#710-agents)
+   - 7.10 [CTO](#710-cto)
    - 7.11 [Missions](#711-missions)
    - 7.12 [Settings](#712-settings)
 8. [Feature Documentation](#8-feature-documentation)
 9. [Architecture Documentation](#9-architecture-documentation)
 10. [Cross-Cutting Concerns](#10-cross-cutting-concerns)
     - 10.1 [Packs (Context and History System)](#101-packs-context-and-history-system)
-    - 10.2 [Agents](#102-agents)
+    - 10.2 [Mission Workers](#102-mission-workers)
     - 10.3 [Workspace Graph](#103-workspace-graph)
     - 10.4 [Job Engine](#104-job-engine)
     - 10.5 [AI Integration](#105-ai-integration)
     - 10.6 [Compute Backends](#106-compute-backends)
-    - 10.7 [Agent Computer Use](#107-agent-computer-use)
+    - 10.7 [Worker Computer Use](#107-worker-computer-use)
     - 10.8 [Artifacts](#108-artifacts)
     - 10.9 [Learning Packs](#109-learning-packs)
     - 10.10 [Development Modes](#1010-development-modes)
     - 10.11 [Cross-Machine Portability](#1011-cross-machine-portability)
     - 10.12 [External Agent Bridge](#1012-external-agent-bridge)
-    - 10.13 [Agent Execution Model](#1013-agent-execution-model)
+    - 10.13 [Worker and CTO Execution Model](#1013-worker-and-cto-execution-model)
 11. [Security and Privacy](#11-security-and-privacy)
 12. [Configuration Model](#12-configuration-model)
 13. [Non-Goals and Out of Scope](#13-non-goals-and-out-of-scope)
@@ -54,7 +54,7 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
 
 ## 1. Product Overview
 
-ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its Packs system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-agent workflows through its AI Integration Layer -- native agent SDKs unified behind an AgentExecutor interface, a local MCP server, and an AI orchestrator that coordinates agents (Claude Code, Codex) using the developer's existing CLI subscriptions. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-agent communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across agents and missions.
+ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its Packs system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-worker missions through its AI Integration Layer -- native agent SDKs unified behind an AgentExecutor interface, a local MCP server, and an AI orchestrator that coordinates workers (Claude Code, Codex) using the developer's existing CLI subscriptions. Missions use a configurable phases model where users define the structure and constraints, and the orchestrator executes accordingly. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-worker communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across workers and missions. An always-on CTO agent provides persistent project awareness and serves as the intelligent entry point for both users and external systems.
 
 ADE is built with Electron and ships as a cross-platform desktop application for macOS, Windows, and Linux.
 
@@ -84,9 +84,9 @@ ADE is a **development orchestration control plane** -- it does not try to be a 
 
 ADE exposes its full infrastructure via the MCP server (35+ tools), enabling external agent systems to orchestrate development through ADE programmatically. An external agent platform like OpenClaw can connect to ADE's MCP server to launch missions, read context packs, check for conflicts, and monitor progress -- all without touching ADE's UI. This makes ADE a first-class development backend for the broader agent ecosystem.
 
-Users can build personal agent setups on top of ADE. For example, a **"Virtual Me" (V) agent** running on an external orchestration platform could serve as the user's single entry point for all tasks -- delegating development work to ADE via MCP, research to research agents, scheduling to calendar agents, and communication to messaging agents. V observes ADE's outputs the same way a human developer would: by reading the repo (git log, `.ade/` state files, PR results). ADE does not need to "report to V" -- the `.ade/` directory, MCP server, and Concierge Agent provide everything V needs to interact with ADE programmatically. This is a user-land concern: ADE provides the infrastructure and the MCP surface, but the composition of higher-level agent workflows is up to the user. See `final-plan/appendix.md` Section 11.3 for detailed V concept documentation.
+Users can build personal agent setups on top of ADE. For example, a **"Virtual Me" (V) agent** running on an external orchestration platform could serve as the user's single entry point for all tasks -- delegating development work to ADE via MCP, research to research agents, scheduling to calendar agents, and communication to messaging agents. V observes ADE's outputs the same way a human developer would: by reading the repo (git log, `.ade/` state files, PR results). ADE does not need to "report to V" -- the `.ade/` directory, MCP server, and CTO provide everything V needs to interact with ADE programmatically. This is a user-land concern: ADE provides the infrastructure and the MCP surface, but the composition of higher-level agent workflows is up to the user. See `final-plan/appendix.md` Section 11.3 for detailed V concept documentation.
 
-The Concierge Agent (Phase 4 in `docs/final-plan.md`) is ADE's designated entry point for external systems. It receives development requests -- whether from a user, an external agent, or a webhook -- and routes them to the appropriate internal workflow: mission planning, agent spawning, context retrieval, or human-in-the-loop escalation.
+The CTO is ADE's always-on project-aware agent and designated entry point for external systems. It receives development requests -- whether from a user, an external agent, or a webhook -- and routes them to the appropriate internal workflow: mission planning, agent spawning, context retrieval, or human-in-the-loop escalation.
 
 ADE does not replace the IDE or the git CLI. It integrates deeply with external agent CLIs via tracked sessions, agent flows, and first-class mission/orchestrator execution as defined in `docs/final-plan.md`.
 
@@ -145,33 +145,33 @@ The AI Integration Layer replaces the former cloud-based agent model with a full
 
 The AI Integration Layer never mutates the repository directly. All file changes, git operations, and test runs are performed by the agents it spawns or by the user through the existing local core.
 
-### Inter-Agent Communication
+### Inter-Worker Communication
 
-Agents within a mission can communicate with each other in real time using @mention syntax. Messages are routed through the orchestrator's message bus and delivered via dual-path delivery: PTY injection for CLI-based agents and SDK message API for SDK-managed agents. All inter-agent messages appear in the mission's Slack-like chat UI alongside orchestrator decisions and user messages.
+Workers within a mission can communicate with each other in real time using @mention syntax. Messages are routed through the orchestrator's message bus and delivered via dual-path delivery: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. All inter-worker messages appear in the mission's Slack-like chat UI alongside orchestrator decisions and user messages.
 
 ### AI Meta-Reasoner
 
-The orchestrator's intelligence layer that analyzes mission structure to select the optimal dispatch strategy before spawning agents. Four strategies are available: sequential, parallel, wave (phased groups), and adaptive (dynamically adjusted). The meta-reasoner considers mission complexity, inter-step dependencies, available resources, and budget constraints.
+The orchestrator's intelligence layer that analyzes mission structure to select the optimal dispatch strategy before spawning workers. Four strategies are available: sequential, parallel, wave (phased groups), and adaptive (dynamically adjusted). The meta-reasoner considers mission complexity, inter-step dependencies, available resources, and budget constraints.
 
 ### Context Compaction
 
-An automatic process that prevents context overflow in long-running agent sessions. When context usage reaches a configurable threshold (default 70%), the compaction engine persists critical state via pre-compaction writeback, then summarizes prior context. Sessions resume from compacted state without loss of essential knowledge.
+An automatic process that prevents context overflow in long-running worker sessions. When context usage reaches a configurable threshold (default 70%), the compaction engine persists critical state via pre-compaction writeback, then summarizes prior context. Sessions resume from compacted state without loss of essential knowledge.
 
 ### Memory Scopes
 
-A scoped memory architecture organizes mission context into `runtime-thread`, `run`, `project`, `identity`, and `daily-log` namespaces. Context entries are promoted by policy and confidence, with provenance retained for auditability. Memory is further organized into three retrieval tiers -- Core (always in context), Hot (vector-retrieved on demand), and Cold (archival) -- and four ownership scopes: identity (per-agent), project (shared), mission (per-run), and session (ephemeral). See Section 10.5 for the full memory architecture.
+A scoped memory architecture organizes mission context into `runtime-thread`, `run`, `project`, `identity`, and `daily-log` namespaces. Context entries are promoted by policy and confidence, with provenance retained for auditability. Memory is further organized into three retrieval tiers -- Core (always in context), Hot (vector-retrieved on demand), and Cold (archival) -- and four ownership scopes: identity (CTO-owned), project (shared), mission (per-run), and session (ephemeral). See Section 10.5 for the full memory architecture.
 
 ### Per-Task-Type Model Routing
 
 Users can configure which AI model and provider to use for each task type. Task types include planning, implementation, review, conflict resolution, narratives, and PR descriptions. For example, a user might configure Claude for planning and code review while using Codex for implementation tasks.
 
-### Concierge Agent
+### CTO (Always-On Project Agent)
 
-The designated entry point for external systems connecting to ADE (Phase 4). The Concierge receives development requests -- from external agents, webhooks, or programmatic MCP calls -- and routes them to the appropriate internal workflow (mission planning, agent spawning, context retrieval, or human escalation). See Section 10.12.
+An always-on, project-aware agent that serves as ADE's intelligent entry point. The CTO has full memory and context about the project (using the three-tier memory model), can create missions, spin up lanes, check project state via MCP tools, and route external requests to the appropriate internal workflow (mission planning, agent spawning, context retrieval, or human escalation). The CTO replaces the former "Concierge Agent" concept with a richer, persistent agent that "knows" the entire project. See Section 7.10 and Section 10.12.
 
 ### External Agent Bridge
 
-The MCP server's role as a bidirectional bridge between ADE and the broader agent ecosystem. External agents connect inbound to use ADE as a development backend; ADE agents connect outbound to consume external tool ecosystems. See Section 10.12.
+The MCP server's role as a bidirectional bridge between ADE and the broader agent ecosystem. External agents connect inbound to use ADE as a development backend; ADE workers and the CTO connect outbound to consume external tool ecosystems. See Section 10.12.
 
 ### Job Engine
 
@@ -200,7 +200,7 @@ ADE Desktop (Electron)
 |   |   |   +-- CodexExecutor (@openai/codex-sdk, subscription)
 |   |   +-- AI Orchestrator (Claude session + MCP tools)
 |   |   |   +-- AI Meta-Reasoner (dispatch strategy selection)
-|   |   |   +-- Inter-Agent Message Bus (@mention routing)
+|   |   |   +-- Inter-Worker Message Bus (@mention routing)
 |   |   |   +-- Context Compaction Engine (threshold-based summarization)
 |   |   |   +-- Scoped Memory (`runtime-thread` -> `run` -> `project`/`identity`)
 |   |   +-- Per-task-type model routing
@@ -293,7 +293,7 @@ Current tab routes:
 - `/graph`
 - `/prs`
 - `/history`
-- `/agents`
+- `/cto`
 - `/missions`
 - `/settings`
 
@@ -353,35 +353,148 @@ The History tab provides an ADE-native operations timeline (distinct from `git l
 
 See: [features/HISTORY.md](features/HISTORY.md)
 
-### 7.10 Agents
+### 7.10 CTO
 
-The Agents tab is the control center for all autonomous ADE behavior. Users create, configure, and monitor agents that perform work on their behalf. Agent types include: **Task Agent** (one-off background task with custom instructions — users define a prompt, select a compute backend (local/VPS/Daytona/E2B), choose a compute environment (terminal-only/browser/desktop), and configure completion behaviors (open PR, take screenshots, record video, run tests, notify); task agents run in the background and report back with artifacts; launched from the Agents tab, command palette, or programmatically; this is the general-purpose "launch an agent to do a thing" — the catch-all for any background work that isn't active development), **Automation Agents** (trigger-action workflows migrated from the previous Automations tab), **Night Shift Agents** (scheduled unattended tasks with strict guardrails and morning digest), **Watcher Agents** (monitors for upstream repos, APIs, and dependency feeds), and **Review Agents** (pre-review assigned PRs overnight). Each agent combines an identity (persona + policy profile), a trigger (when to activate), a behavior (what to do), and guardrails (budget caps + stop conditions). The tab features a card-based UI for agent management, a guided Custom Agent Builder wizard with natural language support, and a Morning Briefing — a swipeable card interface (inspired by Tinder/TikTok) for rapidly reviewing overnight results with approve/dismiss/investigate actions.
+The CTO tab is home to ADE's always-on, project-aware agent -- a persistent AI assistant that "knows" the entire project. The CTO replaces the former Concierge Agent concept with a richer, interactive agent that serves as both a conversational interface and an intelligent entry point for development workflows.
 
-See: [features/AGENTS.md](features/AGENTS.md)
+**Core Capabilities**: The CTO has full access to ADE's infrastructure via MCP tools. It can create missions, spin up lanes, check project state, read context packs, review conflict predictions, and route external requests to the appropriate internal workflow. Unlike mission workers (which are ephemeral and task-scoped), the CTO is persistent and project-scoped -- it accumulates knowledge about the project over time and can answer questions, suggest approaches, and take action based on deep project understanding.
+
+**Three-Tier Memory Model**: The CTO uses the same three-tier memory architecture as mission workers (Core/Hot/Cold) with auto-compaction, but with a significantly larger core memory allocation. Its core memory includes project architecture, key conventions, recent mission outcomes, active lane states, and accumulated project knowledge. Hot memory retrieval surfaces relevant historical context (past decisions, learned patterns, known pitfalls) on demand. Cold memory provides access to the full project history when explicitly queried.
+
+**Interaction Model**: The CTO tab presents a persistent chat interface. Users can ask questions about the project ("what's the state of the auth module?"), request actions ("create a mission to refactor the payment service"), or delegate complex workflows ("review what happened overnight and summarize"). The CTO can also receive requests from external systems via the MCP server, making it the designated router for programmatic development requests from tools like OpenClaw or custom agent frameworks.
+
+**Relationship to Missions**: The CTO can create and monitor missions but does not replace the orchestrator. The CTO operates at the project level (strategic), while the orchestrator operates at the mission level (tactical). The CTO might decide a mission is needed, configure its phases, and launch it, then monitor progress and intervene if the orchestrator escalates.
+
+**Detailed Design**: The full CTO design (memory configuration, persona definition, MCP tool access policy, external request routing protocol) is deferred to a later phase. This section establishes the concept and its place in the tab structure.
+
+See: [features/CTO.md](features/CTO.md)
 
 ### 7.11 Missions
 
-The Missions tab is the AI orchestrator control center. It provides quick mission launch (prompt, lane, priority, execution target), status-lane board views, intervention queues, mission step progress with DAG visualization, orchestrator run controls (start, pause, resume, cancel), attempt history, outcomes, artifacts (including PR links), and mission timeline events. The AI orchestrator (a Claude session via the AgentExecutor interface connected to the MCP server) decomposes missions into steps, spawns agents in isolated lanes, monitors progress through checkpoints and session events, and routes decisions to the user through the intervention panel.
+The Missions tab is the AI orchestrator control center. Missions use a **configurable phases model** where users define the structure and constraints of a mission, and the AI orchestrator executes accordingly. The tab provides mission launch with phase configuration, status-lane board views, intervention queues, phase and task progress, orchestrator run controls (start, pause, resume, cancel), attempt history, outcomes, artifacts (including PR links), and mission timeline events.
 
-Mission detail supports starting orchestrator runs from mission steps. Operators can tick/resume/cancel runs, start attempts, and complete running attempts. Step DAG state, attempt history, and timeline events are visible from mission detail. Mission intake applies a deterministic planner split pass (dependencies, join policy, done criteria metadata). Autopilot launch mode persists executor/run-mode metadata and can auto-advance after tracked session completion.
+#### Configurable Phases Model
 
-**Slack-like Mission Chat (MissionChatV2)**: Mission detail includes a unified chat view that replaces the former separate channels and transcript tabs. The chat surfaces all mission activity in a single Slack-style timeline: orchestrator decisions, agent output, user messages, and inter-agent @mentions. Messages are displayed with agent identity badges, timestamps, and @mention highlighting. Users can send messages to specific agents or broadcast to all agents in the mission.
+Missions ship with pre-built phases that cover the standard development lifecycle:
 
-**Inter-Agent Communication**: Agents within a mission can communicate with each other in real time via @mentions. Messages are routed through the orchestrator's message bus and delivered via both PTY injection and SDK message APIs. The chat UI renders inter-agent messages inline, enabling transparency into how agents coordinate.
+- **Planning**: Mission decomposition, task breakdown, dependency analysis
+- **Development**: Code implementation across isolated lanes
+- **Testing**: Test execution, coverage analysis, regression detection
+- **Validation**: Output review, acceptance criteria verification
+- **PR & Conflict Resolution**: Pull request creation, conflict detection and resolution
 
-**AI Meta-Reasoner**: The orchestrator uses an AI meta-reasoner to determine optimal fan-out strategy for each mission. Four dispatch strategies are available: sequential (one agent at a time), parallel (all agents simultaneously), wave (phased groups), and adaptive (dynamically adjusted based on progress). The meta-reasoner considers mission complexity, resource availability, and dependency structure when selecting a strategy.
+**Ordering Rules**: Phases follow hard and flexible ordering constraints:
+- *Hard rules*: Planning always runs first. Development runs after Planning. Validation runs after Development.
+- *Flexible rules*: Testing can be configured as TDD (after Planning, before Development) or traditional (after Development, before Validation).
 
-**Context Compaction Engine**: Long-running missions benefit from automatic context compaction. When an agent's context reaches 70% of its window limit, the compaction engine triggers a pre-compaction writeback (persisting important state to memory) followed by context summarization. Sessions can be resumed from compacted state, preventing context overflow during extended missions.
+**Custom Phases**: Users can create custom phases for specialized workflows. Examples include "UI Planning" (design review before implementation), "Documentation Update" (auto-generate docs after code changes), "Security Audit" (run security scans at milestone boundaries), or any project-specific workflow step. Custom phases use the same template and card structure as built-in phases -- there is no distinction at the execution level. Custom phases are validated for structural correctness, semantic coherence, and ordering constraint compatibility.
 
-**Scoped Memory Architecture**: Mission context is organized into explicit scopes (`runtime-thread`, `run`, `project`, `identity`, `daily-log`). A Context Budget Panel in the UI provides visibility into retrieved/promoted context and allows manual promotion/archival workflows.
+**Phases as Guides, Not Hard-Coded Types**: Phases are guides for the orchestrator, not hard-coded types. There are no special behaviors tied to any phase name -- the orchestrator reads the phase card instructions and decides how to execute using any of its capabilities. A phase named "Testing" does not trigger different orchestrator code than a phase named "Security Audit"; the orchestrator interprets the instructions on the card and acts accordingly. Per-phase model selection determines what model the workers in that phase use; the orchestrator itself stays on one pre-selected model throughout the entire mission.
 
-**Mission UI Improvements**: The DAG visualization uses SVG `animateTransform` for smooth node animations. A single `PhaseProgressBar` replaces the former duplicated progress indicators. The `ExecutionPlanPreview` component has been removed to reduce visual clutter. Tab naming has been updated: "usage" is now "details" and "channels" is now "chat".
+**Phase Cards**: Each phase is configured as a card with the following properties:
+- **Name and description**: Human-readable phase identity and purpose
+- **Instructions**: Natural language instructions for the orchestrator describing what this phase should accomplish
+- **Model selection**: Which AI model workers use for this phase (e.g., Claude for planning, Codex for implementation). This is the worker model, not the orchestrator model -- the orchestrator runs on its own pre-selected model for the entire mission
+- **Budget cap**: Maximum token/cost budget for this phase (enforced for API key users, informational for subscription users)
+- **Position constraints**: Where this phase can appear in the sequence (before/after dependencies)
+- **Ask-questions toggle**: Whether the orchestrator should pause for user input during this phase
+- **Validation gate toggle**: Whether phase completion requires passing a validation check before proceeding
+
+**Phase Profiles**: Phase configurations are managed at three levels:
+- *Global defaults*: Configured in Settings, apply to all missions unless overridden
+- *Profiles*: Named phase configurations for different mission types (e.g., "quick fix" with minimal phases, "full feature" with all phases, "TDD" with testing before development)
+- *Per-mission overrides*: Custom phase configuration at mission launch time
+
+The orchestrator reads phase configuration and executes accordingly -- it is AI-driven, not deterministic. The orchestrator understands phase context and scales complexity appropriately (a simple bug fix does not need the same phase rigor as a multi-service feature).
+
+#### Pre-Mission Launch
+
+Before a mission starts, a **pre-flight checklist** validates readiness:
+- **Model detection**: Selected models for each phase are detected and authenticated
+- **Permission mode**: Full-auto permission mode is enforced (no interactive approval gates during execution)
+- **Worktree availability**: Git worktrees are available for parallel lane creation
+- **Phase configuration validity**: Phase cards pass structural validation (required fields, valid ordering constraints), semantic validation (instructions are coherent), and ordering validation (no circular dependencies, hard rules respected)
+- **Budget estimation**: Best-effort cost estimation based on phase budgets and selected models
+- **Phase profile selection**: User selects a phase profile or configures custom phases
+
+Phase card validation for custom phases includes both structural checks (are all required fields present?) and semantic checks (do the instructions make sense for the phase position?).
+
+#### Missions Home Dashboard
+
+When no mission is selected, the Missions tab shows a home dashboard view. The dashboard displays: active missions at the top with live status indicators, recent missions with their status/duration/outcome, aggregate statistics (completion rate, total cost, common phases), and a quick-launch button for starting new missions. Completed missions can be opened to view their frozen final state -- the Plan, Chat, and Work sub-tabs display historical data as it was at mission completion, providing a full post-mortem view without any live elements.
+
+#### Mission Detail View (Sub-tabs)
+
+Mission detail uses a sub-tab layout for different views into the running mission:
+
+- **Plan**: Hierarchical task list showing milestones, tasks, and subtasks with real-time status updates. Each item shows its current state (pending, in-progress, completed, failed), assigned worker, and dependencies. This is the primary view for understanding mission progress at a glance.
+- **DAG**: Visual dependency graph showing task relationships, critical path, and execution flow. Uses SVG `animateTransform` for smooth node animations.
+- **Chat**: Slack-style unified chat view (MissionChatV2) that surfaces all mission activity in a single timeline: orchestrator decisions, worker output, user messages, and inter-worker @mentions. Messages are displayed with worker identity badges, timestamps, and @mention highlighting. Users can send messages to specific workers or broadcast to all workers in the mission. This is the "office talk" -- transparency into how workers coordinate.
+- **Work**: "Follow mode" -- select a running worker and see its live terminal output, files being edited, and tools being called. This is the raw worker output view, separate from the chat timeline. Users can switch between workers to observe any worker's real-time execution.
+- **Activity**: Timeline feed of orchestrator events including phase transitions, worker spawning, intervention requests, validation results, and milestone completions. Filterable by category.
+- **Details**: Usage metrics, phase progress indicators, budget consumption, model usage breakdown, and mission configuration summary.
+
+#### Validation During Development (Tiered)
+
+Validation is structured into three tiers to balance thoroughness with cost:
+
+- **Tier 1 -- Self-validation** (free): Workers self-validate their output against embedded checklists derived from phase instructions and acceptance criteria. This runs automatically within each worker's context window at no additional cost.
+- **Tier 2 -- Orchestrator spot-check** (cheap): The orchestrator selectively reviews worker output at key decision points. Not every output is reviewed -- the orchestrator uses judgment to spot-check based on task complexity, worker confidence signals, and phase configuration.
+- **Tier 3 -- Dedicated validator** (expensive, gates only): At milestone boundaries and phase transitions with validation gates enabled, the orchestrator spawns a lightweight validator worker to perform thorough review. This is the most expensive tier and is only triggered at explicit gate points configured in the phase cards.
+
+#### Intervention and Permission Handling
+
+- **Granular pausing**: Only the stuck worker pauses when an intervention is needed, not the entire mission (unless the stuck worker is blocking a dependency that other workers need).
+- **Full-auto enforcement**: Pre-flight validates that permission mode is set to full-auto. Missions should not be interrupted by routine approval gates.
+- **Escalation chain**: Worker attempts self-resolution first, then escalates to the orchestrator, which either resolves autonomously or escalates to the human via the intervention panel.
+- **AI failure diagnostician**: When a worker fails, the orchestrator analyzes the failure and recommends one of: skip (mark task as non-blocking and continue), workaround (alternative approach), retry (with adjusted context or approach), or escalate (requires human input).
+
+#### Orchestrator Intelligence
+
+The orchestrator scales its approach based on mission complexity:
+- **Simple missions** (1 worker, no parallelism): Straightforward sequential execution. No need for complex coordination.
+- **Medium missions** (2-3 workers, limited parallelism): Wave-based execution with basic dependency tracking.
+- **Large missions** (milestone-based, parallel workers): Full milestone decomposition, parallel worker pools using worktrees for isolation, inter-worker communication, and phased validation.
+
+**Worktree advantage**: ADE uses git worktrees for worker isolation, enabling true parallel development on the same repository -- a structural advantage over competitors that rely on single-branch workflows.
+
+**Milestone-based context management**: After each milestone, the orchestrator triggers context compaction -- saving important state to run-scoped memory and summarizing prior context. This prevents context overflow in long-running missions.
+
+**Flat orchestrator model**: There are no sub-orchestrators. One orchestrator manages the entire mission. Workers can spawn sub-workers internally if needed, but orchestration authority is centralized.
+
+**Smart prompting**: The orchestrator understands phase context and adjusts its approach accordingly. A planning phase gets high-reasoning prompts with architectural context; a testing phase gets focused, execution-oriented prompts with test specifications.
+
+#### Inter-Worker Communication
+
+Workers within a mission communicate in real time via @mentions. Messages are routed through the orchestrator's message bus and delivered via dual-path delivery: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. The orchestrator can broadcast messages to all workers or relay between specific pairs. All inter-worker messages appear in the Chat sub-tab.
+
+#### Context Compaction Engine
+
+Long-running missions benefit from automatic context compaction. When a worker's context reaches 70% of its window limit, the compaction engine triggers a pre-compaction writeback (persisting important state to memory) followed by context summarization. Sessions resume from compacted state, preventing context overflow during extended missions.
+
+#### Scoped Memory Architecture
+
+Mission context is organized into explicit scopes (`runtime-thread`, `run`, `project`, `identity`, `daily-log`). A Context Budget Panel in the UI provides visibility into retrieved/promoted context and allows manual promotion/archival workflows.
+
+#### Budget Management
+
+- **Subscription users**: Best-effort estimation of remaining budget. ADE tracks usage internally and displays it as informational -- never blocks mission launch over budget uncertainty in subscription mode. For subscription users, ADE reads local CLI session data from `~/.claude/` (session logs containing token counts, models, and timestamps) to compute accurate usage against known subscription limits. No API calls or authentication are required -- this is purely local file analysis. This enables accurate "X remaining of 5hr window" display in the pre-flight checklist, per-mission cost tracking, and per-phase/per-worker cost breakdown.
+- **API key users**: Exact budget tracking with hard caps. Per-phase budgets are supported and enforced. When a phase exceeds its budget, the orchestrator pauses and escalates.
+- **Rate limit handling**: When a rate limit is hit, the affected worker auto-pauses, waits for the rate limit window to reset, and retries automatically. Other workers continue unaffected.
+
+#### Mission Introspection & Reflection Protocol
+
+Every agent in the mission system (orchestrator, workers, validators) actively reflects on its own experience during execution. Agents write structured reflections to `.ade/reflections/<mission-id>.jsonl` noting capability gaps, workflow friction, improvement ideas, reusable patterns discovered, and limitations encountered. After each mission completes, a retrospective synthesis produces a summary of pain points, improvement suggestions, and patterns worth capturing. Each retrospective includes a changelog showing what previous pain points have been addressed and what remains open, enabling the system to track its own improvement trajectory. Reflection patterns that are codebase-specific get promoted to learning pack entries; system-level observations about orchestrator workflow stay in the reflection system for future self-improvement.
 
 See: [features/MISSIONS.md](features/MISSIONS.md)
 
 ### 7.12 Settings
 
-The Settings tab provides application preferences including AI provider configuration (guest mode or subscription-powered via installed CLI tools), per-task-type model routing (which model/provider handles planning, implementation, review, conflict resolution, narratives, and PR descriptions), per-feature AI toggles (enable/disable individual AI capabilities: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator), AI usage dashboard (per-feature usage bars, subscription status with rate limits, budget controls with daily limits, usage history trends), detected CLI tools status and health, process/test configuration export/import, keyboard shortcuts reference, theme selection (Clean Paper light or Bloomberg Terminal dark), and agent enable/disable with last-run status. Budget controls defined here tie into Night Shift (Phase 4), which reuses the same per-feature limits and counters for unattended batch execution.
+The Settings tab provides application preferences including AI provider configuration (guest mode or subscription-powered via installed CLI tools), per-task-type model routing (which model/provider handles planning, implementation, review, conflict resolution, narratives, and PR descriptions), per-feature AI toggles (enable/disable individual AI capabilities: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator), AI usage dashboard (per-feature usage bars, subscription status with rate limits, budget controls with daily limits, usage history trends), detected CLI tools status and health, process/test configuration export/import, keyboard shortcuts reference, theme selection (Clean Paper light or Bloomberg Terminal dark), and mission phase profile management. Budget controls defined here support both subscription (informational) and API key (hard cap) modes, with per-phase budget configuration available in phase profiles.
+
+**Phase Profile Management**: Settings includes a dedicated section for managing mission phase profiles. Users can create, edit, and delete named phase profiles that define default phase configurations for different mission types. Each profile specifies which phases are included, their ordering, model selection, budget caps, validation gates, and custom instructions. Phase profiles configured here serve as the global defaults that can be overridden per-mission at launch time.
+
+**Automations**: Background automation workflows (trigger-action pipelines, scheduled tasks, watchers, review agents) and Night Shift mode (scheduled unattended execution with morning digest) are configured in the Automations section of Settings. This consolidates all background autonomous behavior configuration in one place.
 
 See: [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md)
 
@@ -404,7 +517,7 @@ Each feature area is specified in detail in the following documents. These are t
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
 | 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | AI orchestrator control center for mission intake and execution. Covers mission lifecycle, orchestrator run management, step DAG visualization, intervention queues, artifacts (including PR links), timeline events, and per-task-type model routing. |
 | 11 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, and theme/keybinding settings. |
-| 12 | Agents | [features/AGENTS.md](features/AGENTS.md) | Unified autonomous agent system. Covers task agents (one-off background tasks with custom instructions, compute backend/environment selection, and completion behaviors), automation agents (trigger-action workflows), Night Shift agents (unattended scheduled execution with morning digest), watcher agents (repo/API monitoring), review agents (PR pre-review), agent identities (persona/policy profiles), the Custom Agent Builder wizard, and Morning Briefing UI. |
+| 12 | CTO | [features/CTO.md](features/CTO.md) | Always-on project-aware agent. Covers the CTO's persistent chat interface, three-tier memory model with project-scoped core memory, MCP tool access for mission creation and lane management, external request routing, and relationship to the mission orchestrator. Background autonomous behaviors (automations, Night Shift, watchers, review agents) are consolidated into Automations within Settings. |
 
 ---
 
@@ -452,17 +565,19 @@ Packs are ADE's core differentiator for agentic workflows. They provide a durabl
 
 See: [features/PACKS.md](features/PACKS.md)
 
-### 10.2 Agents
+### 10.2 Mission Workers
 
-Agents are ADE's unified system for autonomous behavior. The Agents tab (renamed from Automations in Phase 4) is the hub where users create, configure, and monitor agents that perform work on their behalf. Agent types include task agents (one-off background tasks with custom instructions and completion behaviors), automation agents (wrapping the existing trigger-action engine), Night Shift agents (scheduled unattended execution), watcher agents (resource monitors), and review agents (PR pre-reviewers). Each agent combines an identity, trigger, behavior, and guardrails. The Morning Briefing provides a swipeable card interface for reviewing overnight results. Agents are configured in `.ade/ade.yaml` or `.ade/local.yaml` under the `agents:` key and can be managed from the Agents tab or Settings.
+Mission workers are the agents that the orchestrator spawns to execute tasks within a mission. Workers are ephemeral -- they exist for the duration of their assigned task and are torn down when complete. There is no user-facing "create an agent" flow; workers are spawned automatically by the orchestrator based on mission phase configuration and task decomposition.
 
-**Agent Execution Model**: Agents are NOT continuously running model processes. They are **durable definitions** that are triggered by events, schedules, or explicit user actions. "Always-on" means always *available* to respond, not always *thinking* or consuming compute. When an agent is invoked, its state is reconstructed from durable storage in the `.ade/` directory -- identity files, memory scopes, learning packs, and mission context are loaded fresh for each invocation. Between invocations, agents consume zero resources.
+**Worker Execution Model**: Workers are NOT continuously running model processes. They are **ephemeral agent invocations** spawned by the orchestrator into isolated lanes (typically git worktrees). When the orchestrator spawns a worker, the worker's state is constructed from the mission's context: phase instructions, task description, relevant memory scopes, learning packs, and project context are assembled into the worker's initial prompt. When the task completes, the worker's outputs (code changes, test results, artifacts) are captured and the worker is terminated. Between invocations, workers consume zero resources.
 
-**Agent Identity Persistence**: Each agent's identity is defined by a versioned identity file stored in `.ade/agents/`. Identity files capture the agent's persona (name, role, behavioral traits), policy profile (what it is allowed to do autonomously vs. what requires escalation), and accumulated preferences. Identity files are versioned alongside the project, enabling reproducible agent behavior across machines and over time.
+**Worker Identity**: Workers do not have persistent identities like the CTO. Instead, they receive task-scoped identity from the mission: the phase they are executing, the model they are using, and the instructions they are following. The orchestrator assigns worker identities at spawn time based on phase configuration (e.g., a worker in the Development phase using Claude receives development-oriented instructions and the Claude model configuration from the phase card).
 
-**Context Window Optimization**: ADE separates business context from code context in agent prompts, inspired by the ZOE/CODEX split pattern. Business context (mission intent, acceptance criteria, architectural constraints) is injected as a structured preamble. Code context (diffs, file contents, test results) is streamed on-demand via MCP tools. This separation allows the orchestrator to maximize the useful information density within each agent's context window. Additional techniques include observation masking (filtering out irrelevant tool output before it enters context) and importance classification (tagging context entries by criticality so that compaction preserves the most valuable information).
+**Context Window Optimization**: ADE separates business context from code context in worker prompts, inspired by the ZOE/CODEX split pattern. Business context (mission intent, acceptance criteria, architectural constraints, phase instructions) is injected as a structured preamble. Code context (diffs, file contents, test results) is streamed on-demand via MCP tools. This separation allows the orchestrator to maximize the useful information density within each worker's context window. Additional techniques include observation masking (filtering out irrelevant tool output before it enters context) and importance classification (tagging context entries by criticality so that compaction preserves the most valuable information).
 
-See: [features/AGENTS.md](features/AGENTS.md)
+**Worker Autonomy**: Workers operate with full-auto permissions within their assigned lane. They can read and write files, run tests, execute git operations, and use MCP tools without human approval. The pre-flight checklist enforces full-auto mode before mission launch. If a worker encounters a situation it cannot resolve, it escalates to the orchestrator (not directly to the human).
+
+**Background Automations**: Autonomous background behaviors (trigger-action workflows, scheduled tasks, Night Shift mode with morning digest, watchers, review agents) are consolidated into the Automations section of Settings. These are not managed through a separate tab but are configured as automation rules that execute workers when triggered.
 
 ### 10.3 Workspace Graph
 
@@ -502,53 +617,53 @@ The AI Integration Layer provides narrative augmentation, conflict resolution pr
 1. Receives a mission prompt enriched with bounded context pack exports.
 2. Uses the AI meta-reasoner to determine optimal dispatch strategy (sequential, parallel, wave, or adaptive fan-out).
 3. Decomposes the mission into a step DAG with dependencies, join policies, and done criteria.
-4. Spawns agents (Claude Code, Codex) into isolated lanes via MCP tools.
-5. Monitors agent progress through session events, checkpoints, and pack updates.
-6. Facilitates inter-agent communication via @mention routing and the mission message bus.
+4. Spawns workers (Claude Code, Codex) into isolated lanes via MCP tools.
+5. Monitors worker progress through session events, checkpoints, and pack updates.
+6. Facilitates inter-worker communication via @mention routing and the mission message bus.
 7. Manages context lifecycle through the compaction engine and scoped memory architecture.
 8. Routes human-in-the-loop decisions through the intervention panel.
 9. Advances the step DAG deterministically based on session outcomes (success/failure/canceled).
 
-**AI Meta-Reasoner**: Before dispatching agents, the orchestrator's meta-reasoner analyzes the mission to select the best fan-out strategy. The four dispatch strategies are: sequential (agents execute one at a time, suitable for dependent tasks), parallel (all agents launch simultaneously, suitable for independent tasks), wave (agents launch in phased groups, balancing parallelism with coordination), and adaptive (strategy adjusts dynamically based on real-time progress and resource pressure). The meta-reasoner considers mission complexity, inter-step dependencies, available compute resources, and budget constraints.
+**AI Meta-Reasoner**: Before dispatching workers, the orchestrator's meta-reasoner analyzes the mission to select the best fan-out strategy. The four dispatch strategies are: sequential (workers execute one at a time, suitable for dependent tasks), parallel (all workers launch simultaneously, suitable for independent tasks), wave (workers launch in phased groups, balancing parallelism with coordination), and adaptive (strategy adjusts dynamically based on real-time progress and resource pressure). The meta-reasoner considers mission complexity, inter-step dependencies, available compute resources, and budget constraints.
 
-**Inter-Agent Communication**: Agents within a mission can communicate with each other in real time. Messages use @mention syntax and are routed through the orchestrator's message bus. Delivery is dual-path: PTY injection for CLI-based agents and SDK message API for SDK-managed agents. The orchestrator can also broadcast messages to all agents or relay messages between specific pairs. All inter-agent messages are logged in the mission timeline and visible in the Slack-like chat UI.
+**Inter-Worker Communication**: Workers within a mission can communicate with each other in real time. Messages use @mention syntax and are routed through the orchestrator's message bus. Delivery is dual-path: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. The orchestrator can also broadcast messages to all workers or relay messages between specific pairs. All inter-worker messages are logged in the mission timeline and visible in the Slack-like chat UI.
 
-**Context Compaction Engine**: Long-running agent sessions accumulate context that can exceed model window limits. The compaction engine monitors context usage and triggers at a configurable threshold (default 70%). Before compaction, a writeback phase persists critical state (decisions, partial results, key findings) to the memory layer. The compacted context retains a summary of prior work plus the most recent detailed context. Sessions can resume from compacted state, enabling arbitrarily long missions without context overflow.
+**Context Compaction Engine**: Long-running worker sessions accumulate context that can exceed model window limits. The compaction engine monitors context usage and triggers at a configurable threshold (default 70%). Before compaction, a writeback phase persists critical state (decisions, partial results, key findings) to the memory layer. The compacted context retains a summary of prior work plus the most recent detailed context. Sessions can resume from compacted state, enabling arbitrarily long missions without context overflow.
 
 **Scoped Memory Architecture**: Mission context flows through explicit namespaces:
 - **`runtime-thread`**: Current runtime context window. Volatile, managed by compaction.
-- **`run`**: Shared mission/run context across agents in the same run.
+- **`run`**: Shared mission/run context across workers in the same run.
 - **`project`**: Long-term cross-mission knowledge.
-- **`identity`**: Agent-definition-owned durable memory.
+- **`identity`**: CTO-owned durable memory (workers use mission-scoped memory instead).
 - **`daily-log`**: Bounded operational continuity snapshots for briefing/resume.
 
 Candidate entries are promoted by relevance/confidence and policy. The Context Budget Panel in the mission UI shows real-time memory retrieval and promotion status.
 
-**Three-Tier Memory Model**: Agent memory is organized into three tiers based on access frequency and context cost:
+**Three-Tier Memory Model**: Memory is organized into three tiers based on access frequency and context cost. The CTO uses all three tiers with a large core allocation; mission workers primarily use core and hot memory scoped to their task.
 
-- **Core Memory** (~2-4K tokens): Always present in the agent's context window. Contains agent identity, current mission objective, critical project constraints, and active task state. This tier is never evicted -- it defines the baseline context that every invocation starts with.
+- **Core Memory** (~2-4K tokens): Always present in the context window. For the CTO, this contains project identity, architecture overview, active mission states, and accumulated project knowledge. For workers, this contains task description, phase instructions, and critical constraints. This tier is never evicted -- it defines the baseline context that every invocation starts with.
 - **Hot Memory** (retrieved on demand): Stored in a local vector database and retrieved via semantic search when relevant to the current task. Includes recent mission outcomes, learned patterns, project conventions, and frequently-referenced architectural decisions. Retrieved entries are scored and injected into context only when their relevance exceeds a configurable threshold.
 - **Cold Memory** (archival): Rarely accessed historical data including old mission transcripts, superseded decisions, and low-confidence observations. Cold memory is queryable but never automatically injected. It serves as a long-term knowledge base that can be surfaced on explicit request.
 
 **Memory Scopes (Extended)**: Beyond the runtime namespaces above, memory is also scoped by ownership:
-- **Identity scope**: Per-agent memory that persists across all missions and sessions. Captures the agent's learned preferences, behavioral calibration, and accumulated expertise. Stored in `.ade/agents/<agent-id>/memory/`.
-- **Project scope**: Shared across all agents working on the same project. Captures architectural rules, coding conventions, known pitfalls, and team preferences. Stored in `.ade/memory/project/`.
-- **Mission scope**: Per-mission-run memory that captures decisions, intermediate findings, and coordination state for agents within a single mission. Discarded or archived when the mission completes.
-- **Session scope**: Ephemeral conversational memory that exists only for the duration of a single agent invocation. Used for short-term reasoning and working memory. Not persisted.
+- **Identity scope**: CTO-owned memory that persists across all missions and sessions. Captures the CTO's learned preferences, project understanding, and accumulated expertise. Stored in `.ade/cto/memory/`.
+- **Project scope**: Shared across the CTO and all workers on the same project. Captures architectural rules, coding conventions, known pitfalls, and team preferences. Stored in `.ade/memory/project/`.
+- **Mission scope**: Per-mission-run memory that captures decisions, intermediate findings, and coordination state for workers within a single mission. Discarded or archived when the mission completes.
+- **Session scope**: Ephemeral conversational memory that exists only for the duration of a single worker invocation. Used for short-term reasoning and working memory. Not persisted.
 
 **Memory Innovations**:
-- **Pre-compaction flush**: Before the compaction engine summarizes context, all in-flight memories are explicitly saved to their appropriate durable tier. This prevents knowledge loss at compaction boundaries -- the most common failure mode in long-running agent sessions.
+- **Pre-compaction flush**: Before the compaction engine summarizes context, all in-flight memories are explicitly saved to their appropriate durable tier. This prevents knowledge loss at compaction boundaries -- the most common failure mode in long-running sessions.
 - **Memory consolidation**: When new memories overlap with existing entries, a consolidation pass applies one of four operations: PASS (keep both), REPLACE (new supersedes old), APPEND (merge into richer entry), or DELETE (new evidence invalidates old). This prevents memory bloat from redundant observations.
 - **Temporal decay**: Memory entries have a half-life (default 30 days). Relevance scores decay over time unless entries are reinforced by repeated access or explicit user confirmation. This ensures that stale knowledge gradually fades while actively-useful knowledge remains prominent.
 - **Composite scoring for retrieval**: Hot memory retrieval uses a composite score combining semantic similarity, recency, access frequency, confidence level, and explicit importance tags. This multi-signal approach produces better retrieval quality than pure vector similarity.
 
 **Vector Search**: Memory retrieval is powered by `sqlite-vec`, an embedded SQLite extension for vector similarity search. This keeps all memory infrastructure local -- no external vector databases or cloud services required. Embeddings are generated locally using lightweight models and stored alongside memory entries in the SQLite database.
 
-**Episodic Memory**: Structured summaries of completed sessions and missions. Each episodic entry captures what happened (actions taken), why (decisions and rationale), what was learned (new knowledge or corrections), and the outcome (success, failure, or partial). Episodic memories enable agents to learn from past experience across missions.
+**Episodic Memory**: Structured summaries of completed sessions and missions. Each episodic entry captures what happened (actions taken), why (decisions and rationale), what was learned (new knowledge or corrections), and the outcome (success, failure, or partial). Episodic memories enable the CTO and future workers to learn from past experience across missions.
 
-**Procedural Memory**: Learned workflows and tool-usage patterns that improve agent efficiency over time. When an agent discovers an effective sequence of tool calls for a recurring task type (e.g., "run tests, check coverage, fix failures, re-run"), the pattern is captured as procedural memory and suggested in future similar contexts.
+**Procedural Memory**: Learned workflows and tool-usage patterns that improve worker efficiency over time. When a worker discovers an effective sequence of tool calls for a recurring task type (e.g., "run tests, check coverage, fix failures, re-run"), the pattern is captured as procedural memory and suggested in future similar contexts.
 
-**Design Influences**: The memory architecture synthesizes patterns from several production systems and research projects — MemGPT/Letta (tiered memory with agent-managed read/write), Mem0 (PASS/REPLACE/APPEND/DELETE consolidation), CrewAI (composite scoring with multi-signal retrieval), OpenClaw (pre-compaction flush, hybrid BM25+vector search), LangMem/LangChain (episodic/procedural memory taxonomy), A-MEM (Zettelkasten-inspired linking), and JetBrains' NeurIPS 2025 research (observation masking outperforms LLM summarization). Detailed attribution is documented in `features/AGENTS.md` and `final-plan/phase-4.md`.
+**Design Influences**: The memory architecture synthesizes patterns from several production systems and research projects — MemGPT/Letta (tiered memory with agent-managed read/write), Mem0 (PASS/REPLACE/APPEND/DELETE consolidation), CrewAI (composite scoring with multi-signal retrieval), OpenClaw (pre-compaction flush, hybrid BM25+vector search), LangMem/LangChain (episodic/procedural memory taxonomy), A-MEM (Zettelkasten-inspired linking), and JetBrains' NeurIPS 2025 research (observation masking outperforms LLM summarization). Detailed attribution is documented in `features/CTO.md` and `final-plan/phase-4.md`.
 
 **Learning Pack Integration**: Learning packs (Section 10.9) feed into the memory system as high-confidence project-scope entries. Confirmed learning pack entries are promoted to core or hot memory based on their relevance to the current task. The memory system and learning packs share a unified confidence scoring model.
 
@@ -556,76 +671,81 @@ Candidate entries are promoted by relevance/confidence and policy. The Context B
 
 **Cost controls**: Execution is tied to session boundaries, not keystrokes. Context pack exports are bounded by default. The orchestrator context profile excludes narrative text unless explicitly opted in. Content-hash caching avoids redundant work.
 
-**Usage tracking**: Every AI call is logged to a local `ai_usage_log` table with feature type, provider, model, token counts, duration, and success status. The Settings tab surfaces this data as a usage dashboard with per-feature progress bars, subscription status, and configurable budget controls. Budget enforcement is the foundation for Night Shift (Phase 4) budget caps — the same per-feature limits and counters are reused for unattended batch execution.
+**Usage tracking**: Every AI call is logged to a local `ai_usage_log` table with feature type, provider, model, token counts, duration, and success status. The Settings tab surfaces this data as a usage dashboard with per-feature progress bars, subscription status, and configurable budget controls. Budget enforcement supports both per-phase caps in missions and per-automation caps in the Automations system (Night Shift, scheduled tasks, etc.).
 
 ### 10.6 Compute Backends
 
-ADE agents can execute on multiple compute backends, configured per-agent or per-mission step. All backends provide isolated environments for agent work.
+Mission workers can execute on multiple compute backends, configured per-phase or per-mission step. All backends provide isolated environments for worker execution.
 
-- **Local** (Default): Agent runs as a subprocess on the developer's machine, operating in a git worktree managed by ADE. Zero setup, zero cost, full access to local tools and credentials.
-- **VPS** (Opt-in): User-provisioned remote machine (SSH target). ADE syncs the worktree, runs the agent remotely, and streams output back. Configured in Settings → Compute Backends with SSH credentials.
+- **Local** (Default): Worker runs as a subprocess on the developer's machine, operating in a git worktree managed by ADE. Zero setup, zero cost, full access to local tools and credentials.
+- **VPS** (Opt-in): User-provisioned remote machine (SSH target). ADE syncs the worktree, runs the worker remotely, and streams output back. Configured in Settings → Compute Backends with SSH credentials.
 - **Daytona** (Opt-in): Dev environment-as-a-service via Daytona SDK. Provides reproducible, containerized development environments with pre-configured toolchains. Configured in Settings → Compute Backends with API key. Always opt-in.
 - **E2B** (Opt-in): Firecracker microVM-based sandboxes via E2B SDK. Sub-150ms cold start. Supports full desktop environments (Xfce + Chromium) for computer use scenarios. Per-second billing (~$0.05/hr for 1 vCPU). Configured in Settings → Compute Backends with API key. Always opt-in.
 
-### 10.7 Agent Computer Use
+### 10.7 Worker Computer Use
 
-Agents can interact with running applications visually through computer use capabilities. Three compute environment types support different levels of interaction:
+Workers can interact with running applications visually through computer use capabilities. Three compute environment types support different levels of interaction:
 
-- **Terminal-only**: Default. Agent operates via CLI commands in a worktree or sandbox.
-- **Browser**: Headless browser (Playwright) for web app testing and verification. Agent can navigate, click, type, screenshot.
-- **Desktop**: Full virtual desktop (Xvfb + window manager) for desktop apps, Electron apps, mobile emulators. Agent gets mouse/keyboard control, screenshot capture, and video recording.
+- **Terminal-only**: Default. Worker operates via CLI commands in a worktree or sandbox.
+- **Browser**: Headless browser (Playwright) for web app testing and verification. Worker can navigate, click, type, screenshot.
+- **Desktop**: Full virtual desktop (Xvfb + window manager) for desktop apps, Electron apps, mobile emulators. Worker gets mouse/keyboard control, screenshot capture, and video recording.
 
-Computer use is powered by provider-native APIs: Anthropic's Computer Use Tool for Claude agents, OpenAI's CUA for Codex agents. All compute backends (Local, VPS, Daytona, E2B) support all environment types.
+Computer use is powered by provider-native APIs: Anthropic's Computer Use Tool for Claude workers, OpenAI's CUA for Codex workers. All compute backends (Local, VPS, Daytona, E2B) support all environment types.
 
 Artifacts produced by computer use (screenshots, videos, test results) attach to the lane or mission and are auto-included in PR descriptions.
 
 ### 10.8 Artifacts
 
-Artifacts are first-class objects that can attach to missions, lanes, or agent runs. Types include: summary, pr, link, note, patch, screenshot, video, test-result.
+Artifacts are first-class objects that can attach to missions, lanes, or worker runs. Types include: summary, pr, link, note, patch, screenshot, video, test-result.
 
-Lane-level artifacts enable agents working in a lane (via chat, task agents, or mission steps) to attach visual proof and outputs directly to the lane. When a PR is opened from a lane, attached artifacts (screenshots, videos) are auto-included in the PR description.
+Lane-level artifacts enable workers operating in a lane (via chat, mission phases, or automation tasks) to attach visual proof and outputs directly to the lane. When a PR is opened from a lane, attached artifacts (screenshots, videos) are auto-included in the PR description.
 
-Artifact storage is local under `.ade/artifacts/`, organized by mission or lane. Artifacts are referenced by ID in the SQLite database and linked to their parent entity (mission, lane, or agent run).
+Artifact storage is local under `.ade/artifacts/`, organized by mission or lane. Artifacts are referenced by ID in the SQLite database and linked to their parent entity (mission, lane, or worker run).
 
 ### 10.9 Learning Packs
 
-Learning packs are auto-curated project knowledge that accumulates from agent interactions. The system observes agent failures, user corrections, repeated issues, and PR review patterns to build a persistent memory bank that improves agent performance over time.
+Learning packs are auto-curated project knowledge that accumulates from worker and CTO interactions. The system observes worker failures, user corrections, repeated issues, and PR review patterns to build a persistent memory bank that improves worker performance over time.
 
-Knowledge entries have categories (mistake-pattern, preference, flaky-test, tool-usage, architecture-rule), scopes (global, directory, file-pattern), and confidence scores that increase with repeated observations. High-confidence entries are injected into agent context alongside project packs.
+Knowledge entries have categories (mistake-pattern, preference, flaky-test, tool-usage, architecture-rule), scopes (global, directory, file-pattern), and confidence scores that increase with repeated observations. High-confidence entries are injected into worker and CTO context alongside project packs.
 
 Users can review, edit, confirm, or delete entries in Settings → Learning. Learning packs can export to/from CLAUDE.md or agents.md format for interoperability. Learning packs are local-only and never transmitted.
 
 ### 10.10 Development Modes
 
-ADE supports two complementary modes of work:
+ADE supports three complementary modes of work:
 
 **Active Development** (interactive, user-in-the-loop):
-- Work Tab / Lane Chat: Direct conversation with Claude or Codex in a lane worktree
+- Lane Chat: Direct conversation with Claude or Codex in a lane worktree
 - Terminals: Interactive CLI sessions
-- Missions: Orchestrated multi-agent workflows with real-time monitoring and approval gates
+- CTO: Persistent project-aware agent for strategic questions, mission planning, and project oversight
 
-**Background Work** (fire-and-forget, agents tab):
-- Task Agents: One-off background tasks with custom instructions and completion behaviors
-- Automation Agents: Trigger-action pipelines (on commit, on schedule, etc.)
-- Night Shift Agents: Scheduled overnight execution with morning digest
-- Watcher Agents: External resource monitoring (repos, APIs, dependency feeds)
-- Review Agents: PR pre-review and summarization
+**Missions** (orchestrated, multi-worker):
+- Configurable phase-based workflows with parallel workers in isolated lanes
+- Real-time monitoring via Plan, DAG, Chat, Work, Activity, and Details sub-tabs
+- Tiered validation (self-check, spot-check, dedicated validator at gates)
+- Orchestrator intelligence that scales from simple to complex missions
 
-The Agents tab is the unified launch pad and monitoring view for all background work. Users configure what the agent does, where it runs, and what it produces when done.
+**Background Automations** (fire-and-forget, configured in Settings):
+- Automation rules: Trigger-action pipelines (on commit, on schedule, etc.)
+- Night Shift mode: Scheduled unattended execution with morning digest
+- Watchers: External resource monitoring (repos, APIs, dependency feeds)
+- Review automation: PR pre-review and summarization
+
+Background automations are configured in the Automations section of Settings. Each automation defines a trigger, behavior, compute backend, and guardrails (budget caps, stop conditions).
 
 ### 10.11 Cross-Machine Portability
 
 ADE state is designed to be portable across machines without any dedicated sync service, hub, or event bus. **Git IS the sync layer.** Agents write code, commit, and push. Other machines pull. The core development workflow -- code changes flowing through git -- is inherently cross-machine.
 
 ADE stores all of its own state in the `.ade/` directory at the project root:
-- **Agent definitions**: `.ade/agents/` (identity files, memory, configuration)
+- **CTO state**: `.ade/cto/` (identity, memory, configuration)
 - **Memory**: `.ade/memory/` (project-scope knowledge, learning pack entries)
 - **Packs**: `.ade/packs/` (context versions, materialized views)
 - **History**: `.ade/history/` (checkpoints, events, mission records)
 - **Artifacts**: `.ade/artifacts/` (screenshots, videos, test results)
 - **Configuration**: `.ade/ade.yaml` (shared baseline), `.ade/local.yaml` (machine-specific overrides)
 
-The `.ade/` directory is committable to the repository. By committing `.ade/` (or syncing it via a dedicated branch), any machine that clones the repository gets the full ADE state -- agent definitions, accumulated memory, learning packs, mission history, and project configuration. Open ADE on a new machine, point it at the repo, and it reads `.ade/` to reconstruct the complete picture.
+The `.ade/` directory is committable to the repository. By committing `.ade/` (or syncing it via a dedicated branch), any machine that clones the repository gets the full ADE state -- CTO identity and memory, accumulated project knowledge, learning packs, mission history, phase profiles, and project configuration. Open ADE on a new machine, point it at the repo, and it reads `.ade/` to reconstruct the complete picture.
 
 Machine-specific state (local overrides, cache, active terminal sessions) stays in `.ade/local.yaml` and `.ade/cache/`, which are git-ignored by default. Everything else is portable.
 
@@ -646,36 +766,38 @@ External agent platforms (OpenClaw, Claude Code, Codex, custom agent frameworks)
 - **User interaction**: `ask_user`, `approve_plan`, `commit_changes`
 - **Observability**: `get_run_graph`, `get_mission_metrics`, `get_pr_health`, `stream_events`
 
-The Concierge Agent (Phase 4) is ADE's designated router for incoming external requests. When an external agent connects and submits a development request, the Concierge analyzes the request, determines the appropriate workflow (new mission, context query, conflict check, etc.), and routes it internally. This prevents external systems from needing to understand ADE's internal orchestration model.
+The CTO is ADE's designated router for incoming external requests. When an external agent connects and submits a development request, the CTO analyzes the request, determines the appropriate workflow (new mission, context query, conflict check, etc.), and routes it internally. This prevents external systems from needing to understand ADE's internal orchestration model.
 
-**Outbound: ADE Agents Using External Tools**
+**Outbound: ADE Workers Using External Tools**
 
-Starting in Phase 4+, ADE agents can also consume external MCP servers, letting them reach into external tool ecosystems. For example, an ADE agent could connect to a design system MCP server to fetch component specs, or a project management MCP server to read ticket details and update status. This bidirectional MCP capability positions ADE as both a provider and consumer in the MCP ecosystem.
+Starting in Phase 4+, ADE workers and the CTO can also consume external MCP servers, letting them reach into external tool ecosystems. For example, a worker could connect to a design system MCP server to fetch component specs, or the CTO could connect to a project management MCP server to read ticket details and update status. This bidirectional MCP capability positions ADE as both a provider and consumer in the MCP ecosystem.
 
-**Example Flow**: OpenClaw agent receives a user request ("implement the auth module") -> connects to ADE MCP -> Concierge Agent receives the request -> creates a mission -> orchestrator plans and spawns dev agents -> agents work in isolated lanes -> mission completes -> PR is opened -> result flows back to OpenClaw via MCP.
+**Example Flow**: OpenClaw agent receives a user request ("implement the auth module") -> connects to ADE MCP -> CTO receives the request -> creates a mission -> orchestrator plans and spawns workers -> workers execute in isolated lanes -> mission completes -> PR is opened -> result flows back to OpenClaw via MCP.
 
-### 10.13 Agent Execution Model
+### 10.13 Worker and CTO Execution Model
 
-This section clarifies the runtime characteristics of ADE agents, complementing the agent type definitions in Section 10.2.
+This section clarifies the runtime characteristics of ADE's AI agents (mission workers and the CTO), complementing the worker definitions in Section 10.2 and the CTO description in Section 7.10.
 
-**Event-Driven, Not Continuously Running**: ADE agents are durable definitions, not persistent model processes. An agent definition (stored in `.ade/agents/`) specifies identity, triggers, behavior, and guardrails. The agent "exists" as a configuration at rest and only becomes a running model process when triggered by an event (mission dispatch, schedule, user action, or external MCP call). Between invocations, agents consume no compute resources.
+**Two Execution Patterns**: ADE has two distinct agent execution patterns:
+- **CTO**: A persistent, project-scoped agent with durable identity and accumulated memory. The CTO is "always-on" -- always *available* to respond to requests, not always *thinking* or consuming compute. Between interactions, the CTO is inert but its full state (identity, memory, project context) persists in `.ade/cto/`.
+- **Mission Workers**: Ephemeral, task-scoped agents spawned by the orchestrator. Workers exist only for the duration of their assigned task. Their state is constructed at spawn time from mission context and destroyed on completion.
 
-**State Reconstruction Per Invocation**: When an agent is invoked, ADE reconstructs its full state from durable storage:
-1. **Identity**: Loaded from the versioned identity file in `.ade/agents/<agent-id>/`.
-2. **Core memory**: Injected from the agent's core memory tier (~2-4K tokens of always-present context).
-3. **Hot memory**: Retrieved via vector search based on the current task description.
+**State Reconstruction**: When either the CTO or a worker is invoked, ADE constructs its state from durable storage:
+1. **Identity**: For the CTO, loaded from `.ade/cto/identity.yaml`. For workers, constructed from phase configuration at spawn time.
+2. **Core memory**: The CTO's core memory includes persistent project knowledge (~4-8K tokens). Worker core memory includes task description, phase instructions, and constraints (~2-4K tokens).
+3. **Hot memory**: Retrieved via vector search based on the current task or query.
 4. **Project context**: Loaded from project-scope packs and learning pack entries.
-5. **Mission context**: If part of a mission, loaded from the mission's shared run memory.
+5. **Mission context**: For workers, loaded from the mission's shared run memory.
 
-This reconstruction pattern means agents can be invoked on any machine that has the `.ade/` directory, supporting the cross-machine portability model (Section 10.11).
+This reconstruction pattern means the CTO and mission infrastructure can be invoked on any machine that has the `.ade/` directory, supporting the cross-machine portability model (Section 10.11).
 
-**"Always-On" Means Always Available**: When ADE documentation or UI describes an agent as "always-on," this means the agent is always *available* to respond to its triggers -- not that it is always *thinking* or consuming a model context window. A Night Shift agent is "always-on" in the sense that it will activate at its scheduled time, every time, without manual intervention. Between activations, it is inert.
+**Background Automations**: Scheduled and trigger-based automations (Night Shift, watchers, review automation) are event-driven. An automation rule defines a trigger and behavior; when the trigger fires, a worker is spawned to execute the behavior. Between activations, automations consume no compute resources.
 
-**Context Window Strategy**: ADE optimizes agent context windows using several techniques inspired by the ZOE/CODEX separation pattern:
+**Context Window Strategy**: ADE optimizes context windows for both the CTO and workers using several techniques inspired by the ZOE/CODEX separation pattern:
 - **Business/code separation**: Business context (mission intent, acceptance criteria, architectural constraints) is structured as a compact preamble. Code context (diffs, file contents, test output) is streamed on-demand via MCP tools rather than pre-loaded.
 - **Observation masking**: Tool outputs that are not relevant to the current reasoning step are filtered before entering context. For example, a successful test run returns only a pass/fail summary rather than the full test output.
 - **Importance classification**: Every context entry is tagged with an importance level (critical, high, normal, low). During compaction, critical entries are always preserved, while low-importance entries are summarized or dropped first.
-- **Incremental context delivery**: Rather than front-loading all context into the initial prompt, ADE delivers context incrementally via MCP tool calls as the agent progresses through its task. This keeps the active context window focused on what the agent needs right now.
+- **Incremental context delivery**: Rather than front-loading all context into the initial prompt, ADE delivers context incrementally via MCP tool calls as the worker progresses through its task. This keeps the active context window focused on what is needed right now.
 
 ---
 
@@ -686,7 +808,7 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 **Trust boundaries**:
 
 - The local core (main process) is the only component that edits files, runs git operations, runs tests, and performs undo/rollback.
-- The AI Integration Layer spawns agents as subprocesses but never directly mutates the repository. All agent outputs (patches, proposals, narratives) are mediated through ADE's local core.
+- The AI Integration Layer spawns workers as subprocesses but never directly mutates the repository. All worker outputs (patches, proposals, narratives) are mediated through ADE's local core.
 - The renderer is untrusted and communicates exclusively through a typed IPC allowlist.
 - Process and test commands execute only in the main process, never in the renderer.
 
@@ -718,15 +840,15 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 
 ## 12. Configuration Model
 
-ADE configuration lives in the `.ade/` folder at the project root. By default, `.ade/` is git-ignored via `.git/info/exclude`, but users can opt in to committing shareable state (agent definitions, memory, packs, history, artifacts) for cross-machine portability (see Section 10.11). Machine-specific files (`.ade/local.yaml`, `.ade/cache/`, `.ade/logs/`) remain git-ignored regardless.
+ADE configuration lives in the `.ade/` folder at the project root. By default, `.ade/` is git-ignored via `.git/info/exclude`, but users can opt in to committing shareable state (CTO identity, memory, packs, history, artifacts, phase profiles) for cross-machine portability (see Section 10.11). Machine-specific files (`.ade/local.yaml`, `.ade/cache/`, `.ade/logs/`) remain git-ignored regardless.
 
 **File layout**:
 
 | File | Purpose | Shareable |
 |------|---------|-----------|
-| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, `agents:` definitions) | Yes (opt-in) |
+| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, phase profiles, automation definitions) | Yes (opt-in) |
 | `.ade/local.yaml` | Machine-specific overrides (including local AI provider preferences and CLI tool paths) | No |
-| `.ade/agents/` | Agent identity files, per-agent memory, and configuration | Yes (opt-in) |
+| `.ade/cto/` | CTO identity, memory, and configuration | Yes (opt-in) |
 | `.ade/memory/` | Project-scope memory, learning pack entries, vector embeddings | Yes (opt-in) |
 | `.ade/packs/` | Pack versions and materialized views | Yes (opt-in) |
 | `.ade/history/` | Checkpoints, events, and mission records | Yes (opt-in) |
@@ -786,10 +908,10 @@ When a configured CLI tool is not installed or not authenticated, ADE falls back
 | Terminal reliability | Stable embedded terminals at scale | 10+ concurrent PTY sessions with no data loss, resize glitches, or cross-lane cwd leaks |
 | Process management | One-click dev environment startup | All configured processes reachable and controllable from Projects (Home) tab without external tools |
 | Checkpoint durability | Every session produces a durable checkpoint | 100% of completed sessions yield an immutable checkpoint with SHA anchors and deterministic deltas |
-| Mission orchestration | End-to-end mission execution with minimal manual intervention | Multi-step missions complete with agent spawning, context injection, and conflict checking through the orchestrator |
+| Mission orchestration | End-to-end mission execution with minimal manual intervention | Multi-step missions complete with worker spawning, context injection, and conflict checking through the orchestrator |
 | AI provider flexibility | Users can mix providers per task type | Per-task-type routing works correctly with at least two different CLI providers simultaneously |
 | AI usage visibility | Users can see per-feature AI consumption at a glance | Usage dashboard loads in <1s, per-feature breakdown is accurate within 5% of actual token usage |
-| Inter-agent coordination | Agents share relevant context without manual intervention | @mention messages are delivered within 2s; mission chat shows full agent communication history |
+| Inter-worker coordination | Workers share relevant context without manual intervention | @mention messages are delivered within 2s; mission chat shows full worker communication history |
 | Context longevity | Long-running missions do not lose critical context | Compaction triggers before overflow; sessions resume from compacted state with key findings preserved |
 | Smart dispatch | Orchestrator selects appropriate fan-out strategy | Meta-reasoner correctly identifies parallelizable vs. sequential tasks in >80% of missions |
 
@@ -801,7 +923,7 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan.md`
 
-Current status: Phase 1 (Agent SDK Integration), Phase 1.5 (Agent Chat Integration), Phase 2 (MCP Server), and Phase 3 (AI Orchestrator) are complete. The Orchestrator Evolution (Project Hivemind) is complete, delivering inter-agent communication, AI meta-reasoner for smart fan-out, context compaction, and scoped memory architecture.
+Current status: Phase 1 (Agent SDK Integration), Phase 1.5 (Agent Chat Integration), Phase 2 (MCP Server), and Phase 3 (AI Orchestrator) are complete. The Orchestrator Evolution (Project Hivemind) is complete, delivering inter-worker communication, AI meta-reasoner for smart fan-out, context compaction, and scoped memory architecture.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 
@@ -819,10 +941,10 @@ This PRD intentionally focuses on product scope and behavior, while roadmap exec
 | **Context window limits** | AI orchestrator and agents have finite context windows; large projects may exceed them | Bounded pack exports by default. Context profiles exclude narrative text unless opted in. Incremental context delivery via MCP tools rather than single-prompt stuffing. |
 | **Electron performance at scale** | Many concurrent terminals, file watchers, and git operations could degrade performance | Lazy xterm rendering (only focused sessions get full rendering). Coalesced event processing. Incremental materializers keyed by checkpoint IDs. Git-native operations preferred over filesystem walks. |
 | **Scope creep toward IDE** | Pressure to add code intelligence, debugging, or full editing could dilute the product | Non-goals are explicitly documented. Monaco is scoped to focused edits and diff review. Users are expected to use their preferred IDE alongside ADE. |
-| **Multi-agent coordination complexity** | Orchestrator managing multiple concurrent agents across lanes introduces scheduling, conflict, and resource contention challenges | Deterministic step DAG with explicit dependencies and join policies. Session-backed attempts with clear success/failure/canceled outcomes. Conservative concurrency defaults with user-configurable limits. |
+| **Multi-worker coordination complexity** | Orchestrator managing multiple concurrent workers across lanes introduces scheduling, conflict, and resource contention challenges | Phase-based execution with explicit ordering constraints. Session-backed attempts with clear success/failure/canceled outcomes. Conservative concurrency defaults with user-configurable limits. |
 | **Claude subscription auth policy uncertainty** | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; AgentExecutor interface enables quick switch to official SDK if policy changes. |
-| **Inter-agent message delivery reliability** | Messages between agents could be lost or delayed, causing coordination failures | Dual-path delivery (PTY + SDK API) with message acknowledgment. All messages logged to mission timeline for audit. Orchestrator monitors delivery status. |
-| **Context compaction information loss** | Aggressive compaction could discard critical context, causing agents to repeat work or make incorrect decisions | Pre-compaction writeback persists key state before summarization. Configurable threshold (default 70%). User can review and promote important context entries to higher memory layers. |
+| **Inter-worker message delivery reliability** | Messages between workers could be lost or delayed, causing coordination failures | Dual-path delivery (PTY + SDK API) with message acknowledgment. All messages logged to mission timeline for audit. Orchestrator monitors delivery status. |
+| **Context compaction information loss** | Aggressive compaction could discard critical context, causing workers to repeat work or make incorrect decisions | Pre-compaction writeback persists key state before summarization. Configurable threshold (default 70%). User can review and promote important context entries to higher memory layers. |
 | **Memory scope promotion accuracy** | Automatic promotion of context entries could surface irrelevant information or miss important findings | Conservative default (manual promotion). Relevance scoring based on reference frequency and recency. Users can review, confirm, or delete promoted entries via the Context Budget Panel. |
 
 ---

@@ -4,8 +4,9 @@ This plan has been split into individual phase files for maintainability. Each p
 
 ## Table of Contents
 
-- [Phases 1-3: Foundation (Phase 3 Completion In Progress)](phases-1-3.md)
-- [Phase 4: Agents Hub](phase-4.md)
+- [Phases 1-2: Foundation (Complete)](phases-1-2.md)
+- [Phase 3: AI Orchestrator + Missions Overhaul](phase-3.md)
+- [Phase 4: CTO + Ecosystem](phase-4.md)
 - [Phase 5: Play Runtime Isolation](phase-5.md)
 - [Phase 5.5: Compute Backend Abstraction](phase-5.5.md)
 - [Phase 6: Integration Sandbox](phase-6.md)
@@ -29,7 +30,7 @@ This file is the canonical implementation roadmap for future ADE work.
 - `docs/PRD.md` remains the product behavior/scope reference.
 - This plan defines execution order, dependencies, and delivery gates.
 - Feature and architecture docs should align to this file for forward-looking sequencing.
-- `docs/phase-3-gaps.md` is the active completion blueprint for remaining Phase 3 orchestrator autonomy work.
+- Phase 3 (`phase-3.md`) contains the complete orchestrator autonomy and missions overhaul plan.
 
 ---
 
@@ -48,7 +49,7 @@ Baseline derived from code in `apps/desktop`.
 - Graph (`/graph`)
 - PRs (`/prs`)
 - History (`/history`)
-- Agents (`/agents`) (renamed from Automations in Phase 4)
+- Automations (`/automations`)
 - Missions (`/missions`)
 - Settings (`/settings`)
 
@@ -61,7 +62,7 @@ Baseline derived from code in `apps/desktop`.
 - Conflict prediction, risk matrix, merge simulation, proposal apply/undo, external resolver runs
 - PR workflows (including stacked and integration PR paths)
 - Packs/checkpoints/version/event pipeline with bounded exports
-- Automations engine + natural-language planner (rebranded as Agents in Phase 4)
+- Automations engine + natural-language planner
 - Mission intake/tracking lifecycle (status lanes, steps, interventions, artifacts, events)
 - Deterministic orchestrator runtime: DAG scheduling, claims, context snapshots, timeline, gate evaluator
 - Executor scaffold adapters for Claude/Codex/Gemini (tracked-session scaffold, not yet AI-driven)
@@ -101,28 +102,35 @@ Baseline derived from code in `apps/desktop`.
 Not implemented yet:
 
 - Phase 3 completion package for full autonomous orchestration (team runtime model, validator loop contracts, policy flags, structured worker reporting, lane-affinity rework continuity)
-- Agents hub (unified autonomous agent system — automation, Night Shift, watcher, review agents)
-- Agent identities as full persona/policy bundles (schema exists in `agent_identities` table from Hivemind WS7, but full Phase 4 identity system not yet built)
-- Morning Briefing (swipeable card review for overnight results)
+- Missions phases engine (configurable phase pipelines with drag-and-drop)
+- CTO agent (persistent project-aware assistant, replaces Concierge)
+- Night Shift mode in Automations (overnight execution with morning briefing)
+- Mission Plan tab (hierarchical task list with real-time updates)
+- Mission Work tab (follow-mode for raw worker output)
+- Pre-mission launch validation (pre-flight checklist)
+- Tiered validation system (self-check, spot-check, milestone-gate)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
 - Compute backend abstraction (local/VPS/Daytona)
 - Integration sandbox for lane-set verification
 - `packages/core` extraction
 - Relay and machine registry/routing
 - iOS control app
+- Mission Introspection (reflection protocol for system self-improvement)
+- Subscription usage tracking via local CLI session data
+- Missions home dashboard (aggregate stats, mission history)
 
-### 2.5 Phase 3 Completion Focus (2026-02-27 update)
+### 2.5 Phase 3 Remaining Work (2026-02-27 update)
 
-To align with autonomy goals, the remaining Phase 3 work now explicitly includes:
+Phase 3 encompasses both orchestrator autonomy and the missions overhaul. The remaining work is organized into 8 self-contained tasks (see `phase-3.md` for full detail):
 
-1. Team runtime foundations (required roles + role-aware worker spawning)
-2. Structured worker reporting (`report_status`, `report_result`, `read_mission_status`)
-3. Autonomous re-planning (`revise_plan` with supersede semantics)
-4. Validation contracts + validator loops at step/milestone/mission gates
-5. Lane-affinity rework continuity and partial-completion outcomes
-6. Budget-aware orchestration decisions and mission-level tool profile control
-
-This keeps deterministic code as runtime/safety infrastructure while preserving AI-led execution strategy.
+1. **Task 1: Orchestrator Autonomy Core** — team runtime, worker reporting, replanning, tool profiles, partial completion
+2. **Task 2: Validation & Lane Continuity** — validation contracts, validator loop, lane affinity, rework continuity
+3. **Task 3: Mission Phases Engine & Profiles** — phase cards, profiles, drag-and-drop, constraint engine
+4. **Task 4: Mission UI Overhaul** — Plan tab, Work tab, existing tab fixes, Home Dashboard
+5. **Task 5: Pre-Flight, Intervention & HITL** — pre-flight checklist, granular intervention, escalation chain
+6. **Task 6: Budget & Usage Tracking** — budget-aware orchestration, dual-mode budget, subscription usage
+7. **Task 7: Reflection Protocol** — reflection logs, retrospectives, improvement changelog
+8. **Task 8: Integration Testing** — orchestrator soak tests, missions overhaul tests
 
 ---
 
@@ -137,7 +145,7 @@ ADE becomes the execution control plane for parallel agentic development:
 5. Desktop, relay machines, and iOS share one mission/audit state model.
 6. All core features work in `guest` mode (no AI) -- AI orchestration is additive, never mandatory.
 7. ADE state (memory, agents, history) is portable across machines via `.ade/` in git -- no cloud backend needed for sync.
-8. External agent systems connect via MCP server; the Concierge Agent routes development requests.
+8. CTO agent provides persistent project-aware assistance with full memory and context; external agent systems connect via MCP server.
 
 ---
 
@@ -150,36 +158,40 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Hivemind shipped; autonomy completion package W13-W22 remaining) |
-| Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Planned (Phase 3 completion package) |
-| Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Planned (Phase 3 completion package) |
-| Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Planned (Phase 3 completion package) |
-| Structured worker reporting + mission status read | Phase 3 | Phases 1 and 2 | Planned (Phase 3 completion package) |
-| Lane-affinity rework continuity + partial completion | Phase 3 | Phases 1 and 2 | Planned (Phase 3 completion package) |
-| Agents hub (Automations → Agents rebrand) | Phase 4 | Phase 3 | Planned |
-| Agent identities | Phase 4 | Phase 3 | Planned |
-| Night Shift agents | Phase 4 | Phase 3 | Planned |
-| Watcher & Review agents | Phase 4 | Phase 3 | Planned |
-| Morning Briefing UI | Phase 4 | Phase 3 | Planned |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Hivemind shipped; Tasks 1-8 remaining) |
+| Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Planned (Task 1) |
+| Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Planned (Task 2) |
+| Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Planned (Task 1) |
+| Structured worker reporting + mission status read | Phase 3 | Phases 1 and 2 | Planned (Task 1) |
+| Lane-affinity rework continuity + partial completion | Phase 3 | Phases 1 and 2 | Planned (Task 2) |
+| Mission Phases Engine (configurable phase pipelines) | Phase 3 | Phase 3 | Planned |
+| Phase Profiles (settings-based mission templates) | Phase 3 | Phase 3 | Planned |
+| Mission Plan Tab (hierarchical task list, real-time) | Phase 3 | Phase 3 | Planned |
+| Mission Work Tab (follow-mode worker output) | Phase 3 | Phase 3 | Planned |
+| Pre-Mission Launch System (pre-flight checklist) | Phase 3 | Phase 3 | Planned |
+| Tiered Validation System (self/spot-check/gate) | Phase 3 | Phase 3 | Planned |
+| Intervention Granularity (per-worker pause) | Phase 3 | Phase 3 | Planned |
+| CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Planned |
+| Night Shift Mode (in Automations) | Phase 4 | Phase 3 | Planned |
+| Budget Management (subscription + API key) | Phase 3 | Phase 3 | Planned |
 | Play runtime isolation | Phase 5 | Phase 3 | Planned |
 | Compute backend abstraction | Phase 5.5 | Phase 5 | Planned |
-| Task Agents (one-off background agents) | Phase 4 | Phase 3 | Planned |
 | Computer Use (agent GUI interaction) | Phase 5.5 | Phase 5 | Planned |
 | E2B compute backend | Phase 5.5 | Phase 5 | Planned |
-| Lane-level artifacts | Phase 4 | Phase 3 | Planned |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
-| Chat-to-mission escalation | Phase 4 | Phase 3 | Planned |
 | Integration sandbox + readiness gates | Phase 6 | Phase 5 | Planned |
 | Core extraction (`packages/core`) | Phase 7 | Phases 3, 5, 6 | Planned |
 | Relay + Machines | Phase 8 | Phase 7 | Planned |
 | iOS app | Phase 9 | Phase 8 | Planned |
-| Concierge Agent | Phase 4 | Phase 3 | Planned |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Planned |
 | .ade/ Portable State | Phase 4 | Phase 3 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned |
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Planned |
 | Memory Consolidation | Phase 4 | Phase 3 | Planned |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |
+| Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Planned |
+| Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Planned |
+| Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Planned |
 
 ---
 

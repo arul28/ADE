@@ -7,8 +7,8 @@ Base build order:
 1. Phase 1 (Agent SDK Integration + AgentExecutor Interface) — **Complete**
 1.5. Phase 1.5 (Agent Chat Integration) — **Complete**
 2. Phase 2 (MCP Server) — **Complete**
-3. Phase 3 (AI Orchestrator) — **In Progress** (Project Hivemind shipped; completion package W13-W22 now defines finish criteria)
-4. Phase 4 (Agents Hub)
+3. Phase 3 (AI Orchestrator + Missions Overhaul) — **In Progress** (Project Hivemind shipped; 8 remaining tasks define finish criteria — see `phase-3.md`)
+4. Phase 4 (CTO + Ecosystem)
 5. Phase 5 (Play Runtime Isolation)
 5.5. Phase 5.5 (Compute Backend Abstraction)
 6. Phase 6 (Integration Sandbox + Merge Readiness)
@@ -23,10 +23,9 @@ Pull-forward rules:
 - Phase 1.5 (Agent Chat Integration) runs in parallel with Phase 1. It depends only on Phase 1 W1 (package installation) being complete. All other Phase 1.5 work is independent of Phase 1's migration workstreams.
 - Daytona SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration.
 - E2B SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration alongside Daytona.
-- Computer use tool prototyping may begin during Phase 4 (task agents) since task agents reference compute environments and completion behaviors that depend on computer use capabilities.
-- Phase 4 agent identity system can build on the `agent_identities` table and memory promotion flow shipped in Hivemind WS7.
-- Phase 4 inter-agent communication can build on the `teamMessageTool`, `deliverMessageToAgent`, and Slack-like chat infrastructure shipped in Hivemind WS2/WS3.
-- Phase 3 completion package (W13-W22) is a hard prerequisite for full autonomous mission quality. Phase 4 UI and ecosystem work should not bypass these runtime foundations.
+- Computer use tool prototyping may begin during Phase 3 since compute environments and completion behaviors inform computer use capabilities.
+- Phase 3 mission phases UI work runs alongside the Phase 3 completion package since it depends on orchestrator runtime, not specific P3 workstreams.
+- Phase 3 remaining tasks (Tasks 1-8) are a hard prerequisite for full autonomous mission quality. Phase 4 CTO and ecosystem work should not bypass these runtime foundations.
 
 ---
 
@@ -51,7 +50,7 @@ Each phase must satisfy:
 | Claude subscription auth policy uncertainty | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; `AgentExecutor` interface enables quick switch to official SDK if policy changes |
 | Context window limits under large missions | Orchestrator may lose coherence on complex multi-step missions | Progressive context loading; context pressure management; pack compression; **compaction engine (Hivemind HW6) triggers at 70% threshold with durable resume** |
 | Monolithic IPC concentration | Slows core extraction and relay work | Domain adapter split in Phase 7 with parity test gates |
-| Unsafe unattended execution | High blast radius in Night Shift | Hard budgets, explicit policy gates, intervention states, identity-level constraints |
+| Unsafe unattended execution | High blast radius in Night Shift mode (Automations) | Hard budgets, explicit policy gates, intervention states, per-automation guardrail constraints |
 | Runtime isolation brittleness | Play instability | Deterministic lease model + diagnostics + fallback mode |
 | Cross-device race conditions | Inconsistent mission outcomes | Ownership model + optimistic locking + event sequencing |
 | MCP tool permission model gaps | Orchestrator may invoke unsafe operations | Permission/policy layer with deny-by-default; audit logging for all tool calls |
@@ -67,6 +66,9 @@ Each phase must satisfy:
 | sqlite-vec embedding quality | Poor retrieval if embeddings are low quality | Hybrid BM25+vector ensures keyword fallback; configurable embedding provider |
 | Memory consolidation false positives | LLM incorrectly merges distinct memories | 0.85 similarity threshold is conservative; user can review/undo in Settings |
 | External MCP server reliability | Agent execution blocked by unreachable external server | Timeout + fallback to local-only execution; external MCP is always optional |
+| Custom phase instructions too vague for orchestrator | Orchestrator can't execute phase properly | Semantic validation during pre-flight; require minimum instruction detail |
+| Subscription budget estimation inaccuracy | User unexpectedly hits rate limits | Best-effort estimation with clear 'approximate' labeling; graceful rate-limit handling (pause/wait/retry) |
+| Phase ordering constraint conflicts | Circular dependencies in custom phases | Structural validation catches cycles during pre-flight |
 
 ---
 
@@ -101,9 +103,9 @@ Each phase must satisfy:
 - Episodic memory extraction completeness (key facts captured vs missed)
 - .ade/ sync round-trip accuracy (state identical across machines after git sync)
 
-### Agent Ecosystem KPIs
+### CTO & Ecosystem KPIs
 
-- Concierge routing accuracy (requests correctly classified and routed)
+- CTO response relevance and task completion rate
 - External MCP connection success rate
 - Cross-machine mission launch success rate (via relay)
 
@@ -128,17 +130,24 @@ Each phase must satisfy:
 - Subscription detection success rate at onboarding
 - `guest` vs `subscription` mode usage ratio
 - Mission weekly active users
-- Night Shift agent adoption rate
+- Night Shift mode adoption rate
 - Morning Briefing items approved vs. dismissed ratio
-- Watcher/Review agent finding actionability rate
-- Agent builder completion rate (wizard started vs. agent created)
-- Task agent completion rate (task started vs. successfully completed with all completion behaviors)
-- Chat-to-mission escalation rate (escalations triggered vs. missions successfully created)
+- Phase profile creation rate (users creating custom profiles vs using defaults)
+- Custom phase adoption rate (missions using custom phases vs built-in only)
+- CTO agent activation rate
+- Pre-flight checklist pass rate (first attempt vs requiring fixes)
 - Learning pack entry confirmation rate (auto-generated entries confirmed by users vs. deleted)
-- Lane artifact attachment rate (agents producing artifacts vs. agents with no artifacts)
 - .ade/ git sync adoption rate (users committing .ade/ vs keeping local-only)
 - External MCP server configuration rate (users connecting external tools)
-- Concierge Agent activation rate
+
+### Mission Phases KPIs (Phase 3)
+
+- Phase completion rate per phase type
+- Custom phase validation pass rate (pre-flight)
+- Tiered validation gate pass rate at first attempt
+- Intervention granularity effectiveness (single-worker pause vs mission-wide impact)
+- Plan tab real-time update latency
+- Phase profile usage distribution
 
 ---
 
@@ -156,7 +165,7 @@ OpenClaw is the primary external agent platform ADE is designed to interoperate 
 - **MCP support**: Native MCP client support — OpenClaw agents can connect to ADE's MCP server directly.
 - **Security concerns**: Significant security issues identified — CVE-2026-25253 (prompt injection via skill descriptions), 800+ malicious skills discovered on ClawHub, and general concerns about running untrusted community skills with system access.
 
-**ADE's relationship to OpenClaw**: ADE is not a competitor. OpenClaw is a general-purpose personal AI agent platform; ADE is a specialized development orchestration tool. They connect via MCP — OpenClaw (or any external agent) connects to ADE's MCP server to delegate development tasks. The Concierge Agent (Phase 4 W15) serves as the entry point for these external requests.
+**ADE's relationship to OpenClaw**: ADE is not a competitor. OpenClaw is a general-purpose personal AI agent platform; ADE is a specialized development orchestration tool. They connect via MCP — OpenClaw (or any external agent) connects to ADE's MCP server to delegate development tasks. The CTO agent serves as the persistent project-aware entry point for these external requests.
 
 **Three paths considered**:
 1. Replace OpenClaw features in ADE — rejected (scope creep, different domain)
@@ -195,13 +204,13 @@ Factory Missions introduced several concrete execution patterns worth adopting i
 
 Program implication:
 
-- These patterns map directly to Phase 3 W13-W22 (team runtime model, validation contracts, mission policy flags, structured worker reporting, and HITL risk gates).
-- Phase 4 should build agent product surfaces on top of these runtime foundations instead of duplicating them.
+- These patterns map directly to Phase 3 Tasks 1-2 and 5 (team runtime model, validation contracts, mission policy flags, structured worker reporting, and HITL risk gates).
+- Phase 4 should build CTO and ecosystem capabilities on top of these runtime foundations instead of duplicating them.
 
 ### 11.4 Virtual Me (V) Concept
 
 The "Virtual Me" is a user-land concept where a personal AI agent (likely running on OpenClaw or similar) serves as the user's single entry point for all tasks — not just development. V delegates:
-- Development tasks → ADE (via MCP/Concierge)
+- Development tasks → ADE (via MCP/CTO agent)
 - Research tasks → research agents
 - Scheduling → calendar agents
 - Communication → email/Slack agents
@@ -211,7 +220,7 @@ The "Virtual Me" is a user-land concept where a personal AI agent (likely runnin
 - **Pre-compaction flush**: Same pattern as ADE agents — before V's context is compacted, a silent turn prompts V to save important memories. V's context includes a mix of development, personal, and coordination context, making selective persistence critical.
 - **Temporal decay**: V's memories decay with the same 30-day half-life, but "reinforcement through access" is especially important for V because repeated topics (daily standup updates, recurring projects) should stay fresh.
 - **Context separation from ADE**: V is not ADE's concern. V reads the repo to understand what happened (via git log, `.ade/` state files). ADE does not need to "report to V" — V observes ADE's outputs the same way a human developer would.
-- **ADE provides infrastructure, not the agent**: The `.ade/` directory, MCP server, and Concierge Agent give V everything it needs to interact with ADE. The composition of V as a higher-level orchestrator is user-land.
+- **ADE provides infrastructure, not the agent**: The `.ade/` directory, MCP server, and CTO agent give V everything it needs to interact with ADE. The composition of V as a higher-level orchestrator is user-land.
 
 ### 11.5 Agent Communication Protocols
 
@@ -272,10 +281,10 @@ The program is complete when:
 - Context compaction prevents overflow and supports durable session resume.
 - Memory system tracks agent identities and promotes validated knowledge with confidence scoring.
 - Play supports deterministic lane isolation and integration sandbox verification.
-- Agents tab provides unified autonomous agent system with automation, Night Shift, watcher, review, and task agent types.
-- Agent identities provide reusable persona/policy profiles that constrain agent and orchestrator behavior.
-- Night Shift agents execute unattended with hard guardrails and produce reliable morning digests.
-- Morning Briefing provides a swipeable card interface for rapid review of overnight agent results.
+- Missions use configurable phase pipelines with pre-flight validation and tiered quality gates.
+- CTO agent provides persistent project-aware assistance with full memory and context.
+- Night Shift mode in Automations executes overnight tasks with guardrails and produces morning briefings.
+- Morning Briefing (in Automations Night Shift) provides rapid review of overnight results.
 - Desktop and iOS can operate against local and relay machine targets.
 - MCP server safely exposes ADE capabilities to the AI orchestrator and external agent ecosystems.
 - Compute backend abstraction enables lanes to execute on Local, VPS, Daytona (opt-in), or E2B (opt-in) backends.

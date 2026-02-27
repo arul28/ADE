@@ -14,7 +14,7 @@ Goal: Concurrent lane runtimes without collisions. Full lane environment initial
 
 ### Dependencies
 
-- Phase 3 completion package complete (W13-W22 in `phases-1-3.md`).
+- Phase 3 complete (orchestrator autonomy + missions overhaul — see `phase-3.md`).
 
 ### Workstreams
 

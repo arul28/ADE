@@ -135,7 +135,7 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 | `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, pre-compaction writeback, conversation replacement |
 | `messageDelivery` | (in `aiOrchestratorService.ts`) | Inter-agent messaging: `deliverMessageToAgent()`, `parseMentions()`, `routeMessage()`, @mention routing |
 | `memoryService` | `memoryService.ts` | Three-tier memory with sqlite-vec vector search, composite scoring, pre-compaction flush, consolidation, and `.ade/memory/` git sync |
-| `conciergeAgent` | *Planned* | MCP entry point for external agent systems — intent classification, routing to mission/task/review/query handlers, identity-based learned routing |
+| `ctoAgent` | *Planned* | MCP entry point for external agent systems — intent classification, routing to mission/task/review/query handlers, identity-based learned routing |
 | `externalMcpClient` | *Planned* | Connects to external MCP servers for extended agent capabilities — lazy connect, permission integration, tool manifest merging |
 | `adeStateManager` | *Planned* | Manages `.ade/` portable state directory — cross-machine sync via git, embedding regeneration on clone, state integrity checks |
 | `laneEnvironmentService` | *Planned* | Lane environment initialization (env files, ports, Docker, deps) |
@@ -241,11 +241,11 @@ User creates lane
             --> Results displayed in desktop UI
 ```
 
-For external agent integration via the Concierge Agent:
+For external agent integration via the CTO Agent:
 
 ```
 External agent → MCP Server (stdio/socket)
-  → Concierge Agent (intent classification)
+  → CTO Agent (intent classification)
     → Route to handler: Mission launcher | Task agent | Review agent | State reader
       → Execute via ADE internal services
         → Result assembled
@@ -404,11 +404,11 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Memory architecture (scoped namespaces + candidate/promoted lifecycle) | Complete |
 | Shared facts + run narrative | Complete |
 | Memory architecture upgrade (sqlite-vec, hybrid search, composite scoring, pre-compaction flush) | Planned (Phase 4) |
-| Concierge Agent (MCP entry point for external systems) | Planned (Phase 4) |
+| CTO Agent (MCP entry point for external systems) | Planned (Phase 4) |
 | External MCP consumption (agents connect to external MCP servers) | Planned (Phase 4) |
 | `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
 | Compute backend abstraction (Phase 5.5) | Planned |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 focuses on agent-first runtime unification plus four new architectural capabilities: memory architecture upgrade (sqlite-vec vector search, hybrid retrieval, pre-compaction flush), Concierge Agent (external system bridge via MCP), external MCP consumption (agents connecting to third-party MCP servers), and `.ade/` portable state (git-based cross-machine sync). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 focuses on agent-first runtime unification plus four new architectural capabilities: memory architecture upgrade (sqlite-vec vector search, hybrid retrieval, pre-compaction flush), CTO Agent (external system bridge via MCP), external MCP consumption (agents connecting to third-party MCP servers), and `.ade/` portable state (git-based cross-machine sync). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan.md`
