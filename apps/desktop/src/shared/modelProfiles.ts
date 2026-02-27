@@ -216,7 +216,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       validation: CODEX_53,
       codeReview: CLAUDE_SONNET,
       testReview: CODEX_53,
-      integration: CODEX_53,
+      prReview: CODEX_53,
     },
     intelligenceConfig: {
       coordinator: CLAUDE_SONNET,
@@ -250,7 +250,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       validation: CODEX_MINI,
       codeReview: CLAUDE_HAIKU,
       testReview: CODEX_MINI,
-      integration: CODEX_MINI,
+      prReview: CODEX_MINI,
     },
     intelligenceConfig: {
       coordinator: CLAUDE_HAIKU,
@@ -289,7 +289,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       validation: CLAUDE_OPUS,
       codeReview: CLAUDE_OPUS,
       testReview: CLAUDE_SONNET,
-      integration: CODEX_53,
+      prReview: CODEX_53,
     },
     intelligenceConfig: {
       coordinator: CLAUDE_OPUS,
@@ -323,7 +323,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       validation: CODEX_53,
       codeReview: CODEX_53,
       testReview: CODEX_53,
-      integration: CODEX_53,
+      prReview: CODEX_53,
     },
     intelligenceConfig: {
       coordinator: CODEX_53,
@@ -357,7 +357,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       validation: CLAUDE_SONNET,
       codeReview: CLAUDE_SONNET,
       testReview: CLAUDE_HAIKU,
-      integration: CLAUDE_SONNET,
+      prReview: CLAUDE_SONNET,
     },
     intelligenceConfig: {
       coordinator: CLAUDE_SONNET,

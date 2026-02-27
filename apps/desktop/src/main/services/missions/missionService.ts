@@ -21,7 +21,6 @@ import type {
   MissionIntervention,
   MissionInterventionStatus,
   MissionInterventionType,
-  MissionDepthTier,
   MissionPriority,
   MissionsEventPayload,
   MissionStatus,
@@ -34,7 +33,7 @@ import type {
   UpdateMissionArgs,
   UpdateMissionStepArgs
 } from "../../../shared/types";
-import { depthTierToPolicy, DEFAULT_EXECUTION_POLICY } from "../orchestrator/executionPolicy";
+import { DEFAULT_EXECUTION_POLICY } from "../orchestrator/executionPolicy";
 import type { AdeDb } from "../state/kvDb";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import type { MissionPlanStepDraft } from "./missionPlanningService";
@@ -289,7 +288,7 @@ function mergeWithDefaults(partial: Partial<MissionExecutionPolicy>): MissionExe
     validation: { ...base.validation, ...partial.validation },
     codeReview: { ...base.codeReview, ...partial.codeReview },
     testReview: { ...base.testReview, ...partial.testReview },
-    integration: { ...base.integration, ...partial.integration },
+    prReview: { ...(base.prReview ?? { mode: "off" as const }), ...partial.prReview },
     merge: { ...base.merge, ...partial.merge },
     completion: { ...base.completion, ...partial.completion }
   };
@@ -1042,21 +1041,13 @@ export function createMissionService({
         }
         return Object.keys(out).length > 0 ? out : null;
       })();
-      const missionDepthRaw = typeof args.missionDepth === "string" ? args.missionDepth.trim() : "";
-      const missionDepth: MissionDepthTier | null =
-        missionDepthRaw === "light" || missionDepthRaw === "standard" || missionDepthRaw === "deep"
-          ? missionDepthRaw
-          : null;
-
-      // Resolve execution policy: explicit > converted from depth > null
+      // Resolve execution policy from args
       const executionPolicyArg = args.executionPolicy && typeof args.executionPolicy === "object"
         ? (args.executionPolicy as Partial<MissionExecutionPolicy>)
         : null;
       const resolvedExecutionPolicy: MissionExecutionPolicy | null = executionPolicyArg
         ? mergeWithDefaults(executionPolicyArg)
-        : missionDepth
-          ? depthTierToPolicy(missionDepth)
-          : null;
+        : null;
 
       const legacyPlan = buildDeterministicMissionPlan({
         prompt,
@@ -1088,10 +1079,8 @@ export function createMissionService({
           ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {}),
           ...(args.modelConfig ? { modelConfig: args.modelConfig } : {}),
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
-          ...(args.allowParallelSubagents != null ? { allowParallelSubagents: args.allowParallelSubagents } : {}),
-          ...(args.allowAgentTeams != null ? { allowAgentTeams: args.allowAgentTeams } : {})
+          ...(args.teamRuntime ? { teamRuntime: args.teamRuntime } : {})
         },
-        ...(missionDepth ? { missionDepth } : {}),
         ...(resolvedExecutionPolicy ? { executionPolicy: resolvedExecutionPolicy } : {}),
         planner: plannerRun
           ? {
@@ -1497,6 +1486,14 @@ export function createMissionService({
         );
         db.run(
           `
+            delete from orchestrator_timeline_events
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
             delete from orchestrator_claims
             where project_id = ?
               and run_id in (${runPlaceholders})
@@ -1583,6 +1580,15 @@ export function createMissionService({
           `,
           [projectId, ...runIds]
         );
+        // Delete team runtime tables (FK → orchestrator_runs)
+        db.run(
+          `delete from orchestrator_team_members where run_id in (${runPlaceholders})`,
+          [...runIds]
+        );
+        db.run(
+          `delete from orchestrator_run_state where run_id in (${runPlaceholders})`,
+          [...runIds]
+        );
       }
 
       db.run(
@@ -1647,6 +1653,18 @@ export function createMissionService({
           where project_id = ?
             and mission_id = ?
         `,
+        [projectId, missionId]
+      );
+
+      // Delete team runtime tables (FK → orchestrator_runs) before deleting runs
+      db.run(
+        `delete from orchestrator_team_members where mission_id = ?`,
+        [missionId]
+      );
+      db.run(
+        `delete from orchestrator_run_state where run_id in (
+          select id from orchestrator_runs where project_id = ? and mission_id = ?
+        )`,
         [projectId, missionId]
       );
 

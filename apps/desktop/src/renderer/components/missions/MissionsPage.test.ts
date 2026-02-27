@@ -75,7 +75,7 @@ function makeThread(overrides: Partial<OrchestratorChatThread> = {}): Orchestrat
   return {
     id: "mission:mission-1",
     missionId: "mission-1",
-    threadType: "mission",
+    threadType: "coordinator",
     title: "Mission Coordinator",
     runId: "run-1",
     stepId: null,
@@ -520,7 +520,7 @@ describe("resolveMissionChatSelection — thread identity resolution", () => {
   it("distinguishes planner thread from worker thread and keeps selection stable", () => {
     const plannerThread = makeThread({
       id: "planner:mission-1",
-      threadType: "mission",
+      threadType: "coordinator",
       title: "Mission Coordinator",
       stepKey: null
     });
@@ -551,7 +551,7 @@ describe("resolveMissionChatSelection — thread identity resolution", () => {
   it("falls back to mission thread when planner thread disappears", () => {
     const missionThread = makeThread({
       id: "mission:mission-1",
-      threadType: "mission",
+      threadType: "coordinator",
       title: "Mission Coordinator"
     });
     const workerThread = makeThread({

@@ -66,6 +66,35 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
   const [candidates, setCandidates] = useState<CandidateMemory[]>([]);
   const [contextBudget, setContextBudget] = useState<ContextBudget | null>(null);
 
+  const maxTokens = useMemo(
+    () => stats ? Math.max(1, ...stats.byModel.map((m) => m.inputTokens + m.outputTokens)) : 0,
+    [stats]
+  );
+
+  const byProvider = useMemo(() => {
+    if (!stats) return [];
+    const map = new Map<string, { provider: string; sessions: number; inputTokens: number; outputTokens: number; costEstimateUsd: number }>();
+    for (const m of stats.byModel) {
+      const family = (getModelById(m.model) ?? resolveModelAlias(m.model))?.family ?? m.provider;
+      const existing = map.get(family);
+      if (existing) {
+        existing.sessions += m.sessions;
+        existing.inputTokens += m.inputTokens;
+        existing.outputTokens += m.outputTokens;
+        existing.costEstimateUsd += m.costEstimateUsd;
+      } else {
+        map.set(family, {
+          provider: family,
+          sessions: m.sessions,
+          inputTokens: m.inputTokens,
+          outputTokens: m.outputTokens,
+          costEstimateUsd: m.costEstimateUsd,
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens));
+  }, [stats]);
+
   const fetchUsage = useCallback(async () => {
     try {
       const result = await window.ade.orchestrator.getAggregatedUsage({
@@ -148,11 +177,6 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       </div>
     );
   }
-
-  const maxTokens = useMemo(
-    () => Math.max(1, ...stats.byModel.map((m) => m.inputTokens + m.outputTokens)),
-    [stats.byModel]
-  );
 
   const scopeLabel = missionId
     ? `Usage for: ${missionTitle ?? "Selected Mission"}`
@@ -245,6 +269,37 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
                   </div>
                   <div className="h-1.5 overflow-hidden" style={{ background: "#1E1B26", borderRadius: 0 }}>
                     <div className="h-full transition-all" style={{ width: `${pct}%`, backgroundColor: getModelColor(m.model), borderRadius: 0 }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Provider Breakdown */}
+      {byProvider.length > 0 && (
+        <section>
+          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Provider</h3>
+          <div className="flex flex-col gap-1">
+            {byProvider.map((p) => {
+              const total = p.inputTokens + p.outputTokens;
+              const maxProviderTokens = Math.max(1, ...byProvider.map((x) => x.inputTokens + x.outputTokens));
+              const pct = Math.max(2, (total / maxProviderTokens) * 100);
+              return (
+                <div key={p.provider} className="flex flex-col gap-0.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="px-1.5 py-0.5" style={{ background: "#71717A18", color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+                      {p.provider}
+                    </span>
+                    <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                      <span>{p.sessions} sessions</span>
+                      <span>{formatTokens(total)} tokens</span>
+                      <span>{formatCost(p.costEstimateUsd)}</span>
+                    </div>
+                  </div>
+                  <div className="h-1.5 overflow-hidden" style={{ background: "#1E1B26", borderRadius: 0 }}>
+                    <div className="h-full transition-all" style={{ width: `${pct}%`, backgroundColor: "#71717A", borderRadius: 0 }} />
                   </div>
                 </div>
               );

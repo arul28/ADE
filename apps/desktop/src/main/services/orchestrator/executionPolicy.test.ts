@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type {
   MissionExecutionPolicy,
+  OrchestratorRun,
   OrchestratorStep,
   OrchestratorStepStatus,
+  OrchestratorAttempt,
+  OrchestratorClaim,
+  OrchestratorTeamRuntimeState,
   OrchestratorWorkerRole,
   RecoveryLoopPolicy,
   RecoveryLoopState,
@@ -10,14 +14,13 @@ import type {
 } from "../../../shared/types";
 import {
   DEFAULT_EXECUTION_POLICY,
-  depthTierToPolicy,
   resolveExecutionPolicy,
   evaluateRunCompletion,
+  validateRunCompletion,
   stepTypeToPhase,
   phaseModelToExecutorKind,
   roleForStepType,
   validateRoleIsolation,
-
   contextViewForRole,
   evaluateRecoveryLoop
 } from "./executionPolicy";
@@ -46,39 +49,6 @@ function makeStep(overrides: Partial<OrchestratorStep> & { id: string; status: O
 }
 
 describe("executionPolicy", () => {
-  describe("depthTierToPolicy", () => {
-    it("converts light tier to minimal policy", () => {
-      const policy = depthTierToPolicy("light");
-      expect(policy.planning.mode).toBe("off");
-      expect(policy.testing.mode).toBe("none");
-      expect(policy.validation.mode).toBe("off");
-      expect(policy.codeReview.mode).toBe("off");
-      expect(policy.integration.mode).toBe("off");
-      expect(policy.merge.mode).toBe("off");
-      expect(policy.completion.allowCompletionWithRisk).toBe(true);
-    });
-
-    it("converts standard tier to balanced policy", () => {
-      const policy = depthTierToPolicy("standard");
-      expect(policy.planning.mode).toBe("auto");
-      expect(policy.testing.mode).toBe("post_implementation");
-      expect(policy.validation.mode).toBe("optional");
-      expect(policy.codeReview.mode).toBe("off");
-      expect(policy.merge.mode).toBe("off");
-      expect(policy.completion.allowCompletionWithRisk).toBe(true);
-    });
-
-    it("converts deep tier to strict policy", () => {
-      const policy = depthTierToPolicy("deep");
-      expect(policy.planning.mode).toBe("manual_review");
-      expect(policy.testing.mode).toBe("post_implementation");
-      expect(policy.validation.mode).toBe("required");
-      expect(policy.codeReview.mode).toBe("required");
-      expect(policy.merge.mode).toBe("off");
-      expect(policy.completion.allowCompletionWithRisk).toBe(false);
-    });
-  });
-
   describe("resolveExecutionPolicy", () => {
     it("returns default when no sources provided", () => {
       const policy = resolveExecutionPolicy({});
@@ -88,19 +58,9 @@ describe("executionPolicy", () => {
     it("mission metadata takes highest precedence", () => {
       const policy = resolveExecutionPolicy({
         missionMetadata: { testing: { mode: "tdd" } },
-        missionDepthTier: "light",
         projectConfig: { testing: { mode: "none" } }
       });
       expect(policy.testing.mode).toBe("tdd");
-    });
-
-    it("depth tier takes precedence over project config", () => {
-      const policy = resolveExecutionPolicy({
-        missionDepthTier: "deep",
-        projectConfig: { testing: { mode: "none" } }
-      });
-      expect(policy.testing.mode).toBe("post_implementation");
-      expect(policy.codeReview.mode).toBe("required");
     });
 
     it("project config fills in when no mission-level override", () => {
@@ -155,17 +115,6 @@ describe("executionPolicy", () => {
   });
 
   describe("evaluateRunCompletion", () => {
-    it("uses legacy behavior when policy is null", () => {
-      const steps = [
-        makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } }),
-        makeStep({ id: "s2", status: "succeeded", metadata: { stepType: "test" } })
-      ];
-      const result = evaluateRunCompletion(steps, null);
-      expect(result.status).toBe("succeeded");
-      expect(result.completionReady).toBe(true);
-      expect(result.diagnostics).toEqual([]);
-    });
-
     it("succeeds when all required phases are satisfied", () => {
       const policy: MissionExecutionPolicy = {
         planning: { mode: "auto" },
@@ -174,7 +123,7 @@ describe("executionPolicy", () => {
         validation: { mode: "optional" },
         codeReview: { mode: "off" },
         testReview: { mode: "off" },
-        integration: { mode: "off" },
+        prReview: { mode: "off" },
         merge: { mode: "off" },
         completion: { allowCompletionWithRisk: false }
       };
@@ -196,7 +145,7 @@ describe("executionPolicy", () => {
         validation: { mode: "off" },
         codeReview: { mode: "off" },
         testReview: { mode: "off" },
-        integration: { mode: "off" },
+        prReview: { mode: "off" },
         merge: { mode: "off" },
         completion: { allowCompletionWithRisk: true }
       };
@@ -205,13 +154,11 @@ describe("executionPolicy", () => {
         makeStep({ id: "s2", status: "succeeded", metadata: { stepType: "code" } })
       ];
       const result = evaluateRunCompletion(steps, policy);
-      // No test steps exist but testing mode is none, so not required
-      // However planning is required and present → no risk from testing
       expect(result.status).toBe("succeeded");
       expect(result.completionReady).toBe(true);
     });
 
-    it("blocks completion when required phase is missing and risk not allowed", () => {
+    it("treats missing required phases as advisory risk factors (coordinator is sole authority)", () => {
       const policy: MissionExecutionPolicy = {
         planning: { mode: "auto" },
         implementation: { model: "codex" },
@@ -219,18 +166,17 @@ describe("executionPolicy", () => {
         validation: { mode: "required" },
         codeReview: { mode: "required" },
         testReview: { mode: "off" },
-        integration: { mode: "off" },
+        prReview: { mode: "off" },
         merge: { mode: "off" },
         completion: { allowCompletionWithRisk: false }
       };
-      // Only implementation steps, no validation or review
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
       ];
       const result = evaluateRunCompletion(steps, policy);
-      // Missing required phases: planning, testing, validation, codeReview
-      expect(result.diagnostics.some((d) => d.code === "phase_required_missing" && d.blocking)).toBe(true);
-      expect(result.completionReady).toBe(false);
+      // Phase requirements are always advisory — coordinator decides completion
+      expect(result.diagnostics.some((d) => d.code === "phase_required_missing")).toBe(true);
+      expect(result.riskFactors.length).toBeGreaterThan(0);
     });
 
     it("returns succeeded_with_risk when required phase missing but risk allowed", () => {
@@ -241,11 +187,10 @@ describe("executionPolicy", () => {
         validation: { mode: "off" },
         codeReview: { mode: "off" },
         testReview: { mode: "off" },
-        integration: { mode: "off" },
+        prReview: { mode: "off" },
         merge: { mode: "off" },
         completion: { allowCompletionWithRisk: true }
       };
-      // Implementation succeeded, testing required but no test steps
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
       ];
@@ -284,15 +229,224 @@ describe("executionPolicy", () => {
       expect(result.completionReady).toBe(true);
     });
 
-    it("reports running when steps are still in progress", () => {
+    it("reports active when steps are still in progress", () => {
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } }),
         makeStep({ id: "s2", status: "running", metadata: { stepType: "test" } })
       ];
       const result = evaluateRunCompletion(steps, DEFAULT_EXECUTION_POLICY);
-      expect(result.status).toBe("running");
+      expect(result.status).toBe("active");
       expect(result.completionReady).toBe(false);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// validateRunCompletion
+// ─────────────────────────────────────────────────────
+
+function makeRun(overrides?: Partial<OrchestratorRun>): OrchestratorRun {
+  return {
+    id: "run-1",
+    missionId: "m-1",
+    projectId: "p-1",
+    status: "active",
+    contextProfile: "orchestrator_deterministic_v1",
+    schedulerState: "running",
+    createdAt: "2026-02-20T00:00:00.000Z",
+    updatedAt: "2026-02-20T00:00:00.000Z",
+    startedAt: "2026-02-20T00:00:00.000Z",
+    completedAt: null,
+    lastError: null,
+    metadata: null,
+    ...overrides
+  };
+}
+
+function makeAttempt(overrides?: Partial<OrchestratorAttempt>): OrchestratorAttempt {
+  return {
+    id: "att-1",
+    runId: "run-1",
+    stepId: "step-1",
+    attemptNumber: 1,
+    status: "succeeded",
+    executorKind: "codex",
+    executorSessionId: null,
+    trackedSessionEnforced: false,
+    contextProfile: "orchestrator_deterministic_v1",
+    contextSnapshotId: null,
+    errorClass: "none",
+    errorMessage: null,
+    retryBackoffMs: 0,
+    createdAt: "2026-02-20T00:00:00.000Z",
+    startedAt: "2026-02-20T00:00:00.000Z",
+    completedAt: "2026-02-20T00:01:00.000Z",
+    resultEnvelope: null,
+    metadata: null,
+    ...overrides
+  };
+}
+
+function makeClaim(overrides?: Partial<OrchestratorClaim>): OrchestratorClaim {
+  return {
+    id: "claim-1",
+    runId: "run-1",
+    stepId: null,
+    attemptId: null,
+    ownerId: "worker-1",
+    scopeKind: "lane",
+    scopeValue: "lane-1",
+    state: "released",
+    acquiredAt: "2026-02-20T00:00:00.000Z",
+    heartbeatAt: "2026-02-20T00:00:00.000Z",
+    expiresAt: "2026-02-20T01:00:00.000Z",
+    releasedAt: "2026-02-20T00:01:00.000Z",
+    policy: null,
+    metadata: null,
+    ...overrides
+  };
+}
+
+function makeRunState(overrides?: Partial<OrchestratorTeamRuntimeState>): OrchestratorTeamRuntimeState {
+  return {
+    runId: "run-1",
+    phase: "executing",
+    completionRequested: true,
+    completionValidated: false,
+    lastValidationError: null,
+    coordinatorSessionId: "sess-1",
+    teammateIds: [],
+    createdAt: "2026-02-20T00:00:00.000Z",
+    updatedAt: "2026-02-20T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+describe("validateRunCompletion", () => {
+  it("returns canComplete: true when all conditions are met", () => {
+    const run = makeRun();
+    const steps = [makeStep({ id: "s1", status: "succeeded" })];
+    const attempts = [makeAttempt({ status: "succeeded" })];
+    const claims: OrchestratorClaim[] = [];
+    const runState = makeRunState({ completionRequested: true });
+
+    const result = validateRunCompletion(run, steps, attempts, claims, runState);
+    expect(result.canComplete).toBe(true);
+    expect(result.blockers).toHaveLength(0);
+    expect(result.validatedAt).toBeTruthy();
+  });
+
+  it("blocks when attempts are still running", () => {
+    const run = makeRun();
+    const steps = [makeStep({ id: "s1", status: "running" })];
+    const attempts = [makeAttempt({ id: "att-1", status: "running" })];
+    const runState = makeRunState({ completionRequested: true });
+
+    const result = validateRunCompletion(run, steps, attempts, [], runState);
+    expect(result.canComplete).toBe(false);
+    expect(result.blockers.some((b) => b.code === "running_attempts")).toBe(true);
+  });
+
+  it("blocks when attempts are queued", () => {
+    const run = makeRun();
+    const attempts = [makeAttempt({ id: "att-1", status: "queued" })];
+    const runState = makeRunState({ completionRequested: true });
+
+    const result = validateRunCompletion(run, [], attempts, [], runState);
+    expect(result.canComplete).toBe(false);
+    expect(result.blockers.some((b) => b.code === "running_attempts")).toBe(true);
+  });
+
+  it("blocks when steps are in claimed status", () => {
+    const run = makeRun();
+    const steps = [makeStep({ id: "s1", status: "claimed" as OrchestratorStepStatus })];
+    const runState = makeRunState({ completionRequested: true });
+
+    const result = validateRunCompletion(run, steps, [], [], runState);
+    expect(result.canComplete).toBe(false);
+    expect(result.blockers.some((b) => b.code === "claimed_tasks")).toBe(true);
+  });
+
+  it("blocks when there are active task claims", () => {
+    const run = makeRun();
+    const claims = [makeClaim({ state: "active", scopeKind: "task" })];
+    const runState = makeRunState({ completionRequested: true });
+
+    const result = validateRunCompletion(run, [], [], claims, runState);
+    expect(result.canComplete).toBe(false);
+    expect(result.blockers.some((b) => b.code === "claimed_tasks")).toBe(true);
+  });
+
+  it("does not block on active lane claims (only task claims)", () => {
+    const run = makeRun();
+    const claims = [makeClaim({ state: "active", scopeKind: "lane" })];
+    const runState = makeRunState({ completionRequested: true });
+
+    const result = validateRunCompletion(run, [], [], claims, runState);
+    expect(result.blockers.some((b) => b.code === "claimed_tasks")).toBe(false);
+  });
+
+  it("blocks when there are unresolved interventions", () => {
+    const run = makeRun();
+    const runState = makeRunState({ completionRequested: true });
+    const interventions = [{ status: "pending" }, { status: "resolved" }];
+
+    const result = validateRunCompletion(run, [], [], [], runState, interventions);
+    expect(result.canComplete).toBe(false);
+    expect(result.blockers.some((b) => b.code === "unresolved_interventions")).toBe(true);
+  });
+
+  it("does not block when all interventions are resolved", () => {
+    const run = makeRun();
+    const runState = makeRunState({ completionRequested: true });
+    const interventions = [{ status: "resolved" }, { status: "resolved" }];
+
+    const result = validateRunCompletion(run, [], [], [], runState, interventions);
+    expect(result.blockers.some((b) => b.code === "unresolved_interventions")).toBe(false);
+  });
+
+  it("allows completion when completionRequested is false (coordinator is sole authority)", () => {
+    const run = makeRun();
+    const runState = makeRunState({ completionRequested: false });
+
+    const result = validateRunCompletion(run, [], [], [], runState);
+    // completion_not_requested gate removed — calling finalizeRun IS the completion request
+    expect(result.canComplete).toBe(true);
+    expect(result.blockers.some((b) => b.code === "completion_not_requested")).toBe(false);
+  });
+
+  it("allows completion when runState is null (coordinator is sole authority)", () => {
+    const run = makeRun();
+
+    const result = validateRunCompletion(run, [], [], [], null);
+    // completion_not_requested gate removed — the coordinator decides
+    expect(result.canComplete).toBe(true);
+    expect(result.blockers.some((b) => b.code === "completion_not_requested")).toBe(false);
+  });
+
+  it("returns multiple blockers when multiple conditions fail", () => {
+    const run = makeRun();
+    const attempts = [makeAttempt({ status: "running" })];
+    const claims = [makeClaim({ state: "active", scopeKind: "task" })];
+    const interventions = [{ status: "pending" }];
+
+    const result = validateRunCompletion(run, [], attempts, claims, null, interventions);
+    expect(result.canComplete).toBe(false);
+    expect(result.blockers.length).toBeGreaterThanOrEqual(2);
+    const codes = result.blockers.map((b) => b.code);
+    expect(codes).toContain("running_attempts");
+    expect(codes).toContain("unresolved_interventions");
+    // completion_not_requested gate removed — coordinator is sole authority
+    expect(codes).not.toContain("completion_not_requested");
+  });
+
+  it("does not check interventions when not provided", () => {
+    const run = makeRun();
+    const runState = makeRunState({ completionRequested: true });
+
+    const result = validateRunCompletion(run, [], [], [], runState);
+    expect(result.canComplete).toBe(true);
+    expect(result.blockers.some((b) => b.code === "unresolved_interventions")).toBe(false);
   });
 });
 

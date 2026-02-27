@@ -4,15 +4,92 @@
 
 import { spawnSync } from "node:child_process";
 
+type CliName = "claude" | "codex" | "gemini";
+
+type ApiKeySource = "config" | "env" | "store";
+
+export type ApiKeyVerificationResult = {
+  provider: string;
+  ok: boolean;
+  message: string;
+  endpoint?: string;
+  statusCode?: number | null;
+  verifiedAt: string;
+};
+
+export type CliAuthStatus = {
+  cli: CliName;
+  installed: boolean;
+  path: string | null;
+  authenticated: boolean;
+  verified: boolean;
+};
+
 export type DetectedAuth =
-  | { type: "cli-subscription"; cli: "claude" | "codex" | "gemini"; path: string }
-  | { type: "api-key"; provider: string; key: string; source: "config" | "env" }
-  | { type: "openrouter"; key: string }
+  | {
+      type: "cli-subscription";
+      cli: CliName;
+      path: string;
+      authenticated: boolean;
+      verified: boolean;
+    }
+  | { type: "api-key"; provider: string; key: string; source: ApiKeySource }
+  | { type: "openrouter"; key: string; source: ApiKeySource }
   | { type: "local"; provider: "ollama" | "lmstudio" | "vllm"; endpoint: string };
 
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
+  claude: [
+    ["auth", "status", "--json"],
+    ["auth", "status"],
+    ["whoami"],
+  ],
+  codex: [
+    ["auth", "status", "--json"],
+    ["auth", "status"],
+    ["whoami"],
+  ],
+  gemini: [
+    ["auth", "status"],
+    ["whoami"],
+  ],
+};
+
+const AUTH_INDICATORS = [
+  /logged in/i,
+  /authenticated/i,
+  /signed in/i,
+  /active session/i,
+  /account:/i,
+  /token valid/i,
+];
+
+const UNAUTH_INDICATORS = [
+  /not logged in/i,
+  /not authenticated/i,
+  /login required/i,
+  /sign in required/i,
+  /run .*login/i,
+  /unauthorized/i,
+  /forbidden/i,
+  /invalid token/i,
+  /expired/i,
+];
+
+const UNSUPPORTED_INDICATORS = [
+  /unknown command/i,
+  /unrecognized/i,
+  /invalid option/i,
+  /no such option/i,
+  /unexpected argument/i,
+];
+
+function hasPattern(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(text));
+}
 
 function commandExists(command: string): boolean {
   try {
@@ -46,6 +123,45 @@ function commandPath(command: string): string {
   }
 }
 
+function inspectCliAuthentication(cli: CliName): Pick<CliAuthStatus, "authenticated" | "verified"> {
+  const probes = CLI_AUTH_PROBES[cli] ?? [];
+  let sawUnsupported = false;
+
+  for (const args of probes) {
+    try {
+      const result = spawnSync(cli, args, { encoding: "utf8", timeout: 8_000 });
+      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+      const normalized = output.toLowerCase();
+
+      if (hasPattern(normalized, UNAUTH_INDICATORS)) {
+        return { authenticated: false, verified: true };
+      }
+
+      if (result.status === 0 && hasPattern(normalized, AUTH_INDICATORS)) {
+        return { authenticated: true, verified: true };
+      }
+
+      if (result.status === 0 && normalized.length === 0) {
+        return { authenticated: true, verified: true };
+      }
+
+      if (hasPattern(normalized, UNSUPPORTED_INDICATORS)) {
+        sawUnsupported = true;
+      }
+    } catch {
+      // Continue probing fallback commands.
+    }
+  }
+
+  // Backward-compatible behavior: if auth probing is unsupported for this CLI,
+  // treat it as available but mark the status as unverified.
+  if (sawUnsupported) {
+    return { authenticated: true, verified: false };
+  }
+
+  return { authenticated: false, verified: false };
+}
+
 const ENV_KEY_MAP: Record<string, string> = {
   ANTHROPIC_API_KEY: "anthropic",
   OPENAI_API_KEY: "openai",
@@ -56,6 +172,51 @@ const ENV_KEY_MAP: Record<string, string> = {
   GROQ_API_KEY: "groq",
   TOGETHER_API_KEY: "together",
 };
+
+const LOCAL_ENDPOINT_CHECK_TIMEOUT_MS = 500;
+const LOCAL_ENDPOINT_CACHE_TTL_MS = 10_000;
+const API_KEY_VERIFY_TIMEOUT_MS = 8_000;
+
+let cachedLocalProviders:
+  | {
+      checkedAtMs: number;
+      entries: Array<{ provider: "ollama" | "lmstudio" | "vllm"; endpoint: string }>;
+    }
+  | null = null;
+
+function normalizeApiKeys(keys: Record<string, string> | undefined): Record<string, string> {
+  if (!keys) return {};
+  const normalized: Record<string, string> = {};
+
+  for (const [provider, key] of Object.entries(keys)) {
+    const normalizedProvider = provider.trim().toLowerCase();
+    const normalizedKey = String(key ?? "").trim();
+    if (!normalizedProvider || !normalizedKey) continue;
+    normalized[normalizedProvider] = normalizedKey;
+  }
+
+  return normalized;
+}
+
+function normalizeProvider(provider: string): string {
+  return provider.trim().toLowerCase();
+}
+
+function previewResponseBody(body: string, maxChars = 180): string {
+  const text = body.replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}…`;
+}
+
+async function readStoredApiKeys(): Promise<Record<string, string>> {
+  try {
+    const { getAllApiKeys } = await import("./apiKeyStore");
+    return normalizeApiKeys(getAllApiKeys());
+  } catch {
+    return {};
+  }
+}
 
 async function checkLocalEndpoint(url: string, timeoutMs = 2_000): Promise<boolean> {
   try {
@@ -69,64 +230,12 @@ async function checkLocalEndpoint(url: string, timeoutMs = 2_000): Promise<boole
   }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-export async function detectAllAuth(
-  configApiKeys?: Record<string, string>,
-): Promise<DetectedAuth[]> {
-  const results: DetectedAuth[] = [];
-
-  // 1. CLI subscriptions
-  const cliChecks: Array<{ name: "claude" | "codex" | "gemini" }> = [
-    { name: "claude" },
-    { name: "codex" },
-    { name: "gemini" },
-  ];
-  for (const { name } of cliChecks) {
-    if (commandExists(name)) {
-      results.push({ type: "cli-subscription", cli: name, path: commandPath(name) });
-    }
+async function detectLocalProviders(): Promise<Array<{ provider: "ollama" | "lmstudio" | "vllm"; endpoint: string }>> {
+  const now = Date.now();
+  if (cachedLocalProviders && now - cachedLocalProviders.checkedAtMs < LOCAL_ENDPOINT_CACHE_TTL_MS) {
+    return cachedLocalProviders.entries;
   }
 
-  // 2. API keys from config (passed by settings UI / project config)
-  if (configApiKeys) {
-    for (const [provider, key] of Object.entries(configApiKeys)) {
-      if (key && key.trim().length > 0) {
-        if (provider.toLowerCase() === "openrouter") {
-          results.push({ type: "openrouter", key: key.trim() });
-        } else {
-          results.push({ type: "api-key", provider: provider.toLowerCase(), key: key.trim(), source: "config" });
-        }
-      }
-    }
-  }
-
-  // 3. API keys from environment variables
-  for (const [envVar, provider] of Object.entries(ENV_KEY_MAP)) {
-    const value = process.env[envVar];
-    if (value && value.trim().length > 0) {
-      // Skip if already provided via config with the same provider
-      const alreadyFromConfig = results.some(
-        (r) => r.type === "api-key" && r.provider === provider && r.source === "config",
-      );
-      if (!alreadyFromConfig) {
-        results.push({ type: "api-key", provider, key: value.trim(), source: "env" });
-      }
-    }
-  }
-
-  // OpenRouter from env
-  const openrouterKey = process.env.OPENROUTER_API_KEY;
-  if (openrouterKey && openrouterKey.trim().length > 0) {
-    const alreadyPresent = results.some((r) => r.type === "openrouter");
-    if (!alreadyPresent) {
-      results.push({ type: "openrouter", key: openrouterKey.trim() });
-    }
-  }
-
-  // 4. Local providers
   const localEndpoints: Array<{
     provider: "ollama" | "lmstudio" | "vllm";
     url: string;
@@ -138,19 +247,307 @@ export async function detectAllAuth(
 
   const localChecks = await Promise.allSettled(
     localEndpoints.map(async ({ provider, url }) => {
-      const alive = await checkLocalEndpoint(url);
-      if (alive) {
-        const endpoint = url.replace(/\/api\/tags$|\/v1\/models$/, "");
-        return { provider, endpoint } as const;
-      }
-      return null;
+      const alive = await checkLocalEndpoint(url, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
+      if (!alive) return null;
+      const endpoint = url.replace(/\/api\/tags$|\/v1\/models$/, "");
+      return { provider, endpoint } as const;
     }),
   );
 
+  const entries: Array<{ provider: "ollama" | "lmstudio" | "vllm"; endpoint: string }> = [];
   for (const check of localChecks) {
     if (check.status === "fulfilled" && check.value) {
-      results.push({ type: "local", ...check.value });
+      entries.push(check.value);
     }
+  }
+
+  cachedLocalProviders = { checkedAtMs: now, entries };
+  return entries;
+}
+
+function buildApiVerificationRequest(provider: string, key: string): {
+  url: string;
+  init: RequestInit;
+} | null {
+  switch (normalizeProvider(provider)) {
+    case "anthropic":
+      return {
+        url: "https://api.anthropic.com/v1/models",
+        init: {
+          method: "GET",
+          headers: {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+          },
+        },
+      };
+    case "openai":
+      return {
+        url: "https://api.openai.com/v1/models",
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+          },
+        },
+      };
+    case "google":
+      return {
+        url: `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
+        init: { method: "GET" },
+      };
+    case "mistral":
+      return {
+        url: "https://api.mistral.ai/v1/models",
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+          },
+        },
+      };
+    case "deepseek":
+      return {
+        url: "https://api.deepseek.com/v1/models",
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+          },
+        },
+      };
+    case "xai":
+      return {
+        url: "https://api.x.ai/v1/models",
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+          },
+        },
+      };
+    case "groq":
+      return {
+        url: "https://api.groq.com/openai/v1/models",
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+          },
+        },
+      };
+    case "together":
+      return {
+        url: "https://api.together.xyz/v1/models",
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+          },
+        },
+      };
+    case "openrouter":
+      return {
+        url: "https://openrouter.ai/api/v1/auth/key",
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+          },
+        },
+      };
+    default:
+      return null;
+  }
+}
+
+export async function verifyProviderApiKey(
+  provider: string,
+  key: string,
+): Promise<ApiKeyVerificationResult> {
+  const normalizedProvider = normalizeProvider(provider);
+  const verifiedAt = new Date().toISOString();
+  const keyText = String(key ?? "").trim();
+  if (!normalizedProvider) {
+    return {
+      provider: normalizedProvider,
+      ok: false,
+      message: "Provider is required.",
+      statusCode: null,
+      verifiedAt,
+    };
+  }
+  if (!keyText) {
+    return {
+      provider: normalizedProvider,
+      ok: false,
+      message: "No API key configured.",
+      statusCode: null,
+      verifiedAt,
+    };
+  }
+
+  const request = buildApiVerificationRequest(normalizedProvider, keyText);
+  if (!request) {
+    return {
+      provider: normalizedProvider,
+      ok: false,
+      message: "Provider does not support API key verification.",
+      statusCode: null,
+      verifiedAt,
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_KEY_VERIFY_TIMEOUT_MS);
+  try {
+    const response = await fetch(request.url, {
+      ...request.init,
+      signal: controller.signal,
+    });
+
+    if (response.ok) {
+      return {
+        provider: normalizedProvider,
+        ok: true,
+        message: "Connection verified successfully.",
+        endpoint: request.url,
+        statusCode: response.status,
+        verifiedAt,
+      };
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      return {
+        provider: normalizedProvider,
+        ok: false,
+        message: "Authentication failed. Check API key.",
+        endpoint: request.url,
+        statusCode: response.status,
+        verifiedAt,
+      };
+    }
+
+    if (response.status === 429) {
+      return {
+        provider: normalizedProvider,
+        ok: true,
+        message: "Authentication succeeded but provider is rate limiting requests.",
+        endpoint: request.url,
+        statusCode: response.status,
+        verifiedAt,
+      };
+    }
+
+    const body = previewResponseBody(await response.text().catch(() => ""));
+    return {
+      provider: normalizedProvider,
+      ok: false,
+      message: body ? `Verification failed (${response.status}): ${body}` : `Verification failed (${response.status}).`,
+      endpoint: request.url,
+      statusCode: response.status,
+      verifiedAt,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      provider: normalizedProvider,
+      ok: false,
+      message: `Verification request failed: ${message}`,
+      endpoint: request.url,
+      statusCode: null,
+      verifiedAt,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export function detectCliAuthStatuses(): CliAuthStatus[] {
+  const cliChecks: CliName[] = ["claude", "codex", "gemini"];
+
+  return cliChecks.map((cli) => {
+    const installed = commandExists(cli);
+    const path = installed ? commandPath(cli) : null;
+    const auth = installed ? inspectCliAuthentication(cli) : { authenticated: false, verified: false };
+
+    return {
+      cli,
+      installed,
+      path,
+      authenticated: auth.authenticated,
+      verified: auth.verified,
+    };
+  });
+}
+
+export async function detectAllAuth(
+  configApiKeys?: Record<string, string>,
+): Promise<DetectedAuth[]> {
+  const results: DetectedAuth[] = [];
+
+  // 1. CLI subscriptions (connected and authenticated)
+  const cliStatuses = detectCliAuthStatuses();
+  for (const cli of cliStatuses) {
+    if (cli.cli !== "claude" && cli.cli !== "codex") continue;
+    if (!cli.installed) continue;
+    if (!cli.authenticated && cli.verified) continue;
+    results.push({
+      type: "cli-subscription",
+      cli: cli.cli,
+      path: cli.path ?? cli.cli,
+      authenticated: cli.authenticated,
+      verified: cli.verified,
+    });
+  }
+
+  // 2. API keys from config + secure local store
+  const mergedApiKeys = new Map<string, { key: string; source: Exclude<ApiKeySource, "env"> }>();
+  const normalizedConfig = normalizeApiKeys(configApiKeys);
+  const normalizedStore = await readStoredApiKeys();
+
+  for (const [provider, key] of Object.entries(normalizedStore)) {
+    mergedApiKeys.set(provider, { key, source: "store" });
+  }
+
+  for (const [provider, key] of Object.entries(normalizedConfig)) {
+    mergedApiKeys.set(provider, { key, source: "config" });
+  }
+
+  for (const [provider, entry] of mergedApiKeys.entries()) {
+    if (provider === "openrouter") {
+      results.push({ type: "openrouter", key: entry.key, source: entry.source });
+    } else {
+      results.push({
+        type: "api-key",
+        provider,
+        key: entry.key,
+        source: entry.source,
+      });
+    }
+  }
+
+  // 3. API keys from environment variables
+  for (const [envVar, provider] of Object.entries(ENV_KEY_MAP)) {
+    const value = process.env[envVar];
+    if (!value || value.trim().length === 0) continue;
+    if (mergedApiKeys.has(provider)) continue;
+    results.push({ type: "api-key", provider, key: value.trim(), source: "env" });
+  }
+
+  const openrouterKey = process.env.OPENROUTER_API_KEY;
+  if (openrouterKey && openrouterKey.trim().length > 0 && !mergedApiKeys.has("openrouter")) {
+    results.push({ type: "openrouter", key: openrouterKey.trim(), source: "env" });
+  }
+
+  // 4. Local providers
+  const localProviders = await detectLocalProviders();
+  for (const localProvider of localProviders) {
+    results.push({ type: "local", ...localProvider });
   }
 
   return results;

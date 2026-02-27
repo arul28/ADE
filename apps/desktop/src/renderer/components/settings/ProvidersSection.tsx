@@ -1,193 +1,665 @@
-import React, { useEffect, useState } from "react";
-import { CheckCircle, XCircle, Key, Globe, Cpu } from "@phosphor-icons/react";
-import { Button } from "../ui/Button";
-import { cn } from "../ui/cn";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import type {
+  AiApiKeyVerificationResult,
+  AiDetectedAuth,
+  AiSettingsStatus,
+  ProjectConfigSnapshot,
+} from "../../../shared/types";
+import {
+  ArrowsClockwise,
+  CheckCircle,
+  Cpu,
+  Info,
+  WarningCircle,
+  XCircle,
+} from "@phosphor-icons/react";
+import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import {
+  COLORS,
+  MONO_FONT,
+  SANS_FONT,
+  LABEL_STYLE,
+  cardStyle,
+  dangerButton,
+  outlineButton,
+  primaryButton,
+} from "../lanes/laneDesignTokens";
 
-type DetectedCli = {
-  name: string;
-  detected: boolean;
+type CliName = "claude" | "codex" | "gemini";
+type ApiKeySource = "config" | "env" | "store";
+
+const CLI_TOOLS: Array<{ cli: CliName; label: string; description: string }> = [
+  { cli: "claude", label: "Claude Code", description: "Anthropic CLI subscription" },
+  { cli: "codex", label: "Codex", description: "OpenAI Codex subscription" },
+  { cli: "gemini", label: "Gemini CLI", description: "Google Gemini CLI subscription" },
+];
+
+const API_KEY_PROVIDERS: Array<{
+  provider: string;
+  label: string;
+  envVar: string;
+  placeholder: string;
+  accent: string;
+}> = [
+  { provider: "anthropic", label: "Anthropic", envVar: "ANTHROPIC_API_KEY", placeholder: "sk-ant-...", accent: "#D97757" },
+  { provider: "openai", label: "OpenAI", envVar: "OPENAI_API_KEY", placeholder: "sk-...", accent: "#10A37F" },
+  { provider: "google", label: "Google AI", envVar: "GOOGLE_API_KEY", placeholder: "AIza...", accent: "#60A5FA" },
+  { provider: "mistral", label: "Mistral", envVar: "MISTRAL_API_KEY", placeholder: "mistral-...", accent: "#F59E0B" },
+  { provider: "deepseek", label: "DeepSeek", envVar: "DEEPSEEK_API_KEY", placeholder: "sk-...", accent: "#38BDF8" },
+  { provider: "xai", label: "xAI", envVar: "XAI_API_KEY", placeholder: "xai-...", accent: "#A3A3A3" },
+  { provider: "groq", label: "Groq", envVar: "GROQ_API_KEY", placeholder: "gsk_...", accent: "#F43F5E" },
+  { provider: "together", label: "Together AI", envVar: "TOGETHER_API_KEY", placeholder: "tg_...", accent: "#22C55E" },
+  { provider: "openrouter", label: "OpenRouter", envVar: "OPENROUTER_API_KEY", placeholder: "sk-or-...", accent: "#A78BFA" },
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readString(primary: unknown, fallback: unknown, defaultValue: string): string {
+  if (typeof primary === "string" && primary.length > 0) return primary;
+  if (typeof fallback === "string" && fallback.length > 0) return fallback;
+  return defaultValue;
+}
+
+const sectionLabelStyle: React.CSSProperties = {
+  ...LABEL_STYLE,
+  fontSize: 11,
+  marginBottom: 10,
 };
 
-const CLI_TOOLS: Array<{ name: string; label: string; description: string }> = [
-  { name: "claude", label: "Claude Code CLI", description: "Anthropic's coding agent" },
-  { name: "codex", label: "Codex CLI", description: "OpenAI's coding agent" },
-  { name: "gemini", label: "Gemini CLI", description: "Google's coding agent" },
-];
+const groupLabelStyle: React.CSSProperties = {
+  ...LABEL_STYLE,
+  fontSize: 11,
+  marginBottom: 0,
+  color: COLORS.textSecondary,
+};
 
-const API_KEY_PROVIDERS: Array<{ provider: string; label: string; envVar: string; placeholder: string }> = [
-  { provider: "anthropic", label: "Anthropic", envVar: "ANTHROPIC_API_KEY", placeholder: "sk-ant-..." },
-  { provider: "openai", label: "OpenAI", envVar: "OPENAI_API_KEY", placeholder: "sk-..." },
-  { provider: "google", label: "Google AI", envVar: "GOOGLE_API_KEY", placeholder: "AIza..." },
-  { provider: "mistral", label: "Mistral", envVar: "MISTRAL_API_KEY", placeholder: "" },
-  { provider: "deepseek", label: "DeepSeek", envVar: "DEEPSEEK_API_KEY", placeholder: "" },
-  { provider: "xai", label: "xAI (Grok)", envVar: "XAI_API_KEY", placeholder: "" },
-  { provider: "groq", label: "Groq", envVar: "GROQ_API_KEY", placeholder: "" },
-  { provider: "together", label: "Together AI", envVar: "TOGETHER_API_KEY", placeholder: "" },
-  { provider: "openrouter", label: "OpenRouter", envVar: "OPENROUTER_API_KEY", placeholder: "sk-or-..." },
-];
+const selectStyle: React.CSSProperties = {
+  width: "100%",
+  height: 32,
+  padding: "0 8px",
+  fontSize: 12,
+  fontFamily: MONO_FONT,
+  color: COLORS.textPrimary,
+  background: COLORS.recessedBg,
+  border: `1px solid ${COLORS.outlineBorder}`,
+  borderRadius: 0,
+  outline: "none",
+  appearance: "none",
+  WebkitAppearance: "none",
+  cursor: "pointer",
+};
 
-const LOCAL_PROVIDERS: Array<{ provider: string; label: string; defaultEndpoint: string }> = [
-  { provider: "ollama", label: "Ollama", defaultEndpoint: "http://localhost:11434" },
-  { provider: "lmstudio", label: "LM Studio", defaultEndpoint: "http://localhost:1234" },
-];
+function getStatusTone(args: { connected: boolean; warning?: boolean }): { color: string; label: string } {
+  if (args.connected) return { color: COLORS.success, label: "Connected" };
+  if (args.warning) return { color: COLORS.warning, label: "Sign-in Required" };
+  return { color: COLORS.textDim, label: "Not Detected" };
+}
 
-const cardStyle = cn(
-  "rounded-lg border border-border/20 bg-card/60 p-4"
-);
+function CliLogo({ cli }: { cli: CliName }) {
+  if (cli === "claude") return <ClaudeLogo size={24} />;
+  if (cli === "codex") return <CodexLogo size={24} className="text-zinc-100" />;
+  return (
+    <div
+      style={{
+        width: 24,
+        height: 24,
+        display: "grid",
+        placeItems: "center",
+        fontSize: 10,
+        fontWeight: 700,
+        fontFamily: MONO_FONT,
+        color: COLORS.textPrimary,
+        background: COLORS.recessedBg,
+        border: `1px solid ${COLORS.outlineBorder}`,
+      }}
+    >
+      G
+    </div>
+  );
+}
 
-const sectionHeading = cn("text-sm font-medium text-fg mb-3");
+function SourceBadge({ source }: { source: ApiKeySource }) {
+  const color =
+    source === "store" ? COLORS.success : source === "env" ? COLORS.info : COLORS.warning;
+  const label = source === "store" ? "Local Store" : source === "env" ? "Environment" : "Project Config";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "2px 8px",
+        fontSize: 10,
+        fontWeight: 700,
+        fontFamily: MONO_FONT,
+        textTransform: "uppercase",
+        letterSpacing: "1px",
+        color,
+        background: `${color}18`,
+        border: `1px solid ${color}30`,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
 
-function StatusDot({ ok }: { ok: boolean }) {
-  return ok
-    ? <CheckCircle size={16} weight="fill" className="text-emerald-400" />
-    : <XCircle size={16} weight="regular" className="text-zinc-500" />;
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  disabled,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+  disabled?: boolean;
+}) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 4, opacity: disabled ? 0.5 : 1 }}>
+      <span style={LABEL_STYLE}>{label}</span>
+      <div style={{ position: "relative" }}>
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={disabled}
+          style={selectStyle}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <div
+          style={{
+            position: "absolute",
+            right: 8,
+            top: "50%",
+            transform: "translateY(-50%)",
+            pointerEvents: "none",
+            color: COLORS.textMuted,
+            fontSize: 10,
+          }}
+        >
+          &#9662;
+        </div>
+      </div>
+    </label>
+  );
 }
 
 export function ProvidersSection() {
-  const [cliStatus, setCliStatus] = useState<DetectedCli[]>([]);
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+  const [status, setStatus] = useState<AiSettingsStatus | null>(null);
+  const [configSnapshot, setConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
+  const [storedProviders, setStoredProviders] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [savingPermissions, setSavingPermissions] = useState(false);
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
+  const [verificationByProvider, setVerificationByProvider] = useState<Record<string, AiApiKeyVerificationResult>>({});
+  const [workerPermDraft, setWorkerPermDraft] = useState({
+    claudePermissionMode: "acceptEdits" as string,
+    codexSandboxPermissions: "workspace-write" as string,
+    codexApprovalMode: "full-auto" as string,
+  });
 
-  useEffect(() => {
-    detectProviders();
+  const refreshStatus = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [nextStatus, nextStoredProviders, snapshot] = await Promise.all([
+        window.ade.ai.getStatus(),
+        window.ade.ai.listApiKeys(),
+        window.ade.projectConfig.get(),
+      ]);
+
+      setStatus(nextStatus);
+      setStoredProviders(nextStoredProviders.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
+      setConfigSnapshot(snapshot);
+
+      const effectiveAi = isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
+      const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
+      const localPermissions = isRecord(localAi.permissions) ? localAi.permissions : {};
+      const effectivePermissions = isRecord(effectiveAi.permissions) ? effectiveAi.permissions : {};
+      const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
+      const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
+      const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
+      const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
+
+      setWorkerPermDraft({
+        claudePermissionMode: readString(localClaude.permissionMode, effectiveClaude.permissionMode, "acceptEdits"),
+        codexSandboxPermissions: readString(localCodex.sandboxPermissions, effectiveCodex.sandboxPermissions, "workspace-write"),
+        codexApprovalMode: readString(localCodex.approvalMode, effectiveCodex.approvalMode, "full-auto"),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const detectProviders = async () => {
-    setLoading(true);
-    try {
-      const status = await window.ade.ai?.getStatus?.();
-      if (status) {
-        setCliStatus(CLI_TOOLS.map(t => ({
-          name: t.name,
-          detected: status.availableProviders?.[t.name as keyof typeof status.availableProviders] ?? false
-        })));
-      }
-    } catch {
-      setCliStatus(CLI_TOOLS.map(t => ({ name: t.name, detected: false })));
+  useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+
+  const detectedAuth = status?.detectedAuth ?? [];
+
+  const cliAuthMap = useMemo(() => {
+    const map = new Map<CliName, AiDetectedAuth>();
+    for (const entry of detectedAuth) {
+      if (entry.type !== "cli-subscription" || !entry.cli) continue;
+      map.set(entry.cli, entry);
     }
-    setLoading(false);
+    return map;
+  }, [detectedAuth]);
+
+  const apiKeySources = useMemo(() => {
+    const map = new Map<string, ApiKeySource>();
+    for (const entry of detectedAuth) {
+      if (entry.type === "api-key" && entry.provider && entry.source) {
+        map.set(entry.provider.toLowerCase(), entry.source);
+      } else if (entry.type === "openrouter" && entry.source) {
+        map.set("openrouter", entry.source);
+      }
+    }
+    return map;
+  }, [detectedAuth]);
+
+  const localEndpoints = useMemo(() => {
+    const entries: Array<{ provider: string; endpoint: string }> = [];
+    for (const entry of detectedAuth) {
+      if (entry.type !== "local" || !entry.provider || !entry.endpoint) continue;
+      entries.push({ provider: entry.provider, endpoint: entry.endpoint });
+    }
+    return entries;
+  }, [detectedAuth]);
+
+  const claudeConnected = Boolean(cliAuthMap.get("claude")?.authenticated);
+  const codexConnected = Boolean(cliAuthMap.get("codex")?.authenticated);
+
+  const beginEditing = (provider: string) => {
+    setEditingProvider(provider);
+    setEditValue("");
+    setError(null);
+    setNotice(null);
   };
 
-  const handleSaveKey = async (provider: string) => {
-    if (!editValue.trim()) return;
-    try {
-      await window.ade.ai?.storeApiKey?.(provider, editValue.trim());
-      setApiKeys(prev => ({ ...prev, [provider]: editValue.trim() }));
-    } catch {
-      // Fallback: store locally in component state
-      setApiKeys(prev => ({ ...prev, [provider]: editValue.trim() }));
-    }
+  const cancelEditing = () => {
     setEditingProvider(null);
     setEditValue("");
   };
 
-  const handleDeleteKey = async (provider: string) => {
+  const saveApiKey = async (provider: string) => {
+    const trimmed = editValue.trim();
+    if (!trimmed) return;
+
+    setError(null);
+    setNotice(null);
     try {
-      await window.ade.ai?.deleteApiKey?.(provider);
-    } catch { /* ignore */ }
-    setApiKeys(prev => {
-      const next = { ...prev };
-      delete next[provider];
-      return next;
-    });
+      await window.ade.ai.storeApiKey(provider, trimmed);
+      setNotice(`${provider} key saved.`);
+      cancelEditing();
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
-  const maskKey = (key: string): string => {
-    if (key.length <= 8) return "****";
-    return key.slice(0, 4) + "..." + key.slice(-4);
+  const deleteApiKey = async (provider: string) => {
+    setError(null);
+    setNotice(null);
+    try {
+      await window.ade.ai.deleteApiKey(provider);
+      setNotice(`${provider} key removed.`);
+      if (editingProvider === provider) cancelEditing();
+      setVerificationByProvider((prev) => {
+        const next = { ...prev };
+        delete next[provider];
+        return next;
+      });
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const verifyApiKey = async (provider: string) => {
+    setError(null);
+    setNotice(null);
+    setVerifyingProvider(provider);
+    try {
+      const result = await window.ade.ai.verifyApiKey(provider);
+      setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
+      setNotice(result.ok ? `${provider} connection verified.` : `${provider} verification failed.`);
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setVerifyingProvider(null);
+    }
+  };
+
+  const savePermissions = async () => {
+    setError(null);
+    setNotice(null);
+    setSavingPermissions(true);
+    try {
+      const snapshot = configSnapshot ?? (await window.ade.projectConfig.get());
+      const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
+
+      const nextPermissions: Record<string, Record<string, unknown>> = {};
+
+      const claudePermissions: Record<string, unknown> = {};
+      if (workerPermDraft.claudePermissionMode && workerPermDraft.claudePermissionMode !== "acceptEdits") {
+        claudePermissions.permissionMode = workerPermDraft.claudePermissionMode;
+      }
+      if (Object.keys(claudePermissions).length > 0) {
+        nextPermissions.claude = claudePermissions;
+      }
+
+      const codexPermissions: Record<string, unknown> = {};
+      if (workerPermDraft.codexSandboxPermissions && workerPermDraft.codexSandboxPermissions !== "workspace-write") {
+        codexPermissions.sandboxPermissions = workerPermDraft.codexSandboxPermissions;
+      }
+      if (workerPermDraft.codexApprovalMode && workerPermDraft.codexApprovalMode !== "full-auto") {
+        codexPermissions.approvalMode = workerPermDraft.codexApprovalMode;
+      }
+      if (Object.keys(codexPermissions).length > 0) {
+        nextPermissions.codex = codexPermissions;
+      }
+
+      await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: {
+          ...snapshot.local,
+          ai: {
+            ...(snapshot.local.ai ?? {}),
+            ...localAi,
+            permissions: Object.keys(nextPermissions).length > 0 ? nextPermissions : undefined,
+          },
+        },
+      });
+
+      setNotice("Provider permissions saved.");
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingPermissions(false);
+    }
   };
 
   return (
-    <div className="space-y-6 max-w-2xl">
-      <div>
-        <h2 className="text-lg font-semibold text-fg mb-1">AI Providers</h2>
-        <p className="text-xs text-muted-fg">
-          Configure AI model providers. ADE auto-detects CLI subscriptions and supports API keys for direct access.
-        </p>
+    <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 980 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>Providers</h2>
+          <p style={{ marginTop: 6, marginBottom: 0, fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+            Authenticate providers, confirm active connections, and configure execution permissions.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void refreshStatus()}
+          disabled={loading}
+          style={{ ...outlineButton(), opacity: loading ? 0.6 : 1, cursor: loading ? "not-allowed" : "pointer" }}
+        >
+          <ArrowsClockwise size={14} />
+          {loading ? "Refreshing..." : "Refresh"}
+        </button>
       </div>
 
-      {/* CLI Subscriptions Card */}
-      <div className={cardStyle}>
-        <h3 className={sectionHeading}>
-          <Globe size={14} weight="regular" className="inline mr-1.5 -mt-0.5" />
-          CLI Subscriptions
-        </h3>
-        <div className="space-y-2">
-          {CLI_TOOLS.map(tool => {
-            const status = cliStatus.find(c => c.name === tool.name);
+      {notice && (
+        <div
+          style={{
+            padding: "8px 12px",
+            fontSize: 11,
+            fontFamily: MONO_FONT,
+            color: COLORS.success,
+            background: `${COLORS.success}12`,
+            border: `1px solid ${COLORS.success}30`,
+          }}
+        >
+          {notice}
+        </div>
+      )}
+
+      {error && (
+        <div
+          style={{
+            padding: "8px 12px",
+            fontSize: 11,
+            fontFamily: MONO_FONT,
+            color: COLORS.danger,
+            background: `${COLORS.danger}12`,
+            border: `1px solid ${COLORS.danger}30`,
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      <div style={groupLabelStyle}>CONNECTIONS</div>
+
+      <section style={cardStyle()}>
+        <div style={sectionLabelStyle}>CLI CONNECTIONS</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+          {CLI_TOOLS.map((tool) => {
+            const auth = cliAuthMap.get(tool.cli);
+            const connected = Boolean(auth?.authenticated);
+            const warning = Boolean(auth && !auth.authenticated);
+            const tone = getStatusTone({ connected, warning });
+            const verificationText =
+              auth?.verified === false
+                ? "CLI detected, but auth status check is unavailable."
+                : connected
+                  ? "Connection verified."
+                  : warning
+                    ? "CLI detected. Sign in from terminal."
+                    : "CLI not detected.";
+
             return (
-              <div key={tool.name} className="flex items-center justify-between py-1.5">
-                <div>
-                  <span className="text-sm text-fg">{tool.label}</span>
-                  <span className="text-xs text-muted-fg ml-2">{tool.description}</span>
+              <div
+                key={tool.cli}
+                style={{
+                  border: `1px solid ${COLORS.border}`,
+                  borderLeft: `3px solid ${tone.color}`,
+                  padding: 14,
+                  background: COLORS.recessedBg,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <CliLogo cli={tool.cli} />
+                    <div>
+                      <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>
+                        {tool.label}
+                      </div>
+                      <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                        {tool.description}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
+                    {connected ? <CheckCircle size={14} weight="fill" /> : warning ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
+                    <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
+                      {tone.label}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {loading ? (
-                    <span className="text-xs text-muted-fg">Detecting...</span>
-                  ) : (
-                    <>
-                      <StatusDot ok={status?.detected ?? false} />
-                      <span className="text-xs text-muted-fg">
-                        {status?.detected ? "Detected" : "Not found"}
-                      </span>
-                    </>
-                  )}
+                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                  {verificationText}
                 </div>
+                {auth?.path && (
+                  <code
+                    style={{
+                      fontSize: 10,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.textSecondary,
+                      background: `${COLORS.textDim}12`,
+                      border: `1px solid ${COLORS.border}`,
+                      padding: "3px 6px",
+                    }}
+                  >
+                    {auth.path}
+                  </code>
+                )}
               </div>
             );
           })}
         </div>
-      </div>
+      </section>
 
-      {/* API Keys Card */}
-      <div className={cardStyle}>
-        <h3 className={sectionHeading}>
-          <Key size={14} weight="regular" className="inline mr-1.5 -mt-0.5" />
-          API Keys
-        </h3>
-        <p className="text-xs text-muted-fg mb-3">
-          Add API keys to access models directly. Keys are stored locally.
-        </p>
-        <div className="space-y-2">
-          {API_KEY_PROVIDERS.map(p => {
-            const stored = apiKeys[p.provider];
-            const isEditing = editingProvider === p.provider;
+      <section style={cardStyle()}>
+        <div style={sectionLabelStyle}>API KEYS</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {API_KEY_PROVIDERS.map((provider) => {
+            const keySource = apiKeySources.get(provider.provider) ?? (storedProviders.includes(provider.provider) ? "store" : undefined);
+            const verification = verificationByProvider[provider.provider];
+            const isEditing = editingProvider === provider.provider;
 
             return (
-              <div key={p.provider} className="flex items-center justify-between py-1.5 gap-3">
-                <div className="min-w-[100px]">
-                  <span className="text-sm text-fg">{p.label}</span>
+              <div
+                key={provider.provider}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "220px 1fr auto",
+                  gap: 10,
+                  alignItems: "center",
+                  border: `1px solid ${COLORS.border}`,
+                  background: COLORS.recessedBg,
+                  padding: 10,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div
+                    style={{
+                      width: 18,
+                      height: 18,
+                      display: "grid",
+                      placeItems: "center",
+                      fontSize: 9,
+                      fontFamily: MONO_FONT,
+                      color: provider.accent,
+                      border: `1px solid ${provider.accent}60`,
+                      background: `${provider.accent}15`,
+                    }}
+                  >
+                    {provider.label.slice(0, 1).toUpperCase()}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>{provider.label}</div>
+                    <div style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{provider.envVar}</div>
+                  </div>
                 </div>
-                <div className="flex-1 flex items-center gap-2">
+
+                {isEditing ? (
+                  <input
+                    type="password"
+                    value={editValue}
+                    onChange={(event) => setEditValue(event.target.value)}
+                    placeholder={provider.placeholder || `Enter ${provider.label} API key`}
+                    autoFocus
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void saveApiKey(provider.provider);
+                      if (event.key === "Escape") cancelEditing();
+                    }}
+                    style={{
+                      width: "100%",
+                      height: 30,
+                      border: `1px solid ${COLORS.outlineBorder}`,
+                      background: COLORS.pageBg,
+                      color: COLORS.textPrimary,
+                      fontFamily: MONO_FONT,
+                      fontSize: 11,
+                      padding: "0 8px",
+                      outline: "none",
+                    }}
+                  />
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {keySource ? (
+                        <>
+                          <SourceBadge source={keySource} />
+                          <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                            Key is configured
+                          </span>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                          No key configured
+                        </span>
+                      )}
+                    </div>
+                    {verification && (
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontFamily: MONO_FONT,
+                          color: verification.ok ? COLORS.success : COLORS.warning,
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {verification.message}
+                        <span style={{ color: COLORS.textDim }}> ({new Date(verification.verifiedAt).toLocaleTimeString()})</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   {isEditing ? (
                     <>
-                      <input
-                        type="password"
-                        value={editValue}
-                        onChange={e => setEditValue(e.target.value)}
-                        placeholder={p.placeholder || `Enter ${p.label} API key`}
-                        className="flex-1 h-7 rounded-md border border-border/30 bg-background/60 px-2 text-xs text-fg placeholder:text-muted-fg focus:outline-none focus:ring-1 focus:ring-accent/40"
-                        autoFocus
-                        onKeyDown={e => {
-                          if (e.key === "Enter") void handleSaveKey(p.provider);
-                          if (e.key === "Escape") { setEditingProvider(null); setEditValue(""); }
-                        }}
-                      />
-                      <Button size="sm" variant="primary" onClick={() => void handleSaveKey(p.provider)}>Save</Button>
-                      <Button size="sm" variant="ghost" onClick={() => { setEditingProvider(null); setEditValue(""); }}>Cancel</Button>
-                    </>
-                  ) : stored ? (
-                    <>
-                      <code className="text-xs text-muted-fg font-mono">{maskKey(stored)}</code>
-                      <Button size="sm" variant="ghost" onClick={() => { setEditingProvider(p.provider); setEditValue(""); }}>Edit</Button>
-                      <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300" onClick={() => void handleDeleteKey(p.provider)}>Delete</Button>
+                      <button type="button" onClick={() => void saveApiKey(provider.provider)} style={primaryButton()}>
+                        Save
+                      </button>
+                      <button type="button" onClick={cancelEditing} style={outlineButton()}>
+                        Cancel
+                      </button>
                     </>
                   ) : (
                     <>
-                      <span className="text-xs text-muted-fg flex-1">Not configured</span>
-                      <Button size="sm" variant="ghost" onClick={() => { setEditingProvider(p.provider); setEditValue(""); }}>Add Key</Button>
+                      <button
+                        type="button"
+                        onClick={() => beginEditing(provider.provider)}
+                        style={outlineButton()}
+                      >
+                        {keySource ? "Update" : "Add Key"}
+                      </button>
+                      {keySource && (
+                        <button
+                          type="button"
+                          onClick={() => void verifyApiKey(provider.provider)}
+                          disabled={verifyingProvider === provider.provider}
+                          style={{
+                            ...outlineButton(),
+                            opacity: verifyingProvider === provider.provider ? 0.6 : 1,
+                            cursor: verifyingProvider === provider.provider ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {verifyingProvider === provider.provider ? "Verifying..." : "Verify"}
+                        </button>
+                      )}
+                      {storedProviders.includes(provider.provider) && (
+                        <button
+                          type="button"
+                          onClick={() => void deleteApiKey(provider.provider)}
+                          style={dangerButton()}
+                        >
+                          Remove
+                        </button>
+                      )}
                     </>
                   )}
                 </div>
@@ -195,29 +667,165 @@ export function ProvidersSection() {
             );
           })}
         </div>
-      </div>
+      </section>
 
-      {/* Local Models Card */}
-      <div className={cardStyle}>
-        <h3 className={sectionHeading}>
-          <Cpu size={14} weight="regular" className="inline mr-1.5 -mt-0.5" />
-          Local Models
-        </h3>
-        <p className="text-xs text-muted-fg mb-3">
-          Connect to locally-running model servers.
-        </p>
-        <div className="space-y-2">
-          {LOCAL_PROVIDERS.map(lp => (
-            <div key={lp.provider} className="flex items-center justify-between py-1.5">
-              <div>
-                <span className="text-sm text-fg">{lp.label}</span>
-                <span className="text-xs text-muted-fg ml-2">{lp.defaultEndpoint}</span>
+      <section style={cardStyle()}>
+        <div style={sectionLabelStyle}>LOCAL MODEL ENDPOINTS</div>
+        {localEndpoints.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {localEndpoints.map((entry) => (
+              <div
+                key={`${entry.provider}:${entry.endpoint}`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  border: `1px solid ${COLORS.border}`,
+                  background: COLORS.recessedBg,
+                  padding: "10px 12px",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                    {entry.provider}
+                  </div>
+                  <code style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                    {entry.endpoint}
+                  </code>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 5, color: COLORS.success }}>
+                  <Cpu size={14} />
+                  <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
+                    Reachable
+                  </span>
+                </div>
               </div>
-              <span className="text-xs text-muted-fg">Auto-detect</span>
-            </div>
-          ))}
+            ))}
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              padding: "10px 12px",
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.border}`,
+              color: COLORS.textMuted,
+              fontSize: 11,
+              fontFamily: MONO_FONT,
+            }}
+          >
+            <Info size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+            No local model endpoints detected (Ollama, LM Studio, vLLM).
+          </div>
+        )}
+      </section>
+
+      <div style={groupLabelStyle}>EXECUTION SAFETY</div>
+
+      <section style={cardStyle()}>
+        <div style={sectionLabelStyle}>WORKER PERMISSIONS</div>
+        <div
+          style={{
+            fontSize: 10,
+            fontFamily: MONO_FONT,
+            color: COLORS.textMuted,
+            marginBottom: 10,
+            lineHeight: 1.5,
+          }}
+        >
+          These settings control runtime mutation/sandbox behavior for Claude and Codex workers.
         </div>
-      </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+          <div
+            style={{
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.border}`,
+              borderLeft: `3px solid ${claudeConnected ? COLORS.success : COLORS.textDim}`,
+              padding: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <ClaudeLogo size={20} />
+                <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>Claude</span>
+              </div>
+              <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: claudeConnected ? COLORS.success : COLORS.textMuted, textTransform: "uppercase", letterSpacing: "1px" }}>
+                {claudeConnected ? "Connected" : "Unavailable"}
+              </span>
+            </div>
+            <SelectField
+              label="PERMISSION MODE"
+              value={workerPermDraft.claudePermissionMode}
+              disabled={!claudeConnected}
+              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, claudePermissionMode: value }))}
+              options={[
+                { value: "plan", label: "Plan (read-only)" },
+                { value: "acceptEdits", label: "Accept edits" },
+                { value: "bypassPermissions", label: "Bypass permissions" },
+              ]}
+            />
+          </div>
+
+          <div
+            style={{
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.border}`,
+              borderLeft: `3px solid ${codexConnected ? COLORS.success : COLORS.textDim}`,
+              padding: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <CodexLogo size={20} className="text-zinc-100" />
+                <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>Codex</span>
+              </div>
+              <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: codexConnected ? COLORS.success : COLORS.textMuted, textTransform: "uppercase", letterSpacing: "1px" }}>
+                {codexConnected ? "Connected" : "Unavailable"}
+              </span>
+            </div>
+            <SelectField
+              label="SANDBOX MODE"
+              value={workerPermDraft.codexSandboxPermissions}
+              disabled={!codexConnected}
+              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, codexSandboxPermissions: value }))}
+              options={[
+                { value: "read-only", label: "Read-only" },
+                { value: "workspace-write", label: "Workspace write" },
+                { value: "danger-full-access", label: "Danger full access" },
+              ]}
+            />
+            <SelectField
+              label="APPROVAL MODE"
+              value={workerPermDraft.codexApprovalMode}
+              disabled={!codexConnected}
+              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, codexApprovalMode: value }))}
+              options={[
+                { value: "suggest", label: "Suggest" },
+                { value: "auto-edit", label: "Auto-edit" },
+                { value: "full-auto", label: "Full auto" },
+              ]}
+            />
+          </div>
+        </div>
+        <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            onClick={() => void savePermissions()}
+            disabled={savingPermissions}
+            style={{ ...primaryButton(), opacity: savingPermissions ? 0.6 : 1, cursor: savingPermissions ? "not-allowed" : "pointer" }}
+          >
+            {savingPermissions ? "Saving..." : "Save Permissions"}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

@@ -827,7 +827,6 @@ export type ContextOpenDocArgs = {
   path?: string;
 };
 
-/** @deprecated Use ModelId directly. Kept for backward compatibility. */
 export type AgentChatProvider = "codex" | "claude" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
@@ -1722,6 +1721,27 @@ export type AiFeatureUsageRow = {
   dailyLimit: number | null;
 };
 
+export type AiDetectedAuth = {
+  type: "cli-subscription" | "api-key" | "openrouter" | "local";
+  cli?: "claude" | "codex" | "gemini";
+  provider?: string;
+  source?: "config" | "env" | "store";
+  path?: string;
+  endpoint?: string;
+  authenticated?: boolean;
+  verified?: boolean;
+};
+
+export type AiApiKeyVerificationResult = {
+  provider: string;
+  ok: boolean;
+  message: string;
+  source?: "config" | "env" | "store";
+  endpoint?: string;
+  statusCode?: number | null;
+  verifiedAt: string;
+};
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -1733,6 +1753,7 @@ export type AiSettingsStatus = {
     codex: AiModelDescriptor[];
   };
   features: AiFeatureUsageRow[];
+  detectedAuth?: AiDetectedAuth[];
 };
 export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 
@@ -1864,9 +1885,6 @@ export type AiOrchestratorConfig = {
   defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
   /** @deprecated Use defaultExecutionPolicy */
   default_execution_policy?: Partial<MissionExecutionPolicy>;
-  defaultDepthTier?: MissionDepthTier;
-  /** @deprecated Use defaultDepthTier */
-  default_depth_tier?: MissionDepthTier;
   defaultPlannerProvider?: AiTaskProvider;
   /** @deprecated Use defaultPlannerProvider */
   default_planner_provider?: AiTaskProvider;
@@ -1939,7 +1957,7 @@ export type AiIntegrationStatus = {
     codex: AgentChatModelInfo[];
   };
   // New unified fields
-  detectedAuth?: Array<{ type: string; cli?: string; provider?: string }>;
+  detectedAuth?: AiDetectedAuth[];
   availableModelIds?: ModelId[];
 };
 
@@ -2915,23 +2933,12 @@ export type CreateMissionArgs = {
   autostart?: boolean;
   launchMode?: "autopilot" | "manual";
   autopilotExecutor?: OrchestratorExecutorKind;
-  missionDepth?: MissionDepthTier;
   executionPolicy?: Partial<MissionExecutionPolicy>;
   orchestratorModel?: string;
   thinkingBudgets?: Record<string, number>;
-  /** New granular model configuration (takes precedence over orchestratorModel) */
   modelConfig?: MissionModelConfig;
-  /**
-   * Enable parallel sub-agents within worker sessions.
-   * Claude: Task tool for spawning sub-agents (report back only).
-   * Codex: multi_agent mode for parallel threads (worker/explorer/monitor).
-   */
-  allowParallelSubagents?: boolean;
-  /**
-   * Enable agent teams — Claude workers ONLY (Codex does not support this).
-   * Full Claude Code instances with shared task list + direct messaging.
-   */
-  allowAgentTeams?: boolean;
+  /** Team runtime configuration for agent-team orchestration */
+  teamRuntime?: TeamRuntimeConfig;
 };
 
 export type PlanMissionArgs = {
@@ -3043,12 +3050,36 @@ export type MissionsEventPayload = {
 
 export type OrchestratorRunStatus =
   | "queued"
-  | "running"
+  | "bootstrapping"
+  | "active"
   | "paused"
+  | "completing"
   | "succeeded"
   | "succeeded_with_risk"
   | "failed"
   | "canceled";
+
+/** New task-level status for team-based claiming and tracking */
+export type OrchestratorTaskStatus =
+  | "pending"
+  | "ready"
+  | "claimed"
+  | "running"
+  | "blocked"
+  | "done"
+  | "canceled";
+
+/** Map legacy step statuses to task statuses for backward-compatible reads */
+export const LEGACY_STEP_TO_TASK_STATUS: Record<string, OrchestratorTaskStatus> = {
+  pending: "pending",
+  ready: "ready",
+  running: "running",
+  succeeded: "done",
+  failed: "blocked",
+  blocked: "blocked",
+  skipped: "done",
+  canceled: "canceled",
+};
 
 export type OrchestratorStepStatus =
   | "pending"
@@ -3084,7 +3115,7 @@ export type OrchestratorErrorClass =
   | "canceled"
   | "resume_recovered";
 
-export type OrchestratorClaimScope = "lane" | "file" | "env";
+export type OrchestratorClaimScope = "lane" | "file" | "env" | "task";
 
 export type OrchestratorClaimState = "active" | "released" | "expired";
 
@@ -3291,6 +3322,62 @@ export type OrchestratorClaim = {
   releasedAt: string | null;
   policy: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
+};
+
+// ---------------------------------------------------------------------------
+// Team Runtime Types — agent-team-based orchestration
+// ---------------------------------------------------------------------------
+
+export type OrchestratorTeamMemberRole = "coordinator" | "teammate" | "worker";
+
+export type OrchestratorTeamMemberStatus =
+  | "spawning"
+  | "active"
+  | "idle"
+  | "completing"
+  | "terminated"
+  | "failed";
+
+export type OrchestratorTeamMember = {
+  id: string;
+  runId: string;
+  missionId: string;
+  provider: string;
+  model: string;
+  role: OrchestratorTeamMemberRole;
+  sessionId: string | null;
+  status: OrchestratorTeamMemberStatus;
+  claimedTaskIds: string[];
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OrchestratorTeamRuntimePhase =
+  | "bootstrapping"
+  | "planning"
+  | "executing"
+  | "completing"
+  | "done"
+  | "failed";
+
+export type OrchestratorTeamRuntimeState = {
+  runId: string;
+  phase: OrchestratorTeamRuntimePhase;
+  completionRequested: boolean;
+  completionValidated: boolean;
+  lastValidationError: string | null;
+  coordinatorSessionId: string | null;
+  teammateIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Team runtime config for mission launch */
+export type TeamRuntimeConfig = {
+  enabled: boolean;
+  targetProvider: "claude" | "codex" | "auto";
+  teammateCount: number;
 };
 
 export type OrchestratorContextSnapshot = {
@@ -4301,6 +4388,26 @@ export type GetOrchestratorWorkerStatesArgs = {
   runId: string;
 };
 
+export type GetTeamMembersArgs = {
+  runId: string;
+  missionId?: string;
+};
+
+export type GetTeamRuntimeStateArgs = {
+  runId: string;
+};
+
+export type FinalizeRunArgs = {
+  runId: string;
+  force?: boolean;
+};
+
+export type FinalizeRunResult = {
+  finalized: boolean;
+  blockers: string[];
+  finalStatus: OrchestratorRunStatus;
+};
+
 export type OrchestratorPlannerProvider = "claude" | "codex" | "deterministic" | (string & {});
 
 export type StartMissionRunWithAIArgs = {
@@ -4313,6 +4420,8 @@ export type StartMissionRunWithAIArgs = {
   forcePlanReviewBypass?: boolean;
   plannerProvider?: OrchestratorPlannerProvider;
   defaultModelId?: ModelId;
+  /** Team runtime configuration */
+  teamRuntime?: TeamRuntimeConfig;
 };
 
 export type StartMissionRunWithAIResult = {
@@ -4322,53 +4431,13 @@ export type StartMissionRunWithAIResult = {
 };
 
 // ─────────────────────────────────────────────────────
-// Phase 3+: Mission Depth Tiers, Model Capabilities,
-// PM Intelligence, and User Steering
-// ─────────────────────────────────────────────────────
-
-/** @deprecated Use MissionExecutionPolicy instead */
-export type MissionDepthTier = "light" | "standard" | "deep";
-
-/** @deprecated Use MissionExecutionPolicy instead */
-export type MissionDepthConfig = {
-  tier: MissionDepthTier;
-  planning: {
-    useAiPlanner: boolean;
-    plannerModel?: string;
-    maxPlanningTimeMs: number;
-    requirePlanReview: boolean;
-  };
-  execution: {
-    maxParallelWorkers: number;
-    defaultRetryLimit: number;
-    stepTimeoutMs: number;
-    maxTotalTokenBudget: number;
-    maxPerStepTokenBudget: number;
-  };
-  evaluation: {
-    evaluateEveryStep: boolean;
-    evaluationModel?: string;
-    autoAdjustPlan: boolean;
-    autoResolveInterventions: boolean;
-    interventionConfidenceThreshold: number;
-  };
-  context: {
-    contextProfile: OrchestratorContextProfileId;
-    includeNarrative: boolean;
-    docsMode: OrchestratorContextDocsMode;
-  };
-};
-
-// ─────────────────────────────────────────────────────
-// Mission Execution Policy (replaces MissionDepthTier)
+// Mission Execution Policy
 // ─────────────────────────────────────────────────────
 
 export type PlanningPhaseMode = "off" | "auto" | "manual_review";
 export type TestingPhaseMode = "none" | "post_implementation" | "tdd";
 export type GatePhaseMode = "required" | "optional" | "off";
-export type IntegrationPhaseMode = "off" | "auto";
 export type MergePhaseMode = "off";
-/** @deprecated Use ModelId string directly. Kept for backward compatibility. */
 export type PhaseModelChoice = string;
 
 /** Controls how deep the orchestrator goes with PR lifecycle management. Never merges — enforced at orchestrator level. */
@@ -4467,7 +4536,7 @@ export type MissionModelProfile = {
     validation: ModelConfig;
     codeReview: ModelConfig;
     testReview: ModelConfig;
-    integration: ModelConfig;
+    prReview?: ModelConfig;
   };
   intelligenceConfig: OrchestratorIntelligenceConfig;
   smartBudget?: SmartBudgetConfig;
@@ -4495,17 +4564,14 @@ export type MissionExecutionPolicy = {
   validation: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
   codeReview: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
   testReview: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
-  integration: { mode: IntegrationPhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
+  prReview: { mode: "off" | "auto"; model?: PhaseModelChoice; reasoningEffort?: string };
   merge: { mode: "off" };
   completion: { allowCompletionWithRisk: boolean };
   recoveryLoop?: RecoveryLoopPolicy;
   integrationPr?: IntegrationPrPolicy;
   prStrategy?: PrStrategy;
-  useAgentTeams?: boolean;
-  /** Parallel sub-agents: Claude (Task tool) + Codex (multi_agent threads) */
-  parallelSubagents?: boolean;
-  /** Agent teams: Claude-only. Full instances with shared task list + messaging */
-  agentTeams?: boolean;
+  /** Team runtime: spawn coordinator + teammates with shared task list and direct messaging */
+  teamRuntime?: TeamRuntimeConfig;
 };
 
 export type CompletionDiagnostic = {
@@ -4520,11 +4586,24 @@ export type CompletionDiagnostic = {
   blocking: boolean;
 };
 
+export type RunCompletionBlocker = {
+  code: "running_attempts" | "claimed_tasks" | "unresolved_interventions" | "completion_not_requested" | "validation_failed";
+  message: string;
+  detail?: Record<string, unknown>;
+};
+
+export type RunCompletionValidation = {
+  canComplete: boolean;
+  blockers: RunCompletionBlocker[];
+  validatedAt: string;
+};
+
 export type RunCompletionEvaluation = {
   status: OrchestratorRunStatus;
   diagnostics: CompletionDiagnostic[];
   riskFactors: string[];
   completionReady: boolean;
+  validation?: RunCompletionValidation;
 };
 
 export type ModelCapabilityProfile = {
@@ -4554,11 +4633,6 @@ export type SteerMissionResult = {
   response?: string;
 };
 
-/** @deprecated Use MissionExecutionPolicy instead */
-export type GetMissionDepthConfigArgs = {
-  tier: MissionDepthTier;
-};
-
 export type GetModelCapabilitiesResult = {
   profiles: ModelCapabilityProfile[];
 };
@@ -4581,7 +4655,7 @@ export type OrchestratorChatMessage = {
   metadata?: Record<string, unknown> | null;
 };
 
-export type OrchestratorChatThreadType = "mission" | "worker";
+export type OrchestratorChatThreadType = "coordinator" | "teammate" | "worker";
 
 export type OrchestratorChatVisibilityMode = "full" | "digest_only" | "metadata_only";
 
@@ -4591,6 +4665,12 @@ export type OrchestratorChatTarget =
   | {
       kind: "coordinator";
       runId?: string | null;
+    }
+  | {
+      kind: "teammate";
+      runId?: string | null;
+      teamMemberId?: string | null;
+      sessionId?: string | null;
     }
   | {
       kind: "workers";

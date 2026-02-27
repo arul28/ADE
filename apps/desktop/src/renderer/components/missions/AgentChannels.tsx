@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { PaperPlaneTilt, CaretDown, Robot, TerminalWindow, ChatCircle, Hash, Crown, Wrench } from "@phosphor-icons/react";
+import { PaperPlaneTilt, CaretDown, Robot, TerminalWindow, ChatCircle, Hash, Crown, Wrench, UsersThree } from "@phosphor-icons/react";
 import type {
   OrchestratorChatThread,
   OrchestratorChatMessage
@@ -44,17 +44,19 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
   // Auto-select first thread (coordinator) if nothing selected
   useEffect(() => {
     if (!selectedThreadId && threads.length > 0) {
-      const missionThread = threads.find((t) => t.threadType === "mission");
-      setSelectedThreadId(missionThread?.id ?? threads[0].id);
+      const coordThread = threads.find((t) => t.threadType === "coordinator");
+      setSelectedThreadId(coordThread?.id ?? threads[0].id);
     }
   }, [threads, selectedThreadId]);
 
-  // Partition threads into coordinator and workers
-  const { coordinatorThread, activeWorkers, completedWorkers } = useMemo(() => {
-    const coordinator = threads.find((t) => t.threadType === "mission") ?? null;
+  // Partition threads into coordinator, teammates, and workers
+  const { coordinatorThread, teammates, activeWorkers, completedWorkers } = useMemo(() => {
+    const coordinator = threads.find((t) => t.threadType === "coordinator") ?? null;
+    const teammateThreads = threads.filter((t) => t.threadType === "teammate");
     const workers = threads.filter((t) => t.threadType === "worker");
     return {
       coordinatorThread: coordinator,
+      teammates: teammateThreads,
       activeWorkers: workers.filter((t) => t.status === "active"),
       completedWorkers: workers.filter((t) => t.status !== "active")
     };
@@ -70,7 +72,7 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
     const map = new Map<string, string>();
     for (const t of threads) {
       if (t.attemptId) {
-        map.set(t.attemptId, t.title || (t.threadType === "mission" ? "Coordinator" : "Worker"));
+        map.set(t.attemptId, t.title || (t.threadType === "coordinator" ? "Coordinator" : "Worker"));
       }
     }
     return map;
@@ -165,7 +167,7 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
   }, [selectedThreadId, input, sending, onSendMessage, refreshMessages]);
 
   const channelName = selectedThread
-    ? selectedThread.threadType === "mission"
+    ? selectedThread.threadType === "coordinator"
       ? "coordinator"
       : selectedThread.title
     : "...";
@@ -194,6 +196,26 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
               isSelected={selectedThreadId === coordinatorThread.id}
               onClick={() => setSelectedThreadId(coordinatorThread.id)}
             />
+          )}
+
+          {/* Teammates */}
+          {teammates.length > 0 && (
+            <>
+              <div
+                className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider"
+                style={{ color: "#52525B", letterSpacing: "1px", fontFamily: "JetBrains Mono, monospace" }}
+              >
+                TEAMMATES
+              </div>
+              {teammates.map((t) => (
+                <ChannelButton
+                  key={t.id}
+                  thread={t}
+                  isSelected={selectedThreadId === t.id}
+                  onClick={() => setSelectedThreadId(t.id)}
+                />
+              ))}
+            </>
           )}
 
           {/* Active workers */}
@@ -263,13 +285,21 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
           )}
           {/* Thread identity badge in header */}
           {selectedThread && (
-            selectedThread.threadType === "mission" ? (
+            selectedThread.threadType === "coordinator" ? (
               <span
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
                 style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630", borderRadius: 0 }}
               >
                 <Crown size={10} weight="fill" />
-                Planner
+                Coordinator
+              </span>
+            ) : selectedThread.threadType === "teammate" ? (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+                style={{ background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430", borderRadius: 0 }}
+              >
+                <UsersThree size={10} weight="fill" />
+                Teammate
               </span>
             ) : (
               <span
@@ -378,7 +408,8 @@ function ChannelButton({
 }) {
   const displayName = label ?? thread.title;
   const statusColor = STATUS_DOT[thread.status] ?? "#52525B";
-  const isPlanner = thread.threadType === "mission";
+  const isPlanner = thread.threadType === "coordinator";
+  const isTeammate = thread.threadType === "teammate";
   const threadStepKey = thread.stepKey ?? null;
 
   return (
@@ -425,7 +456,15 @@ function ChannelButton({
             style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630", borderRadius: 0 }}
           >
             <Crown size={8} weight="fill" />
-            Planner
+            Coordinator
+          </span>
+        ) : isTeammate ? (
+          <span
+            className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
+            style={{ background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430", borderRadius: 0 }}
+          >
+            <UsersThree size={8} weight="fill" />
+            Teammate
           </span>
         ) : (
           <span

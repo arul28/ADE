@@ -261,6 +261,7 @@ import type {
   StartOrchestratorRunArgs,
   TickOrchestratorRunArgs,
   AiFeatureKey,
+  AiApiKeyVerificationResult,
   AiSettingsStatus,
   GetOrchestratorWorkerStatesArgs,
   OrchestratorWorkerState,
@@ -268,9 +269,13 @@ import type {
   StartMissionRunWithAIResult,
   SteerMissionArgs,
   SteerMissionResult,
-  GetMissionDepthConfigArgs,
-  MissionDepthConfig,
   GetModelCapabilitiesResult,
+  GetTeamMembersArgs,
+  GetTeamRuntimeStateArgs,
+  FinalizeRunArgs,
+  FinalizeRunResult,
+  OrchestratorTeamMember,
+  OrchestratorTeamRuntimeState,
   GetMissionMetricsArgs,
   GetOrchestratorContextCheckpointArgs,
   OrchestratorChatMessage,
@@ -1155,6 +1160,7 @@ export function registerIpc({
       mode: status.mode,
       availableProviders: status.availableProviders,
       models: status.models,
+      detectedAuth: status.detectedAuth,
       features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
         feature,
         enabled: ctx.aiIntegrationService.getFeatureFlag(feature),
@@ -1178,6 +1184,14 @@ export function registerIpc({
     const { listStoredProviders } = await import("../ai/apiKeyStore");
     return listStoredProviders();
   });
+
+  ipcMain.handle(
+    IPC.aiVerifyApiKey,
+    async (_event, arg: { provider: string }): Promise<AiApiKeyVerificationResult> => {
+      const ctx = getCtx();
+      return await ctx.aiIntegrationService.verifyApiKeyConnection(arg.provider);
+    },
+  );
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
@@ -1740,18 +1754,34 @@ export function registerIpc({
   );
 
   ipcMain.handle(
-    IPC.orchestratorGetDepthConfig,
-    async (_event, arg: GetMissionDepthConfigArgs): Promise<MissionDepthConfig> => {
-      const ctx = getCtx();
-      return ctx.aiOrchestratorService.getDepthConfig(arg);
-    }
-  );
-
-  ipcMain.handle(
     IPC.orchestratorGetModelCapabilities,
     async (): Promise<GetModelCapabilitiesResult> => {
       const ctx = getCtx();
       return ctx.aiOrchestratorService.getModelCapabilities();
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetTeamMembers,
+    async (_event, arg: GetTeamMembersArgs): Promise<OrchestratorTeamMember[]> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.getTeamMembers(arg.runId);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetTeamRuntimeState,
+    async (_event, arg: GetTeamRuntimeStateArgs): Promise<OrchestratorTeamRuntimeState | null> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.getRunState(arg.runId);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorFinalizeRun,
+    async (_event, arg: FinalizeRunArgs): Promise<FinalizeRunResult> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.finalizeRun(arg);
     }
   );
 

@@ -151,8 +151,8 @@ export function MissionControlPage({
   const handleComposerSend = useCallback(
     (target: string, content: string) => {
       if (target === "coordinator" || target === "all") {
-        // Find the mission/coordinator thread
-        const coordThread = threads.find((t) => t.threadType === "mission");
+        // Find the coordinator thread
+        const coordThread = threads.find((t) => t.threadType === "coordinator");
         if (coordThread) {
           onSendMessage(coordThread.id, content);
         }

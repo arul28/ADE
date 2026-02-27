@@ -78,6 +78,7 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AiApiKeyVerificationResult,
   AiSettingsStatus,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
@@ -261,8 +262,12 @@ import type {
   StartMissionRunWithAIResult,
   SteerMissionArgs,
   SteerMissionResult,
-  GetMissionDepthConfigArgs,
-  MissionDepthConfig,
+  GetTeamMembersArgs,
+  GetTeamRuntimeStateArgs,
+  FinalizeRunArgs,
+  FinalizeRunResult,
+  OrchestratorTeamMember,
+  OrchestratorTeamRuntimeState,
   GetModelCapabilitiesResult,
   GetMissionMetricsArgs,
   OrchestratorChatMessage,
@@ -326,6 +331,7 @@ declare global {
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;
+        verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
@@ -396,8 +402,10 @@ declare global {
         getWorkerStates: (args: GetOrchestratorWorkerStatesArgs) => Promise<OrchestratorWorkerState[]>;
         startMissionRun: (args: StartMissionRunWithAIArgs) => Promise<StartMissionRunWithAIResult>;
         steerMission: (args: SteerMissionArgs) => Promise<SteerMissionResult>;
-        getDepthConfig: (args: GetMissionDepthConfigArgs) => Promise<MissionDepthConfig>;
         getModelCapabilities: () => Promise<GetModelCapabilitiesResult>;
+        getTeamMembers: (args: GetTeamMembersArgs) => Promise<OrchestratorTeamMember[]>;
+        getTeamRuntimeState: (args: GetTeamRuntimeStateArgs) => Promise<OrchestratorTeamRuntimeState | null>;
+        finalizeRun: (args: FinalizeRunArgs) => Promise<FinalizeRunResult>;
         sendChat: (args: SendOrchestratorChatArgs) => Promise<OrchestratorChatMessage>;
         getChat: (args: GetOrchestratorChatArgs) => Promise<OrchestratorChatMessage[]>;
         listChatThreads: (args: ListOrchestratorChatThreadsArgs) => Promise<OrchestratorChatThread[]>;

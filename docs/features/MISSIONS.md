@@ -41,6 +41,10 @@
   - [Phase 2 Runtime v2 (Implemented)](#phase-2-runtime-v2-implemented)
   - [Phase 3 AI Orchestrator Integration (Implemented)](#phase-3-ai-orchestrator-integration-implemented)
   - [Phase 4 Agent-First Runtime Migration (In Progress)](#phase-4-agent-first-runtime-migration-in-progress)
+  - [Mission Memory Integration](#mission-memory-integration)
+  - [Mission History Portability](#mission-history-portability)
+  - [Cross-Machine Mission Execution](#cross-machine-mission-execution)
+  - [Concierge to Mission Flow](#concierge-to-mission-flow)
 
 ---
 
@@ -602,6 +606,13 @@ Lifecycle/transition coverage:
 - JSONL-based chat transcript files for durable message storage.
 - Session resume for SDK agents: compacted context can bootstrap a resumed session.
 
+#### MCP Dual-Mode Architecture
+- Desktop embeds MCP socket server at `.ade/mcp.sock`, enabling external agents to proxy through the desktop for live UI updates.
+- Headless mode provides full AI capabilities via `aiIntegrationService` (auto-detects `ANTHROPIC_API_KEY`, `claude` CLI, etc.).
+- Transport abstraction layer (`JsonRpcTransport`) supports both stdio (headless) and Unix socket (embedded) transports.
+- Smart entry point auto-detects desktop presence via `.ade/mcp.sock`.
+- Same 35 MCP tools available in both modes.
+
 #### Operational Improvements
 - missionId filter applied to all queries (previously only breakdown).
 - Role isolation between orchestrator and worker agents.
@@ -619,6 +630,51 @@ Lifecycle/transition coverage:
 - Mission steps map to explicit agent definitions and execution classes (`resident` or `task`) with auditable runtime source metadata.
 - Runtime threads stay mission-local; agent home threads remain in Agents tab.
 - Memory writeback and retrieval are policy-bound by scope instead of transcript merge.
+
+### Mission Memory Integration
+
+When a mission starts, the orchestrator receives a rich memory context to inform planning and execution:
+
+- **Project memory (Tier 2)**: Relevant facts for this specific project — architectural decisions, known patterns, API conventions, gotchas. Retrieved from `.ade/memory/` project-scope namespace.
+- **Episodic memories**: Structured summaries of similar past missions — what approaches worked, what failed, which steps caused interventions, and how they were resolved. Enables the orchestrator to avoid repeating past mistakes.
+- **Procedural memories**: Learned workflows for this type of task. For example, if past "add authentication" missions always required a migration step, the planner includes it proactively.
+- **Learning pack entries**: Auto-curated patterns from across missions. These are distilled, high-confidence patterns that have been validated across multiple runs (e.g., "always run lint before test in this repo").
+
+**During mission execution**:
+- Agents emit shared facts (already shipped in Hivemind HW4) that are scoped per-run and per-step. Categories include `api_pattern`, `schema_change`, `config`, `architectural`, and `gotcha`.
+- Shared facts are included in subsequent agent prompts within the same mission, enabling knowledge transfer between steps without explicit message passing.
+
+**After mission completes**:
+- **Episodic memory extraction**: A structured summary of the mission is generated — prompt, plan, step outcomes, duration, key decisions, failure modes, and resolution paths. Written to the episodic memory namespace for future retrieval.
+- **Memory promotion review**: Mission-scoped facts (run namespace) that proved accurate and useful are eligible for promotion to project scope. Promotion is automatic on run completion for facts above the confidence threshold.
+- **Learning pack update**: Patterns observed in this mission are added to or update existing learning pack entries. Duplicate patterns increase confidence; contradictory patterns trigger review.
+- All memory artifacts are written to `.ade/memory/` for git sync across machines.
+
+### Mission History Portability
+
+- Mission run logs are stored in `.ade/history/missions.jsonl` (append-only format).
+- Each entry includes: mission ID, prompt, plan summary, step outcomes (pass/fail/skip), total duration, artifact references, intervention count, and final status.
+- The JSONL format is portable across machines via git — clone the repo and the full mission history is available.
+- Queryable by ADE for episodic memory retrieval: the orchestrator can search history for "last time we did X..." patterns to inform planning.
+- History entries are immutable once written. Corrections or annotations are appended as separate entries referencing the original mission ID.
+
+### Cross-Machine Mission Execution
+
+- Phase 8 enables launching missions on remote machines (VPS, cloud, teammate workstations).
+- Mission results are pushed to git, including both code changes and `.ade/` state (memory, history, artifacts metadata).
+- Real-time progress is visible via relay WebSocket connection — the desktop UI shows live step status, agent output, and narrative updates regardless of where execution occurs.
+- Interventions are routable to any connected device (laptop, phone via mobile-first UI, or another desktop instance). The first device to resolve an intervention wins; others see the resolution.
+- Mission history is accessible from any machine with the repo, enabling seamless context continuity when switching between devices.
+
+### Concierge to Mission Flow
+
+External agents can launch missions via the Concierge Agent, enabling programmatic mission creation from outside ADE:
+
+- **Flow**: External agent → MCP tool call → Concierge Agent → classifies request as dev task → launches mission with prompt + context.
+- **Context enrichment**: The Concierge adds context from its own memory before launching — user preferences (preferred PR strategy, default lane assignments), past routing patterns (similar requests and their outcomes), and project-specific conventions.
+- **Mission lifecycle**: The launched mission follows the standard mission lifecycle (planning → execution → PR). The Concierge monitors progress and can relay status back to the external agent.
+- **Result delivery**: Mission results (PR URLs, summaries, artifacts) are returned via MCP response to the external agent that initiated the request.
+- **Example flow**: An external agent (e.g., OpenClaw) says "Add authentication to the API" → Concierge receives via MCP → classifies as multi-step dev task → launches mission with phased plan → workers execute across lanes → PR opened → result summary returned to OpenClaw via MCP response.
 
 ### Remaining Work
 

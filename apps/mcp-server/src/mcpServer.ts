@@ -18,10 +18,6 @@ type SessionIdentity = {
   runId: string | null;
   attemptId: string | null;
   ownerId: string | null;
-  allowMutations: boolean;
-  allowSpawnAgent: boolean;
-  allowOrchestration: boolean;
-  allowEvaluation: boolean;
 };
 
 type SessionState = {
@@ -924,31 +920,16 @@ function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> 
 function parseInitializeIdentity(params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
-  const role = asTrimmedString(identity.role);
+  const role = asTrimmedString(identity.role) || process.env.ADE_DEFAULT_ROLE || "";
   const validRole: SessionIdentity["role"] =
     role === "orchestrator" || role === "agent" || role === "evaluator" ? role : "external";
 
-  // Default permissions by role
-  const roleDefaults = {
-    external:     { mutations: false, spawn: false, orchestration: false, evaluation: false },
-    agent:        { mutations: false, spawn: false, orchestration: false, evaluation: false },
-    orchestrator: { mutations: true,  spawn: true,  orchestration: true,  evaluation: false },
-    evaluator:    { mutations: false, spawn: false, orchestration: true,  evaluation: true }
-  };
-  const defaults = roleDefaults[validRole];
-
-  // Role defaults are enforced as ceilings — clients cannot self-elevate
-  // beyond what their role permits. A client can only *reduce* permissions.
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? "unknown",
     role: validRole,
     runId: asOptionalTrimmedString(identity.runId),
     attemptId: asOptionalTrimmedString(identity.attemptId),
-    ownerId: asOptionalTrimmedString(identity.ownerId),
-    allowMutations: defaults.mutations && asBoolean(identity.allowMutations, defaults.mutations),
-    allowSpawnAgent: defaults.spawn && asBoolean(identity.allowSpawnAgent, defaults.spawn),
-    allowOrchestration: defaults.orchestration && asBoolean(identity.allowOrchestration, defaults.orchestration),
-    allowEvaluation: defaults.evaluation && asBoolean(identity.allowEvaluation, defaults.evaluation)
+    ownerId: asOptionalTrimmedString(identity.ownerId)
   };
 }
 
@@ -1214,69 +1195,6 @@ async function buildLaneStatus(runtime: AdeMcpRuntime, laneId: string): Promise<
   };
 }
 
-function ensureMutationAuthorized(args: {
-  runtime: AdeMcpRuntime;
-  session: SessionState;
-  laneId?: string | null;
-  toolName: string;
-}): void {
-  if (args.session.identity.allowMutations) return;
-
-  const now = nowIso();
-  const baseWhere = [
-    "project_id = ?",
-    "state = 'active'",
-    "expires_at > ?"
-  ];
-  const baseParams: Array<string> = [args.runtime.projectId, now];
-
-  if (args.session.identity.runId) {
-    baseWhere.push("run_id = ?");
-    baseParams.push(args.session.identity.runId);
-  }
-
-  if (args.session.identity.ownerId) {
-    baseWhere.push("owner_id = ?");
-    baseParams.push(args.session.identity.ownerId);
-  }
-
-  const checkClaim = (scopeKind: "lane" | "env", scopeValues: string[]): boolean => {
-    if (!scopeValues.length) return false;
-    const placeholders = scopeValues.map(() => "?").join(", ");
-    const row = args.runtime.db.get<{ count: number }>(
-      `
-        select count(*) as count
-        from orchestrator_claims
-        where ${baseWhere.join(" and ")}
-          and scope_kind = ?
-          and scope_value in (${placeholders})
-      `,
-      [...baseParams, scopeKind, ...scopeValues]
-    );
-    return Number(row?.count ?? 0) > 0;
-  };
-
-  if (args.laneId) {
-    if (checkClaim("lane", [args.laneId, "*"])) {
-      return;
-    }
-  }
-
-  if (checkClaim("env", ["mcp:mutate", "lane:create", args.toolName, "*"])) {
-    return;
-  }
-
-  throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `Policy denied mutation tool '${args.toolName}'. Active claim required.`);
-}
-
-function ensureSpawnAuthorized(session: SessionState): void {
-  if (session.identity.allowSpawnAgent) return;
-  if (session.identity.role === "orchestrator") return;
-  throw new JsonRpcError(
-    JsonRpcErrorCode.policyDenied,
-    "Policy denied spawn_agent. Only orchestrator sessions may spawn agents."
-  );
-}
 
 // Global ask_user rate limit shared across all sessions to prevent
 // bypass via session recycling. Limits to 20 calls per 60s globally.
@@ -1312,21 +1230,6 @@ function ensureAskUserAllowed(session: SessionState): void {
   GLOBAL_ASK_USER_RATE_LIMIT.events.push(now);
 }
 
-function ensureOrchestrationAuthorized(session: SessionState, toolName: string): void {
-  if (session.identity.allowOrchestration) return;
-  throw new JsonRpcError(
-    JsonRpcErrorCode.policyDenied,
-    `Policy denied orchestration tool '${toolName}'. Requires allowOrchestration.`
-  );
-}
-
-function ensureEvaluationAuthorized(session: SessionState, toolName: string): void {
-  if (session.identity.allowEvaluation) return;
-  throw new JsonRpcError(
-    JsonRpcErrorCode.policyDenied,
-    `Policy denied evaluation tool '${toolName}'. Requires allowEvaluation.`
-  );
-}
 
 async function runTool(args: {
   runtime: AdeMcpRuntime;
@@ -1350,7 +1253,7 @@ async function runTool(args: {
   }
 
   if (name === "create_lane") {
-    ensureMutationAuthorized({ runtime, session, toolName: name, laneId: asOptionalTrimmedString(toolArgs.parentLaneId) });
+
 
     const nameArg = assertNonEmptyString(toolArgs.name, "name");
     const description = asOptionalTrimmedString(toolArgs.description);
@@ -1384,7 +1287,7 @@ async function runTool(args: {
 
   if (name === "merge_lane") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-    ensureMutationAuthorized({ runtime, session, laneId, toolName: name });
+
 
     const message = asOptionalTrimmedString(toolArgs.message);
     const deleteSourceLane = asBoolean(toolArgs.deleteSourceLane, false);
@@ -1399,7 +1302,7 @@ async function runTool(args: {
     }
 
     const parentLaneId = source.parentLaneId;
-    ensureMutationAuthorized({ runtime, session, laneId: parentLaneId, toolName: name });
+
 
     const parent = runtime.laneService.getLaneBaseAndBranch(parentLaneId);
     const preHead = (await runGit(["rev-parse", "HEAD"], { cwd: parent.worktreePath, timeoutMs: 8_000 })).stdout.trim() || null;
@@ -1507,7 +1410,7 @@ async function runTool(args: {
 
   if (name === "run_tests") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-    ensureMutationAuthorized({ runtime, session, laneId, toolName: name });
+
     const suiteId = asOptionalTrimmedString(toolArgs.suiteId);
     const command = asOptionalTrimmedString(toolArgs.command);
     const waitForCompletion = asBoolean(toolArgs.waitForCompletion, true);
@@ -1573,7 +1476,7 @@ async function runTool(args: {
 
   if (name === "commit_changes") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-    ensureMutationAuthorized({ runtime, session, laneId, toolName: name });
+
 
     const message = assertNonEmptyString(toolArgs.message, "message");
     const amend = asBoolean(toolArgs.amend, false);
@@ -1606,7 +1509,7 @@ async function runTool(args: {
   }
 
   if (name === "create_queue") {
-    ensureMutationAuthorized({ runtime, session, toolName: name });
+
     const laneIds = Array.isArray(toolArgs.laneIds)
       ? toolArgs.laneIds.map((entry) => asTrimmedString(entry)).filter(Boolean)
       : [];
@@ -1633,7 +1536,7 @@ async function runTool(args: {
   }
 
   if (name === "create_integration") {
-    ensureMutationAuthorized({ runtime, session, toolName: name });
+
     const sourceLaneIds = Array.isArray(toolArgs.sourceLaneIds)
       ? toolArgs.sourceLaneIds.map((entry) => asTrimmedString(entry)).filter(Boolean)
       : [];
@@ -1659,7 +1562,7 @@ async function runTool(args: {
 
   if (name === "rebase_lane") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-    ensureMutationAuthorized({ runtime, session, laneId, toolName: name });
+
     const aiAssisted = typeof toolArgs.aiAssisted === "boolean" ? toolArgs.aiAssisted : undefined;
     const provider = asOptionalTrimmedString(toolArgs.provider);
     const autoApplyThreshold = typeof toolArgs.autoApplyThreshold === "number" ? toolArgs.autoApplyThreshold : undefined;
@@ -1680,7 +1583,7 @@ async function runTool(args: {
   }
 
   if (name === "land_queue_next") {
-    ensureMutationAuthorized({ runtime, session, toolName: name });
+
     const groupId = assertNonEmptyString(toolArgs.groupId, "groupId");
     const method = assertNonEmptyString(toolArgs.method, "method");
     const autoResolve = typeof toolArgs.autoResolve === "boolean" ? toolArgs.autoResolve : undefined;
@@ -1743,7 +1646,7 @@ async function runTool(args: {
   }
 
   if (name === "spawn_agent") {
-    ensureSpawnAuthorized(session);
+
 
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
@@ -1842,7 +1745,7 @@ async function runTool(args: {
   // ── Mission Lifecycle Tools ──────────────────────────────────────
 
   if (name === "create_mission") {
-    ensureOrchestrationAuthorized(session, name);
+
     const prompt = assertNonEmptyString(toolArgs.prompt, "prompt");
     const title = asOptionalTrimmedString(toolArgs.title);
     const laneId = asOptionalTrimmedString(toolArgs.laneId);
@@ -1870,7 +1773,7 @@ async function runTool(args: {
   }
 
   if (name === "start_mission") {
-    ensureOrchestrationAuthorized(session, name);
+
     const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
     const runMode = asOptionalTrimmedString(toolArgs.runMode) as "autopilot" | "manual" | null;
     const defaultExecutorKind = asOptionalTrimmedString(toolArgs.defaultExecutorKind);
@@ -1894,7 +1797,7 @@ async function runTool(args: {
   }
 
   if (name === "pause_mission") {
-    ensureOrchestrationAuthorized(session, name);
+
     const runId = assertNonEmptyString(toolArgs.runId, "runId");
     const reason = asOptionalTrimmedString(toolArgs.reason);
     const run = runtime.orchestratorService.pauseRun({
@@ -1905,14 +1808,14 @@ async function runTool(args: {
   }
 
   if (name === "resume_mission") {
-    ensureOrchestrationAuthorized(session, name);
+
     const runId = assertNonEmptyString(toolArgs.runId, "runId");
     const run = runtime.orchestratorService.resumeRun({ runId });
     return { run };
   }
 
   if (name === "cancel_mission") {
-    ensureOrchestrationAuthorized(session, name);
+
     const runId = assertNonEmptyString(toolArgs.runId, "runId");
     const reason = asOptionalTrimmedString(toolArgs.reason);
     const result = await runtime.aiOrchestratorService.cancelRunGracefully({
@@ -1923,7 +1826,7 @@ async function runTool(args: {
   }
 
   if (name === "steer_mission") {
-    ensureOrchestrationAuthorized(session, name);
+
     const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
     const directive = assertNonEmptyString(toolArgs.directive, "directive");
     const targetStepKey = asOptionalTrimmedString(toolArgs.targetStepKey);
@@ -1943,7 +1846,7 @@ async function runTool(args: {
   }
 
   if (name === "approve_plan") {
-    ensureOrchestrationAuthorized(session, name);
+
     const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
     const approved = toolArgs.approved === true;
     const feedback = asOptionalTrimmedString(toolArgs.feedback);
@@ -1957,7 +1860,7 @@ async function runTool(args: {
         body: feedback ?? "Plan was rejected by evaluator."
       });
       // Cancel the most recent active run if one exists
-      const runs = runtime.orchestratorService.listRuns({ missionId, status: "running", limit: 1 });
+      const runs = runtime.orchestratorService.listRuns({ missionId, status: "active", limit: 1 });
       let cancelledRunId: string | null = null;
       if (runs.length > 0) {
         try {
@@ -1978,7 +1881,7 @@ async function runTool(args: {
   }
 
   if (name === "resolve_intervention") {
-    ensureOrchestrationAuthorized(session, name);
+
     const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
     const interventionId = assertNonEmptyString(toolArgs.interventionId, "interventionId");
     const statusRaw = assertNonEmptyString(toolArgs.status, "status");
@@ -2087,7 +1990,7 @@ async function runTool(args: {
   // ── Evaluation Tools ─────────────────────────────────────────────
 
   if (name === "evaluate_run") {
-    ensureEvaluationAuthorized(session, name);
+
     const runId = assertNonEmptyString(toolArgs.runId, "runId");
     const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
     const scores = safeObject(toolArgs.scores);
@@ -2368,11 +2271,7 @@ export function createMcpRequestHandler(args: {
       role: "external",
       runId: null,
       attemptId: null,
-      ownerId: null,
-      allowMutations: false,
-      allowSpawnAgent: false,
-      allowOrchestration: false,
-      allowEvaluation: false
+      ownerId: null
     },
     askUserEvents: [],
     askUserRateLimit: {
@@ -2484,9 +2383,6 @@ export function createMcpRequestHandler(args: {
 
       try {
         const result = await auditToolCall(toolName, toolArgs, async () => {
-          // Authorization is handled per-tool inside runTool() where each mutation
-          // tool calls ensureMutationAuthorized() with the correct lane context.
-          // No blanket pre-check here — that caused double-checks with inconsistent scope.
 
           if (
             READ_ONLY_TOOLS.has(toolName) ||

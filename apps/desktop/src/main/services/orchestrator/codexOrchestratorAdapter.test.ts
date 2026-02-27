@@ -35,7 +35,7 @@ function buildMockArgs(overrides: Partial<OrchestratorExecutorStartArgs> = {}): 
       id: "run-1",
       missionId: "mission-1",
       projectId: "proj-1",
-      status: "running",
+      status: "active",
       contextProfile: "orchestrator_deterministic_v1",
       schedulerState: "active",
       createdAt: "2026-02-20T00:00:00.000Z",

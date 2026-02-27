@@ -2141,6 +2141,60 @@ function migrate(db: Database) {
     ["run_id", "fact_type"]
   );
 
+  // Team runtime: persistent team member registry for agent-team orchestration.
+  db.run(`
+    create table if not exists orchestrator_team_members (
+      id text primary key,
+      run_id text not null,
+      mission_id text not null,
+      provider text not null,
+      model text not null,
+      role text not null default 'teammate',
+      session_id text,
+      status text not null default 'spawning',
+      claimed_task_ids_json text not null default '[]',
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(mission_id) references missions(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_team_members_run on orchestrator_team_members(run_id)",
+    "orchestrator_team_members",
+    ["run_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_team_members_mission on orchestrator_team_members(mission_id)",
+    "orchestrator_team_members",
+    ["mission_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_team_members_status on orchestrator_team_members(run_id, status)",
+    "orchestrator_team_members",
+    ["run_id", "status"]
+  );
+
+  // Team runtime: durable run-level state for team lifecycle (phase, completion gating).
+  db.run(`
+    create table if not exists orchestrator_run_state (
+      run_id text primary key,
+      phase text not null default 'bootstrapping',
+      completion_requested integer not null default 0,
+      completion_validated integer not null default 0,
+      last_validation_error text,
+      coordinator_session_id text,
+      teammate_ids_json text not null default '[]',
+      created_at text not null,
+      updated_at text not null,
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+
   // Context compaction engine — transcript persistence for SDK agent sessions.
   db.run(`
     create table if not exists attempt_transcripts (

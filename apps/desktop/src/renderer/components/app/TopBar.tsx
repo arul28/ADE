@@ -123,10 +123,9 @@ export function TopBar({
       {/* Divider */}
       <div className="ade-shell-header-divider h-4 w-px shrink-0" />
 
-      {/* Project tabs — no-drag so clicks work */}
+      {/* Project tabs — the container stays draggable, only interactive elements opt out */}
       <div
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
         {recentProjects.length === 0 && !project ? (
           <button
@@ -135,6 +134,7 @@ export function TopBar({
               "ade-shell-project-tab inline-flex items-center gap-1.5 px-3 py-1",
               "transition-[background-color,color,border-color,box-shadow] duration-150"
             )}
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             onClick={handleOpenNew}
           >
             <Folder size={12} weight="regular" />
@@ -163,6 +163,7 @@ export function TopBar({
                     isCurrent && "font-semibold",
                     isRelocating && "pointer-events-none opacity-80"
                   )}
+                  style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                   onClick={() => {
                     if (!isMissing) handleSwitchProject(rp.rootPath);
                   }}
@@ -269,6 +270,7 @@ export function TopBar({
           data-variant="ghost"
           onClick={handleOpenNew}
           title="Open another project"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
           <Plus size={12} weight="regular" />
         </button>

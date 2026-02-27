@@ -10,7 +10,7 @@ export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
     buildOverrideCommand: ({ prompt }) =>
       `exec claude -p ${shellEscapeArg(prompt)}`,
 
-    buildStartupCommand: ({ prompt, model, step, permissionConfig, agentCapabilities }) => {
+    buildStartupCommand: ({ prompt, model, step, permissionConfig, teamRuntime }) => {
       // Fallback chain: step metadata -> project config -> default
       const permissionMode =
         typeof step.metadata?.permissionMode === "string" && step.metadata.permissionMode.trim().length
@@ -41,9 +41,9 @@ export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
 
       commandParts.push("-p", shellEscapeArg(prompt));
 
-      // Build env var prefix for agent capabilities
+      // Team runtime env vars — enable native teams when ADE team runtime is active
       const envParts: string[] = [];
-      if (agentCapabilities?.agentTeams) {
+      if (teamRuntime?.enabled && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")) {
         envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
       }
 

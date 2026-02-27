@@ -40,6 +40,9 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
     - 10.8 [Artifacts](#108-artifacts)
     - 10.9 [Learning Packs](#109-learning-packs)
     - 10.10 [Development Modes](#1010-development-modes)
+    - 10.11 [Cross-Machine Portability](#1011-cross-machine-portability)
+    - 10.12 [External Agent Bridge](#1012-external-agent-bridge)
+    - 10.13 [Agent Execution Model](#1013-agent-execution-model)
 11. [Security and Privacy](#11-security-and-privacy)
 12. [Configuration Model](#12-configuration-model)
 13. [Non-Goals and Out of Scope](#13-non-goals-and-out-of-scope)
@@ -74,6 +77,16 @@ Software teams increasingly use AI coding agents (Claude Code, Codex, Cursor, an
 ADE is the orchestration layer for agentic development. It watches what each agent does, tracks context through immutable checkpoints and durable packs, predicts conflicts between parallel work, and surfaces integration risks before they become merge nightmares. Its AI orchestrator -- powered by native agent SDKs and a local MCP server -- can plan multi-step missions, spawn agents into isolated lanes, inject context packs into agent prompts, and route human interventions back through the ADE UI. The orchestrator acts as a smart PM: an AI meta-reasoner selects optimal dispatch strategies (sequential, parallel, wave, or adaptive fan-out), agents communicate in real time through @mentions, a compaction engine prevents context overflow in long-running missions, and a scoped memory architecture enables knowledge to flow between agents and persist across missions. All AI execution is subscription-powered: developers use their existing Claude Pro/Max or ChatGPT Plus subscriptions through CLI tools spawned as subprocesses, with no separate accounts or credentials required.
 
 Think of ADE as "mission control for agentic development."
+
+### ADE's Role in the Agent Ecosystem
+
+ADE is a **development orchestration control plane** -- it does not try to be a general-purpose agent platform. Agents in ADE have a specific job: they write code, push to git, and open pull requests. Everything in ADE's architecture is optimized for that workflow.
+
+ADE exposes its full infrastructure via the MCP server (35+ tools), enabling external agent systems to orchestrate development through ADE programmatically. An external agent platform like OpenClaw can connect to ADE's MCP server to launch missions, read context packs, check for conflicts, and monitor progress -- all without touching ADE's UI. This makes ADE a first-class development backend for the broader agent ecosystem.
+
+Users can build personal agent setups on top of ADE. For example, a **"Virtual Me" (V) agent** running on an external orchestration platform could serve as the user's single entry point for all tasks -- delegating development work to ADE via MCP, research to research agents, scheduling to calendar agents, and communication to messaging agents. V observes ADE's outputs the same way a human developer would: by reading the repo (git log, `.ade/` state files, PR results). ADE does not need to "report to V" -- the `.ade/` directory, MCP server, and Concierge Agent provide everything V needs to interact with ADE programmatically. This is a user-land concern: ADE provides the infrastructure and the MCP surface, but the composition of higher-level agent workflows is up to the user. See `final-plan/appendix.md` Section 11.3 for detailed V concept documentation.
+
+The Concierge Agent (Phase 4 in `docs/final-plan.md`) is ADE's designated entry point for external systems. It receives development requests -- whether from a user, an external agent, or a webhook -- and routes them to the appropriate internal workflow: mission planning, agent spawning, context retrieval, or human-in-the-loop escalation.
 
 ADE does not replace the IDE or the git CLI. It integrates deeply with external agent CLIs via tracked sessions, agent flows, and first-class mission/orchestrator execution as defined in `docs/final-plan.md`.
 
@@ -146,11 +159,19 @@ An automatic process that prevents context overflow in long-running agent sessio
 
 ### Memory Scopes
 
-A scoped memory architecture organizes mission context into `runtime-thread`, `run`, `project`, `identity`, and `daily-log` namespaces. Context entries are promoted by policy and confidence, with provenance retained for auditability.
+A scoped memory architecture organizes mission context into `runtime-thread`, `run`, `project`, `identity`, and `daily-log` namespaces. Context entries are promoted by policy and confidence, with provenance retained for auditability. Memory is further organized into three retrieval tiers -- Core (always in context), Hot (vector-retrieved on demand), and Cold (archival) -- and four ownership scopes: identity (per-agent), project (shared), mission (per-run), and session (ephemeral). See Section 10.5 for the full memory architecture.
 
 ### Per-Task-Type Model Routing
 
 Users can configure which AI model and provider to use for each task type. Task types include planning, implementation, review, conflict resolution, narratives, and PR descriptions. For example, a user might configure Claude for planning and code review while using Codex for implementation tasks.
+
+### Concierge Agent
+
+The designated entry point for external systems connecting to ADE (Phase 4). The Concierge receives development requests -- from external agents, webhooks, or programmatic MCP calls -- and routes them to the appropriate internal workflow (mission planning, agent spawning, context retrieval, or human escalation). See Section 10.12.
+
+### External Agent Bridge
+
+The MCP server's role as a bidirectional bridge between ADE and the broader agent ecosystem. External agents connect inbound to use ADE as a development backend; ADE agents connect outbound to consume external tool ecosystems. See Section 10.12.
 
 ### Job Engine
 
@@ -435,6 +456,12 @@ See: [features/PACKS.md](features/PACKS.md)
 
 Agents are ADE's unified system for autonomous behavior. The Agents tab (renamed from Automations in Phase 4) is the hub where users create, configure, and monitor agents that perform work on their behalf. Agent types include task agents (one-off background tasks with custom instructions and completion behaviors), automation agents (wrapping the existing trigger-action engine), Night Shift agents (scheduled unattended execution), watcher agents (resource monitors), and review agents (PR pre-reviewers). Each agent combines an identity, trigger, behavior, and guardrails. The Morning Briefing provides a swipeable card interface for reviewing overnight results. Agents are configured in `.ade/ade.yaml` or `.ade/local.yaml` under the `agents:` key and can be managed from the Agents tab or Settings.
 
+**Agent Execution Model**: Agents are NOT continuously running model processes. They are **durable definitions** that are triggered by events, schedules, or explicit user actions. "Always-on" means always *available* to respond, not always *thinking* or consuming compute. When an agent is invoked, its state is reconstructed from durable storage in the `.ade/` directory -- identity files, memory scopes, learning packs, and mission context are loaded fresh for each invocation. Between invocations, agents consume zero resources.
+
+**Agent Identity Persistence**: Each agent's identity is defined by a versioned identity file stored in `.ade/agents/`. Identity files capture the agent's persona (name, role, behavioral traits), policy profile (what it is allowed to do autonomously vs. what requires escalation), and accumulated preferences. Identity files are versioned alongside the project, enabling reproducible agent behavior across machines and over time.
+
+**Context Window Optimization**: ADE separates business context from code context in agent prompts, inspired by the ZOE/CODEX split pattern. Business context (mission intent, acceptance criteria, architectural constraints) is injected as a structured preamble. Code context (diffs, file contents, test results) is streamed on-demand via MCP tools. This separation allows the orchestrator to maximize the useful information density within each agent's context window. Additional techniques include observation masking (filtering out irrelevant tool output before it enters context) and importance classification (tagging context entries by criticality so that compaction preserves the most valuable information).
+
 See: [features/AGENTS.md](features/AGENTS.md)
 
 ### 10.3 Workspace Graph
@@ -497,6 +524,34 @@ The AI Integration Layer provides narrative augmentation, conflict resolution pr
 
 Candidate entries are promoted by relevance/confidence and policy. The Context Budget Panel in the mission UI shows real-time memory retrieval and promotion status.
 
+**Three-Tier Memory Model**: Agent memory is organized into three tiers based on access frequency and context cost:
+
+- **Core Memory** (~2-4K tokens): Always present in the agent's context window. Contains agent identity, current mission objective, critical project constraints, and active task state. This tier is never evicted -- it defines the baseline context that every invocation starts with.
+- **Hot Memory** (retrieved on demand): Stored in a local vector database and retrieved via semantic search when relevant to the current task. Includes recent mission outcomes, learned patterns, project conventions, and frequently-referenced architectural decisions. Retrieved entries are scored and injected into context only when their relevance exceeds a configurable threshold.
+- **Cold Memory** (archival): Rarely accessed historical data including old mission transcripts, superseded decisions, and low-confidence observations. Cold memory is queryable but never automatically injected. It serves as a long-term knowledge base that can be surfaced on explicit request.
+
+**Memory Scopes (Extended)**: Beyond the runtime namespaces above, memory is also scoped by ownership:
+- **Identity scope**: Per-agent memory that persists across all missions and sessions. Captures the agent's learned preferences, behavioral calibration, and accumulated expertise. Stored in `.ade/agents/<agent-id>/memory/`.
+- **Project scope**: Shared across all agents working on the same project. Captures architectural rules, coding conventions, known pitfalls, and team preferences. Stored in `.ade/memory/project/`.
+- **Mission scope**: Per-mission-run memory that captures decisions, intermediate findings, and coordination state for agents within a single mission. Discarded or archived when the mission completes.
+- **Session scope**: Ephemeral conversational memory that exists only for the duration of a single agent invocation. Used for short-term reasoning and working memory. Not persisted.
+
+**Memory Innovations**:
+- **Pre-compaction flush**: Before the compaction engine summarizes context, all in-flight memories are explicitly saved to their appropriate durable tier. This prevents knowledge loss at compaction boundaries -- the most common failure mode in long-running agent sessions.
+- **Memory consolidation**: When new memories overlap with existing entries, a consolidation pass applies one of four operations: PASS (keep both), REPLACE (new supersedes old), APPEND (merge into richer entry), or DELETE (new evidence invalidates old). This prevents memory bloat from redundant observations.
+- **Temporal decay**: Memory entries have a half-life (default 30 days). Relevance scores decay over time unless entries are reinforced by repeated access or explicit user confirmation. This ensures that stale knowledge gradually fades while actively-useful knowledge remains prominent.
+- **Composite scoring for retrieval**: Hot memory retrieval uses a composite score combining semantic similarity, recency, access frequency, confidence level, and explicit importance tags. This multi-signal approach produces better retrieval quality than pure vector similarity.
+
+**Vector Search**: Memory retrieval is powered by `sqlite-vec`, an embedded SQLite extension for vector similarity search. This keeps all memory infrastructure local -- no external vector databases or cloud services required. Embeddings are generated locally using lightweight models and stored alongside memory entries in the SQLite database.
+
+**Episodic Memory**: Structured summaries of completed sessions and missions. Each episodic entry captures what happened (actions taken), why (decisions and rationale), what was learned (new knowledge or corrections), and the outcome (success, failure, or partial). Episodic memories enable agents to learn from past experience across missions.
+
+**Procedural Memory**: Learned workflows and tool-usage patterns that improve agent efficiency over time. When an agent discovers an effective sequence of tool calls for a recurring task type (e.g., "run tests, check coverage, fix failures, re-run"), the pattern is captured as procedural memory and suggested in future similar contexts.
+
+**Design Influences**: The memory architecture synthesizes patterns from several production systems and research projects — MemGPT/Letta (tiered memory with agent-managed read/write), Mem0 (PASS/REPLACE/APPEND/DELETE consolidation), CrewAI (composite scoring with multi-signal retrieval), OpenClaw (pre-compaction flush, hybrid BM25+vector search), LangMem/LangChain (episodic/procedural memory taxonomy), A-MEM (Zettelkasten-inspired linking), and JetBrains' NeurIPS 2025 research (observation masking outperforms LLM summarization). Detailed attribution is documented in `features/AGENTS.md` and `final-plan/phase-4.md`.
+
+**Learning Pack Integration**: Learning packs (Section 10.9) feed into the memory system as high-confidence project-scope entries. Confirmed learning pack entries are promoted to core or hot memory based on their relevance to the current task. The memory system and learning packs share a unified confidence scoring model.
+
 **Per-task-type model routing**: Users configure which model/provider handles each task type in Settings. The AI Integration Layer routes requests accordingly, allowing mixed-provider workflows (e.g., Claude for planning, Codex for implementation).
 
 **Cost controls**: Execution is tied to session boundaries, not keystrokes. Context pack exports are bounded by default. The orchestrator context profile excludes narrative text unless explicitly opted in. Content-hash caching avoids redundant work.
@@ -558,6 +613,70 @@ ADE supports two complementary modes of work:
 
 The Agents tab is the unified launch pad and monitoring view for all background work. Users configure what the agent does, where it runs, and what it produces when done.
 
+### 10.11 Cross-Machine Portability
+
+ADE state is designed to be portable across machines without any dedicated sync service, hub, or event bus. **Git IS the sync layer.** Agents write code, commit, and push. Other machines pull. The core development workflow -- code changes flowing through git -- is inherently cross-machine.
+
+ADE stores all of its own state in the `.ade/` directory at the project root:
+- **Agent definitions**: `.ade/agents/` (identity files, memory, configuration)
+- **Memory**: `.ade/memory/` (project-scope knowledge, learning pack entries)
+- **Packs**: `.ade/packs/` (context versions, materialized views)
+- **History**: `.ade/history/` (checkpoints, events, mission records)
+- **Artifacts**: `.ade/artifacts/` (screenshots, videos, test results)
+- **Configuration**: `.ade/ade.yaml` (shared baseline), `.ade/local.yaml` (machine-specific overrides)
+
+The `.ade/` directory is committable to the repository. By committing `.ade/` (or syncing it via a dedicated branch), any machine that clones the repository gets the full ADE state -- agent definitions, accumulated memory, learning packs, mission history, and project configuration. Open ADE on a new machine, point it at the repo, and it reads `.ade/` to reconstruct the complete picture.
+
+Machine-specific state (local overrides, cache, active terminal sessions) stays in `.ade/local.yaml` and `.ade/cache/`, which are git-ignored by default. Everything else is portable.
+
+Phase 8 (Relay) in `docs/final-plan.md` adds remote execution routing -- for example, launching a mission on a Mac Mini from a laptop. But even with relay, the state sync mechanism remains git-based. The relay handles execution dispatch, not state replication.
+
+### 10.12 External Agent Bridge
+
+ADE's MCP server is the bridge between ADE's internal infrastructure and the external agent ecosystem. Any agent system that speaks MCP (JSON-RPC 2.0 over stdio) can connect to ADE and use it as a development backend.
+
+**Inbound: External Agents Using ADE**
+
+External agent platforms (OpenClaw, Claude Code, Codex, custom agent frameworks) connect to ADE's MCP server to access 35+ tools spanning the full development lifecycle:
+- **Mission management**: `create_mission`, `start_mission`, `get_mission`, `steer_mission`, `pause_mission`, `resume_mission`, `cancel_mission`
+- **Agent orchestration**: `spawn_agent`, `get_worker_states`, `resolve_intervention`
+- **Context and memory**: `read_context`, `get_timeline`, `get_step_output`
+- **Lane management**: `create_lane`, `list_lanes`, `get_lane_status`, `merge_lane`, `rebase_lane`
+- **Quality gates**: `run_tests`, `check_conflicts`, `simulate_integration`, `evaluate_run`
+- **User interaction**: `ask_user`, `approve_plan`, `commit_changes`
+- **Observability**: `get_run_graph`, `get_mission_metrics`, `get_pr_health`, `stream_events`
+
+The Concierge Agent (Phase 4) is ADE's designated router for incoming external requests. When an external agent connects and submits a development request, the Concierge analyzes the request, determines the appropriate workflow (new mission, context query, conflict check, etc.), and routes it internally. This prevents external systems from needing to understand ADE's internal orchestration model.
+
+**Outbound: ADE Agents Using External Tools**
+
+Starting in Phase 4+, ADE agents can also consume external MCP servers, letting them reach into external tool ecosystems. For example, an ADE agent could connect to a design system MCP server to fetch component specs, or a project management MCP server to read ticket details and update status. This bidirectional MCP capability positions ADE as both a provider and consumer in the MCP ecosystem.
+
+**Example Flow**: OpenClaw agent receives a user request ("implement the auth module") -> connects to ADE MCP -> Concierge Agent receives the request -> creates a mission -> orchestrator plans and spawns dev agents -> agents work in isolated lanes -> mission completes -> PR is opened -> result flows back to OpenClaw via MCP.
+
+### 10.13 Agent Execution Model
+
+This section clarifies the runtime characteristics of ADE agents, complementing the agent type definitions in Section 10.2.
+
+**Event-Driven, Not Continuously Running**: ADE agents are durable definitions, not persistent model processes. An agent definition (stored in `.ade/agents/`) specifies identity, triggers, behavior, and guardrails. The agent "exists" as a configuration at rest and only becomes a running model process when triggered by an event (mission dispatch, schedule, user action, or external MCP call). Between invocations, agents consume no compute resources.
+
+**State Reconstruction Per Invocation**: When an agent is invoked, ADE reconstructs its full state from durable storage:
+1. **Identity**: Loaded from the versioned identity file in `.ade/agents/<agent-id>/`.
+2. **Core memory**: Injected from the agent's core memory tier (~2-4K tokens of always-present context).
+3. **Hot memory**: Retrieved via vector search based on the current task description.
+4. **Project context**: Loaded from project-scope packs and learning pack entries.
+5. **Mission context**: If part of a mission, loaded from the mission's shared run memory.
+
+This reconstruction pattern means agents can be invoked on any machine that has the `.ade/` directory, supporting the cross-machine portability model (Section 10.11).
+
+**"Always-On" Means Always Available**: When ADE documentation or UI describes an agent as "always-on," this means the agent is always *available* to respond to its triggers -- not that it is always *thinking* or consuming a model context window. A Night Shift agent is "always-on" in the sense that it will activate at its scheduled time, every time, without manual intervention. Between activations, it is inert.
+
+**Context Window Strategy**: ADE optimizes agent context windows using several techniques inspired by the ZOE/CODEX separation pattern:
+- **Business/code separation**: Business context (mission intent, acceptance criteria, architectural constraints) is structured as a compact preamble. Code context (diffs, file contents, test output) is streamed on-demand via MCP tools rather than pre-loaded.
+- **Observation masking**: Tool outputs that are not relevant to the current reasoning step are filtered before entering context. For example, a successful test run returns only a pass/fail summary rather than the full test output.
+- **Importance classification**: Every context entry is tagged with an importance level (critical, high, normal, low). During compaction, critical entries are always preserved, while low-importance entries are summarized or dropped first.
+- **Incremental context delivery**: Rather than front-loading all context into the initial prompt, ADE delivers context incrementally via MCP tool calls as the agent progresses through its task. This keeps the active context window focused on what the agent needs right now.
+
 ---
 
 ## 11. Security and Privacy
@@ -599,7 +718,7 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 
 ## 12. Configuration Model
 
-ADE configuration lives in the `.ade/` folder at the project root, which is git-ignored via `.git/info/exclude` by default.
+ADE configuration lives in the `.ade/` folder at the project root. By default, `.ade/` is git-ignored via `.git/info/exclude`, but users can opt in to committing shareable state (agent definitions, memory, packs, history, artifacts) for cross-machine portability (see Section 10.11). Machine-specific files (`.ade/local.yaml`, `.ade/cache/`, `.ade/logs/`) remain git-ignored regardless.
 
 **File layout**:
 
@@ -607,8 +726,11 @@ ADE configuration lives in the `.ade/` folder at the project root, which is git-
 |------|---------|-----------|
 | `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, `agents:` definitions) | Yes (opt-in) |
 | `.ade/local.yaml` | Machine-specific overrides (including local AI provider preferences and CLI tool paths) | No |
-| `.ade/packs/` | Pack versions and materialized views | No |
-| `.ade/history/` | Checkpoints and events | No |
+| `.ade/agents/` | Agent identity files, per-agent memory, and configuration | Yes (opt-in) |
+| `.ade/memory/` | Project-scope memory, learning pack entries, vector embeddings | Yes (opt-in) |
+| `.ade/packs/` | Pack versions and materialized views | Yes (opt-in) |
+| `.ade/history/` | Checkpoints, events, and mission records | Yes (opt-in) |
+| `.ade/artifacts/` | Screenshots, videos, test results attached to missions/lanes | Yes (opt-in) |
 | `.ade/transcripts/` | Terminal session transcripts | No |
 | `.ade/logs/` | Process and test logs | No |
 | `.ade/cache/` | Local cache | No |

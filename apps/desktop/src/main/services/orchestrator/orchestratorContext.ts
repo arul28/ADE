@@ -12,8 +12,6 @@ import type { GetModelCapabilitiesResult } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import type {
   MissionDetail,
-  MissionDepthTier,
-  MissionDepthConfig,
   MissionExecutionPolicy,
   MissionStepStatus,
   MissionStatus,
@@ -72,8 +70,6 @@ import type { createPrService } from "../prs/prService";
 // ── Re-export commonly-used shared types for module convenience ──
 export type {
   MissionDetail,
-  MissionDepthTier,
-  MissionDepthConfig,
   MissionExecutionPolicy,
   MissionStepStatus,
   MissionStatus,
@@ -168,7 +164,6 @@ export type OrchestratorHookCommandRunner = (args: {
 
 export type ResolvedOrchestratorConfig = {
   requirePlanReview: boolean;
-  defaultDepthTier: MissionDepthTier;
   defaultPlannerProvider: string | null;
   defaultExecutionPolicy: Partial<MissionExecutionPolicy> | null;
   hooks: ResolvedOrchestratorHooks;
@@ -201,8 +196,7 @@ export type MissionRuntimeProfile = {
     docsMode: "digest_refs" | "full_docs";
   };
   provenance: {
-    source: "policy" | "legacy_depth_fallback";
-    legacyDepthTier?: MissionDepthTier | null;
+    source: "policy";
   };
 };
 
@@ -619,7 +613,9 @@ export function parseChatTarget(value: unknown): OrchestratorChatTarget | null {
 }
 
 export function parseThreadType(value: unknown): OrchestratorChatThreadType | null {
-  if (value === "mission" || value === "worker") return value;
+  if (value === "coordinator" || value === "teammate" || value === "worker") return value;
+  // Migrate legacy thread types
+  if (value === "mission") return "coordinator";
   return null;
 }
 
@@ -846,7 +842,7 @@ export function normalizeChatDeliveryState(value: unknown, fallback: Orchestrato
   return parseChatDeliveryState(value) ?? fallback;
 }
 
-export function normalizeThreadType(value: unknown, fallback: OrchestratorChatThreadType = "mission"): OrchestratorChatThreadType {
+export function normalizeThreadType(value: unknown, fallback: OrchestratorChatThreadType = "coordinator"): OrchestratorChatThreadType {
   return parseThreadType(value) ?? fallback;
 }
 
@@ -922,11 +918,6 @@ export function readConfig(projectConfigService: ReturnType<typeof createProject
   const ai = snapshot?.effective?.ai;
   const orchestrator = isRecord(ai) && isRecord(ai.orchestrator) ? (ai.orchestrator as Record<string, unknown>) : {};
   const requirePlanReview = asBool(orchestrator.requirePlanReview, asBool(orchestrator.require_plan_review, false));
-  const defaultDepthTierRaw = (asString(orchestrator.defaultDepthTier) ?? asString(orchestrator.default_depth_tier) ?? "").trim();
-  const defaultDepthTier: MissionDepthTier =
-    (defaultDepthTierRaw === "light" || defaultDepthTierRaw === "standard" || defaultDepthTierRaw === "deep")
-      ? defaultDepthTierRaw
-      : "standard";
   const defaultPlannerProviderRaw =
     asString(orchestrator.defaultPlannerProvider) ?? asString(orchestrator.default_planner_provider);
   const defaultPlannerProvider: string | null =
@@ -939,7 +930,6 @@ export function readConfig(projectConfigService: ReturnType<typeof createProject
   const hooks = readOrchestratorHooksConfig(orchestrator);
   return {
     requirePlanReview,
-    defaultDepthTier,
     defaultPlannerProvider,
     defaultExecutionPolicy,
     hooks
@@ -961,7 +951,7 @@ export function mapOrchestratorStepStatus(status: OrchestratorStepStatus): Missi
 }
 
 export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission: MissionDetail): MissionStatus {
-  if (graph.run.status === "running" || graph.run.status === "queued") return "in_progress";
+  if (graph.run.status === "active" || graph.run.status === "bootstrapping" || graph.run.status === "queued" || graph.run.status === "completing") return "in_progress";
   if (graph.run.status === "paused") return "intervention_required";
   const hasFailedSteps = graph.steps.some((step) => step.status === "failed");
   if (graph.run.status === "succeeded" || graph.run.status === "succeeded_with_risk") {
@@ -1024,99 +1014,6 @@ export function extractRunFailureMessage(graph: OrchestratorRunGraph): string | 
     .filter((a) => a.status === "failed" && a.errorMessage)
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
   return latestFailure?.errorMessage ?? null;
-}
-
-// ── Mission Depth Config Resolution ──────────────────────────────
-
-export function resolveMissionDepthConfig(tier: MissionDepthTier): MissionDepthConfig {
-  switch (tier) {
-    case "light":
-      return {
-        tier: "light",
-        planning: {
-          useAiPlanner: false,
-          maxPlanningTimeMs: 5_000,
-          requirePlanReview: false
-        },
-        execution: {
-          maxParallelWorkers: 1,
-          defaultRetryLimit: 1,
-          stepTimeoutMs: 120_000,
-          maxTotalTokenBudget: 50_000,
-          maxPerStepTokenBudget: 25_000
-        },
-        evaluation: {
-          evaluateEveryStep: false,
-          autoAdjustPlan: false,
-          autoResolveInterventions: false,
-          interventionConfidenceThreshold: 1.0
-        },
-        context: {
-          contextProfile: "orchestrator_deterministic_v1",
-          includeNarrative: false,
-          docsMode: "digest_refs"
-        }
-      };
-    case "deep":
-      return {
-        tier: "deep",
-        planning: {
-          useAiPlanner: true,
-          plannerModel: "claude-opus-4-6",
-          maxPlanningTimeMs: 120_000,
-          requirePlanReview: false
-        },
-        execution: {
-          maxParallelWorkers: 6,
-          defaultRetryLimit: 3,
-          stepTimeoutMs: 600_000,
-          maxTotalTokenBudget: 2_500_000,
-          maxPerStepTokenBudget: 500_000
-        },
-        evaluation: {
-          evaluateEveryStep: true,
-          evaluationModel: "claude-sonnet-4-6",
-          autoAdjustPlan: true,
-          autoResolveInterventions: true,
-          interventionConfidenceThreshold: 0.7
-        },
-        context: {
-          contextProfile: "orchestrator_narrative_opt_in_v1",
-          includeNarrative: true,
-          docsMode: "full_docs"
-        }
-      };
-    case "standard":
-    default:
-      return {
-        tier: "standard",
-        planning: {
-          useAiPlanner: true,
-          plannerModel: "claude-sonnet-4-6",
-          maxPlanningTimeMs: 60_000,
-          requirePlanReview: false
-        },
-        execution: {
-          maxParallelWorkers: 3,
-          defaultRetryLimit: 2,
-          stepTimeoutMs: 300_000,
-          maxTotalTokenBudget: 500_000,
-          maxPerStepTokenBudget: 150_000
-        },
-        evaluation: {
-          evaluateEveryStep: false,
-          evaluationModel: "claude-sonnet-4-6",
-          autoAdjustPlan: true,
-          autoResolveInterventions: true,
-          interventionConfidenceThreshold: 0.85
-        },
-        context: {
-          contextProfile: "orchestrator_deterministic_v1",
-          includeNarrative: false,
-          docsMode: "digest_refs"
-        }
-      };
-  }
 }
 
 // ── PR Strategy Inference ────────────────────────────────────────
@@ -1232,17 +1129,16 @@ export function deriveRuntimeProfileFromPolicy(
     || policy.codeReview.mode === "required"
     || policy.testReview.mode === "required"
     || policy.completion.allowCompletionWithRisk === false;
-  const integrationEnabled = policy.integration.mode === "auto";
 
   let maxParallelWorkers = 2;
   if (testingEnabled) maxParallelWorkers += 1;
   if (reviewEnabled) maxParallelWorkers += 1;
-  if (integrationEnabled) maxParallelWorkers += 1;
+  if (policy.teamRuntime?.enabled) maxParallelWorkers += 2;
   if (policy.testing.mode === "tdd") maxParallelWorkers = Math.max(maxParallelWorkers, 4);
   maxParallelWorkers = Math.max(1, Math.min(6, maxParallelWorkers));
 
   let stepTimeoutMs = 300_000;
-  if (!testingEnabled && !reviewEnabled && !integrationEnabled) {
+  if (!testingEnabled && !reviewEnabled) {
     stepTimeoutMs = 180_000;
   }
   if (strictGates || policy.planning.mode === "manual_review") {
@@ -1267,15 +1163,15 @@ export function deriveRuntimeProfileFromPolicy(
     },
     evaluation: {
       evaluateEveryStep: strictGates || policy.testing.mode === "tdd",
-      autoAdjustPlan: policy.planning.mode !== "off" || integrationEnabled || reviewEnabled,
-      autoResolveInterventions: testingEnabled || reviewEnabled || integrationEnabled,
+      autoAdjustPlan: policy.planning.mode !== "off" || reviewEnabled,
+      autoResolveInterventions: testingEnabled || reviewEnabled,
       interventionConfidenceThreshold: strictGates ? 0.75 : 0.9,
       evaluationReasoningEffort: normalizeReasoningEffort(
         policy.codeReview.reasoningEffort ?? policy.testReview.reasoningEffort ?? policy.validation.reasoningEffort,
         strictGates ? "high" : "medium"
       ),
       interventionReasoningEffort: normalizeReasoningEffort(
-        policy.integration.reasoningEffort ?? policy.planning.reasoningEffort,
+        policy.planning.reasoningEffort,
         strictGates ? "high" : "medium"
       )
     },
@@ -1285,46 +1181,7 @@ export function deriveRuntimeProfileFromPolicy(
       docsMode: includeNarrative ? "full_docs" : "digest_refs"
     },
     provenance: {
-      source: "policy",
-      legacyDepthTier: null
-    }
-  };
-}
-
-export function deriveRuntimeProfileFromDepthConfig(
-  depthConfig: MissionDepthConfig,
-  config: ResolvedOrchestratorConfig
-): MissionRuntimeProfile {
-  const preferProvider = depthConfig.planning.plannerModel?.trim().length
-    ? depthConfig.planning.plannerModel.trim()
-    : config.defaultPlannerProvider;
-  return {
-    planning: {
-      useAiPlanner: depthConfig.planning.useAiPlanner,
-      requirePlanReview: depthConfig.planning.requirePlanReview,
-      preferProvider: preferProvider ?? null
-    },
-    execution: {
-      maxParallelWorkers: depthConfig.execution.maxParallelWorkers,
-      defaultRetryLimit: depthConfig.execution.defaultRetryLimit,
-      stepTimeoutMs: depthConfig.execution.stepTimeoutMs
-    },
-    evaluation: {
-      evaluateEveryStep: depthConfig.evaluation.evaluateEveryStep,
-      autoAdjustPlan: depthConfig.evaluation.autoAdjustPlan,
-      autoResolveInterventions: depthConfig.evaluation.autoResolveInterventions,
-      interventionConfidenceThreshold: depthConfig.evaluation.interventionConfidenceThreshold,
-      evaluationReasoningEffort: depthConfig.tier === "deep" ? "high" : "medium",
-      interventionReasoningEffort: depthConfig.tier === "deep" ? "high" : "medium"
-    },
-    context: {
-      contextProfile: depthConfig.context.contextProfile,
-      includeNarrative: depthConfig.context.includeNarrative,
-      docsMode: depthConfig.context.docsMode
-    },
-    provenance: {
-      source: "legacy_depth_fallback",
-      legacyDepthTier: depthConfig.tier
+      source: "policy"
     }
   };
 }

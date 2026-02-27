@@ -76,6 +76,24 @@ async function seedProjectAndLane(db: any, projectId: string, repoRoot: string) 
     `,
     ["lane-1", projectId, "Lane 1", null, "worktree", "main", "feature/lane-1", repoRoot, null, 0, null, null, null, null, "active", now, null]
   );
+  db.run(
+    `
+      insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    ["lane-target", projectId, "Target Lane", null, "worktree", "main", "feature/target", repoRoot, null, 0, null, null, null, null, "active", now, null]
+  );
+  db.run(
+    `
+      insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    ["lane-2", projectId, "Lane 2", null, "worktree", "main", "feature/lane-2", repoRoot, null, 0, null, null, null, null, "active", now, null]
+  );
 }
 
 function insertPrediction(args: {

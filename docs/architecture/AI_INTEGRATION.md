@@ -31,6 +31,10 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
   - [Inter-Agent Messaging](#inter-agent-messaging)
   - [Memory Tool Wiring](#memory-tool-wiring)
   - [Shared Facts and Run Narrative](#shared-facts-and-run-narrative)
+  - [Memory Architecture](#memory-architecture)
+  - [External MCP Consumption](#external-mcp-consumption)
+  - [Concierge Agent Architecture](#concierge-agent-architecture)
+  - [Cross-Machine Portability](#cross-machine-portability)
   - [Compute Backends for Agent Execution](#compute-backends-for-agent-execution)
   - [Compute Environment Types](#compute-environment-types)
   - [Per-Task-Type Configuration](#per-task-type-configuration)
@@ -591,9 +595,11 @@ The MCP server is a standalone package (`apps/mcp-server`) that exposes ADE's in
 
 #### Transport
 
-- **Protocol**: JSON-RPC 2.0 over stdio
-- **Lifecycle**: Spawned as a child process by the AI integration service, one instance per orchestrator run
-- **Communication**: AI processes connect to the MCP server's stdin/stdout pipes
+- **Protocol**: JSON-RPC 2.0 over a `JsonRpcTransport` abstraction layer
+- **Stdio transport**: Used in headless mode -- AI processes connect to the MCP server's stdin/stdout pipes
+- **Socket transport**: Used in embedded mode -- the desktop app serves `.ade/mcp.sock` and external agents connect via Unix socket
+- **Lifecycle**: Headless mode runs standalone with its own AI backend; embedded mode shares the desktop app's service instances
+- **Smart entry point**: Auto-detects `.ade/mcp.sock` to choose proxy (embedded) vs headless mode
 
 #### Available Tools
 
@@ -1031,6 +1037,221 @@ Memory tools follow the same MCP permission model as other agent tools. Read ope
 **Run Narrative**: `appendRunNarrative()` in `orchestratorService.ts` generates a rolling narrative after each step completion. The narrative summarizes what has been accomplished, what is in progress, and what remains. It is stored as `runNarrative` metadata on the orchestrator run and displayed in the Activity tab.
 
 **Compaction Hints**: A compaction hints section is added to agent prompts, providing the agent with guidance on what information to prioritize preserving if context compaction is triggered.
+
+### Memory Architecture
+
+The memory system provides agents with durable, searchable long-term memory that persists across sessions, runs, and machines. It upgrades the existing scoped-namespace memory (candidate/promoted lifecycle) with vector search, composite scoring, and pre-compaction integration.
+
+#### Storage Layer
+
+- **Primary store**: SQLite (existing) with a new `memory_vectors` table via the `sqlite-vec` extension
+- **Embedding model**: Local GGUF (all-MiniLM-L6-v2, ~25MB) for offline use; OpenAI `text-embedding-3-small` as API fallback when network is available
+- **Vector dimensions**: 384 (MiniLM) or 1536 (OpenAI) — the retrieval pipeline normalizes across both
+- **Hybrid search**: BM25 keyword relevance (30% weight) + vector cosine similarity (70% weight)
+- **MMR re-ranking**: Maximal Marginal Relevance with lambda=0.7 to reduce redundant results in retrieval
+
+#### Retrieval Pipeline
+
+```
+Query → Embed query → Parallel: [Vector search, BM25 search] →
+  Merge with weights → Composite scoring (semantic + recency + importance + access) →
+  MMR re-rank → Budget filter (lite: 3, standard: 8, deep: 20) → Return
+```
+
+The composite score combines four signals:
+- **Semantic relevance** (cosine similarity or BM25 match)
+- **Recency** (decay function on `updatedAt` timestamp)
+- **Importance** (user-confirmed entries score highest, auto-promoted next, candidates lowest)
+- **Access frequency** (frequently retrieved memories rank higher)
+
+Budget tiers control how many memories are injected into agent context:
+- **Lite** (3 entries): Quick tasks, terminal summaries, one-shot generation
+- **Standard** (8 entries): Normal agent work, implementation steps
+- **Deep** (20 entries): Mission planning, complex multi-file reasoning
+
+#### Write Pipeline
+
+```
+New memory → Embed → Find similar (cosine > 0.85) →
+  If similar found: LLM decides PASS/REPLACE/APPEND/DELETE →
+  Store in SQLite + memory_vectors → Emit to .ade/memory/ for git sync
+```
+
+The consolidation step prevents memory bloat:
+- **PASS**: New memory is redundant; discard it
+- **REPLACE**: New memory supersedes existing; update in place
+- **APPEND**: New memory extends existing; merge content
+- **DELETE**: Existing memory is outdated; remove it
+
+All write operations emit a corresponding JSON file to `.ade/memory/` for cross-machine sync via git.
+
+#### Pre-Compaction Integration
+
+The memory system hooks into the existing `compactionEngine.ts` (Hivemind HW6) to ensure durable state is saved before context is compacted:
+
+1. At 70% context threshold, before compaction triggers:
+   - A silent agentic turn prompts the agent to save important memories
+   - The agent uses `memoryAdd` to persist key facts, decisions, and patterns discovered during work
+   - A flush counter prevents double-flushing within the same compaction cycle
+2. Compaction proceeds normally, knowing durable state is safely persisted in the memory store
+3. After compaction, the agent's context includes a summary but can retrieve full memories on demand
+
+This integration ensures that long-running agent sessions do not lose important discoveries when their context window is compacted.
+
+#### Context Assembly Per Runtime
+
+Every agent runtime assembles its context window from a layered budget:
+
+```
+System prompt + tools definition                    (~5-10K tokens)
++ Tier 1 core memory (persona + working context)    (~2-4K tokens)
++ Tier 2 retrieved memories (budget-dependent)       (~1-3K tokens)
++ Mission shared facts (if in mission)               (~0.5-1K tokens)
++ Conversation history                               (remaining budget)
++ Response reserve                                   (~4K tokens)
+```
+
+The memory retrieval tier is scoped to the runtime's namespace hierarchy:
+- `runtime-thread`: Ephemeral, current session only
+- `run`: Shared across all agents in a mission run
+- `project`: Persistent project-level knowledge
+- `identity`: Agent-specific learned behaviors
+- `daily-log`: Time-scoped operational notes
+
+Each tier is populated by `buildFullPrompt()` in the unified executor, which queries the memory service with the appropriate scope and budget before assembling the final prompt.
+
+#### Prior Art & Design References
+
+The memory architecture is informed by production systems and academic research across the agent memory landscape:
+
+- **MemGPT / Letta**: Pioneered the tiered memory model treating LLM context as "main memory" with agent-managed read/write to "disk" storage. ADE's Tier 1/2/3 maps to MemGPT's core memory blocks / recall memory / archival memory. Letta's benchmarks (74% accuracy with simple file operations vs. Mem0's 68.5%) validated our choice of file-backed portable storage over database-only approaches.
+
+- **Mem0**: Source of the PASS/REPLACE/APPEND/DELETE consolidation model. Mem0 performs real-time deduplication on every write using cosine similarity to detect overlap, then delegates merge decisions to an LLM. ADE adopts this with a conservative 0.85 similarity threshold and adds scope-aware matching (only compare within the same memory scope to prevent false merges across agent boundaries).
+
+- **CrewAI**: The composite scoring formula (`semantic + recency + importance + access`) is adapted from CrewAI's `RecallFlow` retrieval system. CrewAI combines multiple signals for memory ranking; ADE simplifies the weights (`0.5/0.2/0.2/0.1`) for predictability and adds explicit user-settable importance tags.
+
+- **OpenClaw**: Two direct influences — (1) the pre-compaction flush pattern, where the agent is prompted to save important memories before context eviction, using the agent's own judgment rather than mechanical extraction; (2) hybrid BM25 + vector search with configurable weights for memory retrieval. ADE formalizes the flush with a monotonic counter and compaction engine hook.
+
+- **LangMem (LangChain)**: The episodic/procedural memory taxonomy — structured post-session summaries and learned tool-usage patterns. LangMem's key insight that procedural memories should be extracted from recurring episodic patterns (not single sessions) informed ADE's requirement for multi-episode pattern observation before procedural entry creation.
+
+- **A-MEM**: Zettelkasten-inspired automatic linking between memory entries. While ADE does not implement full graph-based navigation in Phase 4, the consolidation APPEND operation creates implicit links and composite scoring ensures related memories co-retrieve.
+
+- **JetBrains (NeurIPS 2025)**: Research finding that **observation masking** (replacing old tool outputs with `[output omitted]` placeholders) outperforms LLM-based summarization for context management while being significantly cheaper. ADE applies this in context assembly for resumed sessions.
+
+- **Elvis Sun's ZOE/CODEX**: Demonstrated the context window separation principle — business/orchestration context and code context should not share the same window because context is zero-sum. Directly informed ADE's leader/worker architecture where the orchestrator holds mission context while workers hold code context.
+
+### External MCP Consumption
+
+ADE agents can connect to external MCP servers during execution, extending their capabilities beyond ADE's built-in tool set.
+
+**Configuration**: External MCP servers are declared in `.ade/local.yaml` under the `externalMcp` key:
+
+```yaml
+externalMcp:
+  servers:
+    - name: github
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-github"]
+      env:
+        GITHUB_TOKEN: "${env:GITHUB_TOKEN}"
+    - name: postgres
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-postgres"]
+      env:
+        DATABASE_URL: "${env:DATABASE_URL}"
+```
+
+**Connection management**: External MCP connections are lazy — they are established on first tool use and disconnected when the agent session ends. This avoids unnecessary process spawning for tools that may not be needed.
+
+**Security**: External MCP tools pass through the same permission and policy layer as ADE's internal tools:
+- Agent identity `allowedTools` / `deniedTools` lists apply to external tool names (prefixed with the server name, e.g., `github:create_pull_request`)
+- Mutation tools from external servers require the same claim-based authorization as internal mutation tools
+- All external tool invocations are logged to the call audit trail
+
+**Tool discovery**: When an agent session starts, ADE queries all configured external MCP servers for their tool manifests. These tools are merged with ADE's internal tool set and presented to the agent as a unified tool list. The agent does not need to know whether a tool is internal or external.
+
+### Concierge Agent Architecture
+
+The Concierge Agent is a specialized agent type that bridges external systems to ADE's internal surfaces. It acts as an intelligent router, receiving requests from external MCP clients and dispatching them to the appropriate ADE subsystem.
+
+**Architecture**:
+
+```
+External MCP Request
+        │
+        ▼
+┌─────────────────────────┐
+│   MCP Server (incoming)  │
+│   (stdio or socket)      │
+└─────────┬───────────────┘
+          │
+          ▼
+┌─────────────────────────┐
+│   Concierge Agent        │
+│   (agent runtime)        │
+│                          │
+│   Intent Classification  │
+│   ┌───────────────────┐  │
+│   │ Mission launcher  │  │
+│   │ Task agent        │  │
+│   │ Review agent      │  │
+│   │ State reader      │  │
+│   │ Chat relay        │  │
+│   └───────────────────┘  │
+│                          │
+│   Identity Memory        │
+│   (learned routing)      │
+└─────────┬───────────────┘
+          │
+          ▼
+  ADE Internal Surface
+  (mission, agent, query)
+          │
+          ▼
+  Result → MCP Response
+```
+
+**Routing**:
+- The Concierge classifies incoming requests into intents: `create_mission`, `run_task`, `review_code`, `query_state`, `relay_chat`
+- Routing decisions are informed by the Concierge's identity memory — it learns which request patterns map to which handlers over time
+- Complex requests that span multiple surfaces are decomposed into sub-requests and coordinated by the Concierge
+
+**Identity Memory**: The Concierge maintains its own identity-scoped memory namespace. It records successful routing patterns, failed classifications, and user corrections. Over time, this makes the Concierge more accurate at dispatching requests without explicit intent markers.
+
+**Use Cases**:
+- CI/CD pipelines invoking ADE missions via MCP
+- External AI agents (Claude Code, Cursor, etc.) requesting ADE to perform work
+- Slack/Discord bots routing developer requests to ADE
+- Monitoring systems triggering automated review or testing
+
+### Cross-Machine Portability
+
+ADE stores all portable state in the `.ade/` directory at the project root, enabling cross-machine synchronization via git without any cloud backend or hub.
+
+**Portable state** (committed to git):
+- `memory/project.json` — project-level memories
+- `memory/agents/<agentId>.json` — per-agent identity memories
+- `agents/` — agent definition YAML files
+- `identities/` — agent identity YAML files
+- `missions/history.jsonl` — mission execution history
+- `learning/` — learning pack JSON files
+- `local.yaml` — project-level configuration (shared settings)
+
+**Non-portable state** (`.gitignore`d):
+- `mcp.sock` — Unix socket for embedded MCP (runtime artifact)
+- `cache/embeddings/` — sqlite-vec embedding cache (regenerated locally on each machine)
+- `transcripts/` — raw session transcripts (large, ephemeral)
+- `local.private.yaml` — machine-specific overrides (API keys, paths)
+
+**Sync workflow**:
+```
+Machine A: Agent discovers pattern → memoryAdd → .ade/memory/project.json updated → git commit + push
+Machine B: git pull → .ade/memory/project.json updated → memory service reloads → agent benefits from learned pattern
+```
+
+**Embedding regeneration**: When `.ade/` is cloned on a new machine, the `memory_vectors` SQLite table is empty. On first startup, the memory service detects the mismatch (JSON files present but no vectors) and triggers a background re-embedding job using the local GGUF model. This is a one-time operation (~30s for a typical project's memory corpus).
+
+**No cloud dependency**: State sync is entirely git-based. There is no central hub, relay, or cloud service involved in state portability. The Phase 8 relay is for real-time remote control of a running ADE instance — not for state synchronization.
 
 ### Phase 3 Implementation Status
 
@@ -1604,8 +1825,9 @@ interface LearningEntry {
 | ClaudeChatBackend (community provider) | Complete | Multi-turn `streamText()` in `agentChatService.ts` |
 | Chat UI components | Complete | AgentChatPane, AgentChatMessageList, AgentChatComposer |
 | Chat session integration | Complete | `codex-chat` and `claude-chat` tool types in `terminal_sessions` |
-| MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 stdio server with Phase 2 tool/resource surface |
-| AI orchestrator (Claude + MCP) | ~85% Complete | Hivemind features shipped; remaining items are live multi-agent stress validation and coordination hardening |
+| MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
+| MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
+| AI orchestrator (Claude + MCP) | ~90% Complete | Hivemind features shipped; remaining items are live multi-agent stress validation and coordination hardening |
 | Agent-first runtime migration | In Progress | Non-interactive AI call paths are being normalized through runtime creation and policy enforcement |
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
@@ -1615,10 +1837,14 @@ interface LearningEntry {
 | Compute environment types | Planned | Phase 4 -- terminal-only, browser, and desktop environment support |
 | Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
 | Learning packs | Planned | Phase 4 -- auto-accumulating project knowledge from agent interactions, failures, and PR review patterns |
+| Memory architecture upgrade (sqlite-vec, hybrid search, composite scoring) | Planned | Phase 4 -- three-tier memory with vector search, pre-compaction flush, consolidation |
+| Concierge Agent | Planned | Phase 4 -- MCP entry point for external agent systems, intent classification, identity-based routing |
+| External MCP consumption | Planned | Phase 4 -- agents connect to external MCP servers for extended capabilities |
+| `.ade/` portable state | Planned | Phase 4 -- git-based cross-machine state sync, embedding regeneration on clone |
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration is largely shipped. Phase 4 focuses on agent-first runtime unification: all non-interactive AI surfaces execute through standardized agent runtimes with consistent memory policy, context assembly, and audit lineage.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration is largely shipped. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`. Phase 4 focuses on agent-first runtime unification: all non-interactive AI surfaces execute through standardized agent runtimes with consistent memory policy, context assembly, and audit lineage.
 
 ---
 
@@ -1777,13 +2003,14 @@ Claude Code will invoke the appropriate MCP tools (`create_mission`, `get_missio
 
 ## Known Limitations
 
-### 1. No AI Planning in MCP Mode
+### 1. ~~No AI Planning in MCP Mode~~ (Resolved — Dual-Mode Architecture)
 
-When the MCP server runs standalone (outside the desktop app), `aiIntegrationService` is null because it requires the `ai` package and full Electron main-process context. This means:
+The MCP server now operates in **dual mode**:
 
-- Mission planning falls back to **deterministic planning only** (keyword classification, rule-based step decomposition).
-- AI-powered planning (fail-hard Claude/Codex planner) is not available.
-- The meta-reasoner (dynamic fan-out) is not available.
+- **Headless mode** (stdio transport): The MCP server runs standalone with full AI capabilities. `aiIntegrationService` is wired in during bootstrap, auto-detecting `ANTHROPIC_API_KEY`, `claude` CLI, or other providers. AI-powered planning, the meta-reasoner, and all 35 tools are available.
+- **Embedded mode** (socket transport): The desktop app embeds the MCP server at `.ade/mcp.sock`, sharing the same service instances. External agents connect via the socket and proxy through the desktop for live UI updates.
+
+A `JsonRpcTransport` abstraction layer supports both stdio and Unix socket transports. The smart entry point auto-detects whether `.ade/mcp.sock` exists: if the desktop is running, the server connects as an embedded proxy; otherwise it starts in headless mode with its own AI backend.
 
 ### 2. No Agent Chat Participation
 
@@ -1794,13 +2021,13 @@ When the MCP server runs standalone (outside the desktop app), `aiIntegrationSer
 - `get_step_output` (step transcripts)
 - `get_timeline` (full event timeline)
 
-### 3. Event Buffer is In-Memory
+### 3. Event Buffer is In-Memory (Headless Mode)
 
 The `stream_events` tool uses an in-memory event buffer with a **10,000 event cap**. Events are lost on process restart. For durable event history, use `get_timeline` which reads from the SQLite database. The in-memory buffer is designed for real-time polling during active mission execution, not long-term storage.
 
-### 4. Single Process Database Access
+### 3. Single Process Database Access
 
 ADE uses SQLite (via sql.js WASM) with a single-writer model. If the desktop app and MCP server run simultaneously against the same project database, **SQLite write conflicts** will occur. To avoid this:
 
-- Stop the desktop app before running the MCP server standalone, or
-- Use the MCP server only through the desktop app's built-in MCP integration (which shares the same database connection).
+- Stop the desktop app before running the MCP server standalone in headless mode, or
+- Use the MCP server in embedded mode (via `.ade/mcp.sock`), which shares the same database connection as the desktop app.

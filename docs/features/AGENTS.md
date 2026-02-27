@@ -45,6 +45,21 @@
   - [Database Tables](#database-tables)
   - [Configuration Schema](#configuration-schema)
   - [TypeScript Interfaces](#typescript-interfaces)
+- [Concierge Agent](#concierge-agent)
+  - [Purpose](#purpose)
+  - [Request Routing](#request-routing)
+  - [Identity and Learning](#identity-and-learning)
+- [Memory Architecture](#memory-architecture)
+  - [Three-Tier Memory Model](#three-tier-memory-model)
+  - [Memory Scopes](#memory-scopes)
+  - [Memory Operations](#memory-operations)
+  - [Pre-Compaction Flush](#pre-compaction-flush)
+  - [Temporal Decay](#temporal-decay)
+  - [Memory Tools Available to Agents](#memory-tools-available-to-agents)
+  - [Episodic and Procedural Memory](#episodic-and-procedural-memory)
+- [Portable State (.ade/ Directory)](#portable-state-ade-directory)
+- [External Agent Integration](#external-agent-integration)
+- [Agent Identity Persistence](#agent-identity-persistence)
 - [Implementation Tracking](#implementation-tracking)
   - [Foundation (Former Automations)](#foundation-former-automations)
   - [Phase 4: Agents Hub](#phase-4-agents-hub)
@@ -1480,6 +1495,415 @@ Agent configurations will support a `computeBackend` field:
 - **Settings Integration**: Night Shift default backend toggle on VPS/Daytona cards in Settings > Compute Backends
 
 Note: Daytona routing is only available when Daytona is configured (opt-in) in Settings > Compute Backends.
+
+### Headless Agent Execution via MCP Dual-Mode
+
+Agents can run outside the desktop app via the MCP server's dual-mode architecture:
+
+- **Headless mode** (stdio transport): The MCP server runs standalone with full AI capabilities. `aiIntegrationService` is wired in during bootstrap, auto-detecting `ANTHROPIC_API_KEY`, `claude` CLI, or other available providers. All 35 MCP tools are available.
+- **Embedded mode** (socket transport): When the desktop is running, it serves `.ade/mcp.sock`. External agents connect via the socket and proxy through the desktop, getting live UI updates and shared service instances.
+- **Smart entry point**: The MCP server auto-detects whether `.ade/mcp.sock` exists. If present, it connects as an embedded proxy; otherwise it starts in headless mode with its own AI backend.
+- **Transport abstraction**: A `JsonRpcTransport` interface supports both stdio (for headless/CI usage) and Unix socket (for desktop embedding), allowing the same tool surface to work in both contexts.
+
+This enables CI/CD pipelines, evaluation harnesses, and external tools (e.g., Claude Code) to drive agent workflows without requiring the desktop app to be running.
+
+---
+
+## Concierge Agent
+
+### Purpose
+
+The **Concierge Agent** is ADE's single entry point for external agent systems. When an external agent (OpenClaw, Claude Code, Codex CLI, or any MCP-connected tool) wants to interact with ADE, it does not need to understand which internal surface to target. Instead, it sends its request to the Concierge, which classifies the intent and routes it to the appropriate ADE capability.
+
+The Concierge acts as a receptionist and dispatcher: it receives unstructured or semi-structured requests, understands what the caller is trying to accomplish, and delegates to the right subsystem. This eliminates the need for external agents to know ADE's internal architecture or tool surface.
+
+Users who interact with ADE directly through the desktop UI never need the Concierge. It exists solely for the programmatic/external agent integration path.
+
+### Request Routing
+
+When the Concierge receives a request, it classifies the intent and routes accordingly:
+
+| Intent Classification | Routed To | Example Request |
+|---|---|---|
+| **Development task** (large) | Mission system with phased plan | "Refactor the auth module to use JWT refresh tokens" |
+| **Development task** (small) | Task Agent (one-off) | "Add a loading spinner to the login page" |
+| **Status query** | MCP read tools (mission/lane/agent state) | "What's the status of the auth refactor mission?" |
+| **Simple code change** | Task Agent with minimal guardrails | "Fix the typo in README.md line 42" |
+| **PR review request** | Review Agent | "Review PR #87 before I merge" |
+| **Code question** | Context pack reader, returns answer | "How does the auth middleware handle expired tokens?" |
+| **Agent management** | Agent service IPC | "List all running agents" or "Stop the overnight refactor" |
+
+The Concierge uses an LLM call to classify ambiguous requests. For well-structured requests (e.g., those that arrive with explicit `intent` metadata from the MCP tool call), classification is deterministic and skips the LLM step.
+
+**Large vs. small task distinction**: The Concierge estimates task complexity based on the request description. Tasks that involve multiple files, architectural changes, or multi-step workflows are routed to the full mission system with an AI-generated phased plan. Tasks that are scoped to a single file or a straightforward change are routed to a Task Agent for immediate execution.
+
+### Identity and Learning
+
+The Concierge has its own agent identity, stored at `.ade/agents/concierge.yaml` with project-level memory at `.ade/memory/agents/concierge.json`. This gives it:
+
+- **Persistent context**: The Concierge remembers previous routing decisions, project-specific patterns, and user preferences across sessions.
+- **Learned routing patterns**: Over time, the Concierge learns which routing paths work best for specific request types. For example, it may learn that "the user always wants TypeScript refactoring tasks routed to the Fast Implementer agent" or "PRs from the `infra` team should use security-focused review depth."
+- **Project awareness**: The Concierge reads project-level memory to understand codebase structure, conventions, and team preferences, enabling more accurate intent classification.
+
+Learned routing patterns are stored in the Concierge's identity memory and can be reviewed/edited by the user in the Agent Identity management UI.
+
+---
+
+## Memory Architecture
+
+ADE agents operate with a structured, multi-tier memory system designed to balance context window efficiency with long-term knowledge retention. Memory is scoped, searchable, and portable across machines.
+
+### Three-Tier Memory Model
+
+| Tier | Name | Size in Context | Storage | Description |
+|---|---|---|---|---|
+| **Tier 1** | Core Memory | ~2-4K tokens (always loaded) | In-memory + `.ade/memory/` | The agent's essential working context. Includes persona definition, current task context, and critical project facts. Self-editable by the agent via the `memoryUpdateCore` tool. |
+| **Tier 2** | Hot Memory | Retrieved on demand | SQLite + sqlite-vec | Recent episodic memories, relevant facts, mission shared data. Retrieved via hybrid search when the agent needs additional context. Uses composite scoring: `semantic(0.5) + recency(0.2) + importance(0.2) + access(0.1)`. |
+| **Tier 3** | Cold Memory | Never in context (archival) | `.ade/memory/archive/` | Old memories, low-importance facts, and historical records. Moved here after an inactivity period. Can be promoted back to Tier 2 if accessed. |
+
+**Why three tiers?** AI context windows are finite and expensive. Tier 1 ensures the agent always has its essential identity and task context without retrieval latency. Tier 2 provides rich supplementary knowledge via fast hybrid search. Tier 3 keeps historical data available without polluting search results or consuming storage in the active database.
+
+### Memory Scopes
+
+Memory is partitioned into scopes that control visibility and lifetime:
+
+| Scope | Visibility | Lifetime | Purpose |
+|---|---|---|---|
+| **Identity** | Per-agent only | Persistent (forever) | Agent-specific learned behaviors, preferences, and procedures. Never leaks to other agents. Stored per-agent in `.ade/memory/agents/{agent-name}.json`. |
+| **Project** | All agents in the project | Persistent | Codebase patterns, conventions, architectural decisions, known gotchas. Shared knowledge that benefits every agent working on the project. Stored in `.ade/memory/project.json`. |
+| **Mission** | All agents in a mission run | Mission lifetime (temporary) | Facts discovered during a specific mission. Visible to all participating agents. Can be promoted to project scope after mission completion (policy-driven, user-reviewable). |
+| **Session** | Single agent session | Ephemeral | Conversation context, intermediate reasoning, scratch notes. Dies when the session ends. Not persisted to disk. |
+
+**Scope isolation is strict**: An agent's identity memory never leaks to other agents. Project memory is readable by all agents but writeable only through explicit `memoryAdd` calls with `scope: 'project'`. Mission memory is automatically cleaned up after mission completion unless promoted.
+
+### Memory Operations
+
+#### Search
+
+Memory search uses a hybrid approach combining keyword and semantic matching:
+
+- **BM25 keyword search** (30% weight): Fast, precise matching for exact terms and identifiers. Handles code-specific queries well (function names, variable names, error messages).
+- **Vector similarity search** (70% weight): Semantic matching via embeddings stored in sqlite-vec. Finds conceptually related memories even when exact terms differ.
+- **Composite scoring**: Final relevance score = `semantic(0.5) + recency(0.2) + importance(0.2) + access_frequency(0.1)`. This ensures recent, important, frequently-accessed memories surface first, while still allowing old but semantically relevant memories to appear.
+
+#### Add
+
+When a new memory is added, the system performs an automatic **consolidation check**:
+
+1. Compute cosine similarity between the new memory and existing memories in the same scope.
+2. If similarity exceeds **0.85** threshold, invoke an LLM to decide the consolidation action:
+   - **PASS**: New memory is sufficiently distinct; add it as a new entry.
+   - **REPLACE**: New memory supersedes the existing one; replace the old entry.
+   - **APPEND**: New memory adds detail to the existing one; merge them into a single enriched entry.
+   - **DELETE**: The new memory contradicts or invalidates the existing one; remove the old entry and add the new one.
+
+This prevents memory bloat from near-duplicate entries while preserving genuinely distinct knowledge.
+
+#### Promote
+
+Memories can be promoted from a narrower scope to a broader one:
+
+- **Mission to Project**: Facts discovered during a mission that are generally useful (e.g., "this project uses Vitest, not Jest" or "the API always returns snake_case").
+- Promotion is policy-driven: auto-promote when confidence exceeds a threshold, or queue for user review.
+- Promoted memories retain provenance metadata (source mission, original agent, timestamp).
+
+#### Archive
+
+Memories are moved to cold storage (Tier 3) after an inactivity period:
+
+- Memories not accessed for a configurable period (default: 90 days) are candidates for archival.
+- Archived memories are moved to `.ade/memory/archive/` as compressed JSON.
+- Archived memories can still be found via explicit deep searches but are excluded from standard retrieval.
+
+### Pre-Compaction Flush
+
+Before context compaction occurs (triggered at 70% of the model's context window), the memory system executes a **pre-compaction flush**:
+
+1. The compaction engine detects the 70% threshold is approaching.
+2. A **silent agentic turn** is injected: the agent is prompted with "Write any important memories to disk before context is compacted."
+3. The agent uses its own intelligence to decide what matters — which facts, decisions, patterns, and gotchas from the current conversation should be persisted.
+4. The agent calls `memoryAdd` for each item it wants to preserve.
+5. Only after the flush completes does the compaction engine proceed to summarize and truncate the context.
+
+This approach is superior to rule-based extraction because the agent understands the semantic importance of its own conversation context. A mechanical extractor would miss nuance; the agent knows which offhand comment was actually a critical architectural decision.
+
+### Temporal Decay
+
+Memory relevance decays over time using a **30-day half-life** for the recency component of composite scoring:
+
+| Time Since Creation | Recency Score |
+|---|---|
+| Today | 100% |
+| Yesterday | ~84% |
+| 1 week ago | ~73% |
+| 1 month ago | 50% |
+| 3 months ago | ~12.5% |
+| 6 months ago | ~1.6% |
+
+**Exceptions to decay**:
+- **Core Memory (Tier 1)** never decays — it is always at full relevance.
+- **Promoted facts** (memories explicitly promoted to project scope) never decay.
+- **Pinned memories** (via `memoryPin`) never decay.
+- Decay only affects the recency component (20% of composite score). A 6-month-old memory with high semantic relevance and high importance still scores well: `semantic(0.5) * 0.9 + recency(0.2) * 0.016 + importance(0.2) * 1.0 + access(0.1) * 0.5 = 0.753`.
+
+### Memory Tools Available to Agents
+
+Agents have access to the following memory tools during execution:
+
+| Tool | Signature | Description |
+|---|---|---|
+| `memorySearch` | `memorySearch(query, scope?, limit?)` | Hybrid BM25 + vector search with composite scoring. Returns ranked results from the specified scope (or all accessible scopes if omitted). Default limit: 10. |
+| `memoryAdd` | `memoryAdd(content, category, scope, importance?)` | Add a new memory with automatic consolidation check. `category` is one of: `fact`, `preference`, `pattern`, `decision`, `procedure`, `gotcha`. `importance` is 0.0-1.0 (default: 0.5). |
+| `memoryUpdateCore` | `memoryUpdateCore(content)` | Self-edit the agent's Tier 1 working context. Used to update current task state, active constraints, or critical notes that should always be in context. |
+| `memoryPin` | `memoryPin(memoryId)` | Pin a Tier 2 memory to Tier 1 (always in context). Pinned memories bypass temporal decay and are included in every context assembly. Use sparingly — each pin consumes context window budget. |
+| `memoryPromote` | `memoryPromote(memoryId, targetScope)` | Promote a memory from a narrower scope to a broader one (e.g., mission to project). Respects promotion policies and may queue for user review depending on project settings. |
+
+### Episodic and Procedural Memory
+
+Beyond the standard fact/preference/pattern categories, ADE supports two advanced memory types that enable agents to learn from experience:
+
+#### Episodic Memory
+
+After each session or mission, the system extracts a structured **episodic summary**:
+
+| Field | Description |
+|---|---|
+| `task` | What the agent was asked to do |
+| `approach` | Strategy the agent chose and why |
+| `outcome` | Success, partial success, or failure with details |
+| `toolsUsed` | Which tools were invoked and how often |
+| `patternsDiscovered` | New code patterns, API patterns, or architectural insights found during execution |
+| `gotchas` | Pitfalls encountered, workarounds applied, edge cases hit |
+| `decisionsMade` | Key decisions and their rationale |
+| `duration` | Wall-clock time and token consumption |
+
+Episodic memories are stored in Tier 2 (hot memory) and are retrieved when the agent faces similar tasks in the future. For example, if an agent previously refactored the auth module and encountered a circular dependency, that episodic memory surfaces when a future task involves the same module.
+
+#### Procedural Memory
+
+Procedural memory captures **learned workflows and tool-usage patterns** — the "how to" knowledge that agents accumulate through repeated execution:
+
+| Field | Description |
+|---|---|
+| `procedure` | Step-by-step workflow (e.g., "When running tests in this project: 1) Run `tsc --noEmit` first, 2) Then run `vitest`, 3) If type errors, fix those before re-running tests") |
+| `confidence` | 0.0-1.0 score, reinforced by success/failure counts |
+| `successCount` | Number of times this procedure led to a successful outcome |
+| `failureCount` | Number of times this procedure was followed but the task still failed |
+| `lastUsed` | Timestamp of most recent invocation |
+| `applicableWhen` | Conditions under which this procedure applies (e.g., "TypeScript project", "React component tests") |
+
+Procedural memories are **confidence-scored and self-reinforcing**:
+- Each successful use increments `successCount` and increases `confidence`.
+- Each failure increments `failureCount` and decreases `confidence`.
+- Procedures with confidence below 0.3 are flagged for review or archival.
+- High-confidence procedures (> 0.8) are prioritized in retrieval and may be auto-applied.
+
+Both episodic and procedural memories feed into Tier 2 hot memory and are retrieved during future agent execution via the standard `memorySearch` tool.
+
+### Prior Art & Design References
+
+ADE's memory architecture draws on research and production systems across the agent memory ecosystem. This section documents the external work that informed design decisions and the specific adaptations ADE makes.
+
+| Concept | Source | ADE Adaptation |
+|---|---|---|
+| Three-tier memory (core blocks / archival / recall) | **MemGPT / Letta** — treats LLM context as "main memory" with explicit agent-managed read/write to "disk" | Tier 1/2/3 with composite scoring and `.ade/` file portability. Letta benchmarks (74% accuracy with file operations) validated our file-backed approach. |
+| PASS/REPLACE/APPEND/DELETE consolidation | **Mem0** — real-time deduplication on every write with LLM-decided merge operations | Adopted with 0.85 cosine threshold and scope-aware matching. Mem0's benchmarks (68.5%) informed our conservative threshold choice. |
+| Composite scoring formula (semantic + recency + importance + access) | **CrewAI RecallFlow** — multi-signal retrieval combining semantic similarity with temporal and frequency signals | Simplified weights for predictability: `0.5/0.2/0.2/0.1`. Added explicit importance tags (vs. CrewAI's inferred importance). |
+| Pre-compaction memory flush (agent-driven persistence before eviction) | **OpenClaw** — Markdown-based memory (MEMORY.md + daily logs) with agent self-save before context loss | Formalized with flush counter, compaction engine hook, and tool-based persistence. |
+| Hybrid BM25 + vector search | **OpenClaw / RAG literature** — keyword + semantic search with configurable weights | 30/70 BM25/vector split with MMR re-ranking (lambda=0.7) to reduce redundancy. |
+| Episodic and procedural memory taxonomy | **LangMem (LangChain)** — structured post-session summaries and learned tool-usage patterns | Adapted with confidence scoring, success/failure self-reinforcement, and cross-episode pattern extraction for procedural entries. |
+| Zettelkasten-inspired memory linking | **A-MEM** — automatic linking between related memory entries creating a knowledge graph | Implicit via APPEND consolidation and composite scoring co-retrieval. Full graph navigation deferred to a future phase. |
+| Observation masking over LLM summarization | **JetBrains (NeurIPS 2025)** — replacing old tool outputs with placeholders outperforms LLM summarization, is cheaper | Applied in context assembly for resumed sessions: old tool outputs beyond recent N are masked, not summarized. |
+| Context window separation (business vs. code) | **Elvis Sun's ZOE/CODEX architecture** — orchestrator and workers in separate context windows because context is zero-sum | ADE's leader/worker model: orchestrator holds mission context, workers hold code context. Mixing degrades both. |
+| Identity persistence via versioned Markdown | **SOUL.md / CLAUDE.md / OpenClaw MEMORY.md** — community practice of defining agent persona in versionable files | Formalized as `.ade/identities/*.yaml` with version history, audit trail, and policy enforcement. |
+
+---
+
+## Portable State (.ade/ Directory)
+
+ADE stores all agent-related state in the `.ade/` directory at the project root. This directory is designed to be **committed to the repository**, making ADE's entire agent configuration and knowledge base portable across machines.
+
+### Directory Structure
+
+```
+.ade/
+├── memory/
+│   ├── project.json          # Project-level facts (shared across all agents)
+│   ├── learning-pack.json    # Auto-curated knowledge extracted from agent runs
+│   ├── archive/              # Cold storage (Tier 3 archived memories)
+│   └── agents/
+│       ├── concierge.json    # Concierge agent identity memory
+│       ├── night-owl.json    # Night Owl agent identity memory
+│       └── reviewer.json     # Reviewer agent identity memory
+├── agents/
+│   ├── concierge.yaml        # Concierge agent definition
+│   ├── night-owl.yaml        # Night Owl agent definition
+│   └── reviewer.yaml         # Reviewer agent definition
+├── identities/
+│   ├── careful-reviewer.yaml # Identity preset definition
+│   └── fast-implementer.yaml # Identity preset definition
+├── history/
+│   └── missions.jsonl        # Mission run log (append-only)
+└── config.yaml               # ADE project configuration
+```
+
+### Portability Principles
+
+- **Committable to repo**: Any machine with the repo clone has the full ADE agent state — definitions, identities, project memory, and learned knowledge.
+- **Git IS the sync layer**: There is no separate hub, cloud service, or sync mechanism. Git push/pull propagates agent state to all team members.
+- **Embeddings are local**: The embeddings cache (`.ade/embeddings.db`) is listed in `.gitignore` because embeddings are model-specific and regenerated locally on first use. The source data (JSON memory files) is what gets committed.
+- **Merge-friendly format**: Memory files use JSON with sorted keys for clean diffs. Agent definitions use YAML for readability. The mission history log uses append-only JSONL for conflict-free concurrent appends.
+
+---
+
+## External Agent Integration
+
+ADE is designed to be both a standalone development environment and a programmable backend that external agents can drive.
+
+### MCP Tool Surface
+
+The ADE MCP server exposes 35 tools for external consumption, covering the full range of ADE capabilities:
+
+- **Mission tools**: `create_mission`, `get_mission`, `start_mission`, `pause_mission`, `cancel_mission`, `steer_mission`
+- **Lane tools**: `create_lane`, `get_lane_status`, `merge_lane`, `rebase_lane`
+- **Agent tools**: `spawn_agent`, `get_worker_states`, `resolve_intervention`
+- **Evaluation tools**: `run_tests`, `evaluate_run`, `list_evaluations`, `get_evaluation_report`
+- **Context tools**: `read_context`, `check_conflicts`, `get_timeline`
+- **Integration tools**: `create_integration`, `simulate_integration`, `commit_changes`, `get_final_diff`, `get_pr_health`
+
+### External Agent Workflow
+
+External agents connect to ADE through the MCP protocol. The typical flow:
+
+1. **External agent connects**: An agent (OpenClaw, Claude Code, Codex CLI) establishes an MCP connection — either via stdio (headless mode) or Unix socket (embedded mode when the desktop app is running).
+2. **Request arrives at Concierge**: The external agent's request is received by the Concierge Agent, which classifies intent and routes accordingly.
+3. **ADE executes**: The routed subsystem (mission orchestrator, task agent, review agent, etc.) performs the work.
+4. **Results return via MCP**: Execution results, status updates, and artifacts are returned through the MCP tool response.
+
+### Example: OpenClaw-to-ADE Delegation
+
+A concrete example of external agent integration:
+
+```
+OpenClaw agent receives user request:
+  "Add a dark mode toggle to the settings page"
+    │
+    ▼
+OpenClaw connects to ADE MCP server
+    │
+    ▼
+Calls create_mission tool with task description
+    │
+    ▼
+Concierge classifies: medium development task → Mission system
+    │
+    ▼
+Orchestrator generates phased plan:
+  Step 1: Add theme context provider
+  Step 2: Create toggle component
+  Step 3: Wire into settings page
+  Step 4: Update tests
+    │
+    ▼
+Mission executes (agents work in lanes)
+    │
+    ▼
+Results pushed to git, PR opened
+    │
+    ▼
+MCP returns: { status: "completed", pr: "#52", branch: "dark-mode-toggle" }
+    │
+    ▼
+OpenClaw reports back to user: "Done. PR #52 is ready for review."
+```
+
+### Bidirectional Integration
+
+ADE agents can also **consume external MCP servers** for extended capabilities. An ADE agent executing a mission step can call tools from external MCP servers registered in the project configuration. This enables workflows like:
+
+- An ADE agent calling a Figma MCP server to fetch design specs before implementing a UI component.
+- An ADE agent calling a PostHog MCP server to check feature flag status before making changes.
+- An ADE agent calling a Linear MCP server to update issue status after completing a task.
+
+---
+
+## Agent Identity Persistence
+
+Agent identities are versioned, auditable, and portable files that define how an agent behaves across all its executions.
+
+### Storage and Format
+
+Identities are stored as YAML files in `.ade/identities/`:
+
+```yaml
+# .ade/identities/careful-reviewer.yaml
+name: "Careful Reviewer"
+version: 3
+persona: |
+  You are a meticulous code reviewer focused on correctness, security,
+  and maintainability. You read every line carefully and flag potential
+  issues even if they seem minor. You never approve a PR without at
+  least one suggestion for improvement.
+modelPreferences:
+  provider: claude
+  model: sonnet
+  reasoningEffort: high
+riskPolicies:
+  allowedTools: []           # Empty = all tools allowed
+  deniedTools:
+    - run-command             # Reviewers should not execute commands
+    - commit-changes          # Reviewers should not commit
+  autoMerge: false
+  maxFileChanges: 0           # Read-only: cannot modify files
+  maxLinesChanged: 0
+permissionConstraints:
+  claudePermissionMode: plan
+  codexSandboxLevel: read-only
+  codexApprovalMode: untrusted
+```
+
+### Design Principles
+
+Identity design is inspired by the **SOUL.md pattern**: the core identity (persona, fundamental constraints) is stable across versions, while preferences and policies evolve over time.
+
+Each identity file includes:
+
+| Field | Description |
+|---|---|
+| `name` | Human-readable persona name |
+| `version` | Monotonically increasing version number (auto-incremented on save) |
+| `persona` | System prompt overlay — the agent's personality and behavioral guidelines |
+| `modelPreferences` | Provider, model, and reasoning effort preferences |
+| `riskPolicies` | Tool allow/deny lists, merge permissions, file/line change limits |
+| `permissionConstraints` | Claude permission mode, Codex sandbox level, approval mode |
+
+### Version History
+
+Every edit to an identity increments its version number and creates a snapshot in the `agent_identity_versions` database table. This provides:
+
+- **Audit trail**: See exactly what changed between versions and when.
+- **Rollback capability**: Restore a previous version if a policy change causes problems.
+- **Diff view**: Compare any two versions side-by-side in the Settings > Agent Identities UI.
+
+### Built-in Presets
+
+ADE ships with four identity presets, each optimized for a specific use case:
+
+| Preset | Model | Risk Level | Key Behaviors |
+|---|---|---|---|
+| **Careful Reviewer** | Claude Sonnet, high reasoning | Low risk | Plan-only permissions, read-only sandbox, no code modification, security-focused review depth |
+| **Fast Implementer** | Claude Sonnet, medium reasoning | Medium risk | Accept-edits permissions, workspace-write sandbox, higher file/line limits, speed-optimized |
+| **Night Owl** | Claude Sonnet, medium reasoning | Low-medium risk | Conservative guardrails, parks on first failure, generates morning digest, subscription-aware budgets |
+| **Code Health Inspector** | Claude Haiku, low reasoning | Minimal risk | Read-only, observation-focused, no code modification, reports findings only, cost-efficient |
+
+### Custom Identities
+
+Users can create custom identities through two paths:
+
+1. **Agent Builder Wizard** (Step 2): Interactive form with all identity fields, effective-policy preview, and validation against project-level AI settings.
+2. **Natural Language**: Describe the identity in plain language (e.g., "An agent that focuses on performance optimization, uses Claude Opus for complex analysis, and never modifies test files"). The `agentPlannerService` generates the structured identity definition.
+
+Custom identities are saved to `.ade/identities/` and are immediately available to all agents in the project.
 
 ---
 

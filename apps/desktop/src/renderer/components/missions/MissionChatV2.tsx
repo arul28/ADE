@@ -7,6 +7,7 @@ import {
   ChatCircle,
   Crown,
   Wrench,
+  UsersThree,
   SpinnerGap,
   Globe,
   CaretRight,
@@ -38,7 +39,7 @@ const STATUS_GREEN = "#22c55e";
 const STATUS_GRAY = "#6b7280";
 const STATUS_RED = "#ef4444";
 
-type ChannelKind = "global" | "orchestrator" | "worker";
+type ChannelKind = "global" | "orchestrator" | "teammate" | "worker";
 
 type Channel = {
   id: string;
@@ -166,18 +167,33 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
       unreadCount: 0,
     });
 
-    // Orchestrator (mission/planner thread)
-    const missionThread = threads.find((t) => t.threadType === "mission");
-    if (missionThread) {
+    // Coordinator thread
+    const coordThread = threads.find((t) => t.threadType === "coordinator");
+    if (coordThread) {
       result.push({
-        id: `thread:${missionThread.id}`,
+        id: `thread:${coordThread.id}`,
         kind: "orchestrator",
-        label: "Orchestrator",
-        threadId: missionThread.id,
-        status: missionThread.status,
+        label: "Coordinator",
+        threadId: coordThread.id,
+        status: coordThread.status,
         stepKey: null,
         attemptId: null,
-        unreadCount: missionThread.unreadCount,
+        unreadCount: coordThread.unreadCount,
+      });
+    }
+
+    // Teammate threads
+    const teammateThreads = threads.filter((t) => t.threadType === "teammate");
+    for (const t of teammateThreads) {
+      result.push({
+        id: `thread:${t.id}`,
+        kind: "teammate",
+        label: t.title || "Teammate",
+        threadId: t.id,
+        status: t.status,
+        stepKey: t.stepKey ?? null,
+        attemptId: t.attemptId ?? null,
+        unreadCount: t.unreadCount,
       });
     }
 
@@ -198,6 +214,11 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
 
     return result;
   }, [threads]);
+
+  const teammateChannels = useMemo(
+    () => channels.filter((c) => c.kind === "teammate"),
+    [channels]
+  );
 
   const activeWorkerChannels = useMemo(
     () => channels.filter((c) => c.kind === "worker" && c.status === "active"),
@@ -227,7 +248,14 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
     ];
 
     for (const ch of channels) {
-      if (ch.kind === "worker" && ch.stepKey) {
+      if (ch.kind === "teammate") {
+        result.push({
+          id: ch.label,
+          label: ch.label,
+          status: ch.status === "active" ? "active" : "completed",
+          role: "teammate",
+        });
+      } else if (ch.kind === "worker" && ch.stepKey) {
         const agentInfo = activeAgents.find((a) => a.attemptId === ch.attemptId);
         result.push({
           id: ch.stepKey,
@@ -404,11 +432,20 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
       );
       if (workerThread) {
         setSelectedChannelId(`thread:${workerThread.id}`);
+      } else {
+        // Fallback to coordinator if no matching worker thread (e.g. planner step)
+        const coordThread = threads.find((t) => t.threadType === "coordinator");
+        if (coordThread) setSelectedChannelId(`thread:${coordThread.id}`);
+      }
+    } else if (jumpTarget.kind === "teammate") {
+      const teammateThread = threads.find((t) => t.threadType === "teammate");
+      if (teammateThread) {
+        setSelectedChannelId(`thread:${teammateThread.id}`);
       }
     } else {
-      const missionThread = threads.find((t) => t.threadType === "mission");
-      if (missionThread) {
-        setSelectedChannelId(`thread:${missionThread.id}`);
+      const coordThread = threads.find((t) => t.threadType === "coordinator");
+      if (coordThread) {
+        setSelectedChannelId(`thread:${coordThread.id}`);
       }
     }
     onJumpHandled();
@@ -449,7 +486,7 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
     const map = new Map<string, string>();
     for (const t of threads) {
       if (t.attemptId) {
-        map.set(t.attemptId, t.title || (t.threadType === "mission" ? "Orchestrator" : "Worker"));
+        map.set(t.attemptId, t.title || (t.threadType === "coordinator" ? "Coordinator" : "Worker"));
       }
     }
     return map;
@@ -464,32 +501,40 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
         if (selectedChannel?.kind === "global" || mentions.length > 0) {
           // For global channel or messages with mentions, use sendAgentMessage if targeting agents
           // Otherwise fall back to sendThreadMessage targeting the coordinator
-          const missionThread = threads.find((t) => t.threadType === "mission");
-          if (missionThread) {
+          const coordThread = threads.find((t) => t.threadType === "coordinator");
+          if (coordThread) {
             const target: OrchestratorChatTarget = mentions.includes("all")
               ? { kind: "workers", runId: runId ?? null, includeClosed: false }
               : { kind: "coordinator", runId: runId ?? null };
             await window.ade.orchestrator.sendThreadMessage({
               missionId,
-              threadId: missionThread.id,
+              threadId: coordThread.id,
               content: message,
               target,
             });
           }
         } else if (selectedChannel?.threadId) {
           const thread = threads.find((t) => t.id === selectedChannel.threadId);
-          const target: OrchestratorChatTarget =
-            thread?.threadType === "worker"
-              ? {
-                  kind: "worker",
-                  runId: thread.runId ?? runId ?? null,
-                  stepId: thread.stepId ?? null,
-                  stepKey: thread.stepKey ?? null,
-                  attemptId: thread.attemptId ?? null,
-                  sessionId: thread.sessionId ?? null,
-                  laneId: thread.laneId ?? null,
-                }
-              : { kind: "coordinator", runId: runId ?? null };
+          let target: OrchestratorChatTarget;
+          if (thread?.threadType === "worker") {
+            target = {
+              kind: "worker",
+              runId: thread.runId ?? runId ?? null,
+              stepId: thread.stepId ?? null,
+              stepKey: thread.stepKey ?? null,
+              attemptId: thread.attemptId ?? null,
+              sessionId: thread.sessionId ?? null,
+              laneId: thread.laneId ?? null,
+            };
+          } else if (thread?.threadType === "teammate") {
+            target = {
+              kind: "teammate",
+              runId: thread.runId ?? runId ?? null,
+              teamMemberId: (thread as OrchestratorChatThread & { teamMemberId?: string }).teamMemberId ?? null,
+            };
+          } else {
+            target = { kind: "coordinator", runId: runId ?? null };
+          }
 
           await window.ade.orchestrator.sendThreadMessage({
             missionId,
@@ -518,7 +563,7 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
     ? selectedChannel.kind === "global"
       ? "Global"
       : selectedChannel.kind === "orchestrator"
-        ? "Orchestrator"
+        ? "Coordinator"
         : selectedChannel.label
     : "...";
 
@@ -544,13 +589,13 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
             unreadCount={0}
           />
 
-          {/* Orchestrator section */}
+          {/* Coordinator section */}
           {orchestratorChannel && (
             <>
-              <SectionLabel>ORCHESTRATOR</SectionLabel>
+              <SectionLabel>COORDINATOR</SectionLabel>
               <ChannelButton
                 icon={<Crown size={12} weight="fill" />}
-                label="Orchestrator"
+                label="Coordinator"
                 statusColor={STATUS_DOT[orchestratorChannel.status] ?? STATUS_GRAY}
                 isSelected={selectedChannelId === orchestratorChannel.id}
                 onClick={() => setSelectedChannelId(orchestratorChannel.id)}
@@ -558,6 +603,26 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
                 badge="planner"
                 badgeColor="#3B82F6"
               />
+            </>
+          )}
+
+          {/* Teammates */}
+          {teammateChannels.length > 0 && (
+            <>
+              <SectionLabel>TEAMMATES</SectionLabel>
+              {teammateChannels.map((ch) => (
+                <ChannelButton
+                  key={ch.id}
+                  icon={<UsersThree size={12} weight="fill" />}
+                  label={ch.label}
+                  statusColor={STATUS_DOT[ch.status] ?? STATUS_GRAY}
+                  isSelected={selectedChannelId === ch.id}
+                  onClick={() => setSelectedChannelId(ch.id)}
+                  unreadCount={ch.unreadCount}
+                  badge="teammate"
+                  badgeColor="#06B6D4"
+                />
+              ))}
             </>
           )}
 
@@ -656,7 +721,16 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
               style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" }}
             >
               <Crown size={10} weight="fill" />
-              Planner
+              Coordinator
+            </span>
+          )}
+          {selectedChannel?.kind === "teammate" && (
+            <span
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+              style={{ background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430" }}
+            >
+              <UsersThree size={10} weight="fill" />
+              Teammate
             </span>
           )}
           {selectedChannel?.kind === "worker" && (
@@ -736,8 +810,10 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
               selectedChannel?.kind === "global"
                 ? "Message global (use @mention to target)..."
                 : selectedChannel?.kind === "orchestrator"
-                  ? "Message the orchestrator..."
-                  : `Message ${selectedChannel?.label ?? "worker"}...`
+                  ? "Message the coordinator..."
+                  : selectedChannel?.kind === "teammate"
+                    ? `Message teammate ${selectedChannel?.label ?? ""}...`
+                    : `Message ${selectedChannel?.label ?? "worker"}...`
             }
             disabled={sending}
             autoFocus

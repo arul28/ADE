@@ -6,7 +6,9 @@ const mockState = vi.hoisted(() => ({
   claudeResume: vi.fn(),
   codexExecute: vi.fn(),
   codexResume: vi.fn(),
-  commandExists: vi.fn()
+  detectAllAuth: vi.fn(),
+  detectCliAuthStatuses: vi.fn(),
+  verifyProviderApiKey: vi.fn(),
 }));
 
 vi.mock("./claudeExecutor", () => ({
@@ -25,8 +27,10 @@ vi.mock("./codexExecutor", () => ({
   })
 }));
 
-vi.mock("./utils", () => ({
-  commandExists: mockState.commandExists
+vi.mock("./authDetector", () => ({
+  detectAllAuth: (...args: unknown[]) => mockState.detectAllAuth(...args),
+  detectCliAuthStatuses: (...args: unknown[]) => mockState.detectCliAuthStatuses(...args),
+  verifyProviderApiKey: (...args: unknown[]) => mockState.verifyProviderApiKey(...args),
 }));
 
 import { createAiIntegrationService } from "./aiIntegrationService";
@@ -84,10 +88,59 @@ function makeService(options: ServiceFactoryOptions = {}) {
   } as any;
 
   const availability = options.availability ?? { claude: true, codex: true };
-  mockState.commandExists.mockImplementation((command: string) => {
-    if (command === "claude") return availability.claude;
-    if (command === "codex") return availability.codex;
-    return false;
+  mockState.detectCliAuthStatuses.mockReturnValue([
+    {
+      cli: "claude",
+      installed: availability.claude,
+      path: availability.claude ? "/usr/local/bin/claude" : null,
+      authenticated: availability.claude,
+      verified: true,
+    },
+    {
+      cli: "codex",
+      installed: availability.codex,
+      path: availability.codex ? "/usr/local/bin/codex" : null,
+      authenticated: availability.codex,
+      verified: true,
+    },
+    {
+      cli: "gemini",
+      installed: false,
+      path: null,
+      authenticated: false,
+      verified: false,
+    },
+  ]);
+  mockState.detectAllAuth.mockResolvedValue([
+    ...(availability.claude
+      ? [
+          {
+            type: "cli-subscription",
+            cli: "claude",
+            path: "/usr/local/bin/claude",
+            authenticated: true,
+            verified: true,
+          },
+        ]
+      : []),
+    ...(availability.codex
+      ? [
+          {
+            type: "cli-subscription",
+            cli: "codex",
+            path: "/usr/local/bin/codex",
+            authenticated: true,
+            verified: true,
+          },
+        ]
+      : []),
+  ]);
+  mockState.verifyProviderApiKey.mockResolvedValue({
+    provider: "openai",
+    ok: true,
+    message: "Connection verified successfully.",
+    statusCode: 200,
+    verifiedAt: new Date().toISOString(),
   });
 
   const service = createAiIntegrationService({
@@ -105,8 +158,45 @@ function usageInsertCalls(runCalls: DbRunCall[]): DbRunCall[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
-
-  mockState.commandExists.mockImplementation((command: string) => command === "claude" || command === "codex");
+  mockState.detectCliAuthStatuses.mockReturnValue([
+    {
+      cli: "claude",
+      installed: true,
+      path: "/usr/local/bin/claude",
+      authenticated: true,
+      verified: true,
+    },
+    {
+      cli: "codex",
+      installed: true,
+      path: "/usr/local/bin/codex",
+      authenticated: true,
+      verified: true,
+    },
+    {
+      cli: "gemini",
+      installed: false,
+      path: null,
+      authenticated: false,
+      verified: false,
+    },
+  ]);
+  mockState.detectAllAuth.mockResolvedValue([
+    {
+      type: "cli-subscription",
+      cli: "claude",
+      path: "/usr/local/bin/claude",
+      authenticated: true,
+      verified: true,
+    },
+    {
+      type: "cli-subscription",
+      cli: "codex",
+      path: "/usr/local/bin/codex",
+      authenticated: true,
+      verified: true,
+    },
+  ]);
 
   mockState.claudeExecute.mockImplementation((_prompt: string, opts: ExecutorOpts) =>
     streamEvents([
@@ -447,6 +537,32 @@ describe("aiIntegrationService", () => {
 
     expect(mockState.claudeExecute).not.toHaveBeenCalled();
     expect(mockState.codexExecute).not.toHaveBeenCalled();
+  });
+
+  it("verifies provider API keys using detected auth entries", async () => {
+    mockState.detectAllAuth.mockResolvedValueOnce([
+      {
+        type: "api-key",
+        provider: "openai",
+        key: "sk-test",
+        source: "store",
+      },
+    ]);
+    mockState.verifyProviderApiKey.mockResolvedValueOnce({
+      provider: "openai",
+      ok: true,
+      message: "Connection verified successfully.",
+      endpoint: "https://api.openai.com/v1/models",
+      statusCode: 200,
+      verifiedAt: new Date().toISOString(),
+    });
+
+    const { service } = makeService();
+    const result = await service.verifyApiKeyConnection("openai");
+
+    expect(result.ok).toBe(true);
+    expect(result.source).toBe("store");
+    expect(mockState.verifyProviderApiKey).toHaveBeenCalledWith("openai", "sk-test");
   });
 
   it("returns one-shot outputs for all migrated task helpers", async () => {

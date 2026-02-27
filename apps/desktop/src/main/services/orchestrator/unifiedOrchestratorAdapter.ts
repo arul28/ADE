@@ -19,7 +19,7 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
       return `exec claude -p ${shellEscapeArg(prompt)}`;
     },
 
-    buildStartupCommand: ({ prompt, model, step, permissionConfig, agentCapabilities }) => {
+    buildStartupCommand: ({ prompt, model, step, permissionConfig, teamRuntime }) => {
       const descriptor = getModelById(model);
 
       // Determine which CLI to use based on the model
@@ -49,7 +49,9 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
         parts.push("-p", shellEscapeArg(prompt));
 
         const envParts: string[] = [];
-        if (agentCapabilities?.agentTeams) envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
+        if (teamRuntime?.enabled && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")) {
+          envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
+        }
 
         const cmd = parts.join(" ");
         return envParts.length > 0 ? `${envParts.join(" ")} exec ${cmd}` : `exec ${cmd}`;

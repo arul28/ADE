@@ -138,7 +138,25 @@ describe("packService mission pack", () => {
           completed_at
         ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      ["run-1", projectId, missionId, "running", "orchestrator_deterministic_v1", "active", null, null, null, now, now, now, null]
+      ["run-1", projectId, missionId, "active", "orchestrator_deterministic_v1", "active", null, null, null, now, now, now, null]
+    );
+    db.run(
+      `
+        insert into orchestrator_steps(
+          id, run_id, project_id, step_key, title, status, step_index,
+          created_at, updated_at
+        ) values (?, ?, ?, 'step-1', 'Design runtime contracts', 'running', 0, ?, ?)
+      `,
+      ["ostep-1", "run-1", projectId, now, now]
+    );
+    db.run(
+      `
+        insert into orchestrator_attempts(
+          id, run_id, step_id, project_id, attempt_number, status,
+          executor_kind, context_profile, created_at
+        ) values (?, ?, ?, ?, 1, 'running', 'codex', 'orchestrator_deterministic_v1', ?)
+      `,
+      ["attempt-1", "run-1", "ostep-1", projectId, now]
     );
     db.run(
       `

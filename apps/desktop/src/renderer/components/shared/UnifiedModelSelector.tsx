@@ -18,6 +18,8 @@ type UnifiedModelSelectorProps = {
   showReasoning?: boolean;
   reasoningEffort?: string | null;
   onReasoningEffortChange?: (effort: string | null) => void;
+  /** When provided, renders an "Add more providers..." link below the select. */
+  onAddProvider?: () => void;
 };
 
 const selectCls = cn(
@@ -34,6 +36,7 @@ export function UnifiedModelSelector({
   showReasoning,
   reasoningEffort,
   onReasoningEffortChange,
+  onAddProvider,
 }: UnifiedModelSelectorProps) {
   const grouped = useMemo(() => {
     let models = [...MODEL_REGISTRY].filter((m) => !m.deprecated);
@@ -90,6 +93,16 @@ export function UnifiedModelSelector({
             </option>
           ))}
         </select>
+      ) : null}
+
+      {onAddProvider ? (
+        <button
+          onClick={onAddProvider}
+          className="text-[10px] hover:underline"
+          style={{ color: "var(--color-accent, #A78BFA)", background: "none", border: "none", cursor: "pointer", whiteSpace: "nowrap" }}
+        >
+          + Add more providers...
+        </button>
       ) : null}
     </div>
   );

@@ -19,7 +19,8 @@ import type {
   PlannerMissionStrategy,
   PlannerPlan,
   PlannerStepPlan,
-  PlannerTaskType
+  PlannerTaskType,
+  TeamRuntimeConfig
 } from "../../../shared/types";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
@@ -78,7 +79,7 @@ export type MissionPlanningRequest = {
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   logger?: MissionPlanningLogger;
   policy?: MissionExecutionPolicy;
-  agentCapabilities?: { parallelSubagents?: boolean; agentTeams?: boolean };
+  teamRuntime?: TeamRuntimeConfig;
 };
 
 export type MissionPlanStepDraft = {
@@ -364,7 +365,7 @@ function buildPlannerPrompt(args: {
   contextBundle?: MissionPlanningContextBundle;
   policy?: MissionExecutionPolicy;
   planOutputPath: string;
-  agentCapabilities?: { parallelSubagents?: boolean; agentTeams?: boolean };
+  teamRuntime?: TeamRuntimeConfig;
 }): string {
   const MAX_DOC_CONTENT_CHARS = 12_000;
   const MAX_TOTAL_DOCS_CHARS = 200_000;
@@ -445,23 +446,15 @@ function buildPlannerPrompt(args: {
     ""
   ];
 
-  if (args.agentCapabilities?.parallelSubagents) {
+  if (args.teamRuntime?.enabled) {
     lines.push(
-      "## Parallel Sub-Agents (ENABLED)",
-      "Worker agents can spawn parallel sub-agents for independent research or subtasks.",
-      "- **Claude workers**: Use the Task tool to spawn sub-agents. Each runs in its own context window, does work, and reports results back. Sub-agents cannot communicate with each other.",
-      "- **Codex workers**: Multi-agent mode is enabled. Sub-agents run in separate threads with built-in roles (worker, explorer, monitor).",
-      "Plan accordingly — individual steps can internally parallelize work, so you can design larger, more ambitious steps when the work within them is parallelizable.",
-      ""
-    );
-  }
-  if (args.agentCapabilities?.agentTeams) {
-    lines.push(
-      "## Agent Teams (ENABLED — Claude workers only)",
-      "Claude Code agent teams are enabled for this mission. This is a Claude-only capability (Codex does not support agent teams).",
-      "Unlike sub-agents, teammates share a task list, claim work independently, and communicate directly with each other.",
-      "Best for: research with competing hypotheses, cross-layer coordination (frontend + backend + tests), parallel code review, complex debugging.",
-      "Consider this when designing steps assigned to Claude — a single step can leverage an internal team of agents for complex coordinated work.",
+      "## Agent Team Runtime (ENABLED)",
+      "This mission uses the ADE team runtime. The orchestrator operates as a coordinator with dedicated teammates.",
+      "- Teammates share a task list and dynamically claim work as it becomes available.",
+      "- Direct inter-agent communication is supported — teammates can message each other and the coordinator.",
+      "- The coordinator manages the lifecycle: spawning teammates, assigning initial tasks, validating completion.",
+      `- Target provider: ${args.teamRuntime.targetProvider}, teammate count: ${args.teamRuntime.teammateCount}.`,
+      "Plan accordingly — design steps that can be claimed and executed independently by teammates. Larger missions benefit from more granular steps.",
       ""
     );
   }
@@ -472,9 +465,8 @@ function buildPlannerPrompt(args: {
       "Execution policy constraints:",
       `- Testing mode: ${p.testing.mode}.`,
       `- Code review: ${p.codeReview.mode}.`,
-      `- Integration: ${p.integration.mode}.`,
       `- Merge: ${p.merge.mode}.`,
-      `- Executor preferences: planning=${p.planning.model ?? "codex"}, implementation=${p.implementation.model ?? "codex"}, testing=${p.testing.model ?? "codex"}, integration=${p.integration.model ?? "codex"}.`,
+      `- Executor preferences: planning=${p.planning.model ?? "codex"}, implementation=${p.implementation.model ?? "codex"}, testing=${p.testing.model ?? "codex"}.`,
       ""
     );
     if (p.testing.mode === "none") {
@@ -962,7 +954,7 @@ export function plannerPlanToMissionSteps(args: {
             ? phaseModelToExecutorKind(args.policy.testReview.model)
             : phaseModelToExecutorKind(args.policy.codeReview.model);
       } else if (taskType === "integration" || taskType === "merge") {
-        executorKind = phaseModelToExecutorKind(args.policy.integration.model);
+        executorKind = phaseModelToExecutorKind(args.policy.implementation?.model);
       } else {
         executorKind = mapHintToExecutor({
           hint: step.executorHint,
@@ -994,7 +986,7 @@ export function plannerPlanToMissionSteps(args: {
             ? args.policy.testReview.reasoningEffort
             : args.policy.codeReview.reasoningEffort;
       } else if (taskType === "integration" || taskType === "merge") {
-        reasoningEffort = args.policy.integration.reasoningEffort;
+        reasoningEffort = args.policy.implementation?.reasoningEffort;
       }
     }
 
@@ -1074,7 +1066,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
     contextBundle: args.contextBundle,
     policy: args.policy,
     planOutputPath,
-    agentCapabilities: args.agentCapabilities
+    teamRuntime: args.teamRuntime
   });
 
   const runtimeErrors: PlannerRuntimeError[] = [];
@@ -1247,6 +1239,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
               prompt: retryPrompt,
               timeoutMs,
               model: args.model,
+              planOutputPath,
               aiIntegrationService: args.aiIntegrationService
             });
 

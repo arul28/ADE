@@ -360,7 +360,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
   const testExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.testing.model) : "codex";
   const reviewExecutor: OrchestratorExecutorKind = policy?.codeReview.model ? phaseModelToExecutorKind(policy.codeReview.model) : "codex";
   const testReviewExecutor: OrchestratorExecutorKind = policy?.testReview.model ? phaseModelToExecutorKind(policy.testReview.model) : "codex";
-  const integrationExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.integration.model) : "codex";
+  const integrationExecutor: OrchestratorExecutorKind = "codex";
 
   const rawSteps: RawPlanStep[] = [];
   let previousIndex = -1;
@@ -527,10 +527,9 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
     previousIndex = index;
   }
 
-  // Integration step (skip if policy.integration.mode === "off")
+  // Integration step — always include if there are parallel branches
   const hasParallelJoin = workIndexes.length > 1 || explicitIntegration;
-  const skipIntegration = policy?.integration.mode === "off";
-  if (hasParallelJoin && !skipIntegration) {
+  if (hasParallelJoin) {
     const joinConfig = deriveJoinPolicy(prompt, workIndexes.length || 1);
     const index = rawSteps.length;
     rawSteps.push({
@@ -551,7 +550,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         title: "integration",
         parallelBranch: false
       }),
-      extraMetadata: policy?.integration.reasoningEffort ? { reasoningEffort: policy.integration.reasoningEffort } : undefined
+      extraMetadata: undefined
     });
     previousIndex = index;
   }

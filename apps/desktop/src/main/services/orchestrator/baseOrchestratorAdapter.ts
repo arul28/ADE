@@ -3,7 +3,7 @@ import type {
   OrchestratorExecutorStartArgs,
   OrchestratorExecutorStartResult
 } from "./orchestratorService";
-import type { OrchestratorWorkerRole, OrchestratorContextView, OrchestratorStep, OrchestratorExecutorKind, TerminalToolType } from "../../../shared/types";
+import type { OrchestratorWorkerRole, OrchestratorContextView, OrchestratorStep, OrchestratorExecutorKind, TerminalToolType, TeamRuntimeConfig } from "../../../shared/types";
 import type { createMemoryService } from "../memory/memoryService";
 import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "../../../shared/types";
 
@@ -36,9 +36,6 @@ export function buildCompactPlanView(currentStep: OrchestratorStep, allSteps: Or
       case "failed":
         prefix = "  [FAILED]";
         break;
-      case "skipped":
-        prefix = "  [skipped]";
-        break;
       case "canceled":
         prefix = "  [canceled]";
         break;
@@ -47,6 +44,9 @@ export function buildCompactPlanView(currentStep: OrchestratorStep, allSteps: Or
         break;
       case "blocked":
         prefix = "  ! [blocked]";
+        break;
+      case "ready":
+        prefix = "  * [ready]";
         break;
       default:
         prefix = "  -> [pending]";
@@ -84,7 +84,7 @@ export interface BaseAdapterConfig {
     model: string;
     step: OrchestratorStep;
     permissionConfig: OrchestratorExecutorStartArgs["permissionConfig"];
-    agentCapabilities?: { parallelSubagents?: boolean; agentTeams?: boolean };
+    teamRuntime?: TeamRuntimeConfig;
   }) => string;
   /** Default model when step metadata doesn't specify one. */
   defaultModel: string;
@@ -373,30 +373,24 @@ export function buildFullPrompt(
   // ADE self-awareness
   systemParts.push("You are working within ADE (Autonomous Development Environment), an Electron-based multi-agent development tool. ADE manages lanes (git worktrees), missions (task orchestration), PRs, and agent sessions. You have access to the project's full context including PRD and architecture docs when provided.");
 
-  // Parallel agent capabilities — executor-aware
+  // Team runtime capabilities
   {
-    const agentCaps = run.metadata && typeof run.metadata === "object" && !Array.isArray(run.metadata)
-      ? (run.metadata as Record<string, unknown>).agentCapabilities
-      : null;
-    const caps = agentCaps && typeof agentCaps === "object" && !Array.isArray(agentCaps)
-      ? agentCaps as Record<string, unknown>
-      : null;
-    const kind = executorKind ?? "claude";
+    const teamRuntime = run.metadata && typeof run.metadata === "object" && !Array.isArray(run.metadata)
+      ? (run.metadata as Record<string, unknown>).teamRuntime as TeamRuntimeConfig | undefined
+      : undefined;
 
-    if (caps?.parallelSubagents === true) {
-      if (kind === "claude") {
-        systemParts.push("PARALLEL SUB-AGENTS (ENABLED): You can use the Task tool to spawn parallel sub-agents for independent subtasks. Each sub-agent runs in its own context window and reports results back to you. Use this when multiple independent operations can be done simultaneously — exploring multiple areas, implementing independent changes, or running parallel research. Sub-agents cannot communicate with each other; they only report back to you.");
-      } else if (kind === "codex") {
-        systemParts.push("PARALLEL SUB-AGENTS (ENABLED): Multi-agent mode is enabled. You can spawn parallel sub-agents for independent subtasks. Each sub-agent runs in its own thread and reports results back to you. Use this when multiple independent operations can be done simultaneously. Available roles: worker (implementation), explorer (read-heavy exploration), monitor (long-running polling).");
-      } else {
-        // Generic fallback for third-party executors
-        systemParts.push("PARALLEL SUB-AGENTS (ENABLED): You can spawn parallel sub-agents for independent subtasks when multiple independent operations can be done simultaneously.");
-      }
-    }
-
-    if (caps?.agentTeams === true && kind === "claude") {
-      // Agent teams are ONLY available for Claude Code — Codex does not support this
-      systemParts.push("AGENT TEAMS (ENABLED): You can create Claude Code agent teams for complex coordinated work. Unlike sub-agents, teammates share a task list, claim work independently, and communicate directly with each other. Use this for tasks that benefit from parallel discussion and collaboration — research with competing hypotheses, cross-layer coordination (frontend + backend + tests), or complex debugging. Each teammate is a full Claude Code instance with its own context window. Start by asking to create an agent team describing the roles you need.");
+    if (teamRuntime?.enabled) {
+      systemParts.push(
+        [
+          "TEAM RUNTIME (ACTIVE): You are part of an ADE agent team with shared task management.",
+          "- You can claim tasks from the shared task list",
+          "- You can send messages to other teammates via the coordinator",
+          "- You can report progress, blockers, and discoveries",
+          "- Focus on your claimed task — the coordinator manages task distribution",
+          "- When your task is done, report completion and the coordinator will assign more work or finalize the run",
+          "- If you discover something relevant to other tasks, share it as a shared fact"
+        ].join("\n")
+      );
     }
   }
 
@@ -555,18 +549,15 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
             : defaultModel;
 
         // 4. Construct startup command (adapter-specific)
-        const agentCapsRaw = run.metadata && typeof run.metadata === "object" && !Array.isArray(run.metadata)
-          ? (run.metadata as Record<string, unknown>).agentCapabilities
-          : null;
-        const agentCaps = agentCapsRaw && typeof agentCapsRaw === "object" && !Array.isArray(agentCapsRaw)
-          ? agentCapsRaw as { parallelSubagents?: boolean; agentTeams?: boolean }
+        const teamRuntime = run.metadata && typeof run.metadata === "object" && !Array.isArray(run.metadata)
+          ? (run.metadata as Record<string, unknown>).teamRuntime as TeamRuntimeConfig | undefined
           : undefined;
         const startupCommand = buildStartupCommand({
           prompt,
           model,
           step,
           permissionConfig: args.permissionConfig,
-          agentCapabilities: agentCaps
+          teamRuntime
         });
 
         // 5. Create tracked session

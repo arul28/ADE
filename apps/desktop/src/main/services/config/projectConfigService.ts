@@ -563,11 +563,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
         defaultExecutionPolicy as NonNullable<NonNullable<AiConfig["orchestrator"]>["defaultExecutionPolicy"]>;
     }
 
-    const defaultDepthTier = (asString(orchestratorRaw.defaultDepthTier) ?? asString(orchestratorRaw.default_depth_tier))?.trim();
-    if (defaultDepthTier === "light" || defaultDepthTier === "standard" || defaultDepthTier === "deep") {
-      orchestrator.defaultDepthTier = defaultDepthTier;
-    }
-
     const defaultPlannerProvider =
       (asString(orchestratorRaw.defaultPlannerProvider) ?? asString(orchestratorRaw.default_planner_provider))?.trim();
     if (defaultPlannerProvider === "auto" || defaultPlannerProvider === "claude" || defaultPlannerProvider === "codex") {

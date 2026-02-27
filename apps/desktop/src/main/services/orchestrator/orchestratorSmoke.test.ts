@@ -391,6 +391,18 @@ describe("orchestrator smoke", () => {
       if (!launch.started) throw new Error("Expected smoke run to start");
       const runId = launch.started.run.id;
 
+      // In the AI-first flow, startMissionRun creates an empty run.
+      // Simulate the coordinator adding steps.
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          { stepKey: "api-health", title: "Add GET /api/health endpoint", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Implement health endpoint" } },
+          { stepKey: "endpoint-tests", title: "Add/update endpoint tests", stepIndex: 1, dependencyStepKeys: ["api-health"], executorKind: "manual", metadata: { instructions: "Write tests" } },
+          { stepKey: "readme-update", title: "Update README health section", stepIndex: 2, dependencyStepKeys: ["endpoint-tests"], executorKind: "manual", metadata: { instructions: "Update docs" } },
+          { stepKey: "final-review", title: "Run final review for regressions", stepIndex: 3, dependencyStepKeys: ["readme-update"], executorKind: "manual", metadata: { instructions: "Final review" } }
+        ]
+      });
+
       for (let i = 0; i < 40; i += 1) {
         const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
         if (graph.run.status === "succeeded" || graph.run.status === "succeeded_with_risk" || graph.run.status === "failed" || graph.run.status === "canceled") {
@@ -431,6 +443,9 @@ describe("orchestrator smoke", () => {
           });
         }
       }
+
+      // tick() no longer auto-terminates runs — explicitly finalize.
+      fixture.aiOrchestratorService.finalizeRun({ runId, force: true });
 
       fixture.aiOrchestratorService.syncMissionFromRun(runId, "smoke_finalize");
       const finalGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
@@ -881,6 +896,21 @@ describe("orchestrator smoke", () => {
           }
         })
       });
+      orchestratorService.registerExecutorAdapter({
+        kind: "unified",
+        start: async ({ step }) => ({
+          status: "completed",
+          result: {
+            schema: "ade.orchestratorAttempt.v1",
+            success: true,
+            summary: `Auto-completed ${step.stepKey}`,
+            outputs: { auto: true, stepKey: step.stepKey, observerMode: true },
+            warnings: [],
+            sessionId: null,
+            trackedSession: true
+          }
+        })
+      });
 
       const launch = await aiOrchestratorService.startMissionRun({
         missionId: mission.id,
@@ -891,14 +921,87 @@ describe("orchestrator smoke", () => {
       if (!launch.started) throw new Error("Expected complex mission run to start");
       const runId = launch.started.run.id;
 
+      // In the AI-first flow, startMissionRun creates an empty run.
+      // Simulate the coordinator creating child lanes and adding steps.
+      const childLane1 = await laneService.createChild({ parentLaneId: laneId, name: "parallel-1" });
+      const childLane2 = await laneService.createChild({ parentLaneId: laneId, name: "parallel-2" });
+
+      // Record parallel lane metadata on the mission
+      const mRow = db.get<{ metadata_json: string | null }>(
+        `select metadata_json from missions where id = ?`,
+        [mission.id]
+      );
+      const mMeta = mRow?.metadata_json ? JSON.parse(mRow.metadata_json) : {};
+      mMeta.parallelLanes = {
+        enabled: true,
+        createdLaneIds: [childLane1.id, childLane2.id],
+        assignedSteps: 3
+      };
+      db.run(`update missions set metadata_json = ? where id = ?`, [JSON.stringify(mMeta), mission.id]);
+
+      // Add steps from the complex plan, assigning lanes
+      orchestratorService.addSteps({
+        runId,
+        steps: [
+          { stepKey: "api-health-route", title: "Build health API route", stepIndex: 0, dependencyStepKeys: [], executorKind: "codex", laneId, metadata: { instructions: "Implement GET /api/health" } },
+          { stepKey: "runtime-watchdog-hardening", title: "Harden watchdog recovery", stepIndex: 1, dependencyStepKeys: [], executorKind: "codex", laneId: childLane1.id, metadata: { instructions: "Improve stall detection" } },
+          { stepKey: "ui-telemetry-panel", title: "Add mission telemetry panel UI", stepIndex: 2, dependencyStepKeys: [], executorKind: "codex", laneId: childLane2.id, metadata: { instructions: "Expose telemetry in UI" } },
+          { stepKey: "integration-contract-check", title: "Integrate contracts and orchestration data model", stepIndex: 3, dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"], executorKind: "codex", laneId, metadata: { instructions: "Validate interface compatibility" } },
+          { stepKey: "docs-and-readme", title: "Update docs and README", stepIndex: 4, dependencyStepKeys: ["integration-contract-check"], executorKind: "codex", laneId, metadata: { instructions: "Document changes" } },
+          { stepKey: "test-matrix", title: "Execute endpoint and orchestration test matrix", stepIndex: 5, dependencyStepKeys: ["integration-contract-check"], executorKind: "codex", laneId, metadata: { instructions: "Run tests" } },
+          { stepKey: "rollback-and-risk-check", title: "Perform rollback and risk sanity check", stepIndex: 6, dependencyStepKeys: ["integration-contract-check"], executorKind: "codex", laneId, metadata: { instructions: "Verify rollback path" } },
+          { stepKey: "final-review-gate", title: "Finalize review gate", stepIndex: 7, dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"], executorKind: "codex", laneId, metadata: { instructions: "Final review" } }
+        ]
+      });
+
+      // Inject autopilot config into the run metadata so startReadyAutopilotAttempts works.
+      // The aiOrchestratorService.startMissionRun does not set autopilot metadata on the run
+      // created via orchestratorService.startRun — this must be done explicitly.
+      const existingRunRow = db.get<{ metadata_json: string | null }>(
+        `select metadata_json from orchestrator_runs where id = ?`,
+        [runId]
+      );
+      const existingMeta = existingRunRow?.metadata_json
+        ? JSON.parse(existingRunRow.metadata_json) as Record<string, unknown>
+        : {};
+      existingMeta.autopilot = {
+        enabled: true,
+        executorKind: "codex",
+        ownerId: "orchestrator-autopilot",
+        parallelismCap: 4
+      };
+      db.run(
+        `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ?`,
+        [JSON.stringify(existingMeta), new Date().toISOString(), runId]
+      );
+
+      // Drive execution: tick to refresh readiness then dispatch autopilot attempts
       let terminalReached = false;
       for (let i = 0; i < 120; i += 1) {
-        const status = orchestratorService.getRunGraph({ runId, timelineLimit: 0 }).run.status;
+        const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        const status = graph.run.status;
         if (status === "succeeded" || status === "succeeded_with_risk" || status === "failed" || status === "canceled") {
           terminalReached = true;
           break;
         }
-        await new Promise((resolve) => setTimeout(resolve, 250));
+
+        // Refresh step readiness and dispatch ready steps via autopilot
+        orchestratorService.tick({ runId });
+        await orchestratorService.startReadyAutopilotAttempts({ runId, reason: "smoke_test_driver" });
+
+        // Once all steps are done, explicitly finalize (tick no longer auto-terminates).
+        const allStepsDone = graph.steps.length > 0 && graph.steps.every(
+          (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "failed" || s.status === "canceled"
+        );
+        if (allStepsDone && (status === "active" || status === "completing" || status === "bootstrapping")) {
+          aiOrchestratorService.finalizeRun({ runId, force: true });
+          const afterFinalize = orchestratorService.getRunGraph({ runId, timelineLimit: 0 }).run.status;
+          if (afterFinalize === "succeeded" || afterFinalize === "succeeded_with_risk" || afterFinalize === "failed" || afterFinalize === "canceled") {
+            terminalReached = true;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
       if (!terminalReached) {
         const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 1_000 });

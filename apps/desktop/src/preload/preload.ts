@@ -19,6 +19,7 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AiApiKeyVerificationResult,
   AiSettingsStatus,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
@@ -280,8 +281,12 @@ import type {
   StartMissionRunWithAIResult,
   SteerMissionArgs,
   SteerMissionResult,
-  GetMissionDepthConfigArgs,
-  MissionDepthConfig,
+  GetTeamMembersArgs,
+  GetTeamRuntimeStateArgs,
+  FinalizeRunArgs,
+  FinalizeRunResult,
+  OrchestratorTeamMember,
+  OrchestratorTeamRuntimeState,
   GetModelCapabilitiesResult,
   OrchestratorChatMessage,
   OrchestratorChatThread,
@@ -353,6 +358,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.aiDeleteApiKey, { provider }),
     listApiKeys: async (): Promise<string[]> =>
       ipcRenderer.invoke(IPC.aiListApiKeys),
+    verifyApiKey: async (provider: string): Promise<AiApiKeyVerificationResult> =>
+      ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)
@@ -461,10 +468,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorStartMissionRun, args),
     steerMission: async (args: SteerMissionArgs): Promise<SteerMissionResult> =>
       ipcRenderer.invoke(IPC.orchestratorSteerMission, args),
-    getDepthConfig: async (args: GetMissionDepthConfigArgs): Promise<MissionDepthConfig> =>
-      ipcRenderer.invoke(IPC.orchestratorGetDepthConfig, args),
     getModelCapabilities: async (): Promise<GetModelCapabilitiesResult> =>
       ipcRenderer.invoke(IPC.orchestratorGetModelCapabilities),
+    getTeamMembers: async (args: GetTeamMembersArgs): Promise<OrchestratorTeamMember[]> =>
+      ipcRenderer.invoke(IPC.orchestratorGetTeamMembers, args),
+    getTeamRuntimeState: async (args: GetTeamRuntimeStateArgs): Promise<OrchestratorTeamRuntimeState | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetTeamRuntimeState, args),
+    finalizeRun: async (args: FinalizeRunArgs): Promise<FinalizeRunResult> =>
+      ipcRenderer.invoke(IPC.orchestratorFinalizeRun, args),
     sendChat: async (args: SendOrchestratorChatArgs): Promise<OrchestratorChatMessage> =>
       ipcRenderer.invoke(IPC.orchestratorSendChat, args),
     getChat: async (args: GetOrchestratorChatArgs): Promise<OrchestratorChatMessage[]> =>

@@ -4,16 +4,15 @@ import type {
   PlanningPhaseMode,
   TestingPhaseMode,
   GatePhaseMode,
-  IntegrationPhaseMode,
   PhaseModelChoice,
-  PrStrategy
+  TeamRuntimeConfig,
 } from "../../../shared/types";
-import { CLAUDE_MODELS, CODEX_MODELS } from "../../../shared/modelProfiles";
-import { MODEL_REGISTRY, MODEL_FAMILIES, getModelById, type ProviderFamily, type ModelDescriptor } from "../../../shared/modelRegistry";
+import { MODEL_REGISTRY, MODEL_FAMILIES, getModelById, type ProviderFamily } from "../../../shared/modelRegistry";
+import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+
 type PolicyEditorProps = {
   value: MissionExecutionPolicy;
   onChange: (policy: MissionExecutionPolicy) => void;
-  compact?: boolean;
 };
 
 const PRESET_QUICK: MissionExecutionPolicy = {
@@ -23,7 +22,7 @@ const PRESET_QUICK: MissionExecutionPolicy = {
   validation: { mode: "off" },
   codeReview: { mode: "off" },
   testReview: { mode: "off" },
-  integration: { mode: "off" },
+  prReview: { mode: "off" },
   merge: { mode: "off" },
   completion: { allowCompletionWithRisk: true },
   prStrategy: { kind: "manual" }
@@ -36,89 +35,23 @@ const PRESET_STANDARD: MissionExecutionPolicy = {
   validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
   codeReview: { mode: "off" },
   testReview: { mode: "optional", model: "openai/gpt-5.3-codex" },
-  integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
+  prReview: { mode: "off" },
   merge: { mode: "off" },
   completion: { allowCompletionWithRisk: true },
   prStrategy: { kind: "queue", targetBranch: "main", draft: true, autoRebase: true, ciGating: false }
 };
 
-const PRESET_THOROUGH: MissionExecutionPolicy = {
-  planning: { mode: "manual_review", model: "anthropic/claude-sonnet-4-6" },
-  implementation: { model: "openai/gpt-5.3-codex" },
-  testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
-  validation: { mode: "required", model: "openai/gpt-5.3-codex" },
-  codeReview: { mode: "required", model: "anthropic/claude-sonnet-4-6" },
-  testReview: { mode: "required", model: "openai/gpt-5.3-codex" },
-  integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
-  merge: { mode: "off" },
-  completion: { allowCompletionWithRisk: false },
-  prStrategy: { kind: "integration", targetBranch: "main", draft: false }
-};
-
-type PresetKey = "quick" | "standard" | "thorough" | "custom";
-
-const PRESET_LABELS: Record<PresetKey, { label: string; desc: string }> = {
-  quick: { label: "QUICK", desc: "Minimal steps, no testing" },
-  standard: { label: "STANDARD", desc: "Balanced with testing" },
-  thorough: { label: "THOROUGH", desc: "Full pipeline with review" },
-  custom: { label: "CUSTOM", desc: "Phase-level configuration" }
-};
-
-const PRESET_ACTIVE_STYLES: Record<string, React.CSSProperties> = {
-  quick: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" },
-  standard: { background: "#A78BFA18", color: "#A78BFA", border: "1px solid #A78BFA30" },
-  thorough: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" }
-};
-
-const PRESET_INACTIVE_STYLE: React.CSSProperties = {
-  background: "#13101A",
-  color: "#71717A",
-  border: "1px solid #1E1B26"
-};
-
-function detectPreset(policy: MissionExecutionPolicy): PresetKey {
-  if (
-    policy.planning.mode === "off" &&
-    policy.testing.mode === "none" &&
-    policy.validation.mode === "off" &&
-    policy.codeReview.mode === "off" &&
-    policy.testReview.mode === "off"
-  ) return "quick";
-  if (
-    policy.planning.mode === "auto" &&
-    policy.testing.mode === "post_implementation" &&
-    policy.validation.mode === "optional" &&
-    policy.codeReview.mode === "off" &&
-    (policy.testReview.mode === "optional" || policy.testReview.mode === "off")
-  ) return "standard";
-  if (
-    policy.planning.mode === "manual_review" &&
-    policy.testing.mode === "post_implementation" &&
-    policy.validation.mode === "required" &&
-    policy.codeReview.mode === "required" &&
-    policy.testReview.mode === "required"
-  ) return "thorough";
-  return "custom";
-}
-
 const selectStyle: React.CSSProperties = {
   height: 28,
-  background: "#0C0A10",
-  border: "1px solid #27272A",
-  color: "#FAFAFA",
-  fontFamily: "JetBrains Mono, monospace",
+  background: COLORS.recessedBg,
+  border: `1px solid ${COLORS.outlineBorder}`,
+  color: COLORS.textPrimary,
+  fontFamily: MONO_FONT,
   fontSize: 12,
   padding: "0 6px",
   outline: "none",
   borderRadius: 0
 };
-
-const CODEX_MODEL_IDS = CODEX_MODELS.map((m) => m.modelId);
-
-function isCodexModel(m?: string): boolean {
-  if (!m) return false;
-  return m === "codex" || CODEX_MODEL_IDS.includes(m);
-}
 
 function getReasoningTiers(modelId?: string): Array<{ value: string; label: string }> {
   if (!modelId) return [{ value: "medium", label: "Medium" }];
@@ -130,55 +63,105 @@ function getReasoningTiers(modelId?: string): Array<{ value: string; label: stri
   }));
 }
 
-function PhaseRow({
+// ─────────────────────────────────────────────────────
+// Toggle switch (matches SmartBudgetPanel style)
+// ─────────────────────────────────────────────────────
+
+function ToggleSwitch({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      onClick={() => !disabled && onChange(!on)}
+      className="relative shrink-0"
+      style={{
+        width: 28,
+        height: 14,
+        background: on ? "#22C55E" : COLORS.border,
+        border: "none",
+        borderRadius: 0,
+        cursor: disabled ? "default" : "pointer",
+        transition: "background 0.2s ease",
+        opacity: disabled ? 0.4 : 1,
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          top: 2,
+          left: on ? 14 : 2,
+          width: 10,
+          height: 10,
+          background: on ? COLORS.textPrimary : COLORS.textDim,
+          borderRadius: 0,
+          transition: "left 0.2s ease",
+        }}
+      />
+    </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────
+// Agent Row
+// ─────────────────────────────────────────────────────
+
+function AgentRow({
   label,
-  mode,
-  modeOptions,
-  onModeChange,
+  on,
+  onToggle,
+  alwaysOn,
   model,
   onModelChange,
   reasoningEffort,
   onReasoningEffortChange,
-  showModel
 }: {
   label: string;
-  mode: string;
-  modeOptions: Array<{ value: string; label: string }>;
-  onModeChange: (value: string) => void;
+  on: boolean;
+  onToggle?: (enabled: boolean) => void;
+  alwaysOn?: boolean;
   model?: PhaseModelChoice;
   onModelChange?: (value: PhaseModelChoice) => void;
   reasoningEffort?: string;
   onReasoningEffortChange?: (value: string) => void;
-  showModel: boolean;
 }) {
   const thinkingLevels = getReasoningTiers(model);
+  const showModel = on && onModelChange;
+  const labelColor = on ? "#22C55E" : COLORS.textDim;
 
   return (
     <div className="flex items-center gap-2 py-1">
+      {/* Toggle */}
+      <div className="w-7 shrink-0 flex justify-center">
+        {alwaysOn ? (
+          <div
+            style={{
+              width: 8,
+              height: 8,
+              background: "#22C55E",
+              borderRadius: 0,
+            }}
+          />
+        ) : (
+          <ToggleSwitch on={on} onChange={onToggle ?? (() => {})} />
+        )}
+      </div>
+
+      {/* Agent label */}
       <span
-        className="w-24 shrink-0"
+        className="w-32 shrink-0"
         style={{
-          fontFamily: "JetBrains Mono, monospace",
+          fontFamily: MONO_FONT,
           fontSize: 10,
           fontWeight: 700,
-          color: "#71717A",
+          color: labelColor,
           textTransform: "uppercase",
-          letterSpacing: "1px"
+          letterSpacing: "1px",
+          transition: "color 0.2s ease",
         }}
       >
         {label}
       </span>
-      <select
-        className="flex-1"
-        style={selectStyle}
-        value={mode}
-        onChange={(e) => onModeChange(e.target.value)}
-      >
-        {modeOptions.map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
-        ))}
-      </select>
-      {showModel && onModelChange ? (
+
+      {/* Model selector */}
+      {showModel ? (
         <select
           className="w-36"
           style={selectStyle}
@@ -191,15 +174,17 @@ function PhaseRow({
             return (
               <optgroup key={family} label={MODEL_FAMILIES[family]?.displayName ?? family}>
                 {familyModels.map((m) => (
-                  <option key={m.id} value={m.id}>{m.displayName}{isCodexModel(m.shortId) && CODEX_MODELS.find((c) => m.sdkModelId === c.modelId)?.recommended ? " *" : ""}</option>
+                  <option key={m.id} value={m.id}>{m.displayName}</option>
                 ))}
               </optgroup>
             );
           })}
         </select>
       ) : (
-        <div className="w-28" />
+        <div className="w-36" />
       )}
+
+      {/* Reasoning effort */}
       {showModel && onReasoningEffortChange ? (
         <select
           className="w-20"
@@ -218,15 +203,11 @@ function PhaseRow({
   );
 }
 
-export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
-  const preset = detectPreset(value);
+// ─────────────────────────────────────────────────────
+// PolicyEditor
+// ─────────────────────────────────────────────────────
 
-  const applyPreset = useCallback((key: PresetKey) => {
-    if (key === "quick") onChange(PRESET_QUICK);
-    else if (key === "standard") onChange(PRESET_STANDARD);
-    else if (key === "thorough") onChange(PRESET_THOROUGH);
-  }, [onChange]);
-
+export function PolicyEditor({ value, onChange }: PolicyEditorProps) {
   const updatePhase = useCallback(<K extends keyof MissionExecutionPolicy>(
     phase: K,
     update: Partial<MissionExecutionPolicy[K] & Record<string, unknown>>
@@ -235,344 +216,166 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
     onChange({ ...value, [phase]: typeof prev === "object" && prev !== null ? { ...prev, ...update } : update });
   }, [value, onChange]);
 
+  // Derive on/off state for each agent
+  const planningOn = value.planning.mode !== "off";
+  const testingOn = value.testing.mode !== "none";
+  const validationOn = value.validation.mode !== "off";
+  const codeReviewOn = value.codeReview.mode !== "off";
+  const testReviewOn = value.testReview.mode !== "off";
+  const prReviewOn = (value.prReview?.mode ?? "off") !== "off";
+
+  const teamRuntime = value.teamRuntime;
+  const teamEnabled = teamRuntime?.enabled ?? false;
+
+  const updateTeamRuntime = useCallback((update: Partial<TeamRuntimeConfig>) => {
+    const current: TeamRuntimeConfig = value.teamRuntime ?? { enabled: false, targetProvider: "auto", teammateCount: 2 };
+    onChange({ ...value, teamRuntime: { ...current, ...update } });
+  }, [value, onChange]);
+
   return (
     <div className="space-y-2">
-      <div className="flex gap-2">
-        {(["quick", "standard", "thorough"] as const).map((key) => (
-          <button
-            key={key}
-            onClick={() => applyPreset(key)}
-            className="flex-1 px-2 py-1.5 text-center transition-colors"
-            style={{
-              ...(preset === key ? PRESET_ACTIVE_STYLES[key] : PRESET_INACTIVE_STYLE),
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 11,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              borderRadius: 0
-            }}
-          >
-            <div>{PRESET_LABELS[key].label}</div>
-            {!compact && (
-              <div style={{ fontSize: 9, opacity: 0.7, fontWeight: 400, textTransform: "none", letterSpacing: "0px" }}>
-                {PRESET_LABELS[key].desc}
-              </div>
-            )}
-          </button>
-        ))}
-      </div>
-
-      <div className="p-2 space-y-0.5" style={{ background: "#13101A", border: "1px solid #1E1B26", borderRadius: 0 }}>
-        <div className="flex items-center gap-2 pb-1 mb-1" style={{ borderBottom: "1px solid #1E1B26" }}>
-          <span
-            className="w-24"
-            style={{
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 10,
-              fontWeight: 700,
-              color: "#71717A",
-              textTransform: "uppercase",
-              letterSpacing: "1px"
-            }}
-          >
-            PHASE
-          </span>
-          <span
-            className="flex-1"
-            style={{
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 10,
-              fontWeight: 700,
-              color: "#71717A",
-              textTransform: "uppercase",
-              letterSpacing: "1px"
-            }}
-          >
-            MODE
-          </span>
-          <span
-            className="w-36"
-            style={{
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 10,
-              fontWeight: 700,
-              color: "#71717A",
-              textTransform: "uppercase",
-              letterSpacing: "1px"
-            }}
-          >
-            MODEL
-          </span>
-          <span
-            className="w-20"
-            style={{
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 10,
-              fontWeight: 700,
-              color: "#71717A",
-              textTransform: "uppercase",
-              letterSpacing: "1px"
-            }}
-          >
-            THINKING
-          </span>
+      <div className="p-2 space-y-0.5" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, borderRadius: 0 }}>
+        {/* Column headers */}
+        <div className="flex items-center gap-2 pb-1 mb-1" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <span className="w-7 shrink-0" />
+          <span className="w-32 shrink-0" style={LABEL_STYLE}>AGENT</span>
+          <span className="w-36" style={LABEL_STYLE}>MODEL</span>
+          <span className="w-20" style={LABEL_STYLE}>THINKING</span>
         </div>
 
-        <PhaseRow
-          label="Planning"
-          mode={value.planning.mode}
-          modeOptions={[
-            { value: "off", label: "Off" },
-            { value: "auto", label: "Auto" },
-            { value: "manual_review", label: "Manual Review" }
-          ]}
-          onModeChange={(v) => updatePhase("planning", { mode: v as PlanningPhaseMode })}
+        {/* Planning Agent */}
+        <AgentRow
+          label="Planning Agent"
+          on={planningOn}
+          onToggle={(enabled) => updatePhase("planning", { mode: (enabled ? "auto" : "off") as PlanningPhaseMode })}
           model={value.planning.model}
           onModelChange={(v) => updatePhase("planning", { model: v })}
           reasoningEffort={value.planning.reasoningEffort}
           onReasoningEffortChange={(v) => updatePhase("planning", { reasoningEffort: v })}
-          showModel={value.planning.mode !== "off"}
         />
 
-        <PhaseRow
-          label="Implementation"
-          mode="active"
-          modeOptions={[{ value: "active", label: "Active" }]}
-          onModeChange={() => {}}
+        {/* Implementation Agent — always on */}
+        <AgentRow
+          label="Impl Agent"
+          on
+          alwaysOn
           model={value.implementation.model}
           onModelChange={(v) => updatePhase("implementation", { model: v })}
           reasoningEffort={value.implementation.reasoningEffort}
           onReasoningEffortChange={(v) => updatePhase("implementation", { reasoningEffort: v })}
-          showModel
         />
 
-        <PhaseRow
-          label="Testing"
-          mode={value.testing.mode}
-          modeOptions={[
-            { value: "none", label: "None" },
-            { value: "post_implementation", label: "Post-Implementation" },
-            { value: "tdd", label: "TDD" }
-          ]}
-          onModeChange={(v) => updatePhase("testing", { mode: v as TestingPhaseMode })}
+        {/* Testing Agent */}
+        <AgentRow
+          label="Testing Agent"
+          on={testingOn}
+          onToggle={(enabled) => updatePhase("testing", { mode: (enabled ? "post_implementation" : "none") as TestingPhaseMode })}
           model={value.testing.model}
           onModelChange={(v) => updatePhase("testing", { model: v })}
           reasoningEffort={value.testing.reasoningEffort}
           onReasoningEffortChange={(v) => updatePhase("testing", { reasoningEffort: v })}
-          showModel={value.testing.mode !== "none"}
         />
 
-        <PhaseRow
-          label="Validation"
-          mode={value.validation.mode}
-          modeOptions={[
-            { value: "off", label: "Off" },
-            { value: "optional", label: "Optional" },
-            { value: "required", label: "Required" }
-          ]}
-          onModeChange={(v) => updatePhase("validation", { mode: v as GatePhaseMode })}
+        {/* Validation Agent */}
+        <AgentRow
+          label="Validation Agent"
+          on={validationOn}
+          onToggle={(enabled) => updatePhase("validation", { mode: (enabled ? "required" : "off") as GatePhaseMode })}
           model={value.validation.model}
           onModelChange={(v) => updatePhase("validation", { model: v })}
           reasoningEffort={value.validation.reasoningEffort}
           onReasoningEffortChange={(v) => updatePhase("validation", { reasoningEffort: v })}
-          showModel={value.validation.mode !== "off"}
         />
 
-        <PhaseRow
-          label="Code Review"
-          mode={value.codeReview.mode}
-          modeOptions={[
-            { value: "off", label: "Off" },
-            { value: "optional", label: "Optional" },
-            { value: "required", label: "Required" }
-          ]}
-          onModeChange={(v) => updatePhase("codeReview", { mode: v as GatePhaseMode })}
+        {/* Code Review Agent */}
+        <AgentRow
+          label="Code Review Agent"
+          on={codeReviewOn}
+          onToggle={(enabled) => updatePhase("codeReview", { mode: (enabled ? "required" : "off") as GatePhaseMode })}
           model={value.codeReview.model}
           onModelChange={(v) => updatePhase("codeReview", { model: v })}
           reasoningEffort={value.codeReview.reasoningEffort}
           onReasoningEffortChange={(v) => updatePhase("codeReview", { reasoningEffort: v })}
-          showModel={value.codeReview.mode !== "off"}
         />
 
-        <PhaseRow
-          label="Test Review"
-          mode={value.testReview.mode}
-          modeOptions={[
-            { value: "off", label: "Off" },
-            { value: "optional", label: "Optional" },
-            { value: "required", label: "Required" }
-          ]}
-          onModeChange={(v) => updatePhase("testReview", { mode: v as GatePhaseMode })}
+        {/* Test Review Agent */}
+        <AgentRow
+          label="Test Review Agent"
+          on={testReviewOn}
+          onToggle={(enabled) => updatePhase("testReview", { mode: (enabled ? "required" : "off") as GatePhaseMode })}
           model={value.testReview.model}
           onModelChange={(v) => updatePhase("testReview", { model: v })}
           reasoningEffort={value.testReview.reasoningEffort}
           onReasoningEffortChange={(v) => updatePhase("testReview", { reasoningEffort: v })}
-          showModel={value.testReview.mode !== "off"}
         />
 
-        <PhaseRow
-          label="Integration"
-          mode={value.integration.mode}
-          modeOptions={[
-            { value: "off", label: "Off" },
-            { value: "auto", label: "Auto" }
-          ]}
-          onModeChange={(v) => updatePhase("integration", { mode: v as IntegrationPhaseMode })}
-          model={value.integration.model}
-          onModelChange={(v) => updatePhase("integration", { model: v })}
-          reasoningEffort={value.integration.reasoningEffort}
-          onReasoningEffortChange={(v) => updatePhase("integration", { reasoningEffort: v })}
-          showModel={value.integration.mode !== "off"}
+        {/* PR Review Agent */}
+        <AgentRow
+          label="PR Review Agent"
+          on={prReviewOn}
+          onToggle={(enabled) => updatePhase("prReview", { mode: enabled ? "auto" : "off" })}
+          model={value.prReview?.model}
+          onModelChange={(v) => updatePhase("prReview", { model: v })}
+          reasoningEffort={value.prReview?.reasoningEffort}
+          onReasoningEffortChange={(v) => updatePhase("prReview", { reasoningEffort: v })}
         />
+      </div>
 
-        <div className="pt-2 mt-1 space-y-2" style={{ borderTop: "1px solid #1E1B26" }}>
-          <div
+      {/* Team Runtime */}
+      <div className="p-2 space-y-1" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, borderRadius: 0 }}>
+        <div className="flex items-center gap-2 pb-1 mb-1" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <span style={LABEL_STYLE}>TEAM RUNTIME</span>
+        </div>
+        <div className="flex items-center gap-2 py-1">
+          <div className="w-7 shrink-0 flex justify-center">
+            <ToggleSwitch on={teamEnabled} onChange={(v) => updateTeamRuntime({ enabled: v })} />
+          </div>
+          <span
+            className="w-32 shrink-0"
             style={{
-              fontFamily: "JetBrains Mono, monospace",
+              fontFamily: MONO_FONT,
               fontSize: 10,
               fontWeight: 700,
-              color: "#71717A",
+              color: teamEnabled ? "#22C55E" : COLORS.textDim,
               textTransform: "uppercase",
-              letterSpacing: "1px"
+              letterSpacing: "1px",
+              transition: "color 0.2s ease",
             }}
           >
-            PR STRATEGY
-          </div>
-          <div className="flex items-center gap-2">
-            <select
-              className="flex-1"
-              style={selectStyle}
-              value={value.prStrategy?.kind ?? "manual"}
-              onChange={(e) => {
-                const kind = e.target.value as PrStrategy["kind"];
-                if (kind === "manual") {
-                  onChange({ ...value, prStrategy: { kind: "manual" } });
-                } else {
-                  const prev = value.prStrategy;
-                  const targetBranch = (prev && "targetBranch" in prev ? prev.targetBranch : undefined) ?? "main";
-                  const draft = prev && "draft" in prev ? prev.draft : true;
-                  if (kind === "queue") {
-                    const autoRebase = prev && "autoRebase" in prev ? prev.autoRebase : true;
-                    const ciGating = prev && "ciGating" in prev ? prev.ciGating : false;
-                    onChange({ ...value, prStrategy: { kind, targetBranch, draft, autoRebase, ciGating } });
-                  } else {
-                    onChange({ ...value, prStrategy: { kind, targetBranch, draft } });
-                  }
-                }
-              }}
-            >
-              <option value="integration">Integration PR</option>
-              <option value="per-lane">Per-Lane PRs</option>
-              <option value="queue">Queue (ordered merge)</option>
-              <option value="manual">Manual (no auto-PR)</option>
-            </select>
-          </div>
-          {value.prStrategy?.kind !== "manual" && (
-            <div className="flex items-center gap-2">
-              <input
-                className="flex-1"
-                style={{
-                  height: 28,
-                  background: "#0C0A10",
-                  border: "1px solid #27272A",
-                  color: "#FAFAFA",
-                  fontFamily: "JetBrains Mono, monospace",
-                  fontSize: 12,
-                  padding: "0 6px",
-                  outline: "none",
-                  borderRadius: 0
-                }}
-                placeholder="Target branch"
-                value={(value.prStrategy && "targetBranch" in value.prStrategy ? value.prStrategy.targetBranch : undefined) ?? "main"}
-                onChange={(e) => {
-                  const prev = value.prStrategy as Exclude<PrStrategy, { kind: "manual" }>;
-                  onChange({ ...value, prStrategy: { ...prev, targetBranch: e.target.value } });
-                }}
-              />
-              <label
-                className="flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={(value.prStrategy && "draft" in value.prStrategy ? value.prStrategy.draft : true) ?? true}
-                  onChange={(e) => {
-                    const prev = value.prStrategy as Exclude<PrStrategy, { kind: "manual" }>;
-                    onChange({ ...value, prStrategy: { ...prev, draft: e.target.checked } });
-                  }}
-                />
-                Draft PR
-              </label>
-            </div>
-          )}
-          {value.prStrategy?.kind === "queue" && (
-            <div className="flex items-center gap-3">
-              <label
-                className="flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={(value.prStrategy && "autoRebase" in value.prStrategy ? value.prStrategy.autoRebase : true) ?? true}
-                  onChange={(e) => {
-                    const prev = value.prStrategy as Extract<PrStrategy, { kind: "queue" }>;
-                    onChange({ ...value, prStrategy: { ...prev, autoRebase: e.target.checked } });
-                  }}
-                />
-                Auto-rebase
-              </label>
-              <label
-                className="flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={(value.prStrategy && "ciGating" in value.prStrategy ? value.prStrategy.ciGating : false) ?? false}
-                  onChange={(e) => {
-                    const prev = value.prStrategy as Extract<PrStrategy, { kind: "queue" }>;
-                    onChange({ ...value, prStrategy: { ...prev, ciGating: e.target.checked } });
-                  }}
-                />
-                CI gating
-              </label>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 pt-1 mt-1" style={{ borderTop: "1px solid #1E1B26" }}>
-          <label
-            className="flex items-center gap-1.5 cursor-pointer"
-            style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
-          >
-            <input
-              type="checkbox"
-              checked={value.completion.allowCompletionWithRisk}
-              onChange={(e) => updatePhase("completion", { allowCompletionWithRisk: e.target.checked })}
-            />
-            Allow completion with risk
-          </label>
-        </div>
-
-        <div className="flex items-center gap-2 pt-1 mt-1" style={{ borderTop: "1px solid #1E1B26" }}>
-          <label
-            className="flex items-center gap-1.5 cursor-pointer"
-            style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
-          >
-            <input
-              type="checkbox"
-              checked={value.useAgentTeams ?? false}
-              onChange={(e) => onChange({ ...value, useAgentTeams: e.target.checked })}
-            />
-            Agent Teams
-          </label>
-          <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#52525B" }}>
-            Enable multiple AI agents working in parallel
+            Team Mode
           </span>
+          {teamEnabled && (
+            <>
+              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                <span>COUNT</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={teamRuntime?.teammateCount ?? 2}
+                  onChange={(e) => updateTeamRuntime({ teammateCount: Math.max(1, Math.min(8, Number(e.target.value) || 2)) })}
+                  className="h-6 w-10 px-1 text-xs text-center outline-none"
+                  style={selectStyle}
+                />
+              </label>
+              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                <span>PROVIDER</span>
+                <select
+                  value={teamRuntime?.targetProvider ?? "auto"}
+                  onChange={(e) => updateTeamRuntime({ targetProvider: e.target.value as "claude" | "codex" | "auto" })}
+                  style={selectStyle}
+                >
+                  <option value="auto">Auto</option>
+                  <option value="claude">Claude</option>
+                  <option value="codex">Codex</option>
+                </select>
+              </label>
+            </>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-export { PRESET_QUICK, PRESET_STANDARD, PRESET_THOROUGH, detectPreset };
+export { PRESET_QUICK, PRESET_STANDARD };

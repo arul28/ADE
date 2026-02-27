@@ -1,27 +1,27 @@
 import type {
-  MissionDepthTier,
   MissionExecutionPolicy,
   CompletionDiagnostic,
   RunCompletionEvaluation,
+  RunCompletionValidation,
+  RunCompletionBlocker,
+  OrchestratorRun,
   OrchestratorRunStatus,
   OrchestratorStep,
   OrchestratorStepStatus,
+  OrchestratorAttempt,
+  OrchestratorClaim,
+  OrchestratorTeamRuntimeState,
   OrchestratorWorkerRole,
   OrchestratorExecutorKind,
   RoleIsolationRule,
   RoleIsolationValidation,
   TeamManifest,
-  TeamComplexityAssessment,
-  TeamWorkerAssignment,
-  TeamDecisionEntry,
   RecoveryLoopPolicy,
   RecoveryLoopState,
   OrchestratorContextView,
   ExecutionPlanPreview,
   ExecutionPlanPhase,
-  ExecutionPlanStepPreview,
-  ModelConfig,
-  PrDepth
+  ExecutionPlanStepPreview
 } from "../../../shared/types";
 
 import {
@@ -43,60 +43,11 @@ export const DEFAULT_EXECUTION_POLICY: MissionExecutionPolicy = {
   validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
   codeReview: { mode: "off" },
   testReview: { mode: "off" },
-  integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
+  prReview: { mode: "off" },
   merge: { mode: "off" },
   completion: { allowCompletionWithRisk: true },
   prStrategy: { kind: "manual" }
 };
-
-// ─────────────────────────────────────────────────────
-// Depth tier → policy conversion (backward compat)
-// ─────────────────────────────────────────────────────
-
-export function depthTierToPolicy(tier: MissionDepthTier): MissionExecutionPolicy {
-  switch (tier) {
-    case "light":
-      return {
-        planning: { mode: "off" },
-        implementation: { model: "openai/gpt-5.3-codex" },
-        testing: { mode: "none" },
-        validation: { mode: "off" },
-        codeReview: { mode: "off" },
-        testReview: { mode: "off" },
-        integration: { mode: "off" },
-        merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: true },
-        prStrategy: { kind: "per-lane", draft: true, prDepth: "propose-only" as PrDepth }
-      };
-    case "deep":
-      return {
-        planning: { mode: "manual_review", model: "anthropic/claude-sonnet-4-6" },
-        implementation: { model: "openai/gpt-5.3-codex" },
-        testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
-        validation: { mode: "required", model: "openai/gpt-5.3-codex" },
-        codeReview: { mode: "required", model: "anthropic/claude-sonnet-4-6" },
-        testReview: { mode: "required", model: "openai/gpt-5.3-codex" },
-        integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
-        merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: false },
-        prStrategy: { kind: "integration", targetBranch: "main", draft: false, prDepth: "open-and-comment" as PrDepth }
-      };
-    case "standard":
-    default:
-      return {
-        planning: { mode: "auto", model: "openai/gpt-5.3-codex" },
-        implementation: { model: "openai/gpt-5.3-codex" },
-        testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
-        validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
-        codeReview: { mode: "off" },
-        testReview: { mode: "off" },
-        integration: { mode: "auto", model: "openai/gpt-5.3-codex" },
-        merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: true },
-        prStrategy: { kind: "queue", targetBranch: "main", draft: true, autoRebase: true, ciGating: false, prDepth: "resolve-conflicts" as PrDepth }
-      };
-  }
-}
 
 // ─────────────────────────────────────────────────────
 // Resolution: merge partial policy with defaults
@@ -112,11 +63,10 @@ function mergePhase<T extends Record<string, unknown>>(
 
 export function resolveExecutionPolicy(sources: {
   missionMetadata?: Partial<MissionExecutionPolicy> | null;
-  missionDepthTier?: MissionDepthTier | null;
   projectConfig?: Partial<MissionExecutionPolicy> | null;
   fallback?: MissionExecutionPolicy;
 }): MissionExecutionPolicy {
-  // Priority: mission metadata > depth tier conversion > project config > fallback > DEFAULT
+  // Priority: mission metadata > project config > fallback > DEFAULT
   const base = sources.fallback ?? DEFAULT_EXECUTION_POLICY;
 
   let resolved: MissionExecutionPolicy;
@@ -130,13 +80,13 @@ export function resolveExecutionPolicy(sources: {
       validation: mergePhase(p.validation, base.validation),
       codeReview: mergePhase(p.codeReview, base.codeReview),
       testReview: mergePhase(p.testReview, base.testReview),
-      integration: mergePhase(p.integration, base.integration),
+      prReview: mergePhase(p.prReview, base.prReview),
       merge: { mode: "off" },
       completion: mergePhase(p.completion, base.completion),
-      prStrategy: p.prStrategy ?? base.prStrategy
+      prStrategy: p.prStrategy ?? base.prStrategy,
+      integrationPr: p.integrationPr ?? base.integrationPr,
+      teamRuntime: p.teamRuntime ?? base.teamRuntime
     };
-  } else if (sources.missionDepthTier) {
-    resolved = depthTierToPolicy(sources.missionDepthTier);
   } else if (sources.projectConfig) {
     const p = sources.projectConfig;
     resolved = {
@@ -146,10 +96,12 @@ export function resolveExecutionPolicy(sources: {
       validation: mergePhase(p.validation, base.validation),
       codeReview: mergePhase(p.codeReview, base.codeReview),
       testReview: mergePhase(p.testReview, base.testReview),
-      integration: mergePhase(p.integration, base.integration),
+      prReview: mergePhase(p.prReview, base.prReview),
       merge: { mode: "off" },
       completion: mergePhase(p.completion, base.completion),
-      prStrategy: p.prStrategy ?? base.prStrategy
+      prStrategy: p.prStrategy ?? base.prStrategy,
+      integrationPr: p.integrationPr ?? base.integrationPr,
+      teamRuntime: p.teamRuntime ?? base.teamRuntime
     };
   } else {
     resolved = base;
@@ -202,13 +154,8 @@ const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "fa
 
 export function evaluateRunCompletion(
   steps: OrchestratorStep[],
-  policy: MissionExecutionPolicy | null
+  policy: MissionExecutionPolicy
 ): RunCompletionEvaluation {
-  // Null policy → legacy behavior
-  if (policy === null) {
-    return evaluateLegacy(steps);
-  }
-
   const diagnostics: CompletionDiagnostic[] = [];
   const riskFactors: string[] = [];
 
@@ -233,7 +180,7 @@ export function evaluateRunCompletion(
     validation: policy.validation.mode === "required",
     codeReview: policy.codeReview.mode === "required",
     testReview: policy.testReview.mode === "required",
-    integration: policy.integration.mode === "auto" && hasMultipleLanes(steps),
+    integration: !!policy.integrationPr && hasMultipleLanes(steps),
     merge: false
   };
 
@@ -254,15 +201,14 @@ export function evaluateRunCompletion(
 
     if (stepsInPhase.length === 0) {
       if (required) {
+        // When allowCompletionWithRisk, phase requirements are advisory — never block
         diagnostics.push({
           phase,
           code: "phase_required_missing",
           message: `Required phase "${phase}" has no steps`,
-          blocking: !policy.completion.allowCompletionWithRisk
+          blocking: false
         });
-        if (policy.completion.allowCompletionWithRisk) {
-          riskFactors.push(`${phase}_required_but_missing`);
-        }
+        riskFactors.push(`${phase}_required_but_missing`);
       } else {
         diagnostics.push({
           phase,
@@ -289,13 +235,19 @@ export function evaluateRunCompletion(
         blocking: false
       });
     } else if (anyFailed && allTerminal) {
+      // When allowCompletionWithRisk, failed phases are advisory — coordinator decides
+      const blocking = required && !policy.completion.allowCompletionWithRisk;
       diagnostics.push({
         phase,
         code: "phase_failed",
         message: `Phase "${phase}" has failed steps`,
-        blocking: required
+        blocking
       });
+      if (!blocking && required) {
+        riskFactors.push(`${phase}_failed`);
+      }
     } else if (anyBlocked || anyInProgress) {
+      // In-progress is always blocking — can't complete while steps are running
       diagnostics.push({
         phase,
         code: "phase_in_progress",
@@ -320,7 +272,7 @@ export function evaluateRunCompletion(
   let completionReady: boolean;
 
   if (anyPhaseInProgress || anyStepRunning) {
-    status = "running";
+    status = "active";
     completionReady = false;
   } else if (anyStepBlocked) {
     status = "paused";
@@ -336,53 +288,88 @@ export function evaluateRunCompletion(
     status = allSucceeded ? "succeeded" : "failed";
     completionReady = true;
   } else if (hasBlockingDiagnostics && !policy.completion.allowCompletionWithRisk) {
-    status = "running"; // not ready to complete
+    status = "active"; // not ready to complete
     completionReady = false;
   } else {
-    status = "running";
+    status = "active";
     completionReady = false;
   }
 
   return { status, diagnostics, riskFactors, completionReady };
 }
 
-function evaluateLegacy(steps: OrchestratorStep[]): RunCompletionEvaluation {
-  if (!steps.length) {
-    return { status: "succeeded", diagnostics: [], riskFactors: [], completionReady: true };
-  }
-  const statuses = steps.map((s) => s.status);
-  const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
-  let status: OrchestratorRunStatus;
+// ─────────────────────────────────────────────────────
+// Explicit completion validator
+// ─────────────────────────────────────────────────────
 
-  if (allTerminal && statuses.every((s) => s === "succeeded" || s === "skipped")) {
-    status = "succeeded";
-  } else if (allTerminal && statuses.every((s) => s === "canceled")) {
-    status = "canceled";
-  } else if (allTerminal && statuses.some((s) => s === "failed")) {
-    status = "failed";
-  } else if (allTerminal && statuses.some((s) => s === "blocked")) {
-    status = "paused";
-  } else if (statuses.some((s) => s === "running")) {
-    status = "running";
-  } else if (statuses.some((s) => s === "ready" || s === "pending")) {
-    status = "running";
-  } else if (statuses.some((s) => s === "blocked")) {
-    status = "paused";
-  } else {
-    status = "running";
+/**
+ * Validates whether a run can be finalized. This is the gate that
+ * the kernel's finalizeRun calls before transitioning a run to a
+ * terminal status. Returns structured blockers when the run cannot
+ * yet complete.
+ */
+export function validateRunCompletion(
+  run: OrchestratorRun,
+  steps: OrchestratorStep[],
+  attempts: OrchestratorAttempt[],
+  claims: OrchestratorClaim[],
+  runState: OrchestratorTeamRuntimeState | null,
+  interventions?: Array<{ status: string }>
+): RunCompletionValidation {
+  const blockers: RunCompletionBlocker[] = [];
+
+  // (a) No running or queued attempts
+  const activeAttempts = attempts.filter(
+    (a) => a.status === "running" || a.status === "queued"
+  );
+  if (activeAttempts.length > 0) {
+    blockers.push({
+      code: "running_attempts",
+      message: `${activeAttempts.length} attempt(s) still running or queued`,
+      detail: { attemptIds: activeAttempts.map((a) => a.id) }
+    });
   }
+
+  // (b) No claimed-but-unstarted tasks
+  // "claimed" comes from OrchestratorTaskStatus (team runtime); cast for
+  // backward-compat with OrchestratorStepStatus which doesn't include it yet.
+  const claimedSteps = steps.filter((s) => (s.status as string) === "claimed");
+  const activeTaskClaims = claims.filter(
+    (c) => c.state === "active" && c.scopeKind === "task"
+  );
+  if (claimedSteps.length > 0 || activeTaskClaims.length > 0) {
+    blockers.push({
+      code: "claimed_tasks",
+      message: `${claimedSteps.length} claimed step(s) and ${activeTaskClaims.length} active task claim(s) pending`,
+      detail: {
+        claimedStepIds: claimedSteps.map((s) => s.stepKey),
+        activeClaimIds: activeTaskClaims.map((c) => c.id)
+      }
+    });
+  }
+
+  // (c) No unresolved blocking interventions
+  if (interventions) {
+    const unresolved = interventions.filter((i) => i.status !== "resolved");
+    if (unresolved.length > 0) {
+      blockers.push({
+        code: "unresolved_interventions",
+        message: `${unresolved.length} unresolved intervention(s)`,
+        detail: { count: unresolved.length }
+      });
+    }
+  }
+
+  // (d) completion_not_requested gate removed — the act of calling
+  // finalizeRun or validateRunCompletion IS the completion request.
+  // The coordinator is the sole authority on when a mission is complete.
 
   return {
-    status,
-    diagnostics: [],
-    riskFactors: [],
-    completionReady: TERMINAL_RUN_STATUSES_SET.has(status)
+    canComplete: blockers.length === 0,
+    blockers,
+    validatedAt: new Date().toISOString()
   };
 }
-
-const TERMINAL_RUN_STATUSES_SET = new Set<OrchestratorRunStatus>([
-  "succeeded", "succeeded_with_risk", "failed", "canceled"
-]);
 
 function hasMultipleLanes(steps: OrchestratorStep[]): boolean {
   const laneIds = new Set<string>();
@@ -396,26 +383,13 @@ function hasMultipleLanes(steps: OrchestratorStep[]): boolean {
 // Model/executor helpers
 // ─────────────────────────────────────────────────────
 
-const MODEL_TO_EXECUTOR: Record<string, OrchestratorExecutorKind> = {
-  claude: "claude",
-  codex: "codex",
-};
-
 export function phaseModelToExecutorKind(model?: string | null, fallback: OrchestratorExecutorKind = "codex"): OrchestratorExecutorKind {
   if (!model) return fallback;
-  // Legacy bare values → preserve legacy executor routing
   if (model === "claude") return "claude";
   if (model === "codex") return "codex";
-  // Full model IDs (e.g. "anthropic/claude-sonnet-4-6") → unified adapter
   const descriptor = getModelById(model);
   if (descriptor) return "unified";
-  return MODEL_TO_EXECUTOR[model] ?? fallback;
-}
-
-/** Convert a ModelConfig to executor kind */
-export function modelConfigToExecutorKind(config?: ModelConfig | null): "claude" | "codex" {
-  if (!config) return "codex";
-  return config.provider;
+  return fallback;
 }
 
 // ─────────────────────────────────────────────────────
@@ -541,7 +515,6 @@ export function validateRoleIsolation(
   };
 }
 
-// ─────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────
 // Context view for roles
 // ─────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ import {
   GearSix,
   Hash,
   CaretDown,
+  CaretRight,
   List,
   Kanban,
   Trash,
@@ -81,6 +82,7 @@ import { ModelProfileSelector } from "./ModelProfileSelector";
 import { ModelSelector } from "./ModelSelector";
 import { OrchestratorIntelligencePanel } from "./OrchestratorIntelligencePanel";
 import { SmartBudgetPanel } from "./SmartBudgetPanel";
+import { MissionPromptInput } from "./MissionPromptInput";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
@@ -162,7 +164,7 @@ const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: str
   { key: "completed", label: "DONE", hex: "#22C55E" },
   { key: "failed", label: "FAILED", hex: "#EF4444" },
 ];
-type PlannerProvider = "auto" | "claude" | "codex";
+type PlannerProvider = "auto" | (string & {});
 type TeammatePlanMode = "auto" | "off" | "required";
 
 type MissionSettingsDraft = {
@@ -221,13 +223,13 @@ function mergeExecutionPolicyWithDefaults(source: unknown, defaults: MissionExec
     validation: mergePhase("validation", defaults.validation),
     codeReview: mergePhase("codeReview", defaults.codeReview),
     testReview: mergePhase("testReview", defaults.testReview),
-    integration: mergePhase("integration", defaults.integration),
+    prReview: mergePhase("prReview", defaults.prReview),
     merge: mergePhase("merge", defaults.merge),
     completion: mergePhase("completion", defaults.completion)
   };
 }
 
-function toPlannerProvider(value: string): string {
+function toPlannerProvider(value: string): PlannerProvider {
   // Accept "auto", legacy "claude"/"codex", or any model ID from the registry
   if (value === "auto") return "auto";
   if (getModelById(value)) return value;
@@ -694,17 +696,27 @@ export function resolveMissionChatSelection(args: {
 }): string | null {
   if (!args.threads.length) return null;
   if (args.jumpTarget?.kind === "coordinator") {
-    const missionThread = args.threads.find((thread) => thread.threadType === "mission");
+    const missionThread = args.threads.find((thread) => thread.threadType === "coordinator");
     if (missionThread) return missionThread.id;
+  }
+  if (args.jumpTarget?.kind === "teammate") {
+    const teammateThread = args.threads.find((thread) => thread.threadType === "teammate");
+    if (teammateThread) return teammateThread.id;
+    // Fallback to coordinator/mission thread
+    const coordThread = args.threads.find((thread) => thread.threadType === "coordinator");
+    if (coordThread) return coordThread.id;
   }
   if (args.jumpTarget?.kind === "worker") {
     const matched = findBestWorkerThread(args.threads, args.jumpTarget);
     if (matched) return matched.id;
+    // If no worker thread matched (e.g. planner step), fall back to coordinator thread
+    const coordThread = args.threads.find((thread) => thread.threadType === "coordinator");
+    if (coordThread) return coordThread.id;
   }
   if (args.selectedThreadId && args.threads.some((thread) => thread.id === args.selectedThreadId)) {
     return args.selectedThreadId;
   }
-  const missionThread = args.threads.find((thread) => thread.threadType === "mission");
+  const missionThread = args.threads.find((thread) => thread.threadType === "coordinator");
   return missionThread?.id ?? args.threads[0]?.id ?? null;
 }
 
@@ -752,20 +764,29 @@ function MissionControlWrapper({
   const handleSendMessage = useCallback(async (threadId: string, content: string) => {
     try {
       const thread = threads.find((t) => t.id === threadId);
-      const target: OrchestratorChatTarget = thread?.threadType === "worker"
-        ? {
-            kind: "worker",
-            runId: thread.runId ?? graph.run.id ?? null,
-            stepId: thread.stepId ?? null,
-            stepKey: thread.stepKey ?? null,
-            attemptId: thread.attemptId ?? null,
-            sessionId: thread.sessionId ?? null,
-            laneId: thread.laneId ?? null
-          }
-        : {
-            kind: "coordinator",
-            runId: graph.run.id ?? null
-          };
+      let target: OrchestratorChatTarget;
+      if (thread?.threadType === "worker") {
+        target = {
+          kind: "worker",
+          runId: thread.runId ?? graph.run.id ?? null,
+          stepId: thread.stepId ?? null,
+          stepKey: thread.stepKey ?? null,
+          attemptId: thread.attemptId ?? null,
+          sessionId: thread.sessionId ?? null,
+          laneId: thread.laneId ?? null
+        };
+      } else if (thread?.threadType === "teammate") {
+        target = {
+          kind: "teammate",
+          runId: thread.runId ?? graph.run.id ?? null,
+          teamMemberId: (thread as OrchestratorChatThread & { teamMemberId?: string }).teamMemberId ?? null
+        };
+      } else {
+        target = {
+          kind: "coordinator",
+          runId: graph.run.id ?? null
+        };
+      }
       await window.ade.orchestrator.sendThreadMessage({
         missionId,
         threadId,
@@ -882,7 +903,7 @@ function MissionChat({
       onJumpHandled();
       return;
     }
-    const missionThread = threads.find((thread) => thread.threadType === "mission");
+    const missionThread = threads.find((thread) => thread.threadType === "coordinator");
     if (!missionThread) return;
     if (missionThread.id !== selectedThreadId) {
       setSelectedThreadId(missionThread.id);
@@ -1031,7 +1052,7 @@ function MissionChat({
   );
 
   useEffect(() => {
-    if (!selectedThread || selectedThread.threadType !== "mission") {
+    if (!selectedThread || selectedThread.threadType !== "coordinator") {
       if (broadcastToWorkers) {
         setBroadcastToWorkers(false);
       }
@@ -1114,27 +1135,36 @@ function MissionChat({
     const trimmed = input.trim();
     setSending(true);
     try {
-      const target: OrchestratorChatTarget = selectedThread.threadType === "worker"
-        ? {
-            kind: "worker",
-            runId: selectedThread.runId ?? runId ?? null,
-            stepId: selectedThread.stepId ?? null,
-            stepKey: selectedThread.stepKey ?? null,
-            attemptId: selectedThread.attemptId ?? null,
-            sessionId: selectedThread.sessionId ?? null,
-            laneId: selectedThread.laneId ?? null
-          }
-        : broadcastToWorkers
-          ? {
-              kind: "workers",
-              runId: selectedThread.runId ?? runId ?? null,
-              laneId: null,
-              includeClosed: false
-            }
-        : {
-            kind: "coordinator",
-            runId: selectedThread.runId ?? runId ?? null
-          };
+      let target: OrchestratorChatTarget;
+      if (selectedThread.threadType === "worker") {
+        target = {
+          kind: "worker",
+          runId: selectedThread.runId ?? runId ?? null,
+          stepId: selectedThread.stepId ?? null,
+          stepKey: selectedThread.stepKey ?? null,
+          attemptId: selectedThread.attemptId ?? null,
+          sessionId: selectedThread.sessionId ?? null,
+          laneId: selectedThread.laneId ?? null
+        };
+      } else if (selectedThread.threadType === "teammate") {
+        target = {
+          kind: "teammate",
+          runId: selectedThread.runId ?? runId ?? null,
+          teamMemberId: (selectedThread as OrchestratorChatThread & { teamMemberId?: string }).teamMemberId ?? null
+        };
+      } else if (broadcastToWorkers) {
+        target = {
+          kind: "workers",
+          runId: selectedThread.runId ?? runId ?? null,
+          laneId: null,
+          includeClosed: false
+        };
+      } else {
+        target = {
+          kind: "coordinator",
+          runId: selectedThread.runId ?? runId ?? null
+        };
+      }
       await window.ade.orchestrator.sendThreadMessage({
         missionId,
         threadId: selectedThread.id,
@@ -1157,7 +1187,10 @@ function MissionChat({
     }
   }, [broadcastToWorkers, input, missionId, runId, selectedThread, sending]);
 
-  const threadTypeBadgeHex = (type: string) => type === "mission" ? "#3B82F6" : "#A78BFA";
+  const threadTypeBadgeHex = (type: string) =>
+    type === "coordinator" ? "#3B82F6"
+    : type === "teammate" ? "#06B6D4"
+    : "#A78BFA";
   const deliveryHex = (state: string | undefined) =>
     state === "delivered" ? "#22C55E" : state === "failed" ? "#EF4444" : "#F59E0B";
 
@@ -1195,7 +1228,7 @@ function MissionChat({
                 </div>
                 <div className="mt-1 flex items-center gap-1.5 text-[9px]" style={{ color: COLORS.textMuted }}>
                   <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(threadTypeBadgeHex(thread.threadType))}>
-                    {thread.threadType === "mission" ? "PLANNER" : "WORKER"}
+                    {thread.threadType === "coordinator" ? "COORDINATOR" : thread.threadType === "teammate" ? "TEAMMATE" : "WORKER"}
                   </span>
                   {thread.threadType === "worker" && thread.stepKey && (
                     <span className="px-1 py-0.5 text-[8px] font-bold uppercase tracking-[0.5px]" style={{ background: `${COLORS.accent}12`, border: `1px solid ${COLORS.accent}25`, color: COLORS.accent }}>
@@ -1309,14 +1342,14 @@ function MissionChat({
               placeholder={
                 selectedThread?.threadType === "worker"
                   ? "Send guidance directly to this worker..."
-                  : selectedThread?.threadType === "mission" && broadcastToWorkers
+                  : selectedThread?.threadType === "coordinator" && broadcastToWorkers
                     ? "Broadcast guidance to all worker threads in this run..."
                   : "Message the mission coordinator..."
               }
               className="h-8 flex-1 px-3 text-xs outline-none disabled:opacity-50"
               style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT }}
             />
-            {selectedThread?.threadType === "mission" && (
+            {selectedThread?.threadType === "coordinator" && (
               <label className="flex items-center gap-1 px-2 py-1 text-[10px]" style={{ color: COLORS.textMuted, border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.recessedBg, fontFamily: MONO_FONT }}>
                 <input
                   type="checkbox"
@@ -1449,21 +1482,9 @@ type CreateDraft = {
   laneId: string;
   priority: MissionPriority;
   executionPolicy: MissionExecutionPolicy;
-  orchestratorModel: string;
-  thinkingBudgets: Record<string, number>;
   prStrategy: PrStrategy;
-  prTargetBranch: string;
-  prDraft: boolean;
-  /** New model configuration (takes precedence over orchestratorModel) */
+  /** New model configuration */
   modelConfig: MissionModelConfig;
-  selectedProfileId: string;
-};
-
-const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
-  "anthropic/claude-sonnet-4-6": 16384,
-  "anthropic/claude-opus-4-6": 32768,
-  "anthropic/claude-haiku-4-5": 4096,
-  "openai/gpt-5.3-codex": 16384
 };
 
 const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
@@ -1495,36 +1516,32 @@ function CreateMissionDialog({
     () => [...lanes].sort((a, b) => a.name.localeCompare(b.name)),
     [lanes]
   );
+  const [selectedProfileId, setSelectedProfileId] = useState<string>("standard");
+  const [attachments, setAttachments] = useState<string[]>([]);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [draft, setDraft] = useState<CreateDraft>({
     title: "",
     prompt: "",
     laneId: "",
     priority: "normal",
     executionPolicy: defaultExecutionPolicy,
-    orchestratorModel: "anthropic/claude-sonnet-4-6",
-    thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
     prStrategy: { kind: "integration", targetBranch: "main", draft: true },
-    prTargetBranch: "main",
-    prDraft: true,
     modelConfig: { ...DEFAULT_MODEL_CONFIG },
-    selectedProfileId: "standard"
   });
 
   useEffect(() => {
     if (!open) return;
+    setSelectedProfileId("standard");
+    setAttachments([]);
+    setAdvancedOpen(false);
     setDraft({
       title: "",
       prompt: "",
       laneId: "",
       priority: "normal",
       executionPolicy: defaultExecutionPolicy,
-      orchestratorModel: "anthropic/claude-sonnet-4-6",
-      thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
       prStrategy: { kind: "integration", targetBranch: "main", draft: true },
-      prTargetBranch: "main",
-      prDraft: true,
       modelConfig: { ...DEFAULT_MODEL_CONFIG },
-      selectedProfileId: "standard"
     });
   }, [open, defaultExecutionPolicy]);
 
@@ -1532,6 +1549,18 @@ function CreateMissionDialog({
     if (!draft.prompt.trim()) return;
     onLaunch(draft);
   }, [draft, onLaunch]);
+
+  const hasClaudeModel = useMemo(() => {
+    const orchProvider = draft.modelConfig.orchestratorModel.provider;
+    if (orchProvider === "claude") return true;
+    const intel = draft.modelConfig.intelligenceConfig;
+    if (intel) {
+      for (const config of Object.values(intel)) {
+        if (config && typeof config === "object" && "provider" in config && config.provider === "claude") return true;
+      }
+    }
+    return false;
+  }, [draft.modelConfig]);
 
   if (!open) return null;
 
@@ -1559,20 +1588,21 @@ function CreateMissionDialog({
         </div>
 
         <div className="space-y-4 px-5 py-4">
-          {/* Prompt */}
-          <label className="block space-y-1">
-            <span style={dlgLabelStyle}>MISSION PROMPT *</span>
-            <textarea
+          {/* 1. Mission Prompt */}
+          <div className="space-y-1">
+            <span style={dlgLabelStyle}>
+              <ChatCircle size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+              MISSION PROMPT *
+            </span>
+            <MissionPromptInput
               value={draft.prompt}
-              onChange={(e) => setDraft((p) => ({ ...p, prompt: e.target.value }))}
-              placeholder="Describe what you want to accomplish..."
-              rows={4}
-              className="w-full px-3 py-2 text-xs outline-none resize-none"
-              style={dlgInputStyle}
+              onChange={(v) => setDraft((p) => ({ ...p, prompt: v }))}
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
             />
-          </label>
+          </div>
 
-          {/* Title */}
+          {/* 2. Title */}
           <label className="block space-y-1">
             <span style={dlgLabelStyle}>TITLE (OPTIONAL)</span>
             <input
@@ -1584,9 +1614,12 @@ function CreateMissionDialog({
             />
           </label>
 
-          {/* Base lane selector */}
+          {/* 3. Base Lane */}
           <label className="block space-y-1">
-            <span style={dlgLabelStyle}>BASE LANE</span>
+            <span style={dlgLabelStyle}>
+              <GitBranch size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+              BASE LANE
+            </span>
             <select
               value={draft.laneId}
               onChange={(e) => setDraft((p) => ({ ...p, laneId: e.target.value }))}
@@ -1600,70 +1633,21 @@ function CreateMissionDialog({
             </select>
           </label>
 
-          <div className="px-3 py-2 text-[11px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>
-            <GitBranch className="inline h-3 w-3 mr-1 -mt-0.5" />
-            {selectedLane
-              ? `Base lane: ${selectedLane.name}. Mission lanes branch from this base lane, and each step still gets a dedicated lane.`
-              : "Base lane defaults to your primary lane. Mission lanes branch from this base lane, and each step still gets a dedicated lane."}
-          </div>
+          <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
 
-          {/* Unified Model Selector */}
-          <label className="block space-y-1">
-            <span style={dlgLabelStyle}>MODEL</span>
-            <select
-              value={draft.laneId}
-              onChange={(e) => setDraft((p) => ({ ...p, laneId: e.target.value }))}
-              className="h-8 w-full px-3 text-xs outline-none"
-              style={dlgInputStyle}
-            >
-              {([...new Set(MODEL_REGISTRY.map((m) => m.family))] as ProviderFamily[]).map((family) => {
-                const familyModels = MODEL_REGISTRY.filter((m) => m.family === family && !m.deprecated);
-                if (!familyModels.length) return null;
-                return (
-                  <optgroup key={family} label={MODEL_FAMILIES[family]?.displayName ?? family}>
-                    {familyModels.map((m) => (
-                      <option key={m.id} value={m.id}>{m.displayName}</option>
-                    ))}
-                  </optgroup>
-                );
-              })}
-            </select>
-          </label>
-
-          {/* Thinking Budgets */}
+          {/* 4. Profile */}
           <div className="space-y-1">
-            <span style={dlgLabelStyle}>THINKING BUDGETS</span>
-            <div className="grid grid-cols-2 gap-2">
-              {Object.entries(draft.thinkingBudgets).map(([model, budget]) => (
-                <label key={model} className="flex items-center gap-2 text-[10px]">
-                  <span className="w-[130px] shrink-0" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{getModelById(model)?.displayName ?? model}</span>
-                  <input
-                    type="number"
-                    step={1024}
-                    value={budget}
-                    onChange={(e) => setDraft((p) => ({
-                      ...p,
-                      thinkingBudgets: { ...p.thinkingBudgets, [model]: Number(e.target.value) || 0 }
-                    }))}
-                    className="h-7 w-full px-2 text-xs outline-none"
-                    style={dlgInputStyle}
-                  />
-                  <span className="text-[9px] shrink-0" style={{ color: COLORS.textDim }}>tokens</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Model Profile */}
-          <div className="space-y-1">
-            <span style={dlgLabelStyle}>MODEL PROFILE</span>
+            <span style={dlgLabelStyle}>
+              <CircleHalf size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+              PROFILE
+            </span>
             <ModelProfileSelector
-              selectedProfileId={draft.selectedProfileId}
+              selectedProfileId={selectedProfileId}
               onSelect={(profile) => {
                 if (profile) {
+                  setSelectedProfileId(profile.id);
                   setDraft((p) => ({
                     ...p,
-                    selectedProfileId: profile.id,
                     modelConfig: {
                       profileId: profile.id,
                       orchestratorModel: profile.orchestratorModel,
@@ -1671,46 +1655,49 @@ function CreateMissionDialog({
                       intelligenceConfig: profile.intelligenceConfig,
                       smartBudget: profile.smartBudget ?? p.modelConfig.smartBudget,
                     },
-                    orchestratorModel: profile.orchestratorModel.modelId.includes("opus") ? "opus"
-                      : profile.orchestratorModel.modelId.includes("haiku") ? "haiku" : "sonnet",
                   }));
                 } else {
-                  setDraft((p) => ({ ...p, selectedProfileId: "custom" }));
+                  setSelectedProfileId("custom");
                 }
               }}
             />
           </div>
 
-          {/* Orchestrator Model */}
+          {/* 5. Orchestrator Model */}
           <div className="space-y-1">
-            <span style={dlgLabelStyle}>ORCHESTRATOR MODEL</span>
+            <span style={dlgLabelStyle}>
+              <Robot size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+              ORCHESTRATOR MODEL
+            </span>
             <ModelSelector
               value={draft.modelConfig.orchestratorModel}
-              onChange={(config) => setDraft((p) => ({
-                ...p,
-                selectedProfileId: "custom",
-                modelConfig: { ...p.modelConfig, profileId: undefined, orchestratorModel: config },
-                orchestratorModel: config.modelId.includes("opus") ? "opus"
-                  : config.modelId.includes("haiku") ? "haiku" : "sonnet",
-              }))}
+              onChange={(config) => {
+                setSelectedProfileId("custom");
+                setDraft((p) => ({
+                  ...p,
+                  modelConfig: { ...p.modelConfig, profileId: undefined, orchestratorModel: config },
+                }));
+              }}
               showRecommendedBadge
             />
           </div>
 
-          {/* Decision Timeout Cap */}
+          {/* 6. Decision Timeout Cap */}
           <label className="block space-y-1">
             <span style={dlgLabelStyle}>DECISION TIMEOUT CAP</span>
             <select
               value={draft.modelConfig.decisionTimeoutCapHours ?? 24}
-              onChange={(e) => setDraft((p) => ({
-                ...p,
-                selectedProfileId: "custom",
-                modelConfig: {
-                  ...p.modelConfig,
-                  profileId: undefined,
-                  decisionTimeoutCapHours: Number(e.target.value) as OrchestratorDecisionTimeoutCapHours
-                }
-              }))}
+              onChange={(e) => {
+                setSelectedProfileId("custom");
+                setDraft((p) => ({
+                  ...p,
+                  modelConfig: {
+                    ...p.modelConfig,
+                    profileId: undefined,
+                    decisionTimeoutCapHours: Number(e.target.value) as OrchestratorDecisionTimeoutCapHours
+                  }
+                }));
+              }}
               className="h-8 w-full px-3 text-xs outline-none"
               style={dlgInputStyle}
             >
@@ -1722,61 +1709,77 @@ function CreateMissionDialog({
             </select>
           </label>
 
-          {/* Orchestrator Intelligence (per-call-type config) */}
-          <OrchestratorIntelligencePanel
-            value={draft.modelConfig.intelligenceConfig ?? {}}
-            orchestratorModel={draft.modelConfig.orchestratorModel}
-            onChange={(config) => setDraft((p) => ({
-              ...p,
-              selectedProfileId: "custom",
-              modelConfig: { ...p.modelConfig, profileId: undefined, intelligenceConfig: config }
-            }))}
-          />
+          <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
 
-          {/* Smart Token Budget */}
-          <SmartBudgetPanel
-            value={draft.modelConfig.smartBudget ?? { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 }}
-            onChange={(config) => setDraft((p) => ({
-              ...p,
-              modelConfig: { ...p.modelConfig, smartBudget: config }
-            }))}
-          />
-
-          {/* PR Strategy */}
+          {/* 7. PR Strategy + Depth */}
           <div className="space-y-1">
-            <span style={dlgLabelStyle}>PR STRATEGY</span>
-            <div className="flex gap-1">
-              {(["integration", "per-lane", "manual"] as const).map((kind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => {
-                    const base = kind === "manual"
-                      ? { kind: "manual" as const }
-                      : { kind, targetBranch: draft.prTargetBranch, draft: draft.prDraft };
-                    setDraft((p) => ({ ...p, prStrategy: base }));
-                  }}
-                  className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
-                  style={draft.prStrategy.kind === kind
-                    ? { background: `${COLORS.accent}18`, color: COLORS.accent, border: `1px solid ${COLORS.accent}30`, fontFamily: MONO_FONT }
-                    : { background: COLORS.recessedBg, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }
-                  }
-                >
-                  {kind === "integration" ? "INTEGRATION PR" : kind === "per-lane" ? "PER-LANE PRS" : "MANUAL"}
-                </button>
-              ))}
+            <span style={dlgLabelStyle}>
+              <GitBranch size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+              PR STRATEGY
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {(["integration", "per-lane", "queue", "manual"] as const).map((kind) => {
+                const labels: Record<string, string> = {
+                  integration: "INTEGRATION PR",
+                  "per-lane": "PER-LANE PRS",
+                  queue: "QUEUE",
+                  manual: "MANUAL",
+                };
+                const strategyColors: Record<string, string> = {
+                  integration: "#8B5CF6",
+                  "per-lane": "#3B82F6",
+                  queue: "#F59E0B",
+                  manual: "#71717A",
+                };
+                const accentColor = strategyColors[kind];
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => {
+                      if (kind === "manual") {
+                        setDraft((p) => ({ ...p, prStrategy: { kind: "manual" as const } }));
+                      } else if (kind === "queue") {
+                        setDraft((p) => ({
+                          ...p,
+                          prStrategy: {
+                            kind: "queue" as const,
+                            targetBranch: (p.prStrategy.kind !== "manual" && "targetBranch" in p.prStrategy ? p.prStrategy.targetBranch : undefined) ?? "main",
+                            draft: p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true,
+                            autoRebase: true,
+                            ciGating: true,
+                          }
+                        }));
+                      } else {
+                        const prevTarget = (p: CreateDraft) => p.prStrategy.kind !== "manual" && "targetBranch" in p.prStrategy ? p.prStrategy.targetBranch : "main";
+                        const prevDraft = (p: CreateDraft) => p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true;
+                        setDraft((p) => ({
+                          ...p,
+                          prStrategy: { kind, targetBranch: prevTarget(p) ?? "main", draft: prevDraft(p) ?? true }
+                        }));
+                      }
+                    }}
+                    className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+                    style={draft.prStrategy.kind === kind
+                      ? { background: `${accentColor}18`, color: accentColor, border: `1px solid ${accentColor}30`, fontFamily: MONO_FONT }
+                      : { background: COLORS.recessedBg, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }
+                    }
+                  >
+                    {labels[kind]}
+                  </button>
+                );
+              })}
             </div>
             {draft.prStrategy.kind !== "manual" && (
               <div className="flex items-center gap-3 mt-1">
                 <label className="flex items-center gap-1.5 text-[10px]">
                   <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Target branch</span>
                   <input
-                    value={draft.prTargetBranch}
+                    value={"targetBranch" in draft.prStrategy ? draft.prStrategy.targetBranch ?? "main" : "main"}
                     onChange={(e) => {
                       const branch = e.target.value;
                       setDraft((p) => ({
                         ...p,
-                        prTargetBranch: branch,
                         prStrategy: { ...p.prStrategy, targetBranch: branch } as PrStrategy
                       }));
                     }}
@@ -1784,24 +1787,54 @@ function CreateMissionDialog({
                     style={dlgInputStyle}
                   />
                 </label>
+                {/* Draft PR checkbox: show for integration (only when depth = open-and-comment), always for per-lane, always for queue */}
+                {(draft.prStrategy.kind === "per-lane" || draft.prStrategy.kind === "queue" || (draft.prStrategy.kind === "integration" && draft.prStrategy.prDepth === "open-and-comment")) && (
+                  <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <input
+                      type="checkbox"
+                      checked={"draft" in draft.prStrategy ? draft.prStrategy.draft ?? true : true}
+                      onChange={(e) => {
+                        const isDraft = e.target.checked;
+                        setDraft((p) => ({
+                          ...p,
+                          prStrategy: { ...p.prStrategy, draft: isDraft } as PrStrategy
+                        }));
+                      }}
+                    />
+                    Draft PR
+                  </label>
+                )}
+              </div>
+            )}
+            {/* Queue-specific options */}
+            {draft.prStrategy.kind === "queue" && (
+              <div className="flex items-center gap-3 mt-1">
                 <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                   <input
                     type="checkbox"
-                    checked={draft.prDraft}
-                    onChange={(e) => {
-                      const isDraft = e.target.checked;
-                      setDraft((p) => ({
-                        ...p,
-                        prDraft: isDraft,
-                        prStrategy: { ...p.prStrategy, draft: isDraft } as PrStrategy
-                      }));
-                    }}
+                    checked={draft.prStrategy.autoRebase ?? true}
+                    onChange={(e) => setDraft((p) => ({
+                      ...p,
+                      prStrategy: { ...p.prStrategy, autoRebase: e.target.checked } as PrStrategy
+                    }))}
                   />
-                  Draft PR
+                  Auto-rebase
+                </label>
+                <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  <input
+                    type="checkbox"
+                    checked={draft.prStrategy.ciGating ?? true}
+                    onChange={(e) => setDraft((p) => ({
+                      ...p,
+                      prStrategy: { ...p.prStrategy, ciGating: e.target.checked } as PrStrategy
+                    }))}
+                  />
+                  CI gating
                 </label>
               </div>
             )}
-            {draft.prStrategy.kind !== "manual" && (
+            {/* PR Depth: only show for integration strategy */}
+            {draft.prStrategy.kind === "integration" && (
               <div className="mt-2 space-y-1">
                 <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
                   PR DEPTH
@@ -1812,17 +1845,25 @@ function CreateMissionDialog({
                     { value: "resolve-conflicts" as PrDepth, label: "RESOLVE CONFLICTS", desc: "Also resolve conflicts with AI workers" },
                     { value: "open-and-comment" as PrDepth, label: "OPEN & COMMENT", desc: "Also open PRs and add review comments" },
                   ] as const).map((opt) => {
-                    const currentDepth = (draft.prStrategy.kind !== "manual" && draft.prStrategy.prDepth) || "resolve-conflicts";
+                    const currentDepth = draft.prStrategy.kind === "integration" ? (draft.prStrategy.prDepth ?? "resolve-conflicts") : "resolve-conflicts";
                     const isSelected = currentDepth === opt.value;
                     return (
                       <button
                         key={opt.value}
                         type="button"
                         onClick={() => {
-                          setDraft((p) => ({
-                            ...p,
-                            prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
-                          }));
+                          if (opt.value === "open-and-comment") {
+                            setDraft((p) => ({
+                              ...p,
+                              prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy,
+                              executionPolicy: { ...p.executionPolicy, prReview: { ...p.executionPolicy.prReview, mode: "auto" as const } }
+                            }));
+                          } else {
+                            setDraft((p) => ({
+                              ...p,
+                              prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
+                            }));
+                          }
                         }}
                         className="flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
                         style={{
@@ -1851,14 +1892,152 @@ function CreateMissionDialog({
             )}
           </div>
 
-          {/* Execution Policy */}
+          <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
+
+          {/* 8. Agents (Execution Policy) */}
           <div className="space-y-1">
-            <span style={dlgLabelStyle}>EXECUTION POLICY</span>
+            <span style={dlgLabelStyle}>
+              <Robot size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+              AGENTS
+            </span>
             <PolicyEditor
               value={draft.executionPolicy}
               onChange={(p) => setDraft((prev) => ({ ...prev, executionPolicy: p }))}
             />
           </div>
+
+          <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
+
+          {/* 9. Advanced Options (collapsed by default) */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((v) => !v)}
+              className="flex items-center gap-1.5 w-full text-left"
+              style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}
+            >
+              {advancedOpen
+                ? <CaretDown size={12} weight="bold" style={{ color: COLORS.textMuted }} />
+                : <CaretRight size={12} weight="bold" style={{ color: COLORS.textMuted }} />
+              }
+              <span style={dlgLabelStyle}>
+                <GearSix size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+                ADVANCED OPTIONS
+              </span>
+            </button>
+            {advancedOpen && (
+              <div className="mt-2 space-y-3 pl-4">
+                {/* Orchestrator Intelligence */}
+                <OrchestratorIntelligencePanel
+                  value={draft.modelConfig.intelligenceConfig ?? {}}
+                  orchestratorModel={draft.modelConfig.orchestratorModel}
+                  onChange={(config) => {
+                    setSelectedProfileId("custom");
+                    setDraft((p) => ({
+                      ...p,
+                      modelConfig: { ...p.modelConfig, profileId: undefined, intelligenceConfig: config }
+                    }));
+                  }}
+                />
+
+                {/* Allow completion with risk */}
+                <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  <input
+                    type="checkbox"
+                    checked={draft.executionPolicy.completion?.allowCompletionWithRisk ?? false}
+                    onChange={(e) => setDraft((p) => ({
+                      ...p,
+                      executionPolicy: {
+                        ...p.executionPolicy,
+                        completion: { ...p.executionPolicy.completion, allowCompletionWithRisk: e.target.checked }
+                      }
+                    }))}
+                  />
+                  ALLOW COMPLETION WITH RISK
+                </label>
+
+                {/* Team Runtime */}
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <input
+                      type="checkbox"
+                      checked={draft.executionPolicy.teamRuntime?.enabled ?? false}
+                      onChange={(e) => setDraft((p) => ({
+                        ...p,
+                        executionPolicy: {
+                          ...p.executionPolicy,
+                          teamRuntime: {
+                            enabled: e.target.checked,
+                            targetProvider: p.executionPolicy.teamRuntime?.targetProvider ?? "auto",
+                            teammateCount: p.executionPolicy.teamRuntime?.teammateCount ?? 2,
+                          }
+                        }
+                      }))}
+                    />
+                    ENABLE TEAM RUNTIME
+                  </label>
+                  {draft.executionPolicy.teamRuntime?.enabled && (
+                    <div className="flex items-center gap-3 pl-5">
+                      <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <span>TEAMMATES</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={8}
+                          value={draft.executionPolicy.teamRuntime?.teammateCount ?? 2}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            executionPolicy: {
+                              ...p.executionPolicy,
+                              teamRuntime: {
+                                ...p.executionPolicy.teamRuntime!,
+                                teammateCount: Math.max(1, Math.min(8, Number(e.target.value) || 2)),
+                              }
+                            }
+                          }))}
+                          className="h-6 w-12 px-1 text-xs text-center outline-none"
+                          style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 }}
+                        />
+                      </label>
+                      <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <span>PROVIDER</span>
+                        <select
+                          value={draft.executionPolicy.teamRuntime?.targetProvider ?? "auto"}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            executionPolicy: {
+                              ...p.executionPolicy,
+                              teamRuntime: {
+                                ...p.executionPolicy.teamRuntime!,
+                                targetProvider: e.target.value as "claude" | "codex" | "auto",
+                              }
+                            }
+                          }))}
+                          className="h-6 px-1 text-xs outline-none"
+                          style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 }}
+                        >
+                          <option value="auto">Auto</option>
+                          <option value="claude">Claude</option>
+                          <option value="codex">Codex</option>
+                        </select>
+                      </label>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
+
+          {/* 10. Smart Budget */}
+          <SmartBudgetPanel
+            value={draft.modelConfig.smartBudget ?? { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 }}
+            onChange={(config) => setDraft((p) => ({
+              ...p,
+              modelConfig: { ...p.modelConfig, smartBudget: config }
+            }))}
+          />
         </div>
 
         <div className="flex items-center justify-end gap-2 px-5 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
@@ -1932,7 +2111,6 @@ function MissionSettingsDialog({
                 <PolicyEditor
                   value={draft.defaultExecutionPolicy}
                   onChange={(p) => onDraftChange({ defaultExecutionPolicy: p })}
-                  compact
                 />
               </div>
             </div>
@@ -1943,7 +2121,7 @@ function MissionSettingsDialog({
                   <select
                     style={settingsInputStyle}
                     value={draft.defaultPlannerProvider}
-                    onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value })}
+                    onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value as PlannerProvider })}
                   >
                     <option value="auto">Auto</option>
                     {([...new Set(MODEL_REGISTRY.map((m) => m.family))] as ProviderFamily[]).map((family) => {
@@ -2181,8 +2359,8 @@ export default function MissionsPage() {
       ),
       teammatePlanMode: toTeammatePlanMode(
         readString(
-          localOrchestrator.teammatePlanMode ?? localOrchestrator.teammate_plan_mode,
-          effectiveOrchestrator.teammatePlanMode ?? effectiveOrchestrator.teammate_plan_mode,
+          localOrchestrator.teammatePlanMode,
+          effectiveOrchestrator.teammatePlanMode,
           "auto"
         )
       ),
@@ -2455,8 +2633,6 @@ export default function MissionsPage() {
         laneId: resolvedLaneId || undefined,
         priority: draft.priority,
         executionPolicy: { ...draft.executionPolicy, prStrategy: draft.prStrategy },
-        orchestratorModel: draft.orchestratorModel || undefined,
-        thinkingBudgets: draft.thinkingBudgets,
         modelConfig: {
           ...draft.modelConfig,
           decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
@@ -2598,44 +2774,8 @@ export default function MissionsPage() {
       map.set(col.status, []);
     }
 
-    // Synthetic planning step — always shown so users see planning as a visible phase
-    const missionStatus = selectedMission?.status;
-    const planningStepStatus: MissionStepStatus =
-      missionStatus === "planning" || missionStatus === "plan_review"
-        ? "running"
-        : (steps.length > 0 || missionStatus === "in_progress" || missionStatus === "completed")
-          ? "succeeded"
-          : missionStatus === "failed" && steps.length === 0
-            ? "failed"
-            : "pending";
-    if (selectedMission) {
-      const planningStep: OrchestratorStep = {
-        id: "planning-synthetic",
-        runId: runGraph?.run?.id ?? "",
-        missionStepId: null,
-        stepKey: "planning",
-        stepIndex: -1,
-        title: "Mission Planning",
-        laneId: null,
-        status: planningStepStatus as OrchestratorStep["status"],
-        joinPolicy: "all_success",
-        quorumCount: null,
-        dependencyStepIds: [],
-        retryLimit: 0,
-        retryCount: 0,
-        lastAttemptId: null,
-        createdAt: selectedMission.createdAt,
-        updatedAt: selectedMission.updatedAt,
-        startedAt: selectedMission.startedAt,
-        completedAt: planningStepStatus === "succeeded" ? (selectedMission.startedAt ?? selectedMission.updatedAt) : null,
-        metadata: { planStep: { description: "AI planner decomposes the mission into executable steps." }, stepType: "planning" },
-      };
-      const bucket = map.get(planningStepStatus);
-      if (bucket) {
-        bucket.unshift(planningStep);
-      }
-    }
-
+    // Render planning phase from real run steps only — no synthetic card.
+    // A real planner step (stepKey === "planning" or "planner") is placed like any other step.
     for (const step of steps) {
       const key = step.status as MissionStepStatus;
       const bucket = map.get(key);
@@ -2663,33 +2803,26 @@ export default function MissionsPage() {
 
   const selectedStep = useMemo(() => {
     if (!selectedStepId) return null;
-    // Check synthetic planning step from stepsByStatus
-    if (selectedStepId === "planning-synthetic") {
-      for (const bucket of stepsByStatus.values()) {
-        const found = bucket.find((s) => s.id === "planning-synthetic");
-        if (found) return found;
-      }
-      return null;
-    }
     if (!runGraph?.steps?.length) return null;
     return runGraph.steps.find((step) => step.id === selectedStepId) ?? null;
-  }, [runGraph, selectedStepId, stepsByStatus]);
+  }, [runGraph, selectedStepId]);
 
   const selectedStepAttempts = useMemo(() => {
     if (!selectedStep) return [];
     return attemptsByStep.get(selectedStep.id) ?? [];
   }, [attemptsByStep, selectedStep]);
 
+  // Reconcile selection only against displayed cards — no auto-reset mismatch
   useEffect(() => {
     const steps = runGraph?.steps ?? [];
     if (!steps.length) {
       if (selectedStepId !== null) setSelectedStepId(null);
       return;
     }
-    if (!selectedStepId || !steps.some((step) => step.id === selectedStepId)) {
-      const running = steps.find((step) => step.status === "running");
-      setSelectedStepId((running ?? steps[0]).id);
-    }
+    // Only reset selection if the currently selected step no longer exists in the graph
+    if (selectedStepId && steps.some((step) => step.id === selectedStepId)) return;
+    const running = steps.find((step) => step.status === "running");
+    setSelectedStepId((running ?? steps[0]).id);
   }, [runGraph, selectedStepId]);
 
   /* ── Loading screen ── */
@@ -3130,7 +3263,7 @@ export default function MissionsPage() {
                     />
 
                     {/* Run Narrative - shown when available */}
-                    {runGraph?.run?.metadata?.runNarrative && Array.isArray(runGraph.run.metadata.runNarrative) && (runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).length > 0 && (
+                    {Array.isArray(runGraph?.run?.metadata?.runNarrative) && (runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).length > 0 && (
                       <div className="space-y-1.5 mt-4">
                         <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: COLORS.textMuted }}>
                           RUN NARRATIVE

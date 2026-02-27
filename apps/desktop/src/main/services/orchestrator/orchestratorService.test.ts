@@ -743,8 +743,9 @@ describe("orchestratorService", () => {
       });
       expect(attempt.status).toBe("running");
 
+      fixture.service.activateRun(started.run.id);
       const resumed = fixture.service.resumeRun({ runId: started.run.id });
-      expect(resumed.status).toBe("running");
+      expect(resumed.status).toBe("active");
 
       const attempts = fixture.service.listAttempts({ runId: started.run.id });
       const recovered = attempts.find((entry) => entry.id === attempt.id);
@@ -1006,6 +1007,7 @@ describe("orchestratorService", () => {
       });
       fixture.service.completeAttempt({ attemptId: reviewAttempt.id, status: "succeeded" });
 
+      fixture.service.finalizeRun({ runId: started.run.id, force: true });
       const run = fixture.service.listRuns({ missionId: fixture.missionId }).find((entry) => entry.id === started.run.id);
       expect(run?.status).toBe("succeeded");
     } finally {
@@ -1767,6 +1769,7 @@ describe("orchestratorService", () => {
         errorMessage: "Manual intervention required."
       });
 
+      fixture.service.pauseRun({ runId: started.run.id, reason: "policy_block" });
       const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
       const refreshedIntegration = graph.steps.find((step) => step.id === integrationStep.id);
       const refreshedDownstream = graph.steps.find((step) => step.id === downstreamStep.id);
@@ -1929,6 +1932,7 @@ describe("orchestratorService", () => {
         status: "succeeded"
       });
 
+      fixture.service.finalizeRun({ runId: started.run.id, force: true });
       const finalGraph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
       const finalStep = finalGraph.steps.find((entry) => entry.id === step.id);
       expect(finalStep?.status).toBe("succeeded");
@@ -1974,6 +1978,7 @@ describe("orchestratorService", () => {
         errorMessage: "attempt two"
       });
 
+      fixture.service.finalizeRun({ runId: started.run.id, force: true });
       const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
       const finalStep = graph.steps.find((entry) => entry.id === step.id);
       expect(finalStep?.status).toBe("failed");

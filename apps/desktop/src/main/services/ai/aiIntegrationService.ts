@@ -5,14 +5,14 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentExecutor";
 import { createClaudeExecutor } from "./claudeExecutor";
 import { createCodexExecutor } from "./codexExecutor";
-import { commandExists } from "./utils";
+import type { AiApiKeyVerificationResult } from "../../../shared/types";
 import {
   getModelById,
   getAvailableModels,
   resolveModelAlias,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { detectAllAuth, type DetectedAuth } from "./authDetector";
+import { detectAllAuth, detectCliAuthStatuses, verifyProviderApiKey, type DetectedAuth } from "./authDetector";
 import { resolveModel } from "./providerResolver";
 import { executeUnified, resumeUnified, type UnifiedExecutorOpts, type UnifiedResumeOpts } from "./unifiedExecutor";
 
@@ -48,6 +48,16 @@ export type AiIntegrationStatus = {
     claude: AgentModelDescriptor[];
     codex: AgentModelDescriptor[];
   };
+  detectedAuth?: Array<{
+    type: "cli-subscription" | "api-key" | "openrouter" | "local";
+    cli?: "claude" | "codex" | "gemini";
+    provider?: string;
+    source?: "config" | "env" | "store";
+    path?: string;
+    endpoint?: string;
+    authenticated?: boolean;
+    verified?: boolean;
+  }>;
 };
 
 export type ExecuteAiTaskArgs = {
@@ -264,6 +274,84 @@ function parseClaudeSettingSources(value: unknown): Array<"user" | "project" | "
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function extractConfiguredApiKeys(snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>): Record<string, string> {
+  const aiConfig = extractAiConfig(snapshot);
+  const apiKeysRaw = isRecord(aiConfig.apiKeys) ? aiConfig.apiKeys : {};
+  const out: Record<string, string> = {};
+
+  for (const [provider, rawValue] of Object.entries(apiKeysRaw)) {
+    const key = typeof rawValue === "string" ? rawValue.trim() : "";
+    if (!key) continue;
+    out[provider.trim().toLowerCase()] = key;
+  }
+
+  return out;
+}
+
+function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: boolean } {
+  return {
+    claude: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "claude"),
+    codex: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "codex"),
+  };
+}
+
+function redactDetectedAuth(
+  auth: DetectedAuth[],
+  cliStatuses: ReturnType<typeof detectCliAuthStatuses>,
+): NonNullable<AiIntegrationStatus["detectedAuth"]> {
+  const redacted = auth.map((entry) => {
+    if (entry.type === "cli-subscription") {
+      return {
+        type: entry.type,
+        cli: entry.cli,
+        path: entry.path,
+        authenticated: entry.authenticated,
+        verified: entry.verified,
+      };
+    }
+    if (entry.type === "api-key") {
+      return {
+        type: entry.type,
+        provider: entry.provider,
+        source: entry.source,
+      };
+    }
+    if (entry.type === "openrouter") {
+      return {
+        type: entry.type,
+        provider: "openrouter",
+        source: entry.source,
+      };
+    }
+    return {
+      type: entry.type,
+      provider: entry.provider,
+      endpoint: entry.endpoint,
+    };
+  });
+
+  for (const cliStatus of cliStatuses) {
+    if (!cliStatus.installed) continue;
+    const existingIndex = redacted.findIndex(
+      (entry) => entry.type === "cli-subscription" && entry.cli === cliStatus.cli,
+    );
+    const normalizedEntry = {
+      type: "cli-subscription" as const,
+      cli: cliStatus.cli,
+      path: cliStatus.path ?? cliStatus.cli,
+      authenticated: cliStatus.authenticated,
+      verified: cliStatus.verified,
+    };
+    if (existingIndex >= 0) {
+      redacted[existingIndex] = normalizedEntry;
+    } else {
+      redacted.push(normalizedEntry);
+    }
+  }
+
+  return redacted;
+}
+
 export function createAiIntegrationService(args: {
   db: AdeDb;
   logger: Logger;
@@ -276,18 +364,61 @@ export function createAiIntegrationService(args: {
     codex: createCodexExecutor()
   };
 
-  const getAvailabilitySync = () => ({
-    claude: commandExists("claude"),
-    codex: commandExists("codex")
-  });
+  const detectAuth = async (): Promise<DetectedAuth[]> => {
+    const snapshot = projectConfigService.get();
+    return await detectAllAuth(extractConfiguredApiKeys(snapshot));
+  };
+
+  const getAvailabilitySync = () => {
+    const statuses = detectCliAuthStatuses();
+    const claude = statuses.find((entry) => entry.cli === "claude");
+    const codex = statuses.find((entry) => entry.cli === "codex");
+    return {
+      claude: Boolean(claude?.installed && (claude.authenticated || !claude.verified)),
+      codex: Boolean(codex?.installed && (codex.authenticated || !codex.verified)),
+    };
+  };
 
   const getAvailabilityAsync = async () => {
-    const auth = await detectAllAuth();
+    const auth = await detectAuth();
+    const availability = toCliAvailability(auth);
     return {
-      claude: auth.some(a => a.type === "cli-subscription" && a.cli === "claude"),
-      codex: auth.some(a => a.type === "cli-subscription" && a.cli === "codex"),
+      ...availability,
       detectedAuth: auth,
       availableModels: getAvailableModels(auth),
+    };
+  };
+
+  const verifyApiKeyConnection = async (provider: string): Promise<AiApiKeyVerificationResult> => {
+    const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+    const auth = await detectAuth();
+
+    const apiEntry =
+      normalizedProvider === "openrouter"
+        ? auth.find((entry) => entry.type === "openrouter")
+        : auth.find((entry) => entry.type === "api-key" && entry.provider === normalizedProvider);
+
+    if (!apiEntry) {
+      return {
+        provider: normalizedProvider,
+        ok: false,
+        message: "No API key configured for this provider.",
+        verifiedAt: new Date().toISOString(),
+      };
+    }
+
+    if (apiEntry.type === "openrouter") {
+      const verification = await verifyProviderApiKey("openrouter", apiEntry.key);
+      return {
+        ...verification,
+        source: apiEntry.source,
+      };
+    }
+
+    const verification = await verifyProviderApiKey(apiEntry.provider, apiEntry.key);
+    return {
+      ...verification,
+      source: apiEntry.source,
     };
   };
 
@@ -392,7 +523,7 @@ export function createAiIntegrationService(args: {
 
     // Check task defaults for legacy provider, map to model ID
     const defaults = TASK_DEFAULTS[taskType];
-    const auth = await detectAllAuth();
+    const auth = await detectAuth();
     const available = getAvailableModels(auth);
 
     if (!available.length) {
@@ -468,7 +599,7 @@ export function createAiIntegrationService(args: {
     };
   };
 
-  const resolveProviderForTask = (taskType: AiTaskType, providerHint?: AgentProvider | null): AgentProvider => {
+  const resolveProviderForTask = async (taskType: AiTaskType, providerHint?: AgentProvider | null): Promise<AgentProvider> => {
     const snapshot = projectConfigService.get();
     const defaults = TASK_DEFAULTS[taskType];
     const override = extractTaskOverride(snapshot, taskType);
@@ -476,7 +607,7 @@ export function createAiIntegrationService(args: {
     const preferred = providerHint ?? toStringOrNull(override.provider);
     const normalizedPreferred = preferred?.toLowerCase() ?? "";
 
-    const availability = getAvailabilitySync();
+    const availability = toCliAvailability(await detectAuth());
 
     const preferredProvider =
       normalizedPreferred === "claude" || normalizedPreferred === "codex"
@@ -629,7 +760,7 @@ export function createAiIntegrationService(args: {
       return executeViaUnifiedPath(args);
     }
 
-    const provider = resolveProviderForTask(args.taskType, args.provider ?? null);
+    const provider = await resolveProviderForTask(args.taskType, args.provider ?? null);
     const executor = executors[provider];
     const opts = buildExecutorOpts({
       taskType: args.taskType,
@@ -805,14 +936,17 @@ export function createAiIntegrationService(args: {
     getMode,
 
     getStatus: async (): Promise<AiIntegrationStatus> => {
-      const availability = getAvailabilitySync();
+      const auth = await detectAuth();
+      const cliStatuses = detectCliAuthStatuses();
+      const availability = toCliAvailability(auth);
       return {
         mode: getMode(),
         availableProviders: availability,
         models: {
           claude: availability.claude ? await listModels("claude") : [],
           codex: availability.codex ? await listModels("codex") : CODEX_FALLBACK_MODELS
-        }
+        },
+        detectedAuth: redactDetectedAuth(auth, cliStatuses),
       };
     },
 
@@ -829,6 +963,7 @@ export function createAiIntegrationService(args: {
     getDailyBudgetLimit,
 
     getAvailability: getAvailabilitySync,
+    verifyApiKeyConnection,
 
     // New unified methods
     getAvailabilityAsync,

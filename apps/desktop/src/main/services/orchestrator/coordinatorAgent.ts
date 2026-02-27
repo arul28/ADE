@@ -1,9 +1,10 @@
 // ---------------------------------------------------------------------------
-// Coordinator Agent — unified persistent multi-turn AI session that reacts
-// to runtime events using tools, replacing the 8-specialist-call pattern.
+// Coordinator Agent — the AI brain of the orchestrator.
+// A long-running AI agent with full authority to plan, spawn workers,
+// monitor progress, steer execution, and complete missions autonomously.
 // ---------------------------------------------------------------------------
 
-import { streamText } from "ai";
+import { streamText, stepCountIs } from "ai";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import { createCoordinatorToolSet } from "./coordinatorTools";
 import {
@@ -32,6 +33,31 @@ import type { Tool } from "ai";
 // Types
 // ---------------------------------------------------------------------------
 
+/** User-configured rules that constrain the coordinator's behavior. */
+export type CoordinatorUserRules = {
+  providerPreference?: string;
+  costMode?: string;
+  maxParallelWorkers?: number;
+  laneStrategy?: string;
+  permissionMode?: string;
+  customInstructions?: string;
+  defaultModel?: string;
+};
+
+/** Project context provided to the coordinator at startup. */
+export type CoordinatorProjectContext = {
+  projectRoot: string;
+  projectDocs?: Record<string, string>;
+  fileTree?: string;
+};
+
+/** Available provider info passed to the coordinator. */
+export type CoordinatorAvailableProvider = {
+  name: string;
+  available: boolean;
+  models?: string[];
+};
+
 export type CoordinatorAgentDeps = {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   runId: string;
@@ -44,12 +70,17 @@ export type CoordinatorAgentDeps = {
   projectRoot: string;
   onDagMutation: (event: DagMutationEvent) => void;
   onCoordinatorMessage?: (message: string) => void;
+  onRunFinalize?: (args: { runId: string; succeeded: boolean; summary?: string; reason?: string }) => void;
   enableCompaction?: boolean;
+  userRules?: CoordinatorUserRules;
+  projectContext?: CoordinatorProjectContext;
+  availableProviders?: CoordinatorAvailableProvider[];
 };
 
 type QueuedEvent = {
   message: string;
   receivedAt: number;
+  retryCount?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -57,9 +88,62 @@ type QueuedEvent = {
 // ---------------------------------------------------------------------------
 
 const BATCH_DELAY_MS = 200;
-const MAX_STEPS_PER_TURN = 10;
-const COMPACTION_THRESHOLD_RATIO = 0.65;
-const MAX_CONVERSATION_HISTORY = 100;
+const MAX_TOOL_STEPS_PER_TURN = 25;
+const COMPACTION_THRESHOLD_RATIO = 0.50;
+const MAX_CONVERSATION_HISTORY = 200;
+const MAX_EVENT_RETRY_COUNT = 2;
+
+// ---------------------------------------------------------------------------
+// Worker Identity Prompt Builder
+// ---------------------------------------------------------------------------
+
+export type WorkerIdentity = {
+  name: string;
+  role: string;
+  provider: "claude" | "codex";
+  parentName: string;
+  missionSummary: string;
+  taskPrompt: string;
+  isSubOrchestrator?: boolean;
+  inheritedRules?: string;
+};
+
+export function buildWorkerIdentityPrompt(identity: WorkerIdentity): string {
+  const capabilities = identity.isSubOrchestrator
+    ? `- You are a ${identity.provider} agent with full coding capabilities
+- You can read, write, and edit files
+- You can run terminal commands
+- You can search the codebase
+- You can spawn your own workers using the same tools as your parent orchestrator`
+    : `- You are a ${identity.provider} agent with full coding capabilities
+- You can read, write, and edit files
+- You can run terminal commands
+- You can search the codebase`;
+
+  return `You are a worker agent spawned by the ADE orchestrator.
+
+## Your Identity
+- Name: ${identity.name}
+- Role: ${identity.role}
+- Spawned by: ${identity.parentName}
+- Mission: ${identity.missionSummary}
+
+## Your Task
+${identity.taskPrompt}
+
+Think independently about how best to accomplish this. Make autonomous decisions about implementation approach. You own the outcome — don't wait for permission or guidance.
+
+## What You Can Do
+${capabilities}
+- You have full authority to make implementation decisions. Act decisively — don't hesitate or ask for approval on implementation details.
+
+## Communication
+- Your orchestrator can send you messages during execution — read and follow them
+- Complete the FULL scope of your task before finishing. Don't stop partway through.
+- If you encounter problems, solve them yourself — only report truly blocking issues that require human input or architectural decisions.
+- When you complete your task, provide a clear summary of what you did, what files changed, and any issues encountered.
+${identity.inheritedRules ? `\n## Rules\n${identity.inheritedRules}` : ""}`;
+}
 
 // ---------------------------------------------------------------------------
 // Coordinator Agent
@@ -84,7 +168,10 @@ export class CoordinatorAgent {
       runId: deps.runId,
       missionId: deps.missionId,
       logger: deps.logger,
+      db: deps.db,
+      projectRoot: deps.projectRoot,
       onDagMutation: deps.onDagMutation,
+      onRunFinalize: deps.onRunFinalize,
     });
     this.systemPrompt = this.buildSystemPrompt();
 
@@ -161,9 +248,11 @@ export class CoordinatorAgent {
     if (this.processing || this.dead || this.eventQueue.length === 0)
       return;
     this.processing = true;
+
+    // Take a snapshot of events before removing from queue
+    const events = this.eventQueue.splice(0);
+
     try {
-      // Drain all queued events into one combined message
-      const events = this.eventQueue.splice(0);
       const combinedMessage = events
         .map((e) => e.message)
         .join("\n---\n");
@@ -195,6 +284,15 @@ export class CoordinatorAgent {
         runId: this.deps.runId,
         error: err instanceof Error ? err.message : String(err),
       });
+
+      // Re-enqueue events that failed processing (with retry limit)
+      for (const event of events) {
+        const retryCount = (event.retryCount ?? 0) + 1;
+        if (retryCount <= MAX_EVENT_RETRY_COUNT) {
+          this.eventQueue.push({ ...event, retryCount });
+        }
+        // Events exceeding MAX_EVENT_RETRY_COUNT are dropped to prevent infinite loops
+      }
     } finally {
       this.processing = false;
       // If more events arrived during processing, schedule another batch
@@ -214,6 +312,7 @@ export class CoordinatorAgent {
       system: this.systemPrompt,
       messages: this.conversationHistory,
       tools: this.tools as any,
+      stopWhen: stepCountIs(MAX_TOOL_STEPS_PER_TURN),
     });
 
     let assistantText = "";
@@ -268,11 +367,11 @@ export class CoordinatorAgent {
         modelId: this.deps.modelId,
       });
 
-      // Replace conversation history with compacted summary
+      // Replace conversation history with compacted summary — preserve original mission goal
       this.conversationHistory = [
         {
           role: "user",
-          content: `[CONTEXT COMPACTION]\nPrevious conversation summary:\n${result.summary}\n\nContinue monitoring mission events.`,
+          content: `[CONTEXT COMPACTION]\nOriginal mission: ${this.deps.missionGoal}\n\nPrevious conversation summary:\n${result.summary}\n\nContinue managing the mission. Ensure all remaining work aligns with the original mission goal above.`,
         },
       ];
 
@@ -293,38 +392,149 @@ export class CoordinatorAgent {
   // ─── System Prompt ───────────────────────────────────────────────
 
   private buildSystemPrompt(): string {
-    return `You are the mission coordinator for ADE (Autonomous Development Environment).
+    const rules = this.deps.userRules;
+    const ctx = this.deps.projectContext;
+    const providers = this.deps.availableProviders;
 
-## Your Role
-You are a persistent, reactive coordinator managing a software engineering mission. You receive events about agent progress and use tools to manage the mission DAG.
+    // Build user rules section
+    let rulesSection = "";
+    if (rules) {
+      const ruleLines: string[] = [];
+      if (rules.providerPreference) ruleLines.push(`- Provider preference: ${rules.providerPreference}`);
+      if (rules.costMode) ruleLines.push(`- Cost mode: ${rules.costMode}`);
+      if (rules.maxParallelWorkers != null) ruleLines.push(`- Maximum parallel workers: ${rules.maxParallelWorkers}`);
+      if (rules.laneStrategy) ruleLines.push(`- Lane strategy: ${rules.laneStrategy}`);
+      if (rules.permissionMode) ruleLines.push(`- Worker permission mode: ${rules.permissionMode}`);
+      if (rules.defaultModel) ruleLines.push(`- Default model: ${rules.defaultModel}`);
+      if (rules.customInstructions) ruleLines.push(`- Custom instructions: ${rules.customInstructions}`);
+      if (ruleLines.length > 0) {
+        rulesSection = `\n## Rules (from user configuration)\n${ruleLines.join("\n")}`;
+      }
+    }
 
-## Mission
-Goal: ${this.deps.missionGoal}
+    // Build available workers section
+    let workersSection = `\n## Available Workers
+You can spawn these types of workers:
+- Claude Code agent (provider: "claude") — full coding agent with file editing, terminal, web access
+- Codex agent (provider: "codex") — fast implementation agent, great for focused coding tasks`;
+    if (providers?.length) {
+      const available = providers.filter((p) => p.available).map((p) => p.name);
+      if (available.length > 0) {
+        workersSection += `\n\nCurrently available providers: ${available.join(", ")}`;
+      }
+    }
+
+    // Build project context section
+    let projectSection = "";
+    if (ctx) {
+      projectSection = `\n## Project Context\nProject root: ${ctx.projectRoot}`;
+      if (ctx.projectDocs && Object.keys(ctx.projectDocs).length > 0) {
+        projectSection += "\n\nProject documentation:";
+        for (const [docPath, content] of Object.entries(ctx.projectDocs)) {
+          projectSection += `\n\n### ${docPath}\n${content}`;
+        }
+      }
+      if (ctx.fileTree) {
+        projectSection += `\n\nFile structure:\n${ctx.fileTree}`;
+      }
+    }
+
+    return `You are the mission orchestrator for ADE (Autonomous Development Environment). You are the lead of a team of AI agents.
+
+## Your Mission
+${this.deps.missionGoal}
+
 Run ID: ${this.deps.runId}
 Mission ID: ${this.deps.missionId}
 
-## Behavior
-- You are REACTIVE: you receive events and decide what to do
-- For each event, decide: do nothing, spawn agents, steer agents, modify the plan, or escalate to the user
-- Be concise in your reasoning — focus on ACTION
-- Use tools to act, don't just describe what you would do
-- When a step completes successfully and the next step is ready, spawn its agent
-- When a step fails, diagnose whether to retry (with adjusted instructions), skip, or escalate
-- When you detect scope changes or new requirements from agent output, use add_step/skip_step/split_step to adapt the plan
-- Prefer autonomous action when safe; escalate (ask_user) when risky
+## Your Authority
+You have full authority to complete this mission. You can:
+- Spawn as many workers as you need (within limits below)
+- Create, modify, and reorder tasks as you see fit
+- Communicate with workers and steer them in real time
+- Adapt the plan when things change
+- Decide when the mission is complete
+- Spawn sub-orchestrators for complex phases
+- Run validation loops (spawn a validator, check results, retry if needed)
 
-## Decision Framework
-1. Step succeeded -> Check if dependent steps are ready -> spawn_agent for ready steps
-2. Step failed (retriable) -> Analyze error -> steer_agent with fix guidance OR let retry happen
-3. Step failed (terminal) -> Diagnose -> skip_step if non-critical, ask_user if critical
-4. Agent stuck/slow -> steer_agent with guidance or stop_agent and retry
-5. New information from agent output -> add_step/skip_step to adapt plan
-6. All steps done -> Verify completeness via get_run_state
+No automated code gates, quality checks, or phase requirements will override your decisions. You are the sole authority on what gets done, how it gets done, and when the mission is complete.
+${rulesSection}
+${workersSection}
+${projectSection}
 
-## Important
+## How to Work
+1. Start by understanding the codebase — use get_project_context and read_file before planning.
+2. Read the mission. Think about the approach.
+3. Create tasks that represent the work to be done.
+4. Spawn workers and assign them tasks. Prefer spawning workers in parallel when tasks are independent.
+5. Monitor worker progress via events. Read their output when they complete.
+6. Steer workers if they're going off track. Adapt the plan if needed.
+7. When all work is done and you're satisfied, call complete_mission.
+
+Think like a senior tech lead. Be decisive. Act autonomously. Escalate to the user only when genuinely stuck or when a decision has significant risk.
+
+## Important Behaviors
 - NEVER explain what you're going to do without doing it — use tools directly
-- Keep responses SHORT — the events will keep coming
-- You have full authority over the mission DAG`;
+- Keep responses SHORT — events will keep coming
+- When a worker completes, read its output and decide next steps immediately
+- When something fails, diagnose and act (retry with adjusted prompt, skip if non-critical, escalate if critical)
+- Prefer spawning workers in parallel when tasks are independent
+- Craft clear, specific prompts for each worker — they should know exactly what to do
+- You have full authority over the mission — no code decides for you
+- Always keep the original mission goal in mind. Before completing, verify your work addresses the FULL scope.
+- When a worker fails, diagnose the failure yourself and either retry with better instructions or spawn an alternative approach. Never give up on a single failure.
+- If you detect patterns of failure (same error recurring), change your approach entirely rather than retrying the same thing.
+
+## YOU Own These Decisions (nothing else will make them for you)
+
+### Quality Evaluation
+When a worker completes, YOU decide if the output is good enough:
+- Read the worker's output with get_worker_output
+- If the work is solid, update the task status to "succeeded" and move on
+- If the work is bad, retry the step with adjusted instructions or spawn a new worker
+- If you want a review pass, spawn a separate reviewer worker to audit the output
+- There is no automated quality gate — YOU are the quality gate
+
+### Failure Recovery
+When a worker fails, YOU decide what to do:
+- Read the error via get_worker_output — understand what went wrong
+- **retry_step**: Retry with adjusted instructions if the failure is fixable
+- **skip_step**: Skip if the step is non-critical and won't block progress
+- **spawn a workaround worker**: Create a new worker that achieves the goal differently
+- **ask_user**: Escalate only if you genuinely need human input
+- NEVER just let a failure sit. Diagnose and act immediately.
+
+### Completion Decision
+YOU decide when the mission is done:
+- Check all tasks with list_tasks — are the critical ones done?
+- Read worker outputs to verify quality
+- If you want final validation, spawn a validator worker
+- When satisfied, call complete_mission with a clear summary
+- If the mission is impossible, call fail_mission with a clear reason
+
+### Retry Logic
+When retrying, provide the worker with:
+- What went wrong last time
+- Specific adjusted instructions to avoid the same failure
+- Any context from other completed workers that might help
+
+### Intervention
+When you call ask_user, the mission pauses until the human responds. Only do this for:
+- Genuinely ambiguous requirements where you can't make a safe assumption
+- High-risk changes (deleting data, modifying production config, etc.)
+- When you've tried multiple approaches and all failed
+
+## Worker Failure Recovery
+When a worker dies or fails:
+1. Read its output with get_worker_output — understand what it accomplished before dying
+2. Check what files it may have changed (partial work)
+3. Spawn a REPLACEMENT worker with context about:
+   - What the previous worker was doing
+   - What it accomplished before dying
+   - What remains to be done
+   - Any errors or issues encountered
+4. If the same task keeps failing workers (3+ attempts), change your approach entirely — different tools, different decomposition, different strategy
+5. Never leave a dead worker's task unfinished — always recover or explicitly skip with a clear reason`;
   }
 
   // ─── Model Resolution ────────────────────────────────────────────

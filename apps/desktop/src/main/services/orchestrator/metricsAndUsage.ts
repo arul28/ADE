@@ -35,7 +35,16 @@ const USAGE_TOKEN_COST: Record<string, { input: number; output: number }> = {
   "haiku": { input: 0.25, output: 1.25 },
   "opus": { input: 15, output: 75 },
   "gpt-4o": { input: 2.5, output: 10 },
-  "codex": { input: 0.5, output: 2 }
+  "codex": { input: 0.5, output: 2 },
+  "deepseek": { input: 0.27, output: 1.10 },
+  "mistral": { input: 2, output: 6 },
+  "grok": { input: 5, output: 15 },
+  "gemini": { input: 1.25, output: 5 },
+  "llama": { input: 0.2, output: 0.2 },
+  "groq": { input: 0.05, output: 0.10 },
+  "together": { input: 0.2, output: 0.2 },
+  "ollama": { input: 0, output: 0 },
+  "openrouter": { input: 2, output: 6 },
 };
 
 export function estimateTokenCost(model: string, inputTokens: number, outputTokens: number): number {

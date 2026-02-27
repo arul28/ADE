@@ -396,7 +396,7 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
 
     const suiteResult = await callTool(handler, "run_tests", {
       laneId: "lane-1",
@@ -439,29 +439,11 @@ describe("mcpServer", () => {
     expect(response.structuredContent.awaitingUserResponse).toBe(true);
   });
 
-  it("denies mutation tools without claims and writes failed audit record", async () => {
-    const { runtime, operationStart, operationFinish } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
-
-    const response = await callTool(handler, "commit_changes", {
-      laneId: "lane-1",
-      message: "test"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-    expect(operationStart).toHaveBeenCalledTimes(1);
-    expect(operationFinish).toHaveBeenCalledTimes(1);
-    expect(operationFinish.mock.calls[0]?.[0]?.status).toBe("failed");
-  });
-
-  it("allows mutations when identity grants allowMutations", async () => {
+  it("allows mutations for any session", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
 
     const response = await callTool(handler, "commit_changes", {
       laneId: "lane-1",
@@ -554,86 +536,7 @@ describe("mcpServer", () => {
     expect(finishArgs.metadataPatch?.resultStatus).toBe("success");
   });
 
-  // ---------- Issue 1: Consolidated authorization tests ----------
-
-  it("denies run_tests without mutation authorization", async () => {
-    const { runtime } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
-
-    const response = await callTool(handler, "run_tests", {
-      laneId: "lane-1",
-      suiteId: "unit",
-      waitForCompletion: false
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  it("denies create_queue without mutation authorization", async () => {
-    const { runtime } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
-
-    const response = await callTool(handler, "create_queue", {
-      laneIds: ["lane-1"],
-      targetBranch: "main"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  it("denies create_integration without mutation authorization", async () => {
-    const { runtime } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
-
-    const response = await callTool(handler, "create_integration", {
-      sourceLaneIds: ["lane-1"],
-      integrationLaneName: "integration",
-      baseBranch: "main",
-      title: "Integration PR"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  it("denies rebase_lane without mutation authorization", async () => {
-    const { runtime } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
-
-    const response = await callTool(handler, "rebase_lane", {
-      laneId: "lane-1"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  it("denies land_queue_next without mutation authorization", async () => {
-    const { runtime } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
-
-    const response = await callTool(handler, "land_queue_next", {
-      groupId: "group-1",
-      method: "merge"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  // ---------- Issue 2: Global rate limit tests ----------
+  // ---------- Rate limit tests ----------
 
   afterEach(() => {
     _resetGlobalAskUserRateLimit();
@@ -717,7 +620,7 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
     const response = await callTool(handler, "create_lane", { name: "new-feature" });
 
     expect(response?.isError).toBeUndefined();
@@ -749,7 +652,7 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
     const response = await callTool(handler, "create_queue", {
       laneIds: ["lane-1", "lane-2"],
       targetBranch: "main"
@@ -768,7 +671,7 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
     const response = await callTool(handler, "create_integration", {
       sourceLaneIds: ["lane-1"],
       integrationLaneName: "integration-branch",
@@ -791,7 +694,7 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
     const response = await callTool(handler, "rebase_lane", {
       laneId: "lane-1",
       aiAssisted: true
@@ -819,7 +722,7 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
     const response = await callTool(handler, "land_queue_next", {
       groupId: "group-1",
       method: "squash"
@@ -847,7 +750,7 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
     const response = await callTool(handler, "run_tests", { laneId: "lane-1" });
 
     expect(response.isError).toBe(true);
@@ -1273,31 +1176,6 @@ describe("mcpServer", () => {
     expect(response.structuredContent.runContext.attemptCount).toBe(1);
   });
 
-  it("denies evaluate_run for non-evaluator role", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "evaluate_run", {
-      runId: "run-1",
-      missionId: "mission-1",
-      scores: {
-        planQuality: 8,
-        parallelism: 7,
-        coordinatorDecisions: 9,
-        resourceEfficiency: 6,
-        outcomeQuality: 8
-      },
-      issues: [],
-      summary: "Good run"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  // ---------- Authorization Tests ----------
-
   it("evaluator gets reads + orchestration + evaluation", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -1323,78 +1201,7 @@ describe("mcpServer", () => {
     expect(evalResponse?.isError).toBeUndefined();
   });
 
-  it("evaluator denied mutations", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "commit_changes", {
-      laneId: "lane-1",
-      message: "should fail"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  it("evaluator denied spawn", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "spawn_agent", {
-      laneId: "lane-1",
-      provider: "claude",
-      prompt: "test"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  it("external denied orchestration tools", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-
-    // All orchestration tools should be denied
-    const tools = [
-      { name: "create_mission", args: { prompt: "test" } },
-      { name: "start_mission", args: { missionId: "mission-1" } },
-      { name: "pause_mission", args: { runId: "run-1" } },
-      { name: "resume_mission", args: { runId: "run-1" } },
-      { name: "cancel_mission", args: { runId: "run-1" } },
-      { name: "steer_mission", args: { missionId: "mission-1", directive: "test" } },
-      { name: "approve_plan", args: { missionId: "mission-1", approved: true } },
-      { name: "resolve_intervention", args: { missionId: "mission-1", interventionId: "int-1", status: "resolved" } }
-    ];
-
-    for (const tool of tools) {
-      const response = await callTool(handler, tool.name, tool.args);
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-    }
-  });
-
-  it("external denied evaluation tools", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "evaluate_run", {
-      runId: "run-1",
-      missionId: "mission-1",
-      scores: { planQuality: 8, parallelism: 7, coordinatorDecisions: 9, resourceEfficiency: 6, outcomeQuality: 8 },
-      issues: [],
-      summary: "Test"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
-  });
-
-  it("external can access read-only observation tools", async () => {
+  it("any session can access observation tools", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 

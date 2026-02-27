@@ -20,6 +20,7 @@
    - [Data Flow](#data-flow)
    - [IPC Architecture](#ipc-architecture)
    - [Event Propagation](#event-propagation)
+   - [Cross-Machine Architecture](#cross-machine-architecture)
 5. [Implementation Status](#implementation-status)
 
 ---
@@ -46,7 +47,7 @@ Rather than requiring users to manage API keys, configure cloud endpoints, or pa
 
 ### MCP for AI Tool Access
 
-ADE exposes its internal capabilities to AI processes through a Model Context Protocol (MCP) server. This provides a standardized, auditable interface for AI agents to interact with ADE's lane system, conflict detection, test execution, and other services. The MCP server uses stdio transport with JSON-RPC 2.0, ensuring that all AI tool invocations pass through a permission and policy layer with full call audit logging.
+ADE exposes its internal capabilities to AI processes through a Model Context Protocol (MCP) server operating in dual mode. This provides a standardized, auditable interface for AI agents to interact with ADE's lane system, conflict detection, test execution, and other services. The MCP server uses a `JsonRpcTransport` abstraction supporting both stdio (headless) and Unix socket (embedded at `.ade/mcp.sock`) transports, ensuring that all AI tool invocations pass through a permission and policy layer with full call audit logging. A smart entry point auto-detects the desktop's presence to choose embedded proxy vs headless mode.
 
 ### Trust Boundary at the Process Level
 
@@ -133,6 +134,10 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 | `metaReasoner` | `metaReasoner.ts` | AI-driven fan-out dispatch analysis, dynamic step injection, fan-out strategy selection |
 | `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, pre-compaction writeback, conversation replacement |
 | `messageDelivery` | (in `aiOrchestratorService.ts`) | Inter-agent messaging: `deliverMessageToAgent()`, `parseMentions()`, `routeMessage()`, @mention routing |
+| `memoryService` | `memoryService.ts` | Three-tier memory with sqlite-vec vector search, composite scoring, pre-compaction flush, consolidation, and `.ade/memory/` git sync |
+| `conciergeAgent` | *Planned* | MCP entry point for external agent systems — intent classification, routing to mission/task/review/query handlers, identity-based learned routing |
+| `externalMcpClient` | *Planned* | Connects to external MCP servers for extended agent capabilities — lazy connect, permission integration, tool manifest merging |
+| `adeStateManager` | *Planned* | Manages `.ade/` portable state directory — cross-machine sync via git, embedding regeneration on clone, state integrity checks |
 | `laneEnvironmentService` | *Planned* | Lane environment initialization (env files, ports, Docker, deps) |
 | `laneProxyService` | *Planned* | Per-lane hostname proxy (*.localhost routing) |
 | `previewLaunchService` | *Planned* | Preview URL generation and browser launch |
@@ -144,7 +149,7 @@ All services are instantiated in `main.ts` and wired together through dependency
 
 ### 3. AI Integration Layer
 
-**Technology**: Agent SDKs (`ai-sdk-provider-claude-code`, `@openai/codex-sdk`), AgentExecutor interface, MCP server (stdio/JSON-RPC 2.0), `claude` and `codex` CLI processes
+**Technology**: Agent SDKs (`ai-sdk-provider-claude-code`, `@openai/codex-sdk`), AgentExecutor interface, MCP server (dual-mode: stdio + socket/JSON-RPC 2.0), `claude` and `codex` CLI processes
 
 The AI Integration Layer is a local-only subsystem that provides AI capabilities by spawning CLI processes that use the developer's existing subscriptions. It replaces the previous hosted cloud backend entirely.
 
@@ -236,6 +241,29 @@ User creates lane
             --> Results displayed in desktop UI
 ```
 
+For external agent integration via the Concierge Agent:
+
+```
+External agent → MCP Server (stdio/socket)
+  → Concierge Agent (intent classification)
+    → Route to handler: Mission launcher | Task agent | Review agent | State reader
+      → Execute via ADE internal services
+        → Result assembled
+          → MCP response returned to external agent
+```
+
+For memory persistence and cross-machine sync:
+
+```
+Agent execution → Memory write (memoryAdd)
+  → Embed via local GGUF or OpenAI fallback
+    → Consolidation check (cosine > 0.85 similarity)
+      → Store in SQLite + memory_vectors
+        → Emit to .ade/memory/ JSON files
+          → git commit + push (user-initiated or automated)
+            → Other machines: git pull → memory service reload → re-embed if needed
+```
+
 Each step in these pipelines is triggered by events rather than polling. The job engine ensures that rapid successive events (multiple sessions ending quickly) are coalesced into a single pack refresh.
 
 ### IPC Architecture
@@ -317,6 +345,34 @@ Real-time events (PTY data, process status changes, test run updates, AI streami
 | Daytona SDK | Opt-in cloud sandbox compute for lane/mission execution | No (opt-in) |
 | Docker | Lane environment initialization (optional containerized deps) | No (optional) |
 
+### Cross-Machine Architecture
+
+ADE is designed to be fully portable across developer machines without requiring a central hub, cloud backend, or relay for state synchronization.
+
+**Git-based state sync**: All durable ADE state lives in the `.ade/` directory at the project root. This directory is committed to git alongside the codebase, enabling state to travel with the repository:
+
+| State Category | Location | Git-tracked | Notes |
+|----------------|----------|:-----------:|-------|
+| Project memories | `.ade/memory/project.json` | Yes | Shared project knowledge |
+| Agent memories | `.ade/memory/agents/<id>.json` | Yes | Per-agent learned behaviors |
+| Agent definitions | `.ade/agents/*.yaml` | Yes | Agent role and capability configs |
+| Agent identities | `.ade/identities/*.yaml` | Yes | Agent persona and policy profiles |
+| Mission history | `.ade/missions/history.jsonl` | Yes | Completed mission records |
+| Learning packs | `.ade/learning/*.json` | Yes | Auto-accumulated project rules |
+| Shared config | `.ade/local.yaml` | Yes | Project-level settings |
+| MCP socket | `.ade/mcp.sock` | No | Runtime artifact |
+| Embedding cache | `.ade/cache/embeddings/` | No | Regenerated locally per machine |
+| Session transcripts | `.ade/transcripts/` | No | Large, ephemeral |
+| Private config | `.ade/local.private.yaml` | No | Machine-specific secrets/paths |
+
+**No hub needed**: Unlike systems that require a central server for state sync, ADE relies entirely on git. When a developer pushes their `.ade/` changes, other machines receive the state on the next pull. This is intentionally simple and works with any git hosting provider.
+
+**Embedding regeneration**: The `memory_vectors` SQLite table (sqlite-vec data) is not portable — it is `.gitignore`d because binary embedding data is machine-specific. On first startup after cloning or pulling new memory files, the memory service detects the mismatch and triggers a background re-embedding job using the local GGUF model (~30s for typical projects).
+
+**Phase 8 relay is NOT state sync**: The planned Phase 8 relay server enables real-time remote control of a running ADE instance (e.g., from an iOS app). This is an operational bridge — it streams live events and accepts commands from a remote client to a running desktop instance. It does not participate in state synchronization, which remains purely git-based.
+
+**iOS app as remote control**: The planned iOS companion app connects to a running ADE instance via the Phase 8 relay. It provides mission monitoring, intervention handling, and agent steering from mobile. The iOS app does not store or sync ADE state — it is a thin remote control for an active desktop session.
+
 ---
 
 ## Implementation Status
@@ -337,18 +393,22 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Per-task-type routing configuration | Complete |
 | Agent Chat Service (Phase 1.5) | Complete |
 | Streaming AI responses to UI | Complete |
-| MCP server (`apps/mcp-server`) | Complete |
+| MCP server (`apps/mcp-server`) — dual-mode (headless + embedded) | Complete |
 | MCP permission/policy layer | Complete |
 | MCP call audit logging | Complete |
-| AI orchestrator (Claude session + MCP) | ~85% Complete (Phase 3) — orchestrator evolution shipped |
+| AI orchestrator (Claude session + MCP) | ~90% Complete (Phase 3) — orchestrator evolution shipped |
 | Meta-reasoner + smart fan-out | Complete |
 | Context compaction engine | Complete |
 | Session persistence + resume | Complete |
 | Inter-agent messaging | Complete |
 | Memory architecture (scoped namespaces + candidate/promoted lifecycle) | Complete |
 | Shared facts + run narrative | Complete |
+| Memory architecture upgrade (sqlite-vec, hybrid search, composite scoring, pre-compaction flush) | Planned (Phase 4) |
+| Concierge Agent (MCP entry point for external systems) | Planned (Phase 4) |
+| External MCP consumption (agents connect to external MCP servers) | Planned (Phase 4) |
+| `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
 | Compute backend abstraction (Phase 5.5) | Planned |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~85% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). Phase 4 focuses on agent-first runtime unification. Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 focuses on agent-first runtime unification plus four new architectural capabilities: memory architecture upgrade (sqlite-vec vector search, hybrid retrieval, pre-compaction flush), Concierge Agent (external system bridge via MCP), external MCP consumption (agents connecting to third-party MCP servers), and `.ade/` portable state (git-based cross-machine sync). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan.md`

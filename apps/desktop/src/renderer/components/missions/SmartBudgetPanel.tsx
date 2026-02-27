@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useState } from "react";
 import { Info, Check } from "@phosphor-icons/react";
 import type { SmartBudgetConfig } from "../../../shared/types";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
@@ -7,6 +7,7 @@ type SmartBudgetPanelProps = {
   value: SmartBudgetConfig;
   onChange: (config: SmartBudgetConfig) => void;
   currentSpend?: { fiveHourUsd: number; weeklyUsd: number } | null;
+  modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUsd: number }>;
 };
 
 const inputStyle: React.CSSProperties = {
@@ -76,10 +77,38 @@ function ProgressBar({
   );
 }
 
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span
+      className="relative inline-flex"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <div
+          className="absolute z-50 left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 text-[10px] whitespace-normal max-w-xs"
+          style={{
+            background: COLORS.cardBg,
+            border: `1px solid ${COLORS.border}`,
+            color: COLORS.textSecondary,
+            fontFamily: MONO_FONT,
+            lineHeight: 1.4,
+          }}
+        >
+          {text}
+        </div>
+      )}
+    </span>
+  );
+}
+
 export function SmartBudgetPanel({
   value,
   onChange,
   currentSpend,
+  modelUsage,
 }: SmartBudgetPanelProps) {
   const handleToggle = useCallback(() => {
     onChange({ ...value, enabled: !value.enabled });
@@ -147,12 +176,11 @@ export function SmartBudgetPanel({
           />
         </button>
 
-        <span
-          title="When enabled, the orchestrator will automatically steer model usage to stay within budget thresholds. It can downgrade models, inject conciseness prompts, warn workers, skip optional steps, reduce parallelism, and switch providers."
-          className="cursor-help"
-        >
-          <Info size={14} weight="bold" color={COLORS.textDim} />
-        </span>
+        <Tooltip text="When enabled, the orchestrator will automatically steer model usage to stay within budget thresholds. It can downgrade models, inject conciseness prompts, warn workers, skip optional steps, reduce parallelism, and switch providers.">
+          <span className="cursor-help">
+            <Info size={14} weight="bold" color={COLORS.textDim} />
+          </span>
+        </Tooltip>
       </div>
 
       {/* Body */}
@@ -251,6 +279,83 @@ export function SmartBudgetPanel({
             )}
           </div>
         </div>
+
+        {/* Per-model usage breakdown */}
+        {modelUsage && Object.keys(modelUsage).length > 0 && (
+          <div
+            className="pt-2"
+            style={{ borderTop: `1px solid ${COLORS.border}` }}
+          >
+            <div
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                fontWeight: 700,
+                color: COLORS.textMuted,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                marginBottom: 8,
+              }}
+            >
+              Current Model Usage
+            </div>
+            <div className="space-y-2">
+              {Object.entries(modelUsage).map(([model, usage]) => {
+                const totalTokens = usage.inputTokens + usage.outputTokens;
+                const totalBudget = value.fiveHourThresholdUsd || 1;
+                const pct = Math.min((usage.costUsd / totalBudget) * 100, 100);
+                const barColor =
+                  pct >= 80
+                    ? COLORS.danger
+                    : pct >= 50
+                      ? COLORS.warning
+                      : COLORS.success;
+                return (
+                  <div key={model} className="flex items-center gap-2">
+                    <span
+                      className="w-32 shrink-0 truncate"
+                      style={{
+                        fontFamily: MONO_FONT,
+                        fontSize: 10,
+                        color: COLORS.textSecondary,
+                      }}
+                      title={model}
+                    >
+                      {model}
+                    </span>
+                    <div
+                      style={{
+                        height: 4,
+                        flex: 1,
+                        background: COLORS.border,
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: "100%",
+                          width: `${pct}%`,
+                          background: barColor,
+                          transition: "width 0.3s ease",
+                        }}
+                      />
+                    </div>
+                    <span
+                      style={{
+                        fontFamily: MONO_FONT,
+                        fontSize: 10,
+                        color: COLORS.textDim,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      ${usage.costUsd.toFixed(2)} · {totalTokens.toLocaleString()} tok
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Steering actions */}
         <div

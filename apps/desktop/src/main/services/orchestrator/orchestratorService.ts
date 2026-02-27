@@ -7,6 +7,8 @@ import type {
   ConflictProposal,
   ConflictProposalPreview,
   ExternalConflictResolverProvider,
+  FinalizeRunArgs,
+  FinalizeRunResult,
   MissionExecutionPolicy,
   MissionStepHandoff,
   OrchestratorAttempt,
@@ -34,12 +36,18 @@ import type {
   OrchestratorStepStatus,
   OrchestratorRuntimeBusEvent,
   OrchestratorRuntimeEventType,
+  OrchestratorTeamMember,
+  OrchestratorTeamMemberRole,
+  OrchestratorTeamMemberStatus,
+  OrchestratorTeamRuntimeState,
   OrchestratorTimelineEvent,
   PackDeltaDigestV1,
   PackExport,
   PrepareResolverSessionArgs,
   PtyCreateArgs,
+  RunCompletionBlocker,
   RunCompletionEvaluation,
+  RunCompletionValidation,
   StartOrchestratorRunArgs,
   StartOrchestratorRunStepInput,
   RecoveryLoopPolicy,
@@ -63,7 +71,7 @@ import {
   DEFAULT_CONTEXT_VIEW_POLICIES,
   DEFAULT_ROLE_ISOLATION_RULES
 } from "../../../shared/types";
-import { evaluateRunCompletion } from "./executionPolicy";
+import { evaluateRunCompletion, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import { createUnifiedOrchestratorAdapter } from "./unifiedOrchestratorAdapter";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
@@ -474,8 +482,10 @@ function asPositiveNumberOrNull(value: unknown): number | null {
 function normalizeRunStatus(value: string): OrchestratorRunStatus {
   if (
     value === "queued" ||
-    value === "running" ||
+    value === "bootstrapping" ||
+    value === "active" ||
     value === "paused" ||
+    value === "completing" ||
     value === "succeeded" ||
     value === "succeeded_with_risk" ||
     value === "failed" ||
@@ -543,7 +553,7 @@ function normalizeJoinPolicy(value: string): OrchestratorJoinPolicy {
 }
 
 function normalizeClaimScope(value: string): OrchestratorClaimScope {
-  if (value === "lane" || value === "file" || value === "env") return value;
+  if (value === "lane" || value === "file" || value === "env" || value === "task") return value;
   return "lane";
 }
 
@@ -1230,67 +1240,66 @@ export function createOrchestratorService({
     const orchestrator = asRecord(ai?.orchestrator);
     if (!orchestrator) return DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG;
     const out: ResolvedOrchestratorRuntimeConfig = { ...DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG };
-    const teammatePlanMode = String(orchestrator.teammatePlanMode ?? orchestrator.teammate_plan_mode ?? "").trim();
+    const teammatePlanMode = String(orchestrator.teammatePlanMode ?? "").trim();
     if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
       out.teammatePlanMode = teammatePlanMode;
     }
-    out.requirePlanReview = asBool(orchestrator.requirePlanReview, asBool(orchestrator.require_plan_review, out.requirePlanReview));
+    out.requirePlanReview = asBool(orchestrator.requirePlanReview, out.requirePlanReview);
     out.maxParallelWorkers = asIntInRange(
-      orchestrator.maxParallelWorkers ?? orchestrator.max_parallel_workers,
+      orchestrator.maxParallelWorkers,
       out.maxParallelWorkers,
       1,
       32
     );
-    const mergePolicy = String(orchestrator.defaultMergePolicy ?? orchestrator.default_merge_policy ?? "").trim();
+    const mergePolicy = String(orchestrator.defaultMergePolicy ?? "").trim();
     if (mergePolicy === "sequential" || mergePolicy === "batch-at-end" || mergePolicy === "per-step") {
       out.defaultMergePolicy = mergePolicy;
     }
-    const conflictHandoff = String(orchestrator.defaultConflictHandoff ?? orchestrator.default_conflict_handoff ?? "").trim();
+    const conflictHandoff = String(orchestrator.defaultConflictHandoff ?? "").trim();
     if (conflictHandoff === "auto-resolve" || conflictHandoff === "ask-user" || conflictHandoff === "orchestrator-decides") {
       out.defaultConflictHandoff = conflictHandoff;
     }
     out.workerHeartbeatIntervalMs = asIntInRange(
-      orchestrator.workerHeartbeatIntervalMs ?? orchestrator.worker_heartbeat_interval_ms,
+      orchestrator.workerHeartbeatIntervalMs,
       out.workerHeartbeatIntervalMs,
       1_000,
       600_000
     );
     out.workerHeartbeatTimeoutMs = asIntInRange(
-      orchestrator.workerHeartbeatTimeoutMs ?? orchestrator.worker_heartbeat_timeout_ms,
+      orchestrator.workerHeartbeatTimeoutMs,
       out.workerHeartbeatTimeoutMs,
       1_000,
       900_000
     );
     out.workerIdleTimeoutMs = asIntInRange(
-      orchestrator.workerIdleTimeoutMs ?? orchestrator.worker_idle_timeout_ms,
+      orchestrator.workerIdleTimeoutMs,
       out.workerIdleTimeoutMs,
       1_000,
       3_600_000
     );
     out.stepTimeoutDefaultMs = asIntInRange(
-      orchestrator.stepTimeoutDefaultMs ?? orchestrator.step_timeout_default_ms,
+      orchestrator.stepTimeoutDefaultMs,
       out.stepTimeoutDefaultMs,
       1_000,
       3_600_000
     );
     out.maxRetriesPerStep = asIntInRange(
-      orchestrator.maxRetriesPerStep ?? orchestrator.max_retries_per_step,
+      orchestrator.maxRetriesPerStep,
       out.maxRetriesPerStep,
       0,
       8
     );
     out.contextPressureThreshold = asNumberInRange(
-      orchestrator.contextPressureThreshold ?? orchestrator.context_pressure_threshold,
+      orchestrator.contextPressureThreshold,
       out.contextPressureThreshold,
       0.1,
       0.99
     );
-    out.progressiveLoading = asBool(orchestrator.progressiveLoading, asBool(orchestrator.progressive_loading, out.progressiveLoading));
-    out.maxTotalTokenBudget = asPositiveNumberOrNull(orchestrator.maxTotalTokenBudget ?? orchestrator.max_total_token_budget);
-    out.maxPerStepTokenBudget = asPositiveNumberOrNull(orchestrator.maxPerStepTokenBudget ?? orchestrator.max_per_step_token_budget);
+    out.progressiveLoading = asBool(orchestrator.progressiveLoading, out.progressiveLoading);
+    out.maxTotalTokenBudget = asPositiveNumberOrNull(orchestrator.maxTotalTokenBudget);
+    out.maxPerStepTokenBudget = asPositiveNumberOrNull(orchestrator.maxPerStepTokenBudget);
     const reservationGuardMode = String(
       orchestrator.fileReservationGuardMode
-      ?? orchestrator.file_reservation_guard_mode
       ?? out.fileReservationGuardMode
     ).trim();
     if (reservationGuardMode === "off" || reservationGuardMode === "warn" || reservationGuardMode === "block") {
@@ -1724,7 +1733,7 @@ export function createOrchestratorService({
     const existing = getRunRow(runId);
     if (!existing) throw new Error(`Run not found: ${runId}`);
     const updatedAt = nowIso();
-    const startedAt = status === "running" && !existing.started_at ? updatedAt : existing.started_at;
+    const startedAt = (status === "active" || status === "bootstrapping") && !existing.started_at ? updatedAt : existing.started_at;
     const completedAt = TERMINAL_RUN_STATUSES.has(status) ? updatedAt : null;
     db.run(
       `
@@ -1925,6 +1934,33 @@ export function createOrchestratorService({
           expiresAt: claim.expiresAt
         }
       });
+
+      // Task-scope claims: mark the step as claimed by updating its metadata
+      if (args.scopeKind === "task" && args.stepId) {
+        const stepRow = getStepRow(args.stepId);
+        if (stepRow) {
+          const stepMeta = parseRecord(stepRow.metadata_json) ?? {};
+          const updatedMeta = {
+            ...stepMeta,
+            claimedBy: args.ownerId,
+            claimedAt: acquiredAt,
+            taskClaimId: claim.id
+          };
+          db.run(
+            `
+              update orchestrator_steps
+              set metadata_json = ?,
+                  updated_at = ?
+              where id = ?
+                and run_id = ?
+                and project_id = ?
+            `,
+            [JSON.stringify(updatedMeta), acquiredAt, args.stepId, args.runId, projectId]
+          );
+          emit({ type: "orchestrator-step-updated", runId: args.runId, stepId: args.stepId, reason: "task_claimed" });
+        }
+      }
+
       return claim;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2014,6 +2050,8 @@ export function createOrchestratorService({
   }): string | null => {
     const raw = String(args.scopeValue ?? "").trim();
     if (!raw.length) return null;
+    // Task claims use step ID as scope value — pass through directly
+    if (args.scopeKind === "task") return raw;
     if (args.scopeKind !== "file") return raw;
     return normalizeFileClaimScopeValue(projectRoot, raw);
   };
@@ -2382,27 +2420,13 @@ export function createOrchestratorService({
     }
   };
 
-  const deriveRunStatusFromSteps = (runId: string): OrchestratorRunStatus => {
-    const steps = listStepRows(runId).map(toStep);
-    if (!steps.length) return "succeeded";
-    const statuses = steps.map((step) => step.status);
-    const allTerminal = statuses.every((status) => TERMINAL_STEP_STATUSES.has(status));
-    if (allTerminal && statuses.every((status) => status === "succeeded" || status === "skipped")) return "succeeded";
-    if (allTerminal && statuses.every((status) => status === "canceled")) return "canceled";
-    if (allTerminal && statuses.some((status) => status === "failed")) return "failed";
-    if (allTerminal && statuses.some((status) => status === "blocked")) return "paused";
-    if (statuses.some((status) => status === "running")) return "running";
-    if (statuses.some((status) => status === "ready" || status === "pending")) return "running";
-    if (statuses.some((status) => status === "blocked")) return "paused";
-    return "running";
-  };
-
   /**
    * Policy-aware run status evaluation.
    * Resolves the execution policy from run metadata and delegates to
-   * `evaluateRunCompletion`. When the evaluation yields a terminal status,
-   * the diagnostics are persisted into the run's metadata so they can be
-   * surfaced by `getRunGraph` and downstream consumers.
+   * `evaluateRunCompletion`. This NEVER returns terminal statuses —
+   * terminal transitions are exclusively via finalizeRun() or cancelRun().
+   * When the evaluation signals completion readiness, the run transitions
+   * to "completing" and diagnostics are persisted for downstream consumers.
    */
   const evaluateRunStatusWithPolicy = (runId: string): OrchestratorRunStatus => {
     const steps = listStepRows(runId).map(toStep);
@@ -2410,12 +2434,12 @@ export function createOrchestratorService({
     const runMetadata = runRow ? parseRecord(runRow.metadata_json) : null;
     const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
       ? (runMetadata.executionPolicy as MissionExecutionPolicy)
-      : null;
+      : DEFAULT_EXECUTION_POLICY;
     const evaluation = evaluateRunCompletion(steps, executionPolicy);
 
-    // When the evaluation yields a terminal status, persist completion diagnostics
+    // When the evaluation signals completion readiness, persist diagnostics
     // into run metadata so they are available via getRunGraph and other consumers.
-    if (evaluation.completionReady && TERMINAL_RUN_STATUSES.has(evaluation.status)) {
+    if (evaluation.completionReady) {
       const existingMetadata = runMetadata ?? {};
       const updatedMetadata = {
         ...existingMetadata,
@@ -2434,6 +2458,11 @@ export function createOrchestratorService({
       );
     }
 
+    // Map evaluation status: NEVER return terminal statuses from this function.
+    // Terminal transitions are exclusively via finalizeRun() or cancelRun().
+    if (TERMINAL_RUN_STATUSES.has(evaluation.status) || evaluation.completionReady) {
+      return "completing";
+    }
     return evaluation.status;
   };
 
@@ -4165,7 +4194,7 @@ export function createOrchestratorService({
       const runMetadata = run.metadata ?? {};
       const executionPolicy = isExecutionPolicyRecord(runMetadata.executionPolicy)
         ? (runMetadata.executionPolicy as MissionExecutionPolicy)
-        : null;
+        : DEFAULT_EXECUTION_POLICY;
       const completion = evaluateRunCompletion(steps, executionPolicy);
       return {
         run,
@@ -4466,14 +4495,7 @@ export function createOrchestratorService({
             executorKind: autopilotEnabled ? fallbackExecutor : "manual",
             ownerId: autopilotOwnerId,
             parallelismCap: autopilotParallelismCap
-          },
-          agentCapabilities: (() => {
-            const launch = asRecord(missionMetadata.launch);
-            return {
-              parallelSubagents: launch?.allowParallelSubagents === true,
-              agentTeams: launch?.allowAgentTeams === true,
-            };
-          })()
+          }
         },
         steps: normalized
       });
@@ -5312,42 +5334,39 @@ export function createOrchestratorService({
       if (TERMINAL_RUN_STATUSES.has(runStatus)) return toRun(run);
       // Paused runs (e.g. budget exceeded) should not auto-resume via tick
       if (runStatus === "paused") return toRun(run);
+      // "completing" runs are awaiting explicit finalizeRun — tick should not interfere
+      if (runStatus === "completing") return toRun(run);
 
+      // ── Maintenance only: claim expiry + step readiness refresh ──
       expireClaims();
       refreshStepReadiness(args.runId);
 
-      const next = evaluateRunStatusWithPolicy(args.runId);
-      const current = normalizeRunStatus(run.status);
-      if (next !== current) {
-        updateRunStatus(args.runId, next);
-        // Auto-promote shared facts to memory when run succeeds
-        if (next === "succeeded" || next === "succeeded_with_risk") {
-          try {
-            promoteRunFactsToMemory(args.runId, projectId);
-          } catch {
-            // Memory promotion is best-effort; don't fail the tick
-          }
-        }
-      } else if (current === "queued") {
-        updateRunStatus(args.runId, "running");
-      } else {
-        db.run(
-          `
-            update orchestrator_runs
-            set updated_at = ?
-            where id = ?
-              and project_id = ?
-          `,
-          [nowIso(), args.runId, projectId]
-        );
+      // Promote queued → bootstrapping (or active if no planning needed)
+      const current = runStatus;
+      if (current === "queued") {
+        updateRunStatus(args.runId, "bootstrapping");
       }
+
+      // tick() does NOT transition runs to terminal states.
+      // Terminal transitions are exclusively via finalizeRun() or cancelRun().
+      // However, tick still updates the timestamp for liveness tracking.
+      db.run(
+        `
+          update orchestrator_runs
+          set updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [nowIso(), args.runId, projectId]
+      );
+
       appendTimelineEvent({
         runId: args.runId,
         eventType: "scheduler_tick",
         reason: "tick",
         detail: {
           fromStatus: current,
-          derivedStatus: next
+          maintenance: true
         }
       });
 
@@ -6705,7 +6724,14 @@ export function createOrchestratorService({
       appendRunNarrative(run.id, step.stepKey, `${status}: ${envelope.summary.slice(0, 200)}`);
 
       const updatedRun = this.tick({ runId: run.id });
-      if (updatedRun.status === "succeeded" || updatedRun.status === "failed" || updatedRun.status === "canceled") {
+      // When the run transitions to "completing" (all steps terminal) or is already terminal,
+      // mark worker state as disposed for cleanup.
+      if (
+        updatedRun.status === "completing" ||
+        updatedRun.status === "succeeded" ||
+        updatedRun.status === "failed" ||
+        updatedRun.status === "canceled"
+      ) {
         const latestAttempt = getAttemptRow(args.attemptId);
         const latestMetadata =
           (latestAttempt ? toAttempt(latestAttempt).metadata : null) ?? parseRecord(attemptRow.metadata_json) ?? {};
@@ -6727,18 +6753,19 @@ export function createOrchestratorService({
           ]
         );
       }
-	      if (updatedRun.status === "failed") {
-	        db.run(
-	          `
-	            update orchestrator_runs
-	            set last_error = ?,
-	                updated_at = ?
-	            where id = ?
-	              and project_id = ?
-	          `,
-	          [effectiveErrorMessage ?? defaultSummary, nowIso(), run.id, projectId]
-	        );
-	      }
+      // Store last error on the run when a failed attempt completes
+      if (status === "failed") {
+        db.run(
+          `
+            update orchestrator_runs
+            set last_error = ?,
+                updated_at = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [effectiveErrorMessage ?? defaultSummary, nowIso(), run.id, projectId]
+        );
+      }
       const updatedAttemptRow = getAttemptRow(args.attemptId);
       if (!updatedAttemptRow) throw new Error("Attempt not found after completion update.");
       return toAttempt(updatedAttemptRow);
@@ -6976,6 +7003,8 @@ export function createOrchestratorService({
       const runRow = getRunRow(runId);
       if (!runRow) throw new Error(`Run not found: ${runId}`);
       const run = toRun(runRow);
+      // Only reject step additions for truly terminal states.
+      // "bootstrapping", "active", "completing", "paused", "queued" all allow step additions.
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
         throw new Error(`Cannot add steps to a terminal run (status: ${run.status}).`);
       }
@@ -7159,7 +7188,7 @@ export function createOrchestratorService({
 
     /**
      * Like addSteps, but allows adding steps to a terminal (succeeded/failed) run.
-     * Transitions the run back to "running" before inserting steps, enabling
+     * Transitions the run back to "active" before inserting steps, enabling
      * post-completion workflows like conflict resolution workers.
      */
     addPostCompletionSteps(args: {
@@ -7172,9 +7201,9 @@ export function createOrchestratorService({
       if (!runRow) throw new Error(`Run not found: ${runId}`);
       const run = toRun(runRow);
 
-      // If the run is terminal, transition back to running so new steps can be scheduled
+      // If the run is terminal, transition back to active so new steps can be scheduled
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
-        updateRunStatus(runId, "running");
+        updateRunStatus(runId, "active");
         appendTimelineEvent({
           runId,
           eventType: "run_reopened",
@@ -8529,6 +8558,462 @@ export function createOrchestratorService({
         [missionId, artifactKey, projectId]
       );
       return rows.map(toArtifact);
+    },
+
+    // ─── Explicit Completion: finalizeRun ─────────────────────────────
+    //
+    // This is the ONLY path to terminal success. tick() never closes runs.
+    // The coordinator requests completion → kernel validates → kernel finalizes.
+
+    finalizeRun(args: FinalizeRunArgs): FinalizeRunResult {
+      const runId = String(args.runId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+
+      // Already terminal — return current state
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        return {
+          finalized: true,
+          blockers: [],
+          finalStatus: run.status
+        };
+      }
+
+      // Read run state to check completion_requested
+      const runState = this.getRunState(runId);
+
+      // If not in "completing" status, transition to it first
+      if (run.status !== "completing") {
+        updateRunStatus(runId, "completing");
+        appendTimelineEvent({
+          runId,
+          eventType: "run_completing",
+          reason: "finalize_run_requested",
+          detail: { previousStatus: run.status, force: args.force ?? false }
+        });
+      }
+
+      // Run the completion validator
+      const steps = listStepRows(runId).map(toStep);
+      const attempts = listAttemptRows(runId).map(toAttempt);
+      const claims = db.all<ClaimRow>(
+        `
+          select id, run_id, step_id, attempt_id, owner_id, scope_kind,
+                 scope_value, state, acquired_at, heartbeat_at, expires_at,
+                 released_at, policy_json, metadata_json
+          from orchestrator_claims
+          where project_id = ? and run_id = ? and state = 'active'
+        `,
+        [projectId, runId]
+      ).map(toClaim);
+
+      // Fetch unresolved interventions for the run.
+      // Runtime events don't have a dedicated status column; treat each
+      // intervention_opened row as "open" unless a matching intervention_resolved
+      // event exists for the same step.
+      const interventionRows = db.all<{ status: string }>(
+        `
+          select 'open' as status
+          from orchestrator_runtime_events e
+          where e.project_id = ? and e.run_id = ? and e.event_type = 'intervention_opened'
+            and not exists (
+              select 1 from orchestrator_runtime_events r
+              where r.project_id = e.project_id and r.run_id = e.run_id
+                and r.step_id = e.step_id and r.event_type = 'intervention_resolved'
+            )
+        `,
+        [projectId, runId]
+      );
+
+      const validation = validateRunCompletion(run, steps, attempts, claims, runState, interventionRows);
+
+      if (!validation.canComplete && !args.force) {
+        // Store the validation error in run state
+        if (runState) {
+          this.upsertRunState(runId, {
+            ...runState,
+            lastValidationError: validation.blockers.map((b) => b.message).join("; "),
+            completionValidated: false
+          });
+        }
+
+        appendTimelineEvent({
+          runId,
+          eventType: "run_completion_blocked",
+          reason: "validation_failed",
+          detail: {
+            blockers: validation.blockers,
+            validatedAt: validation.validatedAt
+          }
+        });
+
+        return {
+          finalized: false,
+          blockers: validation.blockers.map((b) => b.message),
+          finalStatus: "completing"
+        };
+      }
+
+      // Validation passed (or forced) — evaluate the final status from step outcomes
+      const evaluation = evaluateRunCompletion(
+        steps,
+        (() => {
+          const runMeta = parseRecord(runRow.metadata_json);
+          return runMeta && isExecutionPolicyRecord(runMeta.executionPolicy)
+            ? (runMeta.executionPolicy as MissionExecutionPolicy)
+            : DEFAULT_EXECUTION_POLICY;
+        })()
+      );
+
+      // Determine final terminal status
+      let finalStatus: OrchestratorRunStatus;
+      const allStepStatuses = steps.map((s) => s.status);
+      const anyFailed = allStepStatuses.some((s) => s === "failed");
+      const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped");
+
+      if (anyFailed) {
+        finalStatus = "failed";
+      } else if (allSucceeded) {
+        finalStatus = "succeeded";
+      } else if (args.force) {
+        // Force-completing with mixed results → succeeded_with_risk
+        finalStatus = "succeeded_with_risk";
+      } else {
+        finalStatus = "succeeded";
+      }
+
+      // Persist completion diagnostics
+      const existingMeta = parseRecord(runRow.metadata_json) ?? {};
+      const updatedMeta = {
+        ...existingMeta,
+        completionDiagnostics: evaluation.diagnostics,
+        completionRiskFactors: evaluation.riskFactors,
+        completionValidation: validation,
+        finalizedAt: nowIso()
+      };
+      updateRunStatus(runId, finalStatus, {
+        metadata_json: JSON.stringify(updatedMeta)
+      });
+
+      // Update run state to mark completion validated
+      if (runState) {
+        this.upsertRunState(runId, {
+          ...runState,
+          phase: "done",
+          completionValidated: true,
+          lastValidationError: null
+        });
+      }
+
+      // Auto-promote shared facts to memory on success
+      if (finalStatus === "succeeded" || finalStatus === "succeeded_with_risk") {
+        try {
+          promoteRunFactsToMemory(runId, projectId);
+        } catch {
+          // Memory promotion is best-effort; don't fail finalization
+        }
+      }
+
+      appendTimelineEvent({
+        runId,
+        eventType: "run_finalized",
+        reason: "finalize_run",
+        detail: {
+          finalStatus,
+          force: args.force ?? false,
+          diagnosticCount: evaluation.diagnostics.length,
+          riskFactors: evaluation.riskFactors
+        }
+      });
+      emit({ type: "orchestrator-run-updated", runId, reason: "finalized" });
+
+      return {
+        finalized: true,
+        blockers: [],
+        finalStatus
+      };
+    },
+
+    // ─── Status transitions ─────────────────────────────────────────
+
+    /** Transition run from bootstrapping → active (planning done, coordinator online) */
+    activateRun(runId: string): OrchestratorRun {
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (run.status !== "bootstrapping" && run.status !== "queued") {
+        throw new Error(`Cannot activate run in status '${run.status}' — must be 'bootstrapping' or 'queued'.`);
+      }
+      updateRunStatus(runId, "active");
+      appendTimelineEvent({
+        runId,
+        eventType: "run_activated",
+        reason: "activate_run",
+        detail: { previousStatus: run.status }
+      });
+      emit({ type: "orchestrator-run-updated", runId, reason: "activated" });
+      const updated = getRunRow(runId);
+      if (!updated) throw new Error(`Run not found after activation: ${runId}`);
+      return toRun(updated);
+    },
+
+    /** Transition run to "completing" when coordinator requests completion */
+    requestCompletion(runId: string): OrchestratorRun {
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status)) return run;
+      if (run.status === "completing") return run;
+      updateRunStatus(runId, "completing");
+
+      // Mark completion as requested in run state
+      const runState = this.getRunState(runId);
+      if (runState) {
+        this.upsertRunState(runId, { ...runState, completionRequested: true });
+      }
+
+      appendTimelineEvent({
+        runId,
+        eventType: "run_completion_requested",
+        reason: "request_completion",
+        detail: { previousStatus: run.status }
+      });
+      emit({ type: "orchestrator-run-updated", runId, reason: "completion_requested" });
+      const updated = getRunRow(runId);
+      if (!updated) throw new Error(`Run not found after requesting completion: ${runId}`);
+      return toRun(updated);
+    },
+
+    // ─── Run State CRUD (orchestrator_run_state) ──────────────────────
+
+    upsertRunState(runId: string, state: Partial<OrchestratorTeamRuntimeState>): OrchestratorTeamRuntimeState {
+      const now = nowIso();
+      const existing = this.getRunState(runId);
+      if (existing) {
+        const phase = state.phase ?? existing.phase;
+        const completionRequested = state.completionRequested ?? existing.completionRequested;
+        const completionValidated = state.completionValidated ?? existing.completionValidated;
+        const lastValidationError = state.lastValidationError !== undefined ? state.lastValidationError : existing.lastValidationError;
+        const coordinatorSessionId = state.coordinatorSessionId !== undefined ? state.coordinatorSessionId : existing.coordinatorSessionId;
+        const teammateIds = state.teammateIds ?? existing.teammateIds;
+        db.run(
+          `
+            update orchestrator_run_state
+            set phase = ?,
+                completion_requested = ?,
+                completion_validated = ?,
+                last_validation_error = ?,
+                coordinator_session_id = ?,
+                teammate_ids_json = ?,
+                updated_at = ?
+            where run_id = ?
+          `,
+          [
+            phase,
+            completionRequested ? 1 : 0,
+            completionValidated ? 1 : 0,
+            lastValidationError,
+            coordinatorSessionId,
+            JSON.stringify(teammateIds),
+            now,
+            runId
+          ]
+        );
+        return {
+          runId,
+          phase,
+          completionRequested,
+          completionValidated,
+          lastValidationError,
+          coordinatorSessionId,
+          teammateIds,
+          createdAt: existing.createdAt,
+          updatedAt: now
+        };
+      } else {
+        const phase = state.phase ?? "bootstrapping";
+        const completionRequested = state.completionRequested ?? false;
+        const completionValidated = state.completionValidated ?? false;
+        const lastValidationError = state.lastValidationError ?? null;
+        const coordinatorSessionId = state.coordinatorSessionId ?? null;
+        const teammateIds = state.teammateIds ?? [];
+        db.run(
+          `
+            insert into orchestrator_run_state(
+              run_id, phase, completion_requested, completion_validated,
+              last_validation_error, coordinator_session_id, teammate_ids_json,
+              created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            runId,
+            phase,
+            completionRequested ? 1 : 0,
+            completionValidated ? 1 : 0,
+            lastValidationError,
+            coordinatorSessionId,
+            JSON.stringify(teammateIds),
+            now,
+            now
+          ]
+        );
+        return {
+          runId,
+          phase,
+          completionRequested,
+          completionValidated,
+          lastValidationError,
+          coordinatorSessionId,
+          teammateIds,
+          createdAt: now,
+          updatedAt: now
+        };
+      }
+    },
+
+    getRunState(runId: string): OrchestratorTeamRuntimeState | null {
+      const row = db.get<{
+        run_id: string;
+        phase: string;
+        completion_requested: number;
+        completion_validated: number;
+        last_validation_error: string | null;
+        coordinator_session_id: string | null;
+        teammate_ids_json: string;
+        created_at: string;
+        updated_at: string;
+      }>(
+        `
+          select run_id, phase, completion_requested, completion_validated,
+                 last_validation_error, coordinator_session_id, teammate_ids_json,
+                 created_at, updated_at
+          from orchestrator_run_state
+          where run_id = ?
+          limit 1
+        `,
+        [runId]
+      );
+      if (!row) return null;
+      return {
+        runId: row.run_id,
+        phase: row.phase as OrchestratorTeamRuntimeState["phase"],
+        completionRequested: row.completion_requested === 1,
+        completionValidated: row.completion_validated === 1,
+        lastValidationError: row.last_validation_error,
+        coordinatorSessionId: row.coordinator_session_id,
+        teammateIds: parseArray(row.teammate_ids_json),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      };
+    },
+
+    // ─── Team Member CRUD (orchestrator_team_members) ────────────────
+
+    insertTeamMember(member: {
+      runId: string;
+      missionId: string;
+      provider: string;
+      model: string;
+      role: OrchestratorTeamMemberRole;
+      sessionId?: string | null;
+      status?: OrchestratorTeamMemberStatus;
+      metadata?: Record<string, unknown> | null;
+    }): OrchestratorTeamMember {
+      const id = randomUUID();
+      const now = nowIso();
+      const status = member.status ?? "spawning";
+      db.run(
+        `
+          insert into orchestrator_team_members(
+            id, run_id, mission_id, provider, model, role,
+            session_id, status, claimed_task_ids_json, metadata_json,
+            created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)
+        `,
+        [
+          id,
+          member.runId,
+          member.missionId,
+          member.provider,
+          member.model,
+          member.role,
+          member.sessionId ?? null,
+          status,
+          member.metadata ? JSON.stringify(member.metadata) : null,
+          now,
+          now
+        ]
+      );
+      return {
+        id,
+        runId: member.runId,
+        missionId: member.missionId,
+        provider: member.provider,
+        model: member.model,
+        role: member.role,
+        sessionId: member.sessionId ?? null,
+        status,
+        claimedTaskIds: [],
+        metadata: member.metadata ?? null,
+        createdAt: now,
+        updatedAt: now
+      };
+    },
+
+    updateTeamMemberStatus(id: string, status: OrchestratorTeamMemberStatus): void {
+      const now = nowIso();
+      db.run(
+        `
+          update orchestrator_team_members
+          set status = ?,
+              updated_at = ?
+          where id = ?
+        `,
+        [status, now, id]
+      );
+    },
+
+    getTeamMembers(runId: string): OrchestratorTeamMember[] {
+      const rows = db.all<{
+        id: string;
+        run_id: string;
+        mission_id: string;
+        provider: string;
+        model: string;
+        role: string;
+        session_id: string | null;
+        status: string;
+        claimed_task_ids_json: string;
+        metadata_json: string | null;
+        created_at: string;
+        updated_at: string;
+      }>(
+        `
+          select id, run_id, mission_id, provider, model, role,
+                 session_id, status, claimed_task_ids_json, metadata_json,
+                 created_at, updated_at
+          from orchestrator_team_members
+          where run_id = ?
+          order by created_at asc
+        `,
+        [runId]
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        runId: row.run_id,
+        missionId: row.mission_id,
+        provider: row.provider,
+        model: row.model,
+        role: row.role as OrchestratorTeamMemberRole,
+        sessionId: row.session_id,
+        status: row.status as OrchestratorTeamMemberStatus,
+        claimedTaskIds: parseArray(row.claimed_task_ids_json),
+        metadata: parseRecord(row.metadata_json),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }));
     }
   };
 }
