@@ -238,6 +238,16 @@ import type {
   GetPlannerAttemptArgs,
   MissionPlannerAttempt,
   MissionPlannerRun,
+  PhaseProfile,
+  SavePhaseProfileArgs,
+  ListPhaseProfilesArgs,
+  DeletePhaseProfileArgs,
+  ClonePhaseProfileArgs,
+  ExportPhaseProfileArgs,
+  ExportPhaseProfileResult,
+  ImportPhaseProfileArgs,
+  MissionPhaseConfiguration,
+  MissionDashboardSnapshot,
   DeleteMissionArgs,
   MissionArtifact,
   MissionDetail,
@@ -418,6 +428,22 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.missionsAddIntervention, args),
     resolveIntervention: async (args: ResolveMissionInterventionArgs): Promise<MissionIntervention> =>
       ipcRenderer.invoke(IPC.missionsResolveIntervention, args),
+    listPhaseProfiles: async (args: ListPhaseProfilesArgs = {}): Promise<PhaseProfile[]> =>
+      ipcRenderer.invoke(IPC.missionsListPhaseProfiles, args),
+    savePhaseProfile: async (args: SavePhaseProfileArgs): Promise<PhaseProfile> =>
+      ipcRenderer.invoke(IPC.missionsSavePhaseProfile, args),
+    deletePhaseProfile: async (args: DeletePhaseProfileArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.missionsDeletePhaseProfile, args),
+    clonePhaseProfile: async (args: ClonePhaseProfileArgs): Promise<PhaseProfile> =>
+      ipcRenderer.invoke(IPC.missionsClonePhaseProfile, args),
+    exportPhaseProfile: async (args: ExportPhaseProfileArgs): Promise<ExportPhaseProfileResult> =>
+      ipcRenderer.invoke(IPC.missionsExportPhaseProfile, args),
+    importPhaseProfile: async (args: ImportPhaseProfileArgs): Promise<PhaseProfile> =>
+      ipcRenderer.invoke(IPC.missionsImportPhaseProfile, args),
+    getPhaseConfiguration: async (missionId: string): Promise<MissionPhaseConfiguration | null> =>
+      ipcRenderer.invoke(IPC.missionsGetPhaseConfiguration, { missionId }),
+    getDashboard: async (): Promise<MissionDashboardSnapshot> =>
+      ipcRenderer.invoke(IPC.missionsGetDashboard),
     onEvent: (cb: (ev: MissionsEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: MissionsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.missionsEvent, listener);

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-02-27
 
 The AI integration layer replaces the previous hosted agent with a local-first, subscription-powered approach. Instead of a cloud backend with API keys and remote job queues, ADE spawns `claude` and `codex` CLI processes that inherit the user's existing subscriptions, coordinates them through an MCP server, and manages multi-step workflows via an AI orchestrator.
 
@@ -813,7 +813,7 @@ When a mission is created, the orchestrator's planning phase:
 5. The plan is validated against claim collision rules (no two steps claim overlapping file patterns in the same phase), normalized, and converted into orchestrator run steps.
 6. Optionally: the plan is presented to the user for review before execution begins (configurable via `ai.orchestrator.require_plan_review` in `.ade/local.yaml`).
 
-If the AI planner fails (CLI unavailable, timeout, invalid output), the system falls back to a deterministic planner that uses keyword classification to generate a reasonable step plan.
+If the AI planner fails (CLI unavailable, timeout, invalid output), planning fails fast with structured `MissionPlanningError` output and mission launch does not silently switch to deterministic strategy handlers.
 
 #### Worker Agent Spawning
 
@@ -1263,9 +1263,9 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 
 ### Phase 3 Implementation Status
 
-**Shipped (~85%)**:
+**Shipped (~90%)**:
 - AI orchestrator service with mission lifecycle management
-- Fail-hard planner (300s timeout, MissionPlanningError, no deterministic fallback)
+- Fail-hard planner (300s timeout, `MissionPlanningError`, no coordinator-strategy deterministic fallback)
 - PR strategies (integration/per-lane/queue/manual) replacing merge phase
 - Team synthesis and recovery loops
 - Execution plan preview with approval gates
@@ -1281,13 +1281,17 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 - Shared facts injection and run narrative generation
 - Memory tool wiring into agent coding tool set
 - Memory architecture (scoped namespaces, candidate/promoted/archived lifecycle, auto-promotion, context budget panel)
+- Mission phase engine + profiles (Task 3): phase storage, profile CRUD/import/export, mission overrides, phase transition telemetry
+- Mission UI overhaul (Task 4): Plan/Work tabs, missions home dashboard, phase-aware details and launch/settings profile management
 
-**Remaining (~15%)**:
+**Remaining (~10%)**:
+- Next execution focus: Task 5 (pre-flight/intervention/HITL) and Task 6 (budget/usage), then Tasks 7-8.
 - Live multi-agent orchestration (concurrent agent coordination)
 - Real-time coordination patterns
 - File conflict prevention at merge time
-- Worker transcript tailing
-- End-to-end validation
+- Pre-flight checks, tiered validation, and intervention granularity (Task 5)
+- Budget pressure orchestration and subscription usage accounting (Task 6)
+- Reflection protocol and deeper integration soak coverage (Tasks 7-8)
 
 ### Compute Backends for Agent Execution
 
@@ -1427,7 +1431,7 @@ When determining which provider to use for a task:
 5. Built-in default for the task type (as listed in the table above).
 6. First available CLI tool on the system (fallback).
 
-If no CLI tool is available, the runtime cannot start; ADE surfaces a clear failure and recommended setup action. Deterministic fallback is only used where explicitly configured.
+If no CLI tool is available, the runtime cannot start; ADE surfaces a clear failure and recommended setup action instead of silently substituting strategy logic.
 
 ### One-Shot AI Task Patterns
 
@@ -1756,8 +1760,11 @@ The job engine does **not** coordinate orchestrator step transitions. The orches
 The mission service (`missionService.ts`) provides the user-facing lifecycle for AI-driven work:
 
 - **Mission creation**: Accepts a plain-English prompt, title, lane assignment, planner engine preference, and executor policy.
-- **Planning dispatch**: Delegates to `missionPlanningService` which dispatches to the configured executor (`ClaudeExecutor` or `CodexExecutor`) for AI planning or falls back to the deterministic planner.
+- **Planning dispatch**: Delegates to `missionPlanningService` which dispatches to the configured executor (`ClaudeExecutor` or `CodexExecutor`) for AI planning and surfaces structured planning failures instead of silently replacing strategy.
 - **Step tracking**: Converts planner output into mission steps with independent status transitions.
+- **Phase pipeline contracts (Task 3)**: Resolves mission phase profile/override, persists phase configuration, and annotates mission steps with phase identity metadata.
+- **Phase transition audit (Task 3)**: Runtime phase changes emit durable `phase_transition` mission/timeline events and update run metadata (`phaseRuntime`) for operator inspection.
+- **Profile lifecycle APIs (Task 3)**: list/save/delete/clone/import/export/getPhaseConfiguration/getDashboard contracts are exposed to renderer and automation surfaces.
 - **Intervention management**: Creates, resolves, and dismisses intervention records when AI agents or the orchestrator need human input.
 - **Artifact collection**: Links mission outcomes (PR URLs, generated files, test results) as artifacts.
 
@@ -1818,7 +1825,7 @@ interface LearningEntry {
 | Architecture design | Complete | Documented in this file |
 | Mission planning via Claude CLI | Complete | `missionPlanningService.ts` -- spawns `claude -p` with JSON schema |
 | Mission planning via Codex CLI | Complete | `missionPlanningService.ts` -- spawns `codex exec` with output schema |
-| Deterministic planner fallback | Complete | `missionPlanner.ts` -- keyword classification when no CLI available |
+| Coordinator-strategy deterministic fallback (runtime) | Removed | Coordinator owns strategy; unavailable coordinator pauses/escalates instead of deterministic replacement |
 | Orchestrator state machine | Complete | `orchestratorService.ts` -- runs, steps, attempts, claims, gates, timeline |
 | Executor adapter interface | Complete | `OrchestratorExecutorAdapter` type for pluggable step execution |
 | Context snapshot system | Complete | Profile-based export assembly (deterministic, narrative-opt-in) |
@@ -1835,7 +1842,11 @@ interface LearningEntry {
 | Chat session integration | Complete | `codex-chat` and `claude-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
-| AI orchestrator (Claude + MCP) | ~90% Complete | Hivemind features shipped; remaining items are live multi-agent stress validation and coordination hardening |
+| AI orchestrator (Claude + MCP) | In Progress | Tasks 1-4 shipped; remaining Phase 3 scope is Tasks 5-8 (pre-flight/intervention, budget, reflection, soak) |
+| Mission phase engine + profiles (Task 3) | Complete | `phase_cards`/`phase_profiles`/`mission_phase_overrides`, profile CRUD/import/export, phase transition telemetry |
+| Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
+| Pre-flight + intervention/HITL (Task 5) | Next | Launch-gate checklist, granular worker-level intervention, escalation-chain UX/runtime wiring |
+| Budget + usage tracking (Task 6) | Next | Budget service, subscription/API-key accounting, coordinator budget-pressure signal contracts |
 | Agent-first runtime migration | In Progress | Non-interactive AI call paths are being normalized through runtime creation and policy enforcement |
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |

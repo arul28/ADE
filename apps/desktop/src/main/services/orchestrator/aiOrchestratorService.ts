@@ -7541,6 +7541,134 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
+  const TERMINAL_PHASE_STEP_STATUSES = new Set<OrchestratorStepStatus>([
+    "succeeded",
+    "failed",
+    "skipped",
+    "superseded",
+    "canceled"
+  ]);
+
+  const syncMissionPhaseFromRun = (graph: OrchestratorRunGraph, reason: string) => {
+    if (!graph.run.missionId) return;
+
+    const sortedSteps = [...graph.steps].sort((a, b) => {
+      const aMeta = isRecord(a.metadata) ? a.metadata : {};
+      const bMeta = isRecord(b.metadata) ? b.metadata : {};
+      const aPhasePos = Number(aMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
+      const bPhasePos = Number(bMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
+      if (Number.isFinite(aPhasePos) && Number.isFinite(bPhasePos) && aPhasePos !== bPhasePos) {
+        return aPhasePos - bPhasePos;
+      }
+      if (a.stepIndex !== b.stepIndex) return a.stepIndex - b.stepIndex;
+      return a.title.localeCompare(b.title);
+    });
+    if (sortedSteps.length === 0) return;
+
+    const activeStep =
+      sortedSteps.find((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status))
+      ?? sortedSteps[sortedSteps.length - 1]
+      ?? null;
+    if (!activeStep) return;
+
+    const stepMeta = isRecord(activeStep.metadata) ? activeStep.metadata : {};
+    const nextPhaseKey = typeof stepMeta.phaseKey === "string" && stepMeta.phaseKey.trim().length > 0
+      ? stepMeta.phaseKey.trim()
+      : "development";
+    const nextPhaseName = typeof stepMeta.phaseName === "string" && stepMeta.phaseName.trim().length > 0
+      ? stepMeta.phaseName.trim()
+      : "Development";
+    const nextPhaseModel = isRecord(stepMeta.phaseModel) ? stepMeta.phaseModel : null;
+    const nextPhaseInstructions =
+      typeof stepMeta.phaseInstructions === "string" && stepMeta.phaseInstructions.trim().length > 0
+        ? stepMeta.phaseInstructions.trim()
+        : null;
+    const nextPhaseValidation = isRecord(stepMeta.phaseValidation) ? stepMeta.phaseValidation : null;
+    const nextPhaseBudget = isRecord(stepMeta.phaseBudget) ? stepMeta.phaseBudget : null;
+
+    const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
+    const phaseRuntime = isRecord(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
+    const prevPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey : null;
+    const prevPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName : null;
+    if (prevPhaseKey === nextPhaseKey) return;
+
+    const transitionedAt = nowIso();
+    const transitionReason = `${prevPhaseName ?? "Start"} -> ${nextPhaseName}`;
+
+    updateRunMetadata(graph.run.id, (metadata) => {
+      const nextRuntime = isRecord(metadata.phaseRuntime) ? { ...metadata.phaseRuntime } : {};
+      const transitions = Array.isArray(nextRuntime.transitions) ? [...nextRuntime.transitions] : [];
+      transitions.unshift({
+        fromPhaseKey: prevPhaseKey,
+        fromPhaseName: prevPhaseName,
+        toPhaseKey: nextPhaseKey,
+        toPhaseName: nextPhaseName,
+        at: transitionedAt,
+        reason
+      });
+      nextRuntime.transitions = transitions.slice(0, 64);
+      nextRuntime.currentPhaseKey = nextPhaseKey;
+      nextRuntime.currentPhaseName = nextPhaseName;
+      nextRuntime.currentPhaseModel = nextPhaseModel;
+      nextRuntime.currentPhaseInstructions = nextPhaseInstructions;
+      nextRuntime.currentPhaseValidation = nextPhaseValidation;
+      nextRuntime.currentPhaseBudget = nextPhaseBudget;
+      nextRuntime.transitionedAt = transitionedAt;
+
+      const phaseBudgets = isRecord(nextRuntime.phaseBudgets) ? { ...nextRuntime.phaseBudgets } : {};
+      if (!isRecord(phaseBudgets[nextPhaseKey])) {
+        phaseBudgets[nextPhaseKey] = {
+          enteredAt: transitionedAt,
+          usedTokens: 0,
+          usedCostUsd: 0
+        };
+      }
+      nextRuntime.phaseBudgets = phaseBudgets;
+      metadata.phaseRuntime = nextRuntime;
+    });
+
+    orchestratorService.appendTimelineEvent({
+      runId: graph.run.id,
+      stepId: activeStep.id,
+      eventType: "phase_transition",
+      reason: transitionReason,
+      detail: {
+        fromPhaseKey: prevPhaseKey,
+        fromPhaseName: prevPhaseName,
+        toPhaseKey: nextPhaseKey,
+        toPhaseName: nextPhaseName,
+        transitionReason: reason,
+        phaseModel: nextPhaseModel,
+        phaseValidation: nextPhaseValidation,
+        phaseBudget: nextPhaseBudget,
+        transitionedAt
+      }
+    });
+
+    try {
+      missionService.logEvent({
+        missionId: graph.run.missionId,
+        eventType: "phase_transition",
+        actor: "system",
+        summary: transitionReason,
+        payload: {
+          runId: graph.run.id,
+          fromPhaseKey: prevPhaseKey,
+          fromPhaseName: prevPhaseName,
+          toPhaseKey: nextPhaseKey,
+          toPhaseName: nextPhaseName,
+          transitionReason: reason,
+          phaseModel: nextPhaseModel,
+          phaseValidation: nextPhaseValidation,
+          phaseBudget: nextPhaseBudget,
+          transitionedAt
+        }
+      });
+    } catch {
+      // Best effort mission event write; runtime should continue.
+    }
+  };
+
   const syncMissionFromRun = async (
     runId: string,
     reason: string,
@@ -7554,6 +7682,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (!mission) return;
 
       syncMissionStepsFromRun(graph);
+      syncMissionPhaseFromRun(graph, reason);
       const refreshed = missionService.get(mission.id) ?? mission;
       const nextMissionStatus = options?.nextMissionStatus ?? deriveMissionStatusFromRun(graph, refreshed);
       if (nextMissionStatus === "completed") {

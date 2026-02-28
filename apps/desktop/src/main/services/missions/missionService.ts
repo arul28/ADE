@@ -1,15 +1,24 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type {
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
+  ClonePhaseProfileArgs,
   CreateMissionArgs,
+  DeletePhaseProfileArgs,
   GetPlannerAttemptArgs,
+  ImportPhaseProfileArgs,
   ListPlannerRunsArgs,
+  ListPhaseProfilesArgs,
   MissionConcurrencyCheckResult,
   MissionConcurrencyConfig,
+  MissionDashboardSnapshot,
   MissionExecutionPolicy,
   MissionExecutorPolicy,
   MissionLaneClaimCheckResult,
+  MissionPhaseConfiguration,
+  MissionPhaseOverride,
   MissionPlannerAttempt,
   MissionPlannerRun,
   ListMissionsArgs,
@@ -27,6 +36,12 @@ import type {
   MissionStep,
   MissionStepStatus,
   MissionSummary,
+  ThinkingLevel,
+  PhaseCard,
+  PhaseProfile,
+  SavePhaseProfileArgs,
+  ExportPhaseProfileArgs,
+  ExportPhaseProfileResult,
   PlannerPlan,
   ResolveMissionInterventionArgs,
   DeleteMissionArgs,
@@ -37,6 +52,14 @@ import { DEFAULT_EXECUTION_POLICY } from "../orchestrator/executionPolicy";
 import type { AdeDb } from "../state/kvDb";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import type { MissionPlanStepDraft } from "./missionPlanningService";
+import {
+  applyPhaseCardsToPlanSteps,
+  createBuiltInPhaseCards,
+  createBuiltInPhaseProfiles,
+  normalizeProfileInput,
+  validatePhaseSequence,
+  groupMissionStepsByPhase,
+} from "./phaseEngine";
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "partially_completed", "failed", "canceled"]);
 
@@ -154,6 +177,48 @@ type MissionInterventionRow = {
   metadata_json: string | null;
 };
 
+type PhaseProfileRow = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  phases_json: string;
+  is_built_in: number;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+};
+
+type PhaseCardRow = {
+  id: string;
+  project_id: string;
+  phase_key: string;
+  name: string;
+  description: string;
+  instructions: string;
+  model_json: string;
+  budget_json: string | null;
+  ordering_constraints_json: string | null;
+  ask_questions_json: string | null;
+  validation_gate_json: string | null;
+  is_built_in: number;
+  is_custom: number;
+  position: number;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type MissionPhaseOverrideRow = {
+  id: string;
+  mission_id: string;
+  profile_id: string | null;
+  phases_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
 type CreateMissionInternalArgs = CreateMissionArgs & {
   plannedSteps?: MissionPlanStepDraft[];
   plannerRun?: MissionPlannerRun | null;
@@ -176,6 +241,167 @@ function safeParseRecord(raw: string | null): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function safeParseArray(raw: string | null): unknown[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function coerceNumber(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return undefined;
+  return n;
+}
+
+function coerceBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === "boolean") return value;
+  return fallback;
+}
+
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return value === "none"
+    || value === "low"
+    || value === "medium"
+    || value === "high"
+    || value === "max";
+}
+
+function toModelConfig(value: unknown): PhaseCard["model"] {
+  const record = isRecord(value) ? value : {};
+  const provider = record.provider === "claude" || record.provider === "codex" ? record.provider : "claude";
+  const modelId = typeof record.modelId === "string" && record.modelId.trim().length > 0
+    ? record.modelId.trim()
+    : provider === "claude"
+      ? "claude-sonnet-4-6"
+      : "gpt-5.3-codex";
+  const thinkingLevel = isThinkingLevel(record.thinkingLevel) ? record.thinkingLevel : undefined;
+  return {
+    provider,
+    modelId,
+    ...(thinkingLevel ? { thinkingLevel } : {})
+  };
+}
+
+function toPhaseCard(value: unknown, fallbackPosition = 0): PhaseCard | null {
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === "string" && value.id.trim().length > 0 ? value.id.trim() : randomUUID();
+  const phaseKey = typeof value.phaseKey === "string" && value.phaseKey.trim().length > 0
+    ? value.phaseKey.trim()
+    : "";
+  const name = typeof value.name === "string" && value.name.trim().length > 0 ? value.name.trim() : phaseKey;
+  if (!phaseKey.length || !name.length) return null;
+  const description = typeof value.description === "string" ? value.description : "";
+  const instructions = typeof value.instructions === "string" ? value.instructions : "";
+  const position = Number.isFinite(Number(value.position)) ? Math.max(0, Math.floor(Number(value.position))) : fallbackPosition;
+  const budget = isRecord(value.budget) ? value.budget : {};
+  const orderingConstraints = isRecord(value.orderingConstraints) ? value.orderingConstraints : {};
+  const askQuestions = isRecord(value.askQuestions) ? value.askQuestions : {};
+  const validationGate = isRecord(value.validationGate) ? value.validationGate : {};
+  const createdAt = typeof value.createdAt === "string" ? value.createdAt : nowIso();
+  const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : nowIso();
+  const tier = validationGate.tier === "none"
+    || validationGate.tier === "self"
+    || validationGate.tier === "spot-check"
+    || validationGate.tier === "dedicated"
+    ? validationGate.tier
+    : "self";
+  return {
+    id,
+    phaseKey,
+    name,
+    description,
+    instructions,
+    model: toModelConfig(value.model),
+    budget: {
+      maxTokens: coerceNumber(budget.maxTokens),
+      maxTimeMs: coerceNumber(budget.maxTimeMs),
+      maxSteps: coerceNumber(budget.maxSteps),
+    },
+    orderingConstraints: {
+      mustBeFirst: coerceBoolean(orderingConstraints.mustBeFirst),
+      mustBeLast: coerceBoolean(orderingConstraints.mustBeLast),
+      mustFollow: Array.isArray(orderingConstraints.mustFollow)
+        ? orderingConstraints.mustFollow.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+        : [],
+      mustPrecede: Array.isArray(orderingConstraints.mustPrecede)
+        ? orderingConstraints.mustPrecede.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+        : [],
+      canLoop: coerceBoolean(orderingConstraints.canLoop),
+      loopTarget: typeof orderingConstraints.loopTarget === "string" && orderingConstraints.loopTarget.trim().length > 0
+        ? orderingConstraints.loopTarget.trim()
+        : null
+    },
+    askQuestions: {
+      enabled: coerceBoolean(askQuestions.enabled),
+      mode: askQuestions.mode === "always" || askQuestions.mode === "auto_if_uncertain" || askQuestions.mode === "never"
+        ? askQuestions.mode
+        : "auto_if_uncertain",
+      maxQuestions: coerceNumber(askQuestions.maxQuestions),
+    },
+    validationGate: {
+      tier,
+      required: coerceBoolean(validationGate.required, tier !== "none"),
+      criteria: typeof validationGate.criteria === "string" ? validationGate.criteria : undefined,
+    },
+    isBuiltIn: coerceBoolean(value.isBuiltIn),
+    isCustom: coerceBoolean(value.isCustom, true),
+    position,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function toPhaseCards(raw: unknown[]): PhaseCard[] {
+  return raw
+    .map((entry, index) => toPhaseCard(entry, index))
+    .filter((entry): entry is PhaseCard => entry != null)
+    .sort((a, b) => a.position - b.position)
+    .map((phase, index) => ({ ...phase, position: index }));
+}
+
+function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
+  return phases
+    .map((phase, index) => ({ ...phase, position: index }))
+    .sort((a, b) => a.position - b.position)
+    .map((phase, index) => ({ ...phase, position: index }));
+}
+
+function toPhaseProfile(row: PhaseProfileRow): PhaseProfile {
+  const phases = toPhaseCards(safeParseArray(row.phases_json));
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    phases,
+    isBuiltIn: Number(row.is_built_in) === 1,
+    isDefault: Number(row.is_default) === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toMissionPhaseOverride(row: MissionPhaseOverrideRow): MissionPhaseOverride {
+  return {
+    id: row.id,
+    missionId: row.mission_id,
+    profileId: row.profile_id,
+    phases: toPhaseCards(safeParseArray(row.phases_json)),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function sanitizeFilePart(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/-+/g, "-");
+  const cleaned = normalized.replace(/^-+/, "").replace(/-+$/, "");
+  return cleaned.length ? cleaned : "phase-profile";
 }
 
 function normalizeMissionStatus(value: string): MissionStatus {
@@ -467,11 +693,13 @@ export function isValidMissionStepTransition(from: MissionStepStatus, to: Missio
 export function createMissionService({
   db,
   projectId,
+  projectRoot,
   onEvent,
   concurrencyConfig
 }: {
   db: AdeDb;
   projectId: string;
+  projectRoot?: string;
   onEvent?: (payload: MissionsEventPayload) => void;
   concurrencyConfig?: Partial<MissionConcurrencyConfig>;
 }) {
@@ -818,6 +1046,470 @@ export function createMissionService({
     };
   };
 
+  const profilesDir = projectRoot ? path.join(projectRoot, ".ade", "profiles") : null;
+  let phaseStorageSeeded = false;
+
+  const listPhaseProfileRows = (includeArchived = false): PhaseProfileRow[] =>
+    db.all<PhaseProfileRow>(
+      `
+        select
+          id,
+          project_id,
+          name,
+          description,
+          phases_json,
+          is_built_in,
+          is_default,
+          created_at,
+          updated_at,
+          archived_at
+        from phase_profiles
+        where project_id = ?
+          ${includeArchived ? "" : "and archived_at is null"}
+        order by is_default desc, is_built_in desc, updated_at desc, name asc
+      `,
+      [projectId]
+    );
+
+  const getPhaseProfileRow = (profileId: string): PhaseProfileRow | null =>
+    db.get<PhaseProfileRow>(
+      `
+        select
+          id,
+          project_id,
+          name,
+          description,
+          phases_json,
+          is_built_in,
+          is_default,
+          created_at,
+          updated_at,
+          archived_at
+        from phase_profiles
+        where project_id = ?
+          and id = ?
+        limit 1
+      `,
+      [projectId, profileId]
+    );
+
+  const getDefaultPhaseProfileRow = (): PhaseProfileRow | null =>
+    db.get<PhaseProfileRow>(
+      `
+        select
+          id,
+          project_id,
+          name,
+          description,
+          phases_json,
+          is_built_in,
+          is_default,
+          created_at,
+          updated_at,
+          archived_at
+        from phase_profiles
+        where project_id = ?
+          and archived_at is null
+          and is_default = 1
+        order by updated_at desc
+        limit 1
+      `,
+      [projectId]
+    );
+
+  const upsertPhaseCardRow = (card: PhaseCard) => {
+    const existing = db.get<{ id: string }>(
+      `
+        select id
+        from phase_cards
+        where project_id = ?
+          and phase_key = ?
+        limit 1
+      `,
+      [projectId, card.phaseKey]
+    );
+    if (existing?.id) {
+      db.run(
+        `
+          update phase_cards
+          set id = ?,
+              name = ?,
+              description = ?,
+              instructions = ?,
+              model_json = ?,
+              budget_json = ?,
+              ordering_constraints_json = ?,
+              ask_questions_json = ?,
+              validation_gate_json = ?,
+              is_built_in = ?,
+              is_custom = ?,
+              position = ?,
+              archived_at = null,
+              updated_at = ?
+          where project_id = ?
+            and phase_key = ?
+        `,
+        [
+          card.id,
+          card.name,
+          card.description,
+          card.instructions,
+          JSON.stringify(card.model),
+          JSON.stringify(card.budget ?? {}),
+          JSON.stringify(card.orderingConstraints ?? {}),
+          JSON.stringify(card.askQuestions ?? {}),
+          JSON.stringify(card.validationGate ?? {}),
+          card.isBuiltIn ? 1 : 0,
+          card.isCustom ? 1 : 0,
+          card.position,
+          nowIso(),
+          projectId,
+          card.phaseKey
+        ]
+      );
+      return;
+    }
+    db.run(
+      `
+        insert into phase_cards(
+          id,
+          project_id,
+          phase_key,
+          name,
+          description,
+          instructions,
+          model_json,
+          budget_json,
+          ordering_constraints_json,
+          ask_questions_json,
+          validation_gate_json,
+          is_built_in,
+          is_custom,
+          position,
+          archived_at,
+          created_at,
+          updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?)
+      `,
+      [
+        card.id,
+        projectId,
+        card.phaseKey,
+        card.name,
+        card.description,
+        card.instructions,
+        JSON.stringify(card.model),
+        JSON.stringify(card.budget ?? {}),
+        JSON.stringify(card.orderingConstraints ?? {}),
+        JSON.stringify(card.askQuestions ?? {}),
+        JSON.stringify(card.validationGate ?? {}),
+        card.isBuiltIn ? 1 : 0,
+        card.isCustom ? 1 : 0,
+        card.position,
+        card.createdAt,
+        card.updatedAt
+      ]
+    );
+  };
+
+  const ensurePhaseStorageSeeded = () => {
+    if (phaseStorageSeeded) return;
+
+    const cardCount = db.get<{ count: number }>(
+      `
+        select count(*) as count
+        from phase_cards
+        where project_id = ?
+          and archived_at is null
+      `,
+      [projectId]
+    )?.count ?? 0;
+    if (cardCount === 0) {
+      const builtInCards = createBuiltInPhaseCards(nowIso());
+      for (const card of builtInCards) {
+        upsertPhaseCardRow(card);
+      }
+    }
+
+    const profileCount = db.get<{ count: number }>(
+      `
+        select count(*) as count
+        from phase_profiles
+        where project_id = ?
+          and archived_at is null
+      `,
+      [projectId]
+    )?.count ?? 0;
+
+    if (profileCount === 0) {
+      const cards = db
+        .all<PhaseCardRow>(
+          `
+            select
+              id,
+              project_id,
+              phase_key,
+              name,
+              description,
+              instructions,
+              model_json,
+              budget_json,
+              ordering_constraints_json,
+              ask_questions_json,
+              validation_gate_json,
+              is_built_in,
+              is_custom,
+              position,
+              archived_at,
+              created_at,
+              updated_at
+            from phase_cards
+            where project_id = ?
+              and archived_at is null
+            order by position asc
+          `,
+          [projectId]
+        )
+        .map((row) =>
+          toPhaseCard(
+            {
+              id: row.id,
+              phaseKey: row.phase_key,
+              name: row.name,
+              description: row.description,
+              instructions: row.instructions,
+              model: safeParseRecord(row.model_json),
+              budget: safeParseRecord(row.budget_json),
+              orderingConstraints: safeParseRecord(row.ordering_constraints_json),
+              askQuestions: safeParseRecord(row.ask_questions_json),
+              validationGate: safeParseRecord(row.validation_gate_json),
+              isBuiltIn: Number(row.is_built_in) === 1,
+              isCustom: Number(row.is_custom) === 1,
+              position: row.position,
+              createdAt: row.created_at,
+              updatedAt: row.updated_at
+            },
+            row.position
+          )
+        )
+        .filter((entry): entry is PhaseCard => entry != null);
+
+      const builtInProfiles = createBuiltInPhaseProfiles(
+        cards.length > 0 ? cards : createBuiltInPhaseCards(nowIso()),
+        nowIso()
+      );
+      for (const profile of builtInProfiles) {
+        db.run(
+          `
+            insert into phase_profiles(
+              id,
+              project_id,
+              name,
+              description,
+              phases_json,
+              is_built_in,
+              is_default,
+              archived_at,
+              created_at,
+              updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, null, ?, ?)
+          `,
+          [
+            profile.id,
+            projectId,
+            profile.name,
+            profile.description,
+            JSON.stringify(normalizePhaseCards(profile.phases)),
+            1,
+            profile.isDefault ? 1 : 0,
+            profile.createdAt,
+            profile.updatedAt
+          ]
+        );
+      }
+    }
+
+    const existingDefault = getDefaultPhaseProfileRow();
+    if (!existingDefault) {
+      const builtInDefault = db.get<{ id: string }>(
+        `
+          select id
+          from phase_profiles
+          where project_id = ?
+            and archived_at is null
+          order by
+            case when id = 'builtin:default' then 0 else 1 end,
+            is_built_in desc,
+            created_at asc
+          limit 1
+        `,
+        [projectId]
+      );
+      if (builtInDefault?.id) {
+        db.run("update phase_profiles set is_default = 0 where project_id = ?", [projectId]);
+        db.run(
+          "update phase_profiles set is_default = 1, updated_at = ? where project_id = ? and id = ?",
+          [nowIso(), projectId, builtInDefault.id]
+        );
+      }
+    }
+
+    phaseStorageSeeded = true;
+  };
+
+  const getMissionPhaseOverrideRow = (missionId: string): MissionPhaseOverrideRow | null =>
+    db.get<MissionPhaseOverrideRow>(
+      `
+        select
+          id,
+          mission_id,
+          profile_id,
+          phases_json,
+          created_at,
+          updated_at
+        from mission_phase_overrides
+        where project_id = ?
+          and mission_id = ?
+        limit 1
+      `,
+      [projectId, missionId]
+    );
+
+  const upsertMissionPhaseOverride = (args: {
+    missionId: string;
+    profileId: string | null;
+    phases: PhaseCard[];
+  }): MissionPhaseOverride => {
+    const existing = getMissionPhaseOverrideRow(args.missionId);
+    const now = nowIso();
+    const phases = normalizePhaseCards(args.phases);
+    if (existing) {
+      db.run(
+        `
+          update mission_phase_overrides
+          set profile_id = ?,
+              phases_json = ?,
+              updated_at = ?
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [args.profileId, JSON.stringify(phases), now, projectId, args.missionId]
+      );
+      const next = getMissionPhaseOverrideRow(args.missionId);
+      if (!next) throw new Error("Failed to update mission phase override.");
+      return toMissionPhaseOverride(next);
+    }
+
+    const id = randomUUID();
+    db.run(
+      `
+        insert into mission_phase_overrides(
+          id,
+          mission_id,
+          project_id,
+          profile_id,
+          phases_json,
+          created_at,
+          updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [id, args.missionId, projectId, args.profileId, JSON.stringify(phases), now, now]
+    );
+    const created = getMissionPhaseOverrideRow(args.missionId);
+    if (!created) {
+      throw new Error("Failed to create mission phase override.");
+    }
+    return toMissionPhaseOverride(created);
+  };
+
+  const resolveMissionPhaseConfiguration = (missionId: string): MissionPhaseConfiguration | null => {
+    const mission = getMissionRow(missionId);
+    if (!mission) return null;
+    ensurePhaseStorageSeeded();
+    const overrideRow = getMissionPhaseOverrideRow(missionId);
+    const override = overrideRow ? toMissionPhaseOverride(overrideRow) : null;
+    const selectedProfileRow = override?.profileId ? getPhaseProfileRow(override.profileId) : null;
+    const defaultProfileRow = selectedProfileRow ? null : getDefaultPhaseProfileRow();
+    const profile = selectedProfileRow
+      ? toPhaseProfile(selectedProfileRow)
+      : defaultProfileRow
+        ? toPhaseProfile(defaultProfileRow)
+        : null;
+    const selectedPhases = normalizePhaseCards(
+      override?.phases?.length
+        ? override.phases
+        : profile?.phases?.length
+          ? profile.phases
+          : createBuiltInPhaseCards(nowIso())
+    );
+    return {
+      profile,
+      override,
+      selectedPhases
+    };
+  };
+
+  const ensureUniqueProfileName = (name: string, excludeProfileId?: string): string => {
+    const base = name.trim() || "Custom Profile";
+    const existingNames = new Set(
+      listPhaseProfileRows(true)
+        .filter((row) => row.id !== excludeProfileId)
+        .map((row) => row.name.trim().toLowerCase())
+    );
+    if (!existingNames.has(base.toLowerCase())) return base;
+    let idx = 2;
+    while (existingNames.has(`${base} (${idx})`.toLowerCase())) {
+      idx += 1;
+    }
+    return `${base} (${idx})`;
+  };
+
+  const estimateMissionCostUsd = (missionId: string): number | null => {
+    const rows = db.all<{ metadata_json: string | null; result_envelope_json: string | null }>(
+      `
+        select metadata_json, result_envelope_json
+        from orchestrator_attempts
+        where project_id = ?
+          and run_id in (
+            select id
+            from orchestrator_runs
+            where project_id = ?
+              and mission_id = ?
+          )
+      `,
+      [projectId, projectId, missionId]
+    );
+    let total = 0;
+    let seenAny = false;
+    for (const row of rows) {
+      const metadata = safeParseRecord(row.metadata_json);
+      const envelope = safeParseRecord(row.result_envelope_json);
+      const candidateValues = [
+        metadata?.costUsd,
+        metadata?.estimatedCostUsd,
+        isRecord(metadata?.usage) ? (metadata.usage as Record<string, unknown>).costUsd : undefined,
+        envelope?.costUsd,
+        envelope?.estimatedCostUsd,
+        isRecord(envelope?.usage) ? (envelope.usage as Record<string, unknown>).costUsd : undefined
+      ];
+      for (const candidate of candidateValues) {
+        const numeric = coerceNumber(candidate);
+        if (numeric == null) continue;
+        total += Math.max(0, numeric);
+        seenAny = true;
+        break;
+      }
+    }
+    return seenAny ? Number(total.toFixed(4)) : null;
+  };
+
+  const mapMissionQuickAction = (status: MissionStatus): "view" | "rerun" | "retry" | "resume" => {
+    if (status === "completed") return "rerun";
+    if (status === "failed") return "retry";
+    if (status === "partially_completed") return "resume";
+    return "view";
+  };
+
   const service = {
     list(args: ListMissionsArgs = {}): MissionSummary[] {
       const where: string[] = [];
@@ -973,7 +1665,8 @@ export function createMissionService({
         steps,
         events,
         artifacts,
-        interventions
+        interventions,
+        phaseConfiguration: resolveMissionPhaseConfiguration(id)
       };
     },
 
@@ -1007,6 +1700,392 @@ export function createMissionService({
       const run = runs.find((entry) => entry.id === plannerRunId);
       if (!run) return null;
       return run.attempts.find((entry) => entry.id === attemptId) ?? null;
+    },
+
+    listPhaseProfiles(args: ListPhaseProfilesArgs = {}): PhaseProfile[] {
+      ensurePhaseStorageSeeded();
+      return listPhaseProfileRows(args.includeArchived === true).map(toPhaseProfile);
+    },
+
+    savePhaseProfile(args: SavePhaseProfileArgs): PhaseProfile {
+      ensurePhaseStorageSeeded();
+      if (!args.profile || typeof args.profile !== "object") {
+        throw new Error("Profile payload is required.");
+      }
+
+      const now = nowIso();
+      const normalized = normalizeProfileInput(args.profile, now);
+      const validationErrors = validatePhaseSequence(normalized.phases);
+      if (validationErrors.length > 0) {
+        throw new Error(`Invalid phase profile: ${validationErrors.join(" ")}`);
+      }
+
+      for (const card of normalized.phases) {
+        upsertPhaseCardRow(card);
+      }
+
+      const candidateId = String(args.profile.id ?? "").trim();
+      const existing = candidateId ? getPhaseProfileRow(candidateId) : null;
+      const profileId = (existing?.id ?? candidateId) || randomUUID();
+      const builtIn = existing ? Number(existing.is_built_in) === 1 : false;
+      const createdAt = existing?.created_at ?? now;
+      const isDefault = args.profile.isDefault === true || (existing ? Number(existing.is_default) === 1 : false);
+      const profileName = ensureUniqueProfileName(normalized.name, existing?.id);
+
+      if (existing) {
+        db.run(
+          `
+            update phase_profiles
+            set name = ?,
+                description = ?,
+                phases_json = ?,
+                is_default = ?,
+                archived_at = null,
+                updated_at = ?
+            where project_id = ?
+              and id = ?
+          `,
+          [
+            profileName,
+            normalized.description,
+            JSON.stringify(normalizePhaseCards(normalized.phases)),
+            isDefault ? 1 : 0,
+            now,
+            projectId,
+            profileId
+          ]
+        );
+      } else {
+        db.run(
+          `
+            insert into phase_profiles(
+              id,
+              project_id,
+              name,
+              description,
+              phases_json,
+              is_built_in,
+              is_default,
+              archived_at,
+              created_at,
+              updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, null, ?, ?)
+          `,
+          [
+            profileId,
+            projectId,
+            profileName,
+            normalized.description,
+            JSON.stringify(normalizePhaseCards(normalized.phases)),
+            builtIn ? 1 : 0,
+            isDefault ? 1 : 0,
+            createdAt,
+            now
+          ]
+        );
+      }
+
+      if (isDefault) {
+        db.run(
+          `
+            update phase_profiles
+            set is_default = 0
+            where project_id = ?
+              and id != ?
+          `,
+          [projectId, profileId]
+        );
+      }
+
+      const row = getPhaseProfileRow(profileId);
+      if (!row) throw new Error("Failed to save phase profile.");
+
+      return toPhaseProfile(row);
+    },
+
+    deletePhaseProfile(args: DeletePhaseProfileArgs): void {
+      ensurePhaseStorageSeeded();
+      const profileId = String(args.profileId ?? "").trim();
+      if (!profileId.length) throw new Error("profileId is required.");
+      const row = getPhaseProfileRow(profileId);
+      if (!row) throw new Error(`Phase profile not found: ${profileId}`);
+      if (Number(row.is_built_in) === 1) {
+        throw new Error("Built-in profiles cannot be deleted.");
+      }
+
+      const now = nowIso();
+      db.run(
+        `
+          update phase_profiles
+          set archived_at = ?,
+              is_default = 0,
+              updated_at = ?
+          where project_id = ?
+            and id = ?
+        `,
+        [now, now, projectId, profileId]
+      );
+      db.run(
+        `
+          update mission_phase_overrides
+          set profile_id = null,
+              updated_at = ?
+          where project_id = ?
+            and profile_id = ?
+        `,
+        [now, projectId, profileId]
+      );
+
+      const stillDefault = getDefaultPhaseProfileRow();
+      if (!stillDefault) {
+        const fallback = listPhaseProfileRows(false)[0];
+        if (fallback) {
+          db.run(
+            `
+              update phase_profiles
+              set is_default = 1,
+                  updated_at = ?
+              where project_id = ?
+                and id = ?
+            `,
+            [nowIso(), projectId, fallback.id]
+          );
+        }
+      }
+    },
+
+    clonePhaseProfile(args: ClonePhaseProfileArgs): PhaseProfile {
+      ensurePhaseStorageSeeded();
+      const profileId = String(args.profileId ?? "").trim();
+      if (!profileId.length) throw new Error("profileId is required.");
+      const source = getPhaseProfileRow(profileId);
+      if (!source || source.archived_at) {
+        throw new Error(`Phase profile not found: ${profileId}`);
+      }
+
+      const sourceProfile = toPhaseProfile(source);
+      const clonedName = ensureUniqueProfileName(args.name?.trim() || `${sourceProfile.name} (Copy)`);
+      return this.savePhaseProfile({
+        profile: {
+          name: clonedName,
+          description: sourceProfile.description,
+          phases: sourceProfile.phases.map((phase, index) => ({
+            ...phase,
+            id: `${phase.id}:clone:${randomUUID()}`,
+            isBuiltIn: false,
+            isCustom: true,
+            position: index,
+            createdAt: nowIso(),
+            updatedAt: nowIso()
+          })),
+          isDefault: false
+        }
+      });
+    },
+
+    exportPhaseProfile(args: ExportPhaseProfileArgs): ExportPhaseProfileResult {
+      ensurePhaseStorageSeeded();
+      const profileId = String(args.profileId ?? "").trim();
+      if (!profileId.length) throw new Error("profileId is required.");
+      const row = getPhaseProfileRow(profileId);
+      if (!row || row.archived_at) throw new Error(`Phase profile not found: ${profileId}`);
+      const profile = toPhaseProfile(row);
+
+      let savedPath: string | null = null;
+      if (profilesDir) {
+        fs.mkdirSync(profilesDir, { recursive: true });
+        const base = sanitizeFilePart(profile.name);
+        const timestamp = nowIso().replace(/[:.]/g, "-");
+        const filePath = path.join(profilesDir, `${base}-${timestamp}.json`);
+        const payload = {
+          schema: "ade.phase-profile.v1",
+          exportedAt: nowIso(),
+          profile
+        };
+        fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+        savedPath = filePath;
+      }
+
+      return { profile, savedPath };
+    },
+
+    importPhaseProfile(args: ImportPhaseProfileArgs): PhaseProfile {
+      ensurePhaseStorageSeeded();
+      const filePath = String(args.filePath ?? "").trim();
+      if (!filePath.length) throw new Error("filePath is required.");
+      const raw = fs.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      const payload = isRecord(parsed) && isRecord(parsed.profile) ? parsed.profile : parsed;
+      if (!isRecord(payload)) {
+        throw new Error("Invalid phase profile JSON payload.");
+      }
+
+      const phases = toPhaseCards(Array.isArray(payload.phases) ? payload.phases : []);
+      if (!phases.length) {
+        throw new Error("Imported phase profile has no phases.");
+      }
+
+      const imported = this.savePhaseProfile({
+        profile: {
+          name: ensureUniqueProfileName(String(payload.name ?? "Imported Profile")),
+          description: typeof payload.description === "string" ? payload.description : "",
+          phases: phases.map((phase, index) => ({
+            ...phase,
+            id: `${phase.id}:import:${randomUUID()}`,
+            isBuiltIn: false,
+            isCustom: true,
+            position: index,
+            createdAt: nowIso(),
+            updatedAt: nowIso()
+          })),
+          isDefault: args.setAsDefault === true
+        }
+      });
+      return imported;
+    },
+
+    getPhaseConfiguration(missionId: string): MissionPhaseConfiguration | null {
+      const trimmed = missionId.trim();
+      if (!trimmed.length) return null;
+      return resolveMissionPhaseConfiguration(trimmed);
+    },
+
+    getDashboard(): MissionDashboardSnapshot {
+      ensurePhaseStorageSeeded();
+      const activeMissions = this.list({ status: "active", limit: 50 });
+      const active = activeMissions.map((mission) => {
+        const detail = this.get(mission.id);
+        const phaseGroups = groupMissionStepsByPhase(detail?.steps ?? []);
+        const currentPhase = phaseGroups.find((group) => group.completed < group.total) ?? phaseGroups[phaseGroups.length - 1] ?? null;
+        const phaseProgress = currentPhase
+          ? {
+              completed: currentPhase.completed,
+              total: currentPhase.total,
+              pct: currentPhase.total > 0 ? Math.round((currentPhase.completed / currentPhase.total) * 100) : 0
+            }
+          : { completed: 0, total: 0, pct: 0 };
+
+        const activeWorkers = db.get<{ count: number }>(
+          `
+            select count(distinct oa.id) as count
+            from orchestrator_attempts oa
+            where oa.project_id = ?
+              and oa.status = 'running'
+              and oa.run_id in (
+                select id
+                from orchestrator_runs
+                where project_id = ?
+                  and mission_id = ?
+              )
+          `,
+          [projectId, projectId, mission.id]
+        )?.count ?? 0;
+
+        const startedAtMs = mission.startedAt ? Date.parse(mission.startedAt) : NaN;
+        const elapsedMs = Number.isFinite(startedAtMs) ? Math.max(0, Date.now() - startedAtMs) : 0;
+        const remainingSteps = Math.max(0, mission.totalSteps - mission.completedSteps);
+        const estimatedRemainingMs =
+          mission.totalSteps > 0 && mission.completedSteps > 0
+            ? Math.round((elapsedMs / mission.completedSteps) * remainingSteps)
+            : null;
+
+        return {
+          mission,
+          phaseName: currentPhase?.name ?? null,
+          phaseProgress,
+          activeWorkers,
+          elapsedMs,
+          estimatedRemainingMs
+        };
+      });
+
+      const recentRows = db.all<MissionRow>(
+        `${baseMissionSelect}
+         and m.status in ('completed', 'partially_completed', 'failed', 'canceled')
+         order by coalesce(m.completed_at, m.updated_at) desc
+         limit 12`,
+        [projectId]
+      );
+      const recent = recentRows.map((row) => {
+        const mission = toMissionSummary(row);
+        const started = mission.startedAt ? Date.parse(mission.startedAt) : NaN;
+        const completed = mission.completedAt ? Date.parse(mission.completedAt) : NaN;
+        const durationMs =
+          Number.isFinite(started) && Number.isFinite(completed)
+            ? Math.max(0, completed - started)
+            : 0;
+        return {
+          mission,
+          durationMs,
+          costEstimateUsd: estimateMissionCostUsd(mission.id),
+          action: mapMissionQuickAction(mission.status)
+        };
+      });
+
+      const weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const weeklyRows = db.all<MissionRow>(
+        `${baseMissionSelect}
+         and m.created_at >= ?
+         order by m.created_at desc`,
+        [projectId, weekStart]
+      );
+      const weeklyMissions = weeklyRows.map(toMissionSummary);
+      const terminal = weeklyMissions.filter((mission) => TERMINAL_MISSION_STATUSES.has(mission.status));
+      const successCount = terminal.filter((mission) => mission.status === "completed" || mission.status === "partially_completed").length;
+      const durationValues = terminal
+        .map((mission) => {
+          const started = mission.startedAt ? Date.parse(mission.startedAt) : NaN;
+          const completed = mission.completedAt ? Date.parse(mission.completedAt) : NaN;
+          if (!Number.isFinite(started) || !Number.isFinite(completed)) return null;
+          return Math.max(0, completed - started);
+        })
+        .filter((value): value is number => value != null);
+      const avgDurationMs =
+        durationValues.length > 0
+          ? Math.round(durationValues.reduce((sum, value) => sum + value, 0) / durationValues.length)
+          : 0;
+      const totalCostUsd = Number(
+        weeklyMissions
+          .map((mission) => estimateMissionCostUsd(mission.id) ?? 0)
+          .reduce((sum, value) => sum + value, 0)
+          .toFixed(4)
+      );
+
+      return {
+        active,
+        recent,
+        weekly: {
+          missions: weeklyMissions.length,
+          successRate: terminal.length > 0 ? Number((successCount / terminal.length).toFixed(4)) : 0,
+          avgDurationMs,
+          totalCostUsd
+        }
+      };
+    },
+
+    logEvent(args: {
+      missionId: string;
+      eventType: string;
+      actor?: string;
+      summary: string;
+      payload?: Record<string, unknown> | null;
+    }): MissionEvent {
+      const missionId = String(args.missionId ?? "").trim();
+      if (!missionId.length) throw new Error("missionId is required.");
+      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+      const event = recordEvent({
+        missionId,
+        eventType: args.eventType,
+        actor: args.actor ?? "system",
+        summary: args.summary,
+        payload: args.payload ?? null
+      });
+      db.run(
+        "update missions set updated_at = ? where id = ? and project_id = ?",
+        [nowIso(), missionId, projectId]
+      );
+      emit({ missionId, reason: "event-logged" });
+      return event;
     },
 
     create(args: CreateMissionInternalArgs): MissionDetail {
@@ -1052,11 +2131,40 @@ export function createMissionService({
         ? mergeWithDefaults(executionPolicyArg)
         : null;
 
+      ensurePhaseStorageSeeded();
+      const requestedProfileId = coerceNullableString(args.phaseProfileId);
+      const selectedProfileRow = requestedProfileId
+        ? getPhaseProfileRow(requestedProfileId)
+        : getDefaultPhaseProfileRow();
+      if (requestedProfileId && !selectedProfileRow) {
+        throw new Error(`Phase profile not found: ${requestedProfileId}`);
+      }
+      const selectedProfile = selectedProfileRow ? toPhaseProfile(selectedProfileRow) : null;
+      const overridePhasesRaw =
+        Array.isArray(args.phaseOverride) && args.phaseOverride.length > 0
+          ? toPhaseCards(args.phaseOverride)
+          : [];
+      const hasExplicitOverride = Array.isArray(args.phaseOverride) && args.phaseOverride.length > 0;
+      if (hasExplicitOverride && overridePhasesRaw.length === 0) {
+        throw new Error("Invalid mission phase override payload.");
+      }
+      const selectedPhases = normalizePhaseCards(
+        overridePhasesRaw.length > 0
+          ? overridePhasesRaw
+          : selectedProfile?.phases?.length
+            ? selectedProfile.phases
+            : createBuiltInPhaseCards(nowIso())
+      );
+      const phaseErrors = validatePhaseSequence(selectedPhases);
+      if (phaseErrors.length > 0) {
+        throw new Error(`Invalid mission phase sequence: ${phaseErrors.join(" ")}`);
+      }
+
       const legacyPlan = buildDeterministicMissionPlan({
         prompt,
         laneId
       });
-      const stepsToPersist: MissionPlanStepDraft[] =
+      const rawStepsToPersist: MissionPlanStepDraft[] =
         Array.isArray(args.plannedSteps) && args.plannedSteps.length
           ? [...args.plannedSteps].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title))
           : legacyPlan.steps.map((step) => ({
@@ -1066,6 +2174,7 @@ export function createMissionService({
               kind: step.kind,
               metadata: step.metadata
             }));
+      const stepsToPersist = applyPhaseCardsToPlanSteps(rawStepsToPersist, selectedPhases);
 
       const id = randomUUID();
       const createdAt = nowIso();
@@ -1082,9 +2191,16 @@ export function createMissionService({
           ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {}),
           ...(args.modelConfig ? { modelConfig: args.modelConfig } : {}),
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
-          ...(args.teamRuntime ? { teamRuntime: args.teamRuntime } : {})
+          ...(args.teamRuntime ? { teamRuntime: args.teamRuntime } : {}),
+          phaseProfileId: selectedProfile?.id ?? null,
+          hasPhaseOverride: hasExplicitOverride
         },
         ...(resolvedExecutionPolicy ? { executionPolicy: resolvedExecutionPolicy } : {}),
+        phaseConfiguration: {
+          profileId: selectedProfile?.id ?? null,
+          phaseKeys: selectedPhases.map((phase) => phase.phaseKey),
+          phaseCount: selectedPhases.length
+        },
         planner: plannerRun
           ? {
               id: plannerRun.id,
@@ -1213,6 +2329,12 @@ export function createMissionService({
         );
       });
 
+      upsertMissionPhaseOverride({
+        missionId: id,
+        profileId: selectedProfile?.id ?? null,
+        phases: selectedPhases
+      });
+
       recordEvent({
         missionId: id,
         eventType: "mission_created",
@@ -1232,7 +2354,21 @@ export function createMissionService({
           plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
           plannerEngineResolved: plannerRun?.resolvedEngine ?? null,
           plannerDegraded: plannerRun?.degraded ?? false,
-          executorPolicy
+          executorPolicy,
+          phaseProfileId: selectedProfile?.id ?? null,
+          phaseKeys: selectedPhases.map((phase) => phase.phaseKey)
+        }
+      });
+
+      recordEvent({
+        missionId: id,
+        eventType: "mission_phase_configured",
+        actor: "system",
+        summary: `Phase configuration loaded (${selectedPhases.length} phases).`,
+        payload: {
+          profileId: selectedProfile?.id ?? null,
+          phaseKeys: selectedPhases.map((phase) => phase.phaseKey),
+          hasOverride: hasExplicitOverride
         }
       });
 
@@ -1706,6 +2842,14 @@ export function createMissionService({
       db.run(
         `
           delete from mission_steps
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from mission_phase_overrides
           where project_id = ?
             and mission_id = ?
         `,

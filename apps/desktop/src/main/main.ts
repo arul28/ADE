@@ -520,6 +520,7 @@ app.whenReady().then(async () => {
     const missionService = createMissionService({
       db,
       projectId,
+      projectRoot,
       onEvent: (event) => broadcast(IPC.missionsEvent, event)
     });
 

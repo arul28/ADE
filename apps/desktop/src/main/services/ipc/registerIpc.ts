@@ -230,6 +230,16 @@ import type {
   MissionExecutorPolicy,
   MissionPlannerAttempt,
   MissionPlannerRun,
+  PhaseProfile,
+  ListPhaseProfilesArgs,
+  SavePhaseProfileArgs,
+  DeletePhaseProfileArgs,
+  ClonePhaseProfileArgs,
+  ExportPhaseProfileArgs,
+  ExportPhaseProfileResult,
+  ImportPhaseProfileArgs,
+  MissionPhaseConfiguration,
+  MissionDashboardSnapshot,
   ResolveMissionInterventionArgs,
   CreateMissionArgs,
   PlanMissionArgs,
@@ -1351,6 +1361,46 @@ export function registerIpc({
   ipcMain.handle(IPC.missionsGet, async (_event, arg: { missionId: string }): Promise<MissionDetail | null> => {
     const ctx = getCtx();
     return ctx.missionService.get(arg?.missionId ?? "");
+  });
+
+  ipcMain.handle(IPC.missionsListPhaseProfiles, async (_event, arg: ListPhaseProfilesArgs = {}): Promise<PhaseProfile[]> => {
+    const ctx = getCtx();
+    return ctx.missionService.listPhaseProfiles(arg);
+  });
+
+  ipcMain.handle(IPC.missionsSavePhaseProfile, async (_event, arg: SavePhaseProfileArgs): Promise<PhaseProfile> => {
+    const ctx = getCtx();
+    return ctx.missionService.savePhaseProfile(arg);
+  });
+
+  ipcMain.handle(IPC.missionsDeletePhaseProfile, async (_event, arg: DeletePhaseProfileArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.missionService.deletePhaseProfile(arg);
+  });
+
+  ipcMain.handle(IPC.missionsClonePhaseProfile, async (_event, arg: ClonePhaseProfileArgs): Promise<PhaseProfile> => {
+    const ctx = getCtx();
+    return ctx.missionService.clonePhaseProfile(arg);
+  });
+
+  ipcMain.handle(IPC.missionsExportPhaseProfile, async (_event, arg: ExportPhaseProfileArgs): Promise<ExportPhaseProfileResult> => {
+    const ctx = getCtx();
+    return ctx.missionService.exportPhaseProfile(arg);
+  });
+
+  ipcMain.handle(IPC.missionsImportPhaseProfile, async (_event, arg: ImportPhaseProfileArgs): Promise<PhaseProfile> => {
+    const ctx = getCtx();
+    return ctx.missionService.importPhaseProfile(arg);
+  });
+
+  ipcMain.handle(IPC.missionsGetPhaseConfiguration, async (_event, arg: { missionId: string }): Promise<MissionPhaseConfiguration | null> => {
+    const ctx = getCtx();
+    return ctx.missionService.getPhaseConfiguration(arg?.missionId ?? "");
+  });
+
+  ipcMain.handle(IPC.missionsGetDashboard, async (): Promise<MissionDashboardSnapshot> => {
+    const ctx = getCtx();
+    return ctx.missionService.getDashboard();
   });
 
   ipcMain.handle(IPC.missionsCreate, async (_event, arg: CreateMissionArgs): Promise<MissionDetail> => {

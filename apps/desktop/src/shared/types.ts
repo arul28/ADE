@@ -2827,6 +2827,143 @@ export type MissionPlannerRun = {
   attempts: MissionPlannerAttempt[];
 };
 
+export type MissionPhaseValidationTier = "none" | "self" | "spot-check" | "dedicated";
+
+export type PhaseCardOrderingConstraints = {
+  mustBeFirst?: boolean;
+  mustBeLast?: boolean;
+  mustFollow?: string[];
+  mustPrecede?: string[];
+  canLoop?: boolean;
+  loopTarget?: string | null;
+};
+
+export type PhaseCardBudget = {
+  maxTokens?: number;
+  maxTimeMs?: number;
+  maxSteps?: number;
+};
+
+export type PhaseCardAskQuestions = {
+  enabled: boolean;
+  mode: "always" | "auto_if_uncertain" | "never";
+  maxQuestions?: number;
+};
+
+export type PhaseCardValidationGate = {
+  tier: MissionPhaseValidationTier;
+  required: boolean;
+  criteria?: string;
+};
+
+export type PhaseCard = {
+  id: string;
+  phaseKey: string;
+  name: string;
+  description: string;
+  instructions: string;
+  model: ModelConfig;
+  budget: PhaseCardBudget;
+  orderingConstraints: PhaseCardOrderingConstraints;
+  askQuestions: PhaseCardAskQuestions;
+  validationGate: PhaseCardValidationGate;
+  isBuiltIn: boolean;
+  isCustom: boolean;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PhaseProfile = {
+  id: string;
+  name: string;
+  description: string;
+  phases: PhaseCard[];
+  isBuiltIn: boolean;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MissionPhaseOverride = {
+  id: string;
+  missionId: string;
+  profileId: string | null;
+  phases: PhaseCard[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MissionPhaseConfiguration = {
+  profile: PhaseProfile | null;
+  override: MissionPhaseOverride | null;
+  selectedPhases: PhaseCard[];
+};
+
+export type MissionDashboardSnapshot = {
+  active: Array<{
+    mission: MissionSummary;
+    phaseName: string | null;
+    phaseProgress: {
+      completed: number;
+      total: number;
+      pct: number;
+    };
+    activeWorkers: number;
+    elapsedMs: number;
+    estimatedRemainingMs: number | null;
+  }>;
+  recent: Array<{
+    mission: MissionSummary;
+    durationMs: number;
+    costEstimateUsd: number | null;
+    action: "view" | "rerun" | "retry" | "resume";
+  }>;
+  weekly: {
+    missions: number;
+    successRate: number;
+    avgDurationMs: number;
+    totalCostUsd: number;
+  };
+};
+
+export type ListPhaseProfilesArgs = {
+  includeArchived?: boolean;
+};
+
+export type SavePhaseProfileArgs = {
+  profile: {
+    id?: string;
+    name: string;
+    description?: string;
+    phases: PhaseCard[];
+    isDefault?: boolean;
+  };
+};
+
+export type DeletePhaseProfileArgs = {
+  profileId: string;
+};
+
+export type ClonePhaseProfileArgs = {
+  profileId: string;
+  name?: string;
+};
+
+export type ExportPhaseProfileArgs = {
+  profileId: string;
+};
+
+export type ExportPhaseProfileResult = {
+  profile: PhaseProfile;
+  savedPath: string | null;
+};
+
+export type ImportPhaseProfileArgs = {
+  filePath: string;
+  setAsDefault?: boolean;
+};
+
 export type MissionSummary = {
   id: string;
   title: string;
@@ -2910,6 +3047,7 @@ export type MissionDetail = MissionSummary & {
   events: MissionEvent[];
   artifacts: MissionArtifact[];
   interventions: MissionIntervention[];
+  phaseConfiguration?: MissionPhaseConfiguration | null;
 };
 
 export type ListMissionsArgs = {
@@ -2940,6 +3078,10 @@ export type CreateMissionArgs = {
   modelConfig?: MissionModelConfig;
   /** Team runtime configuration for agent-team orchestration */
   teamRuntime?: TeamRuntimeConfig;
+  /** Optional phase profile selection for launch */
+  phaseProfileId?: string | null;
+  /** Optional mission-scoped phase override sequence */
+  phaseOverride?: PhaseCard[];
 };
 
 export type PlanMissionArgs = {

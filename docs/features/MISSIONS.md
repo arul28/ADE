@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-02-27
 >
 > **Phase 4 Status: Agent-First Runtime Migration In Progress**
 
@@ -89,11 +89,11 @@ Missions are durable records, persisted locally and visible in a board + detail 
 
 A **Mission Step** is an ordered subtask row attached to a mission.
 
-- Step plans are coordinator-authored in team-runtime mode; legacy deterministic planning paths exist only for backward compatibility.
+- Step plans are coordinator-authored in team-runtime mode.
 - Planner metadata includes dependency indices, join policy, done criteria, and context policy hints.
 - Steps have independent status transitions (`pending`, `ready`, `running`, `succeeded`, `failed`, `blocked`, `skipped`, `superseded`, `canceled`).
 - Plan revisions preserve audit history by superseding steps instead of deleting them.
-- Runtime enforces graph/state integrity, but strategy decisions (replan, retry, replacement, escalation) remain coordinator-owned.
+- Runtime enforces graph/state integrity, but strategy decisions (replan, retry, replacement, escalation) remain coordinator-owned; when coordinator is unavailable, runs pause/escalate rather than falling back to deterministic strategy handlers.
 - A failed step can automatically open an intervention and move the mission into `intervention_required`.
 
 ### Intervention
@@ -240,15 +240,16 @@ Board layout note:
 
 ### Mission Detail
 
-The detail surface is organized into five workspace tabs:
+The detail surface is organized into six workspace tabs:
 
 | Tab | Key | Description |
 |-----|-----|-------------|
-| **Board** | `board` | Mission board lanes by status with card-based overview |
+| **Plan** | `plan` | Hierarchical phase -> milestone -> task view with runtime statuses and expected-signal visibility |
+| **Work** | `work` | Follow-mode worker monitor with transcript tails, files touched, and tool usage |
 | **DAG** | `dag` | Step dependency graph with animated edge transitions and single progress bar |
 | **Chat** | `chat` | Slack-style chat interface (MissionChatV2) with sidebar channels |
 | **Activity** | `activity` | Filtered activity feed with category dropdown |
-| **Details** | `details` | Usage dashboard, mission metadata, and configuration |
+| **Details** | `details` | Usage dashboard, mission metadata, phase profile summary, and configuration |
 
 The detail surface includes:
 
@@ -270,6 +271,7 @@ Runtime detail additions:
 - **Run narrative**: Rolling progress display showing what agents are actively working on, updated in real time from orchestrator events.
 - **Single progress bar**: Replaced per-step progress indicators with a unified mission progress bar.
 - **DAG animation fix**: Step dependency graph now uses smooth animated edge transitions instead of static rendering.
+- **Mission home dashboard**: when no mission is selected, the page shows active/recent mission cards and weekly mission stats from persisted mission/runtime state.
 
 ### Mission Chat (Slack-Style)
 
@@ -374,6 +376,14 @@ Channels:
 - `ade.missions.addArtifact`
 - `ade.missions.addIntervention`
 - `ade.missions.resolveIntervention`
+- `ade.missions.listPhaseProfiles`
+- `ade.missions.savePhaseProfile`
+- `ade.missions.deletePhaseProfile`
+- `ade.missions.clonePhaseProfile`
+- `ade.missions.exportPhaseProfile`
+- `ade.missions.importPhaseProfile`
+- `ade.missions.getPhaseConfiguration`
+- `ade.missions.getDashboard`
 - `ade.missions.event`
 
 Runtime channels used by Missions detail:
@@ -408,6 +418,7 @@ Vercel AI SDK streaming is relayed from main process to renderer via IPC event c
 Missions renderer entrypoint:
 
 - `apps/desktop/src/renderer/components/missions/MissionsPage.tsx`
+- `MissionsPage` now contains the Task 4 workspace tabs (`plan`, `work`, `dag`, `chat`, `activity`, `details`), mission home dashboard rendering, and launch/settings phase profile management UI.
 
 Mission chat (Slack-style):
 
@@ -455,6 +466,12 @@ Phase 1 + Phase 1.5 mission/orchestrator persistence adds:
 - `orchestrator_attempts`
 - `orchestrator_claims`
 - `orchestrator_context_snapshots`
+
+Task 3 phase engine persistence adds:
+
+- `phase_cards`
+- `phase_profiles`
+- `mission_phase_overrides`
 
 Hivemind additions (memory, compaction, agent identity):
 
@@ -547,6 +564,16 @@ Lifecycle/transition coverage:
   - complex observer-mode prompt run: `npm --prefix apps/desktop run test:orchestrator-complex-mock`
   - complex run report path: `/tmp/ade-orchestrator-complex-mock-report.json`
 
+### Phase 3 Missions Overhaul Tasks 3/4 (Implemented 2026-02-27)
+
+- Mission phase engine is live with built-in phase/profile seeding and per-mission phase overrides.
+- Mission creation now stores phase profile selection/override metadata and annotates persisted step metadata with phase keys/names.
+- Profile lifecycle is exposed through mission APIs and settings UI: list/save/delete/clone/import/export.
+- Profile export/import uses JSON and project-local storage under `.ade/profiles/`.
+- Runtime phase progression emits durable `phase_transition` mission events and timeline entries; run metadata stores transition history and phase-runtime state.
+- Mission workspace now includes dedicated Plan and Work tabs, plus no-selection Missions home dashboard.
+- UI renders runtime truth from mission/orchestrator APIs/events and keeps superseded steps, lane transfers, and validation outcomes visible for auditability.
+
 ### Shipped Features (Phase 3)
 
 #### Planner Overhaul
@@ -562,8 +589,8 @@ Lifecycle/transition coverage:
 
 #### UI Redesign (Hivemind)
 - **MissionChatV2** (Slack-style) replaces separate chat + transcript tabs with sidebar channels (Global, Orchestrator, per-worker), @mention autocomplete, and real-time message streaming.
-- Tab count reduced from 6 to 5: Board, DAG, Chat, Activity, Details.
-- Tab renames: "channels" renamed to "chat", "usage" renamed to "details".
+- Mission workspace tabs now expose Plan, Work, DAG, Chat, Activity, and Details views.
+- Tab model now reflects runtime intent directly (plan/work) rather than board-centric mission detail tabs.
 - Activity feed: category dropdown replaces 12+ filter buttons.
 - Mission workspace: all queries filtered by missionId.
 - **ExecutionPlanPreview removed** — replaced by DAG visualization and chat-based plan review.
@@ -683,10 +710,11 @@ External agents can launch missions via the CTO, ADE's persistent project-aware 
 
 ### Remaining Work
 
+- Next execution focus: Task 5 (pre-flight + intervention/HITL) and Task 6 (budget + usage), then Tasks 7-8.
 - End-to-end live multi-agent orchestration stress testing.
-- Plan approval gates (human-in-the-loop).
-- Real-time coordination pattern validation.
-- Worker transcript tailing in MissionChatV2.
+- Pre-flight launch checks and intervention granularity upgrades (Task 5).
+- Budget-aware orchestration and subscription usage accounting (Task 6).
+- Reflection/retrospective protocol and integration soak expansion (Tasks 7-8).
 
 ### Compute Backend Integration (Future)
 

@@ -39,15 +39,13 @@ Evolved the orchestrator into an intelligent multi-agent system. Slack-like miss
 ### What's Still Missing
 
 1. **Strategic autonomy hardening**: Task 1/2 primitives are implemented, but remaining work includes deeper budget-aware strategy shifts and broader soak-test coverage.
-2. **Mission phases/UX layer**: Configurable phase profiles and mission surfaces still need full rollout.
-3. **Budget awareness**: Budget pressure doesn't influence orchestration decisions.
-4. **Configurable phases**: Missions use a fixed internal pipeline — users can't customize the workflow.
-5. **Mission UI**: No Plan tab (hierarchical task list), no Work tab (follow worker output), no home dashboard.
-6. **Pre-flight validation**: No pre-launch checklist for models, permissions, worktrees, or phase config.
-7. **Tiered validation**: No self-check / spot-check / dedicated validator system.
-8. **Granular intervention**: A stuck worker halts the entire mission instead of just that worker.
-9. **Subscription tracking**: No accurate usage data from local CLI session files.
-10. **Reflection protocol**: Agents don't capture observations for system self-improvement.
+2. **Budget awareness**: Budget pressure does not yet influence orchestration decisions.
+3. **Pre-flight validation**: No pre-launch checklist for models, permissions, worktrees, or phase config.
+4. **Tiered validation**: No self-check / spot-check / dedicated validator system.
+5. **Granular intervention**: A stuck worker still tends to halt too much mission flow instead of isolating only impacted workers/dependencies.
+6. **Subscription tracking**: No accurate usage data from local CLI session files.
+7. **Reflection protocol**: Agents do not yet capture observations for system self-improvement.
+8. **Full integration soak coverage**: Task 8 multi-hour autonomy/overhaul validation is not complete yet.
 
 ---
 
@@ -368,7 +366,7 @@ Subscription providers (Claude Pro/Max, ChatGPT Plus) don't expose precise billi
 
 ## Remaining Work
 
-The remaining work is organized into 8 tasks. Each task is self-contained — an agent given this document and the codebase should be able to implement any individual task. Tasks are ordered by dependency (earlier tasks should be completed first, though some can be parallelized).
+The Phase 3 plan is organized into 8 tasks total. Tasks 1-4 are now complete; active remaining execution is Tasks 5-8. Each task is self-contained — an agent given this document and the codebase should be able to implement any individual task. Tasks remain dependency-ordered, with limited parallelization opportunities where noted.
 
 ---
 
@@ -497,7 +495,7 @@ The rework cycle when validation fails:
 
 **Why this is one task**: The data model, execution engine, and profile system are one feature. They share types, storage, and UI components.
 
-**Readiness (2026-02-27): Ready for development**
+**Implementation status (2026-02-27): Implemented**
 
 - Upstream prerequisites are in place from Task 1/2:
   - Coordinator-owned runtime contracts and structured reporting events are live.
@@ -607,6 +605,16 @@ In Settings → Missions → Phase Profiles:
 - Clone creates a copy with "(Copy)" suffix.
 - Import/export as JSON files. Also stores in `.ade/profiles/` for version control.
 
+#### 3E: Task 3 Shipped Scope (2026-02-27)
+
+- Migration-safe storage is live with `phase_cards`, `phase_profiles`, and `mission_phase_overrides` plus seed-on-read for built-in cards/profiles.
+- Mission creation accepts `phaseProfileId` + optional `phaseOverride`, validates ordering constraints, and applies phase metadata to persisted mission steps.
+- Mission-level phase configuration is persisted and queryable via mission detail (`getPhaseConfiguration`) and home aggregate (`getDashboard`) APIs.
+- Profile lifecycle APIs are live: list/save/delete/clone/import/export, with built-in profile deletion protection and unique-name enforcement.
+- Profile export writes JSON snapshots into `.ade/profiles/` when a project root is available.
+- Runtime phase telemetry is wired: orchestrator phase changes emit durable `phase_transition` events and maintain run metadata transition history + per-phase budget reset markers.
+- Autonomy boundary is preserved: phase engine provides declarative constraints/instructions, and does not inject deterministic strategy decisions in place of coordinator choices.
+
 ---
 
 ### Task 4: Mission UI Overhaul
@@ -615,7 +623,7 @@ In Settings → Missions → Phase Profiles:
 
 **Why this is one task**: These are all renderer components within the mission detail view. They share the same IPC event stream and mission state model.
 
-**Readiness (2026-02-27): Ready for development**
+**Implementation status (2026-02-27): Implemented**
 
 - Data signals required by Task 4 are available:
   - Structured worker reports (`report_status`, `report_result`, `report_validation`) are persisted.
@@ -741,6 +749,23 @@ When no mission is selected, the Missions tab shows a home screen:
 - **Weekly stats**: mission count, success rate, avg duration, total cost.
 - **[+ New Mission]**: opens mission launch flow.
 
+#### 4E: Task 4 Shipped Scope (2026-02-27)
+
+- Mission workspace tabs now expose: `Plan`, `Work`, `DAG`, `Chat`, `Activity`, `Details`.
+- `Plan` tab renders phase -> milestone -> task hierarchy from runtime graph metadata, including superseded/audit-visible step statuses and expected-signal detail rows.
+- `Work` tab provides follow-mode worker monitoring: live transcript tails, active worker selector, auto-follow behavior, and runtime-derived files/tools side panels.
+- No-selection missions view now renders a real dashboard (`active`, `recent`, `weekly stats`) from persisted mission/runtime state.
+- Launch flow includes phase profile selection and override editing (configure cards, reorder, add custom phases, save as profile) with client-side ordering validation.
+- Mission settings include phase profile management (create/import/clone/export/delete where allowed) against the same main-process profile APIs.
+- `Details` tab now surfaces phase profile and per-phase completion summary alongside usage/budget telemetry.
+- UI contract remains autonomy-first: all state is rendered from mission/orchestrator runtime events and persisted rows, not inferred deterministic hidden state.
+
+#### 4F: Migration + Operator Notes
+
+- Existing missions remain valid with no backfill requirement; phase config defaults resolve from seeded built-ins when no mission override exists.
+- Operators can inspect phase progression via durable `phase_transition` events in mission timeline/activity.
+- Profile JSON exports under `.ade/profiles/` are intended for versioning/review and can be re-imported across machines/projects.
+
 ---
 
 ### Task 5: Pre-Flight, Intervention & Human-in-Loop
@@ -748,6 +773,17 @@ When no mission is selected, the Missions tab shows a home screen:
 **Combines**: Pre-flight checklist, intervention overhaul, human-in-loop upgrade.
 
 **Why this is one task**: These all govern what happens at mission boundaries — before launch, during stuck states, and when human input is needed. They share the permission model and escalation chain.
+
+**Readiness (2026-02-27): Ready for development (next)**
+
+- Upstream prerequisites are now in place from Tasks 1-4:
+  - Task 1/2 provide structured worker reporting, validation outcomes, lane transfer auditability, and intervention primitives.
+  - Task 3 provides mission phase/profile configuration that pre-flight must validate.
+  - Task 4 provides launch/details/dashboard UI surfaces to host pre-flight and intervention UX upgrades.
+- Development guardrails for Task 5:
+  - Keep coordinator-owned strategy intact; intervention logic must expose state and controls, not inject deterministic decision-making.
+  - Preserve granular audit visibility (worker-level pause/retry/escalation lineage in activity/timeline).
+  - Pre-flight must be an explicit launch gate with explainable pass/fail reasons (no hidden heuristics).
 
 #### 5A: Pre-Flight Checklist
 
@@ -837,6 +873,17 @@ Human provides guidance → Coordinator resumes affected worker
 **Combines**: Budget-aware orchestration decisions, budget management service, subscription usage tracking.
 
 **Why this is one task**: The budget service, usage tracking, and orchestration pressure logic are a single data pipeline. Usage data feeds into budget state, which feeds into orchestration decisions.
+
+**Readiness (2026-02-27): Ready for development (next)**
+
+- Upstream prerequisites are now in place from Tasks 1-4:
+  - Coordinator tooling/telemetry (Task 1/2) can consume budget status as decision input.
+  - Phase-aware mission model (Task 3) enables per-phase budget accounting.
+  - Task 4 details/dashboard surfaces can display per-phase/weekly budget and cost telemetry.
+- Development guardrails for Task 6:
+  - Budget pressure informs coordinator decisions via explicit tools/contracts; runtime must not hard-code strategy overrides.
+  - Distinguish hard limits (API-key mode) vs advisory estimates (subscription mode) in both runtime behavior and UI.
+  - Keep accounting migration-safe and auditable (durable budget snapshots/events, reproducible aggregations).
 
 #### 6A: Budget Service
 
@@ -1024,7 +1071,7 @@ Not in Phase 3, but the architecture supports it:
 #### 8B: Missions Overhaul Tests
 
 - **Phase engine tests**: card CRUD, ordering constraint enforcement (Planning first, Validation after Dev, PR last, Testing flexible), drag-and-drop position updates, phase transition execution, validation gate invocation.
-- **Profile tests**: CRUD, built-in integrity, custom creation with constraint validation, per-mission override, import/export roundtrip, `.ade/profiles/` YAML serialization.
+- **Profile tests**: CRUD, built-in integrity, custom creation with constraint validation, per-mission override, import/export roundtrip, `.ade/profiles/` JSON serialization.
 - **Plan tab tests**: hierarchical rendering (milestones → tasks → subtasks), real-time update handling, status indicator accuracy.
 - **Work tab tests**: worker selector, live output streaming, file list updates, tool call tracking.
 - **Pre-flight tests**: model detection per phase (multiple providers), permission validation, structural/ordering/semantic validation, budget check, UI rendering (pass/warning/fail).
@@ -1052,21 +1099,21 @@ Task 6: Budget & Usage Tracking ────────────────
 Task 7: Reflection Protocol ──────────────────────┘
 ```
 
-**Recommended sequence:**
+**Execution state (2026-02-27):**
 
-1. **Task 1** (Orchestrator Autonomy Core) — foundational, everything else builds on it
-2. **Task 2** (Validation & Lane Continuity) — depends on Task 1 worker tools
-3. **Task 3** (Phases Engine & Profiles) — can start in parallel with Tasks 1-2 (data model is independent)
-4. **Task 6** (Budget & Usage Tracking) — depends on Task 1 for `get_budget_status` tool
-5. **Task 5** (Pre-Flight, Intervention & HITL) — depends on Tasks 2, 3 (needs phase config and validation)
-6. **Task 4** (Mission UI Overhaul) — depends on Tasks 1-3 (needs data from phases, worker reporting, plan structure)
-7. **Task 7** (Reflection Protocol) — independent, can start anytime but lower priority
-8. **Task 8** (Integration Testing) — last, covers everything
+1. **Task 1** (Orchestrator Autonomy Core) — complete
+2. **Task 2** (Validation & Lane Continuity) — complete
+3. **Task 3** (Phases Engine & Profiles) — complete
+4. **Task 4** (Mission UI Overhaul) — complete
+5. **Task 5** (Pre-Flight, Intervention & HITL) — next, depends on Tasks 2-4
+6. **Task 6** (Budget & Usage Tracking) — parallel candidate with Task 5
+7. **Task 7** (Reflection Protocol) — independent but lower priority than Tasks 5/6
+8. **Task 8** (Integration Testing) — final broad soak/coverage pass
 
 **Parallelization opportunities:**
-- Tasks 1 + 3 can run in parallel (different system layers)
-- Tasks 4 + 7 can run in parallel after their dependencies are met
-- Task 6 can start once Task 1 is partially complete (budget service is independent of replanning)
+- Tasks 5 + 6 can run in parallel after Task 3/4 contracts are fixed
+- Task 7 can run in parallel with Task 5 once intervention/validation hooks are stable
+- Task 8 should remain last to validate full cross-task behavior end-to-end
 
 ---
 

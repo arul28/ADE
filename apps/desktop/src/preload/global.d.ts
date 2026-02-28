@@ -229,6 +229,16 @@ import type {
   MissionsEventPayload,
   MissionPlannerAttempt,
   MissionPlannerRun,
+  PhaseProfile,
+  SavePhaseProfileArgs,
+  ListPhaseProfilesArgs,
+  DeletePhaseProfileArgs,
+  ClonePhaseProfileArgs,
+  ExportPhaseProfileArgs,
+  ExportPhaseProfileResult,
+  ImportPhaseProfileArgs,
+  MissionPhaseConfiguration,
+  MissionDashboardSnapshot,
   PlanMissionArgs,
   PlanMissionResult,
   ListPlannerRunsArgs,
@@ -373,6 +383,14 @@ declare global {
         addArtifact: (args: AddMissionArtifactArgs) => Promise<MissionArtifact>;
         addIntervention: (args: AddMissionInterventionArgs) => Promise<MissionIntervention>;
         resolveIntervention: (args: ResolveMissionInterventionArgs) => Promise<MissionIntervention>;
+        listPhaseProfiles: (args?: ListPhaseProfilesArgs) => Promise<PhaseProfile[]>;
+        savePhaseProfile: (args: SavePhaseProfileArgs) => Promise<PhaseProfile>;
+        deletePhaseProfile: (args: DeletePhaseProfileArgs) => Promise<void>;
+        clonePhaseProfile: (args: ClonePhaseProfileArgs) => Promise<PhaseProfile>;
+        exportPhaseProfile: (args: ExportPhaseProfileArgs) => Promise<ExportPhaseProfileResult>;
+        importPhaseProfile: (args: ImportPhaseProfileArgs) => Promise<PhaseProfile>;
+        getPhaseConfiguration: (missionId: string) => Promise<MissionPhaseConfiguration | null>;
+        getDashboard: () => Promise<MissionDashboardSnapshot>;
         onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
       };
       planner: {

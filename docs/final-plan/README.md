@@ -101,12 +101,9 @@ Baseline derived from code in `apps/desktop`.
 
 Not implemented yet:
 
-- Remaining Phase 3 package after Task 1/2 (phase cards engine, missions UI overhaul, pre-flight, budget pressure orchestration, reflection protocol, full integration soak coverage)
-- Missions phases engine (configurable phase pipelines with drag-and-drop)
+- Remaining Phase 3 package after Task 1-4 (pre-flight, budget pressure orchestration, reflection protocol, and full integration soak coverage)
 - CTO agent (persistent project-aware assistant, replaces Concierge)
 - Night Shift mode in Automations (overnight execution with morning briefing)
-- Mission Plan tab (hierarchical task list with real-time updates)
-- Mission Work tab (follow-mode for raw worker output)
 - Pre-mission launch validation (pre-flight checklist)
 - Tiered validation system (self-check, spot-check, milestone-gate)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
@@ -117,7 +114,6 @@ Not implemented yet:
 - iOS control app
 - Mission Introspection (reflection protocol for system self-improvement)
 - Subscription usage tracking via local CLI session data
-- Missions home dashboard (aggregate stats, mission history)
 
 ### 2.5 Phase 3 Status Snapshot (2026-02-27 update)
 
@@ -130,14 +126,15 @@ Implemented in baseline:
 
 Remaining execution tracks (see `phase-3.md` for full detail):
 
-3. **Task 3: Mission Phases Engine & Profiles** — phase cards, profiles, drag-and-drop, constraint engine
-4. **Task 4: Mission UI Overhaul** — Plan tab, Work tab, existing tab fixes, Home Dashboard
-5. **Task 5: Pre-Flight, Intervention & HITL** — pre-flight checklist, granular intervention, escalation chain
-6. **Task 6: Budget & Usage Tracking** — budget-aware orchestration, dual-mode budget, subscription usage
-7. **Task 7: Reflection Protocol** — reflection logs, retrospectives, improvement changelog
-8. **Task 8: Integration Testing** — orchestrator soak tests, missions overhaul tests
+3. **Task 3: Mission Phases Engine & Profiles** — implemented (phase cards/profiles, per-mission overrides, profile import/export, runtime phase transition telemetry)
+4. **Task 4: Mission UI Overhaul** — implemented (Plan tab, Work tab, home dashboard, mission settings profile management, phase-aware details)
+5. **Task 5: Pre-Flight, Intervention & HITL** — pending (pre-flight checklist, granular intervention, escalation chain)
+6. **Task 6: Budget & Usage Tracking** — pending (budget-aware orchestration, dual-mode budget, subscription usage)
+7. **Task 7: Reflection Protocol** — pending (reflection logs, retrospectives, improvement changelog)
+8. **Task 8: Integration Testing** — pending (extended orchestrator soak tests, missions overhaul coverage expansion)
 
-Task 3 and Task 4 have explicit readiness notes in `phase-3.md` and can be started immediately against the current Task 1/2 runtime contract.
+Task 3 and Task 4 are now baseline and form required input contracts for Tasks 5-8.
+Immediate next execution focus is Task 5 and Task 6 in parallel.
 
 ---
 
@@ -165,22 +162,22 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Hivemind + Task 1/2 shipped; Tasks 3-8 remaining) |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Hivemind + Tasks 1-4 shipped; Tasks 5-8 remaining) |
 | Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
 | Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Implemented (Task 2 baseline, coordinator-driven loop) |
 | Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
 | Structured worker reporting + mission status read | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
 | Lane-affinity rework continuity + partial completion | Phase 3 | Phases 1 and 2 | Implemented (Task 1/2 baseline) |
-| Mission Phases Engine (configurable phase pipelines) | Phase 3 | Phase 3 | Planned |
-| Phase Profiles (settings-based mission templates) | Phase 3 | Phase 3 | Planned |
-| Mission Plan Tab (hierarchical task list, real-time) | Phase 3 | Phase 3 | Planned |
-| Mission Work Tab (follow-mode worker output) | Phase 3 | Phase 3 | Planned |
-| Pre-Mission Launch System (pre-flight checklist) | Phase 3 | Phase 3 | Planned |
-| Tiered Validation System (self/spot-check/gate) | Phase 3 | Phase 3 | Planned |
-| Intervention Granularity (per-worker pause) | Phase 3 | Phase 3 | Planned |
+| Mission Phases Engine (configurable phase pipelines) | Phase 3 | Phase 3 | Implemented (Task 3) |
+| Phase Profiles (settings-based mission templates) | Phase 3 | Phase 3 | Implemented (Task 3) |
+| Mission Plan Tab (hierarchical task list, real-time) | Phase 3 | Phase 3 | Implemented (Task 4) |
+| Mission Work Tab (follow-mode worker output) | Phase 3 | Phase 3 | Implemented (Task 4) |
+| Pre-Mission Launch System (pre-flight checklist) | Phase 3 | Phase 3 | Next (Task 5) |
+| Tiered Validation System (self/spot-check/gate) | Phase 3 | Phase 3 | Next (Task 5) |
+| Intervention Granularity (per-worker pause) | Phase 3 | Phase 3 | Next (Task 5) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Planned |
 | Night Shift Mode (in Automations) | Phase 4 | Phase 3 | Planned |
-| Budget Management (subscription + API key) | Phase 3 | Phase 3 | Planned |
+| Budget Management (subscription + API key) | Phase 3 | Phase 3 | Next (Task 6) |
 | Play runtime isolation | Phase 5 | Phase 3 | Planned |
 | Compute backend abstraction | Phase 5.5 | Phase 5 | Planned |
 | Computer Use (agent GUI interaction) | Phase 5.5 | Phase 5 | Planned |
@@ -199,7 +196,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |
 | Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Planned |
 | Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Planned |
-| Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Planned |
+| Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 
 ---
 

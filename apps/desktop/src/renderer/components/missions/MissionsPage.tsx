@@ -37,7 +37,6 @@ import type {
   MissionExecutionPolicy,
   MissionPriority,
   MissionStatus,
-  MissionStepStatus,
   MissionSummary,
   OrchestratorAttempt,
   OrchestratorChatMessage,
@@ -49,6 +48,7 @@ import type {
   OrchestratorExecutorKind,
   OrchestratorRunGraph,
   OrchestratorStep,
+  OrchestratorStepStatus,
   MissionMetricToggle,
   MissionMetricsConfig,
   MissionMetricSample,
@@ -61,7 +61,10 @@ import type {
   SmartBudgetConfig,
   ModelConfig,
   OrchestratorDecisionTimeoutCapHours,
-  PrDepth
+  PrDepth,
+  MissionDashboardSnapshot,
+  PhaseCard,
+  PhaseProfile
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES, getProfileById } from "../../../shared/modelProfiles";
 import { useAppStore } from "../../state/appStore";
@@ -130,14 +133,6 @@ const PRIORITY_STYLES: Record<MissionPriority, { background: string; color: stri
   low: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
 };
 
-const STEP_STATUS_COLUMNS: Array<{ status: MissionStepStatus; label: string }> = [
-  { status: "pending", label: "PENDING" },
-  { status: "running", label: "RUNNING" },
-  { status: "succeeded", label: "SUCCEEDED" },
-  { status: "failed", label: "FAILED" },
-  { status: "skipped", label: "SKIPPED" }
-];
-
 const STEP_STATUS_HEX: Record<string, string> = {
   pending: "#3B82F6",
   running: "#A78BFA",
@@ -157,7 +152,7 @@ const EXECUTOR_BADGE_HEX: Record<string, string> = {
   manual: "#3B82F6",
 };
 
-type WorkspaceTab = "board" | "dag" | "chat" | "activity" | "details";
+type WorkspaceTab = "plan" | "work" | "dag" | "chat" | "activity" | "details";
 type MissionListViewMode = "list" | "board";
 
 const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: string }> = [
@@ -1490,6 +1485,8 @@ type CreateDraft = {
   prStrategy: PrStrategy;
   /** New model configuration */
   modelConfig: MissionModelConfig;
+  phaseProfileId: string | null;
+  phaseOverride: PhaseCard[];
 };
 
 const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
@@ -1501,6 +1498,36 @@ const DEFAULT_MODEL_CONFIG: MissionModelConfig = {
   intelligenceConfig: BUILT_IN_PROFILES[0].intelligenceConfig,
   smartBudget: { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 },
 };
+
+function validatePhaseOrder(cards: PhaseCard[]): string[] {
+  if (!cards.length) return ["At least one phase is required."];
+  const errors: string[] = [];
+  const byKey = new Map<string, number>();
+  cards.forEach((card, index) => {
+    if (!card.phaseKey.trim()) errors.push(`Phase ${index + 1} is missing a key.`);
+    if (byKey.has(card.phaseKey)) errors.push(`Duplicate phase key: ${card.phaseKey}`);
+    byKey.set(card.phaseKey, index);
+    if (card.orderingConstraints.mustBeFirst && index !== 0) {
+      errors.push(`${card.name} must be first.`);
+    }
+    if (card.orderingConstraints.mustBeLast && index !== cards.length - 1) {
+      errors.push(`${card.name} must be last.`);
+    }
+  });
+  cards.forEach((card, index) => {
+    (card.orderingConstraints.mustFollow ?? []).forEach((dep) => {
+      const depIndex = byKey.get(dep);
+      if (depIndex == null) errors.push(`${card.name} requires missing predecessor ${dep}.`);
+      if (depIndex != null && depIndex >= index) errors.push(`${card.name} must follow ${dep}.`);
+    });
+    (card.orderingConstraints.mustPrecede ?? []).forEach((dep) => {
+      const depIndex = byKey.get(dep);
+      if (depIndex == null) errors.push(`${card.name} requires missing successor ${dep}.`);
+      if (depIndex != null && depIndex <= index) errors.push(`${card.name} must precede ${dep}.`);
+    });
+  });
+  return [...new Set(errors)];
+}
 
 function CreateMissionDialog({
   open,
@@ -1524,6 +1551,10 @@ function CreateMissionDialog({
   const [selectedProfileId, setSelectedProfileId] = useState<string>("standard");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>([]);
+  const [phaseLoading, setPhaseLoading] = useState(false);
+  const [phaseError, setPhaseError] = useState<string | null>(null);
+  const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({});
   const [draft, setDraft] = useState<CreateDraft>({
     title: "",
     prompt: "",
@@ -1532,6 +1563,8 @@ function CreateMissionDialog({
     executionPolicy: defaultExecutionPolicy,
     prStrategy: { kind: "integration", targetBranch: "main", draft: true },
     modelConfig: { ...DEFAULT_MODEL_CONFIG },
+    phaseProfileId: null,
+    phaseOverride: [],
   });
 
   useEffect(() => {
@@ -1539,6 +1572,8 @@ function CreateMissionDialog({
     setSelectedProfileId("standard");
     setAttachments([]);
     setAdvancedOpen(false);
+    setPhaseError(null);
+    setExpandedPhases({});
     setDraft({
       title: "",
       prompt: "",
@@ -1547,31 +1582,53 @@ function CreateMissionDialog({
       executionPolicy: defaultExecutionPolicy,
       prStrategy: { kind: "integration", targetBranch: "main", draft: true },
       modelConfig: { ...DEFAULT_MODEL_CONFIG },
+      phaseProfileId: null,
+      phaseOverride: [],
     });
+
+    let cancelled = false;
+    setPhaseLoading(true);
+    void window.ade.missions
+      .listPhaseProfiles({})
+      .then((profiles) => {
+        if (cancelled) return;
+        setPhaseProfiles(profiles);
+        const defaultProfile = profiles.find((profile) => profile.isDefault) ?? profiles[0] ?? null;
+        if (!defaultProfile) {
+          setDraft((prev) => ({ ...prev, phaseProfileId: null, phaseOverride: [] }));
+          return;
+        }
+        setDraft((prev) => ({
+          ...prev,
+          phaseProfileId: defaultProfile.id,
+          phaseOverride: defaultProfile.phases.map((phase, index) => ({ ...phase, position: index }))
+        }));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPhaseProfiles([]);
+        setPhaseError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setPhaseLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [open, defaultExecutionPolicy]);
 
   const handleLaunch = useCallback(() => {
     if (!draft.prompt.trim()) return;
+    if (validatePhaseOrder(draft.phaseOverride).length > 0) return;
     onLaunch(draft);
   }, [draft, onLaunch]);
-
-  const hasClaudeModel = useMemo(() => {
-    const orchProvider = draft.modelConfig.orchestratorModel.provider;
-    if (orchProvider === "claude") return true;
-    const intel = draft.modelConfig.intelligenceConfig;
-    if (intel) {
-      for (const config of Object.values(intel)) {
-        if (config && typeof config === "object" && "provider" in config && config.provider === "claude") return true;
-      }
-    }
-    return false;
-  }, [draft.modelConfig]);
 
   if (!open) return null;
 
   const dlgInputStyle: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 };
   const dlgLabelStyle: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
-  const selectedLane = sortedLanes.find((lane) => lane.id === draft.laneId);
+  const phaseValidationErrors = validatePhaseOrder(draft.phaseOverride);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -1637,6 +1694,248 @@ function CreateMissionDialog({
               ))}
             </select>
           </label>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span style={dlgLabelStyle}>
+                <Hash size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+                PHASE CONFIGURATION
+              </span>
+              <select
+                value={draft.phaseProfileId ?? ""}
+                onChange={(e) => {
+                  const nextProfileId = e.target.value || null;
+                  const profile = phaseProfiles.find((entry) => entry.id === nextProfileId) ?? null;
+                  setDraft((prev) => ({
+                    ...prev,
+                    phaseProfileId: nextProfileId,
+                    phaseOverride: profile
+                      ? profile.phases.map((phase, index) => ({ ...phase, position: index }))
+                      : prev.phaseOverride
+                  }));
+                }}
+                className="h-7 w-[220px] px-2 text-[10px] outline-none"
+                style={dlgInputStyle}
+                disabled={phaseLoading || phaseProfiles.length === 0}
+              >
+                <option value="">Select profile</option>
+                {phaseProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.isBuiltIn ? "\u25CF " : ""}{profile.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                style={outlineButton()}
+                onClick={() => {
+                  const now = new Date().toISOString();
+                  setDraft((prev) => ({
+                    ...prev,
+                    phaseProfileId: prev.phaseProfileId,
+                    phaseOverride: [
+                      ...prev.phaseOverride,
+                      {
+                        id: `custom:${Date.now()}`,
+                        phaseKey: `custom_${prev.phaseOverride.length + 1}`,
+                        name: `Custom Phase ${prev.phaseOverride.length + 1}`,
+                        description: "",
+                        instructions: "",
+                        model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+                        budget: {},
+                        orderingConstraints: {},
+                        askQuestions: { enabled: false, mode: "never" },
+                        validationGate: { tier: "self", required: false },
+                        isBuiltIn: false,
+                        isCustom: true,
+                        position: prev.phaseOverride.length,
+                        createdAt: now,
+                        updatedAt: now
+                      }
+                    ]
+                  }));
+                }}
+              >
+                <Plus size={12} weight="bold" />
+                ADD CUSTOM PHASE
+              </button>
+              <button
+                type="button"
+                style={outlineButton()}
+                disabled={draft.phaseOverride.length === 0}
+                onClick={async () => {
+                  const profileName = window.prompt("New phase profile name", "Custom Profile");
+                  if (!profileName || !profileName.trim()) return;
+                  try {
+                    const saved = await window.ade.missions.savePhaseProfile({
+                      profile: {
+                        name: profileName.trim(),
+                        description: "Saved from mission launch flow",
+                        phases: draft.phaseOverride
+                      }
+                    });
+                    setPhaseProfiles((prev) => [saved, ...prev.filter((entry) => entry.id !== saved.id)]);
+                    setDraft((prev) => ({ ...prev, phaseProfileId: saved.id }));
+                  } catch (err) {
+                    setPhaseError(err instanceof Error ? err.message : String(err));
+                  }
+                }}
+              >
+                SAVE AS PROFILE
+              </button>
+            </div>
+            {phaseLoading ? (
+              <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                Loading phase profiles...
+              </div>
+            ) : null}
+            {phaseError ? (
+              <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
+                {phaseError}
+              </div>
+            ) : null}
+            <div className="space-y-1.5">
+              {draft.phaseOverride.map((phase, index) => {
+                const expanded = expandedPhases[phase.id] === true;
+                return (
+                  <div key={phase.id} className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        {index + 1}.
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>{phase.name}</div>
+                        <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          {phase.model.modelId} · {phase.validationGate.tier}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="px-1 text-[10px]"
+                        style={{ color: COLORS.textMuted }}
+                        disabled={index === 0}
+                        onClick={() => {
+                          if (index === 0) return;
+                          setDraft((prev) => {
+                            const next = [...prev.phaseOverride];
+                            const moved = next[index];
+                            if (!moved) return prev;
+                            next.splice(index, 1);
+                            next.splice(index - 1, 0, moved);
+                            return {
+                              ...prev,
+                              phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos }))
+                            };
+                          });
+                        }}
+                        title="Move up"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="px-1 text-[10px]"
+                        style={{ color: COLORS.textMuted }}
+                        disabled={index === draft.phaseOverride.length - 1}
+                        onClick={() => {
+                          if (index >= draft.phaseOverride.length - 1) return;
+                          setDraft((prev) => {
+                            const next = [...prev.phaseOverride];
+                            const moved = next[index];
+                            if (!moved) return prev;
+                            next.splice(index, 1);
+                            next.splice(index + 1, 0, moved);
+                            return {
+                              ...prev,
+                              phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos }))
+                            };
+                          });
+                        }}
+                        title="Move down"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className="px-2 text-[10px] font-bold uppercase tracking-[1px]"
+                        style={outlineButton()}
+                        onClick={() => setExpandedPhases((prev) => ({ ...prev, [phase.id]: !expanded }))}
+                      >
+                        {expanded ? "HIDE" : "CONFIGURE"}
+                      </button>
+                    </div>
+                    {expanded ? (
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                        <label className="space-y-1 text-[10px]">
+                          <span style={dlgLabelStyle}>PHASE NAME</span>
+                          <input
+                            value={phase.name}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setDraft((prev) => ({
+                                ...prev,
+                                phaseOverride: prev.phaseOverride.map((entry) =>
+                                  entry.id === phase.id ? { ...entry, name: value } : entry
+                                )
+                              }));
+                            }}
+                            className="h-7 w-full px-2 outline-none"
+                            style={dlgInputStyle}
+                          />
+                        </label>
+                        <label className="space-y-1 text-[10px]">
+                          <span style={dlgLabelStyle}>MODEL ID</span>
+                          <input
+                            value={phase.model.modelId}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setDraft((prev) => ({
+                                ...prev,
+                                phaseOverride: prev.phaseOverride.map((entry) =>
+                                  entry.id === phase.id ? { ...entry, model: { ...entry.model, modelId: value } } : entry
+                                )
+                              }));
+                            }}
+                            className="h-7 w-full px-2 outline-none"
+                            style={dlgInputStyle}
+                          />
+                        </label>
+                        <label className="space-y-1 text-[10px] md:col-span-2">
+                          <span style={dlgLabelStyle}>INSTRUCTIONS</span>
+                          <textarea
+                            value={phase.instructions}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setDraft((prev) => ({
+                                ...prev,
+                                phaseOverride: prev.phaseOverride.map((entry) =>
+                                  entry.id === phase.id ? { ...entry, instructions: value } : entry
+                                )
+                              }));
+                            }}
+                            className="w-full px-2 py-1.5 outline-none"
+                            rows={3}
+                            style={dlgInputStyle}
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            {phaseValidationErrors.length > 0 ? (
+              <div className="space-y-1 px-2 py-1.5" style={{ background: `${COLORS.warning}15`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}>
+                {phaseValidationErrors.map((entry) => (
+                  <div key={entry} className="text-[10px]" style={{ fontFamily: MONO_FONT }}>
+                    {entry}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
 
           <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
 
@@ -2050,7 +2349,7 @@ function CreateMissionDialog({
           <button
             style={primaryButton()}
             onClick={handleLaunch}
-            disabled={busy || !draft.prompt.trim()}
+            disabled={busy || !draft.prompt.trim() || phaseValidationErrors.length > 0}
           >
             {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
             LAUNCH
@@ -2080,6 +2379,27 @@ function MissionSettingsDialog({
   error: string | null;
   notice: string | null;
 }) {
+  const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>([]);
+  const [phaseBusy, setPhaseBusy] = useState(false);
+  const [phaseNotice, setPhaseNotice] = useState<string | null>(null);
+  const [phaseError, setPhaseError] = useState<string | null>(null);
+
+  const refreshPhaseProfiles = useCallback(async () => {
+    try {
+      const profiles = await window.ade.missions.listPhaseProfiles({});
+      setPhaseProfiles(profiles);
+      setPhaseError(null);
+    } catch (err) {
+      setPhaseError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    setPhaseNotice(null);
+    void refreshPhaseProfiles();
+  }, [open, refreshPhaseProfiles]);
+
   if (!open) return null;
 
   const settingsInputStyle: React.CSSProperties = { height: 32, width: "100%", background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, padding: "0 8px", fontSize: 12, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0, outline: "none" };
@@ -2236,6 +2556,149 @@ function MissionSettingsDialog({
               </div>
             </div>
           </div>
+
+          <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+                PHASE PROFILES
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  style={outlineButton()}
+                  disabled={phaseBusy}
+                  onClick={async () => {
+                    const name = window.prompt("New phase profile name", "Custom Profile");
+                    if (!name || !name.trim()) return;
+                    const fallback = phaseProfiles.find((profile) => profile.isDefault) ?? phaseProfiles[0] ?? null;
+                    const phases = fallback?.phases ?? [];
+                    if (!phases.length) return;
+                    setPhaseBusy(true);
+                    try {
+                      await window.ade.missions.savePhaseProfile({
+                        profile: {
+                          name: name.trim(),
+                          description: "Created from Mission Settings",
+                          phases
+                        }
+                      });
+                      await refreshPhaseProfiles();
+                      setPhaseNotice("Phase profile created.");
+                    } catch (err) {
+                      setPhaseError(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setPhaseBusy(false);
+                    }
+                  }}
+                >
+                  + CREATE
+                </button>
+                <button
+                  style={outlineButton()}
+                  disabled={phaseBusy}
+                  onClick={async () => {
+                    const filePath = window.prompt("Import profile JSON path");
+                    if (!filePath || !filePath.trim()) return;
+                    setPhaseBusy(true);
+                    try {
+                      await window.ade.missions.importPhaseProfile({ filePath: filePath.trim() });
+                      await refreshPhaseProfiles();
+                      setPhaseNotice("Profile imported.");
+                    } catch (err) {
+                      setPhaseError(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setPhaseBusy(false);
+                    }
+                  }}
+                >
+                  IMPORT
+                </button>
+              </div>
+            </div>
+
+            {phaseNotice ? (
+              <div className="mt-2 px-2 py-1.5 text-[10px]" style={{ border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}15`, color: COLORS.success }}>
+                {phaseNotice}
+              </div>
+            ) : null}
+            {phaseError ? (
+              <div className="mt-2 px-2 py-1.5 text-[10px]" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, color: COLORS.danger }}>
+                {phaseError}
+              </div>
+            ) : null}
+
+            <div className="mt-3 space-y-2">
+              {phaseProfiles.map((profile) => (
+                <div key={profile.id} className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-semibold" style={{ color: COLORS.textPrimary }}>
+                        {profile.isBuiltIn ? "\u25CF " : ""}{profile.name}
+                      </div>
+                      <div className="truncate text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        {profile.phases.map((phase) => phase.name).join(" \u2192 ")}
+                      </div>
+                    </div>
+                    <button
+                      style={outlineButton()}
+                      disabled={phaseBusy}
+                      onClick={async () => {
+                        setPhaseBusy(true);
+                        try {
+                          await window.ade.missions.clonePhaseProfile({ profileId: profile.id });
+                          await refreshPhaseProfiles();
+                          setPhaseNotice("Profile cloned.");
+                        } catch (err) {
+                          setPhaseError(err instanceof Error ? err.message : String(err));
+                        } finally {
+                          setPhaseBusy(false);
+                        }
+                      }}
+                    >
+                      CLONE
+                    </button>
+                    <button
+                      style={outlineButton()}
+                      disabled={phaseBusy}
+                      onClick={async () => {
+                        setPhaseBusy(true);
+                        try {
+                          const exported = await window.ade.missions.exportPhaseProfile({ profileId: profile.id });
+                          setPhaseNotice(exported.savedPath ? `Exported: ${exported.savedPath}` : "Profile exported.");
+                        } catch (err) {
+                          setPhaseError(err instanceof Error ? err.message : String(err));
+                        } finally {
+                          setPhaseBusy(false);
+                        }
+                      }}
+                    >
+                      EXPORT
+                    </button>
+                    {!profile.isBuiltIn ? (
+                      <button
+                        style={dangerButton()}
+                        disabled={phaseBusy}
+                        onClick={async () => {
+                          if (!window.confirm(`Delete phase profile "${profile.name}"?`)) return;
+                          setPhaseBusy(true);
+                          try {
+                            await window.ade.missions.deletePhaseProfile({ profileId: profile.id });
+                            await refreshPhaseProfiles();
+                            setPhaseNotice("Profile deleted.");
+                          } catch (err) {
+                            setPhaseError(err instanceof Error ? err.message : String(err));
+                          } finally {
+                            setPhaseBusy(false);
+                          }
+                        }}
+                      >
+                        DELETE
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 px-5 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
@@ -2260,6 +2723,7 @@ export default function MissionsPage() {
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const [selectedMission, setSelectedMission] = useState<MissionDetail | null>(null);
   const [runGraph, setRunGraph] = useState<OrchestratorRunGraph | null>(null);
+  const [dashboard, setDashboard] = useState<MissionDashboardSnapshot | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -2275,7 +2739,7 @@ export default function MissionsPage() {
   const [missionSettingsSnapshot, setMissionSettingsSnapshot] = useState<ProjectConfigSnapshot | null>(null);
   const [missionSettingsDraft, setMissionSettingsDraft] = useState<MissionSettingsDraft>(DEFAULT_MISSION_SETTINGS_DRAFT);
 
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("board");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("plan");
   const [searchFilter, setSearchFilter] = useState("");
   const [missionListView, setMissionListView] = useState<MissionListViewMode>("list");
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
@@ -2484,7 +2948,7 @@ export default function MissionsPage() {
         }
         setSelectedMissionId((prev) => {
           if (prev && list.some((m) => m.id === prev)) return prev;
-          return list[0]?.id ?? null;
+          return null;
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -2495,6 +2959,15 @@ export default function MissionsPage() {
     },
     [lanes.length, refreshLanes]
   );
+
+  const loadDashboard = useCallback(async () => {
+    try {
+      const snapshot = await window.ade.missions.getDashboard();
+      setDashboard(snapshot);
+    } catch {
+      // Best-effort dashboard hydration.
+    }
+  }, []);
 
   const loadMissionDetail = useCallback(async (missionId: string) => {
     const trimmed = missionId.trim();
@@ -2539,7 +3012,8 @@ export default function MissionsPage() {
 
   useEffect(() => {
     void refreshMissionList({ preserveSelection: true });
-  }, [refreshMissionList]);
+    void loadDashboard();
+  }, [refreshMissionList, loadDashboard]);
 
   useEffect(() => {
     void loadMissionSettings();
@@ -2568,13 +3042,14 @@ export default function MissionsPage() {
   useEffect(() => {
     const unsub = window.ade.missions.onEvent((payload) => {
       void refreshMissionList({ preserveSelection: true, silent: true });
+      void loadDashboard();
       if (payload.missionId && payload.missionId === selectedMissionId) {
         void loadMissionDetail(payload.missionId);
         scheduleOrchestratorGraphRefresh(payload.missionId, 120);
       }
     });
     return () => unsub();
-  }, [loadMissionDetail, refreshMissionList, scheduleOrchestratorGraphRefresh, selectedMissionId]);
+  }, [loadDashboard, loadMissionDetail, refreshMissionList, scheduleOrchestratorGraphRefresh, selectedMissionId]);
 
   useEffect(() => {
     const selectedRunId = runGraph?.run.id ?? null;
@@ -2582,9 +3057,10 @@ export default function MissionsPage() {
       if (!selectedMissionId) return;
       if (selectedRunId && event.runId && event.runId !== selectedRunId) return;
       scheduleOrchestratorGraphRefresh(selectedMissionId);
+      void loadDashboard();
     });
     return () => unsub();
-  }, [runGraph?.run.id, scheduleOrchestratorGraphRefresh, selectedMissionId]);
+  }, [loadDashboard, runGraph?.run.id, scheduleOrchestratorGraphRefresh, selectedMissionId]);
 
   useEffect(() => {
     return () => {
@@ -2642,6 +3118,8 @@ export default function MissionsPage() {
           ...draft.modelConfig,
           decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
         },
+        phaseProfileId: draft.phaseProfileId,
+        phaseOverride: draft.phaseOverride,
         autostart: true,
         launchMode: "autopilot",
         autopilotExecutor: draft.executionPolicy.implementation?.model ?? "openai/gpt-5.3-codex"
@@ -2771,30 +3249,6 @@ export default function MissionsPage() {
     }
   }, [selectedMission, steerInput]);
 
-  /* ── Steps grouped by status for Kanban ── */
-  const stepsByStatus = useMemo(() => {
-    const steps = runGraph?.steps ?? [];
-    const map = new Map<MissionStepStatus, OrchestratorStep[]>();
-    for (const col of STEP_STATUS_COLUMNS) {
-      map.set(col.status, []);
-    }
-
-    // Render planning phase from real run steps only — no synthetic card.
-    // A real planner step (stepKey === "planning" or "planner") is placed like any other step.
-    for (const step of steps) {
-      const key = step.status as MissionStepStatus;
-      const bucket = map.get(key);
-      if (bucket) {
-        bucket.push(step);
-      } else {
-        // Map orchestrator statuses to step statuses
-        const fallback = map.get("pending");
-        fallback?.push(step);
-      }
-    }
-    return map;
-  }, [runGraph, selectedMission]);
-
   const attemptsByStep = useMemo(() => {
     const map = new Map<string, OrchestratorAttempt[]>();
     if (!runGraph) return map;
@@ -2816,6 +3270,23 @@ export default function MissionsPage() {
     if (!selectedStep) return [];
     return attemptsByStep.get(selectedStep.id) ?? [];
   }, [attemptsByStep, selectedStep]);
+
+  const missionPhaseRows = useMemo(() => {
+    if (!selectedMission) return [] as Array<{ key: string; name: string; completed: number; total: number }>;
+    const map = new Map<string, { key: string; name: string; completed: number; total: number }>();
+    for (const step of selectedMission.steps) {
+      const meta = isRecord(step.metadata) ? step.metadata : {};
+      const key = typeof meta.phaseKey === "string" && meta.phaseKey.trim().length > 0 ? meta.phaseKey : "development";
+      const name = typeof meta.phaseName === "string" && meta.phaseName.trim().length > 0 ? meta.phaseName : "Development";
+      const row = map.get(key) ?? { key, name, completed: 0, total: 0 };
+      row.total += 1;
+      if (step.status === "succeeded" || step.status === "skipped" || step.status === "canceled") {
+        row.completed += 1;
+      }
+      map.set(key, row);
+    }
+    return Array.from(map.values());
+  }, [selectedMission]);
 
   // Reconcile selection only against displayed cards — no auto-reset mismatch
   useEffect(() => {
@@ -3040,15 +3511,11 @@ export default function MissionsPage() {
         {/* ════════════ MAIN WORKSPACE ════════════ */}
         <div className="flex flex-1 flex-col min-w-0" style={{ background: COLORS.pageBg }}>
           {!selectedMissionId ? (
-            /* No selection empty state */
-            <div className="flex h-full flex-col items-center justify-center gap-3" style={{ color: COLORS.textMuted }}>
-              <Rocket size={40} weight="regular" style={{ opacity: 0.2 }} />
-              <p className="text-sm" style={{ fontFamily: MONO_FONT }}>Select a mission or create a new one</p>
-              <button style={primaryButton()} onClick={() => setCreateOpen(true)}>
-                <Plus size={14} weight="regular" />
-                NEW MISSION
-              </button>
-            </div>
+            <MissionsHomeDashboard
+              snapshot={dashboard}
+              onNewMission={() => setCreateOpen(true)}
+              onViewMission={(missionId) => setSelectedMissionId(missionId)}
+            />
           ) : (
             <>
               {/* ── Header Bar ── */}
@@ -3141,11 +3608,12 @@ export default function MissionsPage() {
               {/* ── Tab Navigation ── */}
               <div className="flex items-center gap-0 px-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
                 {([
-                  { key: "board" as WorkspaceTab, num: "01", label: "BOARD", icon: SquaresFour },
-                  { key: "dag" as WorkspaceTab, num: "02", label: "DAG", icon: Graph },
-                  { key: "chat" as WorkspaceTab, num: "03", label: "CHAT", icon: ChatCircle },
-                  { key: "activity" as WorkspaceTab, num: "04", label: "ACTIVITY", icon: Pulse },
-                  { key: "details" as WorkspaceTab, num: "05", label: "DETAILS", icon: Lightning }
+                  { key: "plan" as WorkspaceTab, num: "01", label: "PLAN", icon: SquaresFour },
+                  { key: "work" as WorkspaceTab, num: "02", label: "WORK", icon: TerminalWindow },
+                  { key: "dag" as WorkspaceTab, num: "03", label: "DAG", icon: Graph },
+                  { key: "chat" as WorkspaceTab, num: "04", label: "CHAT", icon: ChatCircle },
+                  { key: "activity" as WorkspaceTab, num: "05", label: "ACTIVITY", icon: Pulse },
+                  { key: "details" as WorkspaceTab, num: "06", label: "DETAILS", icon: Lightning }
                 ]).map((tab) => {
                   const isActive = activeTab === tab.key;
                   return (
@@ -3207,12 +3675,20 @@ export default function MissionsPage() {
               )}
 
               {/* ── Tab Content ── */}
-              <div className={cn("flex-1 min-h-0", activeTab === "chat" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
-                {activeTab === "board" && (
+              <div className={cn(
+                "flex-1 min-h-0",
+                activeTab === "chat"
+                  ? "flex flex-col overflow-hidden"
+                  : activeTab === "work"
+                    ? "flex flex-col overflow-hidden p-4"
+                    : "overflow-auto p-4"
+              )}>
+                {activeTab === "plan" && (
                   <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
                     <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-                      <BoardTab
-                        stepsByStatus={stepsByStatus}
+                      <PlanTab
+                        mission={selectedMission}
+                        runGraph={runGraph}
                         attemptsByStep={attemptsByStep}
                         selectedStepId={selectedStepId}
                         onStepSelect={setSelectedStepId}
@@ -3229,6 +3705,10 @@ export default function MissionsPage() {
                       }}
                     />
                   </div>
+                )}
+
+                {activeTab === "work" && (
+                  <WorkTab runGraph={runGraph} />
                 )}
 
                 {activeTab === "dag" && (
@@ -3296,7 +3776,27 @@ export default function MissionsPage() {
                 )}
 
                 {activeTab === "details" && selectedMission && (
-                  <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
+                  <div className="space-y-3">
+                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                      <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        Phase Profile
+                      </div>
+                      <div className="mt-1 text-xs" style={{ color: COLORS.textPrimary }}>
+                        {selectedMission.phaseConfiguration?.profile?.name ?? "Default"}
+                      </div>
+                      {missionPhaseRows.length > 0 ? (
+                        <div className="mt-2 space-y-1">
+                          {missionPhaseRows.map((row) => (
+                            <div key={row.key} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
+                              <span style={{ color: COLORS.textSecondary }}>{row.name}</span>
+                              <span style={{ color: COLORS.textMuted }}>{row.completed}/{row.total}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                    <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
+                  </div>
                 )}
               </div>
 
@@ -3775,97 +4275,499 @@ function StepDetailPanel({
   );
 }
 
-/* ════════════════════ BOARD TAB ════════════════════ */
+/* ════════════════════ PLAN TAB ════════════════════ */
 
-function BoardTab({
-  stepsByStatus,
+const PLAN_DONE_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "skipped", "superseded", "canceled"]);
+
+function statusGlyph(status: OrchestratorStepStatus): string {
+  if (status === "succeeded" || status === "skipped") return "✓";
+  if (status === "running" || status === "ready") return "●";
+  if (status === "failed") return "✗";
+  if (status === "superseded") return "~";
+  return "○";
+}
+
+function PlanTab({
+  mission,
+  runGraph,
   attemptsByStep,
   selectedStepId,
   onStepSelect
 }: {
-  stepsByStatus: Map<MissionStepStatus, OrchestratorStep[]>;
+  mission: MissionDetail | null;
+  runGraph: OrchestratorRunGraph | null;
   attemptsByStep: Map<string, OrchestratorAttempt[]>;
   selectedStepId: string | null;
   onStepSelect: (stepId: string) => void;
 }) {
-  const hasAnySteps = Array.from(stepsByStatus.values()).some((arr) => arr.length > 0);
+  const [collapsedMilestones, setCollapsedMilestones] = useState<Record<string, boolean>>({});
 
-  if (!hasAnySteps) {
+  const hierarchy = useMemo(() => {
+    const steps = runGraph?.steps ?? [];
+    const phaseMap = new Map<string, {
+      key: string;
+      name: string;
+      position: number;
+      milestones: Map<string, { key: string; name: string; steps: OrchestratorStep[] }>;
+    }>();
+
+    for (const step of [...steps].sort((a, b) => a.stepIndex - b.stepIndex)) {
+      const meta = isRecord(step.metadata) ? step.metadata : {};
+      const phaseKey = typeof meta.phaseKey === "string" && meta.phaseKey.trim().length > 0 ? meta.phaseKey : "development";
+      const phaseName = typeof meta.phaseName === "string" && meta.phaseName.trim().length > 0 ? meta.phaseName : "Development";
+      const phasePosition = Number.isFinite(Number(meta.phasePosition)) ? Number(meta.phasePosition) : 9999;
+      const planStep = isRecord(meta.planStep) ? meta.planStep : {};
+      const milestoneName =
+        typeof planStep.milestone === "string" && planStep.milestone.trim().length > 0
+          ? planStep.milestone.trim()
+          : `Milestone ${Math.floor(step.stepIndex / 4) + 1}`;
+
+      const phaseBucket = phaseMap.get(phaseKey) ?? {
+        key: phaseKey,
+        name: phaseName,
+        position: phasePosition,
+        milestones: new Map()
+      };
+      const milestoneBucket = phaseBucket.milestones.get(milestoneName) ?? {
+        key: `${phaseKey}:${milestoneName}`,
+        name: milestoneName,
+        steps: []
+      };
+      milestoneBucket.steps.push(step);
+      phaseBucket.milestones.set(milestoneName, milestoneBucket);
+      phaseMap.set(phaseKey, phaseBucket);
+    }
+
+    return Array.from(phaseMap.values())
+      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))
+      .map((phase) => ({
+        ...phase,
+        milestones: Array.from(phase.milestones.values()).sort((a, b) => a.steps[0]!.stepIndex - b.steps[0]!.stepIndex)
+      }));
+  }, [runGraph?.steps]);
+
+  if (!runGraph || runGraph.steps.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16" style={{ color: COLORS.textMuted }}>
         <SquaresFour size={32} weight="regular" style={{ opacity: 0.2 }} className="mb-2" />
-        <p className="text-xs" style={{ fontFamily: MONO_FONT }}>No steps yet. Start a run to see the board.</p>
+        <p className="text-xs" style={{ fontFamily: MONO_FONT }}>No runtime plan yet. Start a run to populate the plan tree.</p>
+        {mission?.steps?.length ? (
+          <p className="mt-2 text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+            Mission has {mission.steps.length} seeded steps waiting for orchestration.
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  const currentPhase = hierarchy.find((phase) =>
+    phase.milestones.some((milestone) => milestone.steps.some((step) => !PLAN_DONE_STATUSES.has(step.status)))
+  ) ?? hierarchy[hierarchy.length - 1] ?? null;
+  const phaseTotal = currentPhase
+    ? currentPhase.milestones.reduce((sum, milestone) => sum + milestone.steps.length, 0)
+    : 0;
+  const phaseCompleted = currentPhase
+    ? currentPhase.milestones.reduce(
+        (sum, milestone) => sum + milestone.steps.filter((step) => PLAN_DONE_STATUSES.has(step.status)).length,
+        0
+      )
+    : 0;
+
+  return (
+    <div className="space-y-3 pb-3">
+      {currentPhase ? (
+        <div className="px-3 py-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+          <div className="flex items-center justify-between text-[11px]" style={{ fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+            <span>Phase: {currentPhase.name}</span>
+            <span>{phaseCompleted}/{phaseTotal} tasks</span>
+          </div>
+          <div className="mt-2 h-1.5 w-full" style={{ background: COLORS.recessedBg }}>
+            <div
+              className="h-full transition-all"
+              style={{ width: `${phaseTotal > 0 ? Math.round((phaseCompleted / phaseTotal) * 100) : 0}%`, background: COLORS.accent }}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {hierarchy.map((phase) => (
+        <div key={phase.key} className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+          <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+            {phase.name}
+          </div>
+          <div className="mt-2 space-y-2">
+            {phase.milestones.map((milestone) => {
+              const milestoneDone = milestone.steps.filter((step) => PLAN_DONE_STATUSES.has(step.status)).length;
+              const collapsed = collapsedMilestones[milestone.key] === true;
+              return (
+                <div key={milestone.key} style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
+                  <button
+                    className="flex w-full items-center justify-between px-2 py-1.5 text-left"
+                    onClick={() =>
+                      setCollapsedMilestones((prev) => ({ ...prev, [milestone.key]: !collapsed }))
+                    }
+                  >
+                    <span className="text-[11px]" style={{ color: COLORS.textPrimary }}>{milestone.name}</span>
+                    <span className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      {milestoneDone}/{milestone.steps.length}
+                    </span>
+                  </button>
+                  {!collapsed ? (
+                    <div className="space-y-1 px-2 pb-2">
+                      {milestone.steps.map((step) => {
+                        const attempts = attemptsByStep.get(step.id) ?? [];
+                        const activeAttempt = attempts.find((attempt) => attempt.status === "running") ?? attempts[0] ?? null;
+                        const meta = isRecord(step.metadata) ? step.metadata : {};
+                        const expectedSignals = Array.isArray(meta.expectedSignals)
+                          ? meta.expectedSignals.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+                          : [];
+                        return (
+                          <div
+                            key={step.id}
+                            className="cursor-pointer px-2 py-1"
+                            onClick={() => onStepSelect(step.id)}
+                            style={selectedStepId === step.id
+                              ? { background: `${COLORS.accent}12`, border: `1px solid ${COLORS.accent}30` }
+                              : { border: `1px solid ${COLORS.border}` }
+                            }
+                          >
+                            <div className="flex items-center gap-2 text-[11px]">
+                              <span style={{ color: STEP_STATUS_HEX[step.status] ?? COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                {statusGlyph(step.status)}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate" style={{ color: COLORS.textPrimary }}>{step.title}</span>
+                              {activeAttempt && step.status === "running" ? (
+                                <span className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                  {activeAttempt.executorKind}
+                                </span>
+                              ) : null}
+                            </div>
+                            {expectedSignals.length > 0 ? (
+                              <div className="mt-1 space-y-0.5 pl-5">
+                                {expectedSignals.slice(0, 3).map((signal) => (
+                                  <div key={signal} className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                    {step.status === "succeeded" ? "✓" : "○"} {signal}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ════════════════════ WORK TAB ════════════════════ */
+
+function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null }) {
+  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
+  const [transcriptTail, setTranscriptTail] = useState("");
+  const [autoScroll, setAutoScroll] = useState(true);
+  const transcriptRef = useRef<HTMLPreElement>(null);
+
+  const activeAttempts = useMemo(() => {
+    if (!runGraph) return [];
+    return runGraph.attempts
+      .filter((attempt) => attempt.status === "running" && typeof attempt.executorSessionId === "string" && attempt.executorSessionId.length > 0)
+      .sort((a, b) => Date.parse(b.startedAt ?? b.createdAt) - Date.parse(a.startedAt ?? a.createdAt));
+  }, [runGraph]);
+
+  useEffect(() => {
+    if (!activeAttempts.length) {
+      setSelectedAttemptId(null);
+      setTranscriptTail("");
+      return;
+    }
+    setSelectedAttemptId((prev) => (prev && activeAttempts.some((attempt) => attempt.id === prev) ? prev : activeAttempts[0]!.id));
+  }, [activeAttempts]);
+
+  const selectedAttempt = useMemo(
+    () => activeAttempts.find((attempt) => attempt.id === selectedAttemptId) ?? null,
+    [activeAttempts, selectedAttemptId]
+  );
+  const selectedStep = useMemo(
+    () => (runGraph && selectedAttempt ? runGraph.steps.find((step) => step.id === selectedAttempt.stepId) ?? null : null),
+    [runGraph, selectedAttempt]
+  );
+
+  useEffect(() => {
+    if (!selectedAttempt?.executorSessionId) return;
+    let cancelled = false;
+    const readTail = async () => {
+      try {
+        const tail = await window.ade.sessions.readTranscriptTail({
+          sessionId: selectedAttempt.executorSessionId!,
+          maxBytes: 16_000
+        });
+        if (!cancelled) setTranscriptTail(tail);
+      } catch {
+        if (!cancelled) setTranscriptTail("(unable to read worker transcript)");
+      }
+    };
+    void readTail();
+    const timer = window.setInterval(() => {
+      void readTail();
+    }, 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [selectedAttempt?.executorSessionId]);
+
+  useEffect(() => {
+    if (!autoScroll || !transcriptRef.current) return;
+    transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+  }, [autoScroll, transcriptTail]);
+
+  const relatedEvents = useMemo(() => {
+    if (!runGraph?.runtimeEvents || !selectedAttempt) return [];
+    return [...runGraph.runtimeEvents]
+      .filter((event) => event.attemptId === selectedAttempt.id || event.stepId === selectedAttempt.stepId)
+      .sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt))
+      .slice(-200);
+  }, [runGraph?.runtimeEvents, selectedAttempt]);
+
+  const filesTouched = useMemo(() => {
+    const files = new Map<string, number>();
+    for (const event of relatedEvents) {
+      const payload = isRecord(event.payload) ? event.payload : {};
+      const candidates = [
+        typeof payload.filePath === "string" ? payload.filePath : null,
+        typeof payload.path === "string" ? payload.path : null,
+        typeof payload.file === "string" ? payload.file : null
+      ].filter((entry): entry is string => Boolean(entry));
+      for (const file of candidates) {
+        files.set(file, (files.get(file) ?? 0) + 1);
+      }
+    }
+    return [...files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  }, [relatedEvents]);
+
+  const toolsCalled = useMemo(() => {
+    const tools = new Map<string, number>();
+    for (const event of relatedEvents) {
+      const payload = isRecord(event.payload) ? event.payload : {};
+      const toolName =
+        typeof payload.toolName === "string"
+          ? payload.toolName
+          : typeof payload.tool === "string"
+            ? payload.tool
+            : event.eventType.startsWith("tool_")
+              ? event.eventType
+              : null;
+      if (!toolName) continue;
+      tools.set(toolName, (tools.get(toolName) ?? 0) + 1);
+    }
+    return [...tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  }, [relatedEvents]);
+
+  if (!runGraph) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+        No orchestrator run yet.
+      </div>
+    );
+  }
+
+  if (!activeAttempts.length) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+        No active workers right now.
       </div>
     );
   }
 
   return (
-    <div className="flex gap-3 overflow-x-auto pb-2">
-      {STEP_STATUS_COLUMNS.map((col) => {
-        const steps = stepsByStatus.get(col.status) ?? [];
-        const colHex = STEP_STATUS_HEX[col.status] ?? COLORS.textMuted;
-        return (
-          <div
-            key={col.status}
-            className="w-[220px] shrink-0"
-            style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <div className="flex items-center gap-2 px-3 py-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+        <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Follow</span>
+        <select
+          value={selectedAttemptId ?? ""}
+          onChange={(event) => setSelectedAttemptId(event.target.value)}
+          className="h-7 px-2 text-[10px] outline-none"
+          style={{ ...outlineButton(), background: COLORS.recessedBg }}
+        >
+          {activeAttempts.map((attempt) => {
+            const step = runGraph.steps.find((entry) => entry.id === attempt.stepId);
+            return (
+              <option key={attempt.id} value={attempt.id}>
+                {(step?.title ?? attempt.stepId.slice(0, 8)).slice(0, 70)}
+              </option>
+            );
+          })}
+        </select>
+        <span className="ml-auto text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+          {selectedStep ? `Phase: ${String((selectedStep.metadata as Record<string, unknown> | null)?.phaseName ?? "Development")}` : ""}
+        </span>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+        <div className="min-h-0 min-w-0 flex-1" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+          <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+            <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Live Output</span>
+            <button
+              className="text-[10px] font-bold uppercase tracking-[1px]"
+              style={{ color: autoScroll ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+              onClick={() => setAutoScroll((prev) => !prev)}
+            >
+              {autoScroll ? "Auto-scroll" : "Scroll lock"}
+            </button>
+          </div>
+          <pre
+            ref={transcriptRef}
+            className="h-full overflow-auto p-3 text-[10px] whitespace-pre-wrap"
+            style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT, background: COLORS.recessedBg }}
           >
-            {/* Column header */}
-            <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-              <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: colHex, fontFamily: MONO_FONT }}>{col.label}</span>
-              <span className="px-1.5 py-0.5 text-[9px] font-bold" style={steps.length > 0 ? inlineBadge(COLORS.accent) : { color: COLORS.textMuted }}>
-                {steps.length}
-              </span>
-            </div>
+            {transcriptTail || "Waiting for transcript output..."}
+          </pre>
+        </div>
 
-            {/* Step cards */}
-            <div className="space-y-1.5 p-2">
-              {steps.length === 0 && (
-                <div className="px-2 py-3 text-center text-[10px]" style={{ color: COLORS.textDim }}>Empty</div>
-              )}
-              {steps.map((step) => {
-                const attempts = attemptsByStep.get(step.id) ?? [];
-                const latestAttempt = attempts[0];
-                const duration = step.startedAt
-                  ? step.completedAt
-                    ? `${Math.round((Date.parse(step.completedAt) - Date.parse(step.startedAt)) / 1000)}s`
-                    : "running..."
-                  : "--";
-
-                return (
-                  <div
-                    key={step.id}
-                    onClick={() => onStepSelect(step.id)}
-                    className="px-2.5 py-2 transition-colors cursor-pointer"
-                    style={selectedStepId === step.id
-                      ? { background: "#A78BFA12", borderLeft: `3px solid ${COLORS.accent}`, border: `1px solid ${COLORS.accent}30` }
-                      : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
-                    }
-                  >
-                    <div className="text-xs font-medium truncate" style={{ color: COLORS.textPrimary }}>{step.title}</div>
-                    <div className="mt-0.5 text-[11px] leading-snug h-[28px] overflow-hidden" style={{ color: COLORS.textMuted }}>
-                      {stepIntentSummary(step)}
-                    </div>
-                    <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                      {latestAttempt && (
-                        <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(EXECUTOR_BADGE_HEX[latestAttempt.executorKind] ?? COLORS.textMuted)}>
-                          {latestAttempt.executorKind}
-                        </span>
-                      )}
-                      {attempts.length > 0 && (
-                        <span className="text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          {attempts.length} attempt{attempts.length !== 1 ? "s" : ""}
-                        </span>
-                      )}
-                      <span className="text-[9px] ml-auto" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{duration}</span>
-                    </div>
-                  </div>
-                );
-              })}
+        <div className="w-full space-y-3 lg:w-[320px] lg:shrink-0">
+          <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Files Modified</div>
+            <div className="mt-2 space-y-1">
+              {filesTouched.length === 0 ? (
+                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>No file events yet.</div>
+              ) : filesTouched.map(([file, count]) => (
+                <div key={file} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
+                  <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{file}</span>
+                  <span style={{ color: COLORS.textMuted }}>{count}</span>
+                </div>
+              ))}
             </div>
           </div>
-        );
-      })}
+
+          <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Tools Called</div>
+            <div className="mt-2 space-y-1">
+              {toolsCalled.length === 0 ? (
+                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>No tool events yet.</div>
+              ) : toolsCalled.map(([tool, count]) => (
+                <div key={tool} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
+                  <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{tool}</span>
+                  <span style={{ color: COLORS.textMuted }}>{count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════ HOME DASHBOARD ════════════════════ */
+
+function formatDurationMs(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "--";
+  const totalSeconds = Math.floor(value / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function MissionsHomeDashboard({
+  snapshot,
+  onNewMission,
+  onViewMission
+}: {
+  snapshot: MissionDashboardSnapshot | null;
+  onNewMission: () => void;
+  onViewMission: (missionId: string) => void;
+}) {
+  if (!snapshot) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+        Loading mission dashboard...
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col p-4 gap-3 overflow-auto">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-bold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>MISSIONS</div>
+        <button style={primaryButton()} onClick={onNewMission}>
+          <Plus size={14} />
+          NEW MISSION
+        </button>
+      </div>
+
+      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Active Missions</div>
+        <div className="mt-2 space-y-2">
+          {snapshot.active.length === 0 ? (
+            <div className="text-xs" style={{ color: COLORS.textDim }}>No active missions.</div>
+          ) : snapshot.active.map((entry) => (
+            <button
+              key={entry.mission.id}
+              className="w-full text-left p-2"
+              style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}
+              onClick={() => onViewMission(entry.mission.id)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-xs font-medium" style={{ color: COLORS.textPrimary }}>{entry.mission.title}</span>
+                <span className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{entry.phaseProgress.pct}%</span>
+              </div>
+              <div className="mt-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                {entry.phaseName ?? "Phase"} · {entry.activeWorkers} workers · {formatDurationMs(entry.elapsedMs)}
+              </div>
+              <div className="mt-1 h-1.5 w-full" style={{ background: COLORS.pageBg }}>
+                <div className="h-full" style={{ width: `${entry.phaseProgress.pct}%`, background: COLORS.accent }} />
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Recent Missions</div>
+        <div className="mt-2 space-y-1.5">
+          {snapshot.recent.length === 0 ? (
+            <div className="text-xs" style={{ color: COLORS.textDim }}>No recent missions.</div>
+          ) : snapshot.recent.map((entry) => (
+            <div key={entry.mission.id} className="flex items-center gap-2 px-2 py-1.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+              <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: COLORS.textPrimary }}>{entry.mission.title}</span>
+              <span className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{formatDurationMs(entry.durationMs)}</span>
+              <button style={outlineButton()} onClick={() => onViewMission(entry.mission.id)}>
+                {entry.action.toUpperCase()}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Stats (7d)</div>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Missions</div>
+            <div className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>{snapshot.weekly.missions}</div>
+          </div>
+          <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Success</div>
+            <div className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>{Math.round(snapshot.weekly.successRate * 100)}%</div>
+          </div>
+          <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Avg Duration</div>
+            <div className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>{formatDurationMs(snapshot.weekly.avgDurationMs)}</div>
+          </div>
+          <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Est. Cost</div>
+            <div className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>${snapshot.weekly.totalCostUsd.toFixed(2)}</div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

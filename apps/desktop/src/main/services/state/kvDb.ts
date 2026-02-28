@@ -1064,6 +1064,93 @@ function migrate(db: Database) {
     ["project_id", "status"]
   );
 
+  // Phase 3: mission phases engine + profile storage.
+  db.run(`
+    create table if not exists phase_cards (
+      id text primary key,
+      project_id text not null,
+      phase_key text not null,
+      name text not null,
+      description text not null,
+      instructions text not null,
+      model_json text not null,
+      budget_json text,
+      ordering_constraints_json text,
+      ask_questions_json text,
+      validation_gate_json text,
+      is_built_in integer not null default 0,
+      is_custom integer not null default 0,
+      position integer not null default 0,
+      archived_at text,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, phase_key),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_phase_cards_project_position on phase_cards(project_id, position)",
+    "phase_cards",
+    ["project_id", "position"]
+  );
+
+  db.run(`
+    create table if not exists phase_profiles (
+      id text primary key,
+      project_id text not null,
+      name text not null,
+      description text not null,
+      phases_json text not null,
+      is_built_in integer not null default 0,
+      is_default integer not null default 0,
+      archived_at text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_phase_profiles_project_updated on phase_profiles(project_id, updated_at)",
+    "phase_profiles",
+    ["project_id", "updated_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_phase_profiles_project_default on phase_profiles(project_id, is_default)",
+    "phase_profiles",
+    ["project_id", "is_default"]
+  );
+
+  db.run(`
+    create table if not exists mission_phase_overrides (
+      id text primary key,
+      mission_id text not null,
+      project_id text not null,
+      profile_id text,
+      phases_json text not null,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, mission_id),
+      foreign key(mission_id) references missions(id),
+      foreign key(project_id) references projects(id),
+      foreign key(profile_id) references phase_profiles(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_phase_overrides_project_mission on mission_phase_overrides(project_id, mission_id)",
+    "mission_phase_overrides",
+    ["project_id", "mission_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_phase_overrides_profile on mission_phase_overrides(profile_id)",
+    "mission_phase_overrides",
+    ["profile_id"]
+  );
+
   // Phase 1.5 orchestrator/context hardening gate.
   db.run(`
     create table if not exists orchestrator_runs (

@@ -79,6 +79,7 @@ async function createDbWithProjectAndLane() {
     db,
     projectId,
     laneId,
+    root,
     dispose: () => db.close()
   };
 }
@@ -510,6 +511,94 @@ describe("missionService lifecycle", () => {
     });
     expect(attempt?.id).toBe("planner-attempt-1");
     expect(attempt?.engine).toBe("claude_cli");
+
+    dispose();
+  });
+
+  it("supports phase profile CRUD and import/export", async () => {
+    const { db, projectId, root, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId, projectRoot: root });
+
+    const seeded = service.listPhaseProfiles();
+    expect(seeded.length).toBeGreaterThanOrEqual(2);
+    const defaultProfile = seeded.find((profile) => profile.isDefault);
+    expect(defaultProfile).toBeTruthy();
+
+    const clone = service.clonePhaseProfile({
+      profileId: defaultProfile!.id,
+      name: "Security Focused"
+    });
+    expect(clone.isBuiltIn).toBe(false);
+    expect(clone.name).toBe("Security Focused");
+
+    const exported = service.exportPhaseProfile({ profileId: clone.id });
+    expect(exported.profile.id).toBe(clone.id);
+    expect(exported.savedPath).toBeTruthy();
+
+    const imported = service.importPhaseProfile({
+      filePath: exported.savedPath!,
+      setAsDefault: true
+    });
+    expect(imported.isDefault).toBe(true);
+
+    const profiles = service.listPhaseProfiles();
+    const defaultCount = profiles.filter((profile) => profile.isDefault).length;
+    expect(defaultCount).toBe(1);
+
+    dispose();
+  });
+
+  it("persists mission phase configuration and annotates step metadata with phase context", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+    const profiles = service.listPhaseProfiles();
+    const defaultProfile = profiles.find((profile) => profile.isDefault);
+    expect(defaultProfile).toBeTruthy();
+
+    const created = service.create({
+      prompt: "Ship auth migration",
+      laneId,
+      phaseProfileId: defaultProfile!.id,
+      phaseOverride: defaultProfile!.phases.map((phase, index) => ({
+        ...phase,
+        position: index
+      }))
+    });
+
+    expect(created.phaseConfiguration).toBeTruthy();
+    expect(created.phaseConfiguration?.selectedPhases.length).toBeGreaterThan(0);
+    expect(
+      created.steps.every((step) => typeof step.metadata?.phaseKey === "string" && String(step.metadata?.phaseKey).length > 0)
+    ).toBe(true);
+
+    const cfg = service.getPhaseConfiguration(created.id);
+    expect(cfg?.override?.phases.length).toBeGreaterThan(0);
+    expect(cfg?.profile?.id).toBe(defaultProfile!.id);
+
+    dispose();
+  });
+
+  it("returns mission dashboard snapshots for active/recent/weekly views", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+
+    const activeMission = service.create({
+      prompt: "Implement active mission",
+      laneId
+    });
+    service.update({ missionId: activeMission.id, status: "in_progress" });
+
+    const completedMission = service.create({
+      prompt: "Implement completed mission",
+      laneId
+    });
+    service.update({ missionId: completedMission.id, status: "in_progress" });
+    service.update({ missionId: completedMission.id, status: "completed" });
+
+    const snapshot = service.getDashboard();
+    expect(snapshot.active.some((entry) => entry.mission.id === activeMission.id)).toBe(true);
+    expect(snapshot.recent.some((entry) => entry.mission.id === completedMission.id)).toBe(true);
+    expect(snapshot.weekly.missions).toBeGreaterThanOrEqual(2);
 
     dispose();
   });
