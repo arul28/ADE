@@ -86,7 +86,7 @@ function coerceOrchestratorHookConfig(value: unknown): { command: string; timeou
   if (!isRecord(value)) return null;
   const command = asString(value.command)?.trim() ?? "";
   if (!command.length) return null;
-  const timeoutMs = asNumber(value.timeoutMs) ?? asNumber(value.timeout_ms);
+  const timeoutMs = asNumber(value.timeoutMs);
   return {
     command,
     ...(timeoutMs != null ? { timeoutMs: Math.max(1_000, Math.floor(timeoutMs)) } : {})
@@ -338,8 +338,8 @@ function coerceAiTaskRoutingRule(value: unknown): AiTaskRoutingRule | null {
       ? providerRaw
       : undefined;
   const model = asString(value.model);
-  const timeoutMs = asNumber(value.timeoutMs) ?? asNumber(value.timeout_ms);
-  const maxOutputTokens = asNumber(value.maxOutputTokens) ?? asNumber(value.max_output_tokens);
+  const timeoutMs = asNumber(value.timeoutMs);
+  const maxOutputTokens = asNumber(value.maxOutputTokens);
   const temperature = asNumber(value.temperature);
 
   const out: AiTaskRoutingRule = {};
@@ -361,16 +361,12 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     out.mode = mode;
   }
 
-  const defaultProvider = (asString(value.defaultProvider) ?? asString(value.default_provider))?.trim().toLowerCase();
+  const defaultProvider = asString(value.defaultProvider)?.trim().toLowerCase();
   if (defaultProvider === "auto" || defaultProvider === "claude" || defaultProvider === "codex") {
     out.defaultProvider = defaultProvider;
   }
 
-  const taskRoutingRaw = isRecord(value.taskRouting)
-    ? value.taskRouting
-    : isRecord(value.task_routing)
-      ? value.task_routing
-      : null;
+  const taskRoutingRaw = isRecord(value.taskRouting) ? value.taskRouting : null;
   if (taskRoutingRaw) {
     const routing: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>> = {};
     for (const taskKey of AI_TASK_KEYS) {
@@ -396,7 +392,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     for (const key of AI_FEATURE_KEYS) {
       const entry = isRecord(budgetsRaw[key]) ? budgetsRaw[key] : null;
       if (!entry) continue;
-      const dailyLimit = asNumber(entry.dailyLimit) ?? asNumber(entry.daily_limit);
+      const dailyLimit = asNumber(entry.dailyLimit);
       if (dailyLimit == null) continue;
       budgets[key] = { dailyLimit };
     }
@@ -409,28 +405,24 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     const claude = isRecord(permissionsRaw.claude) ? permissionsRaw.claude : null;
     if (claude) {
       const entry: NonNullable<NonNullable<AiConfig["permissions"]>["claude"]> = {};
-      const permissionMode = (asString(claude.permissionMode) ?? asString(claude.permission_mode))?.trim();
+      const permissionMode = asString(claude.permissionMode)?.trim();
       if (permissionMode === "default" || permissionMode === "acceptEdits" || permissionMode === "bypassPermissions" || permissionMode === "plan") {
         entry.permissionMode = permissionMode;
       }
-      const settingsSources = Array.isArray(claude.settingsSources)
-        ? claude.settingsSources
-        : Array.isArray(claude.settings_sources)
-          ? claude.settings_sources
-          : null;
+      const settingsSources = Array.isArray(claude.settingsSources) ? claude.settingsSources : null;
       if (settingsSources) {
         const normalized = settingsSources
           .map((item) => String(item).trim())
           .filter((item): item is "user" | "project" | "local" => item === "user" || item === "project" || item === "local");
         if (normalized.length) entry.settingsSources = normalized;
       }
-      const maxBudgetUsd = asNumber(claude.maxBudgetUsd) ?? asNumber(claude.max_budget_usd);
+      const maxBudgetUsd = asNumber(claude.maxBudgetUsd);
       if (maxBudgetUsd != null && maxBudgetUsd > 0) entry.maxBudgetUsd = maxBudgetUsd;
       const sandbox = asBool(claude.sandbox);
       if (sandbox != null) entry.sandbox = sandbox;
-      const dangerouslySkipPermissions = asBool(claude.dangerouslySkipPermissions) ?? asBool(claude.dangerously_skip_permissions);
+      const dangerouslySkipPermissions = asBool(claude.dangerouslySkipPermissions);
       if (dangerouslySkipPermissions != null) entry.dangerouslySkipPermissions = dangerouslySkipPermissions;
-      const allowedTools = asStringArray(claude.allowedTools) ?? asStringArray(claude.allowed_tools);
+      const allowedTools = asStringArray(claude.allowedTools);
       if (allowedTools?.length) entry.allowedTools = allowedTools;
       if (Object.keys(entry).length) permissions.claude = entry;
     }
@@ -438,11 +430,11 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     const codex = isRecord(permissionsRaw.codex) ? permissionsRaw.codex : null;
     if (codex) {
       const entry: NonNullable<NonNullable<AiConfig["permissions"]>["codex"]> = {};
-      const sandboxPermissions = (asString(codex.sandboxPermissions) ?? asString(codex.sandbox_permissions))?.trim();
+      const sandboxPermissions = asString(codex.sandboxPermissions)?.trim();
       if (sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access") {
         entry.sandboxPermissions = sandboxPermissions;
       }
-      const approvalMode = (asString(codex.approvalMode) ?? asString(codex.approval_mode))?.trim();
+      const approvalMode = asString(codex.approvalMode)?.trim();
       if (
         approvalMode === "untrusted"
         || approvalMode === "on-request"
@@ -454,11 +446,11 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       ) {
         entry.approvalMode = approvalMode;
       }
-      const writablePaths = asStringArray(codex.writablePaths) ?? asStringArray(codex.writable_paths);
+      const writablePaths = asStringArray(codex.writablePaths);
       if (writablePaths?.length) entry.writablePaths = writablePaths;
-      const commandAllowlist = asStringArray(codex.commandAllowlist) ?? asStringArray(codex.command_allowlist);
+      const commandAllowlist = asStringArray(codex.commandAllowlist);
       if (commandAllowlist?.length) entry.commandAllowlist = commandAllowlist;
-      const configPath = asString(codex.configPath) ?? asString(codex.config_path);
+      const configPath = asString(codex.configPath);
       if (configPath) entry.configPath = configPath;
       if (Object.keys(entry).length) permissions.codex = entry;
     }
@@ -466,22 +458,18 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (Object.keys(permissions).length) out.permissions = permissions;
   }
 
-  const conflictRaw = isRecord(value.conflictResolution)
-    ? value.conflictResolution
-    : isRecord(value.conflict_resolution)
-      ? value.conflict_resolution
-      : null;
+  const conflictRaw = isRecord(value.conflictResolution) ? value.conflictResolution : null;
   if (conflictRaw) {
     const conflict: NonNullable<AiConfig["conflictResolution"]> = {};
-    const changeTarget = (asString(conflictRaw.changeTarget) ?? asString(conflictRaw.change_target))?.trim();
+    const changeTarget = asString(conflictRaw.changeTarget)?.trim();
     if (changeTarget === "target" || changeTarget === "source" || changeTarget === "ai_decides") {
       conflict.changeTarget = changeTarget;
     }
-    const postResolution = (asString(conflictRaw.postResolution) ?? asString(conflictRaw.post_resolution))?.trim();
+    const postResolution = asString(conflictRaw.postResolution)?.trim();
     if (postResolution === "unstaged" || postResolution === "staged" || postResolution === "commit") {
       conflict.postResolution = postResolution;
     }
-    const prBehavior = (asString(conflictRaw.prBehavior) ?? asString(conflictRaw.pr_behavior))?.trim();
+    const prBehavior = asString(conflictRaw.prBehavior)?.trim();
     if (prBehavior === "do_nothing" || prBehavior === "open_pr" || prBehavior === "add_to_existing") {
       conflict.prBehavior = prBehavior;
     }
@@ -489,7 +477,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (autonomy === "propose_only" || autonomy === "auto_apply") {
       conflict.autonomy = autonomy;
     }
-    const threshold = asNumber(conflictRaw.autoApplyThreshold) ?? asNumber(conflictRaw.auto_apply_threshold);
+    const threshold = asNumber(conflictRaw.autoApplyThreshold);
     if (threshold != null) conflict.autoApplyThreshold = threshold;
     if (Object.keys(conflict).length) out.conflictResolution = conflict;
   }
@@ -497,24 +485,23 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   const orchestratorRaw = isRecord(value.orchestrator) ? value.orchestrator : null;
   if (orchestratorRaw) {
     const orchestrator: NonNullable<AiConfig["orchestrator"]> = {};
-    const teammatePlanMode = (asString(orchestratorRaw.teammatePlanMode) ?? asString(orchestratorRaw.teammate_plan_mode))?.trim();
+    const teammatePlanMode = asString(orchestratorRaw.teammatePlanMode)?.trim();
     if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
       orchestrator.teammatePlanMode = teammatePlanMode;
     }
 
-    const requirePlanReview = asBool(orchestratorRaw.requirePlanReview) ?? asBool(orchestratorRaw.require_plan_review);
+    const requirePlanReview = asBool(orchestratorRaw.requirePlanReview);
     if (requirePlanReview != null) orchestrator.requirePlanReview = requirePlanReview;
 
-    const maxParallelWorkers = asNumber(orchestratorRaw.maxParallelWorkers) ?? asNumber(orchestratorRaw.max_parallel_workers);
+    const maxParallelWorkers = asNumber(orchestratorRaw.maxParallelWorkers);
     if (maxParallelWorkers != null) orchestrator.maxParallelWorkers = Math.max(1, Math.floor(maxParallelWorkers));
 
-    const defaultMergePolicy = (asString(orchestratorRaw.defaultMergePolicy) ?? asString(orchestratorRaw.default_merge_policy))?.trim();
+    const defaultMergePolicy = asString(orchestratorRaw.defaultMergePolicy)?.trim();
     if (defaultMergePolicy === "sequential" || defaultMergePolicy === "batch-at-end" || defaultMergePolicy === "per-step") {
       orchestrator.defaultMergePolicy = defaultMergePolicy;
     }
 
-    const defaultConflictHandoff =
-      (asString(orchestratorRaw.defaultConflictHandoff) ?? asString(orchestratorRaw.default_conflict_handoff))?.trim();
+    const defaultConflictHandoff = asString(orchestratorRaw.defaultConflictHandoff)?.trim();
     if (
       defaultConflictHandoff === "auto-resolve" ||
       defaultConflictHandoff === "ask-user" ||
@@ -523,58 +510,50 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       orchestrator.defaultConflictHandoff = defaultConflictHandoff;
     }
 
-    const workerHeartbeatIntervalMs =
-      asNumber(orchestratorRaw.workerHeartbeatIntervalMs) ?? asNumber(orchestratorRaw.worker_heartbeat_interval_ms);
+    const workerHeartbeatIntervalMs = asNumber(orchestratorRaw.workerHeartbeatIntervalMs);
     if (workerHeartbeatIntervalMs != null) orchestrator.workerHeartbeatIntervalMs = Math.max(1_000, Math.floor(workerHeartbeatIntervalMs));
 
-    const workerHeartbeatTimeoutMs =
-      asNumber(orchestratorRaw.workerHeartbeatTimeoutMs) ?? asNumber(orchestratorRaw.worker_heartbeat_timeout_ms);
+    const workerHeartbeatTimeoutMs = asNumber(orchestratorRaw.workerHeartbeatTimeoutMs);
     if (workerHeartbeatTimeoutMs != null) orchestrator.workerHeartbeatTimeoutMs = Math.max(1_000, Math.floor(workerHeartbeatTimeoutMs));
 
-    const workerIdleTimeoutMs = asNumber(orchestratorRaw.workerIdleTimeoutMs) ?? asNumber(orchestratorRaw.worker_idle_timeout_ms);
+    const workerIdleTimeoutMs = asNumber(orchestratorRaw.workerIdleTimeoutMs);
     if (workerIdleTimeoutMs != null) orchestrator.workerIdleTimeoutMs = Math.max(1_000, Math.floor(workerIdleTimeoutMs));
 
-    const stepTimeoutDefaultMs = asNumber(orchestratorRaw.stepTimeoutDefaultMs) ?? asNumber(orchestratorRaw.step_timeout_default_ms);
+    const stepTimeoutDefaultMs = asNumber(orchestratorRaw.stepTimeoutDefaultMs);
     if (stepTimeoutDefaultMs != null) orchestrator.stepTimeoutDefaultMs = Math.max(1_000, Math.floor(stepTimeoutDefaultMs));
 
-    const maxRetriesPerStep = asNumber(orchestratorRaw.maxRetriesPerStep) ?? asNumber(orchestratorRaw.max_retries_per_step);
+    const maxRetriesPerStep = asNumber(orchestratorRaw.maxRetriesPerStep);
     if (maxRetriesPerStep != null) orchestrator.maxRetriesPerStep = Math.max(0, Math.floor(maxRetriesPerStep));
 
-    const contextPressureThreshold =
-      asNumber(orchestratorRaw.contextPressureThreshold) ?? asNumber(orchestratorRaw.context_pressure_threshold);
+    const contextPressureThreshold = asNumber(orchestratorRaw.contextPressureThreshold);
     if (contextPressureThreshold != null) orchestrator.contextPressureThreshold = Math.max(0.1, Math.min(0.99, contextPressureThreshold));
 
-    const progressiveLoading = asBool(orchestratorRaw.progressiveLoading) ?? asBool(orchestratorRaw.progressive_loading);
+    const progressiveLoading = asBool(orchestratorRaw.progressiveLoading);
     if (progressiveLoading != null) orchestrator.progressiveLoading = progressiveLoading;
 
-    const maxTotalTokenBudget = asNumber(orchestratorRaw.maxTotalTokenBudget) ?? asNumber(orchestratorRaw.max_total_token_budget);
+    const maxTotalTokenBudget = asNumber(orchestratorRaw.maxTotalTokenBudget);
     if (maxTotalTokenBudget != null && maxTotalTokenBudget > 0) orchestrator.maxTotalTokenBudget = maxTotalTokenBudget;
 
-    const maxPerStepTokenBudget = asNumber(orchestratorRaw.maxPerStepTokenBudget) ?? asNumber(orchestratorRaw.max_per_step_token_budget);
+    const maxPerStepTokenBudget = asNumber(orchestratorRaw.maxPerStepTokenBudget);
     if (maxPerStepTokenBudget != null && maxPerStepTokenBudget > 0) orchestrator.maxPerStepTokenBudget = maxPerStepTokenBudget;
 
     const defaultExecutionPolicy = isRecord(orchestratorRaw.defaultExecutionPolicy)
       ? orchestratorRaw.defaultExecutionPolicy
-      : isRecord(orchestratorRaw.default_execution_policy)
-        ? orchestratorRaw.default_execution_policy
-        : null;
+      : null;
     if (defaultExecutionPolicy) {
       orchestrator.defaultExecutionPolicy =
         defaultExecutionPolicy as NonNullable<NonNullable<AiConfig["orchestrator"]>["defaultExecutionPolicy"]>;
     }
 
-    const defaultPlannerProvider =
-      (asString(orchestratorRaw.defaultPlannerProvider) ?? asString(orchestratorRaw.default_planner_provider))?.trim();
+    const defaultPlannerProvider = asString(orchestratorRaw.defaultPlannerProvider)?.trim();
     if (defaultPlannerProvider === "auto" || defaultPlannerProvider === "claude" || defaultPlannerProvider === "codex") {
       orchestrator.defaultPlannerProvider = defaultPlannerProvider;
     }
 
-    const autoResolveInterventions =
-      asBool(orchestratorRaw.autoResolveInterventions) ?? asBool(orchestratorRaw.auto_resolve_interventions);
+    const autoResolveInterventions = asBool(orchestratorRaw.autoResolveInterventions);
     if (autoResolveInterventions != null) orchestrator.autoResolveInterventions = autoResolveInterventions;
 
-    const interventionConfidenceThreshold =
-      asNumber(orchestratorRaw.interventionConfidenceThreshold) ?? asNumber(orchestratorRaw.intervention_confidence_threshold);
+    const interventionConfidenceThreshold = asNumber(orchestratorRaw.interventionConfidenceThreshold);
     if (interventionConfidenceThreshold != null) {
       orchestrator.interventionConfidenceThreshold = Math.max(0, Math.min(1, interventionConfidenceThreshold));
     }
@@ -583,11 +562,11 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (hooksRaw) {
       const hooks: NonNullable<NonNullable<AiConfig["orchestrator"]>["hooks"]> = {};
       const teammateIdle = coerceOrchestratorHookConfig(
-        hooksRaw.TeammateIdle ?? hooksRaw.teammateIdle ?? hooksRaw.teammate_idle
+        hooksRaw.TeammateIdle ?? hooksRaw.teammateIdle
       );
       if (teammateIdle) hooks.TeammateIdle = teammateIdle;
       const taskCompleted = coerceOrchestratorHookConfig(
-        hooksRaw.TaskCompleted ?? hooksRaw.taskCompleted ?? hooksRaw.task_completed
+        hooksRaw.TaskCompleted ?? hooksRaw.taskCompleted
       );
       if (taskCompleted) hooks.TaskCompleted = taskCompleted;
       if (Object.keys(hooks).length) orchestrator.hooks = hooks;

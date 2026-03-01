@@ -112,15 +112,15 @@ describe("projectConfigService legacy AI mode migration", () => {
         automations: [],
         ai: {
           orchestrator: {
-            teammate_plan_mode: "required",
-            require_plan_review: true,
-            max_parallel_workers: 9,
-            context_pressure_threshold: 0.82,
-            progressive_loading: false,
+            teammatePlanMode: "required",
+            requirePlanReview: true,
+            maxParallelWorkers: 9,
+            contextPressureThreshold: 0.82,
+            progressiveLoading: false,
             hooks: {
-              teammate_idle: {
+              TeammateIdle: {
                 command: "echo teammate-idle",
-                timeout_ms: 4500
+                timeoutMs: 4500
               },
               TaskCompleted: {
                 command: "echo task-completed"

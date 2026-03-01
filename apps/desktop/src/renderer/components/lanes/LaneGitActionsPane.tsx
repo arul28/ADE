@@ -309,26 +309,39 @@ export function LaneGitActionsPane({
 
   useEffect(() => {
     if (!laneId) return;
+    let refreshTimer: number | null = null;
     const refreshSyncStatus = () => {
       void window.ade.git
         .getSyncStatus({ laneId })
         .then((nextStatus) => setSyncStatus(nextStatus))
         .catch(() => setSyncStatus(null));
-      void refreshLanes().catch(() => {});
     };
-    const intervalId = window.setInterval(refreshSyncStatus, 15_000);
-    const onFocus = () => refreshSyncStatus();
+    const scheduleRefreshSyncStatus = (delayMs = 0) => {
+      if (refreshTimer != null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        if (document.visibilityState !== "visible") return;
+        refreshSyncStatus();
+      }, delayMs);
+    };
+    scheduleRefreshSyncStatus();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      scheduleRefreshSyncStatus(250);
+    }, 20_000);
+    const onFocus = () => scheduleRefreshSyncStatus();
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") refreshSyncStatus();
+      if (document.visibilityState === "visible") scheduleRefreshSyncStatus();
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearInterval(intervalId);
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [laneId, refreshLanes]);
+  }, [laneId]);
 
   useEffect(() => {
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {

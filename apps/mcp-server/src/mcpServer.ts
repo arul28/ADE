@@ -448,25 +448,23 @@ const TOOL_SPECS: ToolSpec[] = [
   // ── Observation Tools ────────────────────────────────────────────
   {
     name: "get_mission",
-    description: "Get full mission details including steps, interventions, and metadata.",
+    description: "Get full mission details including steps, interventions, and metadata. When called by a worker, missionId defaults to the worker's own mission.",
     inputSchema: {
       type: "object",
-      required: ["missionId"],
       additionalProperties: false,
       properties: {
-        missionId: { type: "string", minLength: 1 }
+        missionId: { type: "string", description: "Mission ID. Auto-populated from caller context if omitted." }
       }
     }
   },
   {
     name: "get_run_graph",
-    description: "Get the full run graph: run, steps, attempts, claims, timeline.",
+    description: "Get the full run graph: run, steps, attempts, claims, timeline. When called by a worker, runId defaults to the worker's own run.",
     inputSchema: {
       type: "object",
-      required: ["runId"],
       additionalProperties: false,
       properties: {
-        runId: { type: "string", minLength: 1 },
+        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." },
         timelineLimit: { type: "number", minimum: 0, maximum: 1000 }
       }
     }
@@ -486,38 +484,36 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_step_output",
-    description: "Get the output/result of a specific step in a run.",
+    description: "Get the output/result of a specific step in a run. When called by a worker, runId defaults to the worker's own run.",
     inputSchema: {
       type: "object",
-      required: ["runId", "stepKey"],
+      required: ["stepKey"],
       additionalProperties: false,
       properties: {
-        runId: { type: "string", minLength: 1 },
+        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." },
         stepKey: { type: "string", minLength: 1 }
       }
     }
   },
   {
     name: "get_worker_states",
-    description: "Get the current state of all workers in a run.",
+    description: "Get the current state of all workers in a run. When called by a worker, runId defaults to the worker's own run, so you can see your peers without passing parameters.",
     inputSchema: {
       type: "object",
-      required: ["runId"],
       additionalProperties: false,
       properties: {
-        runId: { type: "string", minLength: 1 }
+        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." }
       }
     }
   },
   {
     name: "get_timeline",
-    description: "Get timeline events for a run, optionally filtered by step.",
+    description: "Get timeline events for a run, optionally filtered by step. When called by a worker, runId defaults to the worker's own run.",
     inputSchema: {
       type: "object",
-      required: ["runId"],
       additionalProperties: false,
       properties: {
-        runId: { type: "string", minLength: 1 },
+        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." },
         limit: { type: "number", minimum: 1, maximum: 1000 },
         stepId: { type: "string" }
       }
@@ -525,25 +521,23 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_mission_metrics",
-    description: "Get aggregated metrics for a mission.",
+    description: "Get aggregated metrics for a mission. When called by a worker, missionId defaults to the worker's own mission.",
     inputSchema: {
       type: "object",
-      required: ["missionId"],
       additionalProperties: false,
       properties: {
-        missionId: { type: "string", minLength: 1 }
+        missionId: { type: "string", description: "Mission ID. Auto-populated from caller context if omitted." }
       }
     }
   },
   {
     name: "get_final_diff",
-    description: "Get the final diff output for a completed run.",
+    description: "Get the final diff output for a completed run. When called by a worker, runId defaults to the worker's own run.",
     inputSchema: {
       type: "object",
-      required: ["runId"],
       additionalProperties: false,
       properties: {
-        runId: { type: "string", minLength: 1 }
+        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." }
       }
     }
   },
@@ -615,6 +609,25 @@ const TOOL_SPECS: ToolSpec[] = [
         evaluationId: { type: "string", minLength: 1 }
       }
     }
+  },
+  // ── Worker Collaboration Tools ─────────────────────────────────
+  {
+    name: "get_pending_messages",
+    description: "Get pending messages for this worker. Returns messages from coordinator, peers, or system. Uses caller identity from environment to auto-resolve the worker.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        since_cursor: {
+          type: "string",
+          description: "Optional ISO timestamp cursor to get messages after a certain point"
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of messages to return (default 50, max 200)"
+        }
+      }
+    }
   }
 ];
 
@@ -657,7 +670,8 @@ const OBSERVATION_TOOLS = new Set([
   "get_worker_states",
   "get_timeline",
   "get_mission_metrics",
-  "get_final_diff"
+  "get_final_diff",
+  "get_pending_messages"
 ]);
 
 const EVALUATOR_TOOLS = new Set([
@@ -917,18 +931,40 @@ function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> 
   };
 }
 
+/**
+ * Caller context resolved from environment variables.
+ * Workers spawned by the orchestrator have ADE_MISSION_ID, ADE_RUN_ID, etc.
+ * set in their environment. These provide automatic identity and context defaults.
+ */
+type CallerContext = {
+  missionId: string | null;
+  runId: string | null;
+  stepId: string | null;
+  attemptId: string | null;
+};
+
+function resolveCallerContext(): CallerContext {
+  return {
+    missionId: process.env.ADE_MISSION_ID?.trim() || null,
+    runId: process.env.ADE_RUN_ID?.trim() || null,
+    stepId: process.env.ADE_STEP_ID?.trim() || null,
+    attemptId: process.env.ADE_ATTEMPT_ID?.trim() || null
+  };
+}
+
 function parseInitializeIdentity(params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
+  const envContext = resolveCallerContext();
   const role = asTrimmedString(identity.role) || process.env.ADE_DEFAULT_ROLE || "";
   const validRole: SessionIdentity["role"] =
     role === "orchestrator" || role === "agent" || role === "evaluator" ? role : "external";
 
   return {
-    callerId: asOptionalTrimmedString(identity.callerId) ?? "unknown",
+    callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.attemptId ?? "unknown",
     role: validRole,
-    runId: asOptionalTrimmedString(identity.runId),
-    attemptId: asOptionalTrimmedString(identity.attemptId),
+    runId: asOptionalTrimmedString(identity.runId) ?? envContext.runId,
+    attemptId: asOptionalTrimmedString(identity.attemptId) ?? envContext.attemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId)
   };
 }
@@ -1238,6 +1274,7 @@ async function runTool(args: {
   toolArgs: Record<string, unknown>;
 }): Promise<Record<string, unknown>> {
   const { runtime, session, name, toolArgs } = args;
+  const callerCtx = resolveCallerContext();
 
   if (name === "list_lanes") {
     const includeArchived = asBoolean(toolArgs.includeArchived, false);
@@ -1708,12 +1745,53 @@ async function runTool(args: {
       const claudePermission =
         permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : "acceptEdits";
       commandParts.push("--permission-mode", claudePermission);
+
+      // Bind ADE MCP server to Claude workers via --mcp-config
+      if (runId && attemptId) {
+        const mcpConfigDir = path.join(runtime.projectRoot, ".ade", "orchestrator", "mcp-configs");
+        fs.mkdirSync(mcpConfigDir, { recursive: true });
+        const mcpConfigPath = path.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
+        const builtEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
+        const srcEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "src", "index.ts");
+        const mcpCmd = fs.existsSync(builtEntry) ? "node" : "npx";
+        const mcpArgs = fs.existsSync(builtEntry)
+          ? [builtEntry, "--project-root", runtime.projectRoot]
+          : ["tsx", srcEntry, "--project-root", runtime.projectRoot];
+        const mcpConfig = {
+          mcpServers: {
+            ade: {
+              command: mcpCmd,
+              args: mcpArgs,
+              env: {
+                ADE_PROJECT_ROOT: runtime.projectRoot,
+                ADE_MISSION_ID: callerCtx.missionId ?? "",
+                ADE_RUN_ID: runId,
+                ADE_STEP_ID: stepId ?? "",
+                ADE_ATTEMPT_ID: attemptId,
+                ADE_DEFAULT_ROLE: "agent"
+              }
+            }
+          }
+        };
+        fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
+        commandParts.push("--mcp-config", shellEscapeArg(mcpConfigPath));
+      }
     }
     if (finalPrompt) {
       commandParts.push(shellEscapeArg(finalPrompt));
     }
 
-    const startupCommand = commandParts.join(" ");
+    // Prepend env vars for worker identity
+    const envPrefixParts: string[] = [];
+    if (runId) envPrefixParts.push(`ADE_RUN_ID=${shellEscapeArg(runId)}`);
+    if (stepId) envPrefixParts.push(`ADE_STEP_ID=${shellEscapeArg(stepId)}`);
+    if (attemptId) envPrefixParts.push(`ADE_ATTEMPT_ID=${shellEscapeArg(attemptId)}`);
+    if (callerCtx.missionId) envPrefixParts.push(`ADE_MISSION_ID=${shellEscapeArg(callerCtx.missionId)}`);
+    envPrefixParts.push("ADE_DEFAULT_ROLE=agent");
+
+    const startupCommand = envPrefixParts.length > 0
+      ? `${envPrefixParts.join(" ")} ${commandParts.join(" ")}`
+      : commandParts.join(" ");
 
     const created = await runtime.ptyService.create({
       laneId,
@@ -1897,9 +1975,15 @@ async function runTool(args: {
   }
 
   // ── Observation Tools ────────────────────────────────────────────
+  // Observation tools support auto-population from caller context (env vars).
+  // When a worker calls these tools without explicit IDs, they default to
+  // the worker's own mission/run context.
 
   if (name === "get_mission") {
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId;
+    if (!missionId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "missionId is required (not available from caller context)");
+    }
     const mission = runtime.missionService.get(missionId);
     if (!mission) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Mission not found: ${missionId}`);
@@ -1908,7 +1992,10 @@ async function runTool(args: {
   }
 
   if (name === "get_run_graph") {
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
+    if (!runId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
+    }
     const timelineLimit = asNumber(toolArgs.timelineLimit, 300);
     try {
       const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit });
@@ -1941,7 +2028,10 @@ async function runTool(args: {
   }
 
   if (name === "get_step_output") {
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
+    if (!runId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
+    }
     const stepKey = assertNonEmptyString(toolArgs.stepKey, "stepKey");
     const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
     const step = graph.steps.find((s) => s.stepKey === stepKey);
@@ -1953,13 +2043,19 @@ async function runTool(args: {
   }
 
   if (name === "get_worker_states") {
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
+    if (!runId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
+    }
     const states = runtime.aiOrchestratorService.getWorkerStates({ runId });
     return { runId, workers: states };
   }
 
   if (name === "get_timeline") {
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
+    if (!runId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
+    }
     const limit = asNumber(toolArgs.limit, 300);
     const stepId = asOptionalTrimmedString(toolArgs.stepId);
     const timeline = runtime.orchestratorService.listTimeline({ runId, limit });
@@ -1971,13 +2067,19 @@ async function runTool(args: {
   }
 
   if (name === "get_mission_metrics") {
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId;
+    if (!missionId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "missionId is required (not available from caller context)");
+    }
     const metrics = runtime.aiOrchestratorService.getMissionMetrics({ missionId });
     return { metrics };
   }
 
   if (name === "get_final_diff") {
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
+    if (!runId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
+    }
     const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
     const laneIds = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
     const diffs: Record<string, unknown> = {};
@@ -1985,6 +2087,90 @@ async function runTool(args: {
       diffs[laneId] = await runtime.diffService.getChanges(laneId);
     }
     return { runId, diffs };
+  }
+
+  // ── Worker Collaboration Tools ─────────────────────────────────
+
+  if (name === "get_pending_messages") {
+    const missionId = callerCtx.missionId;
+    const attemptId = callerCtx.attemptId ?? session.identity.attemptId;
+    if (!missionId || !attemptId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "get_pending_messages requires worker identity (ADE_MISSION_ID and ADE_ATTEMPT_ID env vars). This tool is only available to workers spawned by the orchestrator."
+      );
+    }
+
+    const sinceCursor = asOptionalTrimmedString(toolArgs.since_cursor);
+    const limit = Math.max(1, Math.min(200, Math.floor(asNumber(toolArgs.limit, 50))));
+
+    // Find the worker's thread by attemptId
+    const threads = runtime.aiOrchestratorService.listChatThreads({ missionId });
+    const workerThread = threads.find(
+      (t: Record<string, unknown>) =>
+        (t.attemptId === attemptId) ||
+        (t.threadType === "worker" && t.attemptId === attemptId)
+    );
+
+    if (!workerThread) {
+      return {
+        messages: [],
+        workerAttemptId: attemptId,
+        missionId,
+        threadId: null,
+        note: "No message thread found for this worker yet"
+      };
+    }
+
+    const threadId = String(workerThread.id ?? "");
+    const allMessages = runtime.aiOrchestratorService.getThreadMessages({
+      missionId,
+      threadId,
+      limit: limit * 2 // fetch extra to filter
+    });
+
+    // Filter to messages addressed to this worker (not from this worker)
+    let messages = allMessages.filter((msg: Record<string, unknown>) => {
+      // Include messages from coordinator, user, or other agents
+      if (msg.role === "orchestrator" || msg.role === "user" || msg.role === "system") return true;
+      // Include inter-agent messages targeted at this worker
+      const target = msg.target as Record<string, unknown> | null | undefined;
+      if (target?.targetAttemptId === attemptId && msg.attemptId !== attemptId) return true;
+      // Include agent messages that are inter-agent deliveries to this thread
+      const metadata = msg.metadata as Record<string, unknown> | null | undefined;
+      if (metadata?.interAgentDelivery === true && msg.attemptId !== attemptId) return true;
+      return false;
+    });
+
+    // Apply cursor filter
+    if (sinceCursor) {
+      const cursorTime = Date.parse(sinceCursor);
+      if (!Number.isNaN(cursorTime)) {
+        messages = messages.filter((msg: Record<string, unknown>) => {
+          const ts = Date.parse(String(msg.timestamp ?? ""));
+          return !Number.isNaN(ts) && ts > cursorTime;
+        });
+      }
+    }
+
+    // Limit
+    messages = messages.slice(-limit);
+
+    return {
+      messages: messages.map((msg: Record<string, unknown>) => ({
+        id: msg.id,
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp,
+        stepKey: msg.stepKey ?? null,
+        attemptId: msg.attemptId ?? null,
+        metadata: msg.metadata ?? null
+      })),
+      workerAttemptId: attemptId,
+      missionId,
+      threadId,
+      count: messages.length
+    };
   }
 
   // ── Evaluation Tools ─────────────────────────────────────────────

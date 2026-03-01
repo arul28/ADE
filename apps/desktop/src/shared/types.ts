@@ -1181,6 +1181,7 @@ export type ReadTranscriptTailArgs = {
 
 export type ListLanesArgs = {
   includeArchived?: boolean;
+  includeStatus?: boolean;
 };
 
 export type CreateLaneArgs = {
@@ -1681,19 +1682,11 @@ export type AiTaskRoutingKey =
 /** @deprecated Use ModelId for routing. Kept for backward compatibility. */
 export type AiTaskProvider = "auto" | "claude" | "codex" | (string & {});
 
-// TODO(config-naming): AiTaskRoutingRule and all AI config types below accept both camelCase
-// and snake_case variants for backwards compatibility with YAML/JSON config files authored in
-// either convention. New fields MUST use camelCase only. Once a migration pass normalizes
-// persisted configs to camelCase, remove the snake_case aliases and update the config loader.
 export type AiTaskRoutingRule = {
   provider?: AiTaskProvider;
   model?: string;
   timeoutMs?: number;
-  /** @deprecated Use timeoutMs */
-  timeout_ms?: number;
   maxOutputTokens?: number;
-  /** @deprecated Use maxOutputTokens */
-  max_output_tokens?: number;
   temperature?: number;
 };
 
@@ -1759,47 +1752,25 @@ export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 
 export type AiBudgetLimit = {
   dailyLimit?: number;
-  /** @deprecated Use dailyLimit */
-  daily_limit?: number;
 };
 
 export type AiBudgets = Partial<Record<AiFeatureKey, AiBudgetLimit>>;
 
 export type AiClaudePermissionSettings = {
   permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
-  /** @deprecated Use permissionMode */
-  permission_mode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
   settingsSources?: Array<"user" | "project" | "local">;
-  /** @deprecated Use settingsSources */
-  settings_sources?: Array<"user" | "project" | "local">;
   maxBudgetUsd?: number;
-  /** @deprecated Use maxBudgetUsd */
-  max_budget_usd?: number;
   sandbox?: boolean;
   dangerouslySkipPermissions?: boolean;
-  /** @deprecated Use dangerouslySkipPermissions */
-  dangerously_skip_permissions?: boolean;
   allowedTools?: string[];
-  /** @deprecated Use allowedTools */
-  allowed_tools?: string[];
 };
 
 export type AiCodexPermissionSettings = {
   sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
-  /** @deprecated Use sandboxPermissions */
-  sandbox_permissions?: "read-only" | "workspace-write" | "danger-full-access";
   approvalMode?: "untrusted" | "on-request" | "on-failure" | "never" | "suggest" | "auto-edit" | "full-auto";
-  /** @deprecated Use approvalMode */
-  approval_mode?: "untrusted" | "on-request" | "on-failure" | "never" | "suggest" | "auto-edit" | "full-auto";
   writablePaths?: string[];
-  /** @deprecated Use writablePaths */
-  writable_paths?: string[];
   commandAllowlist?: string[];
-  /** @deprecated Use commandAllowlist */
-  command_allowlist?: string[];
   configPath?: string;
-  /** @deprecated Use configPath */
-  config_path?: string;
 };
 
 export type AiPermissionSettings = {
@@ -1816,18 +1787,10 @@ export type WorkerSafetyPolicy = {
 
 export type AiConflictResolutionConfig = {
   changeTarget?: "target" | "source" | "ai_decides";
-  /** @deprecated Use changeTarget */
-  change_target?: "target" | "source" | "ai_decides";
   postResolution?: "unstaged" | "staged" | "commit";
-  /** @deprecated Use postResolution */
-  post_resolution?: "unstaged" | "staged" | "commit";
   prBehavior?: "do_nothing" | "open_pr" | "add_to_existing";
-  /** @deprecated Use prBehavior */
-  pr_behavior?: "do_nothing" | "open_pr" | "add_to_existing";
   autonomy?: "propose_only" | "auto_apply";
   autoApplyThreshold?: number;
-  /** @deprecated Use autoApplyThreshold */
-  auto_apply_threshold?: number;
 };
 
 export type AiOrchestratorHookEvent = "TeammateIdle" | "TaskCompleted";
@@ -1835,108 +1798,48 @@ export type AiOrchestratorHookEvent = "TeammateIdle" | "TaskCompleted";
 export type AiOrchestratorHookConfig = {
   command: string;
   timeoutMs?: number;
-  /** @deprecated Use timeoutMs */
-  timeout_ms?: number;
 };
 
 export type AiOrchestratorConfig = {
   teammatePlanMode?: "off" | "auto" | "required";
-  /** @deprecated Use teammatePlanMode */
-  teammate_plan_mode?: "off" | "auto" | "required";
   requirePlanReview?: boolean;
-  /** @deprecated Use requirePlanReview */
-  require_plan_review?: boolean;
   maxParallelWorkers?: number;
-  /** @deprecated Use maxParallelWorkers */
-  max_parallel_workers?: number;
   defaultMergePolicy?: "sequential" | "batch-at-end" | "per-step";
-  /** @deprecated Use defaultMergePolicy */
-  default_merge_policy?: "sequential" | "batch-at-end" | "per-step";
   defaultConflictHandoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
-  /** @deprecated Use defaultConflictHandoff */
-  default_conflict_handoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
   workerHeartbeatIntervalMs?: number;
-  /** @deprecated Use workerHeartbeatIntervalMs */
-  worker_heartbeat_interval_ms?: number;
   workerHeartbeatTimeoutMs?: number;
-  /** @deprecated Use workerHeartbeatTimeoutMs */
-  worker_heartbeat_timeout_ms?: number;
   workerIdleTimeoutMs?: number;
-  /** @deprecated Use workerIdleTimeoutMs */
-  worker_idle_timeout_ms?: number;
   stepTimeoutDefaultMs?: number;
-  /** @deprecated Use stepTimeoutDefaultMs */
-  step_timeout_default_ms?: number;
   maxRetriesPerStep?: number;
-  /** @deprecated Use maxRetriesPerStep */
-  max_retries_per_step?: number;
   contextPressureThreshold?: number;
-  /** @deprecated Use contextPressureThreshold */
-  context_pressure_threshold?: number;
   progressiveLoading?: boolean;
-  /** @deprecated Use progressiveLoading */
-  progressive_loading?: boolean;
   maxTotalTokenBudget?: number;
-  /** @deprecated Use maxTotalTokenBudget */
-  max_total_token_budget?: number;
   maxPerStepTokenBudget?: number;
-  /** @deprecated Use maxPerStepTokenBudget */
-  max_per_step_token_budget?: number;
   defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
-  /** @deprecated Use defaultExecutionPolicy */
-  default_execution_policy?: Partial<MissionExecutionPolicy>;
   defaultPlannerProvider?: AiTaskProvider;
-  /** @deprecated Use defaultPlannerProvider */
-  default_planner_provider?: AiTaskProvider;
   autoResolveInterventions?: boolean;
-  /** @deprecated Use autoResolveInterventions */
-  auto_resolve_interventions?: boolean;
   interventionConfidenceThreshold?: number;
-  /** @deprecated Use interventionConfidenceThreshold */
-  intervention_confidence_threshold?: number;
   hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;
   maxConcurrentMissions?: number;
-  /** @deprecated Use maxConcurrentMissions */
-  max_concurrent_missions?: number;
   laneExclusivity?: boolean;
-  /** @deprecated Use laneExclusivity */
-  lane_exclusivity?: boolean;
 };
 
 export type AiChatConfig = {
   defaultProvider?: "codex" | "claude" | "last_used";
-  /** @deprecated Use defaultProvider */
-  default_provider?: "codex" | "claude" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
-  /** @deprecated Use defaultApprovalPolicy */
-  default_approval_policy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
-  /** @deprecated Use sendOnEnter */
-  send_on_enter?: boolean;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  /** @deprecated Use codexSandbox */
-  codex_sandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
-  /** @deprecated Use claudePermissionMode */
-  claude_permission_mode?: "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
-  /** @deprecated Use sessionBudgetUsd */
-  session_budget_usd?: number;
 };
 export type AiConfig = {
   mode?: ProviderMode;
   defaultProvider?: AiTaskProvider;
-  /** @deprecated Use defaultProvider */
-  default_provider?: AiTaskProvider;
   taskRouting?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
-  /** @deprecated Use taskRouting */
-  task_routing?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
   features?: AiFeatureToggles;
   budgets?: AiBudgets;
   permissions?: AiPermissionSettings;
   conflictResolution?: AiConflictResolutionConfig;
-  /** @deprecated Use conflictResolution */
-  conflict_resolution?: AiConflictResolutionConfig;
   orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
   // New unified fields
@@ -2710,7 +2613,6 @@ export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
 
 export type MissionPlannerEngine = "auto" | "claude_cli" | "codex_cli";
 
-export type MissionExecutorPolicy = "codex" | "claude" | "both";
 
 export type MissionPlannerResolvedEngine =
   | "claude_cli"
@@ -3066,7 +2968,6 @@ export type CreateMissionArgs = {
   executionMode?: MissionExecutionMode;
   targetMachineId?: string | null;
   plannerEngine?: MissionPlannerEngine;
-  executorPolicy?: MissionExecutorPolicy;
   planningTimeoutMs?: number;
   allowPlanningQuestions?: boolean;
   autostart?: boolean;
@@ -3084,15 +2985,69 @@ export type CreateMissionArgs = {
   phaseOverride?: PhaseCard[];
 };
 
+export type MissionPreflightCheckId =
+  | "models"
+  | "permissions"
+  | "worktrees"
+  | "phase_structural"
+  | "phase_ordering"
+  | "phase_semantic"
+  | "budget";
+
+export type MissionPreflightSeverity = "pass" | "warning" | "fail";
+
+export type MissionPreflightChecklistItem = {
+  id: MissionPreflightCheckId;
+  severity: MissionPreflightSeverity;
+  title: string;
+  summary: string;
+  details: string[];
+  fixHint?: string;
+};
+
+export type MissionPreflightPhaseEstimate = {
+  phaseKey: string;
+  phaseName: string;
+  estimatedTokens: number | null;
+  estimatedCostUsd: number | null;
+  estimatedTimeMs: number | null;
+  configuredMaxTokens: number | null;
+  configuredMaxTimeMs: number | null;
+};
+
+export type MissionPreflightBudgetEstimate = {
+  mode: "subscription" | "api-key";
+  estimatedTokens: number | null;
+  estimatedCostUsd: number | null;
+  estimatedTimeMs: number | null;
+  perPhase: MissionPreflightPhaseEstimate[];
+  note?: string;
+};
+
+export type MissionPreflightResult = {
+  canLaunch: boolean;
+  checkedAt: string;
+  profileName: string | null;
+  selectedPhaseCount: number;
+  hardFailures: number;
+  warnings: number;
+  checklist: MissionPreflightChecklistItem[];
+  budgetEstimate: MissionPreflightBudgetEstimate | null;
+};
+
+export type MissionPreflightRequest = {
+  launch: CreateMissionArgs;
+};
+
 export type PlanMissionArgs = {
   missionId?: string;
   title?: string;
   prompt: string;
   laneId?: string | null;
   plannerEngine?: MissionPlannerEngine;
-  executorPolicy?: MissionExecutorPolicy;
   planningTimeoutMs?: number;
   allowPlanningQuestions?: boolean;
+  model?: string;
 };
 
 export type PlanMissionResult = {
@@ -3155,6 +3110,7 @@ export type AddMissionInterventionArgs = {
   requestedAction?: string | null;
   laneId?: string | null;
   metadata?: Record<string, unknown> | null;
+  pauseMission?: boolean;
 };
 
 export type ResolveMissionInterventionArgs = {
@@ -4727,20 +4683,11 @@ export type ModelConfig = {
 /** The types of AI calls the orchestrator makes internally */
 export type OrchestratorCallType =
   | "coordinator"
+  | "chat_response"
   | "worker_evaluation"
-  | "quality_gate"
   | "failure_diagnosis"
   | "plan_adjustment"
-  | "intervention_handling"
-  | "chat_response"
-  | "lane_strategy"
-  | "step_transition"
-  | "retry_decision"
-  | "timeout_estimation"
-  | "step_priority"
-  | "parallelism_decision"
-  | "stagnation_evaluation"
-  | "recovery_decision";
+  | "intervention_handling";
 
 /** Mission-level timeout cap for orchestrator internal AI decision calls. */
 export type OrchestratorDecisionTimeoutCapHours = 6 | 12 | 24 | 48;
@@ -5609,6 +5556,65 @@ export type GetAggregatedUsageArgs = {
   since?: string | null;
   limit?: number;
   missionId?: string | null;
+};
+
+export type MissionBudgetPressure = "normal" | "warning" | "critical";
+
+export type MissionBudgetScopeSnapshot = {
+  maxTokens?: number | null;
+  maxTimeMs?: number | null;
+  maxCostUsd?: number | null;
+  usedTokens: number;
+  usedTimeMs: number;
+  usedCostUsd: number;
+  remainingTokens?: number | null;
+  remainingTimeMs?: number | null;
+  remainingCostUsd?: number | null;
+};
+
+export type MissionPhaseBudgetSnapshot = MissionBudgetScopeSnapshot & {
+  phaseKey: string;
+  phaseName: string;
+  stepCount: number;
+};
+
+export type MissionWorkerBudgetSnapshot = MissionBudgetScopeSnapshot & {
+  stepId: string;
+  stepKey: string;
+  title: string;
+  phaseKey: string;
+  phaseName: string;
+};
+
+export type MissionBudgetRateLimit = {
+  provider: string;
+  remainingTokens: number | null;
+  resetAt: string | null;
+  source: "runtime" | "claude-local" | "unknown";
+};
+
+export type MissionBudgetSnapshot = {
+  missionId: string;
+  runId: string | null;
+  computedAt: string;
+  mode: "subscription" | "api-key";
+  pressure: MissionBudgetPressure;
+  mission: MissionBudgetScopeSnapshot;
+  perPhase: MissionPhaseBudgetSnapshot[];
+  perWorker: MissionWorkerBudgetSnapshot[];
+  activeWorkers: number;
+  recommendation: string;
+  estimatedRemainingCapacity: {
+    steps: number | null;
+    durationMs: number | null;
+  };
+  rateLimits: MissionBudgetRateLimit[];
+  dataSources: string[];
+};
+
+export type GetMissionBudgetStatusArgs = {
+  missionId: string;
+  runId?: string | null;
 };
 
 // ── Inter-agent messaging types ──

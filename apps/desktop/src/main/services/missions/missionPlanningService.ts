@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type {
   MissionExecutionPolicy,
-  MissionExecutorPolicy,
   MissionPlannerAttempt,
   MissionPlannerEngine,
   MissionPlannerReasonCode,
@@ -862,7 +861,7 @@ async function runPlannerAdapter(args: {
 function mapHintToExecutor(args: {
   hint: PlannerStepPlan["executorHint"];
   taskType: PlannerTaskType;
-  executorPolicy: MissionExecutorPolicy;
+  executorPolicy: string;
 }): OrchestratorExecutorKind {
   if (args.executorPolicy === "codex") return "codex";
   if (args.executorPolicy === "claude") return "claude";
@@ -921,7 +920,7 @@ export function plannerPlanToMissionSteps(args: {
   plan: PlannerPlan;
   requestedEngine: MissionPlannerEngine;
   resolvedEngine: MissionPlannerResolvedEngine;
-  executorPolicy: MissionExecutorPolicy;
+  executorPolicy: string;
   degraded: boolean;
   reasonCode: MissionPlannerReasonCode | null;
   validationErrors: string[];

@@ -211,7 +211,9 @@ export function MissionPromptInput({
           className="flex items-center gap-1 px-2 py-0.5"
           style={{
             background: COLORS.recessedBg,
-            border: `1px solid ${isFocused ? FOCUS_BORDER_COLOR : COLORS.outlineBorder}`,
+            borderLeft: `1px solid ${isFocused ? FOCUS_BORDER_COLOR : COLORS.outlineBorder}`,
+            borderRight: `1px solid ${isFocused ? FOCUS_BORDER_COLOR : COLORS.outlineBorder}`,
+            borderBottom: `1px solid ${isFocused ? FOCUS_BORDER_COLOR : COLORS.outlineBorder}`,
             borderTop: "none",
             transition: "border-color 0.2s ease",
           }}

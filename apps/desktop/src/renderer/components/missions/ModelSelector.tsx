@@ -20,6 +20,8 @@ type ModelSelectorProps = {
   onChange: (config: ModelConfig) => void;
   compact?: boolean;
   showRecommendedBadge?: boolean;
+  /** When provided, only models whose registry id is in this set are shown. */
+  availableModelIds?: string[];
 };
 
 const selectStyle: React.CSSProperties = {
@@ -79,21 +81,25 @@ export function ModelSelector({
   onChange,
   compact,
   showRecommendedBadge,
+  availableModelIds,
 }: ModelSelectorProps) {
   const style = compact ? compactSelectStyle : selectStyle;
+  const allowedSet = useMemo(() => availableModelIds ? new Set(availableModelIds) : null, [availableModelIds]);
 
   // Build provider list from MODEL_REGISTRY families that have non-deprecated models
   const providers: ProviderOption[] = useMemo(() => {
     const familySet = new Set<ProviderFamily>();
     for (const m of MODEL_REGISTRY) {
-      if (!m.deprecated) familySet.add(m.family);
+      if (m.deprecated) continue;
+      if (allowedSet && !allowedSet.has(m.id)) continue;
+      familySet.add(m.family);
     }
     return [...familySet].map((family) => ({
       value: familyToProvider(family),
       label: MODEL_FAMILIES[family]?.displayName ?? family,
       family,
     }));
-  }, []);
+  }, [allowedSet]);
 
   // Get models for the current provider from both legacy and registry
   const models = useMemo(() => getModelsForProvider(value.provider), [value.provider]);
@@ -102,8 +108,12 @@ export function ModelSelector({
   const registryModelsGrouped = useMemo(() => {
     const currentFamily = providers.find((p) => p.value === value.provider)?.family;
     if (!currentFamily) return [];
-    return MODEL_REGISTRY.filter((m) => m.family === currentFamily && !m.deprecated);
-  }, [value.provider, providers]);
+    return MODEL_REGISTRY.filter((m) => {
+      if (m.family !== currentFamily || m.deprecated) return false;
+      if (allowedSet && !allowedSet.has(m.id)) return false;
+      return true;
+    });
+  }, [value.provider, providers, allowedSet]);
 
   const thinkingLevels = useMemo(() => getThinkingLevels(value.provider), [value.provider]);
 

@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
+  MissionBudgetSnapshot,
   OrchestratorRunGraph,
   OrchestratorStep,
   OrchestratorAttempt,
@@ -28,6 +29,7 @@ import {
 } from "../ai/unifiedExecutor";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
+import type { createMissionService } from "../missions/missionService";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -216,6 +218,8 @@ function parseValidationFinding(value: unknown): ValidationResultReport["finding
 
 export function createCoordinatorToolSet(deps: {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
+  missionService: ReturnType<typeof createMissionService>;
+  getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   runId: string;
   missionId: string;
   logger: Logger;
@@ -224,7 +228,17 @@ export function createCoordinatorToolSet(deps: {
   onDagMutation: (event: DagMutationEvent) => void;
   onRunFinalize?: (args: { runId: string; succeeded: boolean; summary?: string; reason?: string }) => void;
 }): Record<string, Tool> {
-  const { orchestratorService, runId, missionId, logger, db, projectRoot, onDagMutation } = deps;
+  const {
+    orchestratorService,
+    missionService,
+    getMissionBudgetStatus,
+    runId,
+    missionId,
+    logger,
+    db,
+    projectRoot,
+    onDagMutation
+  } = deps;
 
   /** Shorthand to get a fresh graph snapshot. */
   function graph(): OrchestratorRunGraph {
@@ -441,9 +455,21 @@ export function createCoordinatorToolSet(deps: {
         if (validationContract && !parsedContract) {
           return { ok: false, error: "Invalid validationContract payload." };
         }
+
+        // Resolve provider from current phase card's model config if not explicitly given
+        let resolvedProvider: "claude" | "codex" = provider ?? "claude";
+        if (!provider) {
+          const runMeta = asRecord(g.run.metadata);
+          const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+          const currentPhaseModel = asRecord(phaseRuntime?.currentPhaseModel);
+          if (typeof currentPhaseModel?.provider === "string") {
+            resolvedProvider = currentPhaseModel.provider as "claude" | "codex";
+          }
+        }
+
         const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
           name,
-          provider: provider ?? "claude",
+          provider: resolvedProvider,
           prompt,
           dependsOn,
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
@@ -472,7 +498,7 @@ export function createCoordinatorToolSet(deps: {
         logger.info("coordinator.spawn_worker", {
           name,
           workerId,
-          provider: provider ?? "claude",
+          provider: resolvedProvider,
           role: roleName
         });
         return {
@@ -481,7 +507,7 @@ export function createCoordinatorToolSet(deps: {
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
           name,
-          provider: provider ?? "claude",
+          provider: resolvedProvider,
           role: roleName,
           toolProfile,
           replacementForWorkerId: replacementSourceWorkerId || null,
@@ -1966,6 +1992,112 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
+  const mark_step_complete = tool({
+    description:
+      "Mark a step as succeeded. Use when YOU (the coordinator) have verified a worker's output is satisfactory, or when completing a task/milestone yourself.",
+    inputSchema: z.object({
+      workerId: z.string().describe("Step key of the step to mark complete"),
+      summary: z.string().optional().describe("Optional completion summary"),
+    }),
+    execute: async ({ workerId, summary }) => {
+      try {
+        const g = graph();
+        const step = resolveStep(g, workerId);
+        if (!step) return { ok: false, error: `Step not found: ${workerId}` };
+        if (TERMINAL_STEP_STATUSES.has(step.status)) {
+          return { ok: false, error: `Step '${workerId}' is already terminal (${step.status})` };
+        }
+        // Cancel running attempt if any
+        const running = findRunningAttempt(g, step.id);
+        if (running) {
+          orchestratorService.completeAttempt({
+            attemptId: running.id,
+            status: "succeeded",
+            result: {
+              schema: "ade.orchestratorAttempt.v1",
+              success: true,
+              summary: summary ?? "Marked complete by coordinator",
+              outputs: null,
+              warnings: [],
+              sessionId: running.executorSessionId ?? null,
+              trackedSession: false,
+            },
+          });
+        }
+        const ts = nowIso();
+        db.run(
+          `update orchestrator_steps set status = 'succeeded', completed_at = ?, updated_at = ? where id = ? and run_id = ?`,
+          [ts, ts, step.id, runId],
+        );
+        onDagMutation({
+          runId,
+          mutation: { type: "status_changed", stepKey: workerId, newStatus: "succeeded" },
+          timestamp: ts,
+          source: "coordinator",
+        });
+        // Trigger autopilot to pick up newly unblocked steps
+        setTimeout(() => {
+          void orchestratorService.startReadyAutopilotAttempts({
+            runId,
+            reason: "coordinator_mark_step_complete",
+          }).catch(() => {});
+        }, 100);
+        logger.info("coordinator.mark_step_complete", { workerId, summary });
+        return { ok: true, workerId, newStatus: "succeeded" };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.mark_step_complete.error", { workerId, error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
+  const mark_step_failed = tool({
+    description:
+      "Mark a step as failed. Use when YOU (the coordinator) have determined a worker's output is unsatisfactory or the task cannot be completed as planned. After marking failed, you can retry_step with adjusted instructions or skip_step.",
+    inputSchema: z.object({
+      workerId: z.string().describe("Step key of the step to mark failed"),
+      reason: z.string().describe("Why the step failed"),
+    }),
+    execute: async ({ workerId, reason }) => {
+      try {
+        const g = graph();
+        const step = resolveStep(g, workerId);
+        if (!step) return { ok: false, error: `Step not found: ${workerId}` };
+        if (TERMINAL_STEP_STATUSES.has(step.status)) {
+          return { ok: false, error: `Step '${workerId}' is already terminal (${step.status})` };
+        }
+        // Cancel running attempt if any
+        const running = findRunningAttempt(g, step.id);
+        if (running) {
+          orchestratorService.completeAttempt({
+            attemptId: running.id,
+            status: "failed",
+            errorClass: "deterministic",
+            errorMessage: reason,
+          });
+        }
+        const ts = nowIso();
+        db.run(
+          `update orchestrator_steps set status = 'failed', completed_at = ?, updated_at = ?, last_error = ? where id = ? and run_id = ?`,
+          [ts, ts, reason, step.id, runId],
+        );
+        onDagMutation({
+          runId,
+          mutation: { type: "status_changed", stepKey: workerId, newStatus: "failed" },
+          timestamp: ts,
+          source: "coordinator",
+        });
+        logger.info("coordinator.mark_step_failed", { workerId, reason });
+        return { ok: true, workerId, newStatus: "failed", reason };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.mark_step_failed.error", { workerId, error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
   const retry_step = tool({
     description:
       "Retry a failed step with adjusted instructions. Creates a new attempt with the revised prompt. Use when a worker failed but you believe it can succeed with different guidance.",
@@ -2099,32 +2231,266 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
+  const openHumanIntervention = (args: {
+    question: string;
+    context?: string | null;
+    urgency?: "low" | "normal" | "high";
+    source: "ask_user" | "request_user_input";
+    canProceedWithoutAnswer?: boolean;
+  }) => {
+    const question = args.question.trim();
+    if (!question.length) {
+      return { ok: false as const, error: "Question is required." };
+    }
+    const context = typeof args.context === "string" ? args.context.trim() : "";
+    const urgency = args.urgency ?? "normal";
+    const mission = missionService.get(missionId);
+    if (!mission) {
+      return { ok: false as const, error: `Mission not found: ${missionId}` };
+    }
+
+    const existing = mission.interventions.find((entry) => {
+      if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
+      const metadata = asRecord(entry.metadata);
+      return (
+        metadata?.runId === runId
+        && metadata?.source === args.source
+        && metadata?.question === question
+      );
+    });
+    if (existing) {
+      return {
+        ok: true as const,
+        interventionId: existing.id,
+        question,
+        deduped: true
+      };
+    }
+
+    const title = question.length > 96
+      ? "Coordinator requested user input"
+      : `Coordinator input needed: ${question}`;
+    const body = context.length > 0 ? `${question}\n\nContext:\n${context}` : question;
+    const intervention = missionService.addIntervention({
+      missionId,
+      interventionType: "manual_input",
+      title,
+      body,
+      requestedAction: args.canProceedWithoutAnswer
+        ? "Optional: provide guidance. Coordinator may continue with best-effort assumptions."
+        : "Provide guidance to unblock coordinator execution.",
+      pauseMission: false,
+      metadata: {
+        source: args.source,
+        runId,
+        question,
+        context: context.length > 0 ? context : null,
+        urgency,
+        canProceedWithoutAnswer: args.canProceedWithoutAnswer === true
+      }
+    });
+
+    orchestratorService.appendRuntimeEvent({
+      runId,
+      eventType: "intervention_opened",
+      payload: {
+        missionId,
+        interventionId: intervention.id,
+        interventionType: intervention.interventionType,
+        source: args.source,
+        question,
+        context: context.length > 0 ? context : null,
+        urgency
+      },
+    });
+    orchestratorService.appendTimelineEvent({
+      runId,
+      eventType: "intervention_opened",
+      reason: "coordinator_escalation",
+      detail: {
+        interventionId: intervention.id,
+        source: args.source,
+        urgency
+      }
+    });
+    logger.info("coordinator.user_input_requested", {
+      runId,
+      missionId,
+      interventionId: intervention.id,
+      source: args.source,
+      urgency
+    });
+    return { ok: true as const, interventionId: intervention.id, question, deduped: false };
+  };
+
+  const get_budget_status = tool({
+    description:
+      "Get the current mission budget pressure and usage snapshot. Use this before deciding parallelism, validation depth, or model strategy.",
+    inputSchema: z.object({
+      includePerPhase: z.boolean().default(true).describe("Include per-phase budget usage details."),
+      includePerWorker: z.boolean().default(false).describe("Include per-worker budget usage details."),
+    }),
+    execute: async ({ includePerPhase, includePerWorker }) => {
+      const current = graph();
+      const activeStep =
+        current.steps.find((step) => step.status === "running")
+        ?? current.steps.find((step) => step.status === "ready")
+        ?? null;
+      const activeMeta = asRecord(activeStep?.metadata);
+      const currentPhaseKey = typeof activeMeta?.phaseKey === "string" ? activeMeta.phaseKey.trim() : "";
+      const currentPhaseName = typeof activeMeta?.phaseName === "string" ? activeMeta.phaseName.trim() : "";
+
+      if (!getMissionBudgetStatus) {
+        const activeWorkers = current.attempts.filter((attempt) => attempt.status === "running").length;
+        return {
+          ok: true,
+          pressure: "normal",
+          mode: "unknown",
+          mission: { used: 0, limit: null, remaining: null },
+          currentPhase: currentPhaseKey.length > 0 || currentPhaseName.length > 0
+            ? { phaseKey: currentPhaseKey || "unknown", phaseName: currentPhaseName || currentPhaseKey || "Current phase", used: 0, limit: null, remaining: null }
+            : null,
+          activeWorkers,
+          recommendation: "Budget service unavailable; use conservative parallelism until telemetry is available."
+        };
+      }
+
+      try {
+        const snapshot = await getMissionBudgetStatus();
+        if (!snapshot) {
+          return { ok: false, error: "Mission budget status unavailable." };
+        }
+        const phaseSnapshot =
+          (currentPhaseKey.length > 0
+            ? snapshot.perPhase.find((phase) => phase.phaseKey === currentPhaseKey)
+            : null)
+          ?? (currentPhaseName.length > 0
+            ? snapshot.perPhase.find((phase) => phase.phaseName === currentPhaseName)
+            : null)
+          ?? null;
+
+        return {
+          ok: true,
+          pressure: snapshot.pressure,
+          mode: snapshot.mode,
+          mission: {
+            used: snapshot.mission.usedTokens,
+            limit: snapshot.mission.maxTokens ?? null,
+            remaining: snapshot.mission.remainingTokens ?? null,
+            usedCostUsd: snapshot.mission.usedCostUsd,
+            limitCostUsd: snapshot.mission.maxCostUsd ?? null,
+            remainingCostUsd: snapshot.mission.remainingCostUsd ?? null,
+            usedTimeMs: snapshot.mission.usedTimeMs,
+            limitTimeMs: snapshot.mission.maxTimeMs ?? null,
+            remainingTimeMs: snapshot.mission.remainingTimeMs ?? null,
+          },
+          currentPhase: phaseSnapshot
+            ? {
+                phaseKey: phaseSnapshot.phaseKey,
+                phaseName: phaseSnapshot.phaseName,
+                used: phaseSnapshot.usedTokens,
+                limit: phaseSnapshot.maxTokens ?? null,
+                remaining: phaseSnapshot.remainingTokens ?? null,
+                usedCostUsd: phaseSnapshot.usedCostUsd,
+                usedTimeMs: phaseSnapshot.usedTimeMs
+              }
+            : null,
+          activeWorkers: snapshot.activeWorkers,
+          recommendation: snapshot.recommendation,
+          estimatedRemainingCapacity: snapshot.estimatedRemainingCapacity,
+          rateLimits: snapshot.rateLimits,
+          ...(includePerPhase
+            ? {
+                perPhase: snapshot.perPhase.map((phase) => ({
+                  phaseKey: phase.phaseKey,
+                  phaseName: phase.phaseName,
+                  used: phase.usedTokens,
+                  limit: phase.maxTokens ?? null,
+                  remaining: phase.remainingTokens ?? null,
+                  usedCostUsd: phase.usedCostUsd,
+                  usedTimeMs: phase.usedTimeMs
+                }))
+              }
+            : {}),
+          ...(includePerWorker
+            ? {
+                perWorker: snapshot.perWorker.map((worker) => ({
+                  workerId: worker.stepKey,
+                  stepId: worker.stepId,
+                  title: worker.title,
+                  phaseKey: worker.phaseKey,
+                  phaseName: worker.phaseName,
+                  used: worker.usedTokens,
+                  limit: worker.maxTokens ?? null,
+                  remaining: worker.remainingTokens ?? null,
+                  usedCostUsd: worker.usedCostUsd,
+                  usedTimeMs: worker.usedTimeMs
+                }))
+              }
+            : {})
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.get_budget_status.error", { runId, missionId, error: msg });
+        return { ok: false, error: msg };
+      }
+    }
+  });
+
   const ask_user = tool({
     description:
-      "Escalate a question to the human user. Creates an intervention visible in the UI. Use when genuinely stuck or for high-risk decisions.",
+      "Escalate a genuinely blocking question to the human user. Creates an intervention visible in the UI.",
     inputSchema: z.object({
       question: z.string().describe("The question to ask the user"),
       context: z
         .string()
         .optional()
         .describe("Additional context for the question"),
+      urgency: z.enum(["low", "normal", "high"]).default("normal")
     }),
-    execute: async ({ question, context }) => {
+    execute: async ({ question, context, urgency }) => {
       try {
-        orchestratorService.appendRuntimeEvent({
-          runId,
-          eventType: "intervention_opened",
-          payload: { question, context: context ?? null, missionId },
+        return openHumanIntervention({
+          source: "ask_user",
+          question,
+          context: context ?? null,
+          urgency
         });
-        const interventionId = randomUUID();
-        logger.info("coordinator.ask_user", { question, interventionId });
-        return { ok: true, interventionId, question };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.ask_user.error", { error: msg });
         return { ok: false, error: msg };
       }
     },
+  });
+
+  const request_user_input = tool({
+    description:
+      "Request user guidance from the coordinator flow. Prefer this over direct worker-to-human escalation.",
+    inputSchema: z.object({
+      question: z.string().describe("The exact question for the user."),
+      context: z.string().optional().describe("Optional context and current assumptions."),
+      urgency: z.enum(["low", "normal", "high"]).default("normal"),
+      canProceedWithoutAnswer: z
+        .boolean()
+        .default(false)
+        .describe("Whether coordinator can continue with assumptions if no response arrives.")
+    }),
+    execute: async ({ question, context, urgency, canProceedWithoutAnswer }) => {
+      try {
+        return openHumanIntervention({
+          source: "request_user_input",
+          question,
+          context: context ?? null,
+          urgency,
+          canProceedWithoutAnswer
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.request_user_input.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    }
   });
 
   // ─── Context Tools ────────────────────────────────────────────
@@ -2315,10 +2681,14 @@ export function createCoordinatorToolSet(deps: {
     assign_task,
     list_tasks,
     skip_step,
+    mark_step_complete,
+    mark_step_failed,
     retry_step,
     complete_mission,
     fail_mission,
+    get_budget_status,
     ask_user,
+    request_user_input,
     read_file,
     search_files,
     get_project_context,

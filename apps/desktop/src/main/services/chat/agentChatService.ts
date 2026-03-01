@@ -427,7 +427,7 @@ export function createAgentChatService(args: {
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
-      const codexApproval = permissions.codex?.approvalMode ?? permissions.codex?.approval_mode;
+      const codexApproval = permissions.codex?.approvalMode;
       if (codexApproval === "untrusted" || codexApproval === "on-request" || codexApproval === "on-failure" || codexApproval === "never") {
         return codexApproval;
       }

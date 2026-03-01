@@ -1,6 +1,101 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
 import { createBaseOrchestratorAdapter, shellEscapeArg } from "./baseOrchestratorAdapter";
 import { getModelById } from "../../../shared/modelRegistry";
+
+/**
+ * Build environment variable assignments for worker identity.
+ * These env vars allow the MCP server to auto-populate caller context.
+ */
+function buildWorkerEnvVars(args: {
+  missionId: string;
+  runId: string;
+  stepId: string;
+  attemptId: string;
+}): string[] {
+  return [
+    `ADE_MISSION_ID=${shellEscapeArg(args.missionId)}`,
+    `ADE_RUN_ID=${shellEscapeArg(args.runId)}`,
+    `ADE_STEP_ID=${shellEscapeArg(args.stepId)}`,
+    `ADE_ATTEMPT_ID=${shellEscapeArg(args.attemptId)}`,
+    `ADE_DEFAULT_ROLE=agent`
+  ];
+}
+
+/**
+ * Write a temporary MCP config JSON file for Claude CLI's --mcp-config flag.
+ * The config tells Claude CLI to connect to the ADE MCP server via stdio.
+ */
+function writeMcpConfigFile(args: {
+  projectRoot: string;
+  runId: string;
+  attemptId: string;
+  missionId: string;
+  stepId: string;
+}): string {
+  const configDir = path.join(args.projectRoot, ".ade", "orchestrator", "mcp-configs");
+  fs.mkdirSync(configDir, { recursive: true });
+
+  const configPath = path.join(configDir, `worker-${args.attemptId}.json`);
+
+  // Resolve the MCP server entry point
+  // Use the built version if available, otherwise use tsx for dev
+  const mcpServerDir = path.resolve(args.projectRoot, "apps", "mcp-server");
+  const builtEntry = path.join(mcpServerDir, "dist", "index.cjs");
+  const srcEntry = path.join(mcpServerDir, "src", "index.ts");
+
+  let command: string;
+  let cmdArgs: string[];
+
+  if (fs.existsSync(builtEntry)) {
+    command = "node";
+    cmdArgs = [builtEntry, "--project-root", args.projectRoot];
+  } else {
+    command = "npx";
+    cmdArgs = ["tsx", srcEntry, "--project-root", args.projectRoot];
+  }
+
+  const config = {
+    mcpServers: {
+      ade: {
+        command,
+        args: cmdArgs,
+        env: {
+          ADE_PROJECT_ROOT: args.projectRoot,
+          ADE_MISSION_ID: args.missionId,
+          ADE_RUN_ID: args.runId,
+          ADE_STEP_ID: args.stepId,
+          ADE_ATTEMPT_ID: args.attemptId,
+          ADE_DEFAULT_ROLE: "agent"
+        }
+      }
+    }
+  };
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
+  return configPath;
+}
+
+/**
+ * Resolve the project root from the current working directory.
+ * Walks up from cwd looking for package.json with the monorepo marker.
+ */
+function resolveProjectRoot(): string {
+  // The adapter runs inside the desktop Electron process.
+  // The project root is the monorepo root (parent of apps/).
+  // Walk up from __dirname to find the root containing apps/mcp-server.
+  let dir = process.cwd();
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
 
 /**
  * Unified orchestrator adapter that handles ALL model providers.
@@ -8,6 +103,8 @@ import { getModelById } from "../../../shared/modelRegistry";
  * For API-key models, it constructs a direct SDK invocation command.
  */
 export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter {
+  const projectRoot = resolveProjectRoot();
+
   return createBaseOrchestratorAdapter({
     executorKind: "unified",
     sessionType: "ai-orchestrated",
@@ -19,8 +116,14 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
       return `exec claude -p ${shellEscapeArg(prompt)}`;
     },
 
-    buildStartupCommand: ({ prompt, model, step, permissionConfig, teamRuntime }) => {
+    buildStartupCommand: ({ prompt, model, step, run, attempt, permissionConfig, teamRuntime }) => {
       const descriptor = getModelById(model);
+      const workerEnv = buildWorkerEnvVars({
+        missionId: run.missionId,
+        runId: run.id,
+        stepId: step.id,
+        attemptId: attempt.id
+      });
 
       // Determine which CLI to use based on the model
       if (!descriptor || (descriptor.isCliWrapped && descriptor.family === "anthropic")) {
@@ -46,9 +149,19 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
           if (tool.trim().length) parts.push("--allowedTools", shellEscapeArg(tool.trim()));
         }
 
+        // Bind ADE MCP server to worker via --mcp-config
+        const mcpConfigPath = writeMcpConfigFile({
+          projectRoot,
+          runId: run.id,
+          attemptId: attempt.id,
+          missionId: run.missionId,
+          stepId: step.id
+        });
+        parts.push("--mcp-config", shellEscapeArg(mcpConfigPath));
+
         parts.push("-p", shellEscapeArg(prompt));
 
-        const envParts: string[] = [];
+        const envParts: string[] = [...workerEnv];
         if (teamRuntime?.enabled && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")) {
           envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
         }
@@ -58,7 +171,7 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
       }
 
       if (descriptor.isCliWrapped && descriptor.family === "openai") {
-        // Codex CLI path
+        // Codex CLI path — Codex does not support MCP, only pass env vars
         const approvalMode =
           typeof step.metadata?.approvalMode === "string" && step.metadata.approvalMode.trim().length
             ? step.metadata.approvalMode.trim()
@@ -87,7 +200,11 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
         }
 
         parts.push(shellEscapeArg(prompt));
-        return `exec ${parts.join(" ")}`;
+
+        // Pass worker env vars for identity (even though Codex can't use MCP)
+        const envParts = [...workerEnv];
+        const cmd = parts.join(" ");
+        return envParts.length > 0 ? `${envParts.join(" ")} exec ${cmd}` : `exec ${cmd}`;
       }
 
       // For API-key models, we can't use a CLI command directly

@@ -31,7 +31,7 @@ const STATUS_DOT: Record<string, string> = {
   failed: "#EF4444"
 };
 
-export function AgentChannels({ missionId, threads, onSendMessage }: AgentChannelsProps) {
+export const AgentChannels = React.memo(function AgentChannels({ missionId, threads, onSendMessage }: AgentChannelsProps) {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<OrchestratorChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -393,7 +393,7 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
       </div>
     </div>
   );
-}
+});
 
 function ChannelButton({
   thread,

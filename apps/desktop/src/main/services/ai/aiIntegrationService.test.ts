@@ -30,6 +30,7 @@ vi.mock("./codexExecutor", () => ({
 vi.mock("./authDetector", () => ({
   detectAllAuth: (...args: unknown[]) => mockState.detectAllAuth(...args),
   detectCliAuthStatuses: (...args: unknown[]) => mockState.detectCliAuthStatuses(...args),
+  getCachedCliAuthStatuses: (...args: unknown[]) => mockState.detectCliAuthStatuses(...args),
   verifyProviderApiKey: (...args: unknown[]) => mockState.verifyProviderApiKey(...args),
 }));
 

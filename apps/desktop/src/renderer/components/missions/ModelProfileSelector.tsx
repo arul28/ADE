@@ -30,10 +30,10 @@ const CUSTOM_ACTIVE_STYLE: React.CSSProperties = {
 
 const PROFILE_DISPLAY_NAMES: Record<string, string> = {
   standard: "STANDARD",
-  "fast-cheap": "FAST & CHEAP",
-  "max-quality": "MAX QUALITY",
-  "codex-only": "CODEX ONLY",
-  "claude-only": "CLAUDE ONLY",
+  "fast-cheap": "FAST",
+  "max-quality": "MAX",
+  "codex-only": "CODEX",
+  "claude-only": "CLAUDE",
 };
 
 export function ModelProfileSelector({
@@ -48,7 +48,7 @@ export function ModelProfileSelector({
   );
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex gap-1">
       {BUILT_IN_PROFILES.map((profile) => {
         const isActive = selectedProfileId === profile.id;
         const activeStyle = PROFILE_ACTIVE_STYLES[profile.id] ?? INACTIVE_STYLE;
@@ -57,11 +57,11 @@ export function ModelProfileSelector({
             key={profile.id}
             onClick={() => onSelect(profile)}
             title={profile.description}
-            className="px-3 py-1.5 text-center transition-colors"
+            className="px-2 py-1 text-center transition-colors"
             style={{
               ...(isActive ? activeStyle : INACTIVE_STYLE),
               fontFamily: MONO_FONT,
-              fontSize: 11,
+              fontSize: 10,
               fontWeight: 700,
               textTransform: "uppercase",
               letterSpacing: "1px",
@@ -78,11 +78,11 @@ export function ModelProfileSelector({
       <button
         onClick={() => onSelect(null)}
         title="Custom model configuration"
-        className="px-3 py-1.5 text-center transition-colors"
+        className="px-2 py-1 text-center transition-colors"
         style={{
           ...(isCustom ? CUSTOM_ACTIVE_STYLE : INACTIVE_STYLE),
           fontFamily: MONO_FONT,
-          fontSize: 11,
+          fontSize: 10,
           fontWeight: 700,
           textTransform: "uppercase",
           letterSpacing: "1px",

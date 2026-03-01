@@ -307,6 +307,16 @@ export function FilesPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(initialSession?.selectedNodePath ?? null);
   const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; key: string } | null>(null);
+  const treeRefreshStateRef = useRef<{
+    inFlight: boolean;
+    queuedFull: boolean;
+    queuedParents: Set<string>;
+  }>({
+    inFlight: false,
+    queuedFull: false,
+    queuedParents: new Set<string>()
+  });
+  const watcherRefreshTimerRef = useRef<number | null>(null);
 
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => initialSession?.openTabs.map((tab) => ({ ...tab })) ?? []);
   const [activeTabPath, setActiveTabPath] = useState<string | null>(initialSession?.activeTabPath ?? null);
@@ -506,7 +516,7 @@ export function FilesPage() {
     pendingOpenRef.current = { key: location.key, filePath: openFilePath, laneId: st?.laneId ?? null };
   }, [location.key, location.state]);
 
-  const refreshTree = useCallback(async (parentPath?: string) => {
+  const refreshTreeNow = useCallback(async (parentPath?: string) => {
     if (!workspaceId) return;
     try {
       const nodes = await window.ade.files.listTree({
@@ -530,6 +540,51 @@ export function FilesPage() {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [workspaceId]);
+
+  const refreshTree = useCallback(async (parentPath?: string) => {
+    if (!workspaceId) return;
+    const normalizedParent = parentPath?.trim() ? parentPath : undefined;
+    const state = treeRefreshStateRef.current;
+    if (state.inFlight) {
+      if (!normalizedParent) {
+        state.queuedFull = true;
+        state.queuedParents.clear();
+      } else if (!state.queuedFull) {
+        state.queuedParents.add(normalizedParent);
+      }
+      return;
+    }
+    state.inFlight = true;
+    try {
+      let nextParent: string | undefined = normalizedParent;
+      while (true) {
+        await refreshTreeNow(nextParent);
+        if (state.queuedFull) {
+          state.queuedFull = false;
+          state.queuedParents.clear();
+          nextParent = undefined;
+          continue;
+        }
+        const [queuedParent] = state.queuedParents;
+        if (queuedParent) {
+          state.queuedParents.delete(queuedParent);
+          nextParent = queuedParent;
+          continue;
+        }
+        break;
+      }
+    } finally {
+      state.inFlight = false;
+    }
+  }, [refreshTreeNow, workspaceId]);
+
+  const scheduleTreeRefresh = useCallback((delayMs = 140) => {
+    if (watcherRefreshTimerRef.current != null) return;
+    watcherRefreshTimerRef.current = window.setTimeout(() => {
+      watcherRefreshTimerRef.current = null;
+      void refreshTree().catch(() => {});
+    }, delayMs);
+  }, [refreshTree]);
 
   const openFile = useCallback(async (filePath: string, options: { forceReload?: boolean; preserveMode?: boolean } = {}) => {
     if (!workspaceId) return;
@@ -755,19 +810,30 @@ export function FilesPage() {
     if (!workspaceId) return;
     setExpanded(new Set());
     setContextMenu(null);
+    treeRefreshStateRef.current.inFlight = false;
+    treeRefreshStateRef.current.queuedFull = false;
+    treeRefreshStateRef.current.queuedParents.clear();
+    if (watcherRefreshTimerRef.current != null) {
+      window.clearTimeout(watcherRefreshTimerRef.current);
+      watcherRefreshTimerRef.current = null;
+    }
     refreshTree().catch(() => {});
     window.ade.files.watchChanges({ workspaceId }).catch(() => {});
 
     const unsub = window.ade.files.onChange((ev) => {
       if (ev.workspaceId !== workspaceId) return;
-      refreshTree().catch(() => {});
+      scheduleTreeRefresh();
     });
 
     return () => {
       unsub();
+      if (watcherRefreshTimerRef.current != null) {
+        window.clearTimeout(watcherRefreshTimerRef.current);
+        watcherRefreshTimerRef.current = null;
+      }
       window.ade.files.stopWatching({ workspaceId }).catch(() => {});
     };
-  }, [workspaceId, refreshTree]);
+  }, [workspaceId, refreshTree, scheduleTreeRefresh]);
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {

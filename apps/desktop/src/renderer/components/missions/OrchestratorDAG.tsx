@@ -189,7 +189,7 @@ type TooltipInfo = {
 
 const MAX_TIMELINE_ENTRIES = 8;
 
-export function OrchestratorDAG({ steps, attempts, claims, selectedStepId, onStepClick, runId }: Props) {
+export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, attempts, claims, selectedStepId, onStepClick, runId }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -848,4 +848,4 @@ export function OrchestratorDAG({ steps, attempts, claims, selectedStepId, onSte
       )}
     </div>
   );
-}
+});

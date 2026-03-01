@@ -157,23 +157,24 @@ export function getAggregatedUsage(
     `SELECT r.mission_id,
             SUM(cs.input_tokens) as input_tokens,
             SUM(cs.output_tokens) as output_tokens,
-            COUNT(DISTINCT cs.id) as sessions
+            COUNT(DISTINCT cs.id) as sessions,
+            m.title as mission_title
      FROM orchestrator_runs r
      JOIN orchestrator_attempt_sessions oas ON oas.run_id = r.id
      JOIN chat_sessions cs ON cs.id = oas.session_id
+     LEFT JOIN missions m ON m.id = r.mission_id
      WHERE cs.created_at >= COALESCE(?, cs.created_at)
      GROUP BY r.mission_id
      ORDER BY sessions DESC`,
     [since]
-  ) as Array<{ mission_id: string; input_tokens: number; output_tokens: number; sessions: number }>;
+  ) as Array<{ mission_id: string; input_tokens: number; output_tokens: number; sessions: number; mission_title: string | null }>;
 
   const missionBreakdown: UsageMissionBreakdown[] = missionRows.map((r) => {
-    const ubm = ctx.missionService.get(r.mission_id);
     const inp = Number(r.input_tokens) || 0;
     const out = Number(r.output_tokens) || 0;
     return {
       missionId: r.mission_id,
-      missionTitle: ubm?.title ?? "Unknown",
+      missionTitle: r.mission_title ?? "Unknown",
       totalTokens: inp + out,
       costEstimateUsd: estimateTokenCost("sonnet", inp, out)
     };

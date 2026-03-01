@@ -80,115 +80,21 @@ export type CallTypeInfo = {
   label: string;
   description: string;
   defaultProvider: ModelProvider;
-  recommended: string;
 };
 
 export const ORCHESTRATOR_CALL_TYPES: CallTypeInfo[] = [
   {
     key: "coordinator",
     label: "Coordinator",
-    description: "Persistent session that observes the full mission run and can intervene with steer/skip/broadcast commands.",
+    description: "Persistent AI session that manages the mission — spawns workers, makes decisions, handles failures",
     defaultProvider: "claude",
-    recommended: "claude-sonnet-4-6"
-  },
-  {
-    key: "worker_evaluation",
-    label: "Worker Evaluation",
-    description: "Evaluates worker-proposed plans before execution. Judges whether the agent's approach is sound.",
-    defaultProvider: "claude",
-    recommended: "claude-haiku-4-5-20251001"
-  },
-  {
-    key: "quality_gate",
-    label: "Quality Gate",
-    description: "Evaluates step outputs against quality criteria (code review, test review, validation).",
-    defaultProvider: "claude",
-    recommended: "claude-sonnet-4-6"
-  },
-  {
-    key: "failure_diagnosis",
-    label: "Failure Diagnosis",
-    description: "Analyzes why a step failed and classifies the error for recovery routing.",
-    defaultProvider: "claude",
-    recommended: "claude-haiku-4-5-20251001"
-  },
-  {
-    key: "plan_adjustment",
-    label: "Plan Adjustment",
-    description: "Suggests modifications to the mission plan based on runtime events (add/skip/reorder steps).",
-    defaultProvider: "claude",
-    recommended: "claude-sonnet-4-6"
-  },
-  {
-    key: "intervention_handling",
-    label: "Intervention Handling",
-    description: "Evaluates whether an intervention can be auto-resolved or needs human input.",
-    defaultProvider: "claude",
-    recommended: "claude-sonnet-4-6"
   },
   {
     key: "chat_response",
     label: "Chat Response",
-    description: "Responds to user messages in the mission thread. Conversational and context-aware.",
+    description: "Handles user chat messages when no coordinator is active",
     defaultProvider: "claude",
-    recommended: "claude-sonnet-4-6"
   },
-  {
-    key: "lane_strategy",
-    label: "Lane Strategy",
-    description: "Chooses lane-level execution strategy for new work and integration sequencing.",
-    defaultProvider: "claude",
-    recommended: "claude-sonnet-4-6"
-  },
-  {
-    key: "step_transition",
-    label: "Step Transition",
-    description: "Determines when a step should advance, pause, or wait for additional signals.",
-    defaultProvider: "claude",
-    recommended: "claude-haiku-4-5-20251001"
-  },
-  {
-    key: "retry_decision",
-    label: "Retry Decision",
-    description: "Decides whether to retry a failed attempt and with what retry posture.",
-    defaultProvider: "claude",
-    recommended: "claude-haiku-4-5-20251001"
-  },
-  {
-    key: "timeout_estimation",
-    label: "Timeout Estimation",
-    description: "Estimates expected duration and timeout posture for upcoming work.",
-    defaultProvider: "claude",
-    recommended: "claude-haiku-4-5-20251001"
-  },
-  {
-    key: "step_priority",
-    label: "Step Priority",
-    description: "Ranks runnable steps to choose which work should execute next.",
-    defaultProvider: "claude",
-    recommended: "claude-haiku-4-5-20251001"
-  },
-  {
-    key: "parallelism_decision",
-    label: "Parallelism Decision",
-    description: "Adjusts worker parallelism based on risk, dependencies, and resource pressure.",
-    defaultProvider: "claude",
-    recommended: "claude-sonnet-4-6"
-  },
-  {
-    key: "stagnation_evaluation",
-    label: "Stagnation Evaluation",
-    description: "Detects stalled progress patterns and decides when escalation is needed.",
-    defaultProvider: "claude",
-    recommended: "claude-haiku-4-5-20251001"
-  },
-  {
-    key: "recovery_decision",
-    label: "Recovery Decision",
-    description: "Selects recovery strategy after repeated failures or stuck states.",
-    defaultProvider: "claude",
-    recommended: "claude-sonnet-4-6"
-  }
 ];
 
 // ─────────────────────────────────────────────────────
@@ -220,20 +126,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     },
     intelligenceConfig: {
       coordinator: CLAUDE_SONNET,
-      worker_evaluation: CLAUDE_HAIKU,
-      quality_gate: CLAUDE_SONNET,
-      failure_diagnosis: CLAUDE_HAIKU,
-      plan_adjustment: CLAUDE_SONNET,
-      intervention_handling: CLAUDE_SONNET,
       chat_response: CLAUDE_SONNET,
-      lane_strategy: CLAUDE_SONNET,
-      step_transition: CLAUDE_HAIKU,
-      retry_decision: CLAUDE_HAIKU,
-      timeout_estimation: CLAUDE_HAIKU,
-      step_priority: CLAUDE_HAIKU,
-      parallelism_decision: CLAUDE_SONNET,
-      stagnation_evaluation: CLAUDE_HAIKU,
-      recovery_decision: CLAUDE_SONNET,
     }
   },
   {
@@ -254,20 +147,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     },
     intelligenceConfig: {
       coordinator: CLAUDE_HAIKU,
-      worker_evaluation: CLAUDE_HAIKU,
-      quality_gate: CLAUDE_HAIKU,
-      failure_diagnosis: CLAUDE_HAIKU,
-      plan_adjustment: CLAUDE_HAIKU,
-      intervention_handling: CLAUDE_HAIKU,
       chat_response: CLAUDE_HAIKU,
-      lane_strategy: CLAUDE_HAIKU,
-      step_transition: CLAUDE_HAIKU,
-      retry_decision: CLAUDE_HAIKU,
-      timeout_estimation: CLAUDE_HAIKU,
-      step_priority: CLAUDE_HAIKU,
-      parallelism_decision: CLAUDE_HAIKU,
-      stagnation_evaluation: CLAUDE_HAIKU,
-      recovery_decision: CLAUDE_HAIKU,
     },
     smartBudget: {
       enabled: true,
@@ -293,20 +173,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     },
     intelligenceConfig: {
       coordinator: CLAUDE_OPUS,
-      worker_evaluation: CLAUDE_SONNET,
-      quality_gate: CLAUDE_OPUS,
-      failure_diagnosis: CLAUDE_SONNET,
-      plan_adjustment: CLAUDE_OPUS,
-      intervention_handling: CLAUDE_OPUS,
       chat_response: CLAUDE_SONNET,
-      lane_strategy: CLAUDE_OPUS,
-      step_transition: CLAUDE_SONNET,
-      retry_decision: CLAUDE_SONNET,
-      timeout_estimation: CLAUDE_SONNET,
-      step_priority: CLAUDE_SONNET,
-      parallelism_decision: CLAUDE_OPUS,
-      stagnation_evaluation: CLAUDE_SONNET,
-      recovery_decision: CLAUDE_OPUS,
     }
   },
   {
@@ -327,20 +194,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     },
     intelligenceConfig: {
       coordinator: CODEX_53,
-      worker_evaluation: CODEX_MINI,
-      quality_gate: CODEX_53,
-      failure_diagnosis: CODEX_MINI,
-      plan_adjustment: CODEX_53,
-      intervention_handling: CODEX_53,
       chat_response: CODEX_53,
-      lane_strategy: CODEX_53,
-      step_transition: CODEX_MINI,
-      retry_decision: CODEX_MINI,
-      timeout_estimation: CODEX_MINI,
-      step_priority: CODEX_MINI,
-      parallelism_decision: CODEX_53,
-      stagnation_evaluation: CODEX_MINI,
-      recovery_decision: CODEX_53,
     }
   },
   {
@@ -361,20 +215,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     },
     intelligenceConfig: {
       coordinator: CLAUDE_SONNET,
-      worker_evaluation: CLAUDE_HAIKU,
-      quality_gate: CLAUDE_SONNET,
-      failure_diagnosis: CLAUDE_HAIKU,
-      plan_adjustment: CLAUDE_SONNET,
-      intervention_handling: CLAUDE_SONNET,
       chat_response: CLAUDE_SONNET,
-      lane_strategy: CLAUDE_SONNET,
-      step_transition: CLAUDE_HAIKU,
-      retry_decision: CLAUDE_HAIKU,
-      timeout_estimation: CLAUDE_HAIKU,
-      step_priority: CLAUDE_HAIKU,
-      parallelism_decision: CLAUDE_SONNET,
-      stagnation_evaluation: CLAUDE_HAIKU,
-      recovery_decision: CLAUDE_SONNET,
     }
   }
 ];

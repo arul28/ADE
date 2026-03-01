@@ -83,6 +83,8 @@ export interface BaseAdapterConfig {
     prompt: string;
     model: string;
     step: OrchestratorStep;
+    run: import("../../../shared/types").OrchestratorRun;
+    attempt: import("../../../shared/types").OrchestratorAttempt;
     permissionConfig: OrchestratorExecutorStartArgs["permissionConfig"];
     teamRuntime?: TeamRuntimeConfig;
   }) => string;
@@ -373,6 +375,22 @@ export function buildFullPrompt(
   // ADE self-awareness
   systemParts.push("You are working within ADE (Autonomous Development Environment), an Electron-based multi-agent development tool. ADE manages lanes (git worktrees), missions (task orchestration), PRs, and agent sessions. You have access to the project's full context including PRD and architecture docs when provided.");
 
+  // MCP server collaboration tools
+  systemParts.push(
+    [
+      "ADE MCP TOOLS: You have access to the ADE MCP server which provides team collaboration tools.",
+      "Your worker identity (mission, run, step, attempt IDs) is automatically resolved — you don't need to pass IDs to observation tools.",
+      "Key tools available:",
+      "- get_worker_states: See all peer workers in your run and their current status",
+      "- get_run_graph: See the full execution plan, step statuses, and dependencies",
+      "- get_mission: Get mission details and metadata",
+      "- get_pending_messages: Check for messages from the coordinator or peer workers",
+      "- get_timeline: See recent events in your run",
+      "- stream_events: Poll for new orchestrator events",
+      "Use get_pending_messages periodically to check for steering directives or peer communications."
+    ].join("\n")
+  );
+
   // Team runtime capabilities
   {
     const teamRuntime = run.metadata && typeof run.metadata === "object" && !Array.isArray(run.metadata)
@@ -556,6 +574,8 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
           prompt,
           model,
           step,
+          run,
+          attempt,
           permissionConfig: args.permissionConfig,
           teamRuntime
         });

@@ -1,11 +1,12 @@
 import React, { useState } from "react";
-import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs } from "@phosphor-icons/react";
+import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, Sparkle } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { GeneralSection } from "../settings/GeneralSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
 import { UsageDashboard } from "../missions/UsageDashboard";
+import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 const SECTIONS = [
@@ -16,6 +17,7 @@ const SECTIONS = [
   { id: "automations", label: "Automations", icon: Robot },
   { id: "terminals", label: "Terminals", icon: Terminal },
   { id: "keybindings", label: "Keybindings", icon: Keyboard },
+  { id: "ai-features", label: "AI Features", icon: Sparkle },
   { id: "usage", label: "Usage", icon: Lightning },
 ] as const;
 
@@ -105,6 +107,7 @@ export function SettingsPage() {
         {section === "providers" && <ProvidersSection />}
         {section === "github" && <GitHubSection />}
         {section === "context" && <ContextSection />}
+        {section === "ai-features" && <AiFeaturesSection />}
         {section === "usage" && <UsageDashboard missionId={null} />}
       </div>
     </div>

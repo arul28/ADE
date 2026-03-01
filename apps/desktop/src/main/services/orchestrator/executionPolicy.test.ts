@@ -92,7 +92,7 @@ describe("executionPolicy", () => {
       expect(stepTypeToPhase("validation")).toBe("testing");
       expect(stepTypeToPhase("review")).toBe("codeReview");
       expect(stepTypeToPhase("integration")).toBe("integration");
-      expect(stepTypeToPhase("merge")).toBe("merge");
+      expect(stepTypeToPhase("merge")).toBeNull(); // merge phase removed — always off
       expect(stepTypeToPhase("unknown")).toBeNull();
     });
 
@@ -200,7 +200,7 @@ describe("executionPolicy", () => {
       expect(result.completionReady).toBe(true);
     });
 
-    it("merge phase is never required (always off)", () => {
+    it("merge phase is not evaluated (removed from execution phases)", () => {
       const policy: MissionExecutionPolicy = {
         ...DEFAULT_EXECUTION_POLICY,
         merge: { mode: "off" }
@@ -209,8 +209,8 @@ describe("executionPolicy", () => {
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
       ];
       const result = evaluateRunCompletion(steps, policy);
-      // Merge is skipped by policy, not blocking
-      expect(result.diagnostics.some((d) => d.phase === "merge" && d.code === "phase_skipped_by_policy")).toBe(true);
+      // Merge is no longer an execution phase — no diagnostic emitted for it
+      expect(result.diagnostics.some((d) => d.phase === "merge")).toBe(false);
       expect(result.completionReady).toBe(true);
     });
 
@@ -491,8 +491,8 @@ describe("roleForStepType", () => {
     expect(roleForStepType("integration")).toBe("integration");
   });
 
-  it('maps "merge" to "merge"', () => {
-    expect(roleForStepType("merge")).toBe("merge");
+  it('returns null for "merge" (merge phase removed)', () => {
+    expect(roleForStepType("merge")).toBeNull();
   });
 
   it("returns null for unknown step types", () => {
@@ -507,7 +507,7 @@ describe("roleForStepType", () => {
     expect(roleForStepType("", "review")).toBe("code_review");
     expect(roleForStepType("", "test_review")).toBe("test_review");
     expect(roleForStepType("", "integration")).toBe("integration");
-    expect(roleForStepType("", "merge")).toBe("merge");
+    expect(roleForStepType("", "merge")).toBeNull(); // merge phase removed
   });
 });
 

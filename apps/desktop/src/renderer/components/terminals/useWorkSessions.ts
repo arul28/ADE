@@ -37,21 +37,48 @@ export function useWorkSessions() {
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"tabs" | "grid">("tabs");
+  const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
+  const hasRunningSessionsRef = useRef(false);
+  const backgroundRefreshTimerRef = useRef<number | null>(null);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (options: { showLoading?: boolean } = {}) => {
+    const showLoading = options.showLoading ?? true;
+    if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+    refreshInFlightRef.current = true;
+    if (showLoading) setLoading(true);
     try {
       const rows = await window.ade.sessions.list({ limit: 500 });
       setSessions(rows);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
+      refreshInFlightRef.current = false;
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        void refresh({ showLoading: false });
+      }
     }
   }, []);
 
+  const scheduleBackgroundRefresh = useCallback((delayMs = 450) => {
+    if (backgroundRefreshTimerRef.current != null) return;
+    backgroundRefreshTimerRef.current = window.setTimeout(() => {
+      backgroundRefreshTimerRef.current = null;
+      void refresh({ showLoading: false });
+    }, delayMs);
+  }, [refresh]);
+
   // Initial fetch
   useEffect(() => {
-    refresh().catch(() => {});
-  }, []);
+    refresh({ showLoading: true }).catch(() => {});
+  }, [refresh]);
+
+  useEffect(() => {
+    hasRunningSessionsRef.current = sessions.some((s) => s.status === "running");
+  }, [sessions]);
 
   // URL params
   useEffect(() => {
@@ -66,25 +93,35 @@ export function useWorkSessions() {
   // Event subscriptions
   useEffect(() => {
     const unsubExit = window.ade.pty.onExit(() => {
-      refresh().catch(() => {});
+      scheduleBackgroundRefresh(120);
     });
     const t = setInterval(() => {
-      if (sessions.some((s) => s.status === "running")) refresh().catch(() => {});
-    }, 2000);
+      if (document.visibilityState !== "visible") return;
+      if (!hasRunningSessionsRef.current) return;
+      scheduleBackgroundRefresh(180);
+    }, 5_000);
     return () => {
       try { unsubExit(); } catch { /* ignore */ }
       clearInterval(t);
     };
-  }, [sessions, refresh]);
+  }, [scheduleBackgroundRefresh]);
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       const event = payload.event;
-      if (event.type === "done") refresh().catch(() => {});
-      if (event.type === "status" && event.turnStatus !== "started") refresh().catch(() => {});
+      if (event.type === "done") scheduleBackgroundRefresh(200);
+      if (event.type === "status" && event.turnStatus !== "started") scheduleBackgroundRefresh(200);
     });
     return unsubscribe;
-  }, [refresh]);
+  }, [scheduleBackgroundRefresh]);
+
+  useEffect(() => {
+    return () => {
+      if (backgroundRefreshTimerRef.current != null) {
+        window.clearTimeout(backgroundRefreshTimerRef.current);
+      }
+    };
+  }, []);
 
   // Enhanced filtering with prefix search
   const filtered = useMemo(() => {

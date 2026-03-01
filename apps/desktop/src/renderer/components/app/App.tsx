@@ -5,7 +5,7 @@ import { BrowserRouter, HashRouter, Navigate, Outlet, Route, Routes, useNavigate
 // The browser mock sets __isBrowserMock when window.ade is stubbed.
 const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
-import { ProjectHomePage } from "../project/ProjectHomePage";
+import { RunPage } from "../run/RunPage";
 import { LanesPage } from "../lanes/LanesPage";
 import { FilesPage } from "../files/FilesPage";
 import { TerminalsPage } from "../terminals/TerminalsPage";
@@ -127,7 +127,7 @@ export function App() {
           <Route path="/startup" element={<Navigate to="/project" replace />} />
           <Route element={<ShellLayout />}>
             <Route path="/" element={<Navigate to="/project" replace />} />
-            <Route path="/project" element={guarded(<ProjectHomePage />)} />
+            <Route path="/project" element={guarded(<RunPage />)} />
             <Route path="/onboarding" element={guarded(<OnboardingPage />)} />
             <Route path="/lanes" element={guarded(<LanesPage />)} />
             <Route path="/files" element={guarded(<FilesPage />)} />

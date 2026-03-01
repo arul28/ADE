@@ -227,7 +227,6 @@ import type {
   MissionStatus,
   MissionStepHandoff,
   MissionSummary,
-  MissionExecutorPolicy,
   MissionPlannerAttempt,
   MissionPlannerRun,
   PhaseProfile,
@@ -240,6 +239,8 @@ import type {
   ImportPhaseProfileArgs,
   MissionPhaseConfiguration,
   MissionDashboardSnapshot,
+  MissionPreflightRequest,
+  MissionPreflightResult,
   ResolveMissionInterventionArgs,
   CreateMissionArgs,
   PlanMissionArgs,
@@ -272,6 +273,7 @@ import type {
   TickOrchestratorRunArgs,
   AiFeatureKey,
   AiApiKeyVerificationResult,
+  AiConfig,
   AiSettingsStatus,
   GetOrchestratorWorkerStatesArgs,
   OrchestratorWorkerState,
@@ -305,6 +307,8 @@ import type {
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
+  GetMissionBudgetStatusArgs,
+  MissionBudgetSnapshot,
   SendAgentMessageArgs,
   GetGlobalChatArgs,
   DeliverMessageArgs,
@@ -343,7 +347,9 @@ import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createMissionService } from "../missions/missionService";
+import type { createMissionPreflightService } from "../missions/missionPreflightService";
 import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionPlanningService";
+import type { createMissionBudgetService } from "../orchestrator/missionBudgetService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { createMemoryService } from "../memory/memoryService";
@@ -381,7 +387,9 @@ export type AppContext = {
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   missionService: ReturnType<typeof createMissionService>;
+  missionPreflightService: ReturnType<typeof createMissionPreflightService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
+  missionBudgetService: ReturnType<typeof createMissionBudgetService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -492,16 +500,6 @@ function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
   return "codex";
 }
 
-function normalizeMissionExecutorPolicy(value: unknown): MissionExecutorPolicy {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "claude" || raw === "codex" || raw === "both") return raw;
-  return "both";
-}
-
-function defaultExecutorForPolicy(policy: MissionExecutorPolicy): OrchestratorExecutorKind {
-  if (policy === "claude") return "claude";
-  return "codex";
-}
 
 function buildMissionPlanningContextBundle(args: {
   ctx: AppContext;
@@ -865,6 +863,32 @@ export function registerIpc({
 }) {
   const watcherCleanupBoundSenders = new Set<number>();
 
+  const withIpcTiming = async <T>(
+    ctx: AppContext,
+    op: string,
+    fn: () => Promise<T>,
+    meta: Record<string, unknown> = {}
+  ): Promise<T> => {
+    const startedAt = Date.now();
+    try {
+      const result = await fn();
+      const durationMs = Date.now() - startedAt;
+      if (durationMs >= 120) {
+        ctx.logger.debug("ipc.timing", { op, durationMs, ...meta });
+      }
+      return result;
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      ctx.logger.warn("ipc.timing_failed", {
+        op,
+        durationMs,
+        err: error instanceof Error ? error.message : String(error),
+        ...meta
+      });
+      throw error;
+    }
+  };
+
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
   ipcMain.handle(IPC.appGetProject, async () => getCtx().project);
@@ -1166,6 +1190,8 @@ export function registerIpc({
   ipcMain.handle(IPC.aiGetStatus, async (): Promise<AiSettingsStatus> => {
     const ctx = getCtx();
     const status = await ctx.aiIntegrationService.getStatus();
+    // Single query for all feature daily usage instead of N individual queries
+    const usageBatch = ctx.aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
     return {
       mode: status.mode,
       availableProviders: status.availableProviders,
@@ -1174,7 +1200,7 @@ export function registerIpc({
       features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
         feature,
         enabled: ctx.aiIntegrationService.getFeatureFlag(feature),
-        dailyUsage: ctx.aiIntegrationService.getDailyUsage(feature),
+        dailyUsage: usageBatch.get(feature) ?? 0,
         dailyLimit: ctx.aiIntegrationService.getDailyBudgetLimit(feature)
       }))
     };
@@ -1202,6 +1228,23 @@ export function registerIpc({
       return await ctx.aiIntegrationService.verifyApiKeyConnection(arg.provider);
     },
   );
+
+  ipcMain.handle(IPC.aiUpdateConfig, async (_event, partial: Partial<AiConfig>): Promise<void> => {
+    const ctx = getCtx();
+    const snapshot = ctx.projectConfigService.get();
+    const currentAi = snapshot.shared?.ai ?? {};
+    const merged: AiConfig = {
+      ...currentAi,
+      ...partial,
+      features: { ...currentAi.features, ...partial.features },
+      taskRouting: { ...currentAi.taskRouting, ...partial.taskRouting },
+      budgets: { ...currentAi.budgets, ...partial.budgets },
+    };
+    ctx.projectConfigService.save({
+      shared: { ...snapshot.shared, ai: merged },
+      local: snapshot.local ?? {},
+    });
+  });
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
@@ -1308,7 +1351,6 @@ export function registerIpc({
         : prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "Mission";
     const plannerEngine = arg?.plannerEngine ?? "auto";
     const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : null;
-    const executorPolicy = normalizeMissionExecutorPolicy(arg?.executorPolicy);
     const planning = await planMissionOnce({
       missionId: typeof arg?.missionId === "string" ? arg.missionId.trim() : undefined,
       title,
@@ -1317,6 +1359,7 @@ export function registerIpc({
       plannerEngine,
       timeoutMs: arg?.planningTimeoutMs,
       allowPlanningQuestions: arg?.allowPlanningQuestions,
+      model: arg?.model,
       projectRoot: ctx.project.rootPath,
       contextBundle: buildMissionPlanningContextBundle({
         ctx,
@@ -1331,7 +1374,7 @@ export function registerIpc({
       plan: planning.plan,
       requestedEngine: planning.run.requestedEngine,
       resolvedEngine: planning.run.resolvedEngine!,
-      executorPolicy,
+      executorPolicy: "both",
       degraded: planning.run.degraded,
       reasonCode: planning.run.reasonCode,
       validationErrors: planning.run.validationErrors
@@ -1403,6 +1446,11 @@ export function registerIpc({
     return ctx.missionService.getDashboard();
   });
 
+  ipcMain.handle(IPC.missionsPreflight, async (_event, arg: MissionPreflightRequest): Promise<MissionPreflightResult> => {
+    const ctx = getCtx();
+    return await ctx.missionPreflightService.runPreflight(arg);
+  });
+
   ipcMain.handle(IPC.missionsCreate, async (_event, arg: CreateMissionArgs): Promise<MissionDetail> => {
     const ctx = getCtx();
     const prompt = typeof arg?.prompt === "string" ? arg.prompt.trim() : "";
@@ -1413,14 +1461,13 @@ export function registerIpc({
         : prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "Mission";
     const plannerEngine = arg?.plannerEngine ?? "auto";
     const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : null;
-    const executorPolicy = normalizeMissionExecutorPolicy(arg?.executorPolicy);
     const executionMode = arg?.executionMode ?? "local";
     const targetMachineId = typeof arg?.targetMachineId === "string" ? arg.targetMachineId.trim() || null : null;
     const autostart = arg?.autostart !== false;
     const runMode = arg?.launchMode === "manual" ? "manual" : "autopilot";
     const defaultExecutorKind: OrchestratorExecutorKind = runMode === "manual"
       ? "manual"
-      : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? defaultExecutorForPolicy(executorPolicy));
+      : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? "codex");
 
     // Fast-path for autostart missions: create immediately and launch in the background
     // so renderer IPC does not block on planning/launch work.
@@ -1456,7 +1503,7 @@ export function registerIpc({
             metadata: {
               launchSource: "missions.create.fast_path",
               plannerEngineRequested: plannerEngine,
-              plannerExecutorPolicy: executorPolicy
+              plannerExecutorPolicy: "codex"
             }
           });
           if (launch.blockedByPlanReview) {
@@ -1498,6 +1545,7 @@ export function registerIpc({
       plannerEngine,
       timeoutMs: arg?.planningTimeoutMs,
       allowPlanningQuestions: arg?.allowPlanningQuestions,
+      model: arg?.orchestratorModel ?? arg?.modelConfig?.orchestratorModel?.modelId,
       projectRoot: ctx.project.rootPath,
       contextBundle: buildMissionPlanningContextBundle({
         ctx,
@@ -1513,7 +1561,7 @@ export function registerIpc({
       plan: planning.plan,
       requestedEngine: planning.run.requestedEngine,
       resolvedEngine: planning.run.resolvedEngine!,
-      executorPolicy,
+      executorPolicy: "both",
       degraded: planning.run.degraded,
       reasonCode: planning.run.reasonCode,
       validationErrors: planning.run.validationErrors
@@ -1916,6 +1964,14 @@ export function registerIpc({
   );
 
   ipcMain.handle(
+    IPC.orchestratorGetMissionBudgetStatus,
+    async (_event, arg: GetMissionBudgetStatusArgs): Promise<MissionBudgetSnapshot> => {
+      const ctx = getCtx();
+      return await ctx.missionBudgetService.getMissionBudgetStatus(arg);
+    }
+  );
+
+  ipcMain.handle(
     IPC.orchestratorSetMissionMetricsConfig,
     async (_event, arg: SetMissionMetricsConfigArgs): Promise<MissionMetricsConfig> => {
       const ctx = getCtx();
@@ -2011,7 +2067,15 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = getCtx();
-    return await ctx.laneService.list(arg);
+    return await withIpcTiming(
+      ctx,
+      "lanes.list",
+      async () => await ctx.laneService.list(arg),
+      {
+        includeArchived: Boolean(arg?.includeArchived),
+        includeStatus: arg?.includeStatus !== false
+      }
+    );
   });
 
   ipcMain.handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
@@ -2106,7 +2170,15 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
     const ctx = getCtx();
-    return ctx.ptyService.enrichSessions(ctx.sessionService.list(arg));
+    return await withIpcTiming(
+      ctx,
+      "sessions.list",
+      async () => ctx.ptyService.enrichSessions(ctx.sessionService.list(arg)),
+      {
+        laneId: typeof arg?.laneId === "string" ? arg.laneId : null,
+        limit: typeof arg?.limit === "number" ? arg.limit : null
+      }
+    );
   });
 
   ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
@@ -2245,7 +2317,16 @@ export function registerIpc({
 
   ipcMain.handle(IPC.filesListTree, async (_event, arg: FilesListTreeArgs): Promise<FileTreeNode[]> => {
     const ctx = getCtx();
-    return await ctx.fileService.listTree(arg);
+    return await withIpcTiming(
+      ctx,
+      "files.listTree",
+      async () => await ctx.fileService.listTree(arg),
+      {
+        workspaceId: arg.workspaceId,
+        hasParentPath: Boolean(arg.parentPath),
+        depth: arg.depth
+      }
+    );
   });
 
   ipcMain.handle(IPC.filesReadFile, async (_event, arg: FilesReadFileArgs): Promise<FileContent> => {

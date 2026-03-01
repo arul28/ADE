@@ -53,7 +53,6 @@ import type {
   PrStrategy,
   OrchestratorArtifactKind,
   ModelConfig,
-  OrchestratorCallType as SharedOrchestratorCallType,
   MissionModelConfig,
   RecoveryLoopIteration
 } from "../../../shared/types";
@@ -290,12 +289,11 @@ export type WorkerDeliverySessionResolution = {
 
 export type OrchestratorCallType =
   | "coordinator"
+  | "chat_response"
   | "worker_evaluation"
-  | "quality_gate"
   | "failure_diagnosis"
   | "plan_adjustment"
-  | "intervention_handling"
-  | "chat_response";
+  | "intervention_handling";
 
 export type ResolvedCallTypeConfig = {
   provider: "claude" | "codex";
@@ -423,11 +421,10 @@ export const TRANSIENT_ERROR_CLASSES = new Set(["transient", "claim_conflict", "
 export const CALL_TYPE_DEFAULTS: Record<OrchestratorCallType, ResolvedCallTypeConfig> = {
   coordinator: { provider: "claude", model: "sonnet", reasoningEffort: "high" },
   worker_evaluation: { provider: "claude", model: "haiku", reasoningEffort: "medium" },
-  quality_gate: { provider: "claude", model: "haiku", reasoningEffort: "medium" },
   failure_diagnosis: { provider: "claude", model: "sonnet", reasoningEffort: "high" },
   plan_adjustment: { provider: "claude", model: "sonnet", reasoningEffort: "high" },
   intervention_handling: { provider: "claude", model: "sonnet", reasoningEffort: "medium" },
-  chat_response: { provider: "claude", model: "sonnet", reasoningEffort: "medium" }
+  chat_response: { provider: "claude", model: "sonnet", reasoningEffort: "medium" },
 };
 
 // ── OrchestratorContext ──────────────────────────────────────────────
@@ -782,7 +779,7 @@ export function parseOrchestratorHookConfig(raw: unknown): ResolvedOrchestratorH
   if (!isRecord(raw)) return null;
   const command = String(raw.command ?? "").trim();
   if (!command.length) return null;
-  const timeoutRaw = Number(raw.timeoutMs ?? raw.timeout_ms);
+  const timeoutRaw = Number(raw.timeoutMs);
   const timeoutMs = Number.isFinite(timeoutRaw)
     ? Math.max(1_000, Math.min(ORCHESTRATOR_HOOK_MAX_TIMEOUT_MS, Math.floor(timeoutRaw)))
     : ORCHESTRATOR_HOOK_DEFAULT_TIMEOUT_MS;
@@ -917,16 +914,13 @@ export function readConfig(projectConfigService: ReturnType<typeof createProject
   const snapshot = projectConfigService?.get();
   const ai = snapshot?.effective?.ai;
   const orchestrator = isRecord(ai) && isRecord(ai.orchestrator) ? (ai.orchestrator as Record<string, unknown>) : {};
-  const requirePlanReview = asBool(orchestrator.requirePlanReview, asBool(orchestrator.require_plan_review, false));
-  const defaultPlannerProviderRaw =
-    asString(orchestrator.defaultPlannerProvider) ?? asString(orchestrator.default_planner_provider);
+  const requirePlanReview = asBool(orchestrator.requirePlanReview, false);
+  const defaultPlannerProviderRaw = asString(orchestrator.defaultPlannerProvider);
   const defaultPlannerProvider: string | null =
     defaultPlannerProviderRaw && defaultPlannerProviderRaw.trim().length > 0 ? defaultPlannerProviderRaw.trim() : null;
   const defaultExecutionPolicy = isRecord(orchestrator.defaultExecutionPolicy)
     ? (orchestrator.defaultExecutionPolicy as Partial<MissionExecutionPolicy>)
-    : isRecord(orchestrator.default_execution_policy)
-      ? (orchestrator.default_execution_policy as Partial<MissionExecutionPolicy>)
-      : null;
+    : null;
   const hooks = readOrchestratorHooksConfig(orchestrator);
   return {
     requirePlanReview,

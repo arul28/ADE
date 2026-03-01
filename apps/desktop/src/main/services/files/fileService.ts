@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import type {
   FileChangeEvent,
   FileContent,
@@ -64,6 +65,74 @@ function hasNullByte(buf: Buffer): boolean {
 
 function normalizeRelative(relPath: string): string {
   return relPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
+}
+
+function isAlwaysIgnoredPath(normalized: string): boolean {
+  return (
+    normalized.startsWith(".git/") ||
+    normalized === ".git" ||
+    normalized.startsWith("node_modules/") ||
+    normalized.startsWith(".ade/") ||
+    normalized === ".ade"
+  );
+}
+
+async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; timeoutMs?: number }): Promise<Set<string>> {
+  if (args.paths.length === 0) return new Set<string>();
+  const timeoutMs = args.timeoutMs ?? 7_000;
+
+  return await new Promise<Set<string>>((resolve) => {
+    const child = spawn("git", ["check-ignore", "--stdin"], {
+      cwd: args.cwd,
+      stdio: ["pipe", "pipe", "ignore"]
+    });
+
+    let settled = false;
+    let stdout = "";
+
+    const finish = (result: Set<string>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      finish(new Set<string>());
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    });
+
+    child.on("error", () => finish(new Set<string>()));
+
+    child.on("close", (code) => {
+      if (code !== 0 && code !== 1) {
+        finish(new Set<string>());
+        return;
+      }
+      const ignored = new Set(
+        stdout
+          .split(/\r?\n/)
+          .map((line) => normalizeRelative(line.trim()))
+          .filter(Boolean)
+      );
+      finish(ignored);
+    });
+
+    try {
+      child.stdin.write(`${args.paths.join("\n")}\n`);
+      child.stdin.end();
+    } catch {
+      finish(new Set<string>());
+    }
+  });
 }
 
 function ensureSafePath(rootPath: string, relPath: string): { absPath: string; normalizedRel: string } {
@@ -136,6 +205,46 @@ export function createFileService({
 
   const resolveWorkspace = (workspaceId: string) => laneService.resolveWorkspaceById(workspaceId);
 
+  const primeIgnoreCache = async (rootPath: string, relPaths: string[], includeIgnored: boolean): Promise<void> => {
+    if (includeIgnored || relPaths.length === 0) return;
+    const keyPrefix = `${rootPath}::`;
+    const unresolved: string[] = [];
+    const seen = new Set<string>();
+
+    for (const relPath of relPaths) {
+      const normalized = normalizeRelative(relPath);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      if (isAlwaysIgnoredPath(normalized)) continue;
+
+      const segments = normalized.split("/");
+      let coveredByParentIgnore = false;
+      for (let i = segments.length; i > 0; i--) {
+        const probe = segments.slice(0, i).join("/");
+        if (ignoredPrefixCache.has(`${keyPrefix}${probe}`)) {
+          coveredByParentIgnore = true;
+          break;
+        }
+      }
+      if (coveredByParentIgnore) continue;
+
+      const cacheKey = `${rootPath}::${normalized}`;
+      if (ignoreCache.has(cacheKey)) continue;
+      unresolved.push(normalized);
+    }
+
+    if (unresolved.length === 0) return;
+    const ignoredSet = await runGitCheckIgnoreBatch({ cwd: rootPath, paths: unresolved });
+    for (const normalized of unresolved) {
+      const cacheKey = `${rootPath}::${normalized}`;
+      const ignored = ignoredSet.has(normalized);
+      ignoreCache.set(cacheKey, ignored);
+      if (ignored) {
+        ignoredPrefixCache.add(cacheKey);
+      }
+    }
+  };
+
   const emitLaneMutation = (workspaceId: string, reason: string) => {
     if (!onLaneWorktreeMutation) return;
     const workspace = resolveWorkspace(workspaceId);
@@ -189,9 +298,7 @@ export function createFileService({
     if (includeIgnored) return false;
     const normalized = normalizeRelative(relPath);
     if (!normalized) return false;
-    if (normalized.startsWith(".git/") || normalized === ".git") return true;
-    if (normalized.startsWith("node_modules/")) return true;
-    if (normalized.startsWith(".ade/") || normalized === ".ade") return true;
+    if (isAlwaysIgnoredPath(normalized)) return true;
 
     const keyPrefix = `${rootPath}::`;
     const segments = normalized.split("/");
@@ -203,21 +310,11 @@ export function createFileService({
     }
 
     const cacheKey = `${rootPath}::${normalized}`;
-    if (ignoreCache.has(cacheKey)) {
-      return ignoreCache.get(cacheKey) ?? false;
+    if (!ignoreCache.has(cacheKey)) {
+      await primeIgnoreCache(rootPath, [normalized], includeIgnored);
     }
-
-    const check = await runGit(["check-ignore", "-q", "--", normalized], {
-      cwd: rootPath,
-      timeoutMs: 3_000,
-      maxOutputBytes: 1024
-    });
-    const ignored = check.exitCode === 0;
-    ignoreCache.set(cacheKey, ignored);
-    if (ignored) {
-      ignoredPrefixCache.add(cacheKey);
-    }
-    return ignored;
+    if (ignoreCache.has(cacheKey)) return ignoreCache.get(cacheKey) ?? false;
+    return false;
   };
 
   const listTreeNode = async ({
@@ -235,6 +332,8 @@ export function createFileService({
   }): Promise<FileTreeNode[]> => {
     const { absPath: dirPath } = ensureSafePath(rootPath, parentPath);
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const entryPaths = entries.map((entry) => normalizeRelative(path.join(parentPath, entry.name)));
+    await primeIgnoreCache(rootPath, entryPaths, includeIgnored);
     entries.sort((a, b) => {
       if (a.isDirectory() && !b.isDirectory()) return -1;
       if (!a.isDirectory() && b.isDirectory()) return 1;

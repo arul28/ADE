@@ -19,6 +19,7 @@ type StepId =
   | "welcome"
   | "detect-defaults"
   | "review-config"
+  | "configure-ai"
   | "detect-branches"
   | "import-branches"
   | "generate-packs"
@@ -161,6 +162,9 @@ function stepMeta(id: StepId): { title: string; subtitle: string } {
   if (id === "review-config") {
     return { title: "Review Config", subtitle: "Edit what gets written to .ade/ade.yaml" };
   }
+  if (id === "configure-ai") {
+    return { title: "Configure AI", subtitle: "Set up AI providers and features" };
+  }
   if (id === "detect-branches") {
     return { title: "Detect Branches", subtitle: "Find existing branches to import as lanes" };
   }
@@ -215,6 +219,18 @@ export function OnboardingPage() {
   const [packsError, setPacksError] = React.useState<string | null>(null);
   const [packsDoneAt, setPacksDoneAt] = React.useState<string | null>(null);
 
+  const [aiStatus, setAiStatus] = React.useState<import("../../../shared/types").AiSettingsStatus | null>(null);
+  const [aiToggles, setAiToggles] = React.useState<Record<string, boolean>>({
+    terminal_summaries: true,
+    pr_descriptions: true,
+    narratives: true,
+    conflict_proposals: true,
+    mission_planning: true,
+    orchestrator: true,
+    initial_context: true,
+  });
+  const [aiSaving, setAiSaving] = React.useState(false);
+
   const primaryLane = React.useMemo(() => lanes.find((lane) => lane.laneType === "primary") ?? null, [lanes]);
 
   const selectedParentLaneId = React.useMemo(() => {
@@ -238,8 +254,14 @@ export function OnboardingPage() {
     void refreshConfigSnapshot().catch(() => {});
   }, [refreshStatus, refreshConfigSnapshot]);
 
+  React.useEffect(() => {
+    if (step === "configure-ai") {
+      window.ade.ai.getStatus().then(setAiStatus).catch(() => {});
+    }
+  }, [step]);
+
   const steps: StepId[] = React.useMemo(
-    () => ["welcome", "detect-defaults", "review-config", "detect-branches", "import-branches", "generate-packs", "complete"],
+    () => ["welcome", "detect-defaults", "review-config", "configure-ai", "detect-branches", "import-branches", "generate-packs", "complete"],
     []
   );
 
@@ -1056,6 +1078,97 @@ export function OnboardingPage() {
 	                </div>
 	              ) : null}
 
+              {step === "configure-ai" ? (
+                <div className="space-y-3">
+                  {/* Provider Detection */}
+                  <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-fg mb-3">Detected AI Providers</div>
+                    {aiStatus?.detectedAuth?.length ? (
+                      <div className="space-y-2">
+                        {aiStatus.detectedAuth.map((auth, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <CheckCircle size={14} weight="fill" className="text-emerald-400" />
+                            <span className="text-fg">
+                              {auth.cli ? `${auth.cli} CLI` : auth.provider ?? "Unknown"}{" "}
+                              {auth.type === "cli-subscription" ? " (subscription)" : auth.type === "api-key" ? " (API key)" : ""}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-muted-fg">No AI providers detected. You can add API keys in Settings later.</div>
+                    )}
+                    {aiStatus?.availableProviders ? (
+                      <div className="mt-2 flex items-center gap-3 text-xs text-muted-fg">
+                        <span>Claude: {aiStatus.availableProviders.claude ? "\u2713" : "\u2014"}</span>
+                        <span>Codex: {aiStatus.availableProviders.codex ? "\u2713" : "\u2014"}</span>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* Feature Toggles */}
+                  <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-fg mb-3">AI Features</div>
+                    <div className="text-xs text-muted-fg mb-3">Choose which AI features to enable. All can be changed later in Settings.</div>
+                    <div className="space-y-2">
+                      {([
+                        { key: "terminal_summaries", label: "Terminal Summaries", desc: "Summarize terminal sessions when they close" },
+                        { key: "pr_descriptions", label: "PR Descriptions", desc: "Auto-draft PR descriptions from lane changes" },
+                        { key: "narratives", label: "Narratives", desc: "Generate work narratives for completed tasks" },
+                        { key: "conflict_proposals", label: "Conflict Proposals", desc: "Suggest resolutions for merge conflicts" },
+                        { key: "mission_planning", label: "Mission Planning", desc: "AI-powered mission planning" },
+                        { key: "orchestrator", label: "Orchestrator", desc: "AI orchestrator for mission execution" },
+                        { key: "initial_context", label: "Initial Context", desc: "Generate initial project context" },
+                      ] as const).map(({ key, label, desc }) => (
+                        <label key={key} className="flex items-center gap-3 rounded border border-border/10 bg-card/50 px-3 py-2 cursor-pointer hover:bg-card/80 transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={aiToggles[key] ?? true}
+                            onChange={(e) => setAiToggles((prev) => ({ ...prev, [key]: e.target.checked }))}
+                            className="accent-emerald-400"
+                          />
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-fg">{label}</div>
+                            <div className="text-[11px] text-muted-fg">{desc}</div>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Save / Skip buttons */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded border border-border/30 bg-card px-3 py-1.5 text-xs font-semibold text-muted-fg hover:text-fg transition-colors"
+                      onClick={goNext}
+                    >
+                      Skip
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-accent/30 bg-accent/15 px-3 py-1.5 text-xs font-semibold text-accent hover:bg-accent/25 transition-colors"
+                      disabled={aiSaving}
+                      onClick={async () => {
+                        setAiSaving(true);
+                        try {
+                          const features: Record<string, boolean> = {};
+                          for (const [k, v] of Object.entries(aiToggles)) features[k] = v;
+                          await window.ade.ai.updateConfig({ features });
+                        } catch {
+                          // ignore errors, non-blocking
+                        } finally {
+                          setAiSaving(false);
+                        }
+                        goNext();
+                      }}
+                    >
+                      {aiSaving ? "Saving..." : "Save & Continue"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               {step === "detect-branches" ? (
                 <div className="space-y-3">
                   {previewLines("What ADE will do", [
@@ -1308,6 +1421,29 @@ export function OnboardingPage() {
                       </div>
                     ) : null}
                   </div>
+
+                  {/* AI configuration summary */}
+                  {aiStatus ? (
+                    <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 mt-3">
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 rounded-md border border-border/10 bg-card backdrop-blur-sm p-2">
+                          <MagicWand size={20} weight="regular" className="text-accent" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold">AI Ready</div>
+                          <div className="mt-1 space-y-1 text-xs text-muted-fg">
+                            {aiStatus.detectedAuth?.length ? (
+                              <div>{aiStatus.detectedAuth.length} AI provider{aiStatus.detectedAuth.length !== 1 ? "s" : ""} configured</div>
+                            ) : (
+                              <div>No AI providers configured yet</div>
+                            )}
+                            <div>{Object.values(aiToggles).filter(Boolean).length} of 7 AI features enabled</div>
+                            <div>You can change these anytime in Settings &rarr; AI Features</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -1333,6 +1469,8 @@ export function OnboardingPage() {
                       Next
                       <Sparkle size={16} weight="regular" />
                     </Button>
+                  ) : step === "configure-ai" ? (
+                    null  // Save/Skip handled in step content
                   ) : step === "detect-branches" ? (
                     <Button size="sm" onClick={goNext}>
                       Next

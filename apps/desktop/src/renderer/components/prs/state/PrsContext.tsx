@@ -184,7 +184,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     try {
       const [prList, laneList] = await Promise.all([
         window.ade.prs.listWithConflicts(),
-        window.ade.lanes.list(),
+        window.ade.lanes.list({ includeStatus: false }),
       ]);
 
       // Stable-reference updates: only replace state when data actually changed

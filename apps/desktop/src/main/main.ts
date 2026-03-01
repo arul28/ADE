@@ -42,11 +42,13 @@ import { createCiService } from "./services/ci/ciService";
 import { createRestackSuggestionService } from "./services/lanes/restackSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
+import { createMissionPreflightService } from "./services/missions/missionPreflightService";
 import { createMemoryService } from "./services/memory/memoryService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createClaudeOrchestratorAdapter } from "./services/orchestrator/claudeOrchestratorAdapter";
 import { createCodexOrchestratorAdapter } from "./services/orchestrator/codexOrchestratorAdapter";
+import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import type { Logger } from "./services/logging/logger";
 
 if (process.env.VITE_DEV_SERVER_URL) {
@@ -93,6 +95,29 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   }
 
   win.setMenuBarVisibility(false);
+
+  win.on("unresponsive", () => {
+    logger?.warn("window.unresponsive", {
+      windowId: win.id,
+      url: win.webContents.getURL()
+    });
+  });
+
+  win.on("responsive", () => {
+    logger?.info("window.responsive", {
+      windowId: win.id,
+      url: win.webContents.getURL()
+    });
+  });
+
+  win.webContents.on("render-process-gone", (_event, details) => {
+    logger?.error("window.render_process_gone", {
+      windowId: win.id,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      url: win.webContents.getURL()
+    });
+  });
 
   if (process.env.VITE_DEV_SERVER_URL) {
     try {
@@ -523,6 +548,23 @@ app.whenReady().then(async () => {
       projectRoot,
       onEvent: (event) => broadcast(IPC.missionsEvent, event)
     });
+    const missionBudgetService = createMissionBudgetService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      missionService,
+      aiIntegrationService
+    });
+    const missionPreflightService = createMissionPreflightService({
+      logger,
+      projectRoot,
+      missionService,
+      laneService,
+      aiIntegrationService,
+      projectConfigService,
+      missionBudgetService
+    });
 
     const memoryService = createMemoryService(db);
 
@@ -553,6 +595,7 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       prService,
       projectRoot,
+      missionBudgetService,
       onThreadEvent: (event) => broadcast(IPC.orchestratorThreadEvent, event),
       onDagMutation: (event) => broadcast(IPC.orchestratorDagMutation, event)
     });
@@ -775,7 +818,9 @@ app.whenReady().then(async () => {
       automationService,
       automationPlannerService,
       missionService,
+      missionPreflightService,
       orchestratorService,
+      missionBudgetService,
       aiOrchestratorService,
       ciService,
       agentChatService,
@@ -894,6 +939,15 @@ app.whenReady().then(async () => {
   });
   process.on("unhandledRejection", (reason) => {
     ctxRef.logger.error("process.unhandled_rejection", { reason: String(reason) });
+  });
+  app.on("child-process-gone", (_event, details) => {
+    ctxRef.logger.warn("app.child_process_gone", {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      serviceName: details.serviceName ?? null,
+      name: details.name ?? null
+    });
   });
 
   registerIpc({

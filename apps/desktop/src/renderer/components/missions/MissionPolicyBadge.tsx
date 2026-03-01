@@ -13,8 +13,7 @@ function detectPresetLabel(policy: MissionExecutionPolicy): { label: string; sty
     policy.planning.mode === "off" &&
     policy.testing.mode === "none" &&
     policy.validation.mode === "off" &&
-    policy.codeReview.mode === "off" &&
-    policy.merge.mode === "off"
+    policy.codeReview.mode === "off"
   ) return {
     label: "QUICK",
     style: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" }
@@ -83,7 +82,6 @@ export function MissionPolicyBadge({ policy, className }: MissionPolicyBadgeProp
         <span className="inline-flex items-center gap-px">
           <PhaseIcon active={policy.testing.mode !== "none"} label="T" />
           <PhaseIcon active={policy.codeReview.mode !== "off"} label="R" />
-          <PhaseIcon active={policy.merge.mode !== "off"} label="M" />
         </span>
         {policy.implementation.model && (
           <span

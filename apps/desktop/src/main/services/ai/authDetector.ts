@@ -2,7 +2,7 @@
 // Auth Detector — discovers available authentication methods
 // ---------------------------------------------------------------------------
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 type CliName = "claude" | "codex" | "gemini";
 
@@ -91,45 +91,56 @@ function hasPattern(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-function commandExists(command: string): boolean {
+/** Run a command asynchronously and return { status, stdout, stderr }. */
+function spawnAsync(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    child.on("error", () => resolve({ status: null, stdout, stderr }));
+    child.on("close", (code) => resolve({ status: code, stdout, stderr }));
+  });
+}
+
+async function commandExists(command: string): Promise<boolean> {
   try {
     if (process.platform === "win32") {
-      const result = spawnSync("where", [command], { encoding: "utf8", timeout: 5_000 });
+      const result = await spawnAsync("where", [command], 5_000);
       return result.status === 0;
     }
-    const result = spawnSync("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], {
-      encoding: "utf8",
-      timeout: 5_000,
-    });
+    const result = await spawnAsync("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], 5_000);
     return result.status === 0;
   } catch {
     return false;
   }
 }
 
-function commandPath(command: string): string {
+async function commandPath(command: string): Promise<string> {
   try {
     if (process.platform === "win32") {
-      const result = spawnSync("where", [command], { encoding: "utf8", timeout: 5_000 });
+      const result = await spawnAsync("where", [command], 5_000);
       return result.stdout?.trim().split(/\r?\n/)[0] ?? command;
     }
-    const result = spawnSync("sh", ["-lc", `command -v ${command}`], {
-      encoding: "utf8",
-      timeout: 5_000,
-    });
+    const result = await spawnAsync("sh", ["-lc", `command -v ${command}`], 5_000);
     return result.stdout?.trim() || command;
   } catch {
     return command;
   }
 }
 
-function inspectCliAuthentication(cli: CliName): Pick<CliAuthStatus, "authenticated" | "verified"> {
+async function inspectCliAuthentication(cli: CliName): Promise<Pick<CliAuthStatus, "authenticated" | "verified">> {
   const probes = CLI_AUTH_PROBES[cli] ?? [];
   let sawUnsupported = false;
 
   for (const args of probes) {
     try {
-      const result = spawnSync(cli, args, { encoding: "utf8", timeout: 8_000 });
+      const result = await spawnAsync(cli, args, 8_000);
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
 
@@ -467,22 +478,43 @@ export async function verifyProviderApiKey(
 // Public API
 // ---------------------------------------------------------------------------
 
-export function detectCliAuthStatuses(): CliAuthStatus[] {
+// ---------------------------------------------------------------------------
+// CLI auth cache — avoid re-probing every time a dialog opens
+// ---------------------------------------------------------------------------
+const CLI_AUTH_CACHE_TTL_MS = 60_000; // 1 minute
+let cachedCliAuth: { checkedAtMs: number; statuses: CliAuthStatus[] } | null = null;
+
+/** Synchronous read from cache — returns empty array if not yet populated. */
+export function getCachedCliAuthStatuses(): CliAuthStatus[] {
+  return cachedCliAuth?.statuses ?? [];
+}
+
+export async function detectCliAuthStatuses(): Promise<CliAuthStatus[]> {
+  const now = Date.now();
+  if (cachedCliAuth && now - cachedCliAuth.checkedAtMs < CLI_AUTH_CACHE_TTL_MS) {
+    return cachedCliAuth.statuses;
+  }
+
   const cliChecks: CliName[] = ["claude", "codex", "gemini"];
 
-  return cliChecks.map((cli) => {
-    const installed = commandExists(cli);
-    const path = installed ? commandPath(cli) : null;
-    const auth = installed ? inspectCliAuthentication(cli) : { authenticated: false, verified: false };
+  // Probe all CLIs in parallel
+  const statuses = await Promise.all(
+    cliChecks.map(async (cli) => {
+      const installed = await commandExists(cli);
+      const path = installed ? await commandPath(cli) : null;
+      const auth = installed ? await inspectCliAuthentication(cli) : { authenticated: false, verified: false };
+      return {
+        cli,
+        installed,
+        path,
+        authenticated: auth.authenticated,
+        verified: auth.verified,
+      };
+    }),
+  );
 
-    return {
-      cli,
-      installed,
-      path,
-      authenticated: auth.authenticated,
-      verified: auth.verified,
-    };
-  });
+  cachedCliAuth = { checkedAtMs: now, statuses };
+  return statuses;
 }
 
 export async function detectAllAuth(
@@ -491,7 +523,7 @@ export async function detectAllAuth(
   const results: DetectedAuth[] = [];
 
   // 1. CLI subscriptions (connected and authenticated)
-  const cliStatuses = detectCliAuthStatuses();
+  const cliStatuses = await detectCliAuthStatuses();
   for (const cli of cliStatuses) {
     if (cli.cli !== "claude" && cli.cli !== "codex") continue;
     if (!cli.installed) continue;

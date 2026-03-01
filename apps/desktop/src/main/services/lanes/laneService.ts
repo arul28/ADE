@@ -13,6 +13,7 @@ import type {
   LaneStatus,
   LaneSummary,
   LaneType,
+  ListLanesArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
   RestackArgs,
@@ -41,6 +42,27 @@ type LaneRow = {
   archived_at: string | null;
   status: string;
 };
+
+const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+const LANE_LIST_CACHE_TTL_MS = 10_000;
+
+function cloneLaneStatus(status: LaneStatus): LaneStatus {
+  return {
+    dirty: status.dirty,
+    ahead: status.ahead,
+    behind: status.behind,
+    remoteBehind: status.remoteBehind
+  };
+}
+
+function cloneLaneSummary(summary: LaneSummary): LaneSummary {
+  return {
+    ...summary,
+    status: cloneLaneStatus(summary.status),
+    parentStatus: summary.parentStatus ? cloneLaneStatus(summary.parentStatus) : null,
+    tags: [...summary.tags]
+  };
+}
 
 function slugify(input: string): string {
   const s = input
@@ -247,6 +269,12 @@ export function createLaneService({
       [projectId, laneId]
     );
 
+  const laneListCache = new Map<string, { expiresAt: number; rows: LaneSummary[] }>();
+
+  const invalidateLaneListCache = (): void => {
+    laneListCache.clear();
+  };
+
   const ensureSameRepo = async (candidatePath: string) => {
     const resolvedProject = normAbs(projectRoot);
     const repoTop = (await runGitOrThrow(["rev-parse", "--show-toplevel"], { cwd: candidatePath, timeoutMs: 10_000 })).trim();
@@ -275,6 +303,7 @@ export function createLaneService({
       `,
       [laneId, projectId, "Primary", "Main repository workspace", defaultBaseRef, branchRef, projectRoot, now]
     );
+    invalidateLaneListCache();
   };
 
   const syncPrimaryLaneBranchRef = async (): Promise<void> => {
@@ -306,9 +335,19 @@ export function createLaneService({
       "update lanes set branch_ref = ? where id = ? and project_id = ?",
       [detectedBranchRef, primary.id, projectId]
     );
+    invalidateLaneListCache();
   };
 
-  const listLanes = async ({ includeArchived = false }: { includeArchived?: boolean } = {}): Promise<LaneSummary[]> => {
+  const listLanes = async ({
+    includeArchived = false,
+    includeStatus = true
+  }: ListLanesArgs = {}): Promise<LaneSummary[]> => {
+    const cacheKey = `arch:${includeArchived ? 1 : 0}|status:${includeStatus ? 1 : 0}`;
+    const cached = laneListCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.rows.map(cloneLaneSummary);
+    }
+
     // Best-effort primary lane bootstrap -- failures should not block listing.
     try {
       await ensurePrimaryLane();
@@ -338,7 +377,7 @@ export function createLaneService({
       const cached = statusCache.get(laneId);
       if (cached) return cached;
       const row = rowsById.get(laneId);
-      if (!row) return { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+      if (!row) return DEFAULT_LANE_STATUS;
       const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
       let baseRef = parent?.branch_ref ?? row.base_ref;
 
@@ -369,26 +408,29 @@ export function createLaneService({
       return status;
     };
 
-    const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
     const out: LaneSummary[] = [];
     for (const row of rows) {
       try {
-        let status: LaneStatus;
-        try {
-          status = await resolveStatus(row.id);
-        } catch {
-          console.warn(`[laneService] resolveStatus failed for lane ${row.id}, using default`);
-          status = defaultStatus;
-        }
-        let parentStatus: LaneStatus | null = null;
-        if (row.parent_lane_id) {
+        let status: LaneStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
+        let parentStatus: LaneStatus | null = row.parent_lane_id ? cloneLaneStatus(DEFAULT_LANE_STATUS) : null;
+
+        if (includeStatus) {
           try {
-            parentStatus = await resolveStatus(row.parent_lane_id);
+            status = await resolveStatus(row.id);
           } catch {
-            console.warn(`[laneService] resolveStatus failed for parent lane ${row.parent_lane_id}, using default`);
-            parentStatus = defaultStatus;
+            console.warn(`[laneService] resolveStatus failed for lane ${row.id}, using default`);
+            status = cloneLaneStatus(DEFAULT_LANE_STATUS);
+          }
+          if (row.parent_lane_id) {
+            try {
+              parentStatus = await resolveStatus(row.parent_lane_id);
+            } catch {
+              console.warn(`[laneService] resolveStatus failed for parent lane ${row.parent_lane_id}, using default`);
+              parentStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
+            }
           }
         }
+
         let stackDepth = 0;
         try {
           stackDepth = computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo });
@@ -410,6 +452,10 @@ export function createLaneService({
         console.warn(`[laneService] Failed to build summary for lane ${row.id}, skipping:`, err instanceof Error ? err.message : String(err));
       }
     }
+    laneListCache.set(cacheKey, {
+      expiresAt: Date.now() + LANE_LIST_CACHE_TTL_MS,
+      rows: out.map(cloneLaneSummary)
+    });
     return out;
   };
 
@@ -443,6 +489,7 @@ export function createLaneService({
       `,
       [laneId, projectId, args.name, args.description ?? null, args.baseRef, branchRef, worktreePath, args.parentLaneId, args.folder ?? null, now]
     );
+    invalidateLaneListCache();
 
     const row = getLaneRow(laneId);
     if (!row) throw new Error(`Failed to create lane: ${laneId}`);
@@ -491,8 +538,12 @@ export function createLaneService({
       await ensurePrimaryLane();
     },
 
-    async list({ includeArchived = false }: { includeArchived?: boolean } = {}): Promise<LaneSummary[]> {
-      return await listLanes({ includeArchived });
+    async list(args: ListLanesArgs = {}): Promise<LaneSummary[]> {
+      return await listLanes(args);
+    },
+
+    invalidateListCache(): void {
+      invalidateLaneListCache();
     },
 
     async create({ name, description, parentLaneId }: CreateLaneArgs): Promise<LaneSummary> {
@@ -632,6 +683,7 @@ export function createLaneService({
         `,
         [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, now]
       );
+      invalidateLaneListCache();
 
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Failed to import lane: ${laneId}`);
@@ -972,6 +1024,7 @@ export function createLaneService({
         "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
         [newParent.id, newBaseRef, lane.id, projectId]
       );
+      invalidateLaneListCache();
 
       try {
         await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
@@ -985,6 +1038,7 @@ export function createLaneService({
           "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
           [previousParentLaneId, previousBaseRef, lane.id, projectId]
         );
+        invalidateLaneListCache();
         const message = error instanceof Error ? error.message : String(error);
         if (operation?.operationId) {
           const postHeadSha = await getHeadSha(lane.worktree_path);
@@ -1032,6 +1086,7 @@ export function createLaneService({
 
     rename({ laneId, name }: { laneId: string; name: string }): void {
       db.run("update lanes set name = ? where id = ? and project_id = ?", [name, laneId, projectId]);
+      invalidateLaneListCache();
     },
 
     updateAppearance({ laneId, color, icon, tags }: UpdateLaneAppearanceArgs): void {
@@ -1060,6 +1115,7 @@ export function createLaneService({
           projectId
         ]
       );
+      invalidateLaneListCache();
     },
 
     archive({ laneId }: { laneId: string }): void {
@@ -1083,6 +1139,7 @@ export function createLaneService({
 
       const now = new Date().toISOString();
       db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
+      invalidateLaneListCache();
     },
 
     async delete({
@@ -1159,6 +1216,7 @@ export function createLaneService({
       db.run("delete from process_runs where lane_id = ?", [laneId]);
       db.run("delete from test_runs where lane_id = ?", [laneId]);
       db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
+      invalidateLaneListCache();
     },
 
     getLaneWorktreePath(laneId: string): string {
@@ -1175,6 +1233,7 @@ export function createLaneService({
 
     updateBranchRef(laneId: string, branchRef: string): void {
       db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [branchRef, laneId, projectId]);
+      invalidateLaneListCache();
     },
 
     getFilesWorkspaces(): Array<{
@@ -1236,8 +1295,9 @@ export function createLaneService({
         )
         values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, null, null, null, null, 'active', ?, null)
       `,
-      [laneId, projectId, args.name, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
-    );
+        [laneId, projectId, args.name, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
+      );
+      invalidateLaneListCache();
 
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Failed to attach lane: ${laneId}`);

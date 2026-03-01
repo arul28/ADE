@@ -81,7 +81,7 @@ export function resolveExecutionPolicy(sources: {
       codeReview: mergePhase(p.codeReview, base.codeReview),
       testReview: mergePhase(p.testReview, base.testReview),
       prReview: mergePhase(p.prReview, base.prReview),
-      merge: { mode: "off" },
+      merge: base.merge,
       completion: mergePhase(p.completion, base.completion),
       prStrategy: p.prStrategy ?? base.prStrategy,
       integrationPr: p.integrationPr ?? base.integrationPr,
@@ -97,7 +97,7 @@ export function resolveExecutionPolicy(sources: {
       codeReview: mergePhase(p.codeReview, base.codeReview),
       testReview: mergePhase(p.testReview, base.testReview),
       prReview: mergePhase(p.prReview, base.prReview),
-      merge: { mode: "off" },
+      merge: base.merge,
       completion: mergePhase(p.completion, base.completion),
       prStrategy: p.prStrategy ?? base.prStrategy,
       integrationPr: p.integrationPr ?? base.integrationPr,
@@ -106,9 +106,6 @@ export function resolveExecutionPolicy(sources: {
   } else {
     resolved = base;
   }
-
-  // Always enforce merge off
-  resolved.merge = { mode: "off" };
 
   return resolved;
 }
@@ -124,8 +121,7 @@ export type ExecutionPhase =
   | "validation"
   | "codeReview"
   | "testReview"
-  | "integration"
-  | "merge";
+  | "integration";
 
 export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionPhase | null {
   const primary = (stepType || "").trim().toLowerCase();
@@ -142,7 +138,6 @@ export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionP
   }
   if (primary === "review" || secondary === "review") return "codeReview";
   if (primary === "integration" || secondary === "integration") return "integration";
-  if (primary === "merge" || secondary === "merge") return "merge";
   return null;
 }
 
@@ -180,8 +175,7 @@ export function evaluateRunCompletion(
     validation: policy.validation.mode === "required",
     codeReview: policy.codeReview.mode === "required",
     testReview: policy.testReview.mode === "required",
-    integration: !!policy.integrationPr && hasMultipleLanes(steps),
-    merge: false
+    integration: !!policy.integrationPr && hasMultipleLanes(steps)
   };
 
   const allPhases: ExecutionPhase[] = [
@@ -191,8 +185,7 @@ export function evaluateRunCompletion(
     "validation",
     "codeReview",
     "testReview",
-    "integration",
-    "merge"
+    "integration"
   ];
 
   for (const phase of allPhases) {
@@ -436,7 +429,6 @@ export function roleForStepType(
   }
   if (primary === "review" || secondary === "review") return "code_review";
   if (primary === "integration" || secondary === "integration") return "integration";
-  if (primary === "merge" || secondary === "merge") return "merge";
   return null;
 }
 
@@ -522,10 +514,11 @@ export function validateRoleIsolation(
 /**
  * Returns the context view appropriate for a given worker role.
  *
- * - implementation, planning, integration, merge → "implementation"
+ * - implementation, planning, integration → "implementation"
  * - code_review → "review"
  * - test_review → "review"
  * - testing → "implementation"
+ * - merge → "implementation" (vestigial; merge phase is always off)
  */
 export function contextViewForRole(role: OrchestratorWorkerRole): OrchestratorContextView {
   switch (role) {
@@ -652,8 +645,7 @@ export function buildExecutionPlanPreview(args: {
     "validation",
     "codeReview",
     "testReview",
-    "integration",
-    "merge"
+    "integration"
   ];
 
   for (const phaseName of phaseOrder) {

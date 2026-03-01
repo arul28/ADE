@@ -206,6 +206,8 @@ Users launch a mission with:
 - executor policy selection (`both` / `codex` / `claude`),
 - optional target machine ID.
 
+Before launch, the dialog runs an explicit **pre-flight checklist** gate (models, permissions, worktrees, phase config validity, semantic checks for custom phases, and budget envelope/estimate). Hard failures block launch; warnings are advisory.
+
 The AI orchestrator receives the prompt and plans execution steps. Users can choose between autopilot mode (orchestrator drives execution end-to-end) or manual mode (user advances steps).
 
 ### Chat-to-Mission Escalation
@@ -710,10 +712,8 @@ External agents can launch missions via the CTO, ADE's persistent project-aware 
 
 ### Remaining Work
 
-- Next execution focus: Task 5 (pre-flight + intervention/HITL) and Task 6 (budget + usage), then Tasks 7-8.
+- Task 5 (pre-flight + intervention/HITL) and Task 6 (budget + usage) are shipped.
 - End-to-end live multi-agent orchestration stress testing.
-- Pre-flight launch checks and intervention granularity upgrades (Task 5).
-- Budget-aware orchestration and subscription usage accounting (Task 6).
 - Reflection/retrospective protocol and integration soak expansion (Tasks 7-8).
 
 ### Compute Backend Integration (Future)

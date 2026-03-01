@@ -83,33 +83,49 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let refreshTimer: number | null = null;
+    let refreshInFlight = false;
+    let refreshQueued = false;
+
     const refreshTerminalAttention = async () => {
+      if (refreshInFlight) {
+        refreshQueued = true;
+        return;
+      }
+      if (document.visibilityState !== "visible") return;
+      refreshInFlight = true;
       try {
         const sessions: TerminalSessionSummary[] = await window.ade.sessions.list({ limit: 500 });
         setTerminalAttention(summarizeTerminalAttention(sessions));
       } catch {
         // best effort
+      } finally {
+        refreshInFlight = false;
+        if (refreshQueued) {
+          refreshQueued = false;
+          scheduleRefresh(250);
+        }
       }
     };
-    const scheduleRefresh = () => {
+
+    const scheduleRefresh = (delayMs = 1_200) => {
       if (refreshTimer != null) return;
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null;
         void refreshTerminalAttention();
-      }, 850);
+      }, delayMs);
     };
 
-    void refreshTerminalAttention();
+    scheduleRefresh(0);
 
     const unsubData = window.ade.pty.onData(() => scheduleRefresh());
     const unsubExit = window.ade.pty.onExit(() => scheduleRefresh());
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefresh();
-    }, 2600);
-    const onFocus = () => scheduleRefresh();
+    }, 5_000);
+    const onFocus = () => scheduleRefresh(0);
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") scheduleRefresh();
+      if (document.visibilityState === "visible") scheduleRefresh(0);
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);

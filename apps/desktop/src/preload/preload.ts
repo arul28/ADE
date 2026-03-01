@@ -20,6 +20,7 @@ import type {
   AutomationSimulateRequest,
   AutomationSimulateResult,
   AiApiKeyVerificationResult,
+  AiConfig,
   AiSettingsStatus,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
@@ -248,6 +249,8 @@ import type {
   ImportPhaseProfileArgs,
   MissionPhaseConfiguration,
   MissionDashboardSnapshot,
+  MissionPreflightRequest,
+  MissionPreflightResult,
   DeleteMissionArgs,
   MissionArtifact,
   MissionDetail,
@@ -319,6 +322,8 @@ import type {
   ExecutionPlanPreview,
   GetAggregatedUsageArgs,
   AggregatedUsageStats,
+  GetMissionBudgetStatusArgs,
+  MissionBudgetSnapshot,
   SendAgentMessageArgs,
   GetGlobalChatArgs,
   DeliverMessageArgs,
@@ -370,6 +375,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.aiListApiKeys),
     verifyApiKey: async (provider: string): Promise<AiApiKeyVerificationResult> =>
       ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
+    updateConfig: async (config: Partial<AiConfig>): Promise<void> =>
+      ipcRenderer.invoke(IPC.aiUpdateConfig, config),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)
@@ -444,6 +451,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.missionsGetPhaseConfiguration, { missionId }),
     getDashboard: async (): Promise<MissionDashboardSnapshot> =>
       ipcRenderer.invoke(IPC.missionsGetDashboard),
+    preflight: async (args: MissionPreflightRequest): Promise<MissionPreflightResult> =>
+      ipcRenderer.invoke(IPC.missionsPreflight, args),
     onEvent: (cb: (ev: MissionsEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: MissionsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.missionsEvent, listener);
@@ -526,6 +535,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorSetMissionMetricsConfig, args),
     getExecutionPlanPreview: async (args: { runId: string }): Promise<ExecutionPlanPreview | null> =>
       ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
+    getMissionBudgetStatus: async (args: GetMissionBudgetStatusArgs): Promise<MissionBudgetSnapshot> =>
+      ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetStatus, args),
     sendAgentMessage: async (args: SendAgentMessageArgs): Promise<OrchestratorChatMessage> =>
       ipcRenderer.invoke(IPC.orchestratorSendAgentMessage, args),
     getGlobalChat: async (args: GetGlobalChatArgs): Promise<OrchestratorChatMessage[]> =>

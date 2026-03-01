@@ -2,7 +2,7 @@
 
 **Status**: In Progress
 **Dependencies**: Phases 1-2 complete (Agent SDKs, AgentExecutor, MCP server)
-**Last updated**: 2026-02-27
+**Last updated**: 2026-02-28
 
 ## Overview
 
@@ -26,7 +26,7 @@ Phase 3 delivers two things: (1) autonomous orchestration foundations that make 
 
 ## What's Shipped
 
-Phase 3 has already delivered 20 workstreams across two waves. The orchestrator is operational — it plans, spawns workers, executes multi-lane missions, recovers from failures, and provides real-time observability. Task 1/2 autonomy primitives are now in baseline; remaining work is focused on phase profiles/UX, budget-pressure behavior, and end-to-end coverage.
+Phase 3 has already delivered 20+ workstreams across two waves. The orchestrator is operational — it plans, spawns workers, executes multi-lane missions, recovers from failures, and provides real-time observability. Tasks 1-6 are now in baseline; remaining work is focused on reflection protocol and full integration soak coverage.
 
 ### Wave 1: Core Orchestrator (W1-W12)
 
@@ -38,14 +38,10 @@ Evolved the orchestrator into an intelligent multi-agent system. Slack-like miss
 
 ### What's Still Missing
 
-1. **Strategic autonomy hardening**: Task 1/2 primitives are implemented, but remaining work includes deeper budget-aware strategy shifts and broader soak-test coverage.
-2. **Budget awareness**: Budget pressure does not yet influence orchestration decisions.
-3. **Pre-flight validation**: No pre-launch checklist for models, permissions, worktrees, or phase config.
-4. **Tiered validation**: No self-check / spot-check / dedicated validator system.
-5. **Granular intervention**: A stuck worker still tends to halt too much mission flow instead of isolating only impacted workers/dependencies.
-6. **Subscription tracking**: No accurate usage data from local CLI session files.
-7. **Reflection protocol**: Agents do not yet capture observations for system self-improvement.
-8. **Full integration soak coverage**: Task 8 multi-hour autonomy/overhaul validation is not complete yet.
+1. **Strategic autonomy hardening**: Coordinator autonomy primitives are in place, but broader multi-hour soak coverage and regression gates are still pending.
+2. **Tiered validation**: No full self-check / spot-check / dedicated validator loop system is shipped yet.
+3. **Reflection protocol**: Agents do not yet capture structured observations for system self-improvement (Task 7).
+4. **Full integration soak coverage**: Task 8 multi-hour autonomy/overhaul validation is not complete yet.
 
 ---
 
@@ -774,7 +770,7 @@ When no mission is selected, the Missions tab shows a home screen:
 
 **Why this is one task**: These all govern what happens at mission boundaries — before launch, during stuck states, and when human input is needed. They share the permission model and escalation chain.
 
-**Readiness (2026-02-27): Ready for development (next)**
+**Readiness (2026-02-28): Shipped**
 
 - Upstream prerequisites are now in place from Tasks 1-4:
   - Task 1/2 provide structured worker reporting, validation outcomes, lane transfer auditability, and intervention primitives.
@@ -866,6 +862,13 @@ Human provides guidance → Coordinator resumes affected worker
 - **Worker `request_user_input`**: workers can request human input, routed through the coordinator. Coordinator decides whether to relay, answer from context, or skip.
 - **Pause/resume parity**: consistent pause/resume controls across UI and runtime. Pause applies at worker or mission level.
 
+#### 5E: Task 5 Shipped Scope (2026-02-28)
+
+- Mission launch now has an explicit pre-flight gate in the create flow (`RUN PRE-FLIGHT` → `LAUNCH MISSION`) with pass/warning/fail checklist rendering and hard-fail launch blocking.
+- Pre-flight checks now validate model authentication, full-auto permissions, worktree capacity, phase structural/ordering constraints, custom-phase semantic clarity, and budget envelope compatibility.
+- Manual-input escalation is now granular: coordinator and worker delivery interventions can open without forcing mission-wide pause (`pauseMission: false`), preserving worker/dependency-level autonomy.
+- Human escalation tooling now supports both `ask_user` and `request_user_input` with dedupe-aware intervention creation and timeline/runtime audit events.
+
 ---
 
 ### Task 6: Budget & Usage Tracking
@@ -874,7 +877,7 @@ Human provides guidance → Coordinator resumes affected worker
 
 **Why this is one task**: The budget service, usage tracking, and orchestration pressure logic are a single data pipeline. Usage data feeds into budget state, which feeds into orchestration decisions.
 
-**Readiness (2026-02-27): Ready for development (next)**
+**Readiness (2026-02-28): Shipped**
 
 - Upstream prerequisites are now in place from Tasks 1-4:
   - Coordinator tooling/telemetry (Task 1/2) can consume budget status as decision input.
@@ -977,6 +980,13 @@ Budget pressure is an input to coordinator decisions, not a hard override — th
 - **Pre-flight**: estimated cost/time based on similar past missions and selected models. Visual budget bar showing allocation across phases.
 - **Mission Details tab**: real-time per-phase and per-worker usage breakdown. Budget consumption chart. Rate limit state indicator.
 - **Home Dashboard**: per-mission cost in recent missions list. Weekly cost aggregate.
+
+#### 6E: Task 6 Shipped Scope (2026-02-28)
+
+- Added `missionBudgetService` with launch estimation, mission/per-phase/per-worker budget snapshots, pressure classification (`normal`/`warning`/`critical`), and recommendation synthesis.
+- Subscription estimation now ingests local Claude session JSONL telemetry under `~/.claude/projects/*/*.jsonl` for best-effort usage/cost correlation.
+- Budget state is now exposed to the coordinator via `get_budget_status`, so budget pressure informs coordinator strategy without deterministic runtime overrides.
+- Mission Details now renders mission budget summary, token/cost/time progress bars, per-phase and per-worker breakdowns, and a rate-limit indicator row.
 
 ---
 
@@ -1099,20 +1109,19 @@ Task 6: Budget & Usage Tracking ────────────────
 Task 7: Reflection Protocol ──────────────────────┘
 ```
 
-**Execution state (2026-02-27):**
+**Execution state (2026-02-28):**
 
 1. **Task 1** (Orchestrator Autonomy Core) — complete
 2. **Task 2** (Validation & Lane Continuity) — complete
 3. **Task 3** (Phases Engine & Profiles) — complete
 4. **Task 4** (Mission UI Overhaul) — complete
-5. **Task 5** (Pre-Flight, Intervention & HITL) — next, depends on Tasks 2-4
-6. **Task 6** (Budget & Usage Tracking) — parallel candidate with Task 5
-7. **Task 7** (Reflection Protocol) — independent but lower priority than Tasks 5/6
+5. **Task 5** (Pre-Flight, Intervention & HITL) — complete
+6. **Task 6** (Budget & Usage Tracking) — complete
+7. **Task 7** (Reflection Protocol) — next
 8. **Task 8** (Integration Testing) — final broad soak/coverage pass
 
 **Parallelization opportunities:**
-- Tasks 5 + 6 can run in parallel after Task 3/4 contracts are fixed
-- Task 7 can run in parallel with Task 5 once intervention/validation hooks are stable
+- Task 7 can run in parallel with early Task 8 harness scaffolding
 - Task 8 should remain last to validate full cross-task behavior end-to-end
 
 ---

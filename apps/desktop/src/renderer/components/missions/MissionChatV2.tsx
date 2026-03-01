@@ -120,7 +120,7 @@ function workerStatusToParticipantStatus(state?: string): "active" | "completed"
   }
 }
 
-export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: MissionChatV2Props) {
+export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: MissionChatV2Props) {
   // ── State ──
   const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
   const [globalMessages, setGlobalMessages] = useState<OrchestratorChatMessage[]>([]);
@@ -828,7 +828,7 @@ export function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: M
       </div>
     </div>
   );
-}
+});
 
 // ── Sidebar components ──
 

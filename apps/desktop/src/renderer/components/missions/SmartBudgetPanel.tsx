@@ -1,13 +1,21 @@
 import React, { useCallback, useState } from "react";
 import { Info, Check } from "@phosphor-icons/react";
 import type { SmartBudgetConfig } from "../../../shared/types";
+import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+
+type BillingContext = {
+  hasSubscription: boolean;
+  subscriptionProviders: string[];
+  apiProviders: string[];
+};
 
 type SmartBudgetPanelProps = {
   value: SmartBudgetConfig;
   onChange: (config: SmartBudgetConfig) => void;
   currentSpend?: { fiveHourUsd: number; weeklyUsd: number } | null;
-  modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUsd: number }>;
+  modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUsd: number; sessions?: number }>;
+  billingContext?: BillingContext;
 };
 
 const inputStyle: React.CSSProperties = {
@@ -35,13 +43,19 @@ const STEERING_ACTIONS = [
 function ProgressBar({
   current,
   threshold,
+  tokenMode,
 }: {
   current: number;
   threshold: number;
+  tokenMode?: boolean;
 }) {
   const pct = threshold > 0 ? Math.min((current / threshold) * 100, 100) : 0;
   const barColor =
     pct >= 80 ? COLORS.danger : pct >= 50 ? COLORS.warning : COLORS.success;
+
+  const label = tokenMode
+    ? `${formatTokenCount(current)} (${Math.round(pct)}%)`
+    : `$${current.toFixed(2)} (${Math.round(pct)}%)`;
 
   return (
     <div className="flex items-center gap-2 flex-1">
@@ -71,10 +85,16 @@ function ProgressBar({
           whiteSpace: "nowrap",
         }}
       >
-        ${current.toFixed(2)} ({Math.round(pct)}%)
+        {label}
       </span>
     </div>
   );
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tok`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K tok`;
+  return `${n} tok`;
 }
 
 function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
@@ -109,7 +129,10 @@ export function SmartBudgetPanel({
   onChange,
   currentSpend,
   modelUsage,
+  billingContext,
 }: SmartBudgetPanelProps) {
+  const subscriptionOnly = billingContext?.hasSubscription && !billingContext?.apiProviders.length;
+
   const handleToggle = useCallback(() => {
     onChange({ ...value, enabled: !value.enabled });
   }, [value, onChange]);
@@ -176,7 +199,10 @@ export function SmartBudgetPanel({
           />
         </button>
 
-        <Tooltip text="When enabled, the orchestrator will automatically steer model usage to stay within budget thresholds. It can downgrade models, inject conciseness prompts, warn workers, skip optional steps, reduce parallelism, and switch providers.">
+        <Tooltip text={subscriptionOnly
+          ? "When enabled, the orchestrator tracks token usage across subscription providers and steers model usage to stay within budget thresholds."
+          : "When enabled, the orchestrator will automatically steer model usage to stay within budget thresholds. It can downgrade models, inject conciseness prompts, warn workers, skip optional steps, reduce parallelism, and switch providers."
+        }>
           <span className="cursor-help">
             <Info size={14} weight="bold" color={COLORS.textDim} />
           </span>
@@ -208,18 +234,20 @@ export function SmartBudgetPanel({
                 letterSpacing: "1px",
               }}
             >
-              5-Hour Limit
+              {subscriptionOnly ? "5-Hour Token Budget" : "5-Hour Limit"}
             </span>
             <div className="flex items-center gap-1">
-              <span
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 12,
-                  color: COLORS.textDim,
-                }}
-              >
-                $
-              </span>
+              {!subscriptionOnly && (
+                <span
+                  style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 12,
+                    color: COLORS.textDim,
+                  }}
+                >
+                  $
+                </span>
+              )}
               <input
                 type="number"
                 min={0}
@@ -233,6 +261,7 @@ export function SmartBudgetPanel({
               <ProgressBar
                 current={currentSpend.fiveHourUsd}
                 threshold={value.fiveHourThresholdUsd}
+                tokenMode={subscriptionOnly}
               />
             )}
           </div>
@@ -250,18 +279,20 @@ export function SmartBudgetPanel({
                 letterSpacing: "1px",
               }}
             >
-              Weekly Limit
+              {subscriptionOnly ? "Weekly Token Budget" : "Weekly Limit"}
             </span>
             <div className="flex items-center gap-1">
-              <span
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 12,
-                  color: COLORS.textDim,
-                }}
-              >
-                $
-              </span>
+              {!subscriptionOnly && (
+                <span
+                  style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 12,
+                    color: COLORS.textDim,
+                  }}
+                >
+                  $
+                </span>
+              )}
               <input
                 type="number"
                 min={0}
@@ -275,6 +306,7 @@ export function SmartBudgetPanel({
               <ProgressBar
                 current={currentSpend.weeklyUsd}
                 threshold={value.weeklyThresholdUsd}
+                tokenMode={subscriptionOnly}
               />
             )}
           </div>
@@ -310,18 +342,41 @@ export function SmartBudgetPanel({
                     : pct >= 50
                       ? COLORS.warning
                       : COLORS.success;
+                const desc = getModelById(model) ?? resolveModelAlias(model);
+                const family = desc?.family ?? "";
+                const isSub = billingContext?.subscriptionProviders.includes(family) ?? false;
+                const isApi = billingContext?.apiProviders.includes(family) ?? false;
                 return (
                   <div key={model} className="flex items-center gap-2">
                     <span
-                      className="w-32 shrink-0 truncate"
-                      style={{
-                        fontFamily: MONO_FONT,
-                        fontSize: 10,
-                        color: COLORS.textSecondary,
-                      }}
+                      className="w-32 shrink-0 truncate flex items-center gap-1"
                       title={model}
                     >
-                      {model}
+                      <span
+                        style={{
+                          fontFamily: MONO_FONT,
+                          fontSize: 10,
+                          color: COLORS.textSecondary,
+                        }}
+                      >
+                        {model}
+                      </span>
+                      {billingContext && (isSub || isApi) && (
+                        <span
+                          className="px-1 py-0.5"
+                          style={{
+                            background: isSub ? "#22C55E18" : "#F59E0B18",
+                            color: isSub ? "#22C55E" : "#F59E0B",
+                            fontFamily: MONO_FONT,
+                            fontSize: 8,
+                            fontWeight: 700,
+                            textTransform: "uppercase",
+                            letterSpacing: "1px",
+                          }}
+                        >
+                          {isSub ? "SUB" : "API"}
+                        </span>
+                      )}
                     </span>
                     <div
                       style={{
@@ -348,7 +403,10 @@ export function SmartBudgetPanel({
                         whiteSpace: "nowrap",
                       }}
                     >
-                      ${usage.costUsd.toFixed(2)} · {totalTokens.toLocaleString()} tok
+                      {isSub
+                        ? `${totalTokens.toLocaleString()} tok${usage.sessions ? ` · ${usage.sessions} sessions` : ""}`
+                        : `$${usage.costUsd.toFixed(2)} · ${totalTokens.toLocaleString()} tok`
+                      }
                     </span>
                   </div>
                 );

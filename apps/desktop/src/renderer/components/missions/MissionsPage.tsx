@@ -24,6 +24,7 @@ import {
   GearSix,
   Hash,
   CaretDown,
+  CaretLeft,
   CaretRight,
   List,
   Kanban,
@@ -57,14 +58,16 @@ import type {
   SteerMissionResult,
   PrStrategy,
   MissionModelConfig,
-  OrchestratorIntelligenceConfig,
   SmartBudgetConfig,
   ModelConfig,
   OrchestratorDecisionTimeoutCapHours,
   PrDepth,
   MissionDashboardSnapshot,
   PhaseCard,
-  PhaseProfile
+  PhaseProfile,
+  MissionPreflightChecklistItem,
+  MissionPreflightResult,
+  AggregatedUsageStats
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES, getProfileById } from "../../../shared/modelProfiles";
 import { useAppStore } from "../../state/appStore";
@@ -73,7 +76,7 @@ import { MODEL_REGISTRY, MODEL_FAMILIES, getModelById, type ProviderFamily } fro
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
-import { PolicyEditor, PRESET_STANDARD } from "./PolicyEditor";
+import { PRESET_STANDARD } from "./PolicyEditor";
 import { CompletionBanner } from "./CompletionBanner";
 import { PhaseProgressBar } from "./PhaseProgressBar";
 import { MissionPolicyBadge } from "./MissionPolicyBadge";
@@ -83,7 +86,6 @@ import { MissionChatV2 } from "./MissionChatV2";
 import { MissionControlPage } from "./MissionControlPage";
 import { ModelProfileSelector } from "./ModelProfileSelector";
 import { ModelSelector } from "./ModelSelector";
-import { OrchestratorIntelligencePanel } from "./OrchestratorIntelligencePanel";
 import { SmartBudgetPanel } from "./SmartBudgetPanel";
 import { MissionPromptInput } from "./MissionPromptInput";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
@@ -272,6 +274,18 @@ function formatElapsed(startedAt: string | null, endedAt?: string | null): strin
 }
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
+
+/** Self-ticking elapsed-time display — isolates the 1s timer from the parent tree. */
+function ElapsedTime({ startedAt, endedAt }: { startedAt: string | null; endedAt?: string | null }) {
+  const [, setTick] = useState(0);
+  const isTerminal = !!endedAt;
+  useEffect(() => {
+    if (isTerminal || !startedAt) return;
+    const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [isTerminal, startedAt]);
+  return <>{formatElapsed(startedAt, endedAt)}</>;
+}
 
 const NOISY_EVENT_TYPES = new Set([
   "claim_heartbeat",
@@ -1529,7 +1543,27 @@ function validatePhaseOrder(cards: PhaseCard[]): string[] {
   return [...new Set(errors)];
 }
 
-function CreateMissionDialog({
+function preflightSeverityHex(severity: MissionPreflightChecklistItem["severity"]): string {
+  if (severity === "pass") return "#22C55E";
+  if (severity === "warning") return "#F59E0B";
+  return "#EF4444";
+}
+
+function formatPreflightDuration(ms: number | null): string {
+  if (ms == null || !Number.isFinite(ms) || ms <= 0) return "n/a";
+  const mins = Math.max(1, Math.round(ms / 60_000));
+  if (mins >= 60) {
+    const hours = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem > 0 ? `${hours}h ${rem}m` : `${hours}h`;
+  }
+  return `${mins}m`;
+}
+
+const DLG_INPUT_STYLE: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 };
+const DLG_LABEL_STYLE: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
+
+function CreateMissionDialogInner({
   open,
   onClose,
   onLaunch,
@@ -1550,11 +1584,19 @@ function CreateMissionDialog({
   );
   const [selectedProfileId, setSelectedProfileId] = useState<string>("standard");
   const [attachments, setAttachments] = useState<string[]>([]);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // advanced options always visible (no collapsible)
   const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>([]);
   const [phaseLoading, setPhaseLoading] = useState(false);
   const [phaseError, setPhaseError] = useState<string | null>(null);
   const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({});
+  const [disabledPhases, setDisabledPhases] = useState<Record<string, boolean>>({});
+  const [availableModelIds, setAvailableModelIds] = useState<string[] | undefined>(undefined);
+  const [aiDetectedAuth, setAiDetectedAuth] = useState<import("../../../shared/types").AiDetectedAuth[] | null>(null);
+  const [currentUsage, setCurrentUsage] = useState<AggregatedUsageStats | null>(null);
+  const [launchStage, setLaunchStage] = useState<"config" | "preflight">("config");
+  const [preflightRunning, setPreflightRunning] = useState(false);
+  const [preflightResult, setPreflightResult] = useState<MissionPreflightResult | null>(null);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
   const [draft, setDraft] = useState<CreateDraft>({
     title: "",
     prompt: "",
@@ -1571,9 +1613,13 @@ function CreateMissionDialog({
     if (!open) return;
     setSelectedProfileId("standard");
     setAttachments([]);
-    setAdvancedOpen(false);
     setPhaseError(null);
     setExpandedPhases({});
+    setDisabledPhases({});
+    setLaunchStage("config");
+    setPreflightRunning(false);
+    setPreflightResult(null);
+    setPreflightError(null);
     setDraft({
       title: "",
       prompt: "",
@@ -1618,25 +1664,141 @@ function CreateMissionDialog({
     };
   }, [open, defaultExecutionPolicy]);
 
+  // Fetch detected auth to determine which models are actually available + current usage.
+  // Deferred: load AFTER the dialog is painted so the UI doesn't freeze on open.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+
+    // Use requestAnimationFrame to yield to the renderer before firing heavy IPC
+    const rafId = requestAnimationFrame(() => {
+      if (cancelled) return;
+      void window.ade.ai.getStatus().then((status) => {
+        if (cancelled) return;
+        const ids: string[] = [];
+        const auth = status.detectedAuth ?? [];
+        setAiDetectedAuth(auth);
+        for (const a of auth) {
+          if (!a.authenticated) continue;
+          if (a.type === "cli-subscription" && a.cli) {
+            const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", gemini: "google" };
+            const family = familyMap[a.cli];
+            if (family) {
+              for (const m of MODEL_REGISTRY) {
+                if (m.family === family && !m.deprecated) ids.push(m.id);
+              }
+            }
+          }
+          if (a.type === "api-key" && a.provider) {
+            for (const m of MODEL_REGISTRY) {
+              if (m.family === a.provider && !m.deprecated) ids.push(m.id);
+            }
+          }
+        }
+        setAvailableModelIds(ids.length > 0 ? [...new Set(ids)] : undefined);
+      }).catch(() => {
+        if (!cancelled) setAvailableModelIds(undefined);
+      });
+
+      const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+      void window.ade.orchestrator.getAggregatedUsage({ since: fiveHoursAgo }).then((stats) => {
+        if (!cancelled) setCurrentUsage(stats);
+      }).catch(() => {
+        if (!cancelled) setCurrentUsage(null);
+      });
+    });
+
+    return () => { cancelled = true; cancelAnimationFrame(rafId); };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (launchStage !== "preflight") return;
+    setLaunchStage("config");
+    setPreflightResult(null);
+    setPreflightError(null);
+  }, [draft, open, launchStage]);
+
+  // Compute active phases (exclude user-disabled ones) and reindex positions
+  const activePhases = useMemo(() => {
+    return draft.phaseOverride
+      .filter((phase) => !disabledPhases[phase.id])
+      .map((phase, index) => ({ ...phase, position: index }));
+  }, [draft.phaseOverride, disabledPhases]);
+
+  const phaseValidationErrors = useMemo(() => validatePhaseOrder(activePhases), [activePhases]);
+
+  const billingContext = useMemo(() => {
+    if (!aiDetectedAuth?.length) return undefined;
+    const subProviders: string[] = [];
+    const apiProviders: string[] = [];
+    for (const auth of aiDetectedAuth) {
+      if (!auth.authenticated) continue;
+      if (auth.type === "cli-subscription" && auth.cli) {
+        const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", gemini: "google" };
+        if (familyMap[auth.cli]) subProviders.push(familyMap[auth.cli]!);
+      }
+      if (auth.type === "api-key" && auth.provider) {
+        apiProviders.push(auth.provider);
+      }
+    }
+    return {
+      hasSubscription: subProviders.length > 0,
+      subscriptionProviders: [...new Set(subProviders)],
+      apiProviders: [...new Set(apiProviders)],
+    };
+  }, [aiDetectedAuth]);
+
   const handleLaunch = useCallback(() => {
     if (!draft.prompt.trim()) return;
-    if (validatePhaseOrder(draft.phaseOverride).length > 0) return;
-    onLaunch(draft);
-  }, [draft, onLaunch]);
+    if (validatePhaseOrder(activePhases).length > 0) return;
+    if (launchStage === "preflight") {
+      if (!preflightResult?.canLaunch) return;
+      onLaunch({ ...draft, phaseOverride: activePhases });
+      return;
+    }
+    setPreflightError(null);
+    setPreflightRunning(true);
+    void window.ade.missions.preflight({
+      launch: {
+        title: draft.title.trim() || undefined,
+        prompt: draft.prompt.trim(),
+        laneId: draft.laneId.trim() || undefined,
+        priority: draft.priority,
+        executionPolicy: { ...draft.executionPolicy, prStrategy: draft.prStrategy },
+        modelConfig: {
+          ...draft.modelConfig,
+          decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
+        },
+        phaseProfileId: draft.phaseProfileId,
+        phaseOverride: activePhases,
+      }
+    })
+      .then((result) => {
+        setPreflightResult(result);
+        setLaunchStage("preflight");
+      })
+      .catch((err) => {
+        setPreflightError(err instanceof Error ? err.message : String(err));
+        setPreflightResult(null);
+      })
+      .finally(() => {
+        setPreflightRunning(false);
+      });
+  }, [draft, activePhases, launchStage, onLaunch, preflightResult?.canLaunch]);
 
   if (!open) return null;
 
-  const dlgInputStyle: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 };
-  const dlgLabelStyle: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
-  const phaseValidationErrors = validatePhaseOrder(draft.phaseOverride);
+  const dlgInputStyle = DLG_INPUT_STYLE;
+  const dlgLabelStyle = DLG_LABEL_STYLE;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto"
         style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
       >
         <div className="flex items-center justify-between px-5 h-14" style={{ background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
@@ -1695,248 +1857,6 @@ function CreateMissionDialog({
             </select>
           </label>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span style={dlgLabelStyle}>
-                <Hash size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-                PHASE CONFIGURATION
-              </span>
-              <select
-                value={draft.phaseProfileId ?? ""}
-                onChange={(e) => {
-                  const nextProfileId = e.target.value || null;
-                  const profile = phaseProfiles.find((entry) => entry.id === nextProfileId) ?? null;
-                  setDraft((prev) => ({
-                    ...prev,
-                    phaseProfileId: nextProfileId,
-                    phaseOverride: profile
-                      ? profile.phases.map((phase, index) => ({ ...phase, position: index }))
-                      : prev.phaseOverride
-                  }));
-                }}
-                className="h-7 w-[220px] px-2 text-[10px] outline-none"
-                style={dlgInputStyle}
-                disabled={phaseLoading || phaseProfiles.length === 0}
-              >
-                <option value="">Select profile</option>
-                {phaseProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.isBuiltIn ? "\u25CF " : ""}{profile.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                style={outlineButton()}
-                onClick={() => {
-                  const now = new Date().toISOString();
-                  setDraft((prev) => ({
-                    ...prev,
-                    phaseProfileId: prev.phaseProfileId,
-                    phaseOverride: [
-                      ...prev.phaseOverride,
-                      {
-                        id: `custom:${Date.now()}`,
-                        phaseKey: `custom_${prev.phaseOverride.length + 1}`,
-                        name: `Custom Phase ${prev.phaseOverride.length + 1}`,
-                        description: "",
-                        instructions: "",
-                        model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
-                        budget: {},
-                        orderingConstraints: {},
-                        askQuestions: { enabled: false, mode: "never" },
-                        validationGate: { tier: "self", required: false },
-                        isBuiltIn: false,
-                        isCustom: true,
-                        position: prev.phaseOverride.length,
-                        createdAt: now,
-                        updatedAt: now
-                      }
-                    ]
-                  }));
-                }}
-              >
-                <Plus size={12} weight="bold" />
-                ADD CUSTOM PHASE
-              </button>
-              <button
-                type="button"
-                style={outlineButton()}
-                disabled={draft.phaseOverride.length === 0}
-                onClick={async () => {
-                  const profileName = window.prompt("New phase profile name", "Custom Profile");
-                  if (!profileName || !profileName.trim()) return;
-                  try {
-                    const saved = await window.ade.missions.savePhaseProfile({
-                      profile: {
-                        name: profileName.trim(),
-                        description: "Saved from mission launch flow",
-                        phases: draft.phaseOverride
-                      }
-                    });
-                    setPhaseProfiles((prev) => [saved, ...prev.filter((entry) => entry.id !== saved.id)]);
-                    setDraft((prev) => ({ ...prev, phaseProfileId: saved.id }));
-                  } catch (err) {
-                    setPhaseError(err instanceof Error ? err.message : String(err));
-                  }
-                }}
-              >
-                SAVE AS PROFILE
-              </button>
-            </div>
-            {phaseLoading ? (
-              <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                Loading phase profiles...
-              </div>
-            ) : null}
-            {phaseError ? (
-              <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
-                {phaseError}
-              </div>
-            ) : null}
-            <div className="space-y-1.5">
-              {draft.phaseOverride.map((phase, index) => {
-                const expanded = expandedPhases[phase.id] === true;
-                return (
-                  <div key={phase.id} className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        {index + 1}.
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>{phase.name}</div>
-                        <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          {phase.model.modelId} · {phase.validationGate.tier}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="px-1 text-[10px]"
-                        style={{ color: COLORS.textMuted }}
-                        disabled={index === 0}
-                        onClick={() => {
-                          if (index === 0) return;
-                          setDraft((prev) => {
-                            const next = [...prev.phaseOverride];
-                            const moved = next[index];
-                            if (!moved) return prev;
-                            next.splice(index, 1);
-                            next.splice(index - 1, 0, moved);
-                            return {
-                              ...prev,
-                              phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos }))
-                            };
-                          });
-                        }}
-                        title="Move up"
-                      >
-                        ↑
-                      </button>
-                      <button
-                        type="button"
-                        className="px-1 text-[10px]"
-                        style={{ color: COLORS.textMuted }}
-                        disabled={index === draft.phaseOverride.length - 1}
-                        onClick={() => {
-                          if (index >= draft.phaseOverride.length - 1) return;
-                          setDraft((prev) => {
-                            const next = [...prev.phaseOverride];
-                            const moved = next[index];
-                            if (!moved) return prev;
-                            next.splice(index, 1);
-                            next.splice(index + 1, 0, moved);
-                            return {
-                              ...prev,
-                              phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos }))
-                            };
-                          });
-                        }}
-                        title="Move down"
-                      >
-                        ↓
-                      </button>
-                      <button
-                        type="button"
-                        className="px-2 text-[10px] font-bold uppercase tracking-[1px]"
-                        style={outlineButton()}
-                        onClick={() => setExpandedPhases((prev) => ({ ...prev, [phase.id]: !expanded }))}
-                      >
-                        {expanded ? "HIDE" : "CONFIGURE"}
-                      </button>
-                    </div>
-                    {expanded ? (
-                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-                        <label className="space-y-1 text-[10px]">
-                          <span style={dlgLabelStyle}>PHASE NAME</span>
-                          <input
-                            value={phase.name}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              setDraft((prev) => ({
-                                ...prev,
-                                phaseOverride: prev.phaseOverride.map((entry) =>
-                                  entry.id === phase.id ? { ...entry, name: value } : entry
-                                )
-                              }));
-                            }}
-                            className="h-7 w-full px-2 outline-none"
-                            style={dlgInputStyle}
-                          />
-                        </label>
-                        <label className="space-y-1 text-[10px]">
-                          <span style={dlgLabelStyle}>MODEL ID</span>
-                          <input
-                            value={phase.model.modelId}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              setDraft((prev) => ({
-                                ...prev,
-                                phaseOverride: prev.phaseOverride.map((entry) =>
-                                  entry.id === phase.id ? { ...entry, model: { ...entry.model, modelId: value } } : entry
-                                )
-                              }));
-                            }}
-                            className="h-7 w-full px-2 outline-none"
-                            style={dlgInputStyle}
-                          />
-                        </label>
-                        <label className="space-y-1 text-[10px] md:col-span-2">
-                          <span style={dlgLabelStyle}>INSTRUCTIONS</span>
-                          <textarea
-                            value={phase.instructions}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              setDraft((prev) => ({
-                                ...prev,
-                                phaseOverride: prev.phaseOverride.map((entry) =>
-                                  entry.id === phase.id ? { ...entry, instructions: value } : entry
-                                )
-                              }));
-                            }}
-                            className="w-full px-2 py-1.5 outline-none"
-                            rows={3}
-                            style={dlgInputStyle}
-                          />
-                        </label>
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-            {phaseValidationErrors.length > 0 ? (
-              <div className="space-y-1 px-2 py-1.5" style={{ background: `${COLORS.warning}15`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}>
-                {phaseValidationErrors.map((entry) => (
-                  <div key={entry} className="text-[10px]" style={{ fontFamily: MONO_FONT }}>
-                    {entry}
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
           <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
 
           {/* 4. Profile */}
@@ -1983,268 +1903,554 @@ function CreateMissionDialog({
                 }));
               }}
               showRecommendedBadge
+              availableModelIds={availableModelIds}
             />
           </div>
 
-          {/* 6. Decision Timeout Cap */}
-          <label className="block space-y-1">
-            <span style={dlgLabelStyle}>DECISION TIMEOUT CAP</span>
-            <select
-              value={draft.modelConfig.decisionTimeoutCapHours ?? 24}
-              onChange={(e) => {
-                setSelectedProfileId("custom");
-                setDraft((p) => ({
-                  ...p,
-                  modelConfig: {
-                    ...p.modelConfig,
-                    profileId: undefined,
-                    decisionTimeoutCapHours: Number(e.target.value) as OrchestratorDecisionTimeoutCapHours
-                  }
-                }));
-              }}
-              className="h-8 w-full px-3 text-xs outline-none"
-              style={dlgInputStyle}
-            >
-              {DECISION_TIMEOUT_CAP_OPTIONS.map((hours) => (
-                <option key={hours} value={hours}>
-                  {hours}h
-                </option>
-              ))}
-            </select>
-          </label>
-
           <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
 
-          {/* 7. PR Strategy + Depth */}
-          <div className="space-y-1">
-            <span style={dlgLabelStyle}>
-              <GitBranch size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-              PR STRATEGY
-            </span>
-            <div className="flex flex-wrap gap-1">
-              {(["integration", "per-lane", "queue", "manual"] as const).map((kind) => {
-                const labels: Record<string, string> = {
-                  integration: "INTEGRATION PR",
-                  "per-lane": "PER-LANE PRS",
-                  queue: "QUEUE",
-                  manual: "MANUAL",
-                };
-                const strategyColors: Record<string, string> = {
-                  integration: "#8B5CF6",
-                  "per-lane": "#3B82F6",
-                  queue: "#F59E0B",
-                  manual: "#71717A",
-                };
-                const accentColor = strategyColors[kind];
-                return (
-                  <button
-                    key={kind}
-                    type="button"
-                    onClick={() => {
-                      if (kind === "manual") {
-                        setDraft((p) => ({ ...p, prStrategy: { kind: "manual" as const } }));
-                      } else if (kind === "queue") {
-                        setDraft((p) => ({
-                          ...p,
-                          prStrategy: {
-                            kind: "queue" as const,
-                            targetBranch: (p.prStrategy.kind !== "manual" && "targetBranch" in p.prStrategy ? p.prStrategy.targetBranch : undefined) ?? "main",
-                            draft: p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true,
-                            autoRebase: true,
-                            ciGating: true,
-                          }
-                        }));
-                      } else {
-                        const prevTarget = (p: CreateDraft) => p.prStrategy.kind !== "manual" && "targetBranch" in p.prStrategy ? p.prStrategy.targetBranch : "main";
-                        const prevDraft = (p: CreateDraft) => p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true;
-                        setDraft((p) => ({
-                          ...p,
-                          prStrategy: { kind, targetBranch: prevTarget(p) ?? "main", draft: prevDraft(p) ?? true }
-                        }));
-                      }
-                    }}
-                    className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
-                    style={draft.prStrategy.kind === kind
-                      ? { background: `${accentColor}18`, color: accentColor, border: `1px solid ${accentColor}30`, fontFamily: MONO_FONT }
-                      : { background: COLORS.recessedBg, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }
-                    }
-                  >
-                    {labels[kind]}
-                  </button>
-                );
-              })}
-            </div>
-            {draft.prStrategy.kind !== "manual" && (
-              <div className="flex items-center gap-3 mt-1">
-                <label className="flex items-center gap-1.5 text-[10px]">
-                  <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Target branch</span>
-                  <input
-                    value={"targetBranch" in draft.prStrategy ? draft.prStrategy.targetBranch ?? "main" : "main"}
+          {/* 6. Additional Options */}
+          <div className="space-y-3">
+                {/* Decision Timeout Cap */}
+                <label className="block space-y-1">
+                  <span style={dlgLabelStyle}>DECISION TIMEOUT CAP</span>
+                  <select
+                    value={draft.modelConfig.decisionTimeoutCapHours ?? 24}
                     onChange={(e) => {
-                      const branch = e.target.value;
+                      setSelectedProfileId("custom");
                       setDraft((p) => ({
                         ...p,
-                        prStrategy: { ...p.prStrategy, targetBranch: branch } as PrStrategy
+                        modelConfig: {
+                          ...p.modelConfig,
+                          profileId: undefined,
+                          decisionTimeoutCapHours: Number(e.target.value) as OrchestratorDecisionTimeoutCapHours
+                        }
                       }));
                     }}
-                    className="h-6 w-24 px-2 text-xs outline-none"
+                    className="h-8 w-full px-3 text-xs outline-none"
                     style={dlgInputStyle}
-                  />
+                  >
+                    {DECISION_TIMEOUT_CAP_OPTIONS.map((hours) => (
+                      <option key={hours} value={hours}>
+                        {hours}h
+                      </option>
+                    ))}
+                  </select>
                 </label>
-                {/* Draft PR checkbox: show for integration (only when depth = open-and-comment), always for per-lane, always for queue */}
-                {(draft.prStrategy.kind === "per-lane" || draft.prStrategy.kind === "queue" || (draft.prStrategy.kind === "integration" && draft.prStrategy.prDepth === "open-and-comment")) && (
-                  <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <input
-                      type="checkbox"
-                      checked={"draft" in draft.prStrategy ? draft.prStrategy.draft ?? true : true}
+
+                {/* c. PR Strategy + Depth */}
+                <div className="space-y-1">
+                  <span style={dlgLabelStyle}>
+                    <GitBranch size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+                    PR STRATEGY
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {(["integration", "per-lane", "queue", "manual"] as const).map((kind) => {
+                      const labels: Record<string, string> = {
+                        integration: "INTEGRATION PR",
+                        "per-lane": "PER-LANE PRS",
+                        queue: "QUEUE",
+                        manual: "MANUAL",
+                      };
+                      const strategyColors: Record<string, string> = {
+                        integration: "#8B5CF6",
+                        "per-lane": "#3B82F6",
+                        queue: "#F59E0B",
+                        manual: "#71717A",
+                      };
+                      const accentColor = strategyColors[kind];
+                      return (
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() => {
+                            if (kind === "manual") {
+                              setDraft((p) => ({ ...p, prStrategy: { kind: "manual" as const } }));
+                            } else if (kind === "queue") {
+                              setDraft((p) => ({
+                                ...p,
+                                prStrategy: {
+                                  kind: "queue" as const,
+                                  targetBranch: (p.prStrategy.kind !== "manual" && "targetBranch" in p.prStrategy ? p.prStrategy.targetBranch : undefined) ?? "main",
+                                  draft: p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true,
+                                  autoRebase: true,
+                                  ciGating: true,
+                                }
+                              }));
+                            } else {
+                              const prevTarget = (p: CreateDraft) => p.prStrategy.kind !== "manual" && "targetBranch" in p.prStrategy ? p.prStrategy.targetBranch : "main";
+                              const prevDraft = (p: CreateDraft) => p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true;
+                              setDraft((p) => ({
+                                ...p,
+                                prStrategy: { kind, targetBranch: prevTarget(p) ?? "main", draft: prevDraft(p) ?? true }
+                              }));
+                            }
+                          }}
+                          className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+                          style={draft.prStrategy.kind === kind
+                            ? { background: `${accentColor}18`, color: accentColor, border: `1px solid ${accentColor}30`, fontFamily: MONO_FONT }
+                            : { background: COLORS.recessedBg, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }
+                          }
+                        >
+                          {labels[kind]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {draft.prStrategy.kind !== "manual" && (
+                    <div className="flex items-center gap-3 mt-1">
+                      <label className="flex items-center gap-1.5 text-[10px]">
+                        <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Target branch</span>
+                        <input
+                          value={"targetBranch" in draft.prStrategy ? draft.prStrategy.targetBranch ?? "main" : "main"}
+                          onChange={(e) => {
+                            const branch = e.target.value;
+                            setDraft((p) => ({
+                              ...p,
+                              prStrategy: { ...p.prStrategy, targetBranch: branch } as PrStrategy
+                            }));
+                          }}
+                          className="h-6 w-24 px-2 text-xs outline-none"
+                          style={dlgInputStyle}
+                        />
+                      </label>
+                      {/* Draft PR checkbox: show for integration (only when depth = open-and-comment), always for per-lane, always for queue */}
+                      {(draft.prStrategy.kind === "per-lane" || draft.prStrategy.kind === "queue" || (draft.prStrategy.kind === "integration" && draft.prStrategy.prDepth === "open-and-comment")) && (
+                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={"draft" in draft.prStrategy ? draft.prStrategy.draft ?? true : true}
+                            onChange={(e) => {
+                              const isDraft = e.target.checked;
+                              setDraft((p) => ({
+                                ...p,
+                                prStrategy: { ...p.prStrategy, draft: isDraft } as PrStrategy
+                              }));
+                            }}
+                          />
+                          Draft PR
+                        </label>
+                      )}
+                    </div>
+                  )}
+                  {/* Queue-specific options */}
+                  {draft.prStrategy.kind === "queue" && (
+                    <div className="flex items-center gap-3 mt-1">
+                      <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.prStrategy.autoRebase ?? true}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            prStrategy: { ...p.prStrategy, autoRebase: e.target.checked } as PrStrategy
+                          }))}
+                        />
+                        Auto-rebase
+                      </label>
+                      <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.prStrategy.ciGating ?? true}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            prStrategy: { ...p.prStrategy, ciGating: e.target.checked } as PrStrategy
+                          }))}
+                        />
+                        CI gating
+                      </label>
+                    </div>
+                  )}
+                  {/* PR Depth: only show for integration strategy */}
+                  {draft.prStrategy.kind === "integration" && (
+                    <div className="mt-2 space-y-1">
+                      <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
+                        PR DEPTH
+                      </span>
+                      <div className="flex flex-col gap-0.5">
+                        {([
+                          { value: "propose-only" as PrDepth, label: "PROPOSE ONLY", desc: "Create draft PRs, flag conflicts" },
+                          { value: "resolve-conflicts" as PrDepth, label: "RESOLVE CONFLICTS", desc: "Also resolve conflicts with AI workers" },
+                          { value: "open-and-comment" as PrDepth, label: "OPEN & COMMENT", desc: "Also open PRs and add review comments" },
+                        ] as const).map((opt) => {
+                          const currentDepth = draft.prStrategy.kind === "integration" ? (draft.prStrategy.prDepth ?? "resolve-conflicts") : "resolve-conflicts";
+                          const isSelected = currentDepth === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => {
+                                if (opt.value === "open-and-comment") {
+                                  setDraft((p) => ({
+                                    ...p,
+                                    prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy,
+                                    executionPolicy: { ...p.executionPolicy, prReview: { ...p.executionPolicy.prReview, mode: "auto" as const } }
+                                  }));
+                                } else {
+                                  setDraft((p) => ({
+                                    ...p,
+                                    prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
+                                  }));
+                                }
+                              }}
+                              className="flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
+                              style={{
+                                background: isSelected ? `${COLORS.accent}18` : "transparent",
+                                border: isSelected ? `1px solid ${COLORS.accent}30` : `1px solid ${COLORS.border}`,
+                                fontFamily: MONO_FONT,
+                              }}
+                            >
+                              <span
+                                className="font-bold uppercase tracking-[1px]"
+                                style={{ fontSize: 10, color: isSelected ? COLORS.accent : COLORS.textPrimary, minWidth: 130 }}
+                              >
+                                {opt.label}
+                              </span>
+                              <span style={{ fontSize: 10, color: COLORS.textMuted }}>
+                                {opt.desc}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 4 }}>
+                        Orchestrator never merges — always requires human approval
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* d. Phase Configuration */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span style={dlgLabelStyle}>
+                      <Hash size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+                      PHASE CONFIGURATION
+                    </span>
+                    <select
+                      value={draft.phaseProfileId ?? ""}
                       onChange={(e) => {
-                        const isDraft = e.target.checked;
-                        setDraft((p) => ({
-                          ...p,
-                          prStrategy: { ...p.prStrategy, draft: isDraft } as PrStrategy
+                        const nextProfileId = e.target.value || null;
+                        const profile = phaseProfiles.find((entry) => entry.id === nextProfileId) ?? null;
+                        setDraft((prev) => ({
+                          ...prev,
+                          phaseProfileId: nextProfileId,
+                          phaseOverride: profile
+                            ? profile.phases.map((phase, index) => ({ ...phase, position: index }))
+                            : prev.phaseOverride
                         }));
                       }}
-                    />
-                    Draft PR
-                  </label>
-                )}
-              </div>
-            )}
-            {/* Queue-specific options */}
-            {draft.prStrategy.kind === "queue" && (
-              <div className="flex items-center gap-3 mt-1">
-                <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                  <input
-                    type="checkbox"
-                    checked={draft.prStrategy.autoRebase ?? true}
-                    onChange={(e) => setDraft((p) => ({
-                      ...p,
-                      prStrategy: { ...p.prStrategy, autoRebase: e.target.checked } as PrStrategy
-                    }))}
-                  />
-                  Auto-rebase
-                </label>
-                <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                  <input
-                    type="checkbox"
-                    checked={draft.prStrategy.ciGating ?? true}
-                    onChange={(e) => setDraft((p) => ({
-                      ...p,
-                      prStrategy: { ...p.prStrategy, ciGating: e.target.checked } as PrStrategy
-                    }))}
-                  />
-                  CI gating
-                </label>
-              </div>
-            )}
-            {/* PR Depth: only show for integration strategy */}
-            {draft.prStrategy.kind === "integration" && (
-              <div className="mt-2 space-y-1">
-                <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
-                  PR DEPTH
-                </span>
-                <div className="flex flex-col gap-0.5">
-                  {([
-                    { value: "propose-only" as PrDepth, label: "PROPOSE ONLY", desc: "Create draft PRs, flag conflicts" },
-                    { value: "resolve-conflicts" as PrDepth, label: "RESOLVE CONFLICTS", desc: "Also resolve conflicts with AI workers" },
-                    { value: "open-and-comment" as PrDepth, label: "OPEN & COMMENT", desc: "Also open PRs and add review comments" },
-                  ] as const).map((opt) => {
-                    const currentDepth = draft.prStrategy.kind === "integration" ? (draft.prStrategy.prDepth ?? "resolve-conflicts") : "resolve-conflicts";
-                    const isSelected = currentDepth === opt.value;
-                    return (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        onClick={() => {
-                          if (opt.value === "open-and-comment") {
-                            setDraft((p) => ({
-                              ...p,
-                              prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy,
-                              executionPolicy: { ...p.executionPolicy, prReview: { ...p.executionPolicy.prReview, mode: "auto" as const } }
-                            }));
-                          } else {
-                            setDraft((p) => ({
-                              ...p,
-                              prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
-                            }));
-                          }
-                        }}
-                        className="flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
-                        style={{
-                          background: isSelected ? `${COLORS.accent}18` : "transparent",
-                          border: isSelected ? `1px solid ${COLORS.accent}30` : `1px solid ${COLORS.border}`,
-                          fontFamily: MONO_FONT,
-                        }}
-                      >
-                        <span
-                          className="font-bold uppercase tracking-[1px]"
-                          style={{ fontSize: 10, color: isSelected ? COLORS.accent : COLORS.textPrimary, minWidth: 130 }}
+                      className="h-7 w-[220px] px-2 text-[10px] outline-none"
+                      style={dlgInputStyle}
+                      disabled={phaseLoading || phaseProfiles.length === 0}
+                    >
+                      <option value="">Select profile</option>
+                      {phaseProfiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.isBuiltIn ? "\u25CF " : ""}{profile.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      style={outlineButton()}
+                      onClick={() => {
+                        const now = new Date().toISOString();
+                        setDraft((prev) => ({
+                          ...prev,
+                          phaseProfileId: prev.phaseProfileId,
+                          phaseOverride: [
+                            ...prev.phaseOverride,
+                            {
+                              id: `custom:${Date.now()}`,
+                              phaseKey: `custom_${prev.phaseOverride.length + 1}`,
+                              name: `Custom Phase ${prev.phaseOverride.length + 1}`,
+                              description: "",
+                              instructions: "",
+                              model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+                              budget: {},
+                              orderingConstraints: {},
+                              askQuestions: { enabled: false, mode: "never" },
+                              validationGate: { tier: "self", required: false },
+                              isBuiltIn: false,
+                              isCustom: true,
+                              position: prev.phaseOverride.length,
+                              createdAt: now,
+                              updatedAt: now
+                            }
+                          ]
+                        }));
+                      }}
+                    >
+                      <Plus size={12} weight="bold" />
+                      ADD CUSTOM PHASE
+                    </button>
+                    <button
+                      type="button"
+                      style={outlineButton()}
+                      disabled={draft.phaseOverride.length === 0}
+                      onClick={async () => {
+                        const profileName = window.prompt("New phase profile name", "Custom Profile");
+                        if (!profileName || !profileName.trim()) return;
+                        try {
+                          const saved = await window.ade.missions.savePhaseProfile({
+                            profile: {
+                              name: profileName.trim(),
+                              description: "Saved from mission launch flow",
+                              phases: draft.phaseOverride
+                            }
+                          });
+                          setPhaseProfiles((prev) => [saved, ...prev.filter((entry) => entry.id !== saved.id)]);
+                          setDraft((prev) => ({ ...prev, phaseProfileId: saved.id }));
+                        } catch (err) {
+                          setPhaseError(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                    >
+                      SAVE AS PROFILE
+                    </button>
+                  </div>
+                  {phaseLoading ? (
+                    <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      Loading phase profiles...
+                    </div>
+                  ) : null}
+                  {phaseError ? (
+                    <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
+                      {phaseError}
+                    </div>
+                  ) : null}
+                  <div className="space-y-1.5">
+                    {draft.phaseOverride.map((phase, index) => {
+                      const expanded = expandedPhases[phase.id] === true;
+                      const isDisabled = disabledPhases[phase.id] === true;
+                      return (
+                        <div
+                          key={phase.id}
+                          className="p-2"
+                          style={{
+                            background: isDisabled ? `${COLORS.recessedBg}80` : COLORS.recessedBg,
+                            border: `1px solid ${isDisabled ? COLORS.border + "60" : COLORS.border}`,
+                            opacity: isDisabled ? 0.5 : 1,
+                            transition: "opacity 0.15s ease",
+                          }}
                         >
-                          {opt.label}
-                        </span>
-                        <span style={{ fontSize: 10, color: COLORS.textMuted }}>
-                          {opt.desc}
-                        </span>
-                      </button>
-                    );
-                  })}
+                          <div className="flex items-center gap-2">
+                            {/* Enable/disable toggle */}
+                            <button
+                              type="button"
+                              onClick={() => setDisabledPhases((prev) => ({ ...prev, [phase.id]: !isDisabled }))}
+                              title={isDisabled ? "Enable phase" : "Disable phase"}
+                              style={{
+                                width: 28,
+                                height: 14,
+                                background: isDisabled ? COLORS.border : "#22C55E",
+                                border: "none",
+                                borderRadius: 0,
+                                cursor: "pointer",
+                                position: "relative",
+                                flexShrink: 0,
+                                transition: "background 0.2s ease",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  top: 2,
+                                  left: isDisabled ? 2 : 14,
+                                  width: 10,
+                                  height: 10,
+                                  background: isDisabled ? COLORS.textDim : COLORS.textPrimary,
+                                  borderRadius: 0,
+                                  transition: "left 0.2s ease",
+                                }}
+                              />
+                            </button>
+                            <span className="text-[10px] font-bold" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                              {index + 1}.
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-[11px] font-semibold" style={{ color: isDisabled ? COLORS.textDim : COLORS.textPrimary }}>
+                                {phase.name}
+                                {isDisabled ? <span style={{ color: COLORS.textDim, fontWeight: 400 }}> (disabled)</span> : null}
+                              </div>
+                              <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                {phase.model.modelId} · {phase.validationGate.tier}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="px-1 text-[10px]"
+                              style={{ color: COLORS.textMuted }}
+                              disabled={index === 0}
+                              onClick={() => {
+                                if (index === 0) return;
+                                setDraft((prev) => {
+                                  const next = [...prev.phaseOverride];
+                                  const moved = next[index];
+                                  if (!moved) return prev;
+                                  next.splice(index, 1);
+                                  next.splice(index - 1, 0, moved);
+                                  return {
+                                    ...prev,
+                                    phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos }))
+                                  };
+                                });
+                              }}
+                              title="Move up"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="px-1 text-[10px]"
+                              style={{ color: COLORS.textMuted }}
+                              disabled={index === draft.phaseOverride.length - 1}
+                              onClick={() => {
+                                if (index >= draft.phaseOverride.length - 1) return;
+                                setDraft((prev) => {
+                                  const next = [...prev.phaseOverride];
+                                  const moved = next[index];
+                                  if (!moved) return prev;
+                                  next.splice(index, 1);
+                                  next.splice(index + 1, 0, moved);
+                                  return {
+                                    ...prev,
+                                    phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos }))
+                                  };
+                                });
+                              }}
+                              title="Move down"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              type="button"
+                              className="px-2 text-[10px] font-bold uppercase tracking-[1px]"
+                              style={outlineButton()}
+                              onClick={() => setExpandedPhases((prev) => ({ ...prev, [phase.id]: !expanded }))}
+                              disabled={isDisabled}
+                            >
+                              {expanded ? "HIDE" : "CONFIGURE"}
+                            </button>
+                            {/* Delete button for custom phases */}
+                            {phase.isCustom ? (
+                              <button
+                                type="button"
+                                className="px-1"
+                                style={{ color: COLORS.danger, background: "none", border: "none", cursor: "pointer" }}
+                                onClick={() => {
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    phaseOverride: prev.phaseOverride
+                                      .filter((entry) => entry.id !== phase.id)
+                                      .map((entry, pos) => ({ ...entry, position: pos }))
+                                  }));
+                                  setExpandedPhases((prev) => { const n = { ...prev }; delete n[phase.id]; return n; });
+                                  setDisabledPhases((prev) => { const n = { ...prev }; delete n[phase.id]; return n; });
+                                }}
+                                title="Remove custom phase"
+                              >
+                                <X size={12} weight="bold" />
+                              </button>
+                            ) : null}
+                          </div>
+                          {expanded && !isDisabled ? (
+                            <div className="mt-2 space-y-2">
+                              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                <label className="space-y-1 text-[10px]">
+                                  <span style={dlgLabelStyle}>PHASE NAME</span>
+                                  <input
+                                    value={phase.name}
+                                    onChange={(e) => {
+                                      const value = e.target.value;
+                                      setDraft((prev) => ({
+                                        ...prev,
+                                        phaseOverride: prev.phaseOverride.map((entry) =>
+                                          entry.id === phase.id ? { ...entry, name: value } : entry
+                                        )
+                                      }));
+                                    }}
+                                    className="h-7 w-full px-2 outline-none"
+                                    style={dlgInputStyle}
+                                  />
+                                </label>
+                                <div className="space-y-1 text-[10px]">
+                                  <span style={dlgLabelStyle}>WORKER MODEL</span>
+                                  <ModelSelector
+                                    value={phase.model}
+                                    onChange={(config) => {
+                                      setDraft((prev) => ({
+                                        ...prev,
+                                        phaseOverride: prev.phaseOverride.map((entry) =>
+                                          entry.id === phase.id ? { ...entry, model: config } : entry
+                                        )
+                                      }));
+                                    }}
+                                    compact
+                                    availableModelIds={availableModelIds}
+                                  />
+                                </div>
+                              </div>
+                              <label className="space-y-1 text-[10px]">
+                                <span style={dlgLabelStyle}>INSTRUCTIONS</span>
+                                <textarea
+                                  value={phase.instructions}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    setDraft((prev) => ({
+                                      ...prev,
+                                      phaseOverride: prev.phaseOverride.map((entry) =>
+                                        entry.id === phase.id ? { ...entry, instructions: value } : entry
+                                      )
+                                    }));
+                                  }}
+                                  className="w-full px-2 py-1.5 outline-none"
+                                  rows={3}
+                                  style={dlgInputStyle}
+                                />
+                              </label>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {phaseValidationErrors.length > 0 ? (
+                    <div className="space-y-1 px-2 py-1.5" style={{ background: `${COLORS.warning}15`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}>
+                      {phaseValidationErrors.map((entry) => (
+                        <div key={entry} className="text-[10px]" style={{ fontFamily: MONO_FONT }}>
+                          {entry}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
-                <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 4 }}>
-                  Orchestrator never merges — always requires human approval
-                </div>
-              </div>
-            )}
-          </div>
 
-          <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
-
-          {/* 8. Agents (Execution Policy) */}
-          <div className="space-y-1">
-            <span style={dlgLabelStyle}>
-              <Robot size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-              AGENTS
-            </span>
-            <PolicyEditor
-              value={draft.executionPolicy}
-              onChange={(p) => setDraft((prev) => ({ ...prev, executionPolicy: p }))}
-            />
-          </div>
-
-          <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
-
-          {/* 9. Advanced Options (collapsed by default) */}
-          <div>
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((v) => !v)}
-              className="flex items-center gap-1.5 w-full text-left"
-              style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}
-            >
-              {advancedOpen
-                ? <CaretDown size={12} weight="bold" style={{ color: COLORS.textMuted }} />
-                : <CaretRight size={12} weight="bold" style={{ color: COLORS.textMuted }} />
-              }
-              <span style={dlgLabelStyle}>
-                <GearSix size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-                ADVANCED OPTIONS
-              </span>
-            </button>
-            {advancedOpen && (
-              <div className="mt-2 space-y-3 pl-4">
-                {/* Orchestrator Intelligence */}
-                <OrchestratorIntelligencePanel
-                  value={draft.modelConfig.intelligenceConfig ?? {}}
-                  orchestratorModel={draft.modelConfig.orchestratorModel}
-                  onChange={(config) => {
-                    setSelectedProfileId("custom");
-                    setDraft((p) => ({
-                      ...p,
-                      modelConfig: { ...p.modelConfig, profileId: undefined, intelligenceConfig: config }
-                    }));
-                  }}
+                {/* e. Smart Token Budget */}
+                <SmartBudgetPanel
+                  value={draft.modelConfig.smartBudget ?? { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 }}
+                  onChange={(config) => setDraft((p) => ({
+                    ...p,
+                    modelConfig: { ...p.modelConfig, smartBudget: config }
+                  }))}
+                  currentSpend={currentUsage ? {
+                    fiveHourUsd: currentUsage.summary.totalCostEstimateUsd,
+                    weeklyUsd: currentUsage.summary.totalCostEstimateUsd, // 5hr window data used for both until weekly is wired
+                  } : null}
+                  modelUsage={currentUsage?.byModel?.length ? Object.fromEntries(
+                    currentUsage.byModel.map((m) => [m.model, {
+                      inputTokens: m.inputTokens,
+                      outputTokens: m.outputTokens,
+                      costUsd: m.costEstimateUsd,
+                      sessions: m.sessions,
+                    }])
+                  ) : undefined}
+                  billingContext={billingContext}
                 />
 
-                {/* Allow completion with risk */}
+                {/* f. Allow completion with risk */}
                 <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                   <input
                     type="checkbox"
@@ -2260,7 +2466,7 @@ function CreateMissionDialog({
                   ALLOW COMPLETION WITH RISK
                 </label>
 
-                {/* Team Runtime */}
+                {/* g. Team Runtime */}
                 <div className="space-y-2">
                   <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                     <input
@@ -2328,37 +2534,179 @@ function CreateMissionDialog({
                     </div>
                   )}
                 </div>
-              </div>
-            )}
           </div>
 
-          <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
+          {(preflightRunning || preflightResult || preflightError) ? (
+            <div className="space-y-2 p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+              <div className="flex items-center justify-between gap-2">
+                <span style={dlgLabelStyle}>PRE-FLIGHT CHECKLIST</span>
+                {preflightRunning ? (
+                  <span className="inline-flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <SpinnerGap size={12} className="animate-spin" />
+                    Checking...
+                  </span>
+                ) : null}
+              </div>
 
-          {/* 10. Smart Budget */}
-          <SmartBudgetPanel
-            value={draft.modelConfig.smartBudget ?? { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 }}
-            onChange={(config) => setDraft((p) => ({
-              ...p,
-              modelConfig: { ...p.modelConfig, smartBudget: config }
-            }))}
-          />
+              {preflightError ? (
+                <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
+                  {preflightError}
+                </div>
+              ) : null}
+
+              {preflightResult ? (
+                <div className="space-y-1.5">
+                  {preflightResult.checklist.map((item) => {
+                    const accent = preflightSeverityHex(item.severity);
+                    return (
+                      <div key={item.id} className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${accent}45` }}>
+                        <div className="flex items-start gap-2">
+                          {item.severity === "pass" ? (
+                            <CheckCircle size={14} weight="fill" style={{ color: accent, marginTop: 1 }} />
+                          ) : item.severity === "warning" ? (
+                            <Warning size={14} weight="fill" style={{ color: accent, marginTop: 1 }} />
+                          ) : (
+                            <X size={14} weight="bold" style={{ color: accent, marginTop: 1 }} />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: accent, fontFamily: MONO_FONT }}>
+                              {item.title}
+                            </div>
+                            <div className="mt-0.5 text-[11px]" style={{ color: COLORS.textPrimary }}>
+                              {item.summary}
+                            </div>
+                            {item.details.length > 0 ? (
+                              <ul className="mt-1 space-y-0.5 pl-4 text-[10px]">
+                                {item.details.map((detail, idx) => (
+                                  <li key={`${item.id}:${idx}`} style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                    • {detail}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                            {item.fixHint ? (
+                              <div className="mt-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                Fix: {item.fixHint}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {preflightResult.budgetEstimate ? (
+                    <div className="mt-2 space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-3 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <span>Mode: {preflightResult.budgetEstimate.mode}</span>
+                        <span>Est. Cost: {preflightResult.budgetEstimate.estimatedCostUsd != null ? `$${preflightResult.budgetEstimate.estimatedCostUsd.toFixed(2)}` : "n/a"}</span>
+                        <span>Est. Time: {formatPreflightDuration(preflightResult.budgetEstimate.estimatedTimeMs)}</span>
+                        <span>Hard fails: {preflightResult.hardFailures}</span>
+                        <span>Warnings: {preflightResult.warnings}</span>
+                      </div>
+                      {(() => {
+                        const rows = preflightResult.budgetEstimate?.perPhase ?? [];
+                        const totalCost = rows.reduce((sum, phase) => sum + (phase.estimatedCostUsd ?? 0), 0);
+                        if (!rows.length || totalCost <= 0) return null;
+                        return (
+                          <div className="space-y-1">
+                            <div className="text-[10px] uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                              Phase Cost Allocation
+                            </div>
+                            <div className="flex h-2 w-full overflow-hidden rounded-sm" style={{ border: `1px solid ${COLORS.border}` }}>
+                              {rows.map((phase, index) => {
+                                const cost = Math.max(0, phase.estimatedCostUsd ?? 0);
+                                const pct = Math.max(0, Math.min(100, (cost / totalCost) * 100));
+                                const hue = (index * 63) % 360;
+                                return (
+                                  <div
+                                    key={`phase-budget:${phase.phaseKey}`}
+                                    title={`${phase.phaseName}: $${cost.toFixed(2)} (${pct.toFixed(1)}%)`}
+                                    style={{ width: `${pct}%`, background: `hsl(${hue} 75% 52%)` }}
+                                  />
+                                );
+                              })}
+                            </div>
+                            <div className="grid grid-cols-1 gap-0.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                              {rows.map((phase, index) => {
+                                const cost = Math.max(0, phase.estimatedCostUsd ?? 0);
+                                const pct = Math.max(0, Math.min(100, (cost / totalCost) * 100));
+                                const hue = (index * 63) % 360;
+                                return (
+                                  <div key={`phase-budget-label:${phase.phaseKey}`} className="flex items-center justify-between gap-2">
+                                    <span className="inline-flex items-center gap-1 min-w-0 truncate">
+                                      <span className="inline-block h-2 w-2 rounded-full" style={{ background: `hsl(${hue} 75% 52%)` }} />
+                                      <span className="truncate">{phase.phaseName}</span>
+                                    </span>
+                                    <span>{`$${cost.toFixed(2)} (${pct.toFixed(0)}%)`}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-5 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
-          <button style={outlineButton()} onClick={onClose} disabled={busy}>CANCEL</button>
-          <button
-            style={primaryButton()}
-            onClick={handleLaunch}
-            disabled={busy || !draft.prompt.trim() || phaseValidationErrors.length > 0}
-          >
-            {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-            LAUNCH
-          </button>
+          {launchStage === "preflight" ? (
+            <>
+              <button
+                style={outlineButton()}
+                onClick={() => {
+                  setLaunchStage("config");
+                  setPreflightError(null);
+                }}
+                disabled={busy || preflightRunning}
+              >
+                <CaretLeft size={12} weight="bold" />
+                BACK
+              </button>
+              <button
+                style={outlineButton()}
+                onClick={() => {
+                  setLaunchStage("config");
+                  setPreflightResult(null);
+                  setPreflightError(null);
+                }}
+                disabled={busy || preflightRunning}
+              >
+                EDIT CONFIG
+              </button>
+              <button
+                style={primaryButton()}
+                onClick={handleLaunch}
+                disabled={busy || preflightRunning || !preflightResult?.canLaunch}
+              >
+                {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+                LAUNCH MISSION
+              </button>
+            </>
+          ) : (
+            <>
+              <button style={outlineButton()} onClick={onClose} disabled={busy || preflightRunning}>CANCEL</button>
+              <button
+                style={primaryButton()}
+                onClick={handleLaunch}
+                disabled={busy || preflightRunning || !draft.prompt.trim() || phaseValidationErrors.length > 0}
+              >
+                {preflightRunning ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Shield className="h-3.5 w-3.5" />}
+                RUN PRE-FLIGHT
+              </button>
+            </>
+          )}
         </div>
       </motion.div>
     </div>
   );
 }
+
+const CreateMissionDialog = React.memo(CreateMissionDialogInner);
 
 function MissionSettingsDialog({
   open,
@@ -2406,7 +2754,7 @@ function MissionSettingsDialog({
   const settingsLabelStyle: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
@@ -2430,13 +2778,9 @@ function MissionSettingsDialog({
 
           <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
             <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>MISSION DEFAULTS</div>
-            <div className="mt-3 space-y-3">
-              <div>
-                <div className="mb-1" style={settingsLabelStyle}>DEFAULT EXECUTION POLICY</div>
-                <PolicyEditor
-                  value={draft.defaultExecutionPolicy}
-                  onChange={(p) => onDraftChange({ defaultExecutionPolicy: p })}
-                />
+            <div className="mt-3">
+              <div className="px-2 py-1.5 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                Execution policy is derived from your Phase Profiles below. Customize phases to control planning, testing, validation, and review behavior.
               </div>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -2717,6 +3061,7 @@ function MissionSettingsDialog({
 export default function MissionsPage() {
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const mappedLanes = useMemo(() => lanes.map((l) => ({ id: l.id, name: l.name })), [lanes]);
 
   /* ── Core state ── */
   const [missions, setMissions] = useState<MissionSummary[]>([]);
@@ -2730,6 +3075,7 @@ export default function MissionsPage() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [createOpen, setCreateOpen] = useState(false);
+  const closeCreateDialog = useCallback(() => setCreateOpen(false), []);
   const [createBusy, setCreateBusy] = useState(false);
   const [runBusy, setRunBusy] = useState(false);
   const [missionSettingsOpen, setMissionSettingsOpen] = useState(false);
@@ -2756,14 +3102,13 @@ export default function MissionsPage() {
   /* ── Track original step count for dynamic step indicator ── */
   const [originalStepCount, setOriginalStepCount] = useState<number | null>(null);
 
-  /* ── Elapsed time ticker (only runs when a non-terminal mission is selected) ── */
-  const [, setTick] = useState(0);
   const hasActiveMission = selectedMission && !TERMINAL_MISSION_STATUSES.has(selectedMission.status);
-  useEffect(() => {
-    if (!hasActiveMission) return;
-    const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [hasActiveMission]);
+
+  /* ── Stable array refs for memoized children ── */
+  const runSteps = useMemo(() => runGraph?.steps ?? [], [runGraph?.steps]);
+  const runAttempts = useMemo(() => runGraph?.attempts ?? [], [runGraph?.attempts]);
+  const runClaims = useMemo(() => runGraph?.claims ?? [], [runGraph?.claims]);
+  const runTimeline = useMemo(() => runGraph?.timeline ?? [], [runGraph?.timeline]);
 
   /* ── Derived data ── */
   const filteredMissions = useMemo(() => {
@@ -2810,8 +3155,8 @@ export default function MissionsPage() {
     const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
     const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
     const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
-    const effectivePolicySource = effectiveOrchestrator.defaultExecutionPolicy ?? effectiveOrchestrator.default_execution_policy;
-    const localPolicySource = localOrchestrator.defaultExecutionPolicy ?? localOrchestrator.default_execution_policy;
+    const effectivePolicySource = effectiveOrchestrator.defaultExecutionPolicy;
+    const localPolicySource = localOrchestrator.defaultExecutionPolicy;
     const effectiveDefaultExecutionPolicy = mergeExecutionPolicyWithDefaults(effectivePolicySource, PRESET_STANDARD);
     const localDefaultExecutionPolicy = mergeExecutionPolicyWithDefaults(localPolicySource, effectiveDefaultExecutionPolicy);
 
@@ -3039,16 +3384,27 @@ export default function MissionsPage() {
   }, [selectedMissionId, loadMissionDetail, loadOrchestratorGraph]);
 
 
+  // Debounced event-driven refresh: coalesce rapid-fire events into a single cycle
+  const missionEventTimerRef = useRef<number | null>(null);
+  const orchestratorEventTimerRef = useRef<number | null>(null);
+
   useEffect(() => {
     const unsub = window.ade.missions.onEvent((payload) => {
-      void refreshMissionList({ preserveSelection: true, silent: true });
-      void loadDashboard();
-      if (payload.missionId && payload.missionId === selectedMissionId) {
-        void loadMissionDetail(payload.missionId);
-        scheduleOrchestratorGraphRefresh(payload.missionId, 120);
-      }
+      if (missionEventTimerRef.current !== null) window.clearTimeout(missionEventTimerRef.current);
+      missionEventTimerRef.current = window.setTimeout(() => {
+        missionEventTimerRef.current = null;
+        void refreshMissionList({ preserveSelection: true, silent: true });
+        void loadDashboard();
+        if (payload.missionId && payload.missionId === selectedMissionId) {
+          void loadMissionDetail(payload.missionId);
+          scheduleOrchestratorGraphRefresh(payload.missionId, 120);
+        }
+      }, 300);
     });
-    return () => unsub();
+    return () => {
+      if (missionEventTimerRef.current !== null) window.clearTimeout(missionEventTimerRef.current);
+      unsub();
+    };
   }, [loadDashboard, loadMissionDetail, refreshMissionList, scheduleOrchestratorGraphRefresh, selectedMissionId]);
 
   useEffect(() => {
@@ -3056,10 +3412,17 @@ export default function MissionsPage() {
     const unsub = window.ade.orchestrator.onEvent((event) => {
       if (!selectedMissionId) return;
       if (selectedRunId && event.runId && event.runId !== selectedRunId) return;
-      scheduleOrchestratorGraphRefresh(selectedMissionId);
-      void loadDashboard();
+      if (orchestratorEventTimerRef.current !== null) window.clearTimeout(orchestratorEventTimerRef.current);
+      orchestratorEventTimerRef.current = window.setTimeout(() => {
+        orchestratorEventTimerRef.current = null;
+        scheduleOrchestratorGraphRefresh(selectedMissionId);
+        void loadDashboard();
+      }, 300);
     });
-    return () => unsub();
+    return () => {
+      if (orchestratorEventTimerRef.current !== null) window.clearTimeout(orchestratorEventTimerRef.current);
+      unsub();
+    };
   }, [loadDashboard, runGraph?.run.id, scheduleOrchestratorGraphRefresh, selectedMissionId]);
 
   useEffect(() => {
@@ -3548,7 +3911,7 @@ export default function MissionsPage() {
                     )}
                   </div>
                   <div className="mt-0.5 flex items-center gap-3 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <span><Clock className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null, selectedMission && TERMINAL_MISSION_STATUSES.has(selectedMission.status) ? selectedMission.completedAt : null)}</span>
+                    <span><Clock className="inline h-3 w-3 mr-0.5" /><ElapsedTime startedAt={selectedMission?.startedAt ?? null} endedAt={selectedMission && TERMINAL_MISSION_STATUSES.has(selectedMission.status) ? selectedMission.completedAt : null} /></span>
                     {selectedMission?.laneName && (
                       <span><GitBranch className="inline h-3 w-3 mr-0.5" />{selectedMission.laneName}</span>
                     )}
@@ -3697,8 +4060,8 @@ export default function MissionsPage() {
                     <StepDetailPanel
                       step={selectedStep}
                       attempts={selectedStepAttempts}
-                      allSteps={runGraph?.steps ?? []}
-                      claims={runGraph?.claims ?? []}
+                      allSteps={runSteps}
+                      claims={runClaims}
                       onOpenWorkerThread={(target) => {
                         setChatJumpTarget(target);
                         setActiveTab("chat");
@@ -3715,9 +4078,9 @@ export default function MissionsPage() {
                   <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
                     <div className="min-h-0 min-w-0 flex-1 overflow-auto">
                     <OrchestratorDAG
-                      steps={runGraph?.steps ?? []}
-                      attempts={runGraph?.attempts ?? []}
-                      claims={runGraph?.claims ?? []}
+                      steps={runSteps}
+                      attempts={runAttempts}
+                      claims={runClaims}
                       selectedStepId={selectedStepId}
                       onStepClick={setSelectedStepId}
                       runId={runGraph?.run?.id}
@@ -3726,8 +4089,8 @@ export default function MissionsPage() {
                     <StepDetailPanel
                       step={selectedStep}
                       attempts={selectedStepAttempts}
-                      allSteps={runGraph?.steps ?? []}
-                      claims={runGraph?.claims ?? []}
+                      allSteps={runSteps}
+                      claims={runClaims}
                       onOpenWorkerThread={(target) => {
                         setChatJumpTarget(target);
                         setActiveTab("chat");
@@ -3744,7 +4107,7 @@ export default function MissionsPage() {
                     />
                     <OrchestratorActivityFeed
                       runId={runGraph?.run.id ?? ""}
-                      initialTimeline={runGraph?.timeline ?? []}
+                      initialTimeline={runTimeline}
                     />
 
                     {/* Run Narrative - shown when available */}
@@ -3841,10 +4204,10 @@ export default function MissionsPage() {
         {createOpen && (
           <CreateMissionDialog
             open={createOpen}
-            onClose={() => setCreateOpen(false)}
+            onClose={closeCreateDialog}
             onLaunch={handleLaunchMission}
             busy={createBusy}
-            lanes={lanes.map((l) => ({ id: l.id, name: l.name }))}
+            lanes={mappedLanes}
             defaultExecutionPolicy={missionSettingsDraft.defaultExecutionPolicy}
           />
         )}

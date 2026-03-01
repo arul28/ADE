@@ -100,7 +100,7 @@ function groupConsecutive(events: OrchestratorTimelineEvent[]): GroupedEvent[] {
   return groups;
 }
 
-export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
+export const OrchestratorActivityFeed = React.memo(function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
   const [events, setEvents] = useState<OrchestratorTimelineEvent[]>(() => sortTimeline(initialTimeline));
   const [category, setCategory] = useState("All Events");
   const [severity, setSeverity] = useState<Severity>("all");
@@ -429,4 +429,4 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
       </div>
     </div>
   );
-}
+});

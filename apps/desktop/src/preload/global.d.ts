@@ -79,6 +79,7 @@ import type {
   AutomationSimulateRequest,
   AutomationSimulateResult,
   AiApiKeyVerificationResult,
+  AiConfig,
   AiSettingsStatus,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
@@ -239,6 +240,8 @@ import type {
   ImportPhaseProfileArgs,
   MissionPhaseConfiguration,
   MissionDashboardSnapshot,
+  MissionPreflightRequest,
+  MissionPreflightResult,
   PlanMissionArgs,
   PlanMissionResult,
   ListPlannerRunsArgs,
@@ -298,6 +301,8 @@ import type {
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
+  GetMissionBudgetStatusArgs,
+  MissionBudgetSnapshot,
   SendAgentMessageArgs,
   GetGlobalChatArgs,
   GetActiveAgentsArgs,
@@ -342,6 +347,7 @@ declare global {
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
+        updateConfig: (config: Partial<AiConfig>) => Promise<void>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
@@ -391,6 +397,7 @@ declare global {
         importPhaseProfile: (args: ImportPhaseProfileArgs) => Promise<PhaseProfile>;
         getPhaseConfiguration: (missionId: string) => Promise<MissionPhaseConfiguration | null>;
         getDashboard: () => Promise<MissionDashboardSnapshot>;
+        preflight: (args: MissionPreflightRequest) => Promise<MissionPreflightResult>;
         onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
       };
       planner: {
@@ -436,6 +443,7 @@ declare global {
         getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }>;
         setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
         getExecutionPlanPreview: (args: { runId: string }) => Promise<ExecutionPlanPreview | null>;
+        getMissionBudgetStatus: (args: GetMissionBudgetStatusArgs) => Promise<MissionBudgetSnapshot>;
         sendAgentMessage: (args: SendAgentMessageArgs) => Promise<OrchestratorChatMessage>;
         getGlobalChat: (args: GetGlobalChatArgs) => Promise<OrchestratorChatMessage[]>;
         getActiveAgents: (args: GetActiveAgentsArgs) => Promise<ActiveAgentInfo[]>;

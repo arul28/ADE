@@ -2,7 +2,6 @@ import React from "react";
 import { Info, Play } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
-import { ToolLogo } from "./ToolLogos";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
@@ -15,15 +14,6 @@ function toolAccentGradient(toolType: string | null | undefined): string {
     return "from-blue-500/70 to-blue-500/10";
   if (toolType === "shell") return "from-emerald-500/60 to-emerald-500/10";
   return "from-violet-500/50 to-violet-500/10";
-}
-
-/** Tool-type badge color — vibrant with borders */
-function toolBadgeClass(toolType: string | null | undefined): string {
-  if (toolType === "claude" || toolType === "claude-chat")
-    return "bg-orange-500/20 text-orange-300 border border-orange-500/30";
-  if (toolType === "codex" || toolType === "codex-chat")
-    return "bg-blue-500/20 text-blue-300 border border-blue-500/30";
-  return "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
 }
 
 function statusDot(session: TerminalSessionSummary): { cls: string; spinning: boolean; label: string } {
@@ -69,7 +59,9 @@ export function SessionCard({
   const canResume = session.status !== "running" && Boolean(session.resumeCommand);
   const isEnded = session.status !== "running";
   const delta = useSessionDelta(session.id, isEnded);
-  const summary = truncateSummary(session.summary ?? session.goal ?? session.title);
+  const secondaryText = isEnded
+    ? truncateSummary(session.goal ?? session.title, 20)
+    : truncateSummary(session.summary, 20);
 
   return (
     <div className="group relative" onContextMenu={onContextMenu}>
@@ -102,7 +94,6 @@ export function SessionCard({
         <div className="pl-3.5 pr-2 py-2">
           {/* Top row: logo + title + status */}
           <div className="flex items-center gap-2 min-w-0">
-            <ToolLogo toolType={session.toolType} size={16} />
             <span
               title={dot.label}
               className={cn("h-2.5 w-2.5 shrink-0 rounded-full", dot.cls, dot.spinning && "animate-spin")}
@@ -114,18 +105,18 @@ export function SessionCard({
                 color: isSelected ? COLORS.accent : undefined,
               }}
             >
-              {(session.goal ?? session.title).trim()}
+              {session.status !== "running" && session.summary ? session.summary : (session.goal ?? session.title).trim()}
             </span>
           </div>
 
           {/* Bottom row: summary + badges */}
-          <div className="mt-1 flex items-center gap-1.5 pl-[26px] min-w-0">
-            {summary ? (
+          <div className="mt-1 flex items-center gap-1.5 pl-[14px] min-w-0">
+            {secondaryText ? (
               <span
-                className="truncate max-w-[160px]"
+                className="truncate"
                 style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}
               >
-                {summary}
+                {secondaryText}
               </span>
             ) : null}
 
@@ -135,22 +126,6 @@ export function SessionCard({
             >
               {session.laneName}
             </span>
-
-            {session.toolType ? (
-              <span
-                className={cn("px-1 py-0.5 leading-none shrink-0", toolBadgeClass(session.toolType))}
-                style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  fontFamily: MONO_FONT,
-                  textTransform: "uppercase",
-                  letterSpacing: "1px",
-                  borderRadius: 0,
-                }}
-              >
-                {session.toolType}
-              </span>
-            ) : null}
 
             {/* Delta chips for ended sessions */}
             {delta && (delta.insertions > 0 || delta.deletions > 0) ? (

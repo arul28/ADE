@@ -137,6 +137,31 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
+  it("keeps mission active for scoped manual-input interventions", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+
+    const created = service.create({
+      prompt: "Coordinate workers and ask for optional user guidance when needed.",
+      laneId
+    });
+
+    service.update({ missionId: created.id, status: "in_progress" });
+    service.addIntervention({
+      missionId: created.id,
+      interventionType: "manual_input",
+      title: "Clarify API naming",
+      body: "Worker requested optional naming guidance.",
+      pauseMission: false
+    });
+
+    const detail = service.get(created.id);
+    expect(detail?.status).toBe("in_progress");
+    expect(detail?.openInterventions).toBe(1);
+
+    dispose();
+  });
+
   it("creates deterministic planner steps with dependencies and completion criteria", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });

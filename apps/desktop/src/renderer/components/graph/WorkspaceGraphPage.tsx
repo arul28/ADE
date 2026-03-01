@@ -798,6 +798,13 @@ function GraphInner() {
   const [loadingPrs, setLoadingPrs] = React.useState(true);
   const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [autoRebaseByLaneId, setAutoRebaseByLaneId] = React.useState<Record<string, AutoRebaseLaneStatus | null>>({});
+  const syncRefreshInFlightRef = React.useRef(false);
+  const syncRefreshQueuedRef = React.useRef(false);
+  const autoRebaseRefreshInFlightRef = React.useRef(false);
+  const autoRebaseRefreshQueuedRef = React.useRef(false);
+  const activityRefreshInFlightRef = React.useRef(false);
+  const activityRefreshQueuedRef = React.useRef(false);
+  const activityRefreshTimerRef = React.useRef<number | null>(null);
 
   const refreshEnvironmentMappings = React.useCallback(async () => {
     try {
@@ -814,40 +821,70 @@ function GraphInner() {
   }, []);
 
   const refreshLaneSyncStatuses = React.useCallback(async () => {
-    if (lanes.length === 0) {
-      setSyncByLaneId({});
+    if (syncRefreshInFlightRef.current) {
+      syncRefreshQueuedRef.current = true;
       return;
     }
-    const results = await Promise.all(
-      lanes.map(async (lane) => {
-        try {
-          const status = await window.ade.git.getSyncStatus({ laneId: lane.id });
-          return [lane.id, status] as const;
-        } catch {
-          return [lane.id, null] as const;
+    syncRefreshInFlightRef.current = true;
+    try {
+      if (lanes.length === 0) {
+        setSyncByLaneId({});
+        return;
+      }
+      const next: Record<string, GitUpstreamSyncStatus | null> = {};
+      const chunkSize = 4;
+      for (let i = 0; i < lanes.length; i += chunkSize) {
+        const chunk = lanes.slice(i, i + chunkSize);
+        const results = await Promise.all(
+          chunk.map(async (lane) => {
+            try {
+              const status = await window.ade.git.getSyncStatus({ laneId: lane.id });
+              return [lane.id, status] as const;
+            } catch {
+              return [lane.id, null] as const;
+            }
+          })
+        );
+        for (const [laneId, status] of results) {
+          next[laneId] = status;
         }
-      })
-    );
-    const next: Record<string, GitUpstreamSyncStatus | null> = {};
-    for (const [laneId, status] of results) {
-      next[laneId] = status;
+      }
+      setSyncByLaneId(next);
+    } finally {
+      syncRefreshInFlightRef.current = false;
+      if (syncRefreshQueuedRef.current) {
+        syncRefreshQueuedRef.current = false;
+        void refreshLaneSyncStatuses();
+      }
     }
-    setSyncByLaneId(next);
   }, [lanes]);
 
   const refreshAutoRebaseStatuses = React.useCallback(async () => {
-    if (lanes.length === 0) {
-      setAutoRebaseByLaneId({});
+    if (autoRebaseRefreshInFlightRef.current) {
+      autoRebaseRefreshQueuedRef.current = true;
       return;
     }
+    autoRebaseRefreshInFlightRef.current = true;
     try {
-      const statuses = await window.ade.lanes.listAutoRebaseStatuses();
-      const next: Record<string, AutoRebaseLaneStatus | null> = {};
-      for (const lane of lanes) next[lane.id] = null;
-      for (const status of statuses) next[status.laneId] = status;
-      setAutoRebaseByLaneId(next);
-    } catch {
-      setAutoRebaseByLaneId({});
+      if (lanes.length === 0) {
+        setAutoRebaseByLaneId({});
+        return;
+      }
+      try {
+        const statuses = await window.ade.lanes.listAutoRebaseStatuses();
+        const next: Record<string, AutoRebaseLaneStatus | null> = {};
+        for (const lane of lanes) next[lane.id] = null;
+        for (const status of statuses) next[status.laneId] = status;
+        setAutoRebaseByLaneId(next);
+      } catch {
+        setAutoRebaseByLaneId({});
+      }
+    } finally {
+      autoRebaseRefreshInFlightRef.current = false;
+      if (autoRebaseRefreshQueuedRef.current) {
+        autoRebaseRefreshQueuedRef.current = false;
+        void refreshAutoRebaseStatuses();
+      }
     }
   }, [lanes]);
 
@@ -1269,16 +1306,37 @@ function GraphInner() {
     }
   }, []);
 
+  const scheduleRefreshActivity = React.useCallback((delayMs = 700) => {
+    if (activityRefreshTimerRef.current != null) return;
+    activityRefreshTimerRef.current = window.setTimeout(() => {
+      activityRefreshTimerRef.current = null;
+      if (activityRefreshInFlightRef.current) {
+        activityRefreshQueuedRef.current = true;
+        return;
+      }
+      activityRefreshInFlightRef.current = true;
+      void refreshActivity()
+        .catch(() => {})
+        .finally(() => {
+          activityRefreshInFlightRef.current = false;
+          if (activityRefreshQueuedRef.current) {
+            activityRefreshQueuedRef.current = false;
+            scheduleRefreshActivity(220);
+          }
+        });
+    }, delayMs);
+  }, [refreshActivity]);
+
   React.useEffect(() => {
     setLoadingTopology(true);
     void refreshLanes()
       .catch((err) => console.warn("[Graph] refreshLanes failed:", err))
       .finally(() => setLoadingTopology(false));
     void refreshRiskBatch();
-    void refreshActivity();
+    scheduleRefreshActivity(0);
     void refreshLaneSyncStatuses();
     void refreshAutoRebaseStatuses();
-  }, [refreshActivity, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses]);
+  }, [refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, scheduleRefreshActivity]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1467,10 +1525,10 @@ function GraphInner() {
       }
     });
     const unsubPtyData = window.ade.pty.onData(() => {
-      void refreshActivity();
+      scheduleRefreshActivity(650);
     });
     const unsubPtyExit = window.ade.pty.onExit(() => {
-      void refreshActivity();
+      scheduleRefreshActivity(220);
     });
     const unsubAutoRebase = window.ade.lanes.onAutoRebaseEvent((event) => {
       if (event.type !== "auto-rebase-updated") return;
@@ -1480,18 +1538,28 @@ function GraphInner() {
       setAutoRebaseByLaneId(next);
     });
     const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       void refreshLanes().catch((err) => console.warn("[Graph] periodic refreshLanes failed:", err));
-      void refreshActivity();
-    }, 5000);
+      scheduleRefreshActivity(320);
+    }, 12_000);
     const syncInterval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       void refreshLaneSyncStatuses();
       void refreshAutoRebaseStatuses();
-    }, 15000);
+    }, 25_000);
     const onFocus = () => {
       void refreshLaneSyncStatuses();
       void refreshAutoRebaseStatuses();
+      scheduleRefreshActivity(0);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshLaneSyncStatuses();
+      void refreshAutoRebaseStatuses();
+      scheduleRefreshActivity(0);
     };
     window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       unsubConflict();
@@ -1501,11 +1569,15 @@ function GraphInner() {
       window.clearInterval(interval);
       window.clearInterval(syncInterval);
       window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (riskRefreshTimerRef.current != null) {
         window.clearTimeout(riskRefreshTimerRef.current);
       }
+      if (activityRefreshTimerRef.current != null) {
+        window.clearTimeout(activityRefreshTimerRef.current);
+      }
     };
-  }, [refreshActivity, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, lanes]);
+  }, [refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, lanes, scheduleRefreshActivity]);
 
   React.useEffect(() => {
     if (!loadedGraphState) return;

@@ -12,7 +12,7 @@ import {
   resolveModelAlias,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { detectAllAuth, detectCliAuthStatuses, verifyProviderApiKey, type DetectedAuth } from "./authDetector";
+import { detectAllAuth, detectCliAuthStatuses, getCachedCliAuthStatuses, verifyProviderApiKey, type DetectedAuth, type CliAuthStatus } from "./authDetector";
 import { resolveModel } from "./providerResolver";
 import { executeUnified, resumeUnified, type UnifiedExecutorOpts, type UnifiedResumeOpts } from "./unifiedExecutor";
 
@@ -297,7 +297,7 @@ function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: bool
 
 function redactDetectedAuth(
   auth: DetectedAuth[],
-  cliStatuses: ReturnType<typeof detectCliAuthStatuses>,
+  cliStatuses: CliAuthStatus[],
 ): NonNullable<AiIntegrationStatus["detectedAuth"]> {
   const redacted = auth.map((entry) => {
     if (entry.type === "cli-subscription") {
@@ -370,7 +370,7 @@ export function createAiIntegrationService(args: {
   };
 
   const getAvailabilitySync = () => {
-    const statuses = detectCliAuthStatuses();
+    const statuses = getCachedCliAuthStatuses();
     const claude = statuses.find((entry) => entry.cli === "claude");
     const codex = statuses.find((entry) => entry.cli === "codex");
     return {
@@ -444,7 +444,7 @@ export function createAiIntegrationService(args: {
     const budgets = isRecord(aiConfig.budgets) ? aiConfig.budgets : {};
     const entry = isRecord(budgets[feature]) ? (budgets[feature] as Record<string, unknown>) : {};
 
-    const daily = toNumberOrNull(entry.dailyLimit) ?? toNumberOrNull(entry.daily_limit);
+    const daily = toNumberOrNull(entry.dailyLimit);
     if (daily == null || daily <= 0) return null;
     return daily;
   };
@@ -462,6 +462,27 @@ export function createAiIntegrationService(args: {
     );
 
     return Number(row?.count ?? 0);
+  };
+
+  /** Batch version: fetch all feature counts in a single query instead of N individual queries. */
+  const countDailyUsageBatch = (features: AiFeatureKey[]): Map<AiFeatureKey, number> => {
+    const result = new Map<AiFeatureKey, number>();
+    if (!features.length) return result;
+    const placeholders = features.map(() => "?").join(",");
+    const rows = db.all<{ feature: string; count: number }>(
+      `
+        select feature, count(*) as count
+        from ai_usage_log
+        where feature in (${placeholders})
+          and timestamp >= ?
+          and success = 1
+        group by feature
+      `,
+      [...features, startOfDayIso()]
+    );
+    for (const f of features) result.set(f, 0);
+    for (const row of rows) result.set(row.feature as AiFeatureKey, Number(row.count ?? 0));
+    return result;
   };
 
   const checkBudget = (feature: AiFeatureKey): void => {
@@ -659,7 +680,6 @@ export function createAiIntegrationService(args: {
     const timeoutMs =
       toNumberOrNull(args.timeoutMs) ??
       toNumberOrNull(taskOverride.timeoutMs) ??
-      toNumberOrNull(taskOverride.timeout_ms) ??
       defaults.timeoutMs;
 
     const permissions = isRecord(aiConfig.permissions) ? (aiConfig.permissions as Record<string, unknown>) : {};
@@ -669,15 +689,15 @@ export function createAiIntegrationService(args: {
     const permissionMode = (() => {
       if (args.permissionMode) return args.permissionMode;
       if (args.provider === "claude") {
-        return mapClaudePermission(toStringOrNull(claudePermissions.permissionMode) ?? toStringOrNull(claudePermissions.permission_mode));
+        return mapClaudePermission(toStringOrNull(claudePermissions.permissionMode));
       }
       return mapCodexPermission({
-        sandboxPermissions: toStringOrNull(codexPermissions.sandboxPermissions) ?? toStringOrNull(codexPermissions.sandbox_permissions),
-        approvalMode: toStringOrNull(codexPermissions.approvalMode) ?? toStringOrNull(codexPermissions.approval_mode)
+        sandboxPermissions: toStringOrNull(codexPermissions.sandboxPermissions),
+        approvalMode: toStringOrNull(codexPermissions.approvalMode)
       });
     })();
 
-    const codexApprovalModeRaw = toStringOrNull(codexPermissions.approvalMode) ?? toStringOrNull(codexPermissions.approval_mode);
+    const codexApprovalModeRaw = toStringOrNull(codexPermissions.approvalMode);
     const codexApprovalMode =
       codexApprovalModeRaw === "untrusted"
       || codexApprovalModeRaw === "on-request"
@@ -686,9 +706,7 @@ export function createAiIntegrationService(args: {
         ? codexApprovalModeRaw
         : undefined;
 
-    const claudeMaxBudgetUsd =
-      toPositiveNumberOrUndefined(claudePermissions.maxBudgetUsd) ??
-      toPositiveNumberOrUndefined(claudePermissions.max_budget_usd);
+    const claudeMaxBudgetUsd = toPositiveNumberOrUndefined(claudePermissions.maxBudgetUsd);
 
     return {
       cwd: args.cwd,
@@ -707,30 +725,24 @@ export function createAiIntegrationService(args: {
       providerConfig: {
         claude: {
           permissionMode: toStringOrNull(claudePermissions.permissionMode) as ClaudeProviderConfig["permissionMode"],
-          settingSources:
-            parseClaudeSettingSources(claudePermissions.settingSources) ??
-            parseClaudeSettingSources(claudePermissions.settings_sources),
+          settingSources: parseClaudeSettingSources(claudePermissions.settingSources),
           sandbox: claudePermissions.sandbox === true,
           maxBudgetUsd: claudeMaxBudgetUsd
         },
         codex: {
           approvalMode: codexApprovalMode,
           sandboxPermissions:
-            (toStringOrNull(codexPermissions.sandboxPermissions) ?? toStringOrNull(codexPermissions.sandbox_permissions)) as
+            toStringOrNull(codexPermissions.sandboxPermissions) as
               | "read-only"
               | "workspace-write"
               | "danger-full-access"
               | undefined,
           writablePaths: Array.isArray(codexPermissions.writablePaths)
             ? codexPermissions.writablePaths.map((entry) => String(entry))
-            : Array.isArray(codexPermissions.writable_paths)
-              ? codexPermissions.writable_paths.map((entry) => String(entry))
-              : [],
+            : [],
           commandAllowlist: Array.isArray(codexPermissions.commandAllowlist)
             ? codexPermissions.commandAllowlist.map((entry) => String(entry))
-            : Array.isArray(codexPermissions.command_allowlist)
-              ? codexPermissions.command_allowlist.map((entry) => String(entry))
-              : []
+            : []
         }
       }
     };
@@ -919,30 +931,55 @@ export function createAiIntegrationService(args: {
     }
   };
 
+  const MODEL_LIST_CACHE_TTL_MS = 120_000; // 2 minutes
+  const modelListCache = new Map<string, { models: AgentModelDescriptor[]; cachedAt: number }>();
+
   const listModels = async (provider: AgentProvider): Promise<AgentModelDescriptor[]> => {
+    const now = Date.now();
+    const cached = modelListCache.get(provider);
+    if (cached && now - cached.cachedAt < MODEL_LIST_CACHE_TTL_MS) {
+      return cached.models;
+    }
+
     const executor = executors[provider];
     if (!executor.listModels) {
-      return provider === "codex" ? CODEX_FALLBACK_MODELS : [];
+      const fallback = provider === "codex" ? CODEX_FALLBACK_MODELS : [];
+      modelListCache.set(provider, { models: fallback, cachedAt: now });
+      return fallback;
     }
 
     try {
       const models = await executor.listModels();
-      if (models.length) return models;
+      if (models.length) {
+        modelListCache.set(provider, { models, cachedAt: now });
+        return models;
+      }
     } catch {
       // fallback below
     }
 
-    return provider === "codex" ? CODEX_FALLBACK_MODELS : [];
+    const fallback = provider === "codex" ? CODEX_FALLBACK_MODELS : [];
+    modelListCache.set(provider, { models: fallback, cachedAt: now });
+    return fallback;
   };
+
+  const STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
+  let statusCache: { result: AiIntegrationStatus; cachedAt: number } | null = null;
 
   return {
     getMode,
 
     getStatus: async (): Promise<AiIntegrationStatus> => {
+      const now = Date.now();
+      if (statusCache && now - statusCache.cachedAt < STATUS_CACHE_TTL_MS) {
+        return statusCache.result;
+      }
       const auth = await detectAuth();
-      const cliStatuses = detectCliAuthStatuses();
+      // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
+      // populated the cache, so this reads instantly from cache:
+      const cliStatuses = getCachedCliAuthStatuses();
       const availability = toCliAvailability(auth);
-      return {
+      const result: AiIntegrationStatus = {
         mode: getMode(),
         availableProviders: availability,
         models: {
@@ -951,6 +988,8 @@ export function createAiIntegrationService(args: {
         },
         detectedAuth: redactDetectedAuth(auth, cliStatuses),
       };
+      statusCache = { result, cachedAt: Date.now() };
+      return result;
     },
 
     executeTask,
@@ -961,6 +1000,10 @@ export function createAiIntegrationService(args: {
 
     getDailyUsage(feature: AiFeatureKey): number {
       return countDailyUsage(feature);
+    },
+
+    getDailyUsageBatch(features: AiFeatureKey[]): Map<AiFeatureKey, number> {
+      return countDailyUsageBatch(features);
     },
 
     getDailyBudgetLimit,

@@ -15,7 +15,6 @@ import type {
   MissionConcurrencyConfig,
   MissionDashboardSnapshot,
   MissionExecutionPolicy,
-  MissionExecutorPolicy,
   MissionLaneClaimCheckResult,
   MissionPhaseConfiguration,
   MissionPhaseOverride,
@@ -522,11 +521,6 @@ function mergeWithDefaults(partial: Partial<MissionExecutionPolicy>): MissionExe
   };
 }
 
-function normalizeMissionExecutorPolicy(value: unknown): MissionExecutorPolicy {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "codex" || raw === "claude" || raw === "both") return raw;
-  return "both";
-}
 
 function toPlannerAttempt(value: unknown): MissionPlannerAttempt | null {
   if (!isRecord(value)) return null;
@@ -2105,7 +2099,6 @@ export function createMissionService({
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
       const autopilotExecutor = args.autopilotExecutor ?? "codex";
-      const executorPolicy = normalizeMissionExecutorPolicy(args.executorPolicy);
       const allowPlanningQuestions = args.allowPlanningQuestions === true;
       const launchModelRaw = typeof args.orchestratorModel === "string" ? args.orchestratorModel.trim().toLowerCase() : "";
       const launchModel =
@@ -2185,7 +2178,6 @@ export function createMissionService({
           autostart,
           runMode: launchMode,
           autopilotExecutor,
-          executorPolicy,
           allowPlanningQuestions,
           ...(launchModel ? { orchestratorModel: launchModel } : {}),
           ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {}),
@@ -2199,7 +2191,8 @@ export function createMissionService({
         phaseConfiguration: {
           profileId: selectedProfile?.id ?? null,
           phaseKeys: selectedPhases.map((phase) => phase.phaseKey),
-          phaseCount: selectedPhases.length
+          phaseCount: selectedPhases.length,
+          phases: selectedPhases
         },
         planner: plannerRun
           ? {
@@ -2354,7 +2347,6 @@ export function createMissionService({
           plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
           plannerEngineResolved: plannerRun?.resolvedEngine ?? null,
           plannerDegraded: plannerRun?.degraded ?? false,
-          executorPolicy,
           phaseProfileId: selectedProfile?.id ?? null,
           phaseKeys: selectedPhases.map((phase) => phase.phaseKey)
         }
@@ -3091,7 +3083,8 @@ export function createMissionService({
         missionStatus === "plan_review" &&
         intervention.status === "open" &&
         intervention.interventionType === "approval_required";
-      if (!keepPlanReview) {
+      const shouldPauseMission = args.pauseMission !== false;
+      if (!keepPlanReview && shouldPauseMission) {
         upsertMissionStatus({
           missionId,
           nextStatus: "intervention_required",

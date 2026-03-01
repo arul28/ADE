@@ -1,13 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 
-const spawnSyncMock = vi.fn();
+const spawnMock = vi.fn();
 const getAllApiKeysMock = vi.fn();
+
+/** Helper: create a fake ChildProcess that immediately emits close with the given result. */
+function fakeChild(result: { status: number | null; stdout?: string; stderr?: string }) {
+  const child = new EventEmitter() as any;
+  const stdoutEmitter = new EventEmitter();
+  const stderrEmitter = new EventEmitter();
+  child.stdout = stdoutEmitter;
+  child.stderr = stderrEmitter;
+  // Emit data + close on next microtask so the caller can attach listeners first.
+  queueMicrotask(() => {
+    if (result.stdout) stdoutEmitter.emit("data", Buffer.from(result.stdout));
+    if (result.stderr) stderrEmitter.emit("data", Buffer.from(result.stderr));
+    child.emit("close", result.status);
+  });
+  return child;
+}
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
   return {
     ...actual,
-    spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
+    spawn: (...args: unknown[]) => spawnMock(...args),
   };
 });
 
@@ -15,21 +32,24 @@ vi.mock("./apiKeyStore", () => ({
   getAllApiKeys: () => getAllApiKeysMock(),
 }));
 
-import { detectAllAuth, detectCliAuthStatuses, verifyProviderApiKey } from "./authDetector";
+// Import AFTER mocks are set up — must re-import to reset the module-level cache.
+let detectAllAuth: typeof import("./authDetector").detectAllAuth;
+let detectCliAuthStatuses: typeof import("./authDetector").detectCliAuthStatuses;
+let verifyProviderApiKey: typeof import("./authDetector").verifyProviderApiKey;
 
-function spawnResult(args: { status: number | null; stdout?: string; stderr?: string }) {
-  return {
-    status: args.status,
-    stdout: args.stdout ?? "",
-    stderr: args.stderr ?? "",
-  };
-}
+beforeEach(async () => {
+  vi.resetModules();
+  const mod = await import("./authDetector");
+  detectAllAuth = mod.detectAllAuth;
+  detectCliAuthStatuses = mod.detectCliAuthStatuses;
+  verifyProviderApiKey = mod.verifyProviderApiKey;
+});
 
 describe("authDetector", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
-    spawnSyncMock.mockReset();
+    spawnMock.mockReset();
     getAllApiKeysMock.mockReset();
     vi.unstubAllGlobals();
     process.env = { ...originalEnv };
@@ -40,24 +60,24 @@ describe("authDetector", () => {
     vi.unstubAllGlobals();
   });
 
-  it("reports installed-but-unauthenticated CLI providers", () => {
-    spawnSyncMock.mockImplementation((command: string, args: string[] = []) => {
+  it("reports installed-but-unauthenticated CLI providers", async () => {
+    spawnMock.mockImplementation((command: string, args: string[] = []) => {
       if (command === "sh" && args[0] === "-lc") {
         const script = args[1] ?? "";
-        if (script.includes("command -v claude >/dev/null")) return spawnResult({ status: 0 });
-        if (script.includes("command -v codex >/dev/null")) return spawnResult({ status: 1 });
-        if (script.includes("command -v gemini >/dev/null")) return spawnResult({ status: 1 });
+        if (script.includes("command -v claude >/dev/null")) return fakeChild({ status: 0 });
+        if (script.includes("command -v codex >/dev/null")) return fakeChild({ status: 1 });
+        if (script.includes("command -v gemini >/dev/null")) return fakeChild({ status: 1 });
         if (script.trim() === "command -v claude") {
-          return spawnResult({ status: 0, stdout: "/usr/local/bin/claude\n" });
+          return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         }
       }
       if (command === "claude" && args[0] === "auth") {
-        return spawnResult({ status: 1, stderr: "Not logged in. Run `claude auth login`." });
+        return fakeChild({ status: 1, stderr: "Not logged in. Run `claude auth login`." });
       }
-      return spawnResult({ status: 1 });
+      return fakeChild({ status: 1 });
     });
 
-    const statuses = detectCliAuthStatuses();
+    const statuses = await detectCliAuthStatuses();
     const claude = statuses.find((entry) => entry.cli === "claude");
 
     expect(claude).toEqual({
@@ -78,20 +98,20 @@ describe("authDetector", () => {
     process.env.OPENAI_API_KEY = "env-openai";
     process.env.GROQ_API_KEY = "env-groq";
 
-    spawnSyncMock.mockImplementation((command: string, args: string[] = []) => {
+    spawnMock.mockImplementation((command: string, args: string[] = []) => {
       if (command === "sh" && args[0] === "-lc") {
         const script = args[1] ?? "";
-        if (script.includes("command -v claude >/dev/null")) return spawnResult({ status: 0 });
-        if (script.includes("command -v codex >/dev/null")) return spawnResult({ status: 1 });
-        if (script.includes("command -v gemini >/dev/null")) return spawnResult({ status: 1 });
+        if (script.includes("command -v claude >/dev/null")) return fakeChild({ status: 0 });
+        if (script.includes("command -v codex >/dev/null")) return fakeChild({ status: 1 });
+        if (script.includes("command -v gemini >/dev/null")) return fakeChild({ status: 1 });
         if (script.trim() === "command -v claude") {
-          return spawnResult({ status: 0, stdout: "/usr/local/bin/claude\n" });
+          return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         }
       }
       if (command === "claude" && args[0] === "auth") {
-        return spawnResult({ status: 0, stdout: "Authenticated as test-user\n" });
+        return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
       }
-      return spawnResult({ status: 1 });
+      return fakeChild({ status: 1 });
     });
 
     vi.stubGlobal(
@@ -167,24 +187,24 @@ describe("authDetector", () => {
     );
   });
 
-  it("marks unsupported CLI auth checks as unverified", () => {
-    spawnSyncMock.mockImplementation((command: string, args: string[] = []) => {
+  it("marks unsupported CLI auth checks as unverified", async () => {
+    spawnMock.mockImplementation((command: string, args: string[] = []) => {
       if (command === "sh" && args[0] === "-lc") {
         const script = args[1] ?? "";
-        if (script.includes("command -v claude >/dev/null")) return spawnResult({ status: 0 });
-        if (script.includes("command -v codex >/dev/null")) return spawnResult({ status: 1 });
-        if (script.includes("command -v gemini >/dev/null")) return spawnResult({ status: 1 });
+        if (script.includes("command -v claude >/dev/null")) return fakeChild({ status: 0 });
+        if (script.includes("command -v codex >/dev/null")) return fakeChild({ status: 1 });
+        if (script.includes("command -v gemini >/dev/null")) return fakeChild({ status: 1 });
         if (script.trim() === "command -v claude") {
-          return spawnResult({ status: 0, stdout: "/usr/local/bin/claude\n" });
+          return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         }
       }
       if (command === "claude") {
-        return spawnResult({ status: 1, stderr: "unknown command 'auth'" });
+        return fakeChild({ status: 1, stderr: "unknown command 'auth'" });
       }
-      return spawnResult({ status: 1 });
+      return fakeChild({ status: 1 });
     });
 
-    const statuses = detectCliAuthStatuses();
+    const statuses = await detectCliAuthStatuses();
     const claude = statuses.find((entry) => entry.cli === "claude");
     expect(claude?.verified).toBe(false);
     expect(claude?.authenticated).toBe(true);
