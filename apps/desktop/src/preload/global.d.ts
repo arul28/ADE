@@ -494,6 +494,7 @@ declare global {
         onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => () => void;
         listContextPacks: (args?: import("../shared/types").ContextPackListArgs) => Promise<import("../shared/types").ContextPackOption[]>;
         fetchContextPack: (args: import("../shared/types").ContextPackFetchArgs) => Promise<import("../shared/types").ContextPackFetchResult>;
+        changePermissionMode: (args: import("../shared/types").AgentChatChangePermissionModeArgs) => Promise<void>;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;

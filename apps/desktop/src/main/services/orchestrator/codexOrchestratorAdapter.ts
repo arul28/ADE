@@ -1,5 +1,6 @@
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
 import { createBaseOrchestratorAdapter, shellEscapeArg } from "./baseOrchestratorAdapter";
+import { resolveCodexCliModel } from "../ai/claudeModelUtils";
 
 export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
   return createBaseOrchestratorAdapter({
@@ -36,7 +37,7 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
       const commandParts: string[] = [
         "codex",
         "--model",
-        shellEscapeArg(model),
+        shellEscapeArg(resolveCodexCliModel(model)),
         "-a",
         shellEscapeArg(approvalPolicy),
         "-s",

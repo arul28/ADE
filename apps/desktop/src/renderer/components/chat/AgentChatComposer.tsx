@@ -1,15 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { At, Image, Pause, Play, Square, X, Hash } from "@phosphor-icons/react";
+import { At, Image, Pause, Play, Square, X, Hash, ShieldCheck, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
   AgentChatFileRef,
+  AgentChatPermissionMode,
   ContextPackOption
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
-import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
-import { Kbd } from "../ui/Kbd";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 
 const SLASH_COMMANDS = [
@@ -20,6 +18,35 @@ const SLASH_COMMANDS = [
   { command: "/model", label: "Model", description: "Change the model", category: "Settings" },
   { command: "/effort", label: "Effort", description: "Change reasoning effort", category: "Settings" }
 ];
+
+type PermissionOption = {
+  value: AgentChatPermissionMode;
+  label: string;
+};
+
+function getPermissionOptions(opts: {
+  provider: string;
+  isCliWrapped: boolean;
+}): PermissionOption[] {
+  if (opts.provider === "claude" && opts.isCliWrapped) {
+    return [
+      { value: "plan", label: "Plan" },
+      { value: "edit", label: "Edits" },
+      { value: "full-auto", label: "Auto" },
+    ];
+  }
+  if (opts.provider === "codex") {
+    return [
+      { value: "plan", label: "Default" },
+      { value: "full-auto", label: "Auto" },
+    ];
+  }
+  return [
+    { value: "plan", label: "Plan" },
+    { value: "edit", label: "Edit" },
+    { value: "full-auto", label: "Auto" },
+  ];
+}
 
 export function AgentChatComposer({
   modelId,
@@ -33,6 +60,9 @@ export function AgentChatComposer({
   busy,
   selectedContextPacks,
   laneId,
+  permissionMode,
+  sessionProvider,
+  sessionIsCliWrapped,
   onModelChange,
   onReasoningEffortChange,
   onDraftChange,
@@ -43,6 +73,7 @@ export function AgentChatComposer({
   onRemoveAttachment,
   onSearchAttachments,
   onContextPacksChange,
+  onPermissionModeChange,
   onClearEvents
 }: {
   modelId: string;
@@ -60,6 +91,9 @@ export function AgentChatComposer({
   busy: boolean;
   selectedContextPacks: ContextPackOption[];
   laneId?: string;
+  permissionMode?: AgentChatPermissionMode;
+  sessionProvider?: string;
+  sessionIsCliWrapped?: boolean;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onDraftChange: (value: string) => void;
@@ -70,6 +104,7 @@ export function AgentChatComposer({
   onRemoveAttachment: (path: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
   onContextPacksChange: (packs: ContextPackOption[]) => void;
+  onPermissionModeChange?: (mode: AgentChatPermissionMode) => void;
   onClearEvents?: () => void;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
@@ -94,7 +129,6 @@ export function AgentChatComposer({
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
   const reasoningTiers = selectedModel?.reasoningTiers ?? [];
 
-  /* ── Slash command filtering ── */
   const filteredSlashCommands = useMemo(() => {
     if (!slashQuery.length) return SLASH_COMMANDS;
     const q = slashQuery.toLowerCase();
@@ -155,7 +189,7 @@ export function AgentChatComposer({
     };
   }, [attachmentPickerOpen, attachmentQuery, attachedPaths, onSearchAttachments]);
 
-  /* ── Context pack picker: fetch packs on open ── */
+  /* ── Context pack picker ── */
   useEffect(() => {
     if (!contextPickerOpen) {
       setContextCursor(0);
@@ -198,7 +232,6 @@ export function AgentChatComposer({
       onDraftChange(`${cmd.command} ${draft}`);
       return;
     }
-    // For /model, /effort, /help — insert as text
     onDraftChange(`${cmd.command} `);
   };
 
@@ -225,114 +258,99 @@ export function AgentChatComposer({
     );
   };
 
+  const permissionOptions = getPermissionOptions({
+    provider: sessionProvider ?? "unified",
+    isCliWrapped: sessionIsCliWrapped ?? false,
+  });
+
   return (
-    <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 shadow-[0_1px_0_rgba(255,255,255,0.03)]">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <label className="inline-flex items-center gap-1 text-xs text-muted-fg">
-          Model
-          <UnifiedModelSelector
-            value={modelId}
-            onChange={onModelChange}
-            availableModelIds={availableModelIds}
-            showReasoning
-            reasoningEffort={reasoningEffort}
-            onReasoningEffortChange={onReasoningEffortChange}
-          />
-        </label>
-
-        {turnActive ? (
-          <Chip className="bg-accent/20 text-[11px] text-fg/90">
-            <Play size={12} weight="regular" className="mr-1" />
-            Steering active turn
-          </Chip>
-        ) : null}
-
-        <Button
-          size="sm"
-          variant={attachmentPickerOpen ? "primary" : "outline"}
-          className="h-7 px-2 text-[11px]"
-          disabled={!canAttach}
-          onClick={() => {
-            if (!canAttach) return;
-            setAttachmentPickerOpen((open) => !open);
-          }}
-          title={canAttach ? "Attach files to the next message" : "Attachments are disabled while steering"}
-        >
-          <At size={14} weight="regular" />
-          Attach
-        </Button>
-      </div>
-
-      {selectedModel ? (
-        <div className="mb-2 rounded border border-border/30 bg-bg/40 px-2 py-1 text-[11px] text-muted-fg">
-          <span className="inline-block h-2 w-2 rounded-full mr-1" style={{ backgroundColor: selectedModel.color }} />
-          <span className="font-medium text-fg/80">{selectedModel.displayName}</span>
-          <span className="ml-1">{selectedModel.family} &middot; {selectedModel.contextWindow.toLocaleString()} ctx</span>
-          {reasoningEffort && reasoningTiers.length > 0 ? <span className="ml-1">&middot; reasoning: {reasoningEffort}</span> : null}
-        </div>
-      ) : null}
-
+    <div className="border-t border-border/10 bg-gradient-to-b from-surface/60 to-surface/40">
+      {/* ── Pending approval banner ── */}
       {pendingApproval ? (
-        <div className="mb-2 rounded border border-amber-400/35 bg-amber-500/10 px-2 py-1.5 text-[11px]">
-          <div className="font-semibold text-fg/90">Approval pending · {pendingApproval.kind}</div>
-          <div className="mt-0.5 text-fg/80">{pendingApproval.description}</div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-1">
-            <Button size="sm" className="h-6 px-2 text-[11px]" onClick={() => onApproval("accept")}>Accept</Button>
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onApproval("accept_for_session")}>Accept Session</Button>
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onApproval("decline")}>Decline</Button>
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onApproval("cancel")}>Dismiss</Button>
+        <div className="border-b border-amber-500/10 bg-gradient-to-r from-amber-500/[0.05] to-transparent px-4 py-3">
+          <div className="mb-1 flex items-center gap-2">
+            <Lightning size={12} weight="bold" className="text-amber-500" />
+            <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-fg/80">Approval · {pendingApproval.kind}</span>
+          </div>
+          <div className="mb-2.5 text-[12px] text-fg/70">{pendingApproval.description}</div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              className="border border-accent/40 bg-accent/15 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-accent/25"
+              onClick={() => onApproval("accept")}
+            >
+              Accept
+            </button>
+            <button
+              type="button"
+              className="border border-accent/20 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/10"
+              onClick={() => onApproval("accept_for_session")}
+            >
+              Accept All
+            </button>
+            <button
+              type="button"
+              className="border border-border/25 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
+              onClick={() => onApproval("decline")}
+            >
+              Decline
+            </button>
           </div>
         </div>
       ) : null}
 
+      {/* ── Attachments bar ── */}
       {attachments.length ? (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded border border-border/30 bg-bg/40 px-2 py-1.5">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border/12 px-4 py-2">
+          <At size={11} weight="bold" className="text-accent/40" />
           {attachments.map((attachment) => (
-            <Chip key={attachment.path} className="flex items-center gap-1 bg-accent/15 text-[11px] text-fg">
-              {attachment.type === "image" ? <Image size={12} weight="regular" /> : <At size={12} weight="regular" />}
-              <span className="max-w-[220px] truncate">{attachment.path}</span>
+            <span key={attachment.path} className="inline-flex items-center gap-1 border border-accent/15 bg-accent/[0.04] px-2 py-0.5 font-mono text-[10px] text-fg/70">
+              {attachment.type === "image" ? <Image size={10} weight="bold" /> : <At size={10} weight="bold" />}
+              <span className="max-w-[200px] truncate">{attachment.path}</span>
               <button
                 type="button"
-                className="inline-flex items-center rounded p-0.5 text-fg/70 hover:bg-muted/40 hover:text-fg"
+                className="ml-0.5 text-fg/40 transition-colors hover:text-fg/80"
                 title={`Remove ${attachment.path}`}
                 onClick={() => onRemoveAttachment(attachment.path)}
               >
-                <X size={12} weight="regular" />
+                <X size={10} weight="bold" />
               </button>
-            </Chip>
+            </span>
           ))}
         </div>
       ) : null}
 
+      {/* ── Context packs bar ── */}
       {selectedContextPacks.length ? (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded border border-violet-500/20 bg-violet-500/[0.04] px-2 py-1.5">
-          <Hash size={12} weight="regular" className="text-violet-400/60" />
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border/12 px-4 py-2">
+          <Hash size={11} weight="bold" className="text-violet-400/40" />
           {selectedContextPacks.map((pack) => (
-            <Chip key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`} className="flex items-center gap-1 bg-violet-500/15 text-[11px] text-fg/80">
-              <span className="max-w-[200px] truncate">{pack.label}</span>
+            <span key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`} className="inline-flex items-center gap-1 border border-violet-500/15 bg-violet-500/[0.04] px-2 py-0.5 font-mono text-[10px] text-fg/70">
+              <span className="max-w-[180px] truncate">{pack.label}</span>
               <button
                 type="button"
-                className="inline-flex items-center rounded p-0.5 text-muted-fg/70 hover:bg-muted/40 hover:text-fg"
+                className="ml-0.5 text-muted-fg/40 transition-colors hover:text-fg/80"
                 title={`Remove ${pack.label}`}
                 onClick={() => removeContextPack(pack)}
               >
-                <X size={12} weight="regular" />
+                <X size={10} weight="bold" />
               </button>
-            </Chip>
+            </span>
           ))}
         </div>
       ) : null}
 
+      {/* ── Attachment picker dropdown ── */}
       {attachmentPickerOpen ? (
-        <div className="mb-2 rounded border border-border/40 bg-bg/60">
-          <div className="flex items-center gap-2 border-b border-border/30 px-2 py-1.5">
-            <At size={14} weight="regular" className="text-muted-fg" />
+        <div className="border-b border-border/10 bg-surface-recessed/80">
+          <div className="flex items-center gap-2 border-b border-border/10 px-4 py-2">
+            <At size={12} weight="bold" className="text-accent/40" />
             <input
               ref={attachmentInputRef}
               value={attachmentQuery}
               onChange={(event) => setAttachmentQuery(event.target.value)}
-              placeholder="Search files in this lane..."
-              className="h-7 flex-1 rounded border border-border/30 bg-bg/60 px-2 text-xs outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/30"
+              placeholder="Search files..."
+              className="h-6 flex-1 bg-transparent font-mono text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/30"
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
@@ -358,39 +376,40 @@ export function AgentChatComposer({
               }}
             />
           </div>
-          <div className="max-h-44 overflow-auto px-1 py-1">
+          <div className="max-h-40 overflow-auto py-1">
             {!attachmentQuery.trim().length ? (
-              <div className="px-2 py-1.5 text-[11px] text-muted-fg">Type to fuzzy-search files.</div>
+              <div className="px-4 py-2 font-mono text-[10px] text-muted-fg/30">Type to search files...</div>
             ) : attachmentBusy ? (
-              <div className="px-2 py-1.5 text-[11px] text-muted-fg">Searching...</div>
+              <div className="px-4 py-2 font-mono text-[10px] text-muted-fg/30">Searching...</div>
             ) : attachmentResults.length ? (
               attachmentResults.map((result, index) => (
                 <button
                   key={result.path}
                   type="button"
                   className={cn(
-                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] text-fg/90",
-                    index === attachmentCursor ? "bg-accent/20 text-fg" : "hover:bg-border/20"
+                    "flex w-full items-center gap-2 px-4 py-1.5 text-left font-mono text-[10px] text-fg/70",
+                    index === attachmentCursor ? "bg-accent/10 text-fg/90" : "hover:bg-border/8"
                   )}
                   onMouseEnter={() => setAttachmentCursor(index)}
                   onClick={() => selectAttachment(result)}
                 >
-                  {result.type === "image" ? <Image size={14} weight="regular" className="text-accent/80" /> : <At size={14} weight="regular" className="text-muted-fg" />}
+                  {result.type === "image" ? <Image size={12} weight="bold" className="text-accent/50" /> : <At size={12} weight="bold" className="text-muted-fg/30" />}
                   <span className="truncate">{result.path}</span>
                 </button>
               ))
             ) : (
-              <div className="px-2 py-1.5 text-[11px] text-muted-fg">No matching files.</div>
+              <div className="px-4 py-2 font-mono text-[10px] text-muted-fg/30">No matching files.</div>
             )}
           </div>
         </div>
       ) : null}
 
+      {/* ── Main input area ── */}
       <div className="relative">
-        {/* ── Slash command picker ── */}
+        {/* Slash command picker */}
         {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-          <div className="absolute bottom-full left-0 z-10 mb-1 w-72 rounded-lg border border-border/40 bg-bg/95 shadow-lg shadow-black/20 backdrop-blur-sm">
-            <div className="border-b border-border/20 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-fg/60">
+          <div className="absolute bottom-full left-0 z-10 mb-0 w-72 border border-border/15 bg-[#0F0D14]/98 shadow-[0_-8px_32px_-8px_rgba(0,0,0,0.7)]">
+            <div className="border-b border-border/8 px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">
               Commands
             </div>
             <div className="max-h-52 overflow-auto py-1">
@@ -399,25 +418,24 @@ export function AgentChatComposer({
                   key={cmd.command}
                   type="button"
                   className={cn(
-                    "flex w-full items-center gap-3 px-3 py-1.5 text-left text-[11px]",
-                    index === slashCursor ? "bg-accent/20 text-fg" : "text-fg/80 hover:bg-border/15"
+                    "flex w-full items-center gap-3 px-3 py-1.5 text-left font-mono text-[10px]",
+                    index === slashCursor ? "bg-accent/10 text-fg" : "text-fg/60 hover:bg-border/8"
                   )}
                   onMouseEnter={() => setSlashCursor(index)}
                   onClick={() => handleSlashSelect(cmd)}
                 >
-                  <span className="w-16 font-mono text-accent/80">{cmd.command}</span>
-                  <span className="flex-1 text-fg/70">{cmd.description}</span>
-                  <span className="text-[11px] text-muted-fg/50">{cmd.category}</span>
+                  <span className="w-14 text-accent/70">{cmd.command}</span>
+                  <span className="flex-1 text-fg/50">{cmd.description}</span>
                 </button>
               ))}
             </div>
           </div>
         ) : null}
 
-        {/* ── Context pack picker ── */}
+        {/* Context pack picker */}
         {contextPickerOpen ? (
-          <div className="absolute bottom-full left-0 z-10 mb-1 w-80 rounded-lg border border-border/40 bg-bg/95 shadow-lg shadow-black/20 backdrop-blur-sm">
-            <div className="border-b border-border/20 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-fg/60">
+          <div className="absolute bottom-full left-0 z-10 mb-0 w-80 border border-border/15 bg-[#0F0D14]/98 shadow-[0_-8px_32px_-8px_rgba(0,0,0,0.7)]">
+            <div className="border-b border-border/8 px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">
               Context Packs
             </div>
             <div className="max-h-52 overflow-auto py-1">
@@ -431,38 +449,35 @@ export function AgentChatComposer({
                       key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`}
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-3 px-3 py-1.5 text-left text-[11px]",
-                        index === contextCursor ? "bg-accent/20" : "hover:bg-border/15",
-                        !pack.available && "opacity-40"
+                        "flex w-full items-center gap-3 px-3 py-1.5 text-left font-mono text-[10px]",
+                        index === contextCursor ? "bg-accent/10" : "hover:bg-border/8",
+                        !pack.available && "opacity-30"
                       )}
                       disabled={!pack.available}
                       onMouseEnter={() => setContextCursor(index)}
-                      onClick={() => {
-                        toggleContextPack(pack);
-                      }}
+                      onClick={() => toggleContextPack(pack)}
                     >
                       <span className={cn(
-                        "flex h-4 w-4 items-center justify-center rounded border text-[11px]",
-                        isSelected ? "border-violet-400/60 bg-violet-500/20 text-violet-300" : "border-border/40 text-transparent"
+                        "flex h-3.5 w-3.5 items-center justify-center border text-[9px]",
+                        isSelected ? "border-violet-400/50 bg-violet-500/15 text-violet-300" : "border-border/25 text-transparent"
                       )}>
                         {isSelected ? "\u2713" : ""}
                       </span>
                       <div className="flex-1">
-                        <div className="font-medium text-fg/85">{pack.label}</div>
-                        <div className="text-[11px] text-muted-fg/60">{pack.description}</div>
+                        <div className="text-fg/75">{pack.label}</div>
+                        <div className="text-[9px] text-muted-fg/35">{pack.description}</div>
                       </div>
-                      <span className="text-[11px] text-muted-fg/40">{pack.scope}</span>
                     </button>
                   );
                 })
               ) : (
-                <div className="px-3 py-2 text-[11px] text-muted-fg">No context packs available.</div>
+                <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/30">No context packs available.</div>
               )}
             </div>
-            <div className="border-t border-border/20 px-3 py-1.5">
+            <div className="border-t border-border/12 px-3 py-1.5">
               <button
                 type="button"
-                className="text-[11px] text-accent/70 hover:text-accent"
+                className="font-mono text-[10px] text-accent/50 hover:text-accent"
                 onClick={() => setContextPickerOpen(false)}
               >
                 Done
@@ -471,7 +486,8 @@ export function AgentChatComposer({
           </div>
         ) : null}
 
-        <div className="flex items-end gap-2">
+        {/* Textarea + send */}
+        <div className="flex items-end">
           <textarea
             ref={textareaRef}
             value={draft}
@@ -479,26 +495,24 @@ export function AgentChatComposer({
               const val = event.target.value;
               onDraftChange(val);
 
-              // Close slash picker when draft no longer starts with /
               if (slashPickerOpen && !val.startsWith("/")) {
                 setSlashPickerOpen(false);
                 setSlashQuery("");
               }
-              // Update slash query while picker is open
               if (slashPickerOpen && val.startsWith("/")) {
                 setSlashQuery(val.slice(1));
                 setSlashCursor(0);
               }
             }}
             className={cn(
-              "min-h-[64px] flex-1 resize-y rounded border border-border/40 bg-bg/70 px-2 py-1.5 text-xs leading-relaxed",
-              "outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/30"
+              "min-h-[56px] max-h-[200px] flex-1 resize-none bg-transparent px-4 py-3 font-mono text-[12px] leading-[1.6] text-fg/85",
+              "outline-none placeholder:text-muted-fg/25"
             )}
-            placeholder={turnActive ? "Steer the active turn..." : "Ask the AI agent to work in this lane..."}
+            placeholder={turnActive ? "Steer the active turn..." : "Message the agent..."}
             onKeyDown={(event) => {
               const commandModified = event.metaKey || event.ctrlKey;
 
-              /* ── Slash picker keyboard handling ── */
+              /* Slash picker keyboard */
               if (slashPickerOpen) {
                 if (event.key === "Escape") {
                   event.preventDefault();
@@ -534,7 +548,7 @@ export function AgentChatComposer({
                 }
               }
 
-              /* ── Context picker keyboard handling ── */
+              /* Context picker keyboard */
               if (contextPickerOpen) {
                 if (event.key === "Escape") {
                   event.preventDefault();
@@ -561,9 +575,8 @@ export function AgentChatComposer({
                 }
               }
 
-              /* ── Trigger slash picker on / at start of empty draft ── */
+              /* Trigger slash picker */
               if (event.key === "/" && draft.length === 0 && !commandModified && !event.altKey) {
-                // Let the character enter, then open picker on next tick
                 window.setTimeout(() => {
                   setSlashPickerOpen(true);
                   setSlashQuery("");
@@ -572,7 +585,7 @@ export function AgentChatComposer({
                 return;
               }
 
-              /* ── Trigger context pack picker on # ── */
+              /* Trigger context picker */
               if (event.key === "#" && !commandModified && !event.altKey) {
                 event.preventDefault();
                 setContextPickerOpen(true);
@@ -618,63 +631,112 @@ export function AgentChatComposer({
             }}
           />
 
-          {turnActive ? (
-            <Button
-              variant="outline"
-              className="h-9"
-              title="Interrupt active turn"
-              onClick={onInterrupt}
-            >
-              <Square size={14} weight="regular" />
-              Stop
-            </Button>
-          ) : null}
+          <div className="flex items-center gap-1 px-2 pb-3">
+            {turnActive ? (
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center border border-red-500/25 bg-red-500/[0.06] text-red-400/70 transition-colors hover:bg-red-500/15 hover:text-red-400"
+                title="Interrupt (Cmd+.)"
+                onClick={onInterrupt}
+              >
+                <Square size={14} weight="fill" />
+              </button>
+            ) : null}
 
-          <Button className="h-9" disabled={busy || !draft.trim().length} onClick={onSubmit}>
-            {busy ? (
-              <>
-                <Pause size={14} weight="regular" />
-                Sending
-              </>
-            ) : turnActive ? (
-              <>
-                <Play size={14} weight="regular" />
-                Steer
-              </>
-            ) : (
-              <>
-                <Play size={14} weight="regular" />
-                Send
-              </>
-            )}
-          </Button>
+            <button
+              type="button"
+              className={cn(
+                "flex h-8 w-8 items-center justify-center border transition-all",
+                busy || !draft.trim().length
+                  ? "border-border/15 text-muted-fg/20"
+                  : "border-accent/30 bg-accent/10 text-accent hover:bg-accent/20"
+              )}
+              disabled={busy || !draft.trim().length}
+              onClick={onSubmit}
+              title={turnActive ? "Steer" : "Send"}
+            >
+              {busy ? (
+                <Pause size={14} weight="fill" />
+              ) : (
+                <PaperPlaneTilt size={14} weight="fill" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-fg/70">
-        <span className="inline-flex items-center gap-1"><Kbd className="px-1 py-0 text-[9px]">@</Kbd> files</span>
-        <span className="text-border/40">|</span>
-        <span className="inline-flex items-center gap-1"><Kbd className="px-1 py-0 text-[9px]">/</Kbd> commands</span>
-        <span className="text-border/40">|</span>
-        <span className="inline-flex items-center gap-1"><Kbd className="px-1 py-0 text-[9px]">#</Kbd> context</span>
-        <span className="text-border/40">—</span>
-        <span>
-          {sendOnEnter ? (
-            <>
-              <Kbd className="px-1 py-0 text-[9px]">Enter</Kbd> send, <Kbd className="px-1 py-0 text-[9px]">Shift+Enter</Kbd> newline
-            </>
-          ) : (
-            <>
-              <Kbd className="px-1 py-0 text-[9px]">Cmd+Enter</Kbd> send, <Kbd className="px-1 py-0 text-[9px]">Enter</Kbd> newline
-            </>
-          )}
-        </span>
-        {turnActive ? (
-          <>
-            <span className="text-border/40">|</span>
-            <span><Kbd className="px-1 py-0 text-[9px]">Cmd+.</Kbd> interrupt</span>
-          </>
+      {/* ── Toolbar row ── */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/12 px-3 py-1.5">
+        {/* Model selector — compact pill with color dot */}
+        <div className="inline-flex items-center gap-1.5">
+          <span
+            className="inline-block h-1.5 w-1.5 flex-shrink-0"
+            style={{ backgroundColor: selectedModel?.color ?? "#A78BFA" }}
+          />
+          <UnifiedModelSelector
+            value={modelId}
+            onChange={onModelChange}
+            availableModelIds={availableModelIds}
+            showReasoning
+            reasoningEffort={reasoningEffort}
+            onReasoningEffortChange={onReasoningEffortChange}
+          />
+        </div>
+
+        {/* Permission mode */}
+        {permissionMode && onPermissionModeChange ? (
+          <div className="inline-flex border border-border/15">
+            {permissionOptions.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                className={cn(
+                  "px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                  permissionMode === opt.value
+                    ? "bg-accent/15 text-accent"
+                    : "text-muted-fg/30 hover:text-muted-fg/60"
+                )}
+                onClick={() => onPermissionModeChange(opt.value)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         ) : null}
+
+        {/* Quick actions + send hint */}
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            className={cn(
+              "px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider transition-colors",
+              canAttach ? "text-muted-fg/30 hover:text-accent/60" : "text-muted-fg/15"
+            )}
+            disabled={!canAttach}
+            onClick={() => canAttach && setAttachmentPickerOpen((open) => !open)}
+            title="Attach files (@)"
+          >
+            @
+          </button>
+          <button
+            type="button"
+            className="px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-muted-fg/30 transition-colors hover:text-accent/60"
+            onClick={() => setContextPickerOpen((open) => !open)}
+            title="Context packs (#)"
+          >
+            #
+          </button>
+          <span className="text-border/15">|</span>
+          <span className="font-mono text-[9px] text-muted-fg/20">
+            {sendOnEnter ? "⏎ send" : "⌘⏎ send"}
+          </span>
+          {turnActive ? (
+            <>
+              <span className="text-border/15">|</span>
+              <span className="font-mono text-[9px] text-muted-fg/20">⌘. stop</span>
+            </>
+          ) : null}
+        </div>
       </div>
     </div>
   );

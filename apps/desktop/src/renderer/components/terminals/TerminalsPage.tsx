@@ -90,7 +90,7 @@ export function TerminalsPage() {
             onResume={(s) => work.resumeSession(s).catch(() => {})}
             resumingSessionId={work.resumingSessionId}
             onLaunchPty={(laneId, profile) => work.handleLaunchPty(laneId, profile).catch(() => {})}
-            onLaunchChat={(laneId, provider) => work.handleLaunchChat(laneId, provider).catch(() => {})}
+            onLaunchChat={(laneId) => work.handleLaunchChat(laneId).catch(() => {})}
             onInfoClick={handleInfoClick}
             onContextMenu={handleContextMenu}
           />

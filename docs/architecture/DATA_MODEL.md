@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-02
 
 ---
 
@@ -180,7 +180,7 @@ CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status  ON terminal_sessions(st
 Records every terminal session within a lane. `head_sha_start` and `head_sha_end` capture the git HEAD at session creation and termination, enabling diff computation for what changed during the session. `transcript_path` points to the raw terminal output log file. Additional metadata:
 - `tracked`: Whether the session is included in pack generation (default: yes).
 - `goal`: User-provided or inferred session intent description.
-- `tool_type`: Agent tool identifier (e.g., `claude-code`, `cursor`) when the session was spawned by an agent tool.
+- `tool_type`: Session tool identifier (e.g., `shell`, `codex`, `claude`, `codex-chat`, `claude-chat`, `ai-chat`, `cursor`) used for filtering, badges, and lifecycle semantics.
 - `pinned`: Whether the session is pinned for retention.
 - `summary`: Post-session AI-generated or user-provided summary.
 

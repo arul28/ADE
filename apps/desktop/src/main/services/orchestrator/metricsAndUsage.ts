@@ -27,10 +27,12 @@ import type {
   UsageActiveSession,
   UsageMissionBreakdown,
 } from "../../../shared/types";
+import { MODEL_PRICING } from "../../../shared/modelProfiles";
 
 // ── Token Cost Estimation ────────────────────────────────────────
 
-const USAGE_TOKEN_COST: Record<string, { input: number; output: number }> = {
+/** Fuzzy fallback costs — used when exact MODEL_PRICING match is unavailable */
+const FUZZY_TOKEN_COST: Record<string, { input: number; output: number }> = {
   "sonnet": { input: 3, output: 15 },
   "haiku": { input: 0.25, output: 1.25 },
   "opus": { input: 15, output: 75 },
@@ -48,13 +50,21 @@ const USAGE_TOKEN_COST: Record<string, { input: number; output: number }> = {
 };
 
 export function estimateTokenCost(model: string, inputTokens: number, outputTokens: number): number {
+  // 1. Try exact match from MODEL_PRICING (includes dynamic models.dev data)
+  const exact = MODEL_PRICING[model];
+  if (exact) {
+    return (inputTokens * exact.input + outputTokens * exact.output) / 1_000_000;
+  }
+
+  // 2. Fuzzy substring match
   const lower = (model ?? "").toLowerCase();
-  for (const [key, cost] of Object.entries(USAGE_TOKEN_COST)) {
+  for (const [key, cost] of Object.entries(FUZZY_TOKEN_COST)) {
     if (lower.includes(key)) {
       return (inputTokens * cost.input + outputTokens * cost.output) / 1_000_000;
     }
   }
-  // Fallback: sonnet pricing
+
+  // 3. Fallback: sonnet pricing
   return (inputTokens * 3 + outputTokens * 15) / 1_000_000;
 }
 

@@ -57,6 +57,28 @@ export const ShellLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
   </svg>
 );
 
+export const AiChatLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    className={cn("shrink-0", className)}
+  >
+    <rect x="2" y="2" width="20" height="20" rx="6" fill="url(#ai-chat-g)" />
+    <path d="M12 6.5l1.25 3.25L16.5 11l-3.25 1.25L12 15.5l-1.25-3.25L7.5 11l3.25-1.25L12 6.5z" fill="#ECFEFF" />
+    <circle cx="17.75" cy="6.5" r="1.1" fill="#CCFBF1" />
+    <circle cx="6.25" cy="17.5" r="1.1" fill="#99F6E4" />
+    <defs>
+      <linearGradient id="ai-chat-g" x1="12" y1="2" x2="12" y2="22" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#14B8A6" />
+        <stop offset="1" stopColor="#0D9488" />
+      </linearGradient>
+    </defs>
+  </svg>
+);
+
 const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   claude: ClaudeLogo,
   "claude-chat": ClaudeLogo,
@@ -64,6 +86,7 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   codex: CodexLogo,
   "codex-chat": CodexLogo,
   "codex-orchestrated": CodexLogo,
+  "ai-chat": AiChatLogo,
   shell: ShellLogo,
 };
 

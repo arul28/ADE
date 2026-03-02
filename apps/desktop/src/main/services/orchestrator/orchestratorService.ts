@@ -72,7 +72,8 @@ import {
   DEFAULT_ROLE_ISOLATION_RULES
 } from "../../../shared/types";
 import { evaluateRunCompletion, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
-import { createUnifiedOrchestratorAdapter } from "./unifiedOrchestratorAdapter";
+import { createUnifiedOrchestratorAdapter, cleanupMcpConfigFile } from "./unifiedOrchestratorAdapter";
+import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
@@ -3918,7 +3919,12 @@ export function createOrchestratorService({
           const commandParts: string[] = [kind];
           const model = typeof args.step.metadata?.model === "string" ? args.step.metadata.model.trim() : "";
           if (model) {
-            commandParts.push("--model", shellEscapeArg(model));
+            const effectiveModel = kind === "claude"
+              ? resolveClaudeCliModel(model)
+              : kind === "codex"
+                ? resolveCodexCliModel(model)
+                : model;
+            commandParts.push("--model", shellEscapeArg(effectiveModel));
           }
           if (kind === "codex") {
             commandParts.push("--sandbox", requiresPlanApproval ? "read-only" : "workspace-write");
@@ -6454,6 +6460,9 @@ export function createOrchestratorService({
         attemptId: args.attemptId,
         state: status === "failed" ? "released" : "released"
       });
+
+      // Clean up temporary MCP config file for this worker
+      cleanupMcpConfigFile(projectRoot, args.attemptId);
 
       // Sync worker checkpoint file to DB for all completion states
       if (step.laneId) {

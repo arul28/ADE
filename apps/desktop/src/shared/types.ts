@@ -827,7 +827,7 @@ export type ContextOpenDocArgs = {
   path?: string;
 };
 
-export type AgentChatProvider = "codex" | "claude" | (string & {});
+export type AgentChatProvider = "codex" | "claude" | "unified" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 
@@ -923,7 +923,11 @@ export type AgentChatEvent =
       message: string;
       turnId?: string;
       itemId?: string;
-      errorInfo?: string;
+      errorInfo?: string | {
+        category: "auth" | "rate_limit" | "budget" | "network" | "unknown";
+        provider?: string;
+        model?: string;
+      };
     }
   | {
       type: "done";
@@ -939,6 +943,11 @@ export type AgentChatEvent =
       activity: "thinking" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling";
       detail?: string;
       turnId?: string;
+    }
+  | {
+      type: "step_boundary";
+      stepNumber: number;
+      turnId?: string;
     };
 
 export type AgentChatEventEnvelope = {
@@ -947,6 +956,8 @@ export type AgentChatEventEnvelope = {
   event: AgentChatEvent;
 };
 
+export type AgentChatPermissionMode = "plan" | "edit" | "full-auto";
+
 export type AgentChatSession = {
   id: string;
   laneId: string;
@@ -954,6 +965,7 @@ export type AgentChatSession = {
   model: string;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
   status: AgentChatSessionStatus;
   threadId?: string;
   createdAt: string;
@@ -967,6 +979,7 @@ export type AgentChatSessionSummary = {
   model: string;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
   status: AgentChatSessionStatus;
   startedAt: string;
   endedAt: string | null;
@@ -997,6 +1010,7 @@ export type AgentChatCreateArgs = {
   model: string;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
 };
 
 export type AgentChatListArgs = {
@@ -1035,6 +1049,11 @@ export type AgentChatModelsArgs = {
 
 export type AgentChatDisposeArgs = {
   sessionId: string;
+};
+
+export type AgentChatChangePermissionModeArgs = {
+  sessionId: string;
+  permissionMode: AgentChatPermissionMode;
 };
 
 export type ContextPackScope = "project" | "lane" | "conflict" | "plan" | "mission" | "feature";
@@ -1078,6 +1097,7 @@ export type TerminalToolType =
   | "ai-orchestrated"
   | "codex-chat"
   | "claude-chat"
+  | "ai-chat"
   | "cursor"
   | "aider"
   | "continue"
@@ -1831,6 +1851,8 @@ export type AiChatConfig = {
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
+  /** Default permission mode for new unified/API-model chat sessions */
+  unifiedPermissionMode?: "plan" | "edit" | "full-auto";
 };
 export type AiConfig = {
   mode?: ProviderMode;
@@ -1847,6 +1869,8 @@ export type AiConfig = {
   apiKeys?: Record<string, string>;
   workerSafety?: WorkerSafetyPolicy;
   mcpServers?: Record<string, unknown>;
+  /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
+  featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
 };
 
 export type AiIntegrationStatus = {
@@ -2607,7 +2631,10 @@ export type MissionInterventionType =
   | "conflict"
   | "policy_block"
   | "failed_step"
-  | "orchestrator_escalation";
+  | "orchestrator_escalation"
+  | "budget_limit_reached"
+  | "provider_unreachable"
+  | "unrecoverable_error";
 
 export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
 
@@ -4672,7 +4699,7 @@ export type PrDepth =
 
 export type ModelProvider = "claude" | "codex";
 
-export type ThinkingLevel = "none" | "low" | "medium" | "high" | "max";
+export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh";
 
 export type ModelConfig = {
   provider: ModelProvider;
@@ -4680,14 +4707,12 @@ export type ModelConfig = {
   thinkingLevel?: ThinkingLevel;
 };
 
-/** The types of AI calls the orchestrator makes internally */
+/** The types of AI calls the orchestrator makes internally.
+ *  The coordinator handles all decision-making (evaluation, diagnosis,
+ *  plan adjustment, intervention) through its own reasoning — no separate call types needed. */
 export type OrchestratorCallType =
   | "coordinator"
-  | "chat_response"
-  | "worker_evaluation"
-  | "failure_diagnosis"
-  | "plan_adjustment"
-  | "intervention_handling";
+  | "chat_response";
 
 /** Mission-level timeout cap for orchestrator internal AI decision calls. */
 export type OrchestratorDecisionTimeoutCapHours = 6 | 12 | 24 | 48;
@@ -4695,6 +4720,12 @@ export type OrchestratorDecisionTimeoutCapHours = 6 | 12 | 24 | 48;
 /** Per-call-type model configuration for orchestrator intelligence */
 export type OrchestratorIntelligenceConfig = {
   [K in OrchestratorCallType]?: ModelConfig;
+};
+
+/** Per-provider tier ceiling — users set these based on their plan limits */
+export type ProviderBudgetLimits = {
+  fiveHourTokenLimit: number;
+  weeklyTokenLimit: number;
 };
 
 /** Smart token budget configuration */
@@ -4708,6 +4739,14 @@ export type SmartBudgetConfig = {
   currentFiveHourSpendUsd?: number;
   /** Current weekly spend (populated at runtime, not persisted) */
   currentWeeklySpendUsd?: number;
+  /** Per-provider tier ceilings (user-set, keyed by ModelProvider) */
+  providerLimits?: Partial<Record<ModelProvider, ProviderBudgetLimits>>;
+  /** Hard stop: pause mission at this % of 5-hour limit (e.g. 80 = 80%) */
+  fiveHourHardStopPercent?: number;
+  /** Hard stop: pause mission at this % of weekly limit (e.g. 95 = 95%) */
+  weeklyHardStopPercent?: number;
+  /** Hard stop: max API-key spend in USD before pausing */
+  apiKeyMaxSpendUsd?: number;
 };
 
 export type BudgetSteeringAction =
@@ -5586,6 +5625,30 @@ export type MissionWorkerBudgetSnapshot = MissionBudgetScopeSnapshot & {
   phaseName: string;
 };
 
+export type MissionBudgetProviderWindow = {
+  usedTokens: number;
+  limitTokens: number | null;
+  usedPct: number | null;
+  usedCostUsd: number;
+  timeUntilResetMs: number | null;
+};
+
+export type MissionBudgetProviderSnapshot = {
+  provider: string;
+  fiveHour: MissionBudgetProviderWindow;
+  weekly: MissionBudgetProviderWindow;
+};
+
+export type MissionBudgetHardCapStatus = {
+  fiveHourHardStopPercent: number | null;
+  weeklyHardStopPercent: number | null;
+  apiKeyMaxSpendUsd: number | null;
+  apiKeySpentUsd: number;
+  fiveHourTriggered: boolean;
+  weeklyTriggered: boolean;
+  apiKeyTriggered: boolean;
+};
+
 export type MissionBudgetRateLimit = {
   provider: string;
   remainingTokens: number | null;
@@ -5602,6 +5665,8 @@ export type MissionBudgetSnapshot = {
   mission: MissionBudgetScopeSnapshot;
   perPhase: MissionPhaseBudgetSnapshot[];
   perWorker: MissionWorkerBudgetSnapshot[];
+  perProvider: MissionBudgetProviderSnapshot[];
+  hardCaps: MissionBudgetHardCapStatus;
   activeWorkers: number;
   recommendation: string;
   estimatedRemainingCapacity: {

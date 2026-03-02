@@ -18,7 +18,7 @@ if (typeof document !== "undefined" && !document.getElementById(BLINK_KEYFRAME_I
 }
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 function statusDotColor(session: TerminalSessionSummary): string {

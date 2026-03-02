@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type { TerminalSessionSummary, TerminalSessionStatus, TerminalToolType } from "../../../shared/types";
+import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
 
 function isChatToolType(toolType: string | null | undefined): boolean {
@@ -13,6 +14,12 @@ function inferToolFromResumeCommand(command: string): string | null {
   if (n.startsWith("codex ")) return "codex";
   if (n.startsWith("gemini ")) return "gemini";
   return null;
+}
+
+function resolveModelDescriptor(modelIdOrAlias: string | null | undefined) {
+  const raw = String(modelIdOrAlias ?? "").trim();
+  if (!raw.length) return null;
+  return getModelById(raw) ?? resolveModelAlias(raw);
 }
 
 export function useWorkSessions() {
@@ -323,22 +330,57 @@ export function useWorkSessions() {
   const handleLaunchChat = useCallback(
     async (laneId: string, modelIdOrProvider?: string) => {
       // Accept either a model ID (e.g. "anthropic/claude-sonnet-4-6") or legacy provider ("claude"/"codex")
-      let provider: "claude" | "codex" = "claude";
-      let model = "sonnet";
+      let provider: "claude" | "codex" | "unified" = "codex";
+      let model = "gpt-5.3-codex";
       let modelId: string | undefined;
+
+      const applyDescriptor = (raw: string | null | undefined): boolean => {
+        const descriptor = resolveModelDescriptor(raw);
+        if (!descriptor) return false;
+        modelId = descriptor.id;
+        if (descriptor.isCliWrapped) {
+          provider = descriptor.family === "openai" ? "codex" : "claude";
+          model = descriptor.shortId;
+        } else {
+          provider = "unified";
+          model = descriptor.id;
+        }
+        return true;
+      };
+
       if (modelIdOrProvider === "codex") {
-        provider = "codex";
-        model = "gpt-5.3-codex";
-        modelId = "openai/gpt-5.3-codex";
+        applyDescriptor("openai/gpt-5.3-codex");
       } else if (modelIdOrProvider === "claude") {
-        provider = "claude";
-        model = "sonnet";
-        modelId = "anthropic/claude-sonnet-4-6";
-      } else if (modelIdOrProvider && modelIdOrProvider.includes("/")) {
-        modelId = modelIdOrProvider;
-        // Derive provider from model family prefix
-        provider = modelIdOrProvider.startsWith("openai/") ? "codex" : "claude";
-        model = modelIdOrProvider.split("/").pop() ?? model;
+        applyDescriptor("anthropic/claude-sonnet-4-6");
+      } else if (modelIdOrProvider && modelIdOrProvider.trim().length) {
+        applyDescriptor(modelIdOrProvider);
+      } else {
+        // No explicit model/provider: choose a runnable default from live availability.
+        try {
+          const status = await window.ade.ai.getStatus();
+          const detectedLocal = (status.detectedAuth ?? [])
+            .find((entry) => entry.type === "local" && (entry.provider === "lmstudio" || entry.provider === "ollama" || entry.provider === "vllm"));
+          if (detectedLocal) {
+            const localModelId = detectedLocal.provider === "ollama" ? "ollama/llama-3.3" : `${detectedLocal.provider}/auto`;
+            applyDescriptor(localModelId);
+          } else if (status.availableProviders.codex) {
+            const codexId = status.models.codex?.[0]?.id ?? "openai/gpt-5.3-codex";
+            applyDescriptor(codexId) || applyDescriptor("openai/gpt-5.3-codex");
+          } else if (status.availableProviders.claude) {
+            const claudeId = status.models.claude?.[0]?.id ?? "anthropic/claude-sonnet-4-6";
+            applyDescriptor(claudeId) || applyDescriptor("anthropic/claude-sonnet-4-6");
+          }
+        } catch {
+          // Fallback defaults below.
+        }
+
+        if (!modelId) {
+          applyDescriptor("openai/gpt-5.3-codex") || applyDescriptor("anthropic/claude-sonnet-4-6");
+        }
+      }
+
+      if (!modelId) {
+        throw new Error("No configured chat model is available. Configure Codex/Claude or a local/API model in Settings.");
       }
       const session = await window.ade.agentChat.create({ laneId, provider, model, modelId });
       selectLane(laneId);

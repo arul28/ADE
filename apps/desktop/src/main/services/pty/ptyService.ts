@@ -104,6 +104,7 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "codex-orchestrated",
     "codex-chat",
     "claude-chat",
+    "ai-chat",
     "cursor",
     "aider",
     "continue",

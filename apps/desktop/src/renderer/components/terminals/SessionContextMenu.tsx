@@ -2,7 +2,7 @@ import React from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 export type SessionContextMenuState = {

@@ -69,7 +69,7 @@ describe("AgentChatComposer", () => {
   it("sends message on Enter when send-on-Enter is enabled", () => {
     const { onSubmit } = renderComposer({ sendOnEnter: true, draft: "send me" });
 
-    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Message the agent...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -78,7 +78,7 @@ describe("AgentChatComposer", () => {
   it("sends message on Cmd/Ctrl+Enter when send-on-Enter is disabled", () => {
     const { onSubmit } = renderComposer({ sendOnEnter: false, draft: "send me" });
 
-    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Message the agent...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
@@ -88,19 +88,22 @@ describe("AgentChatComposer", () => {
   it("shows steer mode and interrupt controls when turn is active", () => {
     renderComposer({ turnActive: true, draft: "steer" });
 
-    expect(screen.getByText("Steering active turn")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Steer" })).toBeTruthy();
+    // Steer mode uses a different placeholder
+    expect(screen.getByPlaceholderText("Steer the active turn...")).toBeTruthy();
+    // Interrupt button has title="Interrupt (Cmd+.)"
+    expect(screen.getByTitle("Interrupt (Cmd+.)")).toBeTruthy();
+    // Send button shows "Steer" title when turn is active
+    expect(screen.getByTitle("Steer")).toBeTruthy();
   });
 
   it("opens @ attachment picker when @ key is pressed", async () => {
     renderComposer();
 
-    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Message the agent...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "@", shiftKey: true, code: "Digit2" });
 
     await waitFor(() => {
-      expect(screen.getByPlaceholderText("Search files in this lane...")).toBeTruthy();
+      expect(screen.getByPlaceholderText("Search files...")).toBeTruthy();
     });
   });
 
@@ -140,7 +143,7 @@ describe("AgentChatComposer", () => {
   it("opens slash picker when / is typed at start of empty draft", async () => {
     const { onDraftChange } = renderComposer({ draft: "" });
 
-    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Message the agent...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "/" });
 
     await waitFor(() => {
@@ -151,18 +154,19 @@ describe("AgentChatComposer", () => {
   it("opens context picker when # is typed", () => {
     renderComposer({ draft: "" });
 
-    const textarea = screen.getByPlaceholderText("Ask the AI agent to work in this lane...") as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText("Message the agent...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "#" });
 
     expect(screen.getByText("Context Packs")).toBeTruthy();
   });
 
-  it("renders key legend with @, /, # shortcut hints", () => {
+  it("renders key legend with @, # quick actions and send hint", () => {
     renderComposer();
 
-    expect(screen.getByText("files")).toBeTruthy();
-    expect(screen.getByText("commands")).toBeTruthy();
-    expect(screen.getByText("context")).toBeTruthy();
+    // Toolbar has @ and # quick-action buttons and a send hint
+    expect(screen.getByTitle("Attach files (@)")).toBeTruthy();
+    expect(screen.getByTitle("Context packs (#)")).toBeTruthy();
+    expect(screen.getByText("⏎ send")).toBeTruthy();
   });
 
   it("switches model and reasoning effort from dropdowns", () => {

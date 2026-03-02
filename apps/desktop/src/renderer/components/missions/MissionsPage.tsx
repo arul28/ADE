@@ -36,6 +36,9 @@ import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react"
 import type {
   MissionDetail,
   MissionExecutionPolicy,
+  PlanningPhaseMode,
+  TestingPhaseMode,
+  GatePhaseMode,
   MissionPriority,
   MissionStatus,
   MissionSummary,
@@ -81,7 +84,6 @@ import { CompletionBanner } from "./CompletionBanner";
 import { PhaseProgressBar } from "./PhaseProgressBar";
 import { MissionPolicyBadge } from "./MissionPolicyBadge";
 import { UsageDashboard } from "./UsageDashboard";
-import { AgentChannels } from "./AgentChannels";
 import { MissionChatV2 } from "./MissionChatV2";
 import { MissionControlPage } from "./MissionControlPage";
 import { ModelProfileSelector } from "./ModelProfileSelector";
@@ -1591,8 +1593,10 @@ function CreateMissionDialogInner({
   const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({});
   const [disabledPhases, setDisabledPhases] = useState<Record<string, boolean>>({});
   const [availableModelIds, setAvailableModelIds] = useState<string[] | undefined>(undefined);
+  const [policyExpanded, setPolicyExpanded] = useState(false);
   const [aiDetectedAuth, setAiDetectedAuth] = useState<import("../../../shared/types").AiDetectedAuth[] | null>(null);
   const [currentUsage, setCurrentUsage] = useState<AggregatedUsageStats | null>(null);
+  const [weeklyUsage, setWeeklyUsage] = useState<AggregatedUsageStats | null>(null);
   const [launchStage, setLaunchStage] = useState<"config" | "preflight">("config");
   const [preflightRunning, setPreflightRunning] = useState(false);
   const [preflightResult, setPreflightResult] = useState<MissionPreflightResult | null>(null);
@@ -1616,6 +1620,7 @@ function CreateMissionDialogInner({
     setPhaseError(null);
     setExpandedPhases({});
     setDisabledPhases({});
+    setPolicyExpanded(false);
     setLaunchStage("config");
     setPreflightRunning(false);
     setPreflightResult(null);
@@ -1705,6 +1710,13 @@ function CreateMissionDialogInner({
         if (!cancelled) setCurrentUsage(stats);
       }).catch(() => {
         if (!cancelled) setCurrentUsage(null);
+      });
+
+      const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      void window.ade.orchestrator.getAggregatedUsage({ since: oneWeekAgo }).then((stats) => {
+        if (!cancelled) setWeeklyUsage(stats);
+      }).catch(() => {
+        if (!cancelled) setWeeklyUsage(null);
       });
     });
 
@@ -1893,18 +1905,59 @@ function CreateMissionDialogInner({
               <Robot size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
               ORCHESTRATOR MODEL
             </span>
-            <ModelSelector
-              value={draft.modelConfig.orchestratorModel}
-              onChange={(config) => {
-                setSelectedProfileId("custom");
-                setDraft((p) => ({
-                  ...p,
-                  modelConfig: { ...p.modelConfig, profileId: undefined, orchestratorModel: config },
-                }));
-              }}
-              showRecommendedBadge
-              availableModelIds={availableModelIds}
-            />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <ModelSelector
+                  value={draft.modelConfig.orchestratorModel}
+                  onChange={(config) => {
+                    setSelectedProfileId("custom");
+                    setDraft((p) => ({
+                      ...p,
+                      modelConfig: { ...p.modelConfig, profileId: undefined, orchestratorModel: config },
+                    }));
+                  }}
+                  showRecommendedBadge
+                  availableModelIds={availableModelIds}
+                />
+              </div>
+              {/* Provider status dots */}
+              {aiDetectedAuth && (
+                <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
+                  {(() => {
+                    const providers = new Map<string, boolean>();
+                    for (const a of aiDetectedAuth) {
+                      const label = a.cli ?? a.provider ?? a.type;
+                      if (label && !providers.has(label)) {
+                        providers.set(label, !!a.authenticated);
+                      }
+                    }
+                    return Array.from(providers.entries()).map(([label, authed]) => (
+                      <span
+                        key={label}
+                        title={`${label}: ${authed ? "authenticated" : "not detected"}`}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 3,
+                          fontSize: 9,
+                          fontFamily: MONO_FONT,
+                          color: authed ? COLORS.success : COLORS.danger,
+                        }}
+                      >
+                        <span style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: 3,
+                          background: authed ? COLORS.success : COLORS.danger,
+                          display: "inline-block",
+                        }} />
+                        {label}
+                      </span>
+                    ));
+                  })()}
+                </div>
+              )}
+            </div>
           </div>
 
           <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
@@ -2146,7 +2199,7 @@ function CreateMissionDialogInner({
                       <option value="">Select profile</option>
                       {phaseProfiles.map((profile) => (
                         <option key={profile.id} value={profile.id}>
-                          {profile.isBuiltIn ? "\u25CF " : ""}{profile.name}
+                          {profile.isBuiltIn ? "\u25CF " : ""}{profile.name}{profile.description ? ` — ${profile.description}` : ""}
                         </option>
                       ))}
                     </select>
@@ -2273,8 +2326,16 @@ function CreateMissionDialogInner({
                             <div className="min-w-0 flex-1">
                               <div className="truncate text-[11px] font-semibold" style={{ color: isDisabled ? COLORS.textDim : COLORS.textPrimary }}>
                                 {phase.name}
+                                {phase.isCustom ? (
+                                  <span style={{ fontSize: 9, fontWeight: 600, color: "#F59E0B", marginLeft: 4, fontFamily: MONO_FONT }}>CUSTOM</span>
+                                ) : null}
                                 {isDisabled ? <span style={{ color: COLORS.textDim, fontWeight: 400 }}> (disabled)</span> : null}
                               </div>
+                              {phase.description ? (
+                                <div className="truncate text-[10px]" style={{ color: COLORS.textDim }}>
+                                  {phase.description}
+                                </div>
+                              ) : null}
                               <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                                 {phase.model.modelId} · {phase.validationGate.tier}
                               </div>
@@ -2394,6 +2455,24 @@ function CreateMissionDialogInner({
                                 </div>
                               </div>
                               <label className="space-y-1 text-[10px]">
+                                <span style={dlgLabelStyle}>DESCRIPTION</span>
+                                <input
+                                  value={phase.description}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    setDraft((prev) => ({
+                                      ...prev,
+                                      phaseOverride: prev.phaseOverride.map((entry) =>
+                                        entry.id === phase.id ? { ...entry, description: value } : entry
+                                      )
+                                    }));
+                                  }}
+                                  placeholder="Brief description of what this phase does"
+                                  className="h-7 w-full px-2 outline-none"
+                                  style={dlgInputStyle}
+                                />
+                              </label>
+                              <label className="space-y-1 text-[10px]">
                                 <span style={dlgLabelStyle}>INSTRUCTIONS</span>
                                 <textarea
                                   value={phase.instructions}
@@ -2411,6 +2490,72 @@ function CreateMissionDialogInner({
                                   style={dlgInputStyle}
                                 />
                               </label>
+
+                              {/* Per-phase budget removed — the coordinator manages budget allocation
+                                 dynamically across phases using the mission-level budget. Users can
+                                 guide allocation via phase instructions instead. */}
+
+                              {/* Validation gate fields */}
+                              <div className="space-y-1">
+                                <span style={dlgLabelStyle}>VALIDATION GATE</span>
+                                <div className="flex items-center gap-3">
+                                  <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                    <span style={{ fontSize: 9 }}>Tier</span>
+                                    <select
+                                      value={phase.validationGate.tier}
+                                      onChange={(e) => {
+                                        const tier = e.target.value as import("../../../shared/types").MissionPhaseValidationTier;
+                                        setDraft((prev) => ({
+                                          ...prev,
+                                          phaseOverride: prev.phaseOverride.map((entry) =>
+                                            entry.id === phase.id ? { ...entry, validationGate: { ...entry.validationGate, tier } } : entry
+                                          )
+                                        }));
+                                      }}
+                                      className="h-6 px-1 outline-none"
+                                      style={{ ...dlgInputStyle, width: "auto", minWidth: 90 }}
+                                    >
+                                      <option value="none">None</option>
+                                      <option value="self">Self</option>
+                                      <option value="spot-check">Spot-check</option>
+                                      <option value="dedicated">Dedicated</option>
+                                    </select>
+                                  </label>
+                                  <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={phase.validationGate.required}
+                                      onChange={(e) => {
+                                        const required = e.target.checked;
+                                        setDraft((prev) => ({
+                                          ...prev,
+                                          phaseOverride: prev.phaseOverride.map((entry) =>
+                                            entry.id === phase.id ? { ...entry, validationGate: { ...entry.validationGate, required } } : entry
+                                          )
+                                        }));
+                                      }}
+                                    />
+                                    Required
+                                  </label>
+                                </div>
+                                {phase.validationGate.tier !== "none" && (
+                                  <input
+                                    value={phase.validationGate.criteria ?? ""}
+                                    onChange={(e) => {
+                                      const criteria = e.target.value || undefined;
+                                      setDraft((prev) => ({
+                                        ...prev,
+                                        phaseOverride: prev.phaseOverride.map((entry) =>
+                                          entry.id === phase.id ? { ...entry, validationGate: { ...entry.validationGate, criteria } } : entry
+                                        )
+                                      }));
+                                    }}
+                                    placeholder="Validation criteria (e.g. all tests pass, no lint errors)"
+                                    className="h-6 w-full px-2 outline-none text-[10px]"
+                                    style={dlgInputStyle}
+                                  />
+                                )}
+                              </div>
                             </div>
                           ) : null}
                         </div>
@@ -2437,7 +2582,7 @@ function CreateMissionDialogInner({
                   }))}
                   currentSpend={currentUsage ? {
                     fiveHourUsd: currentUsage.summary.totalCostEstimateUsd,
-                    weeklyUsd: currentUsage.summary.totalCostEstimateUsd, // 5hr window data used for both until weekly is wired
+                    weeklyUsd: weeklyUsage?.summary.totalCostEstimateUsd ?? currentUsage.summary.totalCostEstimateUsd,
                   } : null}
                   modelUsage={currentUsage?.byModel?.length ? Object.fromEntries(
                     currentUsage.byModel.map((m) => [m.model, {
@@ -2450,7 +2595,142 @@ function CreateMissionDialogInner({
                   billingContext={billingContext}
                 />
 
-                {/* f. Allow completion with risk */}
+                {/* f. Execution Policy */}
+                <div className="space-y-1">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 w-full text-left"
+                    onClick={() => setPolicyExpanded((v) => !v)}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                  >
+                    <CaretDown
+                      size={10}
+                      weight="bold"
+                      style={{
+                        color: COLORS.textMuted,
+                        transform: policyExpanded ? "rotate(0deg)" : "rotate(-90deg)",
+                        transition: "transform 0.15s ease",
+                      }}
+                    />
+                    <span style={dlgLabelStyle}>
+                      <Shield size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+                      EXECUTION POLICY
+                    </span>
+                  </button>
+                  {policyExpanded && (
+                    <div
+                      className="space-y-2 p-2"
+                      style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}
+                    >
+                      {/* Planning Mode */}
+                      <label className="flex items-center justify-between gap-2">
+                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>PLANNING</span>
+                        <select
+                          value={draft.executionPolicy.planning.mode}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            executionPolicy: {
+                              ...p.executionPolicy,
+                              planning: { ...p.executionPolicy.planning, mode: e.target.value as PlanningPhaseMode }
+                            }
+                          }))}
+                          className="h-7 w-40 px-2 text-[11px] outline-none"
+                          style={dlgInputStyle}
+                        >
+                          <option value="auto">Auto</option>
+                          <option value="off">Off</option>
+                          <option value="manual_review">Manual Review</option>
+                        </select>
+                      </label>
+
+                      {/* Testing Mode */}
+                      <label className="flex items-center justify-between gap-2">
+                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>TESTING</span>
+                        <select
+                          value={draft.executionPolicy.testing.mode}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            executionPolicy: {
+                              ...p.executionPolicy,
+                              testing: { ...p.executionPolicy.testing, mode: e.target.value as TestingPhaseMode }
+                            }
+                          }))}
+                          className="h-7 w-40 px-2 text-[11px] outline-none"
+                          style={dlgInputStyle}
+                        >
+                          <option value="post_implementation">Post-Implementation</option>
+                          <option value="tdd">TDD</option>
+                          <option value="none">None</option>
+                        </select>
+                      </label>
+
+                      {/* Validation Mode */}
+                      <label className="flex items-center justify-between gap-2">
+                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>VALIDATION</span>
+                        <select
+                          value={draft.executionPolicy.validation.mode}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            executionPolicy: {
+                              ...p.executionPolicy,
+                              validation: { ...p.executionPolicy.validation, mode: e.target.value as GatePhaseMode }
+                            }
+                          }))}
+                          className="h-7 w-40 px-2 text-[11px] outline-none"
+                          style={dlgInputStyle}
+                        >
+                          <option value="optional">Optional</option>
+                          <option value="required">Required</option>
+                          <option value="off">Off</option>
+                        </select>
+                      </label>
+
+                      {/* Code Review Mode */}
+                      <label className="flex items-center justify-between gap-2">
+                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>CODE REVIEW</span>
+                        <select
+                          value={draft.executionPolicy.codeReview.mode}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            executionPolicy: {
+                              ...p.executionPolicy,
+                              codeReview: { ...p.executionPolicy.codeReview, mode: e.target.value as GatePhaseMode }
+                            }
+                          }))}
+                          className="h-7 w-40 px-2 text-[11px] outline-none"
+                          style={dlgInputStyle}
+                        >
+                          <option value="off">Off</option>
+                          <option value="optional">Optional</option>
+                          <option value="required">Required</option>
+                        </select>
+                      </label>
+
+                      {/* Test Review Mode */}
+                      <label className="flex items-center justify-between gap-2">
+                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>TEST REVIEW</span>
+                        <select
+                          value={draft.executionPolicy.testReview.mode}
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            executionPolicy: {
+                              ...p.executionPolicy,
+                              testReview: { ...p.executionPolicy.testReview, mode: e.target.value as GatePhaseMode }
+                            }
+                          }))}
+                          className="h-7 w-40 px-2 text-[11px] outline-none"
+                          style={dlgInputStyle}
+                        >
+                          <option value="optional">Optional</option>
+                          <option value="required">Required</option>
+                          <option value="off">Off</option>
+                        </select>
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                {/* g. Allow completion with risk */}
                 <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                   <input
                     type="checkbox"
@@ -2707,6 +2987,293 @@ function CreateMissionDialogInner({
 }
 
 const CreateMissionDialog = React.memo(CreateMissionDialogInner);
+
+/* ════════════════════ PHASE PROFILE CARD (Settings) ════════════════════ */
+
+function PhaseProfileCard({
+  profile,
+  phaseBusy,
+  setPhaseBusy,
+  setPhaseNotice,
+  setPhaseError,
+  refreshPhaseProfiles,
+}: {
+  profile: PhaseProfile;
+  phaseBusy: boolean;
+  setPhaseBusy: (v: boolean) => void;
+  setPhaseNotice: (v: string | null) => void;
+  setPhaseError: (v: string | null) => void;
+  refreshPhaseProfiles: () => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [editName, setEditName] = useState(profile.name);
+  const [editDescription, setEditDescription] = useState(profile.description);
+  const [editPhases, setEditPhases] = useState<PhaseCard[]>(profile.phases);
+  const [dirty, setDirty] = useState(false);
+
+  const settingsInputStyle: React.CSSProperties = { height: 28, width: "100%", background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, padding: "0 8px", fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0, outline: "none" };
+  const settingsLabelStyle: React.CSSProperties = { fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
+
+  return (
+    <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-semibold" style={{ color: COLORS.textPrimary }}>
+            {profile.isBuiltIn ? <span style={{ color: COLORS.accent, marginRight: 4 }}>{"\u25CF"}</span> : null}
+            {profile.name}
+            {profile.isDefault ? <span style={{ fontSize: 9, fontWeight: 600, color: "#22C55E", marginLeft: 4, fontFamily: MONO_FONT }}>DEFAULT</span> : null}
+          </div>
+          <div className="truncate text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+            {profile.description || profile.phases.map((phase) => phase.name).join(" \u2192 ")}
+          </div>
+          <div className="text-[9px] mt-0.5" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+            {profile.phases.length} phase{profile.phases.length !== 1 ? "s" : ""} · {profile.isBuiltIn ? "Built-in" : "Custom"}
+          </div>
+        </div>
+        {!profile.isBuiltIn && (
+          <button
+            style={outlineButton()}
+            disabled={phaseBusy}
+            onClick={() => {
+              if (!expanded) {
+                setEditName(profile.name);
+                setEditDescription(profile.description);
+                setEditPhases(profile.phases);
+                setDirty(false);
+              }
+              setExpanded(!expanded);
+            }}
+          >
+            {expanded ? "HIDE" : "EDIT"}
+          </button>
+        )}
+        <button
+          style={outlineButton()}
+          disabled={phaseBusy}
+          onClick={async () => {
+            setPhaseBusy(true);
+            try {
+              await window.ade.missions.clonePhaseProfile({ profileId: profile.id });
+              await refreshPhaseProfiles();
+              setPhaseNotice("Profile cloned.");
+            } catch (err) {
+              setPhaseError(err instanceof Error ? err.message : String(err));
+            } finally {
+              setPhaseBusy(false);
+            }
+          }}
+        >
+          CLONE
+        </button>
+        <button
+          style={outlineButton()}
+          disabled={phaseBusy}
+          onClick={async () => {
+            setPhaseBusy(true);
+            try {
+              const exported = await window.ade.missions.exportPhaseProfile({ profileId: profile.id });
+              setPhaseNotice(exported.savedPath ? `Exported: ${exported.savedPath}` : "Profile exported.");
+            } catch (err) {
+              setPhaseError(err instanceof Error ? err.message : String(err));
+            } finally {
+              setPhaseBusy(false);
+            }
+          }}
+        >
+          EXPORT
+        </button>
+        {!profile.isBuiltIn ? (
+          <button
+            style={dangerButton()}
+            disabled={phaseBusy}
+            onClick={async () => {
+              if (!window.confirm(`Delete phase profile "${profile.name}"?`)) return;
+              setPhaseBusy(true);
+              try {
+                await window.ade.missions.deletePhaseProfile({ profileId: profile.id });
+                await refreshPhaseProfiles();
+                setPhaseNotice("Profile deleted.");
+              } catch (err) {
+                setPhaseError(err instanceof Error ? err.message : String(err));
+              } finally {
+                setPhaseBusy(false);
+              }
+            }}
+          >
+            DELETE
+          </button>
+        ) : null}
+      </div>
+
+      {expanded && !profile.isBuiltIn && (
+        <div className="mt-3 space-y-3 pt-2" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <label className="space-y-0.5">
+              <span style={settingsLabelStyle}>PROFILE NAME</span>
+              <input
+                value={editName}
+                onChange={(e) => { setEditName(e.target.value); setDirty(true); }}
+                style={settingsInputStyle}
+              />
+            </label>
+            <label className="space-y-0.5">
+              <span style={settingsLabelStyle}>DESCRIPTION</span>
+              <input
+                value={editDescription}
+                onChange={(e) => { setEditDescription(e.target.value); setDirty(true); }}
+                placeholder="Describe this profile"
+                style={settingsInputStyle}
+              />
+            </label>
+          </div>
+
+          <div className="space-y-1">
+            <span style={settingsLabelStyle}>PHASES ({editPhases.length})</span>
+            {editPhases.map((phase, idx) => (
+              <div key={phase.id} className="flex items-center gap-2 py-1 px-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                <span className="text-[10px] font-bold" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, minWidth: 16 }}>{idx + 1}.</span>
+                <input
+                  value={phase.name}
+                  onChange={(e) => {
+                    const name = e.target.value;
+                    setEditPhases((prev) => prev.map((p) => p.id === phase.id ? { ...p, name } : p));
+                    setDirty(true);
+                  }}
+                  className="h-6 flex-1 px-1 text-[11px] outline-none"
+                  style={{ background: "transparent", border: "none", color: COLORS.textPrimary, fontFamily: MONO_FONT }}
+                />
+                <span className="text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>{phase.model.modelId}</span>
+                <button
+                  type="button"
+                  className="px-1 text-[10px]"
+                  style={{ color: COLORS.textMuted }}
+                  disabled={idx === 0}
+                  onClick={() => {
+                    setEditPhases((prev) => {
+                      const next = [...prev];
+                      const moved = next[idx]!;
+                      next.splice(idx, 1);
+                      next.splice(idx - 1, 0, moved);
+                      return next.map((p, i) => ({ ...p, position: i }));
+                    });
+                    setDirty(true);
+                  }}
+                >
+                  {"\u2191"}
+                </button>
+                <button
+                  type="button"
+                  className="px-1 text-[10px]"
+                  style={{ color: COLORS.textMuted }}
+                  disabled={idx === editPhases.length - 1}
+                  onClick={() => {
+                    setEditPhases((prev) => {
+                      const next = [...prev];
+                      const moved = next[idx]!;
+                      next.splice(idx, 1);
+                      next.splice(idx + 1, 0, moved);
+                      return next.map((p, i) => ({ ...p, position: i }));
+                    });
+                    setDirty(true);
+                  }}
+                >
+                  {"\u2193"}
+                </button>
+                {phase.isCustom && (
+                  <button
+                    type="button"
+                    className="px-1"
+                    style={{ color: COLORS.danger, background: "none", border: "none", cursor: "pointer" }}
+                    onClick={() => {
+                      setEditPhases((prev) => prev.filter((p) => p.id !== phase.id).map((p, i) => ({ ...p, position: i })));
+                      setDirty(true);
+                    }}
+                  >
+                    <X size={10} weight="bold" />
+                  </button>
+                )}
+              </div>
+            ))}
+
+            <button
+              type="button"
+              style={outlineButton()}
+              onClick={() => {
+                const now = new Date().toISOString();
+                setEditPhases((prev) => [
+                  ...prev,
+                  {
+                    id: `custom:${Date.now()}`,
+                    phaseKey: `custom_${prev.length + 1}`,
+                    name: `Custom Phase ${prev.length + 1}`,
+                    description: "",
+                    instructions: "",
+                    model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+                    budget: {},
+                    orderingConstraints: {},
+                    askQuestions: { enabled: false, mode: "never" },
+                    validationGate: { tier: "self", required: false },
+                    isBuiltIn: false,
+                    isCustom: true,
+                    position: prev.length,
+                    createdAt: now,
+                    updatedAt: now,
+                  }
+                ]);
+                setDirty(true);
+              }}
+            >
+              + ADD PHASE
+            </button>
+          </div>
+
+          {dirty && (
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                style={primaryButton()}
+                disabled={phaseBusy || !editName.trim()}
+                onClick={async () => {
+                  setPhaseBusy(true);
+                  try {
+                    await window.ade.missions.savePhaseProfile({
+                      profile: {
+                        id: profile.id,
+                        name: editName.trim(),
+                        description: editDescription.trim(),
+                        phases: editPhases,
+                      }
+                    });
+                    await refreshPhaseProfiles();
+                    setPhaseNotice("Profile saved.");
+                    setDirty(false);
+                    setExpanded(false);
+                  } catch (err) {
+                    setPhaseError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setPhaseBusy(false);
+                  }
+                }}
+              >
+                SAVE
+              </button>
+              <button
+                style={outlineButton()}
+                onClick={() => {
+                  setEditName(profile.name);
+                  setEditDescription(profile.description);
+                  setEditPhases(profile.phases);
+                  setDirty(false);
+                }}
+              >
+                REVERT
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function MissionSettingsDialog({
   open,
@@ -2972,74 +3539,15 @@ function MissionSettingsDialog({
 
             <div className="mt-3 space-y-2">
               {phaseProfiles.map((profile) => (
-                <div key={profile.id} className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                  <div className="flex items-center gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-semibold" style={{ color: COLORS.textPrimary }}>
-                        {profile.isBuiltIn ? "\u25CF " : ""}{profile.name}
-                      </div>
-                      <div className="truncate text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        {profile.phases.map((phase) => phase.name).join(" \u2192 ")}
-                      </div>
-                    </div>
-                    <button
-                      style={outlineButton()}
-                      disabled={phaseBusy}
-                      onClick={async () => {
-                        setPhaseBusy(true);
-                        try {
-                          await window.ade.missions.clonePhaseProfile({ profileId: profile.id });
-                          await refreshPhaseProfiles();
-                          setPhaseNotice("Profile cloned.");
-                        } catch (err) {
-                          setPhaseError(err instanceof Error ? err.message : String(err));
-                        } finally {
-                          setPhaseBusy(false);
-                        }
-                      }}
-                    >
-                      CLONE
-                    </button>
-                    <button
-                      style={outlineButton()}
-                      disabled={phaseBusy}
-                      onClick={async () => {
-                        setPhaseBusy(true);
-                        try {
-                          const exported = await window.ade.missions.exportPhaseProfile({ profileId: profile.id });
-                          setPhaseNotice(exported.savedPath ? `Exported: ${exported.savedPath}` : "Profile exported.");
-                        } catch (err) {
-                          setPhaseError(err instanceof Error ? err.message : String(err));
-                        } finally {
-                          setPhaseBusy(false);
-                        }
-                      }}
-                    >
-                      EXPORT
-                    </button>
-                    {!profile.isBuiltIn ? (
-                      <button
-                        style={dangerButton()}
-                        disabled={phaseBusy}
-                        onClick={async () => {
-                          if (!window.confirm(`Delete phase profile "${profile.name}"?`)) return;
-                          setPhaseBusy(true);
-                          try {
-                            await window.ade.missions.deletePhaseProfile({ profileId: profile.id });
-                            await refreshPhaseProfiles();
-                            setPhaseNotice("Profile deleted.");
-                          } catch (err) {
-                            setPhaseError(err instanceof Error ? err.message : String(err));
-                          } finally {
-                            setPhaseBusy(false);
-                          }
-                        }}
-                      >
-                        DELETE
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
+                <PhaseProfileCard
+                  key={profile.id}
+                  profile={profile}
+                  phaseBusy={phaseBusy}
+                  setPhaseBusy={setPhaseBusy}
+                  setPhaseNotice={setPhaseNotice}
+                  setPhaseError={setPhaseError}
+                  refreshPhaseProfiles={refreshPhaseProfiles}
+                />
               ))}
             </div>
           </div>
@@ -4132,6 +4640,7 @@ export default function MissionsPage() {
                 {activeTab === "chat" && selectedMissionId && (
                   <MissionChatV2
                     missionId={selectedMissionId}
+                    missionStatus={selectedMission?.status ?? null}
                     runId={runGraph?.run.id ?? null}
                     jumpTarget={chatJumpTarget}
                     onJumpHandled={() => setChatJumpTarget(null)}

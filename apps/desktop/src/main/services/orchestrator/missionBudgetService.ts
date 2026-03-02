@@ -6,14 +6,19 @@ import type { AdeDb } from "../state/kvDb";
 import type {
   CreateMissionArgs,
   GetMissionBudgetStatusArgs,
+  MissionBudgetHardCapStatus,
   MissionBudgetPressure,
+  MissionBudgetProviderSnapshot,
+  MissionBudgetProviderWindow,
   MissionBudgetScopeSnapshot,
   MissionBudgetSnapshot,
   MissionPhaseBudgetSnapshot,
   MissionPreflightBudgetEstimate,
   MissionPreflightPhaseEstimate,
   MissionWorkerBudgetSnapshot,
+  ModelProvider,
   PhaseCard,
+  ProviderBudgetLimits,
 } from "../../../shared/types";
 import { BUILT_IN_PHASE_KEYS } from "../missions/phaseEngine";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
@@ -48,7 +53,7 @@ type MissionRow = {
   completed_at: string | null;
 };
 
-type ClaudWindowUsage = {
+type ClaudeProviderUsage = {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -56,6 +61,12 @@ type ClaudWindowUsage = {
   totalTokens: number;
   costUsd: number;
   samples: number;
+};
+
+type ClaudWindowUsage = ClaudeProviderUsage & {
+  byProvider: Record<string, ClaudeProviderUsage>;
+  oldestEntryMs: number | null;
+  oldestByProvider: Record<string, number>;
 };
 
 type LaunchBudgetEstimate = {
@@ -173,23 +184,45 @@ function toClaudometerProjectPath(projectId: string): string {
   return projectId.replace(/^-/, "/").replace(/-/g, "/");
 }
 
+function inferProviderFromModel(model: string): ModelProvider {
+  const lower = (model ?? "").toLowerCase();
+  if (lower.includes("codex") || lower.includes("gpt") || lower.includes("o1") || lower.includes("o3") || lower.includes("o4")) {
+    return "codex";
+  }
+  return "claude";
+}
+
+function emptyProviderUsage(): ClaudeProviderUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    samples: 0,
+  };
+}
+
+const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
+const WEEKLY_MS = 7 * 24 * 60 * 60 * 1000;
+
 function readClaudeJsonlWindow(args: {
   fromMs: number;
   toMs: number;
   projectRoot: string | null;
   logger: Logger;
 }): ClaudWindowUsage {
+  const emptyResult = (): ClaudWindowUsage => ({
+    ...emptyProviderUsage(),
+    byProvider: {},
+    oldestEntryMs: null,
+    oldestByProvider: {},
+  });
+
   const claudeProjectsDir = path.join(os.homedir(), ".claude", "projects");
   if (!fs.existsSync(claudeProjectsDir)) {
-    return {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 0,
-      costUsd: 0,
-      samples: 0,
-    };
+    return emptyResult();
   }
 
   let inputTokens = 0;
@@ -198,6 +231,9 @@ function readClaudeJsonlWindow(args: {
   let cacheWriteTokens = 0;
   let costUsd = 0;
   let samples = 0;
+  let oldestEntryMs: number | null = null;
+  const oldestByProvider: Record<string, number> = {};
+  const byProvider: Record<string, ClaudeProviderUsage> = {};
 
   const projectRoot = args.projectRoot ? path.resolve(args.projectRoot) : null;
   const projectEntries = fs.readdirSync(claudeProjectsDir);
@@ -274,17 +310,44 @@ function readClaudeJsonlWindow(args: {
           if (!Number.isFinite(inTokens) || !Number.isFinite(outTokens) || !Number.isFinite(cacheRead) || !Number.isFinite(cacheWrite)) {
             continue;
           }
-          inputTokens += Math.max(0, Math.floor(inTokens));
-          outputTokens += Math.max(0, Math.floor(outTokens));
-          cacheReadTokens += Math.max(0, Math.floor(cacheRead));
-          cacheWriteTokens += Math.max(0, Math.floor(cacheWrite));
+          const safeIn = Math.max(0, Math.floor(inTokens));
+          const safeOut = Math.max(0, Math.floor(outTokens));
+          const safeCacheRead = Math.max(0, Math.floor(cacheRead));
+          const safeCacheWrite = Math.max(0, Math.floor(cacheWrite));
+
+          inputTokens += safeIn;
+          outputTokens += safeOut;
+          cacheReadTokens += safeCacheRead;
+          cacheWriteTokens += safeCacheWrite;
+
           const model = typeof message?.model === "string"
             ? message.model
             : typeof parsed.model === "string"
               ? parsed.model
               : "claude-sonnet-4-6";
-          costUsd += estimateTokenCost(model, inTokens + cacheWrite, outTokens + cacheRead);
+          const entryCost = estimateTokenCost(model, inTokens + cacheWrite, outTokens + cacheRead);
+          costUsd += entryCost;
           samples += 1;
+
+          // Track oldest entry timestamp for time-until-reset calculations
+          if (oldestEntryMs === null || timestampMs < oldestEntryMs) {
+            oldestEntryMs = timestampMs;
+          }
+
+          const provider = inferProviderFromModel(model);
+
+          if (!(provider in oldestByProvider) || timestampMs < oldestByProvider[provider]) {
+            oldestByProvider[provider] = timestampMs;
+          }
+
+          const bucket = byProvider[provider] ?? (byProvider[provider] = emptyProviderUsage());
+          bucket.inputTokens += safeIn;
+          bucket.outputTokens += safeOut;
+          bucket.cacheReadTokens += safeCacheRead;
+          bucket.cacheWriteTokens += safeCacheWrite;
+          bucket.totalTokens += safeIn + safeOut + safeCacheRead + safeCacheWrite;
+          bucket.costUsd += entryCost;
+          bucket.samples += 1;
         }
       } catch (error) {
         args.logger.debug("mission_budget.read_claude_jsonl_failed", {
@@ -295,6 +358,11 @@ function readClaudeJsonlWindow(args: {
     }
   }
 
+  // Round cost values
+  for (const bucket of Object.values(byProvider)) {
+    bucket.costUsd = Number(bucket.costUsd.toFixed(6));
+  }
+
   return {
     inputTokens,
     outputTokens,
@@ -303,6 +371,9 @@ function readClaudeJsonlWindow(args: {
     totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
     costUsd: Number(costUsd.toFixed(6)),
     samples,
+    byProvider,
+    oldestEntryMs,
+    oldestByProvider,
   };
 }
 
@@ -423,7 +494,7 @@ export function createMissionBudgetService(args: {
     let remainingWindowCostUsd: number | null = null;
     if (budgetLimitCostUsd != null) {
       const nowMs = Date.now();
-      const fiveHoursAgo = nowMs - (5 * 60 * 60 * 1000);
+      const fiveHoursAgo = nowMs - FIVE_HOUR_MS;
       const usage = readClaudeJsonlWindow({
         fromMs: fiveHoursAgo,
         toMs: nowMs,
@@ -696,6 +767,141 @@ export function createMissionBudgetService(args: {
       maxCostUsd: configuredMaxCostUsd,
     });
 
+    // ── Per-provider window usage ────────────────────────────────
+    const nowMs = Date.now();
+    const fiveHourUsage = readClaudeJsonlWindow({
+      fromMs: nowMs - FIVE_HOUR_MS,
+      toMs: nowMs,
+      projectRoot: null,
+      logger,
+    });
+    const weeklyUsage = readClaudeJsonlWindow({
+      fromMs: nowMs - WEEKLY_MS,
+      toMs: nowMs,
+      projectRoot: null,
+      logger,
+    });
+
+    if (fiveHourUsage.samples > 0 || weeklyUsage.samples > 0) {
+      if (!dataSources.includes("~/.claude/projects/*.jsonl")) {
+        dataSources.push("~/.claude/projects/*.jsonl");
+      }
+    }
+
+    const providerLimits = smartBudget && isRecord(smartBudget.providerLimits)
+      ? smartBudget.providerLimits as Record<string, unknown>
+      : null;
+
+    // Collect providers used in this mission (from step rows + JSONL windows)
+    const missionProviders = new Set<string>();
+    for (const row of stepRows) {
+      const models = (row.models_csv ?? "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+      for (const m of models) {
+        missionProviders.add(inferProviderFromModel(m));
+      }
+    }
+    for (const p of Object.keys(fiveHourUsage.byProvider)) missionProviders.add(p);
+    for (const p of Object.keys(weeklyUsage.byProvider)) missionProviders.add(p);
+    // Ensure at least the orchestrator model's provider is present
+    const orchestratorModelId = launchMeta && typeof launchMeta.orchestratorModel === "string"
+      ? launchMeta.orchestratorModel
+      : modelConfig && isRecord(modelConfig.orchestratorModel) && typeof (modelConfig.orchestratorModel as Record<string, unknown>).modelId === "string"
+        ? (modelConfig.orchestratorModel as Record<string, unknown>).modelId as string
+        : "claude-sonnet-4-6";
+    missionProviders.add(inferProviderFromModel(orchestratorModelId));
+
+    const fiveHourHardStopPercent = smartBudget && typeof smartBudget.fiveHourHardStopPercent === "number"
+      ? smartBudget.fiveHourHardStopPercent
+      : null;
+    const weeklyHardStopPercent = smartBudget && typeof smartBudget.weeklyHardStopPercent === "number"
+      ? smartBudget.weeklyHardStopPercent
+      : null;
+    const apiKeyMaxSpendUsd = smartBudget && typeof smartBudget.apiKeyMaxSpendUsd === "number"
+      ? smartBudget.apiKeyMaxSpendUsd
+      : null;
+
+    let fiveHourTriggered = false;
+    let weeklyTriggered = false;
+    let apiKeyTriggered = false;
+
+    const perProvider: MissionBudgetProviderSnapshot[] = [...missionProviders].sort().map((provider) => {
+      const fiveHrBucket = fiveHourUsage.byProvider[provider] ?? emptyProviderUsage();
+      const weeklyBucket = weeklyUsage.byProvider[provider] ?? emptyProviderUsage();
+
+      const limits = providerLimits && isRecord(providerLimits[provider])
+        ? providerLimits[provider] as Record<string, unknown>
+        : null;
+      const fiveHourTokenLimit = limits && typeof limits.fiveHourTokenLimit === "number"
+        ? limits.fiveHourTokenLimit
+        : null;
+      const weeklyTokenLimit = limits && typeof limits.weeklyTokenLimit === "number"
+        ? limits.weeklyTokenLimit
+        : null;
+
+      const fiveHrPct = fiveHourTokenLimit != null && fiveHourTokenLimit > 0
+        ? Number(((fiveHrBucket.totalTokens / fiveHourTokenLimit) * 100).toFixed(1))
+        : null;
+      const weeklyPct = weeklyTokenLimit != null && weeklyTokenLimit > 0
+        ? Number(((weeklyBucket.totalTokens / weeklyTokenLimit) * 100).toFixed(1))
+        : null;
+
+      // Check hard caps per provider
+      if (fiveHourHardStopPercent != null && fiveHrPct != null && fiveHrPct >= fiveHourHardStopPercent) {
+        fiveHourTriggered = true;
+      }
+      if (weeklyHardStopPercent != null && weeklyPct != null && weeklyPct >= weeklyHardStopPercent) {
+        weeklyTriggered = true;
+      }
+
+      // Time until the oldest entry in this provider's window "falls off" the sliding window.
+      // The oldest entry leaves the window at (oldestEntryTimestamp + windowDuration),
+      // so timeUntilReset = (oldestEntryTimestamp + windowDuration) - now.
+      const fiveHrOldest = fiveHourUsage.oldestByProvider[provider] ?? null;
+      const timeUntilFiveHrReset = fiveHrBucket.samples > 0 && fiveHrOldest != null
+        ? Math.max(0, (fiveHrOldest + FIVE_HOUR_MS) - nowMs)
+        : null;
+
+      const weeklyOldest = weeklyUsage.oldestByProvider[provider] ?? null;
+      const timeUntilWeeklyReset = weeklyBucket.samples > 0 && weeklyOldest != null
+        ? Math.max(0, (weeklyOldest + WEEKLY_MS) - nowMs)
+        : null;
+
+      const fiveHour: MissionBudgetProviderWindow = {
+        usedTokens: fiveHrBucket.totalTokens,
+        limitTokens: fiveHourTokenLimit,
+        usedPct: fiveHrPct,
+        usedCostUsd: fiveHrBucket.costUsd,
+        timeUntilResetMs: timeUntilFiveHrReset,
+      };
+      const weekly: MissionBudgetProviderWindow = {
+        usedTokens: weeklyBucket.totalTokens,
+        limitTokens: weeklyTokenLimit,
+        usedPct: weeklyPct,
+        usedCostUsd: weeklyBucket.costUsd,
+        timeUntilResetMs: timeUntilWeeklyReset,
+      };
+
+      return { provider, fiveHour, weekly };
+    });
+
+    // API key hard cap check
+    if (apiKeyMaxSpendUsd != null && mode === "api-key" && missionUsedCostUsd >= apiKeyMaxSpendUsd) {
+      apiKeyTriggered = true;
+    }
+
+    const hardCaps: MissionBudgetHardCapStatus = {
+      fiveHourHardStopPercent: typeof fiveHourHardStopPercent === "number" ? fiveHourHardStopPercent : null,
+      weeklyHardStopPercent: typeof weeklyHardStopPercent === "number" ? weeklyHardStopPercent : null,
+      apiKeyMaxSpendUsd: typeof apiKeyMaxSpendUsd === "number" ? apiKeyMaxSpendUsd : null,
+      apiKeySpentUsd: mode === "api-key" ? missionUsedCostUsd : 0,
+      fiveHourTriggered,
+      weeklyTriggered,
+      apiKeyTriggered,
+    };
+
     const pressure = computePressure(missionScope);
     const terminalStatuses = new Set(["succeeded", "failed", "blocked", "canceled", "skipped", "superseded"]);
     const completedWorkers = stepRows.filter((row) => terminalStatuses.has(row.status)).length;
@@ -719,6 +925,8 @@ export function createMissionBudgetService(args: {
       mission: missionScope,
       perPhase,
       perWorker: perWorker.sort((a, b) => b.usedTokens - a.usedTokens),
+      perProvider,
+      hardCaps,
       activeWorkers,
       recommendation: pressureRecommendation(pressure),
       estimatedRemainingCapacity: {

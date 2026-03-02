@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-02
 
 ---
 
@@ -28,7 +28,7 @@
 
 The Job Engine is ADE's background task scheduling system. It processes asynchronous work triggered by system events -- terminal session endings, git HEAD changes, and lane dirty state changes -- ensuring that context packs remain current and conflict predictions stay fresh without blocking the user's interactive workflow.
 
-The engine is an in-process queue with per-lane deduplication for pack refreshes and a debounced conflict prediction queue. After each deterministic pack refresh, the engine optionally triggers AI narrative generation (via Vercel AI SDK using subscription-powered CLI tools) in a non-blocking async flow. Conflict prediction runs on a debounced schedule (900ms-1500ms depending on trigger type) plus a periodic 120-second interval.
+The engine is an in-process queue with per-lane deduplication for pack refreshes and a debounced conflict prediction queue. After each deterministic pack refresh, the engine optionally triggers AI narrative generation (via Vercel AI SDK using configured providers: CLI/API/local) in a non-blocking async flow. Conflict prediction runs on a debounced schedule (900ms-1500ms depending on trigger type) plus a periodic 120-second interval.
 
 Phase 1.5 introduces a separate orchestrator runtime service for mission step scheduling/execution state machines. The job engine remains focused on background context maintenance (packs, narratives, conflict prediction) and does not coordinate orchestrator step transitions.
 
@@ -212,7 +212,7 @@ The lane pack is always refreshed first because the project pack references lane
 
 ### Auto-Narrative Generation
 
-After the deterministic lane+project pack refresh completes, the job engine checks whether a subscription-powered CLI tool is available via `aiIntegrationService`. If a provider is available (i.e., the mode is not `guest`), the engine fires an async (non-blocking) narrative generation flow:
+After the deterministic lane+project pack refresh completes, the job engine checks whether any configured provider is available via `aiIntegrationService`. If a provider is available (i.e., the mode is not `guest`), the engine fires an async (non-blocking) narrative generation flow:
 
 1. Build a `LaneExportStandard` and `ProjectExportLite` from the pack service.
 2. Clip and redact both exports (lane: 220K chars max, project: 120K chars max).

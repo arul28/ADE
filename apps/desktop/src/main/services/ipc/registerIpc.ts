@@ -116,6 +116,7 @@ import type {
   ExportHistoryResult,
   ExportConfigBundleResult,
   AgentChatApproveArgs,
+  AgentChatChangePermissionModeArgs,
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
   AgentChatInterruptArgs,
@@ -2267,6 +2268,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatFetchContextPack, async (_event, arg: ContextPackFetchArgs): Promise<ContextPackFetchResult> => {
     const ctx = getCtx();
     return ctx.agentChatService.fetchContextPack(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatChangePermissionMode, async (_event, arg: AgentChatChangePermissionModeArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.agentChatService.changePermissionMode(arg);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

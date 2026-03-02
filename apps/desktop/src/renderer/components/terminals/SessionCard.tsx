@@ -12,6 +12,7 @@ function toolAccentGradient(toolType: string | null | undefined): string {
     return "from-orange-500/80 to-orange-500/10";
   if (toolType === "codex" || toolType === "codex-chat" || toolType === "codex-orchestrated")
     return "from-blue-500/70 to-blue-500/10";
+  if (toolType === "ai-chat") return "from-teal-500/70 to-teal-500/10";
   if (toolType === "shell") return "from-emerald-500/60 to-emerald-500/10";
   return "from-violet-500/50 to-violet-500/10";
 }

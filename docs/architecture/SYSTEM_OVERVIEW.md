@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-02
 >
 > Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan.md`.
 
@@ -27,11 +27,11 @@
 
 ## Overview
 
-ADE (Agentic Development Environment) is a desktop application designed to augment the developer workflow by providing deep integration between terminal sessions, git operations, and context-aware tooling. The system is built around two main components -- the Desktop UI and the Local Core Engine -- with an integrated AI layer that connects to existing CLI subscriptions via native agent SDKs (unified behind an AgentExecutor interface) and an MCP server. Strict boundaries govern which layer is permitted to perform mutations on the repository and filesystem.
+ADE (Agentic Development Environment) is a desktop application designed to augment the developer workflow by providing deep integration between terminal sessions, git operations, and context-aware tooling. The system is built around two main components -- the Desktop UI and the Local Core Engine -- with an integrated AI layer that connects to configured providers (CLI subscriptions, API-key/OpenRouter, and local OpenAI-compatible endpoints) via native agent SDKs and an MCP server. Strict boundaries govern which layer is permitted to perform mutations on the repository and filesystem.
 
 The core insight behind ADE's architecture is that developer context -- the state of code changes, terminal output, test results, process health, and git history -- is fragmented across tools. ADE unifies this context into structured artifacts called "packs" that serve both humans and AI agents.
 
-The AI integration layer replaces the previous hosted cloud backend with a fully local, subscription-powered approach. Instead of managing API keys or relying on a remote gateway, ADE spawns `claude` and `codex` CLI processes that inherit the user's existing subscriptions. An MCP server exposes ADE's internal tools to these AI processes, and an AI orchestrator coordinates multi-step mission execution.
+The AI integration layer replaces the previous hosted cloud backend with a local-first, provider-flexible approach. ADE can run with CLI subscriptions (`claude`/`codex`), API-key/OpenRouter providers, and local model endpoints (LM Studio/Ollama/vLLM). An MCP server exposes ADE's internal tools to these AI processes, and an AI orchestrator coordinates multi-step mission execution.
 
 ---
 
@@ -39,11 +39,11 @@ The AI integration layer replaces the previous hosted cloud backend with a fully
 
 ### Local-First, Local-Only
 
-ADE operates fully offline. The Local Core Engine handles all repository mutations, file I/O, and process management without requiring network connectivity. AI functionality runs locally by spawning CLI processes that use the developer's existing subscriptions -- no cloud backend, no API keys, no remote gateway required.
+ADE's core product features operate fully offline. The Local Core Engine handles all repository mutations, file I/O, and process management without requiring network connectivity. AI functionality remains local-first and can execute through CLI subscriptions, API-key/OpenRouter providers, or local endpoints -- no ADE-hosted cloud backend is required.
 
-### Subscription-Powered AI
+### Provider-Flexible AI
 
-Rather than requiring users to manage API keys, configure cloud endpoints, or pay for a hosted service, ADE leverages existing CLI subscriptions. Developers who have `claude` or `codex` installed and authenticated get AI capabilities automatically. This decision eliminates credential management, reduces configuration surface, and aligns cost with tools developers already pay for. Each agent uses its native SDK — `ai-sdk-provider-claude-code` (community Vercel provider) for Claude and `@openai/codex-sdk` (official) for Codex. ADE's `AgentExecutor` interface unifies both behind a common contract.
+ADE supports multiple provider modes from one model registry. Developers can use existing CLI subscriptions (`claude`, `codex`), API-key/OpenRouter providers, or local model endpoints (LM Studio/Ollama/vLLM). The chat model selector surfaces only configured/detected models, and switching model families in lane chat forks a new chat session to preserve thread/runtime invariants. Core SDK executors remain `ai-sdk-provider-claude-code` (community Vercel provider) for Claude and `@openai/codex-sdk` (official) for Codex.
 
 ### MCP for AI Tool Access
 
@@ -96,7 +96,7 @@ Key UI subsystems:
 | Play | Run processes/tests, lane-scoped execution controls, CI import, agent tool launch points |
 | Lanes | Create, rename, archive, delete, and stack worktree-backed development lanes |
 | Files | IDE-style workspace browser/editor with search and quick-open |
-| Terminals | Embedded terminal sessions (PTY via node-pty) and agent chat sessions (Codex App Server + Claude multi-turn) with unified session tracking |
+| Terminals | Embedded terminal sessions (PTY via node-pty) and agent chat sessions (Codex App Server, Claude multi-turn, and unified API/local runtimes) with unified session tracking |
 | Conflicts | Risk matrix, merge simulation, proposal/reconciliation workflows |
 | Context/Packs | Deterministic pack views, exports, and docs-generation actions |
 | Graph | Workspace topology and risk overlays |
@@ -104,7 +104,7 @@ Key UI subsystems:
 | History | Operation/checkpoint/pack event timeline |
 | Agents | Autonomous agent system: automation, Night Shift, watcher, and review agents with identity/policy profiles |
 | Missions | AI orchestrator control center: mission intake, lifecycle board, Slack-style chat (MissionChatV2 + MentionInput), Details tab, run narrative, interventions, artifacts, outcomes |
-| Settings | Subscription provider config, trust levels, keybindings, terminal profiles, and data controls |
+| Settings | Provider config (CLI/API/local/OpenRouter), trust levels, keybindings, terminal profiles, and data controls |
 
 ### 2. Local Core Engine
 
@@ -130,7 +130,7 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 | `missionService` | `missionService.ts` | Mission lifecycle, step tracking, intervention management |
 | `missionPlanningService` | `missionPlanningService.ts` | AI-powered and deterministic mission planning |
 | `orchestratorService` | `orchestratorService.ts` | Run/step/attempt state machine, claim management, context snapshots |
-| `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, ChatEvent streaming |
+| `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, unified API/local backend, ChatEvent streaming |
 | `metaReasoner` | `metaReasoner.ts` | AI-driven fan-out dispatch analysis, dynamic step injection, fan-out strategy selection |
 | `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, pre-compaction writeback, conversation replacement |
 | `messageDelivery` | (in `aiOrchestratorService.ts`) | Inter-agent messaging: `deliverMessageToAgent()`, `parseMentions()`, `routeMessage()`, @mention routing |
@@ -149,9 +149,9 @@ All services are instantiated in `main.ts` and wired together through dependency
 
 ### 3. AI Integration Layer
 
-**Technology**: Agent SDKs (`ai-sdk-provider-claude-code`, `@openai/codex-sdk`), AgentExecutor interface, MCP server (dual-mode: stdio + socket/JSON-RPC 2.0), `claude` and `codex` CLI processes
+**Technology**: Agent SDKs (`ai-sdk-provider-claude-code`, `@openai/codex-sdk`, Vercel AI SDK providers), AgentExecutor interface, MCP server (dual-mode: stdio + socket/JSON-RPC 2.0), CLI + API/local model runtimes
 
-The AI Integration Layer is a local-only subsystem that provides AI capabilities by spawning CLI processes that use the developer's existing subscriptions. It replaces the previous hosted cloud backend entirely.
+The AI Integration Layer is a local-first subsystem that provides AI capabilities via both CLI-backed and non-CLI runtimes. It replaces the previous hosted cloud backend entirely.
 
 #### Dual-SDK Architecture and AgentExecutor Interface
 
@@ -166,7 +166,11 @@ ADE uses each agent's native SDK rather than a single unified execution layer:
 
 #### Agent Chat Service
 
-The Agent Chat Service provides a native interactive chat interface inside ADE, complementing the programmatic `AgentExecutor` for one-shot tasks. It uses the Codex App Server protocol (JSON-RPC 2.0 over stdio, documented at https://developers.openai.com/codex/app-server) for Codex and the community Vercel provider's multi-turn `streamText()` for Claude. A provider-agnostic `AgentChatService` interface unifies both backends behind a common `ChatEvent` stream. Chat sessions integrate as first-class `terminal_sessions` with delta computation, pack integration, and full session lifecycle callbacks.
+The Agent Chat Service provides a native interactive chat interface inside ADE, complementing the programmatic `AgentExecutor` for one-shot tasks. It uses the Codex App Server protocol (JSON-RPC 2.0 over stdio, documented at https://developers.openai.com/codex/app-server) for Codex and the community Vercel provider's multi-turn `streamText()` for Claude. A provider-agnostic `AgentChatService` interface unifies both backends behind a common `ChatEvent` stream. Chat sessions integrate as first-class `terminal_sessions` with delta computation, pack integration, and full session lifecycle callbacks. A **unified runtime** extends chat to API-key and local models (not just CLI-wrapped), with permission modes (plan/edit/full-auto) and universal tools.
+
+#### Model Registry & Dynamic Pricing
+
+The model registry (`modelRegistry.ts`) catalogs 40+ models across 8 provider families, classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). At startup, `modelsDevService` fetches live pricing and capabilities from `models.dev`, caching locally with 6-hour refresh. `enrichModelRegistry()` updates context windows and capabilities; `updateModelPricing()` merges pricing via a Proxy-based `MODEL_PRICING` object. Provider options use pure tier-string passthrough (`providerOptions.ts`) -- no invented token budgets. A middleware layer (`middleware.ts`) handles logging, retry, cost guards, and reasoning extraction.
 
 #### MCP Server
 
@@ -237,7 +241,7 @@ User creates lane
     --> Session end triggers checkpoint computation
       --> Checkpoint triggers pack update (lane pack + project pack)
         --> Pack triggers conflict prediction
-          --> AI generates narratives/proposals locally via CLI subscriptions
+          --> AI generates narratives/proposals via configured providers (CLI/API/local)
             --> Results displayed in desktop UI
 ```
 
@@ -377,7 +381,7 @@ ADE is designed to be fully portable across developer machines without requiring
 
 ## Implementation Status
 
-Current codebase status is feature-rich across lanes, files, terminals, conflicts, packs/context, PRs, agents, missions, orchestrator runtime, and AI-powered planning via CLI subscriptions.
+Current codebase status is feature-rich across lanes, files, terminals, conflicts, packs/context, PRs, agents, missions, orchestrator runtime, and AI-powered planning via configured providers (CLI/API/local).
 
 | Component | Status |
 |-----------|--------|

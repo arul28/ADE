@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-03-02
 
 This document describes the Electron desktop runtime in `apps/desktop`, including process boundaries, service initialization, IPC contracts, and lifecycle behavior.
 
@@ -51,7 +51,7 @@ Main-process responsibilities:
 - Agents (automation, Night Shift, watcher, review) and job engine execution
 - Process/test runners
 - AI integration (AgentExecutor interface, dual SDK, MCP server)
-- Agent chat service (Codex App Server + Claude multi-turn chat sessions)
+- Agent chat service (Codex App Server, Claude multi-turn, and unified API/local model chat sessions)
 
 ### Renderer Process (untrusted)
 
@@ -72,8 +72,8 @@ Core service groups:
 - Project/context bootstrapping: project service, config service, keybindings, terminal profiles, agent tools, onboarding, CI
 - Core execution: lane/session/pty/file/diff/git/process/test/history
 - Context and risk systems: pack service, conflict service, restack suggestion service, auto-rebase service, job engine
-- AI Integration: AI integration service (AgentExecutor interface, dual SDK), AI orchestrator service, MCP server, GitHub service, PR service + polling
-- Agent Chat: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn)
+- AI Integration: AI integration service (AgentExecutor interface, dual SDK), AI orchestrator service, MCP server, GitHub service, PR service + polling, models.dev service (dynamic pricing/capabilities), middleware (logging, retry, cost guard, reasoning extraction), provider options (tier passthrough), universal tools (API-key/local model support)
+- Agent Chat: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn, unified runtime for API-key/local models with permission modes, persisted as `codex-chat` / `claude-chat` / `ai-chat` sessions)
 - Agents: agent service (automation, Night Shift, watcher, review agents) + agent planner service + agent identity service
 - Missions: mission service (Phase 1 mission lifecycle CRUD + eventing)
 

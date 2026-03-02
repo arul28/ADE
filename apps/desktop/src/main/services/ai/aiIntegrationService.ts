@@ -15,6 +15,9 @@ import {
 import { detectAllAuth, detectCliAuthStatuses, getCachedCliAuthStatuses, verifyProviderApiKey, type DetectedAuth, type CliAuthStatus } from "./authDetector";
 import { resolveModel } from "./providerResolver";
 import { executeUnified, resumeUnified, type UnifiedExecutorOpts, type UnifiedResumeOpts } from "./unifiedExecutor";
+import { initialize as initModelsDevService } from "./modelsDevService";
+import { updateModelPricing } from "../../../shared/modelProfiles";
+import { enrichModelRegistry } from "../../../shared/modelRegistry";
 
 export type AiTaskType =
   | "planning"
@@ -153,6 +156,7 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
 
 const CODEX_FALLBACK_MODELS: AgentModelDescriptor[] = [
   { id: "gpt-5.3-codex", label: "gpt-5.3-codex" },
+  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5.2-codex", label: "gpt-5.2-codex" },
   { id: "gpt-5.1-codex-max", label: "gpt-5.1-codex-max" },
   { id: "codex-mini-latest", label: "codex-mini-latest" },
@@ -168,8 +172,9 @@ const CLAUDE_MODEL_ALIASES = new Set([
   "claude-haiku-4-5-20251001"
 ]);
 const CODEX_MODEL_ALIASES = new Set([
-  "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex",
-  "gpt-5.1-codex-max", "codex-mini-latest", "o4-mini", "o3"
+  "gpt-5.3-codex", "gpt-5.3-codex-spark",
+  "gpt-5.2-codex", "gpt-5.1-codex-max",
+  "codex-mini-latest", "o4-mini", "o3"
 ]);
 const PROVIDER_DEFAULT_MODEL: Record<AgentProvider, string> = {
   claude: "sonnet",
@@ -363,6 +368,33 @@ export function createAiIntegrationService(args: {
     claude: createClaudeExecutor(),
     codex: createCodexExecutor()
   };
+
+  // Non-blocking: fetch models.dev data and enrich pricing + registry
+  initModelsDevService().then((modelData) => {
+    if (modelData.size === 0) return;
+
+    // Update MODEL_PRICING with fresh cost data
+    const pricingUpdates: Record<string, { input: number; output: number }> = {};
+    const enrichments = new Map<string, { contextWindow?: number; maxOutputTokens?: number }>();
+
+    for (const [modelId, data] of modelData) {
+      if (data.cost) {
+        pricingUpdates[modelId] = data.cost;
+      }
+      if (data.contextWindow || data.maxOutputTokens) {
+        enrichments.set(modelId, {
+          contextWindow: data.contextWindow,
+          maxOutputTokens: data.maxOutputTokens,
+        });
+      }
+    }
+
+    const pricingCount = updateModelPricing(pricingUpdates);
+    const enrichCount = enrichModelRegistry(enrichments);
+    logger.info("ai.modelsdev.enriched", { pricingCount, enrichCount });
+  }).catch((err) => {
+    logger.warn("ai.modelsdev.init_failed", { error: err instanceof Error ? err.message : String(err) });
+  });
 
   const detectAuth = async (): Promise<DetectedAuth[]> => {
     const snapshot = projectConfigService.get();
@@ -581,7 +613,7 @@ export function createAiIntegrationService(args: {
       prompt: args.prompt,
       system: args.systemPrompt,
       cwd: args.cwd,
-      tools: args.permissionMode === "read-only" ? "none" : "coding",
+      tools: args.taskType === "mission_planning" ? "planning" : args.permissionMode === "read-only" ? "none" : "coding",
       timeout: args.timeoutMs,
       jsonSchema: args.jsonSchema,
       reasoningEffort: args.reasoningEffort,
@@ -672,8 +704,38 @@ export function createAiIntegrationService(args: {
     // from Claude to Codex but the default model is still "sonnet").
     const provider = args.provider as AgentProvider | undefined;
     const model = (() => {
-      if (provider === "codex" && CLAUDE_MODEL_ALIASES.has(rawModel)) return PROVIDER_DEFAULT_MODEL.codex;
-      if (provider === "claude" && CODEX_MODEL_ALIASES.has(rawModel)) return PROVIDER_DEFAULT_MODEL.claude;
+      const normalizedRawModel = rawModel.toLowerCase();
+      const namespacedFamily = normalizedRawModel.includes("/")
+        ? normalizedRawModel.split("/", 1)[0]
+        : null;
+      const resolvedModel = getModelById(rawModel) ?? resolveModelAlias(rawModel);
+
+      if (provider === "codex") {
+        if (resolvedModel) {
+          if (!resolvedModel.isCliWrapped || resolvedModel.family !== "openai") {
+            return PROVIDER_DEFAULT_MODEL.codex;
+          }
+          return rawModel;
+        }
+        if (CLAUDE_MODEL_ALIASES.has(normalizedRawModel) || namespacedFamily === "anthropic") {
+          return PROVIDER_DEFAULT_MODEL.codex;
+        }
+        return rawModel;
+      }
+
+      if (provider === "claude") {
+        if (resolvedModel) {
+          if (!resolvedModel.isCliWrapped || resolvedModel.family !== "anthropic") {
+            return PROVIDER_DEFAULT_MODEL.claude;
+          }
+          return rawModel;
+        }
+        if (CODEX_MODEL_ALIASES.has(normalizedRawModel) || namespacedFamily === "openai") {
+          return PROVIDER_DEFAULT_MODEL.claude;
+        }
+        return rawModel;
+      }
+
       return rawModel;
     })();
 
@@ -770,18 +832,41 @@ export function createAiIntegrationService(args: {
 
     checkBudget(args.feature);
 
-    // Try unified path if a model registry ID is provided
-    if (args.model && getModelById(args.model)) {
-      return executeViaUnifiedPath(args);
+    const requestedModel = toStringOrNull(args.model);
+    const requestedDescriptor = requestedModel
+      ? (getModelById(requestedModel) ?? resolveModelAlias(requestedModel))
+      : null;
+    // Try unified path for non-CLI registry models only.
+    if (requestedDescriptor && !requestedDescriptor.isCliWrapped) {
+      return executeViaUnifiedPath({ ...args, model: requestedDescriptor.id });
     }
 
-    const provider = await resolveProviderForTask(args.taskType, args.provider ?? null);
+    // API-key/local only fallback: if no CLI provider is available, pick a
+    // resolved non-CLI default model for this task and route through unified.
+    if (!requestedDescriptor && !requestedModel) {
+      const availability = toCliAvailability(await detectAuth());
+      if (!availability.claude && !availability.codex) {
+        const resolvedModelId = await resolveModelForTask(args.taskType);
+        const resolvedDescriptor = getModelById(resolvedModelId);
+        if (resolvedDescriptor && !resolvedDescriptor.isCliWrapped) {
+          return executeViaUnifiedPath({ ...args, model: resolvedDescriptor.id });
+        }
+      }
+    }
+
+    const providerHintFromModel = requestedDescriptor?.isCliWrapped
+      ? (requestedDescriptor.family === "openai" ? "codex" : requestedDescriptor.family === "anthropic" ? "claude" : null)
+      : null;
+    const provider = await resolveProviderForTask(args.taskType, providerHintFromModel ?? args.provider ?? null);
+    const normalizedLegacyModel = requestedDescriptor?.isCliWrapped
+      ? requestedDescriptor.shortId
+      : requestedModel ?? undefined;
     const executor = executors[provider];
     const opts = buildExecutorOpts({
       taskType: args.taskType,
       provider,
       cwd: args.cwd,
-      model: args.model,
+      model: normalizedLegacyModel,
       reasoningEffort: args.reasoningEffort,
       timeoutMs: args.timeoutMs,
       systemPrompt: args.systemPrompt,

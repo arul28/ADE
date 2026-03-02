@@ -2,7 +2,7 @@
 
 ## Phase 1 -- Agent SDK Integration + AgentExecutor Interface (3-4 weeks)
 
-Goal: Replace all legacy AI call paths with subscription-powered agent SDKs unified behind ADE's `AgentExecutor` interface. Establish the execution layer that all downstream phases build on.
+Goal: Replace all legacy AI call paths with local-first agent SDK runtimes unified behind ADE's `AgentExecutor` interface. Establish the execution layer that all downstream phases build on.
 
 ### Reference docs
 
@@ -59,7 +59,7 @@ Goal: Replace all legacy AI call paths with subscription-powered agent SDKs unif
 
 #### W5: AI Integration Service
 - Create `aiIntegrationService` as the single AI execution surface for all main-process callers.
-- Provider model: `guest` (no AI, all local features work) and `subscription` (uses existing CLI subscriptions via agent SDKs).
+- Provider model: `guest` (no AI), `subscription` (CLI), plus API-key/OpenRouter/local provider support through unified runtimes.
 - Per-task-type model/provider routing with resolution order: step-level hint → task config → mission policy → global default → built-in default → first available CLI.
 - All Phase 1 AI tasks were initially one-pass (no multi-turn): send prompt + context, receive result, session ends. Phase 4+ preserves this UX while routing through standardized agent runtime records.
 
@@ -171,7 +171,7 @@ Goal: Replace all legacy AI call paths with subscription-powered agent SDKs unif
 
 ## Phase 1.5 -- Agent Chat Integration (2-3 weeks, parallel with Phase 1)
 
-Goal: Build a native agent chat interface inside ADE — a rich, provider-agnostic chat UI that lets users work interactively with Codex and Claude directly in lanes. Chat sessions are first-class sessions with full context tracking, delta computation, and pack integration. The UI replicates the core Codex app experience while also supporting Claude via the same community SDK used in Phase 1.
+Goal: Build a native agent chat interface inside ADE — a rich, provider-agnostic chat UI that lets users work interactively with Codex, Claude, and configured unified/API/local models directly in lanes. Chat sessions are first-class sessions with full context tracking, delta computation, and pack integration.
 
 ### Reference docs
 
@@ -202,14 +202,14 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
 - Define `AgentChatService` interface — the provider-agnostic abstraction for interactive chat sessions:
   ```typescript
   interface AgentChatService {
-    createSession(laneId: string, provider: "codex" | "claude", model: string): Promise<ChatSession>;
+    createSession(laneId: string, provider: "codex" | "claude" | "unified", model: string, modelId?: string, permissionMode?: "plan" | "edit" | "full-auto"): Promise<ChatSession>;
     sendMessage(sessionId: string, text: string, attachments?: FileRef[]): AsyncIterable<ChatEvent>;
     steer(sessionId: string, text: string): Promise<void>;
     interrupt(sessionId: string): Promise<void>;
     resumeSession(sessionId: string): Promise<ChatSession>;
     listSessions(laneId?: string): Promise<ChatSessionSummary[]>;
     approveToolUse(sessionId: string, itemId: string, decision: ApprovalDecision): Promise<void>;
-    getAvailableModels(provider: "codex" | "claude"): Promise<ModelInfo[]>;
+    getAvailableModels(provider: "codex" | "claude" | "unified"): Promise<ModelInfo[]>;
     dispose(sessionId: string): Promise<void>;
   }
   ```
@@ -276,7 +276,7 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
 
 #### W4: Session Integration
 - Map agent chat sessions to `terminal_sessions` table:
-  - `tool_type`: `"codex-chat"` or `"claude-chat"` (new values added to `TerminalToolType` union).
+  - `tool_type`: `"codex-chat"`, `"claude-chat"`, or `"ai-chat"` (new values added to `TerminalToolType` union).
   - `pty_id`: null (no PTY — chat uses JSON-RPC / SDK streams instead).
   - `tracked`: always `true` (chat sessions always produce context).
   - `transcript_path`: points to chat message log (`.ade/transcripts/<session-id>.chat.jsonl` — JSONL format with all ChatEvents).
@@ -287,7 +287,7 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
 - Session delta computation: same algorithm as terminal sessions — diff `head_sha_start` vs current state, scan chat events for `file_change` items, extract failure lines from `command` events.
 - Wire into `onSessionEnded` callback chain: job engine, agent service (automation pipeline), and orchestrator all receive chat session end events.
 - Chat sessions appear in both:
-  - **Terminals tab** session list (with "codex-chat" or "claude-chat" tool type badge)
+  - **Terminals tab** session list (with "codex-chat", "claude-chat", or "ai-chat" tool type badge)
   - **Lanes tab** Work Pane (in the agent chat view)
 
 #### W5: Chat UI — Message List Component
@@ -313,7 +313,7 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
 - `AgentChatComposer.tsx` — input area at the bottom of the chat pane.
 - Components:
   - **Text input**: Multi-line textarea with `Cmd+Enter` or `Enter` to send (configurable).
-  - **Provider/Model selector**: Dropdown showing detected providers (Codex, Claude) and their available models. Remembers last selection per lane.
+  - **Provider/Model selector**: Dropdown showing configured models across CLI, API-key, OpenRouter, and local providers. Remembers last selection per lane/model.
   - **File attachment**: `@` key triggers fuzzy file search popup — attach files as context references.
   - **Send button**: Sends `turn/start` (Codex) or appends to messages + `streamText()` (Claude).
   - **Steer indicator**: When a turn is active, the input area shows "Steering..." label and Enter sends `turn/steer` instead of starting a new turn.
@@ -358,12 +358,13 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
   ```
 - New chat sessions created from the Chat view are automatically scoped to the selected lane (cwd = lane worktree).
 - Existing chat sessions for the selected lane are shown in the Chat view — user can switch between them via a session dropdown or tabs.
+- Switching model families while a session is active forks a new chat session under the selected runtime/provider.
 
 #### W8: Chat UI — Integration with Terminals Tab
 - Chat sessions appear in the Terminals tab session list alongside PTY sessions.
-- Tool type badges: "codex-chat" (blue), "claude-chat" (purple) — distinct from "codex" and "claude" (which are CLI sessions).
+- Tool type badges: "codex-chat" (blue), "claude-chat" (purple), "ai-chat" (teal) — distinct from "codex" and "claude" (which are CLI sessions).
 - Clicking a chat session in Terminals tab opens the chat view (not a terminal view).
-- Session filters: `TerminalToolType` expanded to include `"codex-chat"` and `"claude-chat"`.
+- Session filters: `TerminalToolType` expanded to include `"codex-chat"`, `"claude-chat"`, and `"ai-chat"`.
 - Session delta card: same display as terminal sessions — files changed, insertions, deletions, AI summary.
 - Resume: clicking resume on an ended chat session calls `agentChatService.resumeSession()`.
 
@@ -374,6 +375,7 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
   - **Send on Enter**: Toggle between Enter-to-send and Cmd+Enter-to-send
   - **Codex sandbox policy**: Read-only / Workspace write / Full access (overrides default for chat sessions)
   - **Claude permission mode for chat**: Plan / Accept edits / Bypass permissions
+  - **Unified permission mode for chat**: Plan / Edit / Full-auto (for API-key/local/OpenRouter model sessions)
 - Settings persist to `.ade/local.yaml` under `ai.chat`.
 
 #### W10: Validation
@@ -381,16 +383,16 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
 - ClaudeChatBackend: multi-turn conversation, streaming, tool approval, session persistence, resume tests.
 - Session integration: chat sessions appear in session list, delta computation, callback chain, resume flow.
 - UI component tests: message rendering for each item type, composer input/send, approval overlay, steer/interrupt.
-- Cross-provider: same UI works with both Codex and Claude backends.
+- Cross-provider: same UI works with Codex, Claude, and unified API/local backends.
 
 ### Exit criteria
 
-- Users can open an agent chat in any lane's Work Pane and interact with Codex or Claude via a rich chat interface.
+- Users can open an agent chat in any lane's Work Pane and interact with Codex, Claude, or configured unified/API/local models via a rich chat interface.
 - Chat sessions are tracked as first-class sessions with transcripts, deltas, and pack integration.
 - Chat sessions appear in both the Lanes tab (Work Pane chat view) and the Terminals tab (session list).
 - The Codex chat experience closely mirrors the Codex desktop app: streaming messages, inline diffs, command output, plan tracking, approval flow, steering.
 - Claude chat provides the same UI experience using the community provider in multi-turn mode.
-- Users can switch between Codex and Claude in the composer dropdown — same UI, different backend.
+- Users can switch between configured model families in the composer dropdown; cross-family switches fork a new chat session to keep thread/runtime invariants.
 - Session resume works for both providers.
 - Chat-specific settings (provider, approval policy, sandbox) are configurable in Settings.
 - All chat activity feeds into the same context pipeline as terminal sessions (deltas, packs, agents, orchestrator).
@@ -448,8 +450,9 @@ Goal: Expose ADE capabilities as MCP tools for AI orchestrator consumption. The 
   - Redesign `AgentChatMessageList.tsx` to match the visual quality of the official Codex desktop app and opencode — rich message bubbles, clean inline diff rendering, polished command execution blocks, smooth streaming indicators, and refined approval overlays.
   - Redesign `AgentChatComposer.tsx` — cleaner input area, better provider/model selector styling, improved attachment UX.
   - Redesign `AgentChatPane.tsx` layout — proper spacing, session management chrome, and responsive panel behavior in the Work Pane split view.
-- Agent Chat bug fix — Claude provider selection:
-  - Fix bug where users cannot select Claude as the chat provider in the composer dropdown. Ensure both Codex and Claude are selectable when their respective CLIs are detected and authenticated.
+- Agent Chat bug fix — model selection and availability:
+  - Fix dropdown state bugs where users cannot switch to available models/providers.
+  - Ensure only configured/detected models are shown (CLI/API/OpenRouter/local), and all shown options are selectable.
 - Agent Chat feature — model reasoning effort selector:
   - Add reasoning effort level selector to the chat composer model picker.
   - For Codex models: expose reasoning effort levels (`low`, `medium`, `high`, `extra_high`) as reported by `model/list` in the App Server protocol. Pass selected effort to `thread/start` and `turn/start` via the `reasoningEffort` parameter.
@@ -489,6 +492,6 @@ Goal: Expose ADE capabilities as MCP tools for AI orchestrator consumption. The 
 - Every tool invocation is audit-logged with structured metadata.
 - Agent chat UI is visually polished with rich message rendering matching the quality of the official Codex app.
 - Claude is selectable as a chat provider in the composer dropdown.
-- Model reasoning effort levels are selectable for both Codex and Claude in the chat composer.
+- Model reasoning effort levels are selectable for Codex/Claude and unified models that expose reasoning tiers.
 
 ---

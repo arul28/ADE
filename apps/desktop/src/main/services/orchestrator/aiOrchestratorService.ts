@@ -419,7 +419,30 @@ export function createAiOrchestratorService(args: {
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
   const coordinatorRecoveryAttempts = new Map<string, number>();
-  const MAX_COORDINATOR_RECOVERIES = 3;
+  const DEFAULT_MAX_COORDINATOR_RECOVERIES = 3;
+
+  const getMaxCoordinatorRecoveries = (missionId?: string | null): number => {
+    // Check mission-specific metadata first
+    if (missionId) {
+      try {
+        const metadata = getMissionMetadata(missionId);
+        const missionMax = (metadata as Record<string, unknown>)?.maxCoordinatorRecoveries;
+        if (typeof missionMax === "number" && Number.isFinite(missionMax) && missionMax >= 0) {
+          return missionMax;
+        }
+      } catch { /* fall through */ }
+    }
+    // Then project config
+    try {
+      const config = readConfig(projectConfigService);
+      const execPolicy = config.defaultExecutionPolicy;
+      const policyMax = (execPolicy as Record<string, unknown> | null)?.maxCoordinatorRecoveries;
+      if (typeof policyMax === "number" && Number.isFinite(policyMax) && policyMax >= 0) {
+        return policyMax;
+      }
+    } catch { /* use default */ }
+    return DEFAULT_MAX_COORDINATOR_RECOVERIES;
+  };
 
   // Team runtime state tracking
   const teamRuntimeStates = new Map<string, OrchestratorTeamRuntimeState>();
@@ -1577,6 +1600,7 @@ export function createAiOrchestratorService(args: {
       userRules?: import("./coordinatorAgent").CoordinatorUserRules;
       projectContext?: import("./coordinatorAgent").CoordinatorProjectContext;
       availableProviders?: import("./coordinatorAgent").CoordinatorAvailableProvider[];
+      phases?: import("../../../shared/types").PhaseCard[];
     },
   ): CoordinatorAgent | null => {
     if (!projectRoot) {
@@ -1619,13 +1643,39 @@ export function createAiOrchestratorService(args: {
             runId,
           });
         },
-        onRunFinalize: () => {
+        onRunFinalize: (args) => {
+          // Forward coordinator's verdict to the chat before finalizing
+          if (args.succeeded) {
+            emitOrchestratorMessage(missionId, `[Mission Complete] ${args.summary ?? "Mission finished successfully."}`, null, {
+              role: "coordinator_v2",
+              runId,
+              event: "mission_complete",
+            });
+          } else {
+            emitOrchestratorMessage(missionId, `[Mission Failed] ${args.reason ?? "Mission could not be completed."}`, null, {
+              role: "coordinator_v2",
+              runId,
+              event: "mission_failed",
+            });
+          }
           finalizeRun({ runId, force: true });
+        },
+        onHardCapTriggered: (detail) => {
+          pauseOnBudgetHardCap(missionId, detail);
+        },
+        onBudgetWarning: (pressure, detail) => {
+          emitOrchestratorMessage(
+            missionId,
+            `Budget pressure: ${pressure} \u2014 ${detail}`,
+            null,
+            { budgetPressure: pressure, source: "budget_soft_warning" }
+          );
         },
         enableCompaction: true,
         userRules: opts?.userRules,
         projectContext: opts?.projectContext,
         availableProviders: opts?.availableProviders,
+        phases: opts?.phases,
       });
 
       coordinatorAgents.set(runId, agent);
@@ -1678,12 +1728,27 @@ export function createAiOrchestratorService(args: {
 
   /**
    * Attempt to recover a dead coordinator agent. Returns the new agent or null if recovery fails.
-   * Limited to MAX_COORDINATOR_RECOVERIES per run to prevent infinite restart loops.
+   * Limited to maxCoordinatorRecoveries (configurable, default 3) per run to prevent infinite restart loops.
    */
   const attemptCoordinatorRecovery = (runId: string): CoordinatorAgent | null => {
     const attempts = coordinatorRecoveryAttempts.get(runId) ?? 0;
-    if (attempts >= MAX_COORDINATOR_RECOVERIES) {
-      logger.warn("ai_orchestrator.coordinator_recovery_exhausted", { runId, attempts });
+    const missionId = getMissionIdForRun(runId);
+    const maxRecoveries = getMaxCoordinatorRecoveries(missionId);
+    if (attempts >= maxRecoveries) {
+      logger.warn("ai_orchestrator.coordinator_recovery_exhausted", { runId, attempts, maxRecoveries });
+
+      // Surface as a user intervention instead of silently returning null
+      if (missionId) {
+        pauseMissionWithIntervention({
+          missionId,
+          interventionType: "unrecoverable_error",
+          title: "Coordinator recovery exhausted",
+          body: `The coordinator has exhausted recovery attempts (${attempts}/${maxRecoveries}). The mission is paused. You can resume to retry, or cancel.`,
+          requestedAction: "Resume the mission to retry coordinator startup, adjust maxCoordinatorRecoveries in config, or cancel.",
+          metadata: { source: "coordinator_recovery_exhausted", runId, attempts, maxRecoveries },
+        });
+      }
+
       return null;
     }
 
@@ -1704,13 +1769,14 @@ export function createAiOrchestratorService(args: {
 
       const missionGoal = mission.prompt || mission.title;
       const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
-      const { userRules, projectCtx, availableProviders } = gatherCoordinatorContext(missionId, { missionId });
+      const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, { missionId });
 
       // Restart coordinator
       const newAgent = startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig, {
         userRules,
         projectContext: projectCtx,
         availableProviders,
+        phases,
       });
 
       if (!newAgent) return null;
@@ -1738,7 +1804,7 @@ export function createAiOrchestratorService(args: {
 
       newAgent.injectMessage(
         `[COORDINATOR RECOVERY] You are taking over a mission that was in progress.
-The previous coordinator crashed (recovery attempt ${attempts + 1} of ${MAX_COORDINATOR_RECOVERIES}). Here is the current state:
+The previous coordinator crashed (recovery attempt ${attempts + 1} of ${maxRecoveries}). Here is the current state:
 
 Mission: ${missionGoal}
 
@@ -1762,7 +1828,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
       emitOrchestratorMessage(
         missionId,
-        `Coordinator recovered (attempt ${attempts + 1}/${MAX_COORDINATOR_RECOVERIES}). Resuming mission control.`,
+        `Coordinator recovered (attempt ${attempts + 1}/${maxRecoveries}). Resuming mission control.`,
         null,
         { role: "coordinator_v2", runId },
       );
@@ -3620,70 +3686,89 @@ Check all worker statuses and continue managing the mission from here. Read work
           });
           if (elapsedMs <= timeoutMs + STALE_ATTEMPT_GRACE_MS) continue;
 
-          // Attempt exceeded timeout — forward to coordinator for decision
-          // instead of deterministically marking failed
+          const activityCandidates = [sessionSignal?.at ?? null, sessionState?.lastOutputAt ?? null]
+            .map((value) => (value ? Date.parse(value) : Number.NaN))
+            .filter((value) => Number.isFinite(value));
+          const lastActivityMs = activityCandidates.length > 0 ? Math.max(...activityCandidates) : Number.NaN;
+          const hasRecentSessionActivity =
+            Number.isFinite(lastActivityMs) && Date.now() - lastActivityMs <= STALE_ATTEMPT_GRACE_MS;
+          const hasRecentPreviewActivity =
+            stagnationSnapshot.digest != null && stagnationSnapshot.stagnantMs < STALE_ATTEMPT_GRACE_MS;
+          if (hasRecentSessionActivity || hasRecentPreviewActivity) {
+            continue;
+          }
+
+          // Attempt exceeded timeout and has no recent activity. Notify the coordinator,
+          // then enforce a deterministic guardrail so attempts cannot run forever.
           const elapsedMinutes = Math.max(1, Math.round(elapsedMs / 60_000));
           const timeoutMinutes = Math.max(1, Math.round(timeoutMs / 60_000));
           const stagnantMs = stagnationSnapshot.stagnantMs;
           const stagnantMinutes = Math.max(1, Math.round(stagnantMs / 60_000));
           const coordAgent = coordinatorAgents.get(run.id);
-          if (coordAgent) {
-            // Notify coordinator about stale attempt — it decides what to do
-            const staleMessage = [
-              `STALE ATTEMPT DETECTED: Step "${stepTitleForMessage(step)}" (${step.stepKey}) has exceeded its timeout.`,
-              `Elapsed: ${elapsedMinutes}m, Timeout: ${timeoutMinutes}m, No progress for: ${stagnantMinutes}m.`,
-              `Retry count: ${step.retryCount}/${step.retryLimit}.`,
-              `Attempt ID: ${attempt.id}. Step ID: ${step.id}.`,
-              `Decide: fail the attempt and retry, skip the step, or take another recovery action.`,
-            ].join("\n");
-            recordRuntimeEvent({
-              runId: run.id,
-              stepId: step.id,
-              attemptId: attempt.id,
-              sessionId: sessionId.length > 0 ? sessionId : null,
-              eventType: "progress",
-              eventKey: `stale:${attempt.id}:${Math.floor(Date.now() / 60_000)}`,
-              payload: {
-                staleAttempt: true,
-                elapsedMs,
-                timeoutMs,
-                stagnantMs,
-                stepTitle: stepTitleForMessage(step),
-                stepKey: step.stepKey,
-              }
-            });
-            coordAgent.injectMessage(staleMessage);
-          } else {
-            // No coordinator agent — hard guardrail: fail the attempt
-            const errorMessage = `Attempt exceeded timeout (${elapsedMinutes}m > ${timeoutMinutes}m) with ${stagnantMinutes}m no progress.`;
+          const staleMessage = [
+            `STALE ATTEMPT DETECTED: Step "${stepTitleForMessage(step)}" (${step.stepKey}) has exceeded its timeout.`,
+            `Elapsed: ${elapsedMinutes}m, Timeout: ${timeoutMinutes}m, No progress for: ${stagnantMinutes}m.`,
+            `Retry count: ${step.retryCount}/${step.retryLimit}.`,
+            `Attempt ID: ${attempt.id}. Step ID: ${step.id}.`,
+            `Attempt has been failed by timeout guardrail; decide recovery (retry/skip/workaround).`,
+          ].join("\n");
+          recordRuntimeEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: attempt.id,
+            sessionId: sessionId.length > 0 ? sessionId : null,
+            eventType: "progress",
+            eventKey: `stale:${attempt.id}:${Math.floor(Date.now() / 60_000)}`,
+            payload: {
+              staleAttempt: true,
+              elapsedMs,
+              timeoutMs,
+              stagnantMs,
+              stepTitle: stepTitleForMessage(step),
+              stepKey: step.stepKey,
+            }
+          });
+          if (coordAgent?.isAlive) {
             try {
-              orchestratorService.completeAttempt({
-                attemptId: attempt.id,
-                status: "failed",
-                errorClass: "transient",
-                errorMessage,
-                metadata: {
-                  watchdogReason: reason,
-                  watchdogRecoveredAt: nowIso(),
-                  watchdogTimeoutMs: timeoutMs,
-                  watchdogElapsedMs: elapsedMs,
-                  watchdogStagnantMs: stagnantMs,
-                  ownerId
-                }
-              });
-              staleRecovered += 1;
-              emitOrchestratorMessage(
-                graph.run.missionId,
-                `Step "${stepTitleForMessage(step)}" exceeded timeout (${elapsedMinutes}m). Marked failed — no coordinator to handle recovery.`,
-                step.stepKey
-              );
+              coordAgent.injectMessage(staleMessage);
             } catch (error) {
-              logger.debug("ai_orchestrator.health_sweep_complete_failed", {
+              logger.debug("ai_orchestrator.health_sweep_stale_notify_failed", {
                 runId: run.id,
                 attemptId: attempt.id,
                 error: error instanceof Error ? error.message : String(error)
               });
             }
+          }
+
+          const errorMessage = `Attempt stagnating after timeout (${elapsedMinutes}m > ${timeoutMinutes}m) with ${stagnantMinutes}m no progress.`;
+          try {
+            orchestratorService.completeAttempt({
+              attemptId: attempt.id,
+              status: "failed",
+              errorClass: "transient",
+              errorMessage,
+              metadata: {
+                watchdogReason: reason,
+                watchdogRecoveredAt: nowIso(),
+                watchdogTimeoutMs: timeoutMs,
+                watchdogElapsedMs: elapsedMs,
+                watchdogStagnantMs: stagnantMs,
+                ownerId,
+                coordinatorNotified: Boolean(coordAgent?.isAlive)
+              }
+            });
+            staleRecovered += 1;
+            emitOrchestratorMessage(
+              graph.run.missionId,
+              `Step "${stepTitleForMessage(step)}" exceeded timeout (${elapsedMinutes}m) and was marked failed by watchdog.`,
+              step.stepKey
+            );
+          } catch (error) {
+            logger.debug("ai_orchestrator.health_sweep_complete_failed", {
+              runId: run.id,
+              attemptId: attempt.id,
+              error: error instanceof Error ? error.message : String(error)
+            });
           }
         }
 
@@ -3913,7 +3998,8 @@ Check all worker statuses and continue managing the mission from here. Read work
           const completionCriteria = typeof stepMeta.completionCriteria === "string" ? stepMeta.completionCriteria : "";
           const hasCriteria = completionCriteria.length > 0 && completionCriteria !== "step_done";
 
-          if (hasCriteria && (runtimeProfile.evaluation.evaluateEveryStep || isFinalStep)) {
+          const coordForEval = coordinatorAgents.get(attempt.runId);
+          if (!coordForEval?.isAlive && hasCriteria && (runtimeProfile.evaluation.evaluateEveryStep || isFinalStep)) {
             evaluateWorkerPlan({
               attemptId: attempt.id,
               workerPlan: {
@@ -4053,9 +4139,10 @@ Check all worker statuses and continue managing the mission from here. Read work
               }
             });
 
-            if (aiIntegrationService && projectRoot) {
-              // AI failure diagnosis that DECIDES and ACTS, not just describes
-              const diagConfig = resolveCallTypeConfig(graph.run.missionId, "failure_diagnosis");
+            const coordForDiag = coordinatorAgents.get(attempt.runId);
+            if (!coordForDiag?.isAlive && aiIntegrationService && projectRoot) {
+              // AI failure diagnosis that DECIDES and ACTS, not just describes (one-shot fallback when no coordinator)
+              const diagConfig = resolveCallTypeConfig(graph.run.missionId, "coordinator");
               void (async () => {
                 try {
                   const fullGraph = orchestratorService.getRunGraph({ runId: attempt.runId, timelineLimit: 5 });
@@ -4567,11 +4654,12 @@ Check all worker statuses and continue managing the mission from here. Read work
     initTeamRuntimeState(runId, null);
 
     // 1. Spawn coordinator agent
-    const { userRules: teamUserRules, projectCtx: teamProjectCtx, availableProviders: teamProviders } = gatherCoordinatorContext(missionId, { missionId });
+    const { userRules: teamUserRules, projectCtx: teamProjectCtx, availableProviders: teamProviders, phases: teamPhases } = gatherCoordinatorContext(missionId, { missionId });
     const coordinatorAgent = startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig, {
       userRules: teamUserRules,
       projectContext: teamProjectCtx,
       availableProviders: teamProviders,
+      phases: teamPhases,
     });
     const coordinatorMemberId = randomUUID();
     const now = nowIso();
@@ -4844,11 +4932,12 @@ Check all worker statuses and continue managing the mission from here. Read work
 
         const coordinatorModelConfig = resolveOrchestratorModelConfig(run.mission_id, "coordinator");
         const missionGoal = mission.prompt || mission.title;
-        const { userRules, projectCtx, availableProviders } = gatherCoordinatorContext(run.mission_id, { missionId: run.mission_id });
+        const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(run.mission_id, { missionId: run.mission_id });
         const agent = startCoordinatorAgentV2(run.mission_id, run.id, missionGoal, coordinatorModelConfig, {
           userRules,
           projectContext: projectCtx,
           availableProviders,
+          phases,
         });
 
         if (agent) {
@@ -5477,11 +5566,11 @@ Check all worker statuses and continue managing the mission from here. Read work
         ?? (missionIdForAttempt ? resolveActiveRuntimeProfile(missionIdForAttempt) : null);
       const evaluationReasoningEffort = runtimeProfile?.evaluation.evaluationReasoningEffort ?? "medium";
       const configWorkerEval = missionIdForAttempt
-        ? resolveOrchestratorModelConfig(missionIdForAttempt, "worker_evaluation")
+        ? resolveOrchestratorModelConfig(missionIdForAttempt, "coordinator")
         : legacyToModelConfig("sonnet", evaluationReasoningEffort);
       const callTypeConfig = missionIdForAttempt
-        ? resolveCallTypeConfig(missionIdForAttempt, "worker_evaluation")
-        : CALL_TYPE_DEFAULTS.worker_evaluation;
+        ? resolveCallTypeConfig(missionIdForAttempt, "coordinator")
+        : CALL_TYPE_DEFAULTS.coordinator;
 
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
@@ -5634,7 +5723,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     };
 
     const missionId = graph.run.missionId;
-    const planAdjustConfig = resolveCallTypeConfig(missionId, "plan_adjustment");
+    const planAdjustConfig = resolveCallTypeConfig(missionId, "coordinator");
 
     const result = await aiIntegrationService.executeTask({
       feature: "orchestrator",
@@ -6012,6 +6101,120 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
+  // ── Mission Pause Helpers ──────────────────────────────────────────────
+  // Create an intervention and transition mission to intervention_required.
+  // Running workers are NOT killed — they finish their current task.
+
+  const pauseMissionWithIntervention = (args: {
+    missionId: string;
+    interventionType: "budget_limit_reached" | "provider_unreachable" | "unrecoverable_error";
+    title: string;
+    body: string;
+    requestedAction: string;
+    metadata?: Record<string, unknown>;
+  }): void => {
+    try {
+      missionService.addIntervention({
+        missionId: args.missionId,
+        interventionType: args.interventionType,
+        title: args.title,
+        body: args.body,
+        requestedAction: args.requestedAction,
+        pauseMission: true,
+        metadata: args.metadata ?? null,
+      });
+      emitOrchestratorMessage(
+        args.missionId,
+        `[MISSION PAUSED] ${args.title}: ${args.body.slice(0, 300)}`,
+        null,
+        { pauseReason: args.interventionType }
+      );
+
+      // Emit mission_paused timeline event for the activity feed
+      const pauseRuns = orchestratorService.listRuns({ missionId: args.missionId });
+      const pauseRun = pauseRuns.find((r) => r.status === "active" || r.status === "bootstrapping" || r.status === "paused");
+      if (pauseRun) {
+        orchestratorService.appendTimelineEvent({
+          runId: pauseRun.id,
+          eventType: "mission_paused",
+          reason: `${args.interventionType}: ${args.title}`,
+          detail: { interventionType: args.interventionType, body: args.body.slice(0, 300) },
+        });
+      }
+
+      logger.info("ai_orchestrator.mission_paused", {
+        missionId: args.missionId,
+        interventionType: args.interventionType,
+        title: args.title,
+      });
+    } catch (err) {
+      logger.error("ai_orchestrator.pause_intervention_failed", {
+        missionId: args.missionId,
+        interventionType: args.interventionType,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  /** Pause mission when a budget hard cap is triggered by spawn_worker refusal. */
+  const pauseOnBudgetHardCap = (missionId: string, detail: string): void => {
+    // Emit budget hard cap chat message + timeline event before pausing
+    emitOrchestratorMessage(missionId, `Budget pressure: hard_cap — ${detail}`);
+    const hardCapRuns = orchestratorService.listRuns({ missionId });
+    const hardCapRun = hardCapRuns.find((r) => r.status === "active" || r.status === "bootstrapping" || r.status === "paused");
+    if (hardCapRun) {
+      orchestratorService.appendTimelineEvent({
+        runId: hardCapRun.id,
+        eventType: "budget_hard_cap_triggered",
+        reason: "Budget hard cap reached",
+        detail: { detail },
+      });
+    }
+
+    pauseMissionWithIntervention({
+      missionId,
+      interventionType: "budget_limit_reached",
+      title: "Budget hard cap reached",
+      body: detail,
+      requestedAction: "Raise budget limits, wait for the 5-hour window to reset, or cancel the mission.",
+      metadata: { source: "spawn_worker_hard_cap" },
+    });
+  };
+
+  /** Pause mission when a provider is unreachable (rate limit, auth error, network). */
+  const pauseOnProviderUnreachable = (missionId: string, provider: string, errorMessage: string): void => {
+    const lowerErr = errorMessage.toLowerCase();
+    const isAuthError = lowerErr.includes("auth") || lowerErr.includes("401") || lowerErr.includes("403")
+      || lowerErr.includes("invalid api key") || lowerErr.includes("unauthorized") || lowerErr.includes("forbidden");
+
+    pauseMissionWithIntervention({
+      missionId,
+      interventionType: "provider_unreachable",
+      title: isAuthError
+        ? `Worker failed: authentication error (${provider})`
+        : `Provider unreachable: ${provider}`,
+      body: isAuthError
+        ? `Worker failed: ${errorMessage.slice(0, 500)}. Check your ${provider} subscription or API key, or switch to a different model.`
+        : `Worker failed because ${provider} is unreachable: ${errorMessage.slice(0, 500)}`,
+      requestedAction: isAuthError
+        ? `Verify your ${provider} API key or subscription in Settings, switch to a different model, then resume.`
+        : "Check provider status, verify credentials, or switch to a different provider.",
+      metadata: { source: "worker_provider_failure", provider, isAuthError },
+    });
+  };
+
+  /** Pause mission on unrecoverable errors the coordinator cannot handle. */
+  const pauseOnUnrecoverableError = (missionId: string, stepKey: string, errorMessage: string): void => {
+    pauseMissionWithIntervention({
+      missionId,
+      interventionType: "unrecoverable_error",
+      title: `Unrecoverable error in ${stepKey}`,
+      body: `Coordinator cannot recover from: ${errorMessage.slice(0, 500)}`,
+      requestedAction: "Investigate the error, fix manually, or cancel the mission.",
+      metadata: { source: "coordinator_unrecoverable", stepKey },
+    });
+  };
+
   const handleInterventionWithAI = async (args: {
     missionId: string;
     interventionId: string;
@@ -6078,9 +6281,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         required: ["autoResolvable", "confidence", "suggestedAction", "reasoning"]
       };
 
-      const configIntervention = resolveOrchestratorModelConfig(args.missionId, "intervention_handling");
+      const configIntervention = resolveOrchestratorModelConfig(args.missionId, "coordinator");
       const timeoutMs = resolveAiDecisionLikeTimeoutMs(args.missionId);
-      const interventionCallConfig = resolveCallTypeConfig(args.missionId, "intervention_handling");
+      const interventionCallConfig = resolveCallTypeConfig(args.missionId, "coordinator");
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
         taskType: "review",
@@ -6910,6 +7113,13 @@ Check all worker statuses and continue managing the mission from here. Read work
         transitionedAt
       }
     });
+
+    emitOrchestratorMessage(
+      graph.run.missionId,
+      `Phase transition: ${prevPhaseName ?? "Start"} → ${nextPhaseName}`,
+      null,
+      { phaseFrom: prevPhaseKey, phaseTo: nextPhaseKey }
+    );
 
     try {
       missionService.logEvent({
@@ -8556,7 +8766,13 @@ Check all worker statuses and continue managing the mission from here. Read work
     } else {
       // Single coordinator agent (no teammates)
       const missionGoal = initialMission.prompt || initialMission.title;
-      startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig);
+      const { userRules: soloRules, projectCtx: soloCtx, availableProviders: soloProviders, phases: soloPhases } = gatherCoordinatorContext(missionId, args);
+      startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig, {
+        userRules: soloRules,
+        projectContext: soloCtx,
+        availableProviders: soloProviders,
+        phases: soloPhases,
+      });
 
       // Transition run to active
       const ts = nowIso();
@@ -8634,11 +8850,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (activeRun) {
         // Resume the coordinator for the existing run
         const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
-        const { userRules, projectCtx, availableProviders } = gatherCoordinatorContext(missionId, args);
+        const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
         startCoordinatorAgentV2(missionId, activeRun.id, missionGoal, coordinatorModelConfig, {
           userRules,
           projectContext: projectCtx,
           availableProviders,
+          phases,
         });
 
         const ts = nowIso();
@@ -8682,7 +8899,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     );
 
     // ── Gather context for the coordinator ──
-    const { userRules, projectCtx, availableProviders } = gatherCoordinatorContext(missionId, args);
+    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
 
     // ── Spawn the coordinator — the AI brain takes over ──
     const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
@@ -8690,6 +8907,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       userRules,
       projectContext: projectCtx,
       availableProviders,
+      phases,
     });
 
     void syncMissionFromRun(started.run.id, "mission_run_started");
@@ -8744,10 +8962,30 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     // Discover project docs
     const projectDocsContext = discoverProjectDocs();
+
+    // Build a shallow file tree for coordinator context
+    let fileTree: string | undefined;
+    if (projectRoot) {
+      try {
+        const fsSync = require("fs");
+        const entries = fsSync.readdirSync(projectRoot, { withFileTypes: true }) as Array<{ isDirectory(): boolean; name: string }>;
+        const lines = entries
+          .sort((a: { isDirectory(): boolean; name: string }, b: { isDirectory(): boolean; name: string }) =>
+            a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1,
+          )
+          .slice(0, 50)
+          .map((e: { isDirectory(): boolean; name: string }) => (e.isDirectory() ? `${e.name}/` : e.name));
+        fileTree = lines.join("\n");
+      } catch {
+        /* ignore — best-effort */
+      }
+    }
+
     const projectCtx: import("./coordinatorAgent").CoordinatorProjectContext | undefined =
       projectRoot ? {
         projectRoot,
         projectDocs: projectDocsContext.found ? projectDocsContext.contents : undefined,
+        fileTree,
       } : undefined;
 
     // Detect available providers
@@ -8758,7 +8996,11 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (availability.codex) availableProviders.push({ name: "codex", available: true });
     }
 
-    return { userRules, projectCtx, availableProviders };
+    // Load phase cards so the coordinator knows the mission execution phases
+    const phaseConfig = missionService.getPhaseConfiguration(missionId);
+    const phases = phaseConfig?.selectedPhases ?? [];
+
+    return { userRules, projectCtx, availableProviders, phases };
   };
 
   const approveMissionPlan = async (args: MissionRunStartArgs): Promise<MissionRunStartResult> => {
@@ -12515,7 +12757,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         peerField
       });
 
-      const configFailureDiag = resolveOrchestratorModelConfig(diagArgs.missionId, "failure_diagnosis");
+      const configFailureDiag = resolveOrchestratorModelConfig(diagArgs.missionId, "coordinator");
       const timeoutMs = resolveAiDecisionLikeTimeoutMs(diagArgs.missionId);
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator" as const,
@@ -12591,6 +12833,36 @@ Check all worker statuses and continue managing the mission from here. Read work
       const tier = classifyFailureTier({
         errorClass: attempt.errorClass
       });
+
+      // Provider unreachable: pause mission on executor failures that indicate the
+      // provider itself is down (rate limit, auth, network). These show up as
+      // "executor_failure" with recognizable error messages.
+      if (attempt.errorClass === "executor_failure") {
+        const lowerErr = errorMessage.toLowerCase();
+        const isProviderDown =
+          lowerErr.includes("rate limit") ||
+          lowerErr.includes("rate_limit") ||
+          lowerErr.includes("429") ||
+          lowerErr.includes("auth") ||
+          lowerErr.includes("401") ||
+          lowerErr.includes("403") ||
+          lowerErr.includes("network") ||
+          lowerErr.includes("econnrefused") ||
+          lowerErr.includes("fetch failed") ||
+          lowerErr.includes("service unavailable") ||
+          lowerErr.includes("503");
+        if (isProviderDown) {
+          const executorKind = attempt.executorKind ?? "claude";
+          pauseOnProviderUnreachable(missionId, executorKind, errorMessage);
+          return;
+        }
+      }
+
+      // Unrecoverable: policy blocks with exhausted retries
+      if (attempt.errorClass === "policy" && step.retryCount >= step.retryLimit) {
+        pauseOnUnrecoverableError(missionId, step.stepKey, errorMessage);
+        return;
+      }
 
       // Tier 1: transient — existing backoff is sufficient
       if (tier === "transient") {

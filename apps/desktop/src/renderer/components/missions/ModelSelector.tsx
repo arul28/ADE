@@ -1,7 +1,6 @@
 import React, { useCallback, useMemo } from "react";
 import type { ModelConfig, ModelProvider, ThinkingLevel } from "../../../shared/types";
 import {
-  ALL_MODELS,
   getModelsForProvider,
   getThinkingLevels,
   findModel,
@@ -9,9 +8,7 @@ import {
 import type { ModelEntry } from "../../../shared/modelProfiles";
 import {
   MODEL_REGISTRY,
-  MODEL_FAMILIES,
   type ProviderFamily,
-  type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 
@@ -43,15 +40,10 @@ const compactSelectStyle: React.CSSProperties = {
   padding: "0 4px",
 };
 
-// Map MODEL_REGISTRY families to legacy ModelProvider for backward compat
-const FAMILY_TO_PROVIDER: Partial<Record<ProviderFamily, ModelProvider>> = {
-  anthropic: "claude",
-  openai: "codex",
+const PROVIDER_TO_FAMILY: Record<ModelProvider, ProviderFamily> = {
+  claude: "anthropic",
+  codex: "openai",
 };
-
-function familyToProvider(family: ProviderFamily): ModelProvider {
-  return FAMILY_TO_PROVIDER[family] ?? (family as ModelProvider);
-}
 
 function getRecommendedModel(provider: ModelProvider): ModelEntry | undefined {
   return getModelsForProvider(provider).find((m) => m.recommended);
@@ -62,7 +54,8 @@ function detectProvider(modelId: string): ModelProvider {
   if (entry) return entry.provider;
   // Check registry for broader family detection
   const descriptor = MODEL_REGISTRY.find((m) => m.id === modelId || m.sdkModelId === modelId);
-  if (descriptor) return familyToProvider(descriptor.family);
+  if (descriptor?.family === "anthropic") return "claude";
+  if (descriptor?.family === "openai") return "codex";
   if (
     modelId.startsWith("claude") ||
     modelId.startsWith("opus") ||
@@ -88,16 +81,27 @@ export function ModelSelector({
 
   // Build provider list from MODEL_REGISTRY families that have non-deprecated models
   const providers: ProviderOption[] = useMemo(() => {
-    const familySet = new Set<ProviderFamily>();
-    for (const m of MODEL_REGISTRY) {
-      if (m.deprecated) continue;
-      if (allowedSet && !allowedSet.has(m.id)) continue;
-      familySet.add(m.family);
+    const options: ProviderOption[] = [];
+    for (const provider of ["claude", "codex"] as const) {
+      const family = PROVIDER_TO_FAMILY[provider];
+      const hasModel = MODEL_REGISTRY.some((model) => {
+        if (model.deprecated || !model.isCliWrapped) return false;
+        if (model.family !== family) return false;
+        if (allowedSet && !allowedSet.has(model.id)) return false;
+        return true;
+      });
+      if (!hasModel) continue;
+      options.push({
+        value: provider,
+        label: provider === "claude" ? "Anthropic" : "OpenAI",
+        family,
+      });
     }
-    return [...familySet].map((family) => ({
-      value: familyToProvider(family),
-      label: MODEL_FAMILIES[family]?.displayName ?? family,
-      family,
+    if (options.length > 0) return options;
+    return (["claude", "codex"] as const).map((provider) => ({
+      value: provider,
+      label: provider === "claude" ? "Anthropic" : "OpenAI",
+      family: PROVIDER_TO_FAMILY[provider],
     }));
   }, [allowedSet]);
 
@@ -106,14 +110,14 @@ export function ModelSelector({
 
   // Get registry models grouped by family for the current provider
   const registryModelsGrouped = useMemo(() => {
-    const currentFamily = providers.find((p) => p.value === value.provider)?.family;
+    const currentFamily = PROVIDER_TO_FAMILY[value.provider];
     if (!currentFamily) return [];
     return MODEL_REGISTRY.filter((m) => {
-      if (m.family !== currentFamily || m.deprecated) return false;
+      if (m.family !== currentFamily || m.deprecated || !m.isCliWrapped) return false;
       if (allowedSet && !allowedSet.has(m.id)) return false;
       return true;
     });
-  }, [value.provider, providers, allowedSet]);
+  }, [value.provider, allowedSet]);
 
   const thinkingLevels = useMemo(() => getThinkingLevels(value.provider), [value.provider]);
 
@@ -128,7 +132,7 @@ export function ModelSelector({
     if (registryDescriptor?.reasoningTiers?.length) {
       return registryDescriptor.reasoningTiers.map((t) => ({
         value: t as ThinkingLevel,
-        label: t.charAt(0).toUpperCase() + t.slice(1).replace("_", " "),
+        label: t === "xhigh" ? "Extra High" : t.charAt(0).toUpperCase() + t.slice(1).replace("_", " "),
       }));
     }
     return thinkingLevels;
@@ -138,18 +142,27 @@ export function ModelSelector({
     (newProvider: ModelProvider) => {
       // Try legacy models first, fall back to registry
       const recommended = getRecommendedModel(newProvider);
-      let modelId = recommended?.modelId;
+      const providerFamily = PROVIDER_TO_FAMILY[newProvider];
+      const providerRegistryModels = MODEL_REGISTRY
+        .filter((model) => {
+          if (model.deprecated || !model.isCliWrapped) return false;
+          if (model.family !== providerFamily) return false;
+          if (allowedSet && !allowedSet.has(model.id)) return false;
+          return true;
+        })
+        .sort((a, b) => a.displayName.localeCompare(b.displayName));
+      const recommendedRegistryModel = recommended
+        ? providerRegistryModels.find((model) =>
+            model.sdkModelId === recommended.modelId
+            || model.shortId === recommended.modelId
+            || model.id === recommended.modelId
+          )
+        : undefined;
+      let modelId = recommendedRegistryModel?.sdkModelId;
+      if (!modelId) modelId = providerRegistryModels[0]?.sdkModelId;
+      if (!modelId) modelId = getModelsForProvider(newProvider)[0]?.modelId;
       if (!modelId) {
-        const legacyModels = getModelsForProvider(newProvider);
-        modelId = legacyModels[0]?.modelId;
-      }
-      if (!modelId) {
-        // Use registry to find the first model for this provider's family
-        const family = providers.find((p) => p.value === newProvider)?.family;
-        const registryModel = family
-          ? MODEL_REGISTRY.find((m) => m.family === family && !m.deprecated)
-          : undefined;
-        modelId = registryModel?.sdkModelId ?? "";
+        modelId = "";
       }
       const levels = getThinkingLevels(newProvider);
       const thinkingLevel =
@@ -158,7 +171,7 @@ export function ModelSelector({
           : "medium";
       onChange({ provider: newProvider, modelId, thinkingLevel });
     },
-    [onChange, value.thinkingLevel, providers]
+    [allowedSet, onChange, value.thinkingLevel]
   );
 
   const handleModelChange = useCallback(
@@ -201,6 +214,14 @@ export function ModelSelector({
           ? registryModelsGrouped.map((m) => (
               <option key={m.id} value={m.sdkModelId}>
                 {m.displayName}
+                {showRecommendedBadge
+                  && getRecommendedModel(value.provider)?.modelId
+                  && (
+                    m.sdkModelId === getRecommendedModel(value.provider)?.modelId
+                    || m.shortId === getRecommendedModel(value.provider)?.modelId
+                  )
+                    ? " ★ RECOMMENDED"
+                    : ""}
               </option>
             ))
           : models.map((m) => (

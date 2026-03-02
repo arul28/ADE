@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-27
+> Last updated: 2026-03-02
 
-The AI integration layer replaces the previous hosted agent with a local-first, subscription-powered approach. Instead of a cloud backend with API keys and remote job queues, ADE spawns `claude` and `codex` CLI processes that inherit the user's existing subscriptions, coordinates them through an MCP server, and manages multi-step workflows via an AI orchestrator.
+The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
 ---
 
@@ -13,7 +13,7 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
 - [Overview](#overview)
 - [Agent-First Execution Contract](#agent-first-execution-contract)
 - [Design Decisions](#design-decisions)
-  - [Why Subscription-Powered?](#why-subscription-powered)
+  - [Why Subscription-Powered First?](#why-subscription-powered-first)
   - [SDK Strategy](#sdk-strategy)
   - [Why MCP for Tool Access?](#why-mcp-for-tool-access)
   - [Why AI Orchestrator?](#why-ai-orchestrator)
@@ -54,13 +54,13 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
 
 ADE's AI integration is designed around three principles:
 
-1. **No credential management**: Users should never paste API keys into ADE. If `claude` or `codex` is installed and authenticated, AI features work automatically.
-2. **Local execution**: All AI processing happens on the developer's machine. No data leaves the local environment except through the CLI processes' own authenticated connections to their respective providers.
+1. **No mandatory credential management**: CLI users do not need to paste keys; `claude`/`codex` authentication is inherited. API-key/local provider configuration is optional for broader model access.
+2. **Local-first execution**: ADE runs AI flows from the local desktop process and supports CLI runtimes plus direct API/local endpoints, with no ADE-hosted backend.
 3. **Auditable tool access**: AI agents interact with ADE exclusively through an MCP server that enforces permissions, logs every call, and provides a clear boundary between what the AI can read versus what it can mutate.
 
 The AI integration layer consists of four subsystems:
 
-- **Agent SDKs** -- the execution layer that spawns and manages CLI processes via the `AgentExecutor` interface.
+- **Agent SDKs** -- the execution layer that handles both CLI-backed and non-CLI model runtimes via shared execution contracts.
 - **AI Integration Service** -- the main-process service that routes tasks to the appropriate provider and model.
 - **MCP Server** -- the tool exposure layer that gives AI agents controlled access to ADE's capabilities.
 - **AI Orchestrator** -- the coordination layer that plans and executes multi-step missions.
@@ -87,16 +87,16 @@ AI agents **NEVER** directly mutate the repository. All filesystem writes, git c
 
 ## Design Decisions
 
-### Why Subscription-Powered?
+### Why Subscription-Powered First?
 
 The previous architecture required users to either sign up for a hosted service (with OAuth, cloud sync, and remote job processing) or configure bring-your-own-key (BYOK) credentials with raw API keys. Both approaches created friction:
 
 - Hosted service: required account creation, network connectivity for AI features, and a separate billing relationship.
 - BYOK: required users to obtain, paste, and rotate API keys -- a credential management burden that is error-prone and creates security surface area.
 
-The subscription-powered approach eliminates both problems. Developers who use Claude or Codex already have authenticated CLI tools on their machines. ADE spawns these CLIs as child processes, and they authenticate using whatever mechanism the user already set up (browser sign-in, token file, environment variable). ADE never sees or stores the credentials.
+The subscription-powered approach eliminated most onboarding friction for core users. Developers who use Claude or Codex already have authenticated CLI tools on their machines. ADE spawns these CLIs as child processes, and they authenticate using whatever mechanism the user already set up (browser sign-in, token file, environment variable). ADE never sees or stores the credentials.
 
-This also aligns AI cost with tools developers already budget for. There is no separate ADE subscription tier for AI features -- the user's existing CLI subscription covers it.
+This also aligns AI cost with tools developers already budget for. There is no separate ADE subscription tier for AI features. API-key/OpenRouter/local runtime paths are available alongside this CLI-first path when users want broader model coverage.
 
 ### SDK Strategy
 
@@ -427,6 +427,7 @@ ADE always passes its own config via the SDK, which overrides project-level code
 | `codex-mini-latest` | Fast, lightweight | One-shot tasks, summaries |
 | `o4-mini` | Reasoning model | Planning, analysis |
 | `o3` | Advanced reasoning | Complex multi-step reasoning |
+| `gpt-5.3-codex-spark` | Near-instant speed | Quick iterations, lightweight tasks |
 
 **Tool interception**: The Codex SDK's approval hooks are mapped to the same `canUseTool` contract via the executor adapter, maintaining a uniform permission interface for the orchestrator.
 
@@ -508,6 +509,30 @@ function detectAvailableProviders(): ProviderAvailability {
 ```
 
 If no CLI tools are detected, ADE operates in guest mode: all deterministic features (packs, diffs, conflict detection) work normally, but AI-generated content (narratives, proposals, PR descriptions) is unavailable. The UI clearly indicates which features require a CLI subscription.
+
+#### Model Registry & Dynamic Pricing
+
+At startup, the AI integration service also initializes the models.dev integration (non-blocking):
+
+1. **Fetch**: `modelsDevService.initialize()` fetches the models.dev API with a 10s timeout.
+2. **Parse**: Scans all providers, builds a map of model metadata (pricing, context windows, capabilities).
+3. **Cache**: Persists to a local cache file; falls back to cache on network failure.
+4. **Enrich**: Calls `updateModelPricing()` to merge live pricing into the `MODEL_PRICING` Proxy object, and `enrichModelRegistry()` to update context windows and capabilities in the registry.
+5. **Refresh**: Repeats every 6 hours (non-blocking).
+
+The model registry (`modelRegistry.ts`) contains 40+ models across 8 provider families (Anthropic, OpenAI, Google, DeepSeek, Mistral, xAI, OpenRouter, local providers such as Ollama/LM Studio/vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). The `UnifiedModelSelector` groups models by auth type and only shows models that are currently configured/detected -- a "Configure more..." link navigates to Settings.
+
+#### Provider Options (Reasoning Tier Passthrough)
+
+Provider-specific reasoning configuration is handled by `buildProviderOptions()` in `providerOptions.ts`. Instead of inventing arbitrary token budgets, it passes the tier string directly to each provider's native configuration:
+
+- **Anthropic** (adaptive): `{ thinking: { type: "adaptive" }, effort: tier }`
+- **OpenAI/Codex**: `{ reasoningEffort: tier }`
+- **Google** (3.x): `{ thinkingConfig: { thinkingLevel: tier, includeThoughts: true } }`
+- **DeepSeek**: `{}` (always-on, handled by `extractReasoningMiddleware`)
+- **Others**: `{ reasoningEffort: tier }` or `{}` as appropriate
+
+Each model declares its own `reasoningTiers` array in the registry, and the UI only shows tiers that the selected model supports.
 
 #### Configuration
 
@@ -1283,6 +1308,15 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 - Memory architecture (scoped namespaces, candidate/promoted/archived lifecycle, auto-promotion, context budget panel)
 - Mission phase engine + profiles (Task 3): phase storage, profile CRUD/import/export, mission overrides, phase transition telemetry
 - Mission UI overhaul (Task 4): Plan/Work tabs, missions home dashboard, phase-aware details and launch/settings profile management
+- Model registry expansion (40+ models across 8 provider families, auth-type classification, runtime enrichment via `enrichModelRegistry()`)
+- Dynamic pricing via models.dev integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded)
+- Provider options simplification (`providerOptions.ts`: pure tier-string passthrough, no invented token budgets)
+- Reasoning tier standardization: Claude CLI low/medium/high, Claude API low/medium/high/max, Codex minimal/low/medium/high/xhigh
+- UnifiedModelSelector redesign (auth-type grouping, hide unavailable models, "Configure more..." settings link)
+- Universal tools for API-key and local models (`universalTools.ts`: permission modes plan/edit/full-auto)
+- Middleware layer (`middleware.ts`: logging, retry, cost guard, reasoning extraction)
+- GPT-5.3 Codex Spark model support
+- Orchestrator call types simplified from 6 to 2 (coordinator, chat_response)
 
 **Remaining (~10%)**:
 - Next execution focus: Task 5 (pre-flight/intervention/HITL) and Task 6 (budget/usage), then Tasks 7-8.
@@ -1483,7 +1517,7 @@ This boundary is critical: SDK calls are ADE's internal tool; CLI sessions are t
 
 ### Agent Chat Service (Phase 1.5)
 
-The Agent Chat Service provides a native, interactive chat interface inside ADE — an alternative to using CLI terminals for working with Codex and Claude. It is a **provider-agnostic abstraction** that lets users chat with either agent using the same UI.
+The Agent Chat Service provides a native, interactive chat interface inside ADE — an alternative to using CLI terminals for working with Codex, Claude, and unified API/local model runtimes. It is a **provider-agnostic abstraction** that lets users chat with CLI or non-CLI models using the same UI.
 
 > **External reference**: The Codex App Server protocol specification is at https://developers.openai.com/codex/app-server — this is the canonical reference for the CodexChatBackend implementation.
 
@@ -1495,28 +1529,30 @@ CLI terminals are powerful but opaque. The chat interface provides:
 - **Approval flow**: Accept/decline tool use with full context, not a yes/no prompt in a terminal.
 - **Steering**: Inject instructions into an active turn without starting a new conversation.
 - **Session persistence**: Resume conversations with full context, not just a command string.
-- **Provider switching**: Same UI for both Codex and Claude — switch in the composer dropdown.
+- **Provider switching**: Same UI across providers/models. When switching model families mid-session, ADE forks a new chat session under the selected runtime/provider.
 
 #### AgentChatService Interface
 
 ```typescript
 interface AgentChatService {
-  createSession(laneId: string, provider: "codex" | "claude", model: string): Promise<ChatSession>;
+  createSession(laneId: string, provider: "codex" | "claude" | "unified", model: string, modelId?: string, permissionMode?: "plan" | "edit" | "full-auto"): Promise<ChatSession>;
   sendMessage(sessionId: string, text: string, attachments?: FileRef[]): AsyncIterable<ChatEvent>;
   steer(sessionId: string, text: string): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
   resumeSession(sessionId: string): Promise<ChatSession>;
   listSessions(laneId?: string): Promise<ChatSessionSummary[]>;
   approveToolUse(sessionId: string, itemId: string, decision: ApprovalDecision): Promise<void>;
-  getAvailableModels(provider: "codex" | "claude"): Promise<ModelInfo[]>;
+  getAvailableModels(provider: "codex" | "claude" | "unified"): Promise<ModelInfo[]>;
   dispose(sessionId: string): Promise<void>;
 }
 
 interface ChatSession {
   id: string;
   laneId: string;
-  provider: "codex" | "claude";
+  provider: "codex" | "claude" | "unified";
   model: string;
+  modelId?: string;
+  permissionMode?: "plan" | "edit" | "full-auto";
   status: "active" | "idle" | "ended";
   threadId?: string;           // Codex: app-server thread ID
   createdAt: string;
@@ -1691,7 +1727,7 @@ Phase 2 completed the outstanding chat debt from Phase 1.5:
 
 - **UI polish shipped**: The Work Pane chat surface (`AgentChatMessageList.tsx`, `AgentChatComposer.tsx`, `AgentChatPane.tsx`) now uses richer bubble styling, inline diff emphasis, cleaner command blocks, improved streaming indicators, and clearer approval presentation.
 - **Claude provider selection fixed**: Provider selection no longer resets unexpectedly; Claude and Codex remain selectable based on detected model availability.
-- **Reasoning effort selector shipped**: Codex reasoning effort (`low`, `medium`, `high`, `extra_high`) is surfaced in the composer and passed to both `thread/start` and `turn/start`. Last-used effort is persisted per lane/model. Claude model variants are shown with descriptive labels from `supportedModels()`.
+- **Reasoning effort selector shipped**: Codex reasoning effort (`minimal`, `low`, `medium`, `high`, `xhigh`) is surfaced in the composer and passed to both `thread/start` and `turn/start`. Last-used effort is persisted per lane/model. Claude model variants are shown with descriptive labels from `supportedModels()`.
 
 #### Chat Session Lifecycle
 
@@ -1700,9 +1736,10 @@ Agent chat sessions integrate into ADE's existing session tracking infrastructur
 ```
 1. User opens Chat view in Work Pane
    → agentChatService.createSession(laneId, provider, model)
-   → Creates terminal_sessions row (tool_type: "codex-chat" or "claude-chat")
+   → Creates terminal_sessions row (tool_type: "codex-chat", "claude-chat", or "ai-chat")
    → Codex: spawns app-server + thread/start
    → Claude: initializes messages[] + session state
+   → Unified: resolves configured API/local model via provider resolver + initializes universal tool runtime
    → Captures head_sha_start
 
 2. User sends messages, agent works
@@ -1728,6 +1765,7 @@ Agent chat sessions integrate into ADE's existing session tracking infrastructur
    → agentChatService.resumeSession()
    → Codex: thread/resume with stored threadId
    → Claude: reload messages[] from JSON
+   → Unified: re-resolve model + reload persisted message history + permission mode
 ```
 
 This lifecycle mirrors the PTY session lifecycle exactly, ensuring that chat sessions produce the same context artifacts (deltas, packs, checkpoints) as terminal sessions.
@@ -1839,7 +1877,7 @@ interface LearningEntry {
 | CodexChatBackend (App Server) | Complete | JSON-RPC 2.0 client in `agentChatService.ts` |
 | ClaudeChatBackend (community provider) | Complete | Multi-turn `streamText()` in `agentChatService.ts` |
 | Chat UI components | Complete | AgentChatPane, AgentChatMessageList, AgentChatComposer |
-| Chat session integration | Complete | `codex-chat` and `claude-chat` tool types in `terminal_sessions` |
+| Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
 | AI orchestrator (Claude + MCP) | In Progress | Tasks 1-6 shipped; remaining Phase 3 scope is Tasks 7-8 (reflection + integration soak) |
@@ -1847,6 +1885,11 @@ interface LearningEntry {
 | Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
 | Pre-flight + intervention/HITL (Task 5) | Complete | Launch-gate checklist, granular worker-level interventions, coordinator `ask_user`/`request_user_input` escalation wiring |
 | Budget + usage tracking (Task 6) | Complete | Mission budget service, subscription/API-key accounting, coordinator `get_budget_status`, details-tab budget telemetry |
+| Model registry (40+ models, runtime enrichment) | Complete | `modelRegistry.ts` -- 8 provider families, auth-type classification, `enrichModelRegistry()` for models.dev data |
+| Dynamic pricing (models.dev) | Complete | `modelsDevService.ts` -- fetch/cache/fallback, 6h refresh, Proxy-based `MODEL_PRICING` |
+| Provider options (tier passthrough) | Complete | `providerOptions.ts` -- pure tier-string passthrough per provider family, no arbitrary token budgets |
+| Middleware layer | Complete | `middleware.ts` -- logging, retry, cost guard, reasoning extraction |
+| Universal tools (API-key/local) | Complete | `universalTools.ts` -- permission modes (plan/edit/full-auto), approval hooks |
 | Agent-first runtime migration | In Progress | Non-interactive AI call paths are being normalized through runtime creation and policy enforcement |
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |

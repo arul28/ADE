@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from "react";
-import { Info, Check } from "@phosphor-icons/react";
-import type { SmartBudgetConfig } from "../../../shared/types";
+import { Info, Check, Clock, Warning } from "@phosphor-icons/react";
+import type { SmartBudgetConfig, MissionBudgetProviderSnapshot, ProviderBudgetLimits, ModelProvider } from "../../../shared/types";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
@@ -16,6 +16,8 @@ type SmartBudgetPanelProps = {
   currentSpend?: { fiveHourUsd: number; weeklyUsd: number } | null;
   modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUsd: number; sessions?: number }>;
   billingContext?: BillingContext;
+  /** Per-provider budget snapshots from the budget service */
+  perProvider?: MissionBudgetProviderSnapshot[];
 };
 
 const inputStyle: React.CSSProperties = {
@@ -31,6 +33,11 @@ const inputStyle: React.CSSProperties = {
   width: 100,
 };
 
+const smallInputStyle: React.CSSProperties = {
+  ...inputStyle,
+  width: 72,
+};
+
 const STEERING_ACTIONS = [
   "Downgrade models",
   "Inject conciseness",
@@ -39,6 +46,8 @@ const STEERING_ACTIONS = [
   "Reduce parallelism",
   "Switch provider",
 ];
+
+const PROVIDERS: ModelProvider[] = ["claude", "codex"];
 
 function ProgressBar({
   current,
@@ -97,6 +106,15 @@ function formatTokenCount(n: number): string {
   return `${n} tok`;
 }
 
+function formatTimeRemaining(ms: number | null): string {
+  if (ms == null || ms <= 0) return "--";
+  const minutes = Math.floor(ms / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
 function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
   return (
@@ -124,12 +142,49 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
   );
 }
 
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontFamily: MONO_FONT,
+        fontSize: 10,
+        fontWeight: 700,
+        color: COLORS.textMuted,
+        textTransform: "uppercase",
+        letterSpacing: "1px",
+        marginBottom: 8,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function FieldLabel({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span
+      className={className ?? "w-24 shrink-0"}
+      style={{
+        fontFamily: MONO_FONT,
+        fontSize: 10,
+        fontWeight: 700,
+        color: COLORS.textMuted,
+        textTransform: "uppercase",
+        letterSpacing: "1px",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
 export function SmartBudgetPanel({
   value,
   onChange,
   currentSpend,
   modelUsage,
   billingContext,
+  perProvider,
 }: SmartBudgetPanelProps) {
   const subscriptionOnly = billingContext?.hasSubscription && !billingContext?.apiProviders.length;
 
@@ -153,6 +208,41 @@ export function SmartBudgetPanel({
       if (!isNaN(num) && num >= 0) {
         onChange({ ...value, weeklyThresholdUsd: num });
       }
+    },
+    [value, onChange]
+  );
+
+  const handleProviderLimitChange = useCallback(
+    (provider: ModelProvider, field: keyof ProviderBudgetLimits, raw: string) => {
+      const num = parseInt(raw, 10);
+      if (isNaN(num) || num < 0) return;
+      const current = value.providerLimits ?? {};
+      const provLimits = current[provider] ?? { fiveHourTokenLimit: 0, weeklyTokenLimit: 0 };
+      onChange({
+        ...value,
+        providerLimits: {
+          ...current,
+          [provider]: { ...provLimits, [field]: num },
+        },
+      });
+    },
+    [value, onChange]
+  );
+
+  const handleHardStopChange = useCallback(
+    (field: "fiveHourHardStopPercent" | "weeklyHardStopPercent", raw: string) => {
+      const num = parseInt(raw, 10);
+      if (isNaN(num) || num < 0 || num > 100) return;
+      onChange({ ...value, [field]: num });
+    },
+    [value, onChange]
+  );
+
+  const handleApiKeyMaxChange = useCallback(
+    (raw: string) => {
+      const num = parseFloat(raw);
+      if (isNaN(num) || num < 0) return;
+      onChange({ ...value, apiKeyMaxSpendUsd: num });
     },
     [value, onChange]
   );
@@ -223,19 +313,9 @@ export function SmartBudgetPanel({
         <div className="space-y-2 pt-2">
           {/* 5-Hour Limit */}
           <div className="flex items-center gap-3">
-            <span
-              className="w-24 shrink-0"
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                fontWeight: 700,
-                color: COLORS.textMuted,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-              }}
-            >
+            <FieldLabel>
               {subscriptionOnly ? "5-Hour Token Budget" : "5-Hour Limit"}
-            </span>
+            </FieldLabel>
             <div className="flex items-center gap-1">
               {!subscriptionOnly && (
                 <span
@@ -268,19 +348,9 @@ export function SmartBudgetPanel({
 
           {/* Weekly Limit */}
           <div className="flex items-center gap-3">
-            <span
-              className="w-24 shrink-0"
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                fontWeight: 700,
-                color: COLORS.textMuted,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-              }}
-            >
+            <FieldLabel>
               {subscriptionOnly ? "Weekly Token Budget" : "Weekly Limit"}
-            </span>
+            </FieldLabel>
             <div className="flex items-center gap-1">
               {!subscriptionOnly && (
                 <span
@@ -312,25 +382,258 @@ export function SmartBudgetPanel({
           </div>
         </div>
 
+        {/* Per-provider usage display */}
+        {perProvider && perProvider.length > 0 && (
+          <div
+            className="pt-2"
+            style={{ borderTop: `1px solid ${COLORS.border}` }}
+          >
+            <SectionLabel>Per-Provider Usage</SectionLabel>
+            <div className="space-y-3">
+              {perProvider.map((snap) => {
+                const fiveHrPct = snap.fiveHour.usedPct ?? 0;
+                const weeklyPct = snap.weekly.usedPct ?? 0;
+                const fiveHrColor = fiveHrPct >= 80 ? COLORS.danger : fiveHrPct >= 50 ? COLORS.warning : COLORS.success;
+                const weeklyColor = weeklyPct >= 80 ? COLORS.danger : weeklyPct >= 50 ? COLORS.warning : COLORS.success;
+                return (
+                  <div key={snap.provider}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span
+                        style={{
+                          fontFamily: MONO_FONT,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: COLORS.textSecondary,
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {snap.provider}
+                      </span>
+                      {snap.fiveHour.timeUntilResetMs != null && snap.fiveHour.timeUntilResetMs > 0 && (
+                        <span className="flex items-center gap-1">
+                          <Clock size={10} color={COLORS.textDim} />
+                          <span
+                            style={{
+                              fontFamily: MONO_FONT,
+                              fontSize: 9,
+                              color: COLORS.textDim,
+                            }}
+                          >
+                            5hr reset: {formatTimeRemaining(snap.fiveHour.timeUntilResetMs)}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                    {/* 5-hour bar */}
+                    <div className="flex items-center gap-2 mb-1">
+                      <span
+                        className="w-12 shrink-0"
+                        style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }}
+                      >
+                        5hr
+                      </span>
+                      <div
+                        style={{
+                          height: 4,
+                          flex: 1,
+                          background: COLORS.border,
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${Math.min(fiveHrPct, 100)}%`,
+                            background: fiveHrColor,
+                            transition: "width 0.3s ease",
+                          }}
+                        />
+                      </div>
+                      <span
+                        style={{
+                          fontFamily: MONO_FONT,
+                          fontSize: 9,
+                          color: COLORS.textDim,
+                          whiteSpace: "nowrap",
+                          minWidth: 80,
+                          textAlign: "right",
+                        }}
+                      >
+                        {formatTokenCount(snap.fiveHour.usedTokens)}
+                        {snap.fiveHour.limitTokens != null ? ` / ${formatTokenCount(snap.fiveHour.limitTokens)}` : ""}
+                        {" "}({Math.round(fiveHrPct)}%)
+                      </span>
+                    </div>
+                    {/* Weekly bar */}
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="w-12 shrink-0"
+                        style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }}
+                      >
+                        weekly
+                      </span>
+                      <div
+                        style={{
+                          height: 4,
+                          flex: 1,
+                          background: COLORS.border,
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${Math.min(weeklyPct, 100)}%`,
+                            background: weeklyColor,
+                            transition: "width 0.3s ease",
+                          }}
+                        />
+                      </div>
+                      <span
+                        style={{
+                          fontFamily: MONO_FONT,
+                          fontSize: 9,
+                          color: COLORS.textDim,
+                          whiteSpace: "nowrap",
+                          minWidth: 80,
+                          textAlign: "right",
+                        }}
+                      >
+                        {formatTokenCount(snap.weekly.usedTokens)}
+                        {snap.weekly.limitTokens != null ? ` / ${formatTokenCount(snap.weekly.limitTokens)}` : ""}
+                        {" "}({Math.round(weeklyPct)}%)
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Per-provider tier ceilings */}
+        <div
+          className="pt-2"
+          style={{ borderTop: `1px solid ${COLORS.border}` }}
+        >
+          <SectionLabel>Provider Tier Ceilings</SectionLabel>
+          <div className="space-y-2">
+            {PROVIDERS.map((provider) => {
+              const limits = value.providerLimits?.[provider] ?? { fiveHourTokenLimit: 0, weeklyTokenLimit: 0 };
+              return (
+                <div key={provider} className="flex items-center gap-3">
+                  <span
+                    className="w-16 shrink-0"
+                    style={{
+                      fontFamily: MONO_FONT,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      color: COLORS.textSecondary,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {provider}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }}>5hr</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={10000}
+                      style={smallInputStyle}
+                      value={limits.fiveHourTokenLimit}
+                      onChange={(e) => handleProviderLimitChange(provider, "fiveHourTokenLimit", e.target.value)}
+                      title={`${provider} 5-hour token ceiling`}
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }}>wk</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={50000}
+                      style={smallInputStyle}
+                      value={limits.weeklyTokenLimit}
+                      onChange={(e) => handleProviderLimitChange(provider, "weeklyTokenLimit", e.target.value)}
+                      title={`${provider} weekly token ceiling`}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Hard stop controls */}
+        <div
+          className="pt-2"
+          style={{ borderTop: `1px solid ${COLORS.border}` }}
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <SectionLabel>Hard Stop Limits</SectionLabel>
+            <Tooltip text="When usage reaches these percentages of your tier ceiling, the mission will automatically pause. Running workers finish their current task.">
+              <span className="cursor-help">
+                <Warning size={12} weight="bold" color={COLORS.warning} />
+              </span>
+            </Tooltip>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <FieldLabel className="w-28 shrink-0">5hr Hard Stop</FieldLabel>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={5}
+                  style={smallInputStyle}
+                  value={value.fiveHourHardStopPercent ?? 80}
+                  onChange={(e) => handleHardStopChange("fiveHourHardStopPercent", e.target.value)}
+                />
+                <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>%</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <FieldLabel className="w-28 shrink-0">Weekly Hard Stop</FieldLabel>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={5}
+                  style={smallInputStyle}
+                  value={value.weeklyHardStopPercent ?? 95}
+                  onChange={(e) => handleHardStopChange("weeklyHardStopPercent", e.target.value)}
+                />
+                <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>%</span>
+              </div>
+            </div>
+            {!subscriptionOnly && (
+              <div className="flex items-center gap-3">
+                <FieldLabel className="w-28 shrink-0">API Key Max</FieldLabel>
+                <div className="flex items-center gap-1">
+                  <span style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textDim }}>$</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={5}
+                    style={smallInputStyle}
+                    value={value.apiKeyMaxSpendUsd ?? 0}
+                    onChange={(e) => handleApiKeyMaxChange(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Per-model usage breakdown */}
         {modelUsage && Object.keys(modelUsage).length > 0 && (
           <div
             className="pt-2"
             style={{ borderTop: `1px solid ${COLORS.border}` }}
           >
-            <div
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                fontWeight: 700,
-                color: COLORS.textMuted,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-                marginBottom: 8,
-              }}
-            >
-              Current Model Usage
-            </div>
+            <SectionLabel>Current Model Usage</SectionLabel>
             <div className="space-y-2">
               {Object.entries(modelUsage).map(([model, usage]) => {
                 const totalTokens = usage.inputTokens + usage.outputTokens;
@@ -420,19 +723,7 @@ export function SmartBudgetPanel({
           className="pt-2"
           style={{ borderTop: `1px solid ${COLORS.border}` }}
         >
-          <div
-            style={{
-              fontFamily: MONO_FONT,
-              fontSize: 10,
-              fontWeight: 700,
-              color: COLORS.textMuted,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              marginBottom: 8,
-            }}
-          >
-            When approaching limit:
-          </div>
+          <SectionLabel>When approaching limit:</SectionLabel>
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             {STEERING_ACTIONS.map((action) => (
               <div key={action} className="flex items-center gap-1.5">

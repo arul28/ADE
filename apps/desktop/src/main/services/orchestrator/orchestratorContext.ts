@@ -16,6 +16,7 @@ import type {
   MissionStepStatus,
   MissionStatus,
   ModelCapabilityProfile,
+  OrchestratorCallType,
   OrchestratorExecutorKind,
   OrchestratorRunGraph,
   OrchestratorRuntimeEvent,
@@ -287,14 +288,6 @@ export type WorkerDeliverySessionResolution = {
   error: string | null;
 };
 
-export type OrchestratorCallType =
-  | "coordinator"
-  | "chat_response"
-  | "worker_evaluation"
-  | "failure_diagnosis"
-  | "plan_adjustment"
-  | "intervention_handling";
-
 export type ResolvedCallTypeConfig = {
   provider: "claude" | "codex";
   model: string;
@@ -420,10 +413,6 @@ export const TRANSIENT_ERROR_CLASSES = new Set(["transient", "claim_conflict", "
 
 export const CALL_TYPE_DEFAULTS: Record<OrchestratorCallType, ResolvedCallTypeConfig> = {
   coordinator: { provider: "claude", model: "sonnet", reasoningEffort: "high" },
-  worker_evaluation: { provider: "claude", model: "haiku", reasoningEffort: "medium" },
-  failure_diagnosis: { provider: "claude", model: "sonnet", reasoningEffort: "high" },
-  plan_adjustment: { provider: "claude", model: "sonnet", reasoningEffort: "high" },
-  intervention_handling: { provider: "claude", model: "sonnet", reasoningEffort: "medium" },
   chat_response: { provider: "claude", model: "sonnet", reasoningEffort: "medium" },
 };
 
@@ -1235,7 +1224,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "medium",
       bestFor: ["implementation", "review"],
       parallelCapable: true,
-      reasoningTiers: ["low", "medium", "high", "extra_high"]
+      reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"]
     },
     {
       provider: "codex",
@@ -1246,7 +1235,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "low",
       bestFor: ["implementation"],
       parallelCapable: true,
-      reasoningTiers: ["low", "medium"]
+      reasoningTiers: ["minimal", "low", "medium"]
     },
     {
       provider: "codex",
@@ -1257,7 +1246,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "medium",
       bestFor: ["implementation"],
       parallelCapable: true,
-      reasoningTiers: ["low", "medium", "high", "extra_high"]
+      reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"]
     },
     {
       provider: "codex",
@@ -1301,7 +1290,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "high",
       bestFor: ["planning", "review"],
       parallelCapable: false,
-      reasoningTiers: ["low", "medium", "high", "extra_high"]
+      reasoningTiers: ["minimal", "low", "medium", "high"]
     }
   ];
   return { profiles };

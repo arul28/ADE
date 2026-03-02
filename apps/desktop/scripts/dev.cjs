@@ -134,7 +134,7 @@ async function main() {
 
   await Promise.all([waitForPort(devPort, 30_000), waitForFile(distMainFile, 30_000)]);
 
-  const electron = spawnProcess("electron", "npx", ["electron", "."], {
+  const electron = spawnProcess("electron", "npx", ["electron", ".", "--remote-debugging-port=9222"], {
     VITE_DEV_SERVER_URL: devServerUrl
   });
   children.add(electron);

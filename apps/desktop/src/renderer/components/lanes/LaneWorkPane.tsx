@@ -6,7 +6,7 @@ import { AgentChatPane } from "../chat/AgentChatPane";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 const WORK_TABS = [

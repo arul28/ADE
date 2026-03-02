@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-02
 
 This document is the **authoritative contract** for ADE context artifacts used by:
 
@@ -20,7 +20,7 @@ The contract prioritizes **reviewability** (diffable, structured artifacts) and 
 - **Stable parsing**: Packs and exports have stable headers and stable section markers.
 - **Diff-friendly**: Context artifacts are structured, concise, and avoid transcript slabs by default.
 - **Budgeted exports**: Orchestrators consume `Lite`/`Standard` exports by default. `Deep` is explicit and on-demand.
-- **Provider-neutral AI**: AI is powered by Vercel AI SDK, which spawns subscription-powered CLI tools locally. No remote gateway assumptions.
+- **Provider-neutral AI**: AI is powered by local-first runtimes (CLI subscriptions, API/OpenRouter, or local endpoints) behind shared execution contracts. No ADE-hosted gateway assumptions.
 - **Guest mode useful**: Packs, versions, events, diffs, and exports are all usable without any AI provider.
 - **Explainable handoffs**: Every AI job submission records context delivery metadata with reason codes and explicit fallbacks.
 
@@ -69,8 +69,8 @@ Contract rules:
 
 | Scenario | AI Context | Notes |
 |----------|-----------|------|
-| New lane with active session | bounded export consumed locally | Works whenever a subscription provider is available |
-| No subscription provider (guest mode) | no AI context needed | Deterministic packs still refresh normally |
+| New lane with active session | bounded export consumed locally | Works whenever a configured provider is available |
+| No AI provider (guest mode) | no AI context needed | Deterministic packs still refresh normally |
 | Conflict-heavy lane | bounded export with conflict data | Conflict risk summary included in lane exports |
 | Periodic delta handoff | delta digest + bounded export | Deterministic ordering, optional omission metadata preserved |
 

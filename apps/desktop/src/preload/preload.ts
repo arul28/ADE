@@ -634,7 +634,9 @@ contextBridge.exposeInMainWorld("ade", {
     listContextPacks: async (args: import("../shared/types").ContextPackListArgs = {}): Promise<import("../shared/types").ContextPackOption[]> =>
       ipcRenderer.invoke(IPC.agentChatListContextPacks, args),
     fetchContextPack: async (args: import("../shared/types").ContextPackFetchArgs): Promise<import("../shared/types").ContextPackFetchResult> =>
-      ipcRenderer.invoke(IPC.agentChatFetchContextPack, args)
+      ipcRenderer.invoke(IPC.agentChatFetchContextPack, args),
+    changePermissionMode: async (args: import("../shared/types").AgentChatChangePermissionModeArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatChangePermissionMode, args),
   },
   pty: {
     create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => ipcRenderer.invoke(IPC.ptyCreate, args),

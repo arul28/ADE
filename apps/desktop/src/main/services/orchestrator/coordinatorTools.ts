@@ -12,6 +12,8 @@ import path from "node:path";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
   MissionBudgetSnapshot,
+  MissionBudgetProviderSnapshot,
+  MissionBudgetHardCapStatus,
   OrchestratorRunGraph,
   OrchestratorStep,
   OrchestratorAttempt,
@@ -227,6 +229,8 @@ export function createCoordinatorToolSet(deps: {
   projectRoot: string;
   onDagMutation: (event: DagMutationEvent) => void;
   onRunFinalize?: (args: { runId: string; succeeded: boolean; summary?: string; reason?: string }) => void;
+  onHardCapTriggered?: (detail: string) => void;
+  onBudgetWarning?: (pressure: "warning" | "critical", detail: string) => void;
 }): Record<string, Tool> {
   const {
     orchestratorService,
@@ -240,9 +244,64 @@ export function createCoordinatorToolSet(deps: {
     onDagMutation
   } = deps;
 
+  /** Track last emitted budget pressure to avoid spamming soft warnings. */
+  let lastEmittedBudgetPressure: "normal" | "warning" | "critical" = "normal";
+
   /** Shorthand to get a fresh graph snapshot. */
   function graph(): OrchestratorRunGraph {
     return orchestratorService.getRunGraph({ runId });
+  }
+
+  /**
+   * Shared budget hard cap check — refuses worker spawning when budget limits are triggered.
+   * Returns `{ blocked: false }` if spawning is allowed, or `{ blocked: true, detail, hardCaps }` if blocked.
+   */
+  async function checkBudgetHardCaps(): Promise<{
+    blocked: boolean;
+    detail?: string;
+    hardCaps?: MissionBudgetHardCapStatus;
+  }> {
+    if (!getMissionBudgetStatus) return { blocked: false };
+    try {
+      const budgetSnap = await getMissionBudgetStatus();
+      if (!budgetSnap?.hardCaps) return { blocked: false };
+      const caps = budgetSnap.hardCaps;
+      const anyTriggered = caps.fiveHourTriggered || caps.weeklyTriggered || caps.apiKeyTriggered;
+      if (!anyTriggered) return { blocked: false };
+      const reasons: string[] = [];
+      if (caps.fiveHourTriggered) {
+        const prov = budgetSnap.perProvider.find((p) => {
+          const pct = p.fiveHour.usedPct ?? 0;
+          return pct >= (caps.fiveHourHardStopPercent ?? 100);
+        });
+        const provName = prov?.provider ?? "aggregate";
+        const usedPct = prov?.fiveHour.usedPct ?? 0;
+        reasons.push(`${provName} 5hr usage at ${Math.round(usedPct)}% (hard cap: ${caps.fiveHourHardStopPercent ?? 100}%)`);
+      }
+      if (caps.weeklyTriggered) {
+        const prov = budgetSnap.perProvider.find((p) => {
+          const pct = p.weekly.usedPct ?? 0;
+          return pct >= (caps.weeklyHardStopPercent ?? 100);
+        });
+        const provName = prov?.provider ?? "aggregate";
+        const usedPct = prov?.weekly.usedPct ?? 0;
+        reasons.push(`${provName} weekly usage at ${Math.round(usedPct)}% (hard cap: ${caps.weeklyHardStopPercent ?? 100}%)`);
+      }
+      if (caps.apiKeyTriggered) {
+        reasons.push(`API key spend $${caps.apiKeySpentUsd.toFixed(2)} (hard cap: $${caps.apiKeyMaxSpendUsd?.toFixed(2) ?? "?"} )`);
+      }
+      const detail = reasons.join("; ");
+      if (deps.onHardCapTriggered) {
+        deps.onHardCapTriggered(detail);
+      }
+      return { blocked: true, detail, hardCaps: caps };
+    } catch (budgetErr) {
+      // Budget check failure is non-blocking — log and continue
+      logger.debug("coordinator.budget_hard_cap_check_failed", {
+        error: budgetErr instanceof Error ? budgetErr.message : String(budgetErr),
+      });
+      return { blocked: false };
+    }
   }
 
   // ─── Worker Management ────────────────────────────────────────
@@ -467,6 +526,36 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
+        // Hard cap check: refuse to spawn if budget hard caps are triggered
+        const budgetCheck = await checkBudgetHardCaps();
+        if (budgetCheck.blocked) {
+          logger.warn("coordinator.spawn_worker.hard_cap_blocked", { name, detail: budgetCheck.detail });
+          return {
+            ok: false,
+            error: `Cannot spawn worker: ${budgetCheck.detail}. Mission pausing.`,
+            hardCapTriggered: true,
+            hardCaps: budgetCheck.hardCaps,
+          };
+        }
+
+        // Emit soft budget warning on spawn if pressure is elevated (deduped)
+        if (deps.onBudgetWarning && getMissionBudgetStatus) {
+          try {
+            const snap = await getMissionBudgetStatus();
+            if (
+              snap &&
+              (snap.pressure === "warning" || snap.pressure === "critical") &&
+              snap.pressure !== lastEmittedBudgetPressure
+            ) {
+              const detail = snap.recommendation || `Budget pressure is now ${snap.pressure} while spawning worker '${name}'`;
+              lastEmittedBudgetPressure = snap.pressure;
+              deps.onBudgetWarning(snap.pressure, detail);
+            }
+          } catch {
+            // Non-blocking — budget warning is best-effort
+          }
+        }
+
         const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
           name,
           provider: resolvedProvider,
@@ -487,23 +576,55 @@ export function createCoordinatorToolSet(deps: {
           });
         }
 
-        // Trigger autopilot to pick up the new step if it's ready
-        setTimeout(() => {
-          void orchestratorService.startReadyAutopilotAttempts({
-            runId,
-            reason: "coordinator_spawn_worker",
-          }).catch(() => {});
-        }, 100);
+        // Trigger autopilot to pick up the new step — await with timeout
+        // so we can tell the coordinator whether the worker actually launched.
+        let launched = false;
+        let launchNote: string | undefined;
+        try {
+          const startedCount = await Promise.race([
+            orchestratorService.startReadyAutopilotAttempts({
+              runId,
+              reason: "coordinator_spawn_worker",
+            }),
+            new Promise<number>((_, reject) =>
+              setTimeout(() => reject(new Error("autopilot_start_timeout")), 5000)
+            ),
+          ]);
+          // Verify an attempt is actually running for this step
+          if (newStep) {
+            const freshGraph = graph();
+            const runningAttempt = freshGraph.attempts.find(
+              (a) => a.stepId === newStep.id && a.status === "running",
+            );
+            launched = !!runningAttempt;
+            if (!launched && startedCount > 0) {
+              // Autopilot started attempts but not for this step (e.g. other ready steps got priority)
+              launchNote = "autopilot_started_other_steps";
+            } else if (!launched) {
+              launchNote = "step_queued_not_yet_started";
+            }
+          } else {
+            launched = startedCount > 0;
+          }
+        } catch {
+          // Autopilot didn't finish in time — step is created and will be picked up on next cycle
+          launchNote = "autopilot_start_timeout_step_queued";
+          logger.warn("coordinator.spawn_worker.autopilot_timeout", { name, workerId });
+        }
 
         logger.info("coordinator.spawn_worker", {
           name,
           workerId,
           provider: resolvedProvider,
-          role: roleName
+          role: roleName,
+          launched,
+          launchNote,
         });
         return {
           ok: true,
           workerId,
+          launched,
+          ...(launchNote ? { launchNote } : {}),
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
           name,
@@ -564,6 +685,19 @@ export function createCoordinatorToolSet(deps: {
         if (replacementSourceWorkerId && !resolveStep(g, replacementSourceWorkerId)) {
           return { ok: false, error: `Replacement source worker '${replacementSourceWorkerId}' was not found.` };
         }
+
+        // Hard cap check: refuse to spawn specialist if budget hard caps are triggered
+        const budgetCheck = await checkBudgetHardCaps();
+        if (budgetCheck.blocked) {
+          logger.warn("coordinator.request_specialist.hard_cap_blocked", { role, detail: budgetCheck.detail });
+          return {
+            ok: false,
+            error: `Cannot spawn specialist: ${budgetCheck.detail}. Mission pausing.`,
+            hardCapTriggered: true,
+            hardCaps: budgetCheck.hardCaps,
+          };
+        }
+
         const { workerId, step, roleName, toolProfile } = spawnWorkerStep({
           name: workerName,
           provider: roleDef.defaultModel.provider,
@@ -1458,6 +1592,20 @@ export function createCoordinatorToolSet(deps: {
         const uniqueTargets = [...new Set(replacementTargets)];
         if (!uniqueTargets.length && newSteps.length === 0 && dependencyPatches.length === 0) {
           return { ok: false, error: "No steps selected for replacement." };
+        }
+
+        // Hard cap check: refuse to spawn replacement workers if budget hard caps are triggered
+        if (newSteps.length > 0) {
+          const budgetCheck = await checkBudgetHardCaps();
+          if (budgetCheck.blocked) {
+            logger.warn("coordinator.revise_plan.hard_cap_blocked", { detail: budgetCheck.detail });
+            return {
+              ok: false,
+              error: `Cannot revise plan (spawning blocked): ${budgetCheck.detail}. Mission pausing.`,
+              hardCapTriggered: true,
+              hardCaps: budgetCheck.hardCaps,
+            };
+          }
         }
 
         const existingStepKeys = new Set(initialGraph.steps.map((step) => step.stepKey));
@@ -2369,6 +2517,36 @@ export function createCoordinatorToolSet(deps: {
             : null)
           ?? null;
 
+        // Emit soft budget warnings on pressure transitions (deduped)
+        if (
+          deps.onBudgetWarning &&
+          (snapshot.pressure === "warning" || snapshot.pressure === "critical") &&
+          snapshot.pressure !== lastEmittedBudgetPressure
+        ) {
+          const pctUsed = snapshot.mission.maxTokens
+            ? Math.round((snapshot.mission.usedTokens / snapshot.mission.maxTokens) * 100)
+            : null;
+          const costDetail = snapshot.mission.usedCostUsd != null
+            ? `$${snapshot.mission.usedCostUsd.toFixed(2)} spent`
+            : null;
+          const parts = [
+            pctUsed != null ? `${pctUsed}% of token budget used` : null,
+            costDetail,
+            snapshot.recommendation,
+          ].filter(Boolean);
+          const detail = parts.join("; ") || `Budget pressure is now ${snapshot.pressure}`;
+          lastEmittedBudgetPressure = snapshot.pressure;
+          deps.onBudgetWarning(snapshot.pressure, detail);
+          logger.info("coordinator.budget_soft_warning_emitted", {
+            runId,
+            missionId,
+            pressure: snapshot.pressure,
+          });
+        } else if (snapshot.pressure === "normal" && lastEmittedBudgetPressure !== "normal") {
+          // Reset dedup tracker when pressure drops back to normal
+          lastEmittedBudgetPressure = "normal";
+        }
+
         return {
           ok: true,
           pressure: snapshot.pressure,
@@ -2399,6 +2577,33 @@ export function createCoordinatorToolSet(deps: {
           recommendation: snapshot.recommendation,
           estimatedRemainingCapacity: snapshot.estimatedRemainingCapacity,
           rateLimits: snapshot.rateLimits,
+          perProvider: snapshot.perProvider.map((prov) => ({
+            provider: prov.provider,
+            fiveHour: {
+              usedTokens: prov.fiveHour.usedTokens,
+              limitTokens: prov.fiveHour.limitTokens,
+              usedPct: prov.fiveHour.usedPct,
+              usedCostUsd: prov.fiveHour.usedCostUsd,
+              timeUntilResetMs: prov.fiveHour.timeUntilResetMs,
+            },
+            weekly: {
+              usedTokens: prov.weekly.usedTokens,
+              limitTokens: prov.weekly.limitTokens,
+              usedPct: prov.weekly.usedPct,
+              usedCostUsd: prov.weekly.usedCostUsd,
+              timeUntilResetMs: prov.weekly.timeUntilResetMs,
+            },
+          })),
+          hardCaps: {
+            fiveHourHardStopPercent: snapshot.hardCaps.fiveHourHardStopPercent,
+            weeklyHardStopPercent: snapshot.hardCaps.weeklyHardStopPercent,
+            apiKeyMaxSpendUsd: snapshot.hardCaps.apiKeyMaxSpendUsd,
+            apiKeySpentUsd: snapshot.hardCaps.apiKeySpentUsd,
+            fiveHourTriggered: snapshot.hardCaps.fiveHourTriggered,
+            weeklyTriggered: snapshot.hardCaps.weeklyTriggered,
+            apiKeyTriggered: snapshot.hardCaps.apiKeyTriggered,
+            anyTriggered: snapshot.hardCaps.fiveHourTriggered || snapshot.hardCaps.weeklyTriggered || snapshot.hardCaps.apiKeyTriggered,
+          },
           ...(includePerPhase
             ? {
                 perPhase: snapshot.perPhase.map((phase) => ({

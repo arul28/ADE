@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { streamText } from "ai";
+import { streamText, stepCountIs, type LanguageModel } from "ai";
 import { createClaudeCode } from "ai-sdk-provider-claude-code";
 import {
   unstable_v2_createSession,
@@ -39,6 +39,9 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { detectAllAuth } from "../ai/authDetector";
+import { resolveModel, buildProviderOptions, isModelCliWrapped } from "../ai/providerResolver";
+import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
+import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 
 type JsonRpcEnvelope = {
   jsonrpc?: string;
@@ -64,7 +67,9 @@ type PersistedChatState = {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
+  modelId?: string;
   reasoningEffort?: string | null;
+  permissionMode?: AgentChatSession["permissionMode"];
   threadId?: string;
   messages?: PersistedClaudeMessage[];
   updatedAt: string;
@@ -113,7 +118,25 @@ type ClaudeRuntime = {
   interrupted: boolean;
 };
 
-type ChatRuntime = CodexRuntime | ClaudeRuntime;
+type PendingUnifiedApproval = {
+  resolve: (decision: AgentChatApprovalDecision) => void;
+};
+
+type UnifiedRuntime = {
+  kind: "unified";
+  messages: Array<{ role: string; content: string }>;
+  busy: boolean;
+  abortController: AbortController | null;
+  activeTurnId: string | null;
+  permissionMode: PermissionMode;
+  pendingApprovals: Map<string, PendingUnifiedApproval>;
+  pendingSteers: string[];
+  interrupted: boolean;
+  resolvedModel: LanguageModel;
+  modelDescriptor: ModelDescriptor;
+};
+
+type ChatRuntime = CodexRuntime | ClaudeRuntime | UnifiedRuntime;
 
 type ManagedChatSession = {
   session: AgentChatSession;
@@ -132,26 +155,29 @@ type ResolvedChatConfig = {
   codexApprovalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
   codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode: "plan" | "acceptEdits" | "bypassPermissions";
+  unifiedPermissionMode: PermissionMode;
   sessionBudgetUsd: number | null;
 };
 
 const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
 const DEFAULT_CLAUDE_MODEL = "sonnet";
+const DEFAULT_UNIFIED_MODEL_ID = "anthropic/claude-sonnet-4-6-api";
 const DEFAULT_REASONING_EFFORT = "medium";
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
+  { effort: "minimal", description: "Minimum reasoning, fastest responses." },
   { effort: "low", description: "Fastest turn-around with shallow reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
   { effort: "high", description: "Deeper reasoning for multi-step implementation." },
-  { effort: "extra_high", description: "Maximum reasoning depth for complex tasks." }
+  { effort: "xhigh", description: "Maximum reasoning depth for complex tasks." }
 ];
 
 const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
-  { effort: "low", description: "Quick responses with ~1K thinking tokens." },
-  { effort: "medium", description: "Balanced reasoning with ~4K thinking tokens." },
-  { effort: "high", description: "Deep reasoning with ~16K thinking tokens." },
-  { effort: "max", description: "Maximum reasoning with ~32K thinking tokens." }
+  { effort: "low", description: "Quick responses with minimal reasoning." },
+  { effort: "medium", description: "Balanced reasoning depth and speed." },
+  { effort: "high", description: "Deep reasoning for complex tasks." },
+  { effort: "max", description: "Maximum reasoning depth." }
 ];
 
 const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
@@ -170,6 +196,13 @@ const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = [
     description: "Latest Codex model for implementation-heavy tasks.",
     isDefault: true,
     reasoningEfforts: CODEX_REASONING_EFFORTS
+  },
+  {
+    id: "gpt-5.3-codex-spark",
+    displayName: "gpt-5.3-codex-spark",
+    description: "Near-instant real-time coding, optimized for speed.",
+    isDefault: false,
+    reasoningEfforts: CODEX_REASONING_EFFORTS.filter((e) => ["minimal", "low", "medium"].includes(e.effort))
   },
   {
     id: "gpt-5.2-codex",
@@ -256,15 +289,17 @@ function describeClaudeModel(value: string): string | null {
   return null;
 }
 
-function isChatToolType(toolType: TerminalToolType | null | undefined): toolType is "codex-chat" | "claude-chat" {
-  return toolType === "codex-chat" || toolType === "claude-chat";
+function isChatToolType(toolType: TerminalToolType | null | undefined): toolType is "codex-chat" | "claude-chat" | "ai-chat" {
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 function providerFromToolType(toolType: TerminalToolType | null | undefined): AgentChatProvider {
+  if (toolType === "ai-chat") return "unified";
   return toolType === "claude-chat" ? "claude" : "codex";
 }
 
-function toolTypeFromProvider(provider: AgentChatProvider): "codex-chat" | "claude-chat" {
+function toolTypeFromProvider(provider: AgentChatProvider): "codex-chat" | "claude-chat" | "ai-chat" {
+  if (provider === "unified") return "ai-chat";
   return provider === "claude" ? "claude-chat" : "codex-chat";
 }
 
@@ -337,9 +372,72 @@ function parseJsonLine(raw: string): JsonRpcEnvelope | null {
 }
 
 function resolveClaudeModel(model: string): string {
+  return resolveClaudeCliModel(model);
+}
+
+function resolveModelIdFromStoredValue(
+  model: string,
+  providerHint?: AgentChatProvider,
+): string | undefined {
   const normalized = model.trim().toLowerCase();
-  if (!normalized) return CLAUDE_ALIAS_TO_MODEL.sonnet;
-  return CLAUDE_ALIAS_TO_MODEL[normalized] ?? model;
+  if (!normalized.length) return undefined;
+  const matches = MODEL_REGISTRY.filter(
+    (entry) =>
+      entry.id.toLowerCase() === normalized
+      || entry.shortId.toLowerCase() === normalized
+      || entry.sdkModelId.toLowerCase() === normalized
+  );
+  if (!matches.length) return undefined;
+
+  const prefer = (() => {
+    if (providerHint === "codex") {
+      return matches.find((entry) => entry.isCliWrapped && entry.family === "openai");
+    }
+    if (providerHint === "claude") {
+      return matches.find((entry) => entry.isCliWrapped && entry.family === "anthropic");
+    }
+    if (providerHint === "unified") {
+      return matches.find((entry) => !entry.isCliWrapped);
+    }
+    return undefined;
+  })();
+  if (prefer) return prefer.id;
+
+  return matches[0]?.id;
+}
+
+function fallbackModelForProvider(provider: AgentChatProvider): string {
+  if (provider === "codex") return DEFAULT_CODEX_MODEL;
+  if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
+  return DEFAULT_UNIFIED_MODEL_ID;
+}
+
+function mapSessionPermissionToClaude(mode: AgentChatSession["permissionMode"]): "plan" | "acceptEdits" | "bypassPermissions" {
+  if (mode === "full-auto") return "bypassPermissions";
+  if (mode === "edit") return "acceptEdits";
+  return "plan";
+}
+
+function mapSessionPermissionToCodex(mode: AgentChatSession["permissionMode"]): {
+  approvalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
+  sandbox: "read-only" | "workspace-write" | "danger-full-access";
+} {
+  if (mode === "full-auto") {
+    return { approvalPolicy: "never", sandbox: "danger-full-access" };
+  }
+  if (mode === "edit") {
+    return { approvalPolicy: "on-request", sandbox: "workspace-write" };
+  }
+  return { approvalPolicy: "untrusted", sandbox: "read-only" };
+}
+
+function normalizePersistedPermissionMode(value: unknown): AgentChatSession["permissionMode"] | undefined {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw.length) return undefined;
+  if (raw === "plan" || raw === "edit" || raw === "full-auto") {
+    return raw;
+  }
+  return undefined;
 }
 
 function toIso(): string {
@@ -388,33 +486,65 @@ export function createAgentChatService(args: {
   const claudeProvider = createClaudeCode();
   const managedSessions = new Map<string, ManagedChatSession>();
 
-  // Unified session support — gradual migration path for model registry IDs.
-  // For CLI-wrapped models, we fall through to the existing Claude/Codex runtimes.
-  // For API-key models, this will be fully implemented once WS3 is complete.
-  const startUnifiedSession = async (managed: ManagedChatSession, _message: string): Promise<"handled" | "fallthrough"> => {
+  const detectAuth = async () => {
+    const snapshot = projectConfigService.get();
+    const configured = snapshot.effective.ai?.apiKeys;
+    const configApiKeys: Record<string, string> = {};
+    if (configured && typeof configured === "object") {
+      for (const [provider, value] of Object.entries(configured as Record<string, unknown>)) {
+        const key = typeof value === "string" ? value.trim() : "";
+        if (!key.length) continue;
+        configApiKeys[String(provider).trim().toLowerCase()] = key;
+      }
+    }
+    return detectAllAuth(configApiKeys);
+  };
+
+  // Unified session support — for API-key / local models using streamText + universal tools.
+  // CLI-wrapped models fall through to the existing Claude/Codex runtimes.
+  const startUnifiedSession = async (managed: ManagedChatSession): Promise<"handled" | "fallthrough"> => {
     const modelId = managed.session.modelId;
     if (!modelId) return "fallthrough";
 
     const descriptor = getModelById(modelId);
     if (!descriptor) return "fallthrough";
 
-    // CLI-wrapped Anthropic models -> fall through to Claude runtime
-    if (descriptor.isCliWrapped && descriptor.family === "anthropic") {
-      return "fallthrough";
-    }
-    // CLI-wrapped OpenAI models -> fall through to Codex runtime
-    if (descriptor.isCliWrapped && descriptor.family === "openai") {
-      return "fallthrough";
-    }
+    // CLI-wrapped models -> fall through to legacy runtimes
+    if (descriptor.isCliWrapped) return "fallthrough";
 
-    // For API-key models, log that the unified path was requested but
-    // fall through for now. Full implementation arrives with WS3.
-    logger.info("agent_chat.unified_session_requested", {
+    logger.info("agent_chat.unified_session_starting", {
       sessionId: managed.session.id,
       modelId,
       family: descriptor.family,
     });
-    return "fallthrough";
+
+    const auth = await detectAuth();
+    const resolvedModel = await resolveModel(modelId, auth, {
+      cwd: managed.laneWorktreePath,
+    });
+
+    const chatConfig = resolveChatConfig();
+    const permMode: PermissionMode =
+      managed.session.permissionMode ??
+      chatConfig.unifiedPermissionMode;
+
+    const runtime: UnifiedRuntime = {
+      kind: "unified",
+      messages: [],
+      busy: false,
+      abortController: null,
+      activeTurnId: null,
+      permissionMode: permMode,
+      pendingApprovals: new Map(),
+      pendingSteers: [],
+      interrupted: false,
+      resolvedModel,
+      modelDescriptor: descriptor,
+    };
+
+    managed.runtime = runtime;
+    managed.session.provider = "unified";
+    return "handled";
   };
 
   const resolveChatConfig = (): ResolvedChatConfig => {
@@ -451,6 +581,15 @@ export function createAgentChatService(args: {
       return "acceptEdits" as const;
     })();
 
+    const unifiedPermissionMode = (() => {
+      if (chat.unifiedPermissionMode === "plan" || chat.unifiedPermissionMode === "edit" || chat.unifiedPermissionMode === "full-auto") {
+        return chat.unifiedPermissionMode;
+      }
+      if (claudePermissionMode === "bypassPermissions") return "full-auto" as const;
+      if (claudePermissionMode === "plan") return "plan" as const;
+      return "edit" as const;
+    })();
+
     const budget = Number(chat.sessionBudgetUsd ?? permissions.claude?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
 
@@ -458,6 +597,7 @@ export function createAgentChatService(args: {
       codexApprovalPolicy: approvalPolicy,
       codexSandboxMode: sandboxMode,
       claudePermissionMode,
+      unifiedPermissionMode,
       sessionBudgetUsd
     };
   };
@@ -480,9 +620,14 @@ export function createAgentChatService(args: {
       laneId: managed.session.laneId,
       provider: managed.session.provider,
       model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+      ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { messages: managed.runtime.messages } : {}),
+      ...(managed.runtime?.kind === "unified"
+        ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
+        : {}),
       updatedAt: toIso()
     };
 
@@ -506,10 +651,14 @@ export function createAgentChatService(args: {
       const record = parsed as Partial<PersistedChatState>;
       if (record.version !== 1) return null;
       const provider = record.provider;
-      if (provider !== "codex" && provider !== "claude") return null;
+      if (provider !== "codex" && provider !== "claude" && provider !== "unified") return null;
       const laneId = String(record.laneId ?? "").trim();
       const model = String(record.model ?? "").trim();
+      const modelId = typeof record.modelId === "string" && record.modelId.trim().length
+        ? (getModelById(record.modelId.trim()) ? record.modelId.trim() : undefined)
+        : resolveModelIdFromStoredValue(model, provider);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
+      const permissionMode = normalizePersistedPermissionMode(record.permissionMode);
       if (!laneId || !model) return null;
       const messages = Array.isArray(record.messages)
         ? record.messages
@@ -526,7 +675,9 @@ export function createAgentChatService(args: {
         laneId,
         provider,
         model,
+        ...(modelId ? { modelId } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(permissionMode ? { permissionMode } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
@@ -661,6 +812,14 @@ export function createAgentChatService(args: {
       managed.runtime.approvals.clear();
       managed.runtime = null;
     }
+    if (managed.runtime?.kind === "unified") {
+      managed.runtime.abortController?.abort();
+      for (const pending of managed.runtime.pendingApprovals.values()) {
+        pending.resolve("cancel");
+      }
+      managed.runtime.pendingApprovals.clear();
+      managed.runtime = null;
+    }
 
     try {
       onSessionEnded?.({ laneId: managed.session.laneId, sessionId: managed.session.id, exitCode: options?.exitCode ?? null });
@@ -681,9 +840,13 @@ export function createAgentChatService(args: {
       throw new Error(`Session '${sessionId}' is not an agent chat session.`);
     }
 
-    const provider = providerFromToolType(row.toolType);
     const persisted = readPersistedState(sessionId);
-    const model = persisted?.model ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL);
+    const provider = persisted?.provider ?? providerFromToolType(row.toolType);
+    const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
+    const hydratedModelId = persisted?.modelId
+      ?? resolveModelIdFromStoredValue(fallbackModel, provider)
+      ?? (provider === "unified" ? DEFAULT_UNIFIED_MODEL_ID : undefined);
+    const model = provider === "unified" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const lane = laneService.getLaneBaseAndBranch(row.laneId);
 
     const managed: ManagedChatSession = {
@@ -692,7 +855,9 @@ export function createAgentChatService(args: {
         laneId: row.laneId,
         provider,
         model,
+        ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
+        ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         status: mapTerminalStatusToChatStatus(row.status),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
         createdAt: row.startedAt,
@@ -784,6 +949,9 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
 
     const chatConfig = resolveChatConfig();
+    const claudePermissionMode = managed.session.permissionMode
+      ? mapSessionPermissionToClaude(managed.session.permissionMode)
+      : chatConfig.claudePermissionMode;
     const abortController = new AbortController();
     runtime.abortController = abortController;
 
@@ -820,7 +988,7 @@ export function createAgentChatService(args: {
     try {
       const claudeOpts: Record<string, unknown> = {
           cwd: managed.laneWorktreePath,
-          permissionMode: chatConfig.claudePermissionMode,
+          permissionMode: claudePermissionMode,
           settingSources: [],
           maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
           canUseTool
@@ -980,6 +1148,294 @@ export function createAgentChatService(args: {
           type: "error",
           message: error instanceof Error ? error.message : String(error),
           turnId
+        });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "failed" });
+      }
+
+      persistChatState(managed);
+    }
+  };
+
+  // ── Unified runtime turn (API-key / local models via streamText + universal tools) ──
+
+  const mapReasoningEffortToThinking = (effort: string | null | undefined): import("../../../shared/types").ThinkingLevel | null => {
+    if (!effort) return null;
+    const map: Record<string, import("../../../shared/types").ThinkingLevel> = {
+      none: "none",
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      max: "max",
+      xhigh: "xhigh",
+      extra_high: "max",
+    };
+    return map[effort] ?? null;
+  };
+
+  const classifyUnifiedError = (
+    error: unknown,
+    providerFamily: string,
+    modelDisplayName: string,
+  ): {
+    message: string;
+    errorInfo: { category: "auth" | "rate_limit" | "budget" | "network" | "unknown"; provider?: string; model?: string };
+  } => {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const lower = rawMessage.toLowerCase();
+
+    // Check for status code in error message or error object properties
+    const statusCode = (error as { status?: number; statusCode?: number })?.status
+      ?? (error as { status?: number; statusCode?: number })?.statusCode
+      ?? null;
+
+    // Rate limit (429)
+    if (statusCode === 429 || lower.includes("rate limit") || lower.includes("429") || lower.includes("too many requests")) {
+      return {
+        message: `Rate limited by ${providerFamily}. The middleware will retry automatically. If this persists, try a different model.`,
+        errorInfo: { category: "rate_limit", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
+    // Auth errors (401/403)
+    if (
+      statusCode === 401 || statusCode === 403
+      || lower.includes("unauthorized") || lower.includes("forbidden")
+      || lower.includes("authentication failed") || lower.includes("invalid api key")
+      || lower.includes("api key") || lower.includes("invalid_api_key")
+    ) {
+      return {
+        message: `Authentication failed for ${modelDisplayName}. Check your API key in Settings.`,
+        errorInfo: { category: "auth", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
+    // Budget exhaustion
+    if (lower.includes("budget") || lower.includes("cost limit") || lower.includes("spending limit")) {
+      return {
+        message: "Session budget limit reached. Increase budget in Settings or start a new session.",
+        errorInfo: { category: "budget", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
+    // Network / timeout errors
+    if (
+      lower.includes("timeout") || lower.includes("timed out") || lower.includes("econnrefused")
+      || lower.includes("enotfound") || lower.includes("network") || lower.includes("fetch failed")
+      || lower.includes("econnreset") || lower.includes("socket hang up")
+    ) {
+      return {
+        message: `Connection to ${providerFamily} timed out. Check your network or try again.`,
+        errorInfo: { category: "network", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
+    // Generic / unknown
+    return {
+      message: rawMessage,
+      errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
+    };
+  };
+
+  const runUnifiedTurn = async (managed: ManagedChatSession, text: string, attachments: AgentChatFileRef[] = []): Promise<void> => {
+    if (!managed.runtime || managed.runtime.kind !== "unified") {
+      throw new Error(`Unified runtime is not available for session '${managed.session.id}'.`);
+    }
+
+    const runtime = managed.runtime;
+    if (runtime.busy) {
+      throw new Error("A turn is already active. Use steer or interrupt.");
+    }
+
+    const turnId = randomUUID();
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    runtime.interrupted = false;
+    managed.session.status = "active";
+
+    const attachmentHint = attachments.length
+      ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
+      : "";
+    const userContent = `${text}${attachmentHint}`;
+
+    runtime.messages.push({ role: "user", content: userContent });
+    emitChatEvent(managed, { type: "user_message", text, attachments, turnId });
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+
+    const abortController = new AbortController();
+    runtime.abortController = abortController;
+
+    let assistantText = "";
+    let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
+
+    try {
+      const tools = createUniversalToolSet(managed.laneWorktreePath, {
+        permissionMode: runtime.permissionMode,
+        onAskUser: async (question) => {
+          const askItemId = randomUUID();
+          emitChatEvent(managed, {
+            type: "approval_request",
+            itemId: askItemId,
+            kind: "tool_call",
+            description: question,
+            detail: { tool: "askUser", question },
+            turnId,
+          });
+
+          const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
+            runtime.pendingApprovals.set(askItemId, { resolve });
+          });
+          runtime.pendingApprovals.delete(askItemId);
+          return decision === "accept" ? "yes" : decision === "decline" ? "no" : String(decision);
+        },
+      });
+
+      const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
+      const providerOptions = buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
+
+      const stream = streamText({
+        model: runtime.resolvedModel,
+        messages: runtime.messages.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        })),
+        tools,
+        providerOptions: providerOptions as any,
+        stopWhen: stepCountIs(20),
+        abortSignal: abortController.signal,
+      });
+
+      for await (const part of stream.fullStream as AsyncIterable<any>) {
+        if (!part || typeof part !== "object") continue;
+
+        if (part.type === "text-delta") {
+          const delta = String(part.text ?? part.textDelta ?? "");
+          if (!delta.length) continue;
+          assistantText += delta;
+          emitChatEvent(managed, {
+            type: "text",
+            text: delta,
+            turnId,
+            itemId: typeof part.id === "string" ? part.id : undefined,
+          });
+          continue;
+        }
+
+        if (part.type === "reasoning" || part.type === "reasoning-delta") {
+          const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
+          if (!delta.length) continue;
+          emitChatEvent(managed, {
+            type: "reasoning",
+            text: delta,
+            turnId,
+            itemId: typeof part.id === "string" ? part.id : undefined,
+          });
+          continue;
+        }
+
+        if (part.type === "tool-call") {
+          emitChatEvent(managed, {
+            type: "tool_call",
+            tool: String(part.toolName ?? "tool"),
+            args: part.input ?? part.args ?? part.arguments,
+            itemId: String(part.toolCallId ?? randomUUID()),
+            turnId,
+          });
+          continue;
+        }
+
+        if (part.type === "tool-result") {
+          emitChatEvent(managed, {
+            type: "tool_result",
+            tool: String(part.toolName ?? "tool"),
+            result: part.output ?? part.result,
+            itemId: String(part.toolCallId ?? randomUUID()),
+            turnId,
+            status: "completed",
+          });
+          continue;
+        }
+
+        if (part.type === "finish") {
+          const usagePayload = (part.totalUsage ?? part.usage) as
+            | {
+                inputTokens?: number;
+                outputTokens?: number;
+                promptTokens?: number;
+                completionTokens?: number;
+              }
+            | undefined;
+          usage = {
+            inputTokens: usagePayload?.inputTokens ?? usagePayload?.promptTokens ?? null,
+            outputTokens: usagePayload?.outputTokens ?? usagePayload?.completionTokens ?? null,
+          };
+          continue;
+        }
+
+        if (part.type === "error") {
+          emitChatEvent(managed, {
+            type: "error",
+            message: String(part.error ?? "Unified stream error."),
+            turnId,
+          });
+        }
+      }
+
+      if (assistantText.trim().length) {
+        runtime.messages.push({ role: "assistant", content: assistantText });
+      }
+
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      runtime.abortController = null;
+      managed.session.status = "idle";
+
+      emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: "completed",
+        ...(usage ? { usage } : {}),
+      });
+
+      const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
+      if (endSha) {
+        sessionService.setHeadShaEnd(managed.session.id, endSha);
+      }
+
+      persistChatState(managed);
+
+      if (runtime.pendingSteers.length) {
+        const steerText = runtime.pendingSteers.shift() ?? "";
+        if (steerText.trim().length) {
+          await runUnifiedTurn(managed, steerText, []);
+        }
+      }
+    } catch (error) {
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      runtime.abortController = null;
+
+      if (runtime.interrupted) {
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "interrupted" });
+      } else {
+        managed.session.status = "idle";
+
+        // Classify the error for actionable UI messages
+        const { message: errorMessage, errorInfo } = classifyUnifiedError(
+          error,
+          runtime.modelDescriptor.family,
+          runtime.modelDescriptor.displayName,
+        );
+
+        emitChatEvent(managed, {
+          type: "error",
+          message: errorMessage,
+          turnId,
+          errorInfo,
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, { type: "done", turnId, status: "failed" });
@@ -1582,7 +2038,7 @@ export function createAgentChatService(args: {
   const listClaudeModelsFromSdk = async (): Promise<AgentChatModelInfo[]> => {
     try {
       const session = unstable_v2_createSession({
-        model: CLAUDE_ALIAS_TO_MODEL.sonnet,
+        model: resolveClaudeCliModel(CLAUDE_ALIAS_TO_MODEL.sonnet),
         permissionMode: "plan"
       }) as unknown as {
         supportedModels?: () => Promise<ModelInfo[]>;
@@ -1605,7 +2061,7 @@ export function createAgentChatService(args: {
               id,
               displayName,
               ...(description ? { description } : {}),
-              isDefault: id === CLAUDE_ALIAS_TO_MODEL.sonnet,
+              isDefault: resolveClaudeCliModel(id) === "sonnet",
               reasoningEfforts: CLAUDE_REASONING_EFFORTS,
               maxThinkingTokens: 32768
             };
@@ -1633,7 +2089,7 @@ export function createAgentChatService(args: {
     return CLAUDE_FALLBACK_MODELS;
   };
 
-  const createSession = async ({ laneId, provider, model, modelId, reasoningEffort }: AgentChatCreateArgs): Promise<AgentChatSession> => {
+  const createSession = async ({ laneId, provider, model, modelId, reasoningEffort, permissionMode: requestedPermMode }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const lane = laneService.getLaneBaseAndBranch(laneId);
     const sessionId = randomUUID();
     const startedAt = toIso();
@@ -1642,36 +2098,76 @@ export function createAgentChatService(args: {
 
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
 
-    const normalizedModel = model.trim() || (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL);
-    const legacyProvider: "codex" | "claude" = provider === "codex" ? "codex" : "claude";
-    const rawEffort = legacyProvider === "codex"
+    const normalizedInputModel = model.trim() || (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL);
+    // Resolve modelId from registry if provided
+    const resolvedModelId = modelId && getModelById(modelId)
+      ? modelId
+      : resolveModelIdFromStoredValue(normalizedInputModel, provider);
+
+    if (provider === "unified" && !resolvedModelId) {
+      throw new Error("Unified chat requires a known model ID. Select a model from the registry.");
+    }
+
+    const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
+    if (resolvedModelId && !resolvedDescriptor) {
+      throw new Error(`Unknown model '${resolvedModelId}'.`);
+    }
+
+    let effectiveProvider: AgentChatProvider = provider;
+    let normalizedModel = normalizedInputModel;
+
+    if (resolvedDescriptor) {
+      if (resolvedDescriptor.isCliWrapped) {
+        if (resolvedDescriptor.family === "openai") {
+          effectiveProvider = "codex";
+          normalizedModel = resolvedDescriptor.shortId;
+        } else if (resolvedDescriptor.family === "anthropic") {
+          effectiveProvider = "claude";
+          normalizedModel = resolvedDescriptor.shortId;
+        } else if (provider === "unified") {
+          throw new Error(
+            `Model '${resolvedDescriptor.id}' is CLI-only but does not map to a supported chat runtime.`,
+          );
+        }
+      } else {
+        effectiveProvider = "unified";
+        normalizedModel = resolvedDescriptor.id;
+      }
+    }
+
+    const rawEffort = effectiveProvider === "codex"
       ? normalizeReasoningEffort(reasoningEffort) ?? DEFAULT_REASONING_EFFORT
       : normalizeReasoningEffort(reasoningEffort);
-    const normalizedReasoningEffort = validateReasoningEffort(legacyProvider, rawEffort);
-
-    // Resolve modelId from registry if provided
-    const resolvedModelId = modelId && getModelById(modelId) ? modelId : undefined;
+    const normalizedReasoningEffort = effectiveProvider === "unified"
+      ? rawEffort
+      : validateReasoningEffort(effectiveProvider === "claude" ? "claude" : "codex", rawEffort);
 
     sessionService.create({
       sessionId,
       laneId,
       ptyId: null,
       tracked: true,
-      title: provider === "codex" ? "Codex Chat" : "Claude Chat",
+      title: effectiveProvider === "codex" ? "Codex Chat" : effectiveProvider === "unified" ? "AI Chat" : "Claude Chat",
       startedAt,
       transcriptPath,
-      toolType: toolTypeFromProvider(provider),
-      resumeCommand: provider === "codex" ? "chat:codex" : `chat:claude:${sessionId}`
+      toolType: toolTypeFromProvider(effectiveProvider),
+      resumeCommand:
+        effectiveProvider === "codex"
+          ? "chat:codex"
+          : effectiveProvider === "unified"
+            ? `chat:unified:${sessionId}`
+            : `chat:claude:${sessionId}`
     });
 
     const managed: ManagedChatSession = {
       session: {
         id: sessionId,
         laneId,
-        provider,
+        provider: effectiveProvider,
         model: normalizedModel,
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
+        ...(requestedPermMode ? { permissionMode: requestedPermMode } : {}),
         status: "idle",
         createdAt: startedAt,
         lastActivityAt: startedAt
@@ -1695,7 +2191,7 @@ export function createAgentChatService(args: {
         type: "session_init",
         sessionId,
         laneId,
-        provider,
+        provider: effectiveProvider,
         model: managed.session.model,
         createdAt: startedAt,
       });
@@ -1712,9 +2208,27 @@ export function createAgentChatService(args: {
     }
 
     try {
-      if (provider === "codex") {
+      // Try unified path first for models that are not CLI-wrapped
+      if (managed.session.provider === "unified" && resolvedModelId && !isModelCliWrapped(resolvedModelId)) {
+        const result = await startUnifiedSession(managed);
+        if (result === "handled") {
+          sessionService.setResumeCommand(sessionId, `chat:unified:${sessionId}`);
+          persistChatState(managed);
+          return managed.session;
+        }
+      }
+
+      if (managed.session.provider === "unified") {
+        throw new Error(`Unable to initialize unified runtime for model '${managed.session.model}'.`);
+      }
+
+      // Legacy runtime paths
+      if (managed.session.provider === "codex") {
         const runtime = await ensureCodexSessionRuntime(managed);
         const config = resolveChatConfig();
+        const codexPolicy = managed.session.permissionMode
+          ? mapSessionPermissionToCodex(managed.session.permissionMode)
+          : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
         const response = await runtime.request<{
           thread?: { id?: string };
           model?: string;
@@ -1722,8 +2236,8 @@ export function createAgentChatService(args: {
           model: normalizedModel,
           ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           cwd: lane.worktreePath,
-          approvalPolicy: config.codexApprovalPolicy,
-          sandbox: config.codexSandboxMode,
+          approvalPolicy: codexPolicy.approvalPolicy,
+          sandbox: codexPolicy.sandbox,
           experimentalRawEvents: false,
           persistExtendedHistory: true
         });
@@ -1761,6 +2275,21 @@ export function createAgentChatService(args: {
       managed.endedNotified = false;
     }
 
+    // Unified runtime dispatch
+    if (managed.session.provider === "unified") {
+      if (!managed.runtime || managed.runtime.kind !== "unified") {
+        const restarted = await startUnifiedSession(managed);
+        if (restarted !== "handled" || !managed.runtime || managed.runtime.kind !== "unified") {
+          throw new Error(`Unified runtime is not available for session '${managed.session.id}'.`);
+        }
+      }
+      if (reasoningEffort) {
+        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      }
+      await runUnifiedTurn(managed, trimmed, attachments);
+      return;
+    }
+
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       const nextReasoningEffort = validateReasoningEffort("codex", normalizeReasoningEffort(reasoningEffort));
@@ -1774,13 +2303,16 @@ export function createAgentChatService(args: {
 
       if (!runtime.threadResumed && threadIdToResume) {
         const config = resolveChatConfig();
+        const codexPolicy = managed.session.permissionMode
+          ? mapSessionPermissionToCodex(managed.session.permissionMode)
+          : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
         const resumeParams = {
           threadId: threadIdToResume,
           model: managed.session.model,
           ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
           cwd: managed.laneWorktreePath,
-          approvalPolicy: config.codexApprovalPolicy,
-          sandbox: config.codexSandboxMode,
+          approvalPolicy: codexPolicy.approvalPolicy,
+          sandbox: codexPolicy.sandbox,
           persistExtendedHistory: true
         };
 
@@ -1799,8 +2331,8 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
-            approvalPolicy: config.codexApprovalPolicy,
-            sandbox: config.codexSandboxMode,
+            approvalPolicy: codexPolicy.approvalPolicy,
+            sandbox: codexPolicy.sandbox,
             experimentalRawEvents: false,
             persistExtendedHistory: true
           });
@@ -1832,6 +2364,23 @@ export function createAgentChatService(args: {
     if (!trimmed.length) return;
 
     const managed = ensureManagedSession(sessionId);
+
+    // Unified runtime steer
+    if (managed.runtime?.kind === "unified") {
+      const runtime = managed.runtime;
+      if (runtime.busy) {
+        runtime.pendingSteers.push(trimmed);
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: trimmed,
+          turnId: runtime.activeTurnId ?? undefined,
+        });
+        persistChatState(managed);
+        return;
+      }
+      await runUnifiedTurn(managed, trimmed, []);
+      return;
+    }
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
@@ -1877,6 +2426,13 @@ export function createAgentChatService(args: {
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
 
+    // Unified runtime interrupt
+    if (managed.runtime?.kind === "unified") {
+      managed.runtime.interrupted = true;
+      managed.runtime.abortController?.abort();
+      return;
+    }
+
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       if (!managed.session.threadId || !runtime.activeTurnId) return;
@@ -1899,6 +2455,9 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       const config = resolveChatConfig();
+      const codexPolicy = managed.session.permissionMode
+        ? mapSessionPermissionToCodex(managed.session.permissionMode)
+        : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
       if (!managed.session.reasoningEffort) {
         managed.session.reasoningEffort = persisted?.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
       }
@@ -1910,8 +2469,8 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
-            approvalPolicy: config.codexApprovalPolicy,
-            sandbox: config.codexSandboxMode,
+            approvalPolicy: codexPolicy.approvalPolicy,
+            sandbox: codexPolicy.sandbox,
             persistExtendedHistory: true
           });
           managed.session.threadId = threadId;
@@ -1928,8 +2487,8 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
-            approvalPolicy: config.codexApprovalPolicy,
-            sandbox: config.codexSandboxMode,
+            approvalPolicy: codexPolicy.approvalPolicy,
+            sandbox: codexPolicy.sandbox,
             experimentalRawEvents: false,
             persistExtendedHistory: true
           });
@@ -1940,6 +2499,30 @@ export function createAgentChatService(args: {
           }
           runtime.threadResumed = true;
         }
+      }
+    } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !isModelCliWrapped(managed.session.modelId))) {
+      // Unified runtime resume — re-resolve the model
+      const result = await startUnifiedSession(managed);
+      if (result === "handled" && managed.runtime?.kind === "unified") {
+        // Restore message history from persisted state
+        const persistedMessages = persisted?.messages;
+        if (persistedMessages?.length) {
+          managed.runtime.messages = persistedMessages.map((m) => ({ role: m.role, content: m.content }));
+        }
+        // Restore permission mode
+        if (persisted?.permissionMode) {
+          managed.runtime.permissionMode = persisted.permissionMode as any;
+          managed.session.permissionMode = persisted.permissionMode as any;
+        }
+        sessionService.setResumeCommand(sessionId, `chat:unified:${sessionId}`);
+      } else {
+        if (managed.session.provider === "unified") {
+          throw new Error(`Unable to resume unified runtime for model '${managed.session.model}'.`);
+        }
+        // Fallthrough to Claude
+        const runtime = ensureClaudeSessionRuntime(managed);
+        runtime.messages = persisted?.messages ?? runtime.messages;
+        sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
       }
     } else {
       const runtime = ensureClaudeSessionRuntime(managed);
@@ -1962,13 +2545,20 @@ export function createAgentChatService(args: {
 
     return chatRows.map((row) => {
       const persisted = readPersistedState(row.id);
-      const provider = providerFromToolType(row.toolType);
+      const provider = persisted?.provider ?? providerFromToolType(row.toolType);
+      const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
+      const hydratedModelId = persisted?.modelId
+        ?? resolveModelIdFromStoredValue(fallbackModel, provider)
+        ?? (provider === "unified" ? DEFAULT_UNIFIED_MODEL_ID : undefined);
+      const model = provider === "unified" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
       return {
         sessionId: row.id,
         laneId: row.laneId,
         provider,
-        model: persisted?.model ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL),
+        model,
+        ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
+        ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         status: row.status === "running" ? "idle" : "ended",
         startedAt: row.startedAt,
         endedAt: row.endedAt,
@@ -2009,6 +2599,16 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (managed.runtime?.kind === "unified") {
+      const pending = managed.runtime.pendingApprovals.get(itemId);
+      if (!pending) {
+        throw new Error(`No pending approval found for item '${itemId}'.`);
+      }
+      managed.runtime.pendingApprovals.delete(itemId);
+      pending.resolve(decision);
+      return;
+    }
+
     throw new Error(`Session '${sessionId}' does not have a live runtime for approvals.`);
   };
 
@@ -2020,14 +2620,16 @@ export function createAgentChatService(args: {
       return listClaudeModelsFromSdk();
     }
 
-    // For non-legacy providers, try to resolve from the model registry
+    // For "unified" or any non-legacy provider: return all models with valid auth
     try {
-      const auth = await detectAllAuth();
+      const auth = await detectAuth();
       const available = getRegistryModels(auth);
-      const familyModels = available.filter(m => m.family === provider);
-      if (familyModels.length > 0) {
-        return familyModels.map((m, i) => ({
-          id: m.sdkModelId,
+      const targetModels = provider === "unified"
+        ? available
+        : available.filter(m => m.family === provider);
+      if (targetModels.length > 0) {
+        return targetModels.map((m, i) => ({
+          id: m.id,
           displayName: m.displayName,
           description: `${m.displayName} (${m.family})`,
           isDefault: i === 0,
@@ -2081,6 +2683,16 @@ export function createAgentChatService(args: {
         pending.resolve("cancel");
       }
       managed.runtime.approvals.clear();
+      clearClaudeRuntimeAfterFinish = true;
+    }
+
+    if (managed.runtime?.kind === "unified") {
+      managed.runtime.interrupted = true;
+      managed.runtime.abortController?.abort();
+      for (const pending of managed.runtime.pendingApprovals.values()) {
+        pending.resolve("cancel");
+      }
+      managed.runtime.pendingApprovals.clear();
       clearClaudeRuntimeAfterFinish = true;
     }
 
@@ -2142,6 +2754,22 @@ export function createAgentChatService(args: {
     return { scope: args.scope, content, truncated };
   };
 
+  const changePermissionMode = ({ sessionId, permissionMode }: import("../../../shared/types").AgentChatChangePermissionModeArgs): void => {
+    const managed = ensureManagedSession(sessionId);
+
+    if (managed.runtime?.kind === "unified") {
+      managed.runtime.permissionMode = permissionMode;
+    }
+
+    managed.session.permissionMode = permissionMode;
+    persistChatState(managed);
+
+    logger.info("agent_chat.permission_mode_changed", {
+      sessionId,
+      permissionMode,
+    });
+  };
+
   return {
     createSession,
     sendMessage,
@@ -2154,6 +2782,7 @@ export function createAgentChatService(args: {
     dispose,
     disposeAll,
     listContextPacks,
-    fetchContextPack
+    fetchContextPack,
+    changePermissionMode,
   };
 }

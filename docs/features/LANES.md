@@ -184,7 +184,7 @@ The Chat view layout:
 +-----------------------------------------------+
 ```
 
-Chat sessions created from the Chat view are automatically scoped to the selected lane (`cwd` = lane worktree path). The provider/model selector in the composer supports both Codex and Claude. Chat sessions are tracked as first-class sessions with the same delta computation, pack integration, and context tracking as terminal sessions.
+Chat sessions created from the Chat view are automatically scoped to the selected lane (`cwd` = lane worktree path). The provider/model selector in the composer supports all configured models (CLI, API-key, OpenRouter, and local providers such as LM Studio/Ollama/vLLM). If a user switches model families while a chat session is active, ADE forks a new chat session with the selected model so the active thread remains internally consistent. Chat sessions are tracked as first-class sessions with the same delta computation, pack integration, and context tracking as terminal sessions.
 
 **Phase 2 improvements (shipped)**: The agent chat view now has polished message/composer/pane styling, Claude provider selection remains stable, and Codex reasoning effort selection is available in the model controls (persisted per lane/model and sent to Codex thread/turn starts).
 

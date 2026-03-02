@@ -14,10 +14,11 @@ import {
   SpinnerGap,
   Circle,
   Checks,
-  ListChecks
+  ListChecks,
+  User,
+  Robot
 } from "@phosphor-icons/react";
-import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
-import { Chip } from "../ui/Chip";
+import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 type RenderEnvelope = {
@@ -118,33 +119,37 @@ function collapseEvents(events: AgentChatEventEnvelope[]): RenderEnvelope[] {
   return out;
 }
 
+/* ── Status indicators ── */
+
 function StatusDot({ status }: { status: "running" | "completed" | "failed" }) {
-  if (status === "completed") return <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" />;
-  if (status === "failed") return <span className="inline-block h-2 w-2 rounded-full bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.5)]" />;
-  return <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]" />;
+  if (status === "completed") return <span className="inline-block h-1.5 w-1.5 bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]" />;
+  if (status === "failed") return <span className="inline-block h-1.5 w-1.5 bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.4)]" />;
+  return <span className="inline-block h-1.5 w-1.5 animate-pulse bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.4)]" />;
 }
 
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" }) {
-  if (status === "completed") return <CheckCircle size={14} weight="regular" className="text-emerald-400" />;
-  if (status === "failed") return <XCircle size={14} weight="regular" className="text-red-400" />;
-  return <SpinnerGap size={14} weight="regular" className="animate-spin text-sky-400" />;
+  if (status === "completed") return <CheckCircle size={13} weight="bold" className="text-emerald-400" />;
+  if (status === "failed") return <XCircle size={13} weight="bold" className="text-red-400" />;
+  return <SpinnerGap size={13} weight="bold" className="animate-spin text-accent" />;
 }
 
 function PlanStepIcon({ status }: { status: string }) {
-  if (status === "completed") return <Checks size={14} weight="regular" className="text-emerald-400" />;
-  if (status === "failed") return <XCircle size={14} weight="regular" className="text-red-400" />;
-  if (status === "in_progress") return <SpinnerGap size={14} weight="regular" className="animate-spin text-sky-400" />;
-  return <Circle size={12} weight="regular" className="text-muted-fg" />;
+  if (status === "completed") return <Checks size={13} weight="bold" className="text-emerald-400" />;
+  if (status === "failed") return <XCircle size={13} weight="bold" className="text-red-400" />;
+  if (status === "in_progress") return <SpinnerGap size={13} weight="bold" className="animate-spin text-accent" />;
+  return <Circle size={11} weight="regular" className="text-muted-fg/40" />;
 }
+
+/* ── Markdown renderer ── */
 
 function MarkdownBlock({ markdown }: { markdown: string }) {
   return (
-    <div className="prose ade-prose-themed max-w-none text-[12px] leading-relaxed prose-headings:mb-2 prose-headings:mt-2 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0">
+    <div className="prose ade-prose-themed max-w-none text-[12.5px] leading-[1.65] prose-headings:mb-2 prose-headings:mt-3 prose-headings:font-sans prose-headings:text-fg/90 prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           pre: ({ children }) => (
-            <pre className="my-2 overflow-auto rounded-md border border-border/20 bg-surface-recessed px-3 py-2 font-mono text-[11px] text-fg/80 shadow-inner">
+            <pre className="my-2.5 overflow-auto border border-border/25 bg-[#0C0A10] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/75">
               {children}
             </pre>
           ),
@@ -152,9 +157,9 @@ function MarkdownBlock({ markdown }: { markdown: string }) {
             const text = String(children ?? "");
             const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
             return isBlock ? (
-              <code className="font-mono text-[11px] text-fg/80">{children}</code>
+              <code className="font-mono text-[11px] text-fg/75">{children}</code>
             ) : (
-              <code className="rounded-[4px] bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-secondary-fg">{children}</code>
+              <code className="border border-border/20 bg-[#0C0A10] px-1.5 py-0.5 font-mono text-[11px] text-accent/80">{children}</code>
             );
           },
           a: ({ children, href }) => (
@@ -162,7 +167,7 @@ function MarkdownBlock({ markdown }: { markdown: string }) {
               href={href}
               target="_blank"
               rel="noreferrer"
-              className="text-accent underline decoration-accent/40 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/60"
+              className="text-accent underline decoration-accent/30 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/50"
             >
               {children}
             </a>
@@ -174,6 +179,8 @@ function MarkdownBlock({ markdown }: { markdown: string }) {
     </div>
   );
 }
+
+/* ── Collapsible card ── */
 
 function CollapsibleCard({
   children,
@@ -188,35 +195,37 @@ function CollapsibleCard({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className={cn("rounded-xl border transition-colors", className)}>
+    <div className={cn("border transition-colors", className)}>
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[11px]"
         onClick={() => setOpen((v) => !v)}
       >
-        {open ? <CaretDown size={12} weight="regular" className="text-muted-fg" /> : <CaretRight size={12} weight="regular" className="text-muted-fg" />}
+        {open ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {open ? <div className="border-t border-border/20 px-3 pb-2.5 pt-2">{children}</div> : null}
+      {open ? <div className="border-t border-border/15 px-3 pb-3 pt-2">{children}</div> : null}
     </div>
   );
 }
 
+/* ── Diff preview ── */
+
 function DiffPreview({ diff }: { diff: string }) {
   const lines = diff.split(/\r?\n/);
   return (
-    <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/20 bg-surface-recessed px-3 py-2 font-mono text-[11px] text-fg/75 shadow-inner">
+    <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words border border-border/15 bg-[#0C0A10] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/70">
       {lines.map((line, index) => {
-        let tone = "text-fg/75";
+        let tone = "text-fg/70";
         let bg = "";
         if (line.startsWith("+")) {
-          tone = "text-diff-add";
-          bg = "bg-emerald-500/[0.08]";
+          tone = "text-emerald-400/90";
+          bg = "bg-emerald-500/[0.06]";
         } else if (line.startsWith("-")) {
-          tone = "text-diff-del";
-          bg = "bg-rose-500/[0.08]";
+          tone = "text-red-400/90";
+          bg = "bg-rose-500/[0.06]";
         } else if (line.startsWith("@@")) {
-          tone = "text-diff-hunk";
+          tone = "text-accent/60";
         }
         return (
           <div key={`${index}:${line}`} className={cn(tone, bg, "px-1 -mx-1")}>
@@ -227,6 +236,8 @@ function DiffPreview({ diff }: { diff: string }) {
     </pre>
   );
 }
+
+/* ── Activity indicator ── */
 
 const ACTIVITY_LABELS: Record<string, string> = {
   thinking: "Thinking",
@@ -242,33 +253,86 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
   const displayText = detail ? `${label}: ${detail}` : `${label}...`;
 
   return (
-    <div className="flex items-center gap-2.5 rounded-lg border border-accent/20 bg-accent/[0.06] px-3 py-2 text-[11px] text-fg/80">
+    <div className="flex items-center gap-3 border-l-2 border-l-accent/30 bg-gradient-to-r from-accent/[0.04] to-transparent px-4 py-2.5 font-mono text-[11px] text-fg/60">
       <div className="flex items-center gap-1">
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:0ms]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:150ms]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:300ms]" />
+        <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:0ms]" />
+        <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:150ms]" />
+        <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:300ms]" />
       </div>
       <span className="truncate font-medium">{displayText}</span>
     </div>
   );
 }
 
-function renderEvent(envelope: RenderEnvelope) {
+/* ── Tool result card ── */
+
+const TOOL_RESULT_TRUNCATE_LIMIT = 500;
+
+function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "tool_result" }> }) {
+  const [expanded, setExpanded] = useState(false);
+  const resultStr = typeof event.result === "string" ? event.result : JSON.stringify(event.result, null, 2);
+  const isTruncated = resultStr.length > TOOL_RESULT_TRUNCATE_LIMIT;
+  const displayStr = !expanded && isTruncated ? `${resultStr.slice(0, TOOL_RESULT_TRUNCATE_LIMIT)}...` : resultStr;
+
+  return (
+    <CollapsibleCard
+      defaultOpen={false}
+      summary={
+        <div className="flex items-center gap-2 font-mono text-[11px]">
+          <StatusIcon status={event.status ?? "completed"} />
+          <span className="font-bold text-fg/75">{event.tool}</span>
+          {event.status ? (
+            <span className={cn(
+              "text-[10px] uppercase tracking-wider",
+              event.status === "completed" ? "text-emerald-400/70" : event.status === "failed" ? "text-red-400/70" : "text-accent/70"
+            )}>
+              {event.status}
+            </span>
+          ) : null}
+        </div>
+      }
+      className="border-border/10 bg-gradient-to-r from-surface/30 to-transparent"
+    >
+      <pre
+        className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-[#0C0A10] px-4 py-3 font-mono text-[11px] text-fg/65"
+      >
+        {displayStr}
+      </pre>
+      {isTruncated ? (
+        <button
+          type="button"
+          className="mt-1.5 font-mono text-[10px] text-accent/60 hover:text-accent"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "collapse" : `show all (${resultStr.length} chars)`}
+        </button>
+      ) : null}
+    </CollapsibleCard>
+  );
+}
+
+/* ── Main event renderer ── */
+
+function renderEvent(envelope: RenderEnvelope, onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void) {
   const event = envelope.event;
 
   /* ── User message ── */
   if (event.type === "user_message") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[88%] rounded-2xl border border-accent/25 bg-accent/[0.08] px-4 py-2.5 text-xs leading-relaxed text-card-fg shadow-card">
-          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-accent/70">You</div>
-          <div className="whitespace-pre-wrap break-words">{event.text}</div>
+        <div className="max-w-[80%] bg-gradient-to-l from-accent/[0.10] via-accent/[0.05] to-transparent px-4 py-3">
+          <div className="mb-1.5 flex items-center gap-2">
+            <User size={11} weight="bold" className="text-accent/50" />
+            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-accent/45">You</span>
+            <span className="ml-auto font-mono text-[9px] text-muted-fg/30">{formatTime(envelope.timestamp)}</span>
+          </div>
+          <div className="whitespace-pre-wrap break-words text-[12.5px] leading-[1.6] text-fg/90">{event.text}</div>
           {event.attachments?.length ? (
-            <div className="mt-2 flex flex-wrap gap-1">
+            <div className="mt-2 flex flex-wrap gap-1.5">
               {event.attachments.map((attachment, index) => (
-                <Chip key={`${attachment.path}:${index}`} className="bg-accent/15 text-[11px] text-fg/80">
+                <span key={`${attachment.path}:${index}`} className="inline-flex items-center gap-1 bg-accent/[0.06] px-2 py-0.5 font-mono text-[9px] text-fg/50">
                   {attachment.type}: {attachment.path}
-                </Chip>
+                </span>
               ))}
             </div>
           ) : null}
@@ -281,8 +345,12 @@ function renderEvent(envelope: RenderEnvelope) {
   if (event.type === "text") {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[92%] rounded-2xl border-l-2 border-l-sky-500/50 border-y border-r border-y-border/20 border-r-border/20 bg-card/60 px-4 py-2.5 text-xs leading-relaxed text-fg/90 shadow-[0_1px_4px_rgba(0,0,0,0.1)]">
-          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-sky-400/70">Agent</div>
+        <div className="max-w-[92%] border-l-2 border-l-accent/20 pl-4 py-3">
+          <div className="mb-1.5 flex items-center gap-2">
+            <Robot size={11} weight="bold" className="text-accent/40" />
+            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-accent/35">Agent</span>
+            <span className="ml-auto font-mono text-[9px] text-muted-fg/30">{formatTime(envelope.timestamp)}</span>
+          </div>
           <MarkdownBlock markdown={event.text} />
         </div>
       </div>
@@ -294,24 +362,34 @@ function renderEvent(envelope: RenderEnvelope) {
     const outputTrimmed = event.output.trim();
     const isLong = outputTrimmed.split("\n").length > 12;
 
+    const statusBadgeCls = event.status === "completed"
+      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-400"
+      : event.status === "failed"
+        ? "border-red-500/25 bg-red-500/10 text-red-400"
+        : "border-amber-500/25 bg-amber-500/10 text-amber-400";
+
     const commandHeader = (
-      <div className="flex flex-wrap items-center gap-2 text-[11px]">
-        <Terminal size={14} weight="regular" className="text-amber-500/70" />
-        <span className="font-semibold text-fg/80">Command</span>
-        <StatusDot status={event.status} />
-        <span className="text-muted-fg/80">{event.status}</span>
-        {event.exitCode != null ? <Chip className="text-[11px]">exit {event.exitCode}</Chip> : null}
-        {event.durationMs != null ? <span className="text-muted-fg/60">{Math.max(0, event.durationMs)}ms</span> : null}
+      <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+        <span className="inline-flex items-center gap-1 border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-400">
+          <Terminal size={11} weight="bold" />
+          BASH
+        </span>
+        <span className="flex-1 truncate text-[10px] text-fg/50">{event.command}</span>
+        {event.durationMs != null ? <span className="text-[10px] text-muted-fg/40">{Math.max(0, event.durationMs)}ms</span> : null}
+        <span className={cn("border px-1.5 py-0.5 text-[9px] font-bold uppercase", statusBadgeCls)}>
+          {event.status === "completed" ? "PASS" : event.status === "failed" ? "FAIL" : "RUN"}
+          {event.exitCode != null ? ` ${event.exitCode}` : ""}
+        </span>
       </div>
     );
 
     const commandBody = (
       <>
-        <div className="rounded-md border border-border/15 bg-surface-recessed px-3 py-2 font-mono text-[11px] text-fg/85 shadow-inner">
-          <span className="select-none text-muted-fg/50">$ </span>{event.command}
+        <div className="border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] text-fg/80">
+          <span className="select-none text-amber-500/40">$ </span>{event.command}
         </div>
         {outputTrimmed.length ? (
-          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/15 bg-surface-recessed px-3 py-2 font-mono text-[11px] text-fg/75 shadow-inner">
+          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] leading-[1.5] text-fg/60">
             {event.output}
           </pre>
         ) : null}
@@ -323,7 +401,7 @@ function renderEvent(envelope: RenderEnvelope) {
         <CollapsibleCard
           defaultOpen={event.status === "running"}
           summary={commandHeader}
-          className="border-border/30 bg-surface-recessed/80 shadow-card"
+          className="border-amber-500/8 bg-gradient-to-r from-amber-500/[0.03] to-transparent shadow-[0_0_24px_-12px_rgba(245,158,11,0.06)]"
         >
           {commandBody}
         </CollapsibleCard>
@@ -331,7 +409,7 @@ function renderEvent(envelope: RenderEnvelope) {
     }
 
     return (
-      <div className="rounded-xl border border-border/30 bg-surface-recessed/80 p-3 shadow-card">
+      <div className="border border-amber-500/8 bg-gradient-to-r from-amber-500/[0.03] to-transparent p-3 shadow-[0_0_24px_-12px_rgba(245,158,11,0.06)]">
         <div className="mb-2">{commandHeader}</div>
         {commandBody}
       </div>
@@ -342,12 +420,13 @@ function renderEvent(envelope: RenderEnvelope) {
   if (event.type === "file_change") {
     const hasDiff = event.diff.trim().length > 0;
     const summary = (
-      <div className="flex flex-wrap items-center gap-2 text-[11px]">
-        <FileCode size={14} weight="regular" className="text-emerald-400/70" />
-        <span className="font-semibold text-fg/80">File change</span>
-        <StatusDot status={event.status ?? "running"} />
-        <Chip className="text-[11px]">{event.kind}</Chip>
-        <span className="truncate font-mono text-[11px] text-muted-fg/80">{event.path}</span>
+      <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+        <span className="inline-flex items-center gap-1 border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+          <FileCode size={11} weight="bold" />
+          EDIT
+        </span>
+        <span className="flex-1 truncate text-[10px] text-emerald-400/60">{event.path}</span>
+        <span className="border border-border/15 bg-[#0C0A10] px-1.5 py-0.5 text-[9px] text-muted-fg/50">{event.kind}</span>
       </div>
     );
 
@@ -355,12 +434,12 @@ function renderEvent(envelope: RenderEnvelope) {
       <CollapsibleCard
         defaultOpen={!hasDiff || event.diff.split("\n").length <= 20}
         summary={summary}
-        className="border-emerald-500/20 bg-emerald-500/[0.04] shadow-[0_1px_4px_rgba(0,0,0,0.08)]"
+        className="border-emerald-500/8 bg-gradient-to-r from-emerald-500/[0.03] to-transparent shadow-[0_0_24px_-12px_rgba(16,185,129,0.06)]"
       >
         {hasDiff ? (
           <DiffPreview diff={event.diff} />
         ) : (
-          <div className="text-[11px] text-muted-fg">No diff payload available.</div>
+          <div className="font-mono text-[11px] text-muted-fg/40">No diff payload available.</div>
         )}
       </CollapsibleCard>
     );
@@ -369,31 +448,33 @@ function renderEvent(envelope: RenderEnvelope) {
   /* ── Plan ── */
   if (event.type === "plan") {
     return (
-      <div className="rounded-xl border border-violet-500/20 bg-violet-500/[0.04] p-3 shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
-        <div className="mb-2.5 flex items-center gap-2 text-[11px]">
-          <ListChecks size={14} weight="regular" className="text-violet-400/70" />
-          <span className="font-semibold text-fg/80">Plan</span>
+      <div className="border border-violet-500/8 bg-gradient-to-r from-violet-500/[0.04] to-transparent p-4 shadow-[0_0_24px_-12px_rgba(139,92,246,0.08)]">
+        <div className="mb-3 flex items-center gap-2">
+          <ListChecks size={13} weight="bold" className="text-violet-400/60" />
+          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-violet-400/60">Plan</span>
         </div>
-        <div className="space-y-1.5 text-[11px]">
+        <div className="space-y-1">
           {event.steps.length ? (
             event.steps.map((step, index) => (
-              <div key={`${step.text}:${index}`} className="flex items-start gap-2.5 rounded-md px-2 py-1 transition-colors hover:bg-muted/20">
+              <div key={`${step.text}:${index}`} className="flex items-start gap-2.5 px-2 py-1.5 transition-colors hover:bg-violet-500/[0.03]">
                 <div className="mt-0.5 flex-shrink-0">
                   <PlanStepIcon status={step.status} />
                 </div>
                 <div className={cn(
-                  "flex-1",
-                  step.status === "completed" ? "text-fg/60 line-through decoration-fg/20" : "text-fg/85"
+                  "flex-1 text-[12px]",
+                  step.status === "completed" ? "text-fg/45 line-through decoration-fg/15" : "text-fg/80"
                 )}>
                   {step.text}
                 </div>
               </div>
             ))
           ) : (
-            <div className="text-muted-fg">No plan steps yet.</div>
+            <div className="font-mono text-[11px] text-muted-fg/40">No plan steps yet.</div>
           )}
         </div>
-        {event.explanation ? <div className="mt-2.5 border-t border-violet-500/10 pt-2 text-[11px] text-muted-fg">{event.explanation}</div> : null}
+        {event.explanation ? (
+          <div className="mt-3 border-t border-violet-500/8 pt-2.5 text-[11px] text-muted-fg/50">{event.explanation}</div>
+        ) : null}
       </div>
     );
   }
@@ -404,99 +485,177 @@ function renderEvent(envelope: RenderEnvelope) {
       <CollapsibleCard
         defaultOpen={false}
         summary={
-          <div className="flex items-center gap-2 text-[11px]">
-            <Brain size={14} weight="regular" className="text-purple-400/70" />
-            <span className="font-medium text-purple-500/80">Thinking</span>
+          <div className="flex items-center gap-2 font-mono text-[11px]">
+            <Brain size={13} weight="bold" className="text-purple-400/50" />
+            <span className="font-bold text-purple-400/60">thinking</span>
           </div>
         }
-        className="border-purple-500/20 bg-purple-500/[0.04]"
+        className="border-purple-500/8 bg-gradient-to-r from-purple-500/[0.03] to-transparent"
       >
-        <div className="text-fg/80">
+        <div className="text-fg/70">
           <MarkdownBlock markdown={event.text} />
         </div>
       </CollapsibleCard>
     );
   }
 
+  /* ── Step boundary ── */
+  if (event.type === "step_boundary") {
+    return (
+      <div className="flex items-center gap-3 py-1">
+        <div className="h-px flex-1 bg-border/10" />
+        <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/30">Step {event.stepNumber}</span>
+        <div className="h-px flex-1 bg-border/10" />
+      </div>
+    );
+  }
+
   /* ── Tool call ── */
   if (event.type === "tool_call") {
+    const toolName = event.tool;
+    const args = event.args as Record<string, unknown> | null;
+
+    // Determine badge color and label based on tool type
+    const isRead = toolName === "readFile" || toolName === "Read" || toolName === "grep" || toolName === "Grep" || toolName === "glob" || toolName === "Glob";
+    const isBash = toolName === "bash" || toolName === "Bash";
+    const isEdit = toolName === "editFile" || toolName === "Edit" || toolName === "writeFile" || toolName === "Write";
+
+    const badgeLabel = isBash ? "BASH" : isRead ? "READ" : isEdit ? "EDIT" : toolName.toUpperCase();
+    const badgeCls = isBash
+      ? "border-amber-500/20 bg-amber-500/10 text-amber-400"
+      : isRead
+        ? "border-cyan-500/20 bg-cyan-500/10 text-cyan-400"
+        : isEdit
+          ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+          : "border-accent/20 bg-accent/10 text-accent";
+    const BadgeIcon = isBash ? Terminal : isRead ? FileCode : isEdit ? FileCode : Wrench;
+
+    // Build the target/description line
+    let targetLine: string | null = null;
+    if (isBash) {
+      targetLine = args && typeof args === "object" && "command" in args ? String(args.command) : null;
+    } else if (isRead) {
+      targetLine = args && typeof args === "object"
+        ? ("file_path" in args ? String(args.file_path) : "path" in args ? String(args.path) : "pattern" in args ? String(args.pattern) : null)
+        : null;
+    } else if (isEdit) {
+      targetLine = args && typeof args === "object" && "file_path" in args ? String(args.file_path) : null;
+    }
+
+    let argsDisplay: React.ReactNode;
+    if (targetLine) {
+      const extraPairs = args && typeof args === "object"
+        ? Object.entries(args).filter(([k]) => !["command", "file_path", "path", "pattern"].includes(k))
+        : [];
+      argsDisplay = (
+        <div className="border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] text-fg/80">
+          {isBash ? (
+            <span className="flex items-center gap-1.5">
+              <span className="select-none text-muted-fg/30">$ </span>
+              <span>{targetLine}</span>
+            </span>
+          ) : (
+            <div className="text-accent/70">{targetLine}</div>
+          )}
+          {extraPairs.length > 0 ? (
+            <div className="mt-1 text-muted-fg/50">
+              {extraPairs.map(([k, v]) => (
+                <span key={k} className="mr-2">{k}=<span className="text-fg/60">{String(v)}</span></span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      );
+    } else {
+      const kvPairs = args && typeof args === "object" ? Object.entries(args) : [];
+      argsDisplay = kvPairs.length > 0 ? (
+        <div className="border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] text-fg/60">
+          {kvPairs.map(([k, v]) => {
+            const val = typeof v === "string" ? v : JSON.stringify(v);
+            const truncated = val && val.length > 200 ? `${val.slice(0, 200)}...` : val;
+            return (
+              <div key={k} className="py-0.5">
+                <span className="text-muted-fg/40">{k}</span>=<span className="text-fg/60">{truncated}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] text-fg/60">
+          {JSON.stringify(args, null, 2)}
+        </pre>
+      );
+    }
+
     return (
       <CollapsibleCard
         defaultOpen={false}
         summary={
-          <div className="flex items-center gap-2 text-[11px]">
-            <Wrench size={14} weight="regular" className="text-sky-400/70" />
-            <span className="font-semibold text-fg/80">Tool call</span>
-            <span className="font-mono text-[11px] text-accent/70">{event.tool}</span>
+          <div className="flex items-center gap-2 font-mono text-[11px]">
+            <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", badgeCls)}>
+              <BadgeIcon size={11} weight="bold" />
+              {badgeLabel}
+            </span>
+            {targetLine ? (
+              <span className="flex-1 truncate text-[10px] text-fg/50">{targetLine}</span>
+            ) : null}
           </div>
         }
-        className="border-border/25 bg-card/50"
+        className="border-border/10 bg-gradient-to-r from-surface/40 to-transparent"
       >
-        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/15 bg-surface-recessed px-3 py-2 font-mono text-[11px] text-fg/75">
-          {JSON.stringify(event.args, null, 2)}
-        </pre>
+        {argsDisplay}
       </CollapsibleCard>
     );
   }
 
   /* ── Tool result ── */
   if (event.type === "tool_result") {
-    return (
-      <CollapsibleCard
-        defaultOpen={false}
-        summary={
-          <div className="flex items-center gap-2 text-[11px]">
-            <StatusIcon status={event.status ?? "completed"} />
-            <span className="font-semibold text-fg/80">Tool result</span>
-            <span className="font-mono text-[11px] text-accent/70">{event.tool}</span>
-            {event.status ? (
-              <span className={cn(
-                "text-[11px]",
-                event.status === "completed" ? "text-emerald-400/80" : event.status === "failed" ? "text-red-400/80" : "text-sky-400/80"
-              )}>
-                {event.status}
-              </span>
-            ) : null}
-          </div>
-        }
-        className="border-border/25 bg-card/50"
-      >
-        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/15 bg-surface-recessed px-3 py-2 font-mono text-[11px] text-fg/75">
-          {JSON.stringify(event.result, null, 2)}
-        </pre>
-      </CollapsibleCard>
-    );
+    return <ToolResultCard event={event} />;
   }
 
   /* ── Approval request ── */
   if (event.type === "approval_request") {
+    const handleApproval = onApproval ? (d: AgentChatApprovalDecision) => onApproval(event.itemId, d) : undefined;
     return (
-      <div className="rounded-xl border border-amber-500/30 bg-gradient-to-r from-amber-500/[0.08] to-amber-400/[0.04] p-3 shadow-card">
-        <div className="mb-1.5 flex items-center gap-2 text-[11px]">
-          <Warning size={14} weight="regular" className="text-amber-500" />
-          <span className="font-semibold text-fg/90">Approval required</span>
+      <div className="border border-amber-500/15 bg-gradient-to-r from-amber-500/[0.06] to-transparent p-4 shadow-[0_0_24px_-8px_rgba(245,158,11,0.1)]">
+        <div className="mb-2 flex items-center gap-2">
+          <Warning size={13} weight="bold" className="text-amber-500" />
+          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">Approval Required</span>
+          <span className="font-mono text-[10px] text-muted-fg/40">{event.kind}</span>
         </div>
-        <div className="text-[11px] text-fg/80">{event.description}</div>
-        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            className="rounded-md border border-amber-500/30 bg-amber-500/15 px-2.5 py-1 text-[11px] font-medium text-fg transition-colors hover:bg-amber-500/25"
-          >
-            Accept
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-amber-500/20 bg-transparent px-2.5 py-1 text-[11px] font-medium text-fg/80 transition-colors hover:bg-amber-500/10"
-          >
-            Accept Session
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-amber-500/20 bg-transparent px-2.5 py-1 text-[11px] font-medium text-fg/80 transition-colors hover:bg-amber-500/10"
-          >
-            Decline
-          </button>
-        </div>
+        <div className="text-[12px] leading-relaxed text-fg/75">{event.description}</div>
+        {handleApproval ? (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              className="border border-accent/40 bg-accent/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-accent/25"
+              onClick={() => handleApproval("accept")}
+            >
+              Accept
+            </button>
+            <button
+              type="button"
+              className="border border-accent/20 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/10"
+              onClick={() => handleApproval("accept_for_session")}
+            >
+              Accept All
+            </button>
+            <button
+              type="button"
+              className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
+              onClick={() => handleApproval("decline")}
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
+              onClick={() => handleApproval("cancel")}
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -504,13 +663,17 @@ function renderEvent(envelope: RenderEnvelope) {
   /* ── Error ── */
   if (event.type === "error") {
     return (
-      <div className="rounded-xl border border-red-500/30 bg-gradient-to-r from-red-500/[0.08] to-red-400/[0.04] p-3 shadow-card">
-        <div className="mb-1.5 flex items-center gap-2 text-[11px]">
-          <Warning size={14} weight="regular" className="text-red-500" />
-          <span className="font-semibold text-fg/90">Error</span>
+      <div className="border border-red-500/15 bg-gradient-to-r from-red-500/[0.05] to-transparent p-4 shadow-[0_0_24px_-8px_rgba(239,68,68,0.08)]">
+        <div className="mb-2 flex items-center gap-2">
+          <Warning size={13} weight="bold" className="text-red-500" />
+          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">Error</span>
         </div>
-        <div className="whitespace-pre-wrap break-words text-[11px] text-fg/85">{event.message}</div>
-        {event.errorInfo ? <div className="mt-1.5 text-[11px] text-muted-fg/60">{event.errorInfo}</div> : null}
+        <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg/80">{event.message}</div>
+        {event.errorInfo ? (
+          <div className="mt-2 font-mono text-[10px] text-muted-fg/40">
+            {typeof event.errorInfo === "string" ? event.errorInfo : `[${event.errorInfo.category}]${event.errorInfo.provider ? ` ${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -523,23 +686,23 @@ function renderEvent(envelope: RenderEnvelope) {
   /* ── Status ── */
   if (event.type === "status") {
     return (
-      <div className="flex items-center gap-2 text-[11px] text-muted-fg/70">
-        <div className="h-px flex-1 bg-border/20" />
-        <span>
-          Turn {event.turnStatus}
+      <div className="flex items-center gap-3 py-0.5">
+        <div className="h-px flex-1 bg-border/10" />
+        <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/30">
+          {event.turnStatus}
           {event.message ? ` — ${event.message}` : ""}
         </span>
-        <div className="h-px flex-1 bg-border/20" />
+        <div className="h-px flex-1 bg-border/10" />
       </div>
     );
   }
 
   /* ── Done / fallback ── */
   return (
-    <div className="flex items-center gap-2 text-[11px] text-muted-fg/60">
-      <div className="h-px flex-1 bg-border/15" />
-      <span>Turn {event.status}.</span>
-      <div className="h-px flex-1 bg-border/15" />
+    <div className="flex items-center gap-3 py-0.5">
+      <div className="h-px flex-1 bg-border/10" />
+      <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">{event.status}</span>
+      <div className="h-px flex-1 bg-border/10" />
     </div>
   );
 }
@@ -553,20 +716,37 @@ function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: str
   return null;
 }
 
+/* ── Main component ── */
+
 export function AgentChatMessageList({
   events,
   showStreamingIndicator = false,
-  className
+  className,
+  onApproval
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   className?: string;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
 
   const rows = useMemo(() => collapseEvents(events), [events]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
+
+  // Map turnId → sequential turn number for display
+  const turnNumberMap = useMemo(() => {
+    const map = new Map<string, number>();
+    let counter = 1;
+    for (const row of rows) {
+      const turnId = "turnId" in row.event ? (row.event as { turnId?: string }).turnId ?? null : null;
+      if (turnId && !map.has(turnId)) {
+        map.set(turnId, counter++);
+      }
+    }
+    return map;
+  }, [rows]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -577,7 +757,7 @@ export function AgentChatMessageList({
   return (
     <div
       ref={scrollRef}
-      className={cn("h-full overflow-auto rounded-lg border border-border/30 bg-bg/55 p-3", className)}
+      className={cn("h-full overflow-auto p-4", className)}
       onScroll={(event) => {
         const target = event.currentTarget;
         const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
@@ -585,26 +765,32 @@ export function AgentChatMessageList({
       }}
     >
       {rows.length === 0 ? (
-        <div className="flex h-full items-center justify-center text-xs text-muted-fg">
-          Start a conversation to see chat activity.
+        <div className="flex h-full flex-col items-center justify-center gap-4">
+          <div className="relative">
+            <Robot size={36} weight="thin" className="text-accent/15" />
+            <div className="absolute inset-0 animate-pulse bg-accent/[0.03] blur-xl" />
+          </div>
+          <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/20">Start a conversation</span>
         </div>
       ) : (
-        <div className="space-y-2.5">
+        <div className="space-y-3">
           {rows.map((envelope, index) => {
             const currentTurn = "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
             const previous = rows[index - 1];
             const previousTurn = previous && "turnId" in previous.event ? previous.event.turnId ?? null : null;
             const showTurnDivider = currentTurn && currentTurn !== previousTurn;
             return (
-              <div key={envelope.key} className="space-y-1.5">
+              <div key={envelope.key} className="space-y-2">
                 {showTurnDivider ? (
-                  <div className="flex items-center gap-2 py-1 text-[11px] uppercase tracking-wider text-muted-fg/60">
-                    <div className="h-px flex-1 bg-border/20" />
-                    <span>Turn · {formatTime(envelope.timestamp)}</span>
-                    <div className="h-px flex-1 bg-border/20" />
+                  <div className="flex items-center gap-3 py-2">
+                    <div className="h-px flex-1 bg-accent/8" />
+                    <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-accent/25">
+                      Turn {String(turnNumberMap.get(currentTurn!) ?? 0).padStart(2, "0")} · {formatTime(envelope.timestamp)}
+                    </span>
+                    <div className="h-px flex-1 bg-accent/8" />
                   </div>
                 ) : null}
-                {renderEvent(envelope)}
+                {renderEvent(envelope, onApproval)}
               </div>
             );
           })}
@@ -613,11 +799,11 @@ export function AgentChatMessageList({
             latestActivity ? (
               <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
             ) : (
-              <div className="flex items-center gap-2.5 rounded-lg border border-accent/20 bg-accent/[0.06] px-3 py-2 text-[11px] text-fg/80">
+              <div className="flex items-center gap-3 border-l-2 border-l-accent/30 bg-gradient-to-r from-accent/[0.04] to-transparent px-4 py-2.5 font-mono text-[11px] text-fg/60">
                 <div className="flex items-center gap-1">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:0ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:150ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:300ms]" />
+                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:0ms]" />
+                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:150ms]" />
+                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:300ms]" />
                 </div>
                 <span className="font-medium">Streaming...</span>
               </div>

@@ -18,6 +18,7 @@ import { parseStructuredOutput } from "./utils";
 
 const DEFAULT_CODEX_MODELS: AgentModelDescriptor[] = [
   { id: "gpt-5.3-codex", label: "gpt-5.3-codex" },
+  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5.2-codex", label: "gpt-5.2-codex" },
   { id: "gpt-5.1-codex-max", label: "gpt-5.1-codex-max" },
   { id: "codex-mini-latest", label: "codex-mini-latest" },

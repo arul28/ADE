@@ -1,4 +1,5 @@
 import { app, BrowserWindow, nativeImage, shell } from "electron";
+import { execSync } from "node:child_process";
 import path from "node:path";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
@@ -50,6 +51,54 @@ import { createClaudeOrchestratorAdapter } from "./services/orchestrator/claudeO
 import { createCodexOrchestratorAdapter } from "./services/orchestrator/codexOrchestratorAdapter";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import type { Logger } from "./services/logging/logger";
+
+/**
+ * Electron apps launched from macOS Dock/Finder inherit a minimal PATH
+ * (/usr/bin:/bin:/usr/sbin:/sbin) that misses user-installed CLI tools like
+ * `claude`. Resolve the user's login shell PATH so child processes spawned by
+ * the AI SDK can locate the CLI.
+ */
+function fixElectronShellPath(): void {
+  if (process.platform !== "darwin" && process.platform !== "linux") return;
+
+  const currentPath = process.env.PATH ?? "";
+  // Already rich — likely launched from terminal or already fixed.
+  if (currentPath.includes("/usr/local/bin") && currentPath.includes(".local/bin")) return;
+
+  try {
+    const loginShell = process.env.SHELL || "/bin/zsh";
+    // Use login (-l) shell to source profile, printf to avoid trailing newline.
+    const resolved = execSync(`${loginShell} -lc 'printf "%s" "$PATH"'`, {
+      encoding: "utf-8",
+      timeout: 5_000,
+    }).trim();
+
+    if (resolved && resolved.length > currentPath.length) {
+      process.env.PATH = resolved;
+    }
+  } catch {
+    // Shell resolution failed — manually append common paths as fallback.
+    const extras = [
+      "/usr/local/bin",
+      "/opt/homebrew/bin",
+      "/opt/homebrew/sbin",
+      `${process.env.HOME}/.local/bin`,
+      `${process.env.HOME}/.nvm/current/bin`,
+    ].filter((p) => !currentPath.includes(p));
+
+    if (extras.length) {
+      process.env.PATH = `${currentPath}:${extras.join(":")}`;
+    }
+  }
+}
+
+// Must run before any service or child process is created.
+fixElectronShellPath();
+
+// The Claude CLI refuses to start if it detects it is inside another Claude Code
+// session (nested session guard). ADE is a host app, not a nested session, so
+// strip the marker env var so the SDK can spawn the CLI cleanly.
+delete process.env.CLAUDECODE;
 
 if (process.env.VITE_DEV_SERVER_URL) {
   // Dev-only: prevent stale Vite optimized-dep URLs from being served from Electron cache.

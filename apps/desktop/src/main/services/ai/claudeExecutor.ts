@@ -8,27 +8,13 @@ import type {
   ExecutorOpts
 } from "./agentExecutor";
 import { parseStructuredOutput } from "./utils";
-
-const CLAUDE_MODEL_ALIASES = new Set(["opus", "sonnet", "haiku"]);
-const CLAUDE_FULL_ID_TO_ALIAS: Record<string, "opus" | "sonnet" | "haiku"> = {
-  "claude-opus-4-6": "opus",
-  "claude-sonnet-4-6": "sonnet",
-  "claude-haiku-4-5-20251001": "haiku"
-};
+import { resolveClaudeCliModel } from "./claudeModelUtils";
 
 const DEFAULT_CLAUDE_MODELS: AgentModelDescriptor[] = [
   { id: "opus", label: "Opus", description: "Highest reasoning quality" },
   { id: "sonnet", label: "Sonnet", description: "Balanced default" },
   { id: "haiku", label: "Haiku", description: "Fast and low-cost" }
 ];
-
-function resolveClaudeModel(model: string | undefined): string {
-  const requested = String(model ?? "").trim();
-  if (!requested) return "sonnet";
-  const normalized = requested.toLowerCase();
-  if (CLAUDE_MODEL_ALIASES.has(normalized)) return normalized;
-  return CLAUDE_FULL_ID_TO_ALIAS[normalized] ?? requested;
-}
 
 function mapPermissionMode(mode: ExecutorOpts["permissions"]["mode"]): "plan" | "acceptEdits" | "bypassPermissions" {
   if (mode === "read-only") return "plan";
@@ -119,7 +105,7 @@ export function createClaudeExecutor(): AgentExecutor {
         const abortController = new AbortController();
         const timeoutMs = Math.max(1_000, Math.floor(opts.timeoutMs || 0));
         const timeoutHandle = setTimeout(() => abortController.abort(), timeoutMs);
-        const modelId = resolveClaudeModel(opts.model);
+        const modelId = resolveClaudeCliModel(opts.model);
         let resolvedSessionId = resumeSessionId ?? randomUUID();
         let inputTokens: number | null = null;
         let outputTokens: number | null = null;

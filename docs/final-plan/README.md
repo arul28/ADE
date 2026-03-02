@@ -17,7 +17,7 @@ This plan has been split into individual phase files for maintainability. Each p
 
 ---
 
-Last updated: 2026-02-27
+Last updated: 2026-03-02
 Owner: ADE
 Status: Active
 
@@ -113,7 +113,7 @@ Not implemented yet:
 - Relay and machine registry/routing
 - iOS control app
 - Mission Introspection (reflection protocol for system self-improvement)
-- Subscription usage tracking via local CLI session data
+- Provider usage telemetry parity (CLI/API/local) and budget UX refinements
 
 ### 2.5 Phase 3 Status Snapshot (2026-02-27 update)
 
@@ -142,7 +142,7 @@ Immediate next execution focus is Task 5 and Task 6 in parallel.
 
 ADE becomes the execution control plane for parallel agentic development:
 
-1. Users execute AI tasks via existing CLI subscriptions (Claude Pro/Max, ChatGPT Plus) -- no API keys, no sign-up.
+1. Users execute AI tasks through configured providers (CLI subscriptions, API/OpenRouter, or local endpoints) without any ADE-hosted account/sign-up requirement.
 2. ADE's `AgentExecutor` interface unifies agent SDKs -- `ai-sdk-provider-claude-code` for Claude and `@openai/codex-sdk` for Codex -- spawning CLIs against user subscriptions.
 3. The AI orchestrator uses in-process Vercel AI SDK coordinator tools for mission coordination; the MCP server exposes ADE capabilities as a full headless orchestration API for external agents, evaluators, and CI/CD integration.
 4. Missions, lanes, packs, conflicts, and PRs share one coherent execution model.
@@ -160,7 +160,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Feature | Primary Phase | Depends On | Status |
 |---|---|---|---|
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
-| Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
+| Agent Chat integration (Codex App Server, Claude SDK, unified API/local runtime) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
 | AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Hivemind + Tasks 1-4 shipped; Tasks 5-8 remaining) |
 | Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |

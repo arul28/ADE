@@ -2,7 +2,7 @@
 
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 
@@ -65,8 +65,8 @@ describe("AgentChatMessageList", () => {
       />
     );
 
-    expect(screen.getByText("Command")).toBeTruthy();
-    expect(screen.getByText("exit 0")).toBeTruthy();
+    expect(screen.getByText("BASH")).toBeTruthy();
+    expect(screen.getByText(/PASS/)).toBeTruthy();
     expect(screen.getByText("all good")).toBeTruthy();
   });
 
@@ -86,7 +86,7 @@ describe("AgentChatMessageList", () => {
       />
     );
 
-    expect(screen.getByText("File change")).toBeTruthy();
+    expect(screen.getByText("EDIT")).toBeTruthy();
     expect(screen.getByText("modify")).toBeTruthy();
     expect(screen.getByText("src/index.ts")).toBeTruthy();
     const diff = container.querySelector("pre");
@@ -122,6 +122,7 @@ describe("AgentChatMessageList", () => {
   });
 
   it("renders approval request with action buttons", () => {
+    const onApproval = vi.fn();
     render(
       <AgentChatMessageList
         events={[
@@ -132,13 +133,14 @@ describe("AgentChatMessageList", () => {
             description: "Run destructive command"
           })
         ]}
+        onApproval={onApproval}
       />
     );
 
-    expect(screen.getByText("Approval required")).toBeTruthy();
+    expect(screen.getByText("Approval Required")).toBeTruthy();
     expect(screen.getByText("Run destructive command")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Accept Session" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Accept All" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Decline" })).toBeTruthy();
   });
 
@@ -159,7 +161,7 @@ describe("AgentChatMessageList", () => {
     expect(screen.getByText("Something failed")).toBeTruthy();
     expect(screen.getByText("UsageLimitExceeded")).toBeTruthy();
 
-    const errorBlock = container.querySelector(".border-red-500\\/30");
+    const errorBlock = container.querySelector(".border-red-500\\/15");
     expect(errorBlock).toBeTruthy();
   });
 

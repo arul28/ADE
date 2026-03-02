@@ -53,7 +53,7 @@ function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
 }
 
 function isChatToolType(toolType: TerminalToolType | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string | null } = {}) {

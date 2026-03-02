@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-03-02
 
 ---
 
@@ -185,7 +185,7 @@ pack content with interactive features.
 
 - **Two clear pack scopes**: A toggle switches between the Project pack and the selected Lane pack.
 - **Refresh button**: Triggers deterministic pack regeneration (always available).
-- **AI details button**: Re-runs AI pack details on demand (lane pack only). AI details also refresh automatically in the background after deterministic refresh when a subscription provider is available.
+- **AI details button**: Re-runs AI pack details on demand (lane pack only). AI details also refresh automatically in the background after deterministic refresh when any configured provider is available.
 - **Activity feed**: Human-readable pack events (refreshes, AI updates, failures) with deep links into the History tab.
 - **Versions + diff**: Immutable snapshots with a built-in diff viewer.
 
@@ -398,8 +398,8 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 | `lanePackTemplate` | **Exists, implemented** | Renders deterministic lane pack markdown from raw data. Produces structured markdown with machine-readable header, all marker-bounded sections (intent, task spec, todos, narrative), sessions table with session highlights (summarySource, summaryConfidence, omission tags), validation, errors, key files, and audit footer. |
 | `transcriptInsights` | **Exists, implemented** | Parses high-signal terminal output for structured summaries. Returns `summarySource` (`explicit_final_block` or `heuristic_tail`), `summaryConfidence` (`high` or `medium`), and deterministic omission tags for clipped extractions. |
 | `redaction` | **Exists, implemented** | Secret redaction for exports. `redactSecrets()` strips API keys, tokens, private keys, GitHub PATs. `redactSecretsDeep()` recursively scans complex objects. Applied to all outbound AI payloads. |
-| `aiIntegrationService` | **Exists, implemented** | Generates AI narratives via Vercel AI SDK using subscription-powered CLI tools. Called by the job engine after deterministic pack refresh. |
-| `jobEngine` | **Exists, implemented** | Queues pack refresh jobs, deduplicates by lane, manages execution order. After deterministic refresh, automatically generates AI narratives when a subscription provider is available. |
+| `aiIntegrationService` | **Exists, implemented** | Generates AI narratives via Vercel AI SDK using configured providers (CLI/API/local). Called by the job engine after deterministic pack refresh. |
+| `jobEngine` | **Exists, implemented** | Queues pack refresh jobs, deduplicates by lane, manages execution order. After deterministic refresh, automatically generates AI narratives when any provider is available. |
 | `sessionService` | Exists | Provides session delta data (commands, exit codes, failure lines) for pack generation. |
 | `gitService` | Exists | Provides git diff stats, commit history, and file change information for deterministic sections. |
 | `operationService` | Exists | Records pack refresh operations in the history timeline. |
@@ -838,12 +838,12 @@ Orchestrators and agents can consume pack changes incrementally using the delta 
 
 ### Auto-Narrative Pipeline
 
-When a subscription provider is available, the job engine automatically generates AI narratives after every deterministic pack refresh:
+When any configured provider is available, the job engine automatically generates AI narratives after every deterministic pack refresh:
 
 ```
 Deterministic Pack Refresh Complete
   ↓
-IF subscription providers available:
+IF provider available (CLI/API/local):
   ↓
   Build LaneExportStandard (~2,800 tokens)
     ↓
@@ -864,7 +864,7 @@ Narrative metadata is recorded in the pack event payload: `providerMode`, `jobId
 
 ### Current State
 
-> **Note**: The pack service generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for local workflows. When a subscription provider is available via Vercel AI SDK, narrative updates are generated locally and recorded as pack events and immutable version snapshots. Bounded exports (Lite/Standard/Deep) are available for orchestrator and AI consumption.
+> **Note**: The pack service generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for local workflows. When a provider is available via ADE's local AI runtimes, narrative updates are generated locally and recorded as pack events and immutable version snapshots. Bounded exports (Lite/Standard/Deep) are available for orchestrator and AI consumption.
 
 ---
 

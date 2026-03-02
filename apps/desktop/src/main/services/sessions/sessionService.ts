@@ -29,6 +29,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       "codex-orchestrated",
       "codex-chat",
       "claude-chat",
+      "ai-chat",
       "cursor",
       "aider",
       "continue",

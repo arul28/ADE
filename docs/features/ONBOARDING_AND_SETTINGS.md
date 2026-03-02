@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-02
 
 ---
 
@@ -67,16 +67,18 @@ previews, maintaining an audit trail, and providing escape hatches.
 
 ### AI Provider Detection
 
-ADE automatically detects installed CLI tools and their subscription status:
+ADE automatically detects installed CLI tools, API-key providers, and local model endpoints:
 
 | Provider State | Description | AI Features |
 |----------------|-------------|-------------|
-| **Guest** | No CLI tools detected or installed | All local features work (lanes, terminals, git, processes, tests, packs). AI-powered features are unavailable. |
-| **Subscription** | Claude Code and/or Codex CLI detected with active subscriptions | Full AI features via agent SDKs — narratives, conflict proposals, PR descriptions, mission planning |
+| **Guest** | No authenticated provider detected (CLI/API/local) | All local features work (lanes, terminals, git, processes, tests, packs). AI-powered features are unavailable. |
+| **CLI Subscription** | Claude Code and/or Codex CLI detected with active subscriptions | Full AI features via CLI-backed runtimes. |
+| **API Key** | One or more providers configured via env/settings (OpenAI, Anthropic, Google, Mistral, DeepSeek, xAI, etc.) | Full AI features via unified API runtimes. |
+| **Local Endpoint** | Local provider detected (LM Studio, Ollama, or vLLM) | Full AI features via OpenAI-compatible local runtimes. |
 
-AI features become available when CLI tools are installed. There is no separate
-sign-up, authentication, or API key configuration. ADE spawns `claude` and `codex`
-CLI processes using existing subscriptions through the agent SDKs.
+AI features become available when at least one provider is configured/detected.
+For CLI providers, ADE uses existing local auth (`claude login`, `codex` auth). For
+API-key/local providers, ADE routes through unified model runtimes.
 
 ---
 
@@ -148,7 +150,7 @@ When no CLI tools are detected, deterministic packs are still generated; only AI
 
 | Task Type | Description | Default Provider | Default Model | Available Models |
 |-----------|-------------|-----------------|---------------|-----------------|
-| `planning` | Mission and task planning | Claude | `sonnet` | Claude: opus, sonnet, haiku. Codex: gpt-5.3-codex, gpt-5.2-codex, codex-mini-latest, o4-mini, o3 |
+| `planning` | Mission and task planning | Claude | `sonnet` | Any configured model from registry (CLI/API/local/OpenRouter) |
 | `implementation` | Code generation and edits | Codex | `gpt-5.3-codex` | Same pool |
 | `review` | Code review and analysis | Claude | `sonnet` | Same pool |
 | `conflict_resolution` | Merge conflict proposals | Claude | `sonnet` | Same pool |
@@ -157,8 +159,9 @@ When no CLI tools are detected, deterministic packs are still generated; only AI
 | `terminal_summary` | Terminal session summaries | Claude | `haiku` | Same pool |
 
 Model discovery:
-- **Claude models**: Populated via `supportedModels()` SDK method at startup. Displayed as aliases (`opus`, `sonnet`, `haiku`) with full model IDs shown on hover.
-- **Codex models**: Hardcoded list (SDK does not expose a discovery method): `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-5.1-codex-max`, `codex-mini-latest`, `o4-mini`, `o3`.
+- **CLI models**: Detected from Codex/Claude availability and model discovery paths.
+- **Unified models**: Included when API keys, OpenRouter, or local providers (LM Studio/Ollama/vLLM) are configured.
+- **Filtering**: The model picker only shows configured/available models; unsupported/unconfigured models are hidden.
 - Users can assign any available model to any task type — defaults are suggestions, not requirements.
 
 **AI Feature Toggles**: Per-feature controls for enabling/disabling individual AI capabilities. Each toggle controls whether ADE uses AI for that specific feature. When disabled, the feature falls back to deterministic behavior (or is simply unavailable).
@@ -249,14 +252,19 @@ These settings persist to `.ade/local.yaml` under `ai.permissions.claude` and `a
 
 | Setting | Options | Default | Description |
 |---------|---------|---------|-------------|
-| Default chat provider | Codex / Claude / Last used | Last used | Which provider opens by default when starting a new chat session |
+| Default chat provider | Codex / Claude / Last used | Last used | Legacy default used when opening a fresh chat before an explicit model is selected. |
 | Default approval policy | Auto / Approve mutations / Approve all | Approve mutations | How tool use approvals are handled in chat. Auto = never ask. Approve mutations = ask for file writes and commands. Approve all = ask for everything. |
 | Send on Enter | Toggle | On | When on, Enter sends messages. When off, Cmd+Enter sends (Enter inserts newline). |
 | Codex chat sandbox | Read-only / Workspace write / Full access | Workspace write | Filesystem sandbox policy for Codex chat sessions. |
 | Claude chat permission mode | Plan / Accept edits / Bypass permissions | Accept edits | Permission mode for Claude chat sessions (independent of one-shot task permission mode). |
+| Unified chat permission mode | Plan / Edit / Full-auto | Edit | Default permission mode for non-CLI chat sessions (API-key/local/OpenRouter models). |
 | Chat session budget | USD input | $10.00 | Per-session budget cap for chat sessions (applies to both providers). |
 
 Chat settings persist to `.ade/local.yaml` under `ai.chat`.
+
+Chat model availability and switching behavior:
+- The chat model dropdown only shows models that are currently configured/authenticated (including local endpoints like LM Studio/Ollama/vLLM when detected).
+- Changing to a different model family while a chat thread is active starts a new chat session using the selected model, preserving thread consistency and provider/runtime invariants.
 
 **Lane Templates**: Manage reusable lane initialization templates.
 
@@ -646,7 +654,7 @@ interface OnboardingStatus {
 | ONBOARD-032 | AI feature toggles UI and persistence | Per-feature AI enable/disable toggles with master toggle, persisted to `local.yaml` under `ai.features` | TODO |
 | ONBOARD-033 | AI usage dashboard with per-feature tracking | Real-time usage tracking surface with per-feature progress bars, session totals, and usage history. Backend: `ai_usage_log` table, `logUsage()`, aggregated usage query IPC, and cost estimation are DONE. A usage dashboard UI exists in Missions tab (`UsageDashboard.tsx`). Remaining: dedicated Settings-embedded dashboard with per-feature progress bars and usage history sparklines | PARTIAL |
 | ONBOARD-034 | Budget controls with daily limits | Per-feature AI call limits with notification when limits are reached; foundation for agent guardrails and Night Shift agent budget caps. Backend: daily budget enforcement via `checkBudget()` is DONE — blocks execution when daily limit exceeded. Budget config read from `ai.budgets` in `local.yaml` is DONE. Remaining: Settings UI to configure budget limits, soft warning notifications before limit reached | PARTIAL |
-| ONBOARD-035 | Subscription status detection and display | Detected subscription tier display per provider with known rate limits from CLI response headers. Backend: subscription mode detection (guest vs subscription) is DONE. Remaining: tier detection (Pro/Max for Claude, Plus/Pro for Codex), rate limit header parsing from Claude/Codex CLI responses, Settings UI display | PARTIAL |
+| ONBOARD-035 | Provider status detection and display | Detected provider/auth status display with known rate-limit metadata where available. Backend: mode detection across guest/CLI/API/local is DONE. Remaining: richer tier detection (Pro/Max for Claude, Plus/Pro for Codex), robust CLI header parsing, and expanded Settings presentation | PARTIAL |
 | ONBOARD-036 | AI permissions & sandbox configuration UI | Dedicated section for Claude permission mode, Codex sandbox level, approval mode, writable paths, command allowlist. Persisted to `local.yaml` under `ai.permissions` | TODO |
 | ONBOARD-037 | Dynamic model picker for task routing | Per-task model dropdown populated from `supportedModels()` (Claude) and hardcoded list (Codex). Users can assign any model to any task type | TODO |
 | ONBOARD-038 | Settings honoring behavior display | Show whether .claude/settings.json and codex.toml exist, explain override behavior, allow opt-in for project settings sources | TODO |

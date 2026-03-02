@@ -1,17 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChatCircle, ArrowsClockwise } from "@phosphor-icons/react";
+import { ChatCircle, ArrowsClockwise, Plus } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
+  AiDetectedAuth,
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatFileRef,
+  AgentChatPermissionMode,
   AgentChatSessionSummary,
   ContextPackOption
 } from "../../../shared/types";
-import { MODEL_REGISTRY, getModelById } from "../../../shared/modelRegistry";
-import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
-import { EmptyState } from "../ui/EmptyState";
+import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
+import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 
@@ -24,7 +24,6 @@ type PendingApproval = {
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 
-// Migration: old localStorage keys for backward compatibility
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
@@ -95,17 +94,14 @@ function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   };
 }
 
-/** Migrate old provider+model localStorage to unified modelId. */
 function migrateOldPrefs(): string | null {
   try {
     const oldProvider = window.localStorage.getItem(LEGACY_PROVIDER_KEY);
     const oldModel = oldProvider ? window.localStorage.getItem(`${LEGACY_MODEL_KEY_PREFIX}:${oldProvider}`) : null;
     if (oldProvider && oldModel) {
-      // Try to map old model shortIds to new full IDs
       const match = MODEL_REGISTRY.find((m) => m.shortId === oldModel || m.sdkModelId === oldModel);
       if (match) {
         window.localStorage.setItem(LAST_MODEL_ID_KEY, match.id);
-        // Clean up legacy keys
         window.localStorage.removeItem(LEGACY_PROVIDER_KEY);
         window.localStorage.removeItem(`${LEGACY_MODEL_KEY_PREFIX}:codex`);
         window.localStorage.removeItem(`${LEGACY_MODEL_KEY_PREFIX}:claude`);
@@ -190,6 +186,87 @@ function inferAttachmentType(filePath: string): AgentChatFileRef["type"] {
   return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath) ? "image" : "file";
 }
 
+function resolveRegistryModelId(value: string | null | undefined): string | null {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized.length) return null;
+  const match = MODEL_REGISTRY.find(
+    (model) =>
+      model.id.toLowerCase() === normalized
+      || model.shortId.toLowerCase() === normalized
+      || model.sdkModelId.toLowerCase() === normalized
+  );
+  return match?.id ?? null;
+}
+
+function resolveCliRegistryModelId(provider: "codex" | "claude", value: string | null | undefined): string | null {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized.length) return null;
+  const family = provider === "codex" ? "openai" : "anthropic";
+  const match = MODEL_REGISTRY.find(
+    (model) =>
+      model.isCliWrapped
+      && model.family === family
+      && (
+        model.id.toLowerCase() === normalized
+        || model.shortId.toLowerCase() === normalized
+        || model.sdkModelId.toLowerCase() === normalized
+      )
+  );
+  return match?.id ?? null;
+}
+
+function hasConfiguredNonCliAuth(model: ModelDescriptor, detectedAuth: AiDetectedAuth[]): boolean {
+  return model.authTypes.some((authType) => {
+    if (authType === "api-key") {
+      return detectedAuth.some((auth) => auth.type === "api-key" && auth.provider === model.family);
+    }
+    if (authType === "openrouter") {
+      return detectedAuth.some((auth) => auth.type === "openrouter");
+    }
+    if (authType === "local") {
+      if (model.family === "ollama" || model.family === "lmstudio" || model.family === "vllm") {
+        return detectedAuth.some((auth) => auth.type === "local" && auth.provider === model.family);
+      }
+      return detectedAuth.some((auth) => auth.type === "local");
+    }
+    return false;
+  });
+}
+
+function deriveConfiguredModelIdsFromStatus(status: {
+  availableProviders: { codex: boolean; claude: boolean };
+  models: { codex: Array<{ id: string }>; claude: Array<{ id: string }> };
+  detectedAuth?: AiDetectedAuth[];
+}): string[] {
+  const available = new Set<string>();
+
+  if (status.availableProviders.codex) {
+    for (const model of status.models.codex ?? []) {
+      const resolved = resolveCliRegistryModelId("codex", model.id);
+      if (resolved) available.add(resolved);
+    }
+  }
+
+  if (status.availableProviders.claude) {
+    for (const model of status.models.claude ?? []) {
+      const resolved = resolveCliRegistryModelId("claude", model.id);
+      if (resolved) available.add(resolved);
+    }
+  }
+
+  const detectedAuth = status.detectedAuth ?? [];
+  if (detectedAuth.length) {
+    for (const model of MODEL_REGISTRY) {
+      if (model.deprecated || model.isCliWrapped) continue;
+      if (hasConfiguredNonCliAuth(model, detectedAuth)) {
+        available.add(model.id);
+      }
+    }
+  }
+
+  return [...available];
+}
+
 export function AgentChatPane({
   laneId,
   initialSessionId,
@@ -207,6 +284,7 @@ export function AgentChatPane({
   const [modelId, setModelId] = useState<string>(DEFAULT_MODEL_ID);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
+  const [permissionMode, setPermissionMode] = useState<AgentChatPermissionMode>("plan");
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [selectedContextPacks, setSelectedContextPacks] = useState<ContextPackOption[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
@@ -214,6 +292,7 @@ export function AgentChatPane({
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
 
   const loadedHistoryRef = useRef<Set<string>>(new Set());
 
@@ -221,6 +300,10 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  const selectedSessionModelId = useMemo(() => {
+    if (!selectedSession) return null;
+    return selectedSession.modelId ?? resolveRegistryModelId(selectedSession.model);
+  }, [selectedSession]);
 
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
@@ -228,27 +311,67 @@ export function AgentChatPane({
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
 
+  const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
+
+  const sessionProvider = useMemo(() => {
+    if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
+    const desc = getModelById(modelId);
+    if (!desc) return "unified";
+    if (desc.family === "openai" && desc.isCliWrapped) return "codex";
+    if (desc.family === "anthropic" && desc.isCliWrapped) return "claude";
+    return "unified";
+  }, [selectedSession, modelSelectionDiffersFromSession, modelId]);
+
+  const sessionIsCliWrapped = useMemo(() => {
+    if (selectedSessionModelId && !modelSelectionDiffersFromSession) {
+      const desc = getModelById(selectedSessionModelId);
+      return desc?.isCliWrapped ?? false;
+    }
+    return selectedModelDesc?.isCliWrapped ?? false;
+  }, [selectedSessionModelId, modelSelectionDiffersFromSession, selectedModelDesc]);
+
+  // Keep all configured models selectable, and always include the active session model.
+  const effectiveAvailableModelIds = useMemo(() => {
+    if (!selectedSessionModelId) return availableModelIds;
+    return availableModelIds.includes(selectedSessionModelId)
+      ? availableModelIds
+      : [selectedSessionModelId, ...availableModelIds];
+  }, [availableModelIds, selectedSessionModelId]);
+
   const refreshAvailableModels = useCallback(async () => {
     try {
-      // Fetch available model lists from both providers for backward compat
-      const [codexModels, claudeModels] = await Promise.all([
-        window.ade.agentChat.models({ provider: "codex" }).catch(() => []),
-        window.ade.agentChat.models({ provider: "claude" }).catch(() => []),
-      ]);
-      // Build available model IDs from the registry, including all models whose
-      // family has at least one model available from the backend
-      const hasCodex = codexModels.length > 0;
-      const hasClaude = claudeModels.length > 0;
-      const available = MODEL_REGISTRY.filter((m) => {
-        if (m.deprecated) return false;
-        if (m.family === "openai" && hasCodex) return true;
-        if (m.family === "anthropic" && hasClaude) return true;
-        // API-key and other models are always available
-        if (!m.isCliWrapped) return true;
-        return false;
-      }).map((m) => m.id);
+      const status = await window.ade.ai.getStatus();
+      const available = deriveConfiguredModelIdsFromStatus(status);
       setAvailableModelIds(available);
       return available;
+    } catch {
+      // Fall back to direct model discovery probes below.
+    }
+
+    try {
+      const [codexModels, claudeModels, unifiedModels] = await Promise.all([
+        window.ade.agentChat.models({ provider: "codex" }).catch(() => []),
+        window.ade.agentChat.models({ provider: "claude" }).catch(() => []),
+        window.ade.agentChat.models({ provider: "unified" }).catch(() => []),
+      ]);
+      const available = new Set<string>();
+
+      for (const model of codexModels) {
+        const resolved = resolveCliRegistryModelId("codex", model.id);
+        if (resolved) available.add(resolved);
+      }
+      for (const model of claudeModels) {
+        const resolved = resolveCliRegistryModelId("claude", model.id);
+        if (resolved) available.add(resolved);
+      }
+      for (const model of unifiedModels) {
+        const resolved = resolveRegistryModelId(model.id);
+        if (resolved) available.add(resolved);
+      }
+
+      const ordered = MODEL_REGISTRY.filter((model) => !model.deprecated && available.has(model.id)).map((model) => model.id);
+      setAvailableModelIds(ordered);
+      return ordered;
     } catch {
       setAvailableModelIds([]);
       return [];
@@ -307,13 +430,14 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!selectedSession) return;
-    // Prefer the unified modelId if present, otherwise reconstruct from provider+model
-    const sessionModelId = selectedSession.modelId
-      ?? MODEL_REGISTRY.find((m) => m.shortId === selectedSession.model || m.sdkModelId === selectedSession.model)?.id
-      ?? modelId;
-    setModelId(sessionModelId);
+    if (selectedSessionModelId) {
+      setModelId(selectedSessionModelId);
+    }
     setReasoningEffort(selectedSession.reasoningEffort ?? null);
-  }, [selectedSession?.sessionId]);
+    if (selectedSession.permissionMode) {
+      setPermissionMode(selectedSession.permissionMode);
+    }
+  }, [selectedSession?.sessionId, selectedSessionModelId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -345,7 +469,6 @@ export function AgentChatPane({
     };
   }, [refreshAvailableModels, refreshSessions]);
 
-  // If the selected model is not in the available list, fall back
   useEffect(() => {
     if (loading || !availableModelIds.length) return;
     if (availableModelIds.includes(modelId)) return;
@@ -357,7 +480,6 @@ export function AgentChatPane({
     }
   }, [loading, availableModelIds, modelId]);
 
-  // Sync reasoning effort when model changes
   useEffect(() => {
     if (!reasoningTiers.length) {
       if (reasoningEffort !== null) setReasoningEffort(null);
@@ -443,21 +565,23 @@ export function AgentChatPane({
   const createSession = useCallback(async (): Promise<string | null> => {
     if (!laneId) return null;
     const desc = getModelById(modelId);
-    // Derive provider from the model family for backward compatibility with the backend
-    const provider = desc?.family === "openai" ? "codex" : "claude";
-    const model = desc?.shortId ?? modelId;
+    const provider = desc?.isCliWrapped
+      ? (desc.family === "openai" ? "codex" : "claude")
+      : "unified";
+    const model = provider === "unified" ? modelId : (desc?.shortId ?? modelId);
     const created = await window.ade.agentChat.create({
       laneId,
       provider,
       model,
       modelId,
-      reasoningEffort
+      reasoningEffort,
+      permissionMode
     });
     loadedHistoryRef.current.delete(created.id);
     setSelectedSessionId(created.id);
     await refreshSessions();
     return created.id;
-  }, [laneId, modelId, reasoningEffort, refreshSessions]);
+  }, [laneId, modelId, permissionMode, reasoningEffort, refreshSessions]);
 
   const submit = useCallback(async () => {
     const text = draft.trim();
@@ -466,7 +590,6 @@ export function AgentChatPane({
     setBusy(true);
     setError(null);
     try {
-      // Fetch context packs and prepend their content
       let finalText = text;
       if (selectedContextPacks.length) {
         const packContents: string[] = [];
@@ -491,7 +614,11 @@ export function AgentChatPane({
       }
 
       let sessionId = selectedSessionId;
-      if (!sessionId) {
+      const selectedModelChanged =
+        Boolean(selectedSessionId)
+        && Boolean(selectedSessionModelId)
+        && selectedSessionModelId !== modelId;
+      if (!sessionId || selectedModelChanged) {
         sessionId = await createSession();
       }
       if (!sessionId) {
@@ -521,7 +648,19 @@ export function AgentChatPane({
     } finally {
       setBusy(false);
     }
-  }, [attachments, createSession, draft, laneId, reasoningEffort, refreshSessions, selectedContextPacks, selectedSessionId, turnActiveBySession]);
+  }, [
+    attachments,
+    createSession,
+    draft,
+    laneId,
+    modelId,
+    reasoningEffort,
+    refreshSessions,
+    selectedContextPacks,
+    selectedSessionId,
+    selectedSessionModelId,
+    turnActiveBySession
+  ]);
 
   const interrupt = useCallback(async () => {
     if (!selectedSessionId) return;
@@ -551,45 +690,69 @@ export function AgentChatPane({
     }
   }, [approvalsBySession, selectedSessionId]);
 
+  const handlePermissionModeChange = useCallback(async (mode: AgentChatPermissionMode) => {
+    setPermissionMode(mode);
+    if (selectedSessionId) {
+      try {
+        await window.ade.agentChat.changePermissionMode({
+          sessionId: selectedSessionId,
+          permissionMode: mode
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }, [selectedSessionId]);
+
   if (!laneId) {
-    return <EmptyState title="No lane selected" description="Select a lane to use agent chat." />;
+    return (
+      <div className="flex h-full items-center justify-center">
+        <span className="font-mono text-[11px] text-muted-fg/30">Select a lane to start chatting</span>
+      </div>
+    );
   }
 
-  return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/35 bg-card/70 px-2.5 py-2 shadow-[0_1px_0_rgba(255,255,255,0.03)]">
-        <div className="text-xs font-semibold tracking-wide text-fg/85">Agent Chat</div>
+  const sessionModelDesc = selectedSession?.modelId ? getModelById(selectedSession.modelId) : null;
+  const sessionLabel = sessionModelDesc?.displayName
+    ?? (selectedSession ? `${selectedSession.provider}/${selectedSession.model}` : null);
+  const sessionModelColor = sessionModelDesc?.color ?? selectedModelDesc?.color ?? "#A78BFA";
 
-        {!lockSessionId ? (
-          <select
-            value={selectedSessionId ?? ""}
-            onChange={(event) => setSelectedSessionId(event.target.value || null)}
-            className="h-7 min-w-[220px] flex-1 rounded border border-border/40 bg-bg/65 px-2 text-xs"
-          >
-            <option value="">No session selected</option>
-            {sessions.map((session) => {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {/* ── Session tabs ── */}
+      {!lockSessionId ? (
+        <div className="flex items-center gap-0 border-b border-border/8 bg-[var(--color-surface)]">
+          <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
+            {sessions.map((session, index) => {
               const desc = session.modelId ? getModelById(session.modelId) : MODEL_REGISTRY.find((m) => m.shortId === session.model);
               const label = desc?.displayName ?? `${session.provider}/${session.model}`;
+              const isActive = session.sessionId === selectedSessionId;
               return (
-                <option key={session.sessionId} value={session.sessionId}>
-                  {label} · {new Date(session.startedAt).toLocaleString()}
-                </option>
+                <button
+                  key={session.sessionId}
+                  type="button"
+                  className={cn(
+                    "flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 font-mono text-[10px] transition-colors",
+                    isActive
+                      ? "border-b-accent bg-accent/[0.04] text-fg/90"
+                      : "border-b-transparent text-fg/40 hover:bg-border/6 hover:text-fg/60"
+                  )}
+                  onClick={() => setSelectedSessionId(session.sessionId)}
+                >
+                  {desc?.color ? (
+                    <span className="inline-block h-1.5 w-1.5 flex-shrink-0" style={{ backgroundColor: desc.color }} />
+                  ) : null}
+                  <span className="max-w-[140px] truncate">
+                    {String(index + 1).padStart(2, "0")} · {label}
+                  </span>
+                </button>
               );
             })}
-          </select>
-        ) : (
-          <div className="min-w-[220px] flex-1 text-xs text-muted-fg">
-            {selectedSession
-              ? (getModelById(selectedSession.modelId ?? "")?.displayName ?? `${selectedSession.provider}/${selectedSession.model}`)
-              : lockSessionId}
           </div>
-        )}
-
-        {!lockSessionId ? (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-2 text-[11px]"
+          <button
+            type="button"
+            className="flex h-full shrink-0 items-center gap-1 border-l border-border/8 px-3 py-2 font-mono text-[10px] text-muted-fg/30 transition-colors hover:bg-accent/[0.04] hover:text-accent/60"
+            title="New chat"
             onClick={() => {
               setBusy(true);
               setError(null);
@@ -600,53 +763,100 @@ export function AgentChatPane({
                 .finally(() => setBusy(false));
             }}
           >
-            <ChatCircle size={14} weight="regular" />
-            New chat
-          </Button>
-        ) : null}
+            <Plus size={12} weight="bold" />
+          </button>
+        </div>
+      ) : null}
 
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 px-2 text-[11px]"
-          onClick={() => {
-            setError(null);
-            refreshSessions().catch((refreshError) => {
-              setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
-            });
+      {/* ── Model badge + session info ── */}
+      <div className="flex items-center gap-3 border-b border-border/8 px-4 py-1.5">
+        <span
+          className="inline-flex items-center gap-1.5 border px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider"
+          style={{
+            borderColor: `${sessionModelColor}30`,
+            backgroundColor: `${sessionModelColor}0A`,
+            color: sessionModelColor
           }}
         >
-          <ArrowsClockwise size={14} weight="regular" />
-          Refresh
-        </Button>
+          <span className="inline-block h-1.5 w-1.5" style={{ backgroundColor: sessionModelColor }} />
+          {sessionLabel ?? selectedModelDesc?.displayName ?? "No model"}
+        </span>
 
         {selectedSession ? (
-          <>
-            <Chip className="text-[11px]">{getModelById(selectedSession.modelId ?? "")?.displayName ?? selectedSession.model}</Chip>
-            <Chip className="text-[11px]">{selectedSession.status}</Chip>
-            {turnActive ? <Chip className="bg-accent/20 text-[10px] text-fg/90">active turn</Chip> : null}
-          </>
+          <span className="font-mono text-[10px] text-muted-fg/30">
+            {selectedSession.sessionId.slice(0, 11)} · primary
+          </span>
         ) : null}
+
+        {turnActive ? (
+          <span className="inline-flex items-center gap-1 font-mono text-[9px] font-bold uppercase tracking-widest text-accent/60">
+            <span className="h-1.5 w-1.5 animate-pulse bg-accent" />
+            Active
+          </span>
+        ) : null}
+
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            className="flex items-center gap-1 px-1.5 py-0.5 text-muted-fg/25 transition-colors hover:text-muted-fg/50"
+            onClick={() => {
+              setError(null);
+              refreshSessions().catch((refreshError) => {
+                setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
+              });
+            }}
+            title="Refresh sessions"
+          >
+            <ArrowsClockwise size={11} weight="bold" />
+          </button>
+        </div>
       </div>
 
-      {error ? <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-xs text-fg/90">{error}</div> : null}
+      {/* ── Error bar ── */}
+      {error ? (
+        <div className="border-b border-red-500/10 bg-gradient-to-r from-red-500/[0.05] to-transparent px-4 py-2 font-mono text-[11px] text-red-400/70">
+          {error}
+        </div>
+      ) : null}
 
+      {/* ── Message area ── */}
       <div className="min-h-0 flex-1">
         {loading ? (
-          <div className="flex h-full items-center justify-center text-xs text-muted-fg">Loading chat sessions...</div>
+          <div className="flex h-full items-center justify-center">
+            <span className="font-mono text-[11px] text-muted-fg/25">Loading...</span>
+          </div>
         ) : selectedSessionId ? (
-          <AgentChatMessageList events={selectedEvents} showStreamingIndicator={turnActive} />
-        ) : (
-          <EmptyState
-            title="No chat session"
-            description="Create a new chat session or choose an existing one to start working with an AI agent."
+          <AgentChatMessageList
+            events={selectedEvents}
+            showStreamingIndicator={turnActive}
+            className="border-0"
+            onApproval={(itemId, decision) => {
+              if (!selectedSessionId) return;
+              window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision }).then(() => {
+                setApprovalsBySession((prev) => ({
+                  ...prev,
+                  [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
+                }));
+              }).catch((err) => {
+                setError(err instanceof Error ? err.message : String(err));
+              });
+            }}
           />
+        ) : (
+          <div className="flex h-full flex-col items-center justify-center gap-4">
+            <div className="relative">
+              <ChatCircle size={36} weight="thin" className="text-accent/12" />
+              <div className="absolute inset-0 animate-pulse bg-accent/[0.03] blur-xl" />
+            </div>
+            <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/20">Start a new chat</span>
+          </div>
         )}
       </div>
 
+      {/* ── Composer ── */}
       <AgentChatComposer
         modelId={modelId}
-        availableModelIds={availableModelIds.length ? availableModelIds : undefined}
+        availableModelIds={effectiveAvailableModelIds}
         reasoningEffort={reasoningEffort}
         draft={draft}
         attachments={attachments}
@@ -656,7 +866,14 @@ export function AgentChatPane({
         busy={busy}
         selectedContextPacks={selectedContextPacks}
         laneId={laneId ?? undefined}
+        permissionMode={permissionMode}
+        sessionProvider={sessionProvider}
+        sessionIsCliWrapped={sessionIsCliWrapped}
+        onPermissionModeChange={handlePermissionModeChange}
         onModelChange={(nextModelId) => {
+          if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
+            return;
+          }
           setModelId(nextModelId);
           const nextDesc = getModelById(nextModelId);
           const tiers = nextDesc?.reasoningTiers ?? [];

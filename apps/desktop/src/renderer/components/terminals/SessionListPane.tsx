@@ -154,7 +154,7 @@ export function SessionListPane({
   onResume: (session: TerminalSessionSummary) => void;
   resumingSessionId: string | null;
   onLaunchPty: (laneId: string, profile: "claude" | "codex" | "shell") => void;
-  onLaunchChat: (laneId: string, provider: "claude" | "codex") => void;
+  onLaunchChat: (laneId: string) => void;
   onInfoClick: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
 }) {

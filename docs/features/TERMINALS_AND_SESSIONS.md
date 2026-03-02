@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-18
+> Last updated: 2026-03-02
 
 ---
 
@@ -67,7 +67,7 @@ A **session** is a tracked terminal lifecycle from creation to exit. When a PTY 
 
 - **Identity**: Unique session ID, associated lane, user-provided title.
 - **Goal**: A short human-readable intent/purpose string (distinct from the auto-generated title).
-- **Tool type**: Detected or specified tool type (`shell`, `claude`, `codex`, `codex-chat`, `claude-chat`, `cursor`, `aider`, `continue`, `other`). Used for filtering and display. The `-chat` variants indicate agent chat sessions (rich chat UI) as opposed to CLI terminal sessions.
+- **Tool type**: Detected or specified tool type (`shell`, `claude`, `codex`, `codex-chat`, `claude-chat`, `ai-chat`, `cursor`, `aider`, `continue`, `other`). Used for filtering and display. The `-chat` variants indicate agent chat sessions (rich chat UI) as opposed to CLI terminal sessions.
 - **Tracked/Pinned**: Whether the session captures transcripts (`tracked`) and whether it is pinned for visibility (`pinned`).
 - **Timing**: Start time, end time, duration.
 - **State**: `running`, `completed`, `failed`, or `disposed`. Exit code.
@@ -140,7 +140,7 @@ An **agent chat session** is an interactive conversation with an AI agent (Codex
 | Backend | `node-pty` process | Codex App Server (JSON-RPC) or Claude SDK (`streamText()`) |
 | User interface | xterm.js terminal emulator | Rich chat UI with message bubbles, inline diffs, command output, plan steps |
 | Transcript format | Raw terminal output (`.log`) | Structured JSONL of ChatEvents (`.chat.jsonl`) |
-| Tool type | `"shell"`, `"claude"`, `"codex"` | `"codex-chat"`, `"claude-chat"` |
+| Tool type | `"shell"`, `"claude"`, `"codex"` | `"codex-chat"`, `"claude-chat"`, `"ai-chat"` |
 | `pty_id` | Set while running | Always null (no PTY process) |
 | Interaction | Type commands, read output | Send messages, view structured items, approve tool use, steer active turns |
 | Approval flow | Manual (user types yes/no in terminal) | Structured overlay (Accept / Decline / Accept for Session buttons) |
@@ -155,7 +155,7 @@ An **agent chat session** is an interactive conversation with an AI agent (Codex
 
 **Where chat sessions appear**:
 - **Lanes tab → Work Pane**: In the Chat view (toggle between Terminal view and Chat view)
-- **Terminals tab**: In the global session list alongside PTY sessions, with distinct tool type badges (`codex-chat` blue, `claude-chat` purple)
+- **Terminals tab**: In the global session list alongside PTY sessions, with distinct tool type badges (`codex-chat` blue, `claude-chat` purple, `ai-chat` teal)
 
 ---
 
@@ -199,7 +199,7 @@ Each session row displays:
 
 **Agent chat session display**:
 - Chat sessions appear in the session list with the same row format as PTY sessions.
-- Tool type badge shows "codex-chat" (blue) or "claude-chat" (purple) to distinguish from CLI sessions.
+- Tool type badge shows "codex-chat" (blue), "claude-chat" (purple), or "ai-chat" (teal) to distinguish from CLI sessions.
 - Clicking a chat session opens the **AgentChatPane** (rich chat UI) instead of the xterm.js terminal view.
 - The details pane shows the same session delta card as PTY sessions.
 - Resume button calls `agentChatService.resumeSession()` to reopen the conversation with full context.
@@ -255,13 +255,14 @@ Inside the Lanes tab, each lane has a "Terminals" sub-tab that shows sessions sc
 - **Terminal view**: The existing `LaneTerminalsPanel` showing PTY sessions (default).
 - **Chat view**: The `AgentChatPane` showing the agent chat interface.
 
-The Chat view provides a rich conversational interface for working with Codex or Claude. Users can:
+The Chat view provides a rich conversational interface for working with Codex, Claude, and configured unified/API/local models. Users can:
 - Start new chat sessions scoped to the current lane
 - Send messages with file attachments
 - View streaming agent responses with inline diffs, command output, and plan steps
 - Approve or decline tool use via structured overlays
 - Steer active turns by pressing Enter while the agent is working
-- Switch between Codex and Claude via a provider/model dropdown in the composer
+- Switch models via the composer dropdown (only currently configured/detected models are shown)
+- Fork a new chat session automatically when switching model families mid-thread (to keep runtime/provider consistency)
 
 **Close button per tab**: Running sessions have an explicit close (kill) button per tab/session.
 
@@ -476,7 +477,7 @@ type PtyCreateResult = {
 
 type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
-type TerminalToolType = "shell" | "claude" | "codex" | "codex-chat" | "claude-chat" | "cursor" | "aider" | "continue" | "other";
+type TerminalToolType = "shell" | "claude" | "codex" | "codex-chat" | "claude-chat" | "ai-chat" | "cursor" | "aider" | "continue" | "other";
 
 type TerminalSessionSummary = {
   id: string;
@@ -589,7 +590,7 @@ terminal_sessions (
   tracked             INTEGER NOT NULL DEFAULT 1, -- 1 = tracked (transcript capture + delta), 0 = untracked
   pinned              INTEGER NOT NULL DEFAULT 0, -- 1 = pinned (always visible in session list)
   goal                TEXT,                   -- User-provided goal/intent string
-  tool_type           TEXT,                   -- 'shell' | 'claude' | 'codex' | 'codex-chat' | 'claude-chat' | 'cursor' | 'aider' | 'continue' | 'other'
+  tool_type           TEXT,                   -- 'shell' | 'claude' | 'codex' | 'codex-chat' | 'claude-chat' | 'ai-chat' | 'cursor' | 'aider' | 'continue' | 'other'
   title               TEXT NOT NULL,          -- User-provided or auto-generated title
   status              TEXT NOT NULL,          -- 'running' | 'completed' | 'failed' | 'disposed'
   started_at          TEXT NOT NULL,          -- ISO 8601 timestamp

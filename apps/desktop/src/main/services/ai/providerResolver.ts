@@ -9,6 +9,8 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import type { DetectedAuth } from "./authDetector";
+import { wrapWithMiddleware, type WrapMiddlewareOpts } from "./middleware";
+export { buildProviderOptions } from "./providerOptions";
 
 // ---------------------------------------------------------------------------
 // Lazy provider loaders — avoids importing unused SDK packages at startup.
@@ -95,6 +97,29 @@ function hasCliSubscription(auth: DetectedAuth[], cli: string): boolean {
   return auth.some((a) => a.type === "cli-subscription" && a.cli === cli);
 }
 
+function resolveLegacyModelId(modelId: string, auth: DetectedAuth[]): string | null {
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized.length) return null;
+
+  if (normalized.includes("claude-sonnet")) {
+    return hasCliSubscription(auth, "claude")
+      ? "anthropic/claude-sonnet-4-6"
+      : "anthropic/claude-sonnet-4-6-api";
+  }
+  if (normalized.includes("claude-opus")) {
+    return hasCliSubscription(auth, "claude")
+      ? "anthropic/claude-opus-4-6"
+      : "anthropic/claude-opus-4-6-api";
+  }
+  if (normalized.includes("claude-haiku")) {
+    return hasCliSubscription(auth, "claude")
+      ? "anthropic/claude-haiku-4-5"
+      : "anthropic/claude-haiku-4-5-api";
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Base URL map for OpenAI-compatible providers
 // ---------------------------------------------------------------------------
@@ -105,12 +130,58 @@ const COMPATIBLE_BASE_URLS: Record<string, string> = {
   together: "https://api.together.xyz/v1",
 };
 
+const DEFAULT_LOCAL_ENDPOINTS: Record<"ollama" | "lmstudio" | "vllm", string> = {
+  ollama: "http://localhost:11434",
+  lmstudio: "http://localhost:1234",
+  vllm: "http://localhost:8000",
+};
+
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+async function resolveAutoModelIdFromOpenAiCompatibleEndpoint(
+  endpoint: string,
+  providerName: string,
+): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const response = await fetch(`${normalizeBaseUrl(endpoint)}/v1/models`, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to list models from ${providerName} (${response.status}).`);
+    }
+    const payload = await response.json() as { data?: Array<{ id?: unknown }> };
+    const firstModelId = payload.data?.find((entry) => typeof entry?.id === "string" && entry.id.trim().length)?.id;
+    if (!firstModelId || typeof firstModelId !== "string") {
+      throw new Error(`${providerName} did not return any usable model IDs.`);
+    }
+    return firstModelId.trim();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveOpenAiCompatibleModelId(
+  sdkModelId: string,
+  endpoint: string,
+  providerName: string,
+): Promise<string> {
+  if (sdkModelId !== "auto") return sdkModelId;
+  return resolveAutoModelIdFromOpenAiCompatibleEndpoint(endpoint, providerName);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export type ResolveModelOpts = {
   cwd?: string;
+  /** Middleware options. Pass false to skip middleware entirely. */
+  middleware?: WrapMiddlewareOpts | false;
 };
 
 export async function resolveModel(
@@ -118,18 +189,29 @@ export async function resolveModel(
   auth: DetectedAuth[],
   opts?: ResolveModelOpts,
 ): Promise<LanguageModel> {
-  const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
+  let descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
+  if (!descriptor) {
+    const legacyId = resolveLegacyModelId(modelId, auth);
+    if (legacyId) descriptor = getModelById(legacyId);
+  }
   if (!descriptor) {
     throw new Error(`Unknown model: "${modelId}". Check the model registry for available models.`);
   }
 
   // CLI-wrapped providers
+  let model: LanguageModel;
   if (descriptor.isCliWrapped) {
-    return resolveCliWrapped(descriptor, auth, opts);
+    model = await resolveCliWrapped(descriptor, auth, opts);
+  } else {
+    model = await resolveDirectProvider(descriptor, auth);
   }
 
-  // API-key / direct providers
-  return resolveDirectProvider(descriptor, auth);
+  // Apply middleware stack (unless explicitly disabled)
+  if (opts?.middleware !== false) {
+    model = wrapWithMiddleware(model, descriptor, opts?.middleware || undefined);
+  }
+
+  return model;
 }
 
 async function resolveCliWrapped(
@@ -226,14 +308,16 @@ async function resolveDirectProvider(
 
     case "@ai-sdk/openai-compatible": {
       // Local providers (ollama, lmstudio, vllm)
-      if (family === "ollama") {
-        const endpoint = findLocalEndpoint(auth, "ollama") ?? "http://localhost:11434";
+      if (family === "ollama" || family === "lmstudio" || family === "vllm") {
+        const localProvider = family;
+        const endpoint = findLocalEndpoint(auth, localProvider) ?? DEFAULT_LOCAL_ENDPOINTS[localProvider];
+        const resolvedModelId = await resolveOpenAiCompatibleModelId(sdkModelId, endpoint, localProvider);
         const createCompatible = await loadOpenAICompatibleProvider();
         const provider = createCompatible({
-          name: "ollama",
-          baseURL: `${endpoint}/v1`,
+          name: localProvider,
+          baseURL: `${normalizeBaseUrl(endpoint)}/v1`,
         });
-        return provider(sdkModelId) as LanguageModel;
+        return provider(resolvedModelId) as LanguageModel;
       }
 
       // Generic compatible provider via base URL

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { Pulse, Cpu, CurrencyDollar, Clock, CheckCircle, XCircle, SpinnerGap, Brain, ArrowUp, Archive } from "@phosphor-icons/react";
-import type { AggregatedUsageStats, ContextBudget, MissionBudgetSnapshot } from "../../../shared/types";
+import { Pulse, Cpu, CurrencyDollar, Clock, CheckCircle, XCircle, SpinnerGap, ArrowUp, Archive } from "@phosphor-icons/react";
+import type { AggregatedUsageStats, MissionBudgetSnapshot } from "../../../shared/types";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 
 const DEFAULT_MODEL_COLOR = "#71717A";
@@ -90,7 +90,6 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<CandidateMemory[]>([]);
-  const [contextBudget, setContextBudget] = useState<ContextBudget | null>(null);
   const [budget, setBudget] = useState<MissionBudgetSnapshot | null>(null);
   const [timeRange, setTimeRange] = useState<TimeRange>("24h");
   const [detectedAuth, setDetectedAuth] = useState<import("../../../shared/types").AiDetectedAuth[]>([]);
@@ -557,31 +556,6 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       </>
       )}
 
-      {/* Context Budget Panel */}
-      {contextBudget && (
-        <section>
-          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>
-            <Brain size={12} weight="regular" style={{ display: "inline", marginRight: "4px", verticalAlign: "middle", color: "#71717A" }} />
-            Context Budget
-          </h3>
-          <div className="flex flex-col gap-1" style={{ background: "#13101A", border: "1px solid #1E1B26", padding: "12px" }}>
-            <div className="flex items-center justify-between" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", marginBottom: "4px" }}>
-              <span>{formatTokens(contextBudget.totalTokens)} / {formatTokens(contextBudget.modelContextWindow)}</span>
-              <span>{contextBudget.utilizationPct.toFixed(0)}% utilized</span>
-            </div>
-            <ContextBudgetBar label="System Prompt" tokens={contextBudget.systemPromptTokens} total={contextBudget.modelContextWindow} color="#8B5CF6" />
-            <ContextBudgetBar label="Tool Schemas" tokens={contextBudget.toolSchemaTokens} total={contextBudget.modelContextWindow} color="#3B82F6" />
-            <ContextBudgetBar label="History" tokens={contextBudget.historyTokens} total={contextBudget.modelContextWindow} color="#22C55E" />
-            <ContextBudgetBar label="Memory/Facts" tokens={contextBudget.memoryTokens} total={contextBudget.modelContextWindow} color="#F59E0B" />
-            <ContextBudgetBar label="Docs" tokens={contextBudget.docsTokens} total={contextBudget.modelContextWindow} color="#EC4899" />
-            <div className="flex items-center gap-4 mt-1" style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
-              <span>Truncations: {contextBudget.truncationEvents}</span>
-              <span>Compactions: {contextBudget.compactionEvents}</span>
-            </div>
-          </div>
-        </section>
-      )}
-
       {/* Candidate Memories */}
       {candidates.length > 0 && (
         <section>
@@ -636,17 +610,3 @@ function SummaryCard({ icon: Icon, label, value, sub }: { icon: React.ElementTyp
   );
 }
 
-function ContextBudgetBar({ label, tokens, total, color }: { label: string; tokens: number; total: number; color: string }) {
-  const pct = total > 0 ? Math.max(1, (tokens / total) * 100) : 0;
-  return (
-    <div className="flex flex-col gap-0.5">
-      <div className="flex items-center justify-between">
-        <span style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{label}</span>
-        <span style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatTokens(tokens)}</span>
-      </div>
-      <div className="h-1 overflow-hidden" style={{ background: "#1E1B26", borderRadius: 0 }}>
-        <div className="h-full transition-all" style={{ width: `${pct}%`, backgroundColor: color, borderRadius: 0 }} />
-      </div>
-    </div>
-  );
-}

@@ -2,13 +2,13 @@
 // Unified Executor — single entry-point for all AI models via the AI SDK
 // ---------------------------------------------------------------------------
 
-import { streamText, type Tool } from "ai";
+import { streamText, stepCountIs, type Tool } from "ai";
 import {
   getModelById,
 } from "../../../shared/modelRegistry";
 import { detectAllAuth } from "./authDetector";
 import { resolveModel } from "./providerResolver";
-import { createCodingToolSet } from "./tools";
+import { createCodingToolSet, createUniversalToolSet } from "./tools";
 import type { AgentEvent } from "./agentExecutor";
 import {
   createCompactionMonitor,
@@ -60,7 +60,7 @@ export type UnifiedExecutorOpts = {
   prompt: string;
   system?: string;
   cwd?: string;
-  tools?: "coding" | "none" | Record<string, Tool>;
+  tools?: "coding" | "planning" | "none" | Record<string, Tool>;
   timeout?: number;
   abortSignal?: AbortSignal;
   onStepFinish?: (step: unknown) => void;
@@ -112,15 +112,28 @@ export async function* executeUnified(
   // For CLI-wrapped models, tools are managed by the CLI itself.
   // For API-key models, we provide tools when requested.
   // If tools is already a Record<string, CoreTool>, use it directly.
-  const tools =
-    typeof opts.tools === "object"
-      ? opts.tools
-      : (!model.isCliWrapped && opts.tools === "coding" && opts.cwd
-          ? createCodingToolSet(opts.cwd, {
-              memoryService: opts.memoryService as any,
-              projectId: opts.projectId,
-            })
-          : undefined);
+  const PLANNING_TOOL_ALLOWLIST = new Set([
+    "readFile", "grep", "glob", "listDir", "gitStatus", "gitDiff", "gitLog",
+  ]);
+
+  let tools: Record<string, Tool> | undefined;
+  if (typeof opts.tools === "object") {
+    tools = opts.tools;
+  } else if (!model.isCliWrapped && opts.tools === "planning" && opts.cwd) {
+    // Read-only subset for the planner — no write, no bash, no web
+    const full = createUniversalToolSet(opts.cwd, { permissionMode: "plan" });
+    tools = Object.fromEntries(
+      Object.entries(full).filter(([name]) => PLANNING_TOOL_ALLOWLIST.has(name))
+    );
+  } else if (!model.isCliWrapped && opts.tools === "coding" && opts.cwd) {
+    tools = createCodingToolSet(opts.cwd, {
+      memoryService: opts.memoryService as any,
+      projectId: opts.projectId,
+    });
+  }
+
+  // Planning mode caps tool-use rounds so the planner doesn't explore forever
+  const stopCondition = opts.tools === "planning" ? stepCountIs(10) : undefined;
 
   const abortController = new AbortController();
   if (opts.abortSignal) {
@@ -144,6 +157,7 @@ export async function* executeUnified(
       system: opts.system,
       prompt: opts.prompt,
       tools: tools as any,
+      ...(stopCondition ? { stopWhen: stopCondition } : {}),
       abortSignal: abortController.signal,
     });
 

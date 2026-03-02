@@ -61,10 +61,11 @@ export const CLAUDE_THINKING_LEVELS: ThinkingOption[] = [
 ];
 
 export const CODEX_THINKING_LEVELS: ThinkingOption[] = [
-  { value: "none", label: "None" },
+  { value: "minimal", label: "Minimal" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
 ];
 
 export function getThinkingLevels(provider: ModelProvider): ThinkingOption[] {
@@ -233,17 +234,29 @@ export function legacyToModelConfig(
   model?: string | null,
   reasoningEffort?: string | null
 ): ModelConfig {
-  if (!model || model === "codex") {
+  const trimmedModel = (model ?? "").trim();
+  const normalizedModel = trimmedModel.toLowerCase();
+  if (!normalizedModel || normalizedModel === "codex") {
     return { provider: "codex", modelId: "gpt-5.3-codex", thinkingLevel: (reasoningEffort as ThinkingLevel) ?? "medium" };
   }
-  if (model === "claude") {
+  if (normalizedModel === "claude") {
     return { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: (reasoningEffort as ThinkingLevel) ?? "medium" };
   }
-  // Specific model IDs — detect provider from the ID
-  const provider: ModelProvider = model.startsWith("claude") || model.startsWith("opus") || model.startsWith("sonnet") || model.startsWith("haiku")
+  // Specific model IDs - detect provider from namespaced IDs first, then aliases.
+  const namespacedFamily = normalizedModel.includes("/") ? normalizedModel.split("/", 1)[0] : null;
+  if (namespacedFamily === "anthropic") {
+    return { provider: "claude", modelId: trimmedModel, thinkingLevel: (reasoningEffort as ThinkingLevel) ?? "medium" };
+  }
+  if (namespacedFamily === "openai") {
+    return { provider: "codex", modelId: trimmedModel, thinkingLevel: (reasoningEffort as ThinkingLevel) ?? "medium" };
+  }
+  const provider: ModelProvider = normalizedModel.includes("claude")
+    || normalizedModel.startsWith("opus")
+    || normalizedModel.startsWith("sonnet")
+    || normalizedModel.startsWith("haiku")
     ? "claude"
     : "codex";
-  return { provider, modelId: model, thinkingLevel: (reasoningEffort as ThinkingLevel) ?? "medium" };
+  return { provider, modelId: trimmedModel, thinkingLevel: (reasoningEffort as ThinkingLevel) ?? "medium" };
 }
 
 /** Convert ModelConfig back to legacy format for backward compat */
@@ -286,8 +299,8 @@ export function thinkingLevelToReasoningEffort(level?: ThinkingLevel | null): st
   return level;
 }
 
-/** Pricing per million tokens (USD) */
-export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+/** Fallback pricing per million tokens (USD) — used when models.dev data is unavailable */
+const FALLBACK_PRICING: Record<string, { input: number; output: number }> = {
   "claude-opus-4-6": { input: 5, output: 25 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-haiku-4-5-20251001": { input: 0.8, output: 4 },
@@ -298,4 +311,59 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
   "codex-mini-latest": { input: 0.3, output: 1.2 },
   "o4-mini": { input: 1.1, output: 4.4 },
   "o3": { input: 2, output: 8 },
+  "gemini-3.1-pro-preview": { input: 1.25, output: 5 },
+  "gemini-3-flash-preview": { input: 0.15, output: 0.6 },
+  "gemini-2.5-pro": { input: 1.25, output: 5 },
+  "gemini-2.5-flash": { input: 0.15, output: 0.6 },
+  "gpt-4.1": { input: 2, output: 8 },
+  "gpt-4.1-mini": { input: 0.4, output: 1.6 },
+  "deepseek-reasoner": { input: 0.55, output: 2.19 },
+  "deepseek-chat": { input: 0.27, output: 1.10 },
+  "grok-3": { input: 3, output: 15 },
+  "codestral-latest": { input: 0.3, output: 0.9 },
 };
+
+/** Dynamic pricing overrides — merged from models.dev at runtime */
+const _dynamicPricing: Record<string, { input: number; output: number }> = {};
+
+/**
+ * Pricing per million tokens (USD).
+ * Reads from dynamic overrides first, then falls back to hardcoded values.
+ * Consumers read this as a normal Record — the Proxy is transparent.
+ */
+export const MODEL_PRICING: Record<string, { input: number; output: number }> = new Proxy(
+  {} as Record<string, { input: number; output: number }>,
+  {
+    get(_target, prop: string) {
+      return _dynamicPricing[prop] ?? FALLBACK_PRICING[prop];
+    },
+    has(_target, prop: string) {
+      return prop in _dynamicPricing || prop in FALLBACK_PRICING;
+    },
+    ownKeys() {
+      return [...new Set([...Object.keys(_dynamicPricing), ...Object.keys(FALLBACK_PRICING)])];
+    },
+    getOwnPropertyDescriptor(_target, prop: string) {
+      const value = _dynamicPricing[prop as string] ?? FALLBACK_PRICING[prop as string];
+      if (value) {
+        return { configurable: true, enumerable: true, value };
+      }
+      return undefined;
+    },
+  },
+);
+
+/**
+ * Merge dynamic pricing updates (e.g. from models.dev) into MODEL_PRICING.
+ * Returns the number of entries updated.
+ */
+export function updateModelPricing(updates: Record<string, { input: number; output: number }>): number {
+  let count = 0;
+  for (const [modelId, pricing] of Object.entries(updates)) {
+    if (pricing.input >= 0 && pricing.output >= 0) {
+      _dynamicPricing[modelId] = pricing;
+      count++;
+    }
+  }
+  return count;
+}

@@ -18,6 +18,7 @@ import type {
   OrchestratorWorkerState,
   OrchestratorChatTarget,
   ActiveAgentInfo,
+  MissionStatus,
 } from "../../../shared/types";
 import { MentionInput, type MentionParticipant } from "../shared/MentionInput";
 
@@ -38,6 +39,27 @@ const TEXT_DIM = "#52525B";
 const STATUS_GREEN = "#22c55e";
 const STATUS_GRAY = "#6b7280";
 const STATUS_RED = "#ef4444";
+const WARNING = "#f59e0b";
+
+type MessageCategory = "all" | "coordinator" | "workers" | "system" | "user";
+
+const MESSAGE_CATEGORIES: { value: MessageCategory; label: string }[] = [
+  { value: "all", label: "All Messages" },
+  { value: "coordinator", label: "Coordinator" },
+  { value: "workers", label: "Workers" },
+  { value: "system", label: "System" },
+  { value: "user", label: "User" },
+];
+
+function classifyMessage(msg: OrchestratorChatMessage): MessageCategory {
+  if (msg.role === "user") return "user";
+  if (msg.role === "orchestrator") return "system";
+  if (msg.role === "worker") return "workers";
+  // role === "agent": could be coordinator or worker depending on source
+  if (msg.target?.kind === "agent") return "workers"; // inter-agent
+  if (msg.stepKey) return "workers";
+  return "coordinator";
+}
 
 type ChannelKind = "global" | "orchestrator" | "teammate" | "worker";
 
@@ -54,6 +76,7 @@ type Channel = {
 
 type MissionChatV2Props = {
   missionId: string;
+  missionStatus: MissionStatus | null;
   runId: string | null;
   jumpTarget: OrchestratorChatTarget | null;
   onJumpHandled: () => void;
@@ -120,7 +143,7 @@ function workerStatusToParticipantStatus(state?: string): "active" | "completed"
   }
 }
 
-export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, runId, jumpTarget, onJumpHandled }: MissionChatV2Props) {
+export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, missionStatus, runId, jumpTarget, onJumpHandled }: MissionChatV2Props) {
   // ── State ──
   const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
   const [globalMessages, setGlobalMessages] = useState<OrchestratorChatMessage[]>([]);
@@ -132,6 +155,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, runI
   const [sending, setSending] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [completedCollapsed, setCompletedCollapsed] = useState(false);
+  const [messageFilter, setMessageFilter] = useState<MessageCategory>("all");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const selectedChannelIdRef = useRef<string>("global");
@@ -473,13 +497,19 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, runI
 
   // ── Displayed messages ──
   const displayMessages = useMemo(() => {
+    let msgs: OrchestratorChatMessage[];
     if (selectedChannel?.kind === "global") {
-      return [...globalMessages].sort(
+      msgs = [...globalMessages].sort(
         (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
       );
+    } else {
+      msgs = threadMessages;
     }
-    return threadMessages;
-  }, [selectedChannel, globalMessages, threadMessages]);
+    if (messageFilter !== "all") {
+      msgs = msgs.filter((m) => classifyMessage(m) === messageFilter);
+    }
+    return msgs;
+  }, [selectedChannel, globalMessages, threadMessages, messageFilter]);
 
   // ── Attempt name map ──
   const attemptNameMap = useMemo(() => {
@@ -751,7 +781,60 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, runI
               All Messages
             </span>
           )}
+          <div className="ml-auto flex items-center gap-2">
+            <select
+              value={messageFilter}
+              onChange={(e) => setMessageFilter(e.target.value as MessageCategory)}
+              className="h-6 px-2 text-[10px] outline-none"
+              style={{
+                background: BG_INPUT,
+                border: `1px solid ${BORDER}`,
+                color: TEXT_PRIMARY,
+                fontFamily: MONO,
+                fontSize: "10px",
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                borderRadius: 0,
+              }}
+            >
+              {MESSAGE_CATEGORIES.map((cat) => (
+                <option key={cat.value} value={cat.value}>
+                  {cat.label}
+                </option>
+              ))}
+            </select>
+            {messageFilter !== "all" && (
+              <button
+                onClick={() => setMessageFilter("all")}
+                className="text-[10px] transition-colors hover:text-white"
+                style={{ color: TEXT_MUTED, fontFamily: MONO }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Pause banner */}
+        {missionStatus === "intervention_required" && (
+          <div
+            style={{
+              background: `${WARNING}12`,
+              borderBottom: `1px solid ${WARNING}30`,
+              padding: "8px 16px",
+              fontFamily: MONO,
+              fontSize: "11px",
+              color: WARNING,
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+            }}
+          >
+            <span style={{ fontSize: "14px" }}>{"\u26A0"}</span>
+            <span>Mission paused — intervention required</span>
+          </div>
+        )}
 
         {/* Message list */}
         <div
@@ -948,6 +1031,7 @@ function MessageBubble({
 
   const isToolCall = msg.content.startsWith("Tool call:") || msg.content.startsWith("tool_use:");
   const isFileEdit = msg.content.includes("--- a/") || msg.content.includes("+++ b/");
+  const isBudgetWarning = /MISSION PAUSED|budget|hard cap|Budget pressure/i.test(msg.content);
   const [expanded, setExpanded] = useState(false);
 
   const timestampStyle: React.CSSProperties = {
@@ -1104,24 +1188,34 @@ function MessageBubble({
 
   // Standard message bubble
   const roleIcon = isWorker ? TerminalWindow : Robot;
-  const bubbleBorder = isOrchestrator
-    ? `1px solid ${BORDER}`
-    : isWorker
-      ? "1px solid #A78BFA30"
-      : `1px solid ${BORDER}`;
-  const bubbleBg = isOrchestrator
-    ? BG_MAIN
-    : isWorker
-      ? "#A78BFA10"
-      : BG_MAIN;
+  const bubbleBorder = isBudgetWarning
+    ? `1px solid ${WARNING}30`
+    : isOrchestrator
+      ? `1px solid ${BORDER}`
+      : isWorker
+        ? "1px solid #A78BFA30"
+        : `1px solid ${BORDER}`;
+  const bubbleBg = isBudgetWarning
+    ? `${WARNING}08`
+    : isOrchestrator
+      ? BG_MAIN
+      : isWorker
+        ? "#A78BFA10"
+        : BG_MAIN;
 
   return (
     <div className="flex justify-start">
       <div
         className="max-w-[80%] px-3 py-2 text-xs"
-        style={{ background: bubbleBg, border: bubbleBorder, color: TEXT_PRIMARY }}
+        style={{
+          background: bubbleBg,
+          border: bubbleBorder,
+          borderLeft: isBudgetWarning ? `3px solid ${WARNING}` : undefined,
+          color: TEXT_PRIMARY,
+        }}
       >
-        <div className="mb-1 flex items-center gap-1 text-[10px]" style={{ color: TEXT_MUTED }}>
+        <div className="mb-1 flex items-center gap-1 text-[10px]" style={{ color: isBudgetWarning ? WARNING : TEXT_MUTED }}>
+          {isBudgetWarning && <span style={{ fontSize: "12px" }}>{"\u26A0"}</span>}
           {React.createElement(roleIcon, { size: 12, weight: "regular" })}
           <span className="font-medium">{senderLabel}</span>
           {isGlobalView && targetLabel && (

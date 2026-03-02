@@ -2,7 +2,7 @@
 
 **Status**: In Progress
 **Dependencies**: Phases 1-2 complete (Agent SDKs, AgentExecutor, MCP server)
-**Last updated**: 2026-02-28
+**Last updated**: 2026-03-01
 
 ## Overview
 
@@ -35,6 +35,10 @@ AI orchestrator service with Claude leader session and MCP tools. Fail-hard plan
 ### Wave 2: Project Hivemind (HW1-HW8, shipped 2026-02-25)
 
 Evolved the orchestrator into an intelligent multi-agent system. Slack-like mission chat (`MissionChatV2.tsx`) with sidebar channels, @mentions, real-time updates. Inter-agent message delivery to PTY and SDK agents. Shared facts, project memories, and run narrative injected into agent prompts. Smart fan-out via meta-reasoner with dynamic step injection. Context compaction engine (70% threshold, pre-compaction writeback, transcript JSONL, attempt resume). Memory architecture with promotion flow (candidate/promoted/archived), agent identities table, Context Budget Panel. Activity narrative in mission detail.
+
+### Wave 3: Model System & Dynamic Pricing (shipped 2026-03-01)
+
+Model registry expansion to 40+ models across 8 provider families with auth-type classification (`cli-subscription`, `api-key`, `openrouter`, `local`). Runtime enrichment via `enrichModelRegistry()` with models.dev API integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded pricing). Provider options rewrite to pure tier-string passthrough (`providerOptions.ts`) -- no more invented token budgets. Reasoning tiers standardized per provider (Claude CLI: low/medium/high; Claude API: low/medium/high/max; Codex: minimal/low/medium/high/xhigh). UnifiedModelSelector redesigned to group by auth type, hide unavailable models, and link to Settings. Universal tools (`universalTools.ts`) for API-key and local models with permission modes (plan/edit/full-auto). Middleware layer (`middleware.ts`) for logging, retry, cost guard, and reasoning extraction. GPT-5.3 Codex Spark model support. Orchestrator call types simplified from 6 to 2 (coordinator, chat_response).
 
 ### What's Still Missing
 

@@ -42,7 +42,7 @@ function detectPresetLabel(policy: MissionExecutionPolicy): { label: string; sty
   };
 }
 
-function PhaseIcon({ active, label }: { active: boolean; label: string }) {
+function PhaseIcon({ active, label, tooltip }: { active: boolean; label: string; tooltip?: string }) {
   return (
     <span
       style={{
@@ -53,9 +53,9 @@ function PhaseIcon({ active, label }: { active: boolean; label: string }) {
         lineHeight: 1,
         color: active ? "#FAFAFA" : "#52525B"
       }}
-      title={label}
+      title={tooltip ?? label}
     >
-      {label.charAt(0)}
+      {label}
     </span>
   );
 }
@@ -80,8 +80,11 @@ export function MissionPolicyBadge({ policy, className }: MissionPolicyBadgeProp
           {preset.label}
         </span>
         <span className="inline-flex items-center gap-px">
-          <PhaseIcon active={policy.testing.mode !== "none"} label="T" />
-          <PhaseIcon active={policy.codeReview.mode !== "off"} label="R" />
+          <PhaseIcon active={policy.planning.mode !== "off"} label="P" tooltip={`Planning: ${policy.planning.mode}`} />
+          <PhaseIcon active={policy.testing.mode !== "none"} label="T" tooltip={`Testing: ${policy.testing.mode}`} />
+          <PhaseIcon active={policy.validation.mode !== "off"} label="V" tooltip={`Validation: ${policy.validation.mode}`} />
+          <PhaseIcon active={policy.codeReview.mode !== "off"} label="R" tooltip={`Review: ${policy.codeReview.mode}`} />
+          <PhaseIcon active={policy.prStrategy?.kind !== "manual" && policy.prStrategy != null} label="PR" tooltip={`PR strategy: ${policy.prStrategy?.kind ?? "none"}`} />
         </span>
         {policy.implementation.model && (
           <span

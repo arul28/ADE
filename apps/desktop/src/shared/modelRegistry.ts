@@ -14,6 +14,8 @@ export type ProviderFamily =
   | "meta"
   | "openrouter"
   | "ollama"
+  | "lmstudio"
+  | "vllm"
   | "groq"
   | "together";
 
@@ -50,8 +52,9 @@ const ALL_CAPS: ModelCapabilities = { tools: true, vision: true, reasoning: true
 const NO_REASONING: ModelCapabilities = { tools: true, vision: true, reasoning: false, streaming: true };
 const BASIC_CAPS: ModelCapabilities = { tools: true, vision: false, reasoning: false, streaming: true };
 
-export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
+export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ---- Anthropic (CLI-wrapped via claude) ----
+  // Note: "max" thinking is API-only for Opus; CLI subscribers get up to "high"
   {
     id: "anthropic/claude-opus-4-6",
     shortId: "opus",
@@ -61,7 +64,7 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
+    reasoningTiers: ["low", "medium", "high"],
     color: "#D97706",
     sdkProvider: "ai-sdk-provider-claude-code",
     sdkModelId: "opus",
@@ -102,6 +105,21 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
 
   // ---- Anthropic (API key direct) ----
   {
+    id: "anthropic/claude-opus-4-6-api",
+    shortId: "opus-api",
+    displayName: "Claude Opus 4.6 (API)",
+    family: "anthropic",
+    authTypes: ["api-key"],
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#D97706",
+    sdkProvider: "@ai-sdk/anthropic",
+    sdkModelId: "claude-opus-4-6",
+    isCliWrapped: false,
+  },
+  {
     id: "anthropic/claude-sonnet-4-6-api",
     shortId: "sonnet-api",
     displayName: "Claude Sonnet 4.6 (API)",
@@ -132,6 +150,8 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
   },
 
   // ---- OpenAI (CLI-wrapped via codex) ----
+  // Codex reasoning tiers: minimal | low | medium | high | xhigh (per config.toml reference)
+  // xhigh is model-dependent (gpt-5.1+ support it)
   {
     id: "openai/gpt-5.3-codex",
     shortId: "gpt-5.3-codex",
@@ -141,10 +161,26 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     contextWindow: 192_000,
     maxOutputTokens: 16_384,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "extra_high"],
+    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
     color: "#10B981",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.3-codex",
+    cliCommand: "codex",
+    isCliWrapped: true,
+  },
+  {
+    id: "openai/gpt-5.3-codex-spark",
+    shortId: "gpt-5.3-codex-spark",
+    displayName: "GPT-5.3 Codex Spark",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192_000,
+    maxOutputTokens: 16_384,
+    capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+    reasoningTiers: ["minimal", "low", "medium"],
+    color: "#34D399",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.3-codex-spark",
     cliCommand: "codex",
     isCliWrapped: true,
   },
@@ -157,7 +193,7 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     contextWindow: 192_000,
     maxOutputTokens: 16_384,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "extra_high"],
+    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
     color: "#10B981",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.2-codex",
@@ -173,7 +209,7 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     contextWindow: 192_000,
     maxOutputTokens: 16_384,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "extra_high"],
+    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
     color: "#10B981",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.1-codex-max",
@@ -204,6 +240,7 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     contextWindow: 192_000,
     maxOutputTokens: 16_384,
     capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
     color: "#6EE7B7",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "o4-mini",
@@ -219,6 +256,7 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     contextWindow: 192_000,
     maxOutputTokens: 16_384,
     capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
     color: "#059669",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "o3",
@@ -264,19 +302,52 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
     color: "#6EE7B7",
     sdkProvider: "@ai-sdk/openai",
     sdkModelId: "o4-mini",
     isCliWrapped: false,
   },
 
-  // ---- Google ----
+  // ---- Google (Gemini 3.x — current) ----
+  {
+    id: "google/gemini-3.1-pro",
+    shortId: "gemini-pro",
+    displayName: "Gemini 3.1 Pro",
+    family: "google",
+    authTypes: ["api-key"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#F59E0B",
+    sdkProvider: "@ai-sdk/google",
+    sdkModelId: "gemini-3.1-pro-preview",
+    isCliWrapped: false,
+  },
+  {
+    id: "google/gemini-3-flash",
+    shortId: "gemini-flash",
+    displayName: "Gemini 3 Flash",
+    family: "google",
+    authTypes: ["api-key"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "high"],
+    color: "#FBBF24",
+    sdkProvider: "@ai-sdk/google",
+    sdkModelId: "gemini-3-flash-preview",
+    isCliWrapped: false,
+  },
+
+  // ---- Google (Gemini 2.x — deprecated, kept for backward compat) ----
   {
     id: "google/gemini-2.5-pro",
-    shortId: "gemini-pro",
-    displayName: "Gemini 2.5 Pro",
+    shortId: "gemini-2.5-pro",
+    displayName: "Gemini 2.5 Pro (Legacy)",
     family: "google",
-    authTypes: ["api-key", "cli-subscription"],
+    authTypes: ["api-key"],
     contextWindow: 1_000_000,
     maxOutputTokens: 65_536,
     capabilities: ALL_CAPS,
@@ -284,13 +355,14 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/google",
     sdkModelId: "gemini-2.5-pro",
     isCliWrapped: false,
+    deprecated: true,
   },
   {
     id: "google/gemini-2.5-flash",
-    shortId: "gemini-flash",
-    displayName: "Gemini 2.5 Flash",
+    shortId: "gemini-2.5-flash",
+    displayName: "Gemini 2.5 Flash (Legacy)",
     family: "google",
-    authTypes: ["api-key", "cli-subscription"],
+    authTypes: ["api-key"],
     contextWindow: 1_000_000,
     maxOutputTokens: 65_536,
     capabilities: NO_REASONING,
@@ -298,6 +370,7 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/google",
     sdkModelId: "gemini-2.5-flash",
     isCliWrapped: false,
+    deprecated: true,
   },
 
   // ---- DeepSeek ----
@@ -390,21 +463,56 @@ export const MODEL_REGISTRY: readonly ModelDescriptor[] = [
     capabilities: BASIC_CAPS,
     color: "#71717A",
     sdkProvider: "@ai-sdk/openai-compatible",
-    sdkModelId: "llama-3.3",
+    sdkModelId: "auto",
+    isCliWrapped: false,
+  },
+  {
+    id: "lmstudio/auto",
+    shortId: "lmstudio-auto",
+    displayName: "LM Studio (Auto)",
+    family: "lmstudio",
+    authTypes: ["local"],
+    contextWindow: 128_000,
+    maxOutputTokens: 8_192,
+    capabilities: BASIC_CAPS,
+    color: "#64748B",
+    sdkProvider: "@ai-sdk/openai-compatible",
+    sdkModelId: "auto",
+    isCliWrapped: false,
+  },
+  {
+    id: "vllm/auto",
+    shortId: "vllm-auto",
+    displayName: "vLLM (Auto)",
+    family: "vllm",
+    authTypes: ["local"],
+    contextWindow: 128_000,
+    maxOutputTokens: 8_192,
+    capabilities: BASIC_CAPS,
+    color: "#475569",
+    sdkProvider: "@ai-sdk/openai-compatible",
+    sdkModelId: "auto",
     isCliWrapped: false,
   },
 ];
 
 // ---------------------------------------------------------------------------
-// Index maps (built once)
+// Index maps (built once, refreshed on enrichment)
 // ---------------------------------------------------------------------------
 
-const byId = new Map<string, ModelDescriptor>();
-const byShortId = new Map<string, ModelDescriptor>();
-for (const m of MODEL_REGISTRY) {
-  byId.set(m.id, m);
-  byShortId.set(m.shortId, m);
+let byId = new Map<string, ModelDescriptor>();
+let byShortId = new Map<string, ModelDescriptor>();
+
+function rebuildIndexes() {
+  byId = new Map<string, ModelDescriptor>();
+  byShortId = new Map<string, ModelDescriptor>();
+  for (const m of MODEL_REGISTRY) {
+    byId.set(m.id, m);
+    byShortId.set(m.shortId, m);
+  }
 }
+
+rebuildIndexes();
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -440,17 +548,113 @@ export function getDefaultModel(authType: AuthType): ModelDescriptor {
 }
 
 export function getAvailableModels(
-  detectedAuth: Array<{ type: AuthType }>,
+  detectedAuth: Array<{ type: AuthType; cli?: string; provider?: string }>,
 ): ModelDescriptor[] {
-  const authTypes = new Set(detectedAuth.map((a) => a.type));
-  return MODEL_REGISTRY.filter(
-    (m) => !m.deprecated && m.authTypes.some((at) => authTypes.has(at)),
-  );
+  const hasAuth = (matcher: (auth: { type: AuthType; cli?: string; provider?: string }) => boolean): boolean =>
+    detectedAuth.some((auth) => matcher(auth));
+
+  const hasMappedCli = (family: ProviderFamily): boolean => {
+    const requiredCli = family === "openai"
+      ? "codex"
+      : family === "anthropic"
+        ? "claude"
+        : family === "google"
+          ? "gemini"
+          : null;
+    if (!requiredCli) return hasAuth((auth) => auth.type === "cli-subscription");
+    return hasAuth(
+      (auth) => auth.type === "cli-subscription" && (!auth.cli || auth.cli === requiredCli)
+    );
+  };
+
+  const hasMappedLocal = (family: ProviderFamily): boolean => {
+    const requiredProvider = family === "ollama" || family === "lmstudio" || family === "vllm"
+      ? family
+      : null;
+    if (!requiredProvider) return hasAuth((auth) => auth.type === "local");
+    return hasAuth(
+      (auth) => auth.type === "local" && (!auth.provider || auth.provider === requiredProvider)
+    );
+  };
+
+  const hasAuthForModel = (model: ModelDescriptor): boolean =>
+    model.authTypes.some((authType) => {
+      if (authType === "cli-subscription") return hasMappedCli(model.family);
+      if (authType === "api-key") {
+        return hasAuth(
+          (auth) => auth.type === "api-key" && (!auth.provider || auth.provider === model.family)
+        );
+      }
+      if (authType === "openrouter") return hasAuth((auth) => auth.type === "openrouter");
+      if (authType === "local") return hasMappedLocal(model.family);
+      if (authType === "oauth") return hasAuth((auth) => auth.type === "oauth");
+      return false;
+    });
+
+  return MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
 }
 
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
   const normalized = alias.trim().toLowerCase();
-  return byId.get(normalized) ?? byShortId.get(normalized);
+  const direct = byId.get(normalized) ?? byShortId.get(normalized);
+  if (direct) return direct;
+
+  // Legacy unprefixed Claude IDs (kept for backward compatibility).
+  if (normalized.includes("claude-sonnet")) {
+    return byId.get("anthropic/claude-sonnet-4-6");
+  }
+  if (normalized.includes("claude-opus")) {
+    return byId.get("anthropic/claude-opus-4-6");
+  }
+  if (normalized.includes("claude-haiku")) {
+    return byId.get("anthropic/claude-haiku-4-5");
+  }
+
+  return undefined;
+}
+
+/**
+ * Given a model ID, return all non-deprecated models in the same family.
+ * Used to restrict mid-session model changes to compatible models only.
+ */
+export function getCompatibleModels(currentModelId: string): ModelDescriptor[] {
+  const current = byId.get(currentModelId);
+  if (!current) return MODEL_REGISTRY.filter((m) => !m.deprecated);
+  return MODEL_REGISTRY.filter((m) => !m.deprecated && m.family === current.family);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime enrichment — mutate existing entries in-place with fresh data
+// ---------------------------------------------------------------------------
+
+export type ModelEnrichment = {
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities?: Partial<ModelCapabilities>;
+};
+
+/**
+ * Enrich existing registry entries in-place with fresh data (e.g. from models.dev).
+ * Only updates fields that are provided and truthy.
+ */
+export function enrichModelRegistry(enrichments: Map<string, ModelEnrichment>): number {
+  let updated = 0;
+  for (const descriptor of MODEL_REGISTRY) {
+    const enrichment = enrichments.get(descriptor.sdkModelId);
+    if (!enrichment) continue;
+
+    if (enrichment.contextWindow && enrichment.contextWindow > 0) {
+      descriptor.contextWindow = enrichment.contextWindow;
+    }
+    if (enrichment.maxOutputTokens && enrichment.maxOutputTokens > 0) {
+      descriptor.maxOutputTokens = enrichment.maxOutputTokens;
+    }
+    if (enrichment.capabilities) {
+      Object.assign(descriptor.capabilities, enrichment.capabilities);
+    }
+    updated++;
+  }
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +674,8 @@ export const MODEL_FAMILIES: Record<
   meta: { displayName: "Meta", icon: "meta" },
   openrouter: { displayName: "OpenRouter", icon: "openrouter" },
   ollama: { displayName: "Ollama", icon: "ollama" },
+  lmstudio: { displayName: "LM Studio", icon: "lmstudio" },
+  vllm: { displayName: "vLLM", icon: "vllm" },
   groq: { displayName: "Groq", icon: "groq" },
   together: { displayName: "Together", icon: "together" },
 };

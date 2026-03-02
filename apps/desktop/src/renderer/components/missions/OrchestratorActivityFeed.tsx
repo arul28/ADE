@@ -43,6 +43,10 @@ const EVENT_CONFIG: Record<string, { icon: string; color: string; label: string;
   plan_revised: { icon: "\u267B", color: "text-indigo-300", label: "Plan", category: "Steps" },
   lane_transfer: { icon: "\u21C4", color: "text-orange-300", label: "Lane", category: "Steps" },
   tool_profiles_updated: { icon: "\u2699", color: "text-purple-300", label: "Tools", category: "Steps" },
+  budget_warning: { icon: "\u26A0", color: "text-amber-400", label: "Budget Warning", category: "Quality" },
+  budget_hard_cap_triggered: { icon: "\u26D4", color: "text-red-400", label: "Budget Hard Cap", category: "Quality" },
+  mission_paused: { icon: "\u23F8", color: "text-amber-400", label: "Mission Paused", category: "Steps" },
+  mission_resumed: { icon: "\u25B6", color: "text-emerald-400", label: "Mission Resumed", category: "Steps" },
 };
 
 const DEFAULT_CONFIG = { icon: "\u25CB", color: "text-muted-fg", label: "Event", category: "All Events" };

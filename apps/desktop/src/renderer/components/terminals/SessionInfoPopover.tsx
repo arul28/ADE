@@ -16,7 +16,7 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {

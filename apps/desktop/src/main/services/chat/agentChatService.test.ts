@@ -6,7 +6,9 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("ai", () => ({
-  streamText: vi.fn()
+  streamText: vi.fn(),
+  stepCountIs: vi.fn(() => () => false),
+  tool: vi.fn((def: unknown) => def),
 }));
 
 vi.mock("node:child_process", async () => {
@@ -551,7 +553,7 @@ describe("agentChatService", () => {
       codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
 
       const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
-      await fixture.service.sendMessage({ sessionId: session.id, text: "Run checks", reasoningEffort: "extra_high" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "Run checks", reasoningEffort: "xhigh" });
 
       await waitForEvent(fixture.emitted, (entry) => entry.event.type === "done");
 
@@ -564,7 +566,7 @@ describe("agentChatService", () => {
       const turnStart = codex.sent.find((entry) => entry.method === "turn/start");
       expect(turnStart?.params?.threadId).toBe("thread-1");
       expect(turnStart?.params?.input?.[0]?.type).toBe("text");
-      expect(turnStart?.params?.reasoningEffort).toBe("extra_high");
+      expect(turnStart?.params?.reasoningEffort).toBe("xhigh");
 
       await fixture.service.disposeAll();
     });
@@ -980,22 +982,31 @@ describe("agentChatService", () => {
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-5.3-codex",
-        reasoningEffort: "high"
+        reasoningEffort: "high",
+        permissionMode: "edit"
       });
 
       await fixture.service.sendMessage({
         sessionId: session.id,
         text: "run checks",
-        reasoningEffort: "extra_high"
+        reasoningEffort: "xhigh"
       });
 
       const metadataPath = path.join(fixture.adeDir, "chat-sessions", `${session.id}.json`);
-      const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as { reasoningEffort?: string };
-      expect(metadata.reasoningEffort).toBe("extra_high");
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as {
+        reasoningEffort?: string;
+        modelId?: string;
+        permissionMode?: string;
+      };
+      expect(metadata.reasoningEffort).toBe("xhigh");
+      expect(metadata.modelId).toBe("openai/gpt-5.3-codex");
+      expect(metadata.permissionMode).toBe("edit");
 
       const listed = await fixture.service.listSessions("lane-1");
       const summary = listed.find((entry) => entry.sessionId === session.id);
-      expect(summary?.reasoningEffort).toBe("extra_high");
+      expect(summary?.reasoningEffort).toBe("xhigh");
+      expect(summary?.modelId).toBe("openai/gpt-5.3-codex");
+      expect(summary?.permissionMode).toBe("edit");
 
       await fixture.service.disposeAll();
     });
@@ -1285,11 +1296,16 @@ describe("agentChatService", () => {
       const row = fixture.sessionService.__rows.get(session.id);
       expect(row).toBeTruthy();
       expect(row?.transcriptPath.endsWith(".chat.jsonl")).toBe(true);
-      expect(fs.existsSync(row!.transcriptPath)).toBe(true);
+      await waitForCondition(() => {
+        expect(fs.existsSync(row!.transcriptPath)).toBe(true);
+      });
 
-      const transcript = fs.readFileSync(row!.transcriptPath, "utf8");
-      const lines = transcript.trim().split(/\r?\n/).filter(Boolean);
-      expect(lines.length).toBeGreaterThanOrEqual(2);
+      let lines: string[] = [];
+      await waitForCondition(() => {
+        const transcript = fs.readFileSync(row!.transcriptPath, "utf8");
+        lines = transcript.trim().split(/\r?\n/).filter(Boolean);
+        expect(lines.length).toBeGreaterThanOrEqual(2);
+      });
 
       const parsed = JSON.parse(lines[0]!) as AgentChatEventEnvelope;
       expect(parsed.sessionId).toBe(session.id);

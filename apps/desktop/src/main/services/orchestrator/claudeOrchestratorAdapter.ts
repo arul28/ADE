@@ -1,5 +1,6 @@
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
 import { createBaseOrchestratorAdapter, shellEscapeArg } from "./baseOrchestratorAdapter";
+import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 
 export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
   return createBaseOrchestratorAdapter({
@@ -24,7 +25,7 @@ export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
       const commandParts: string[] = [
         "claude",
         "--model",
-        shellEscapeArg(model)
+        shellEscapeArg(resolveClaudeCliModel(model))
       ];
 
       if (dangerouslySkip) {

@@ -25,6 +25,7 @@ import type {
   MissionBudgetSnapshot,
   OrchestratorRuntimeEvent,
   OrchestratorRunGraph,
+  PhaseCard,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -57,9 +58,7 @@ export type CoordinatorUserRules = {
   costMode?: string;
   maxParallelWorkers?: number;
   laneStrategy?: string;
-  permissionMode?: string;
   customInstructions?: string;
-  defaultModel?: string;
   executionPolicy?: CoordinatorExecutionPolicy;
 };
 
@@ -96,6 +95,12 @@ export type CoordinatorAgentDeps = {
   userRules?: CoordinatorUserRules;
   projectContext?: CoordinatorProjectContext;
   availableProviders?: CoordinatorAvailableProvider[];
+  /** Phase cards defining the mission execution phases — injected into the coordinator prompt. */
+  phases?: PhaseCard[];
+  /** Called when spawn_worker detects a budget hard cap. Orchestrator creates a pause intervention. */
+  onHardCapTriggered?: (detail: string) => void;
+  /** Called when budget pressure transitions to warning or critical. Emits a soft warning chat message. */
+  onBudgetWarning?: (pressure: "warning" | "critical", detail: string) => void;
 };
 
 type QueuedEvent = {
@@ -181,6 +186,8 @@ export class CoordinatorAgent {
   private conversationHistory: ModelMessage[] = [];
   private systemPrompt: string;
   private compactionMonitor: CompactionMonitor | null = null;
+  private cachedSdkModel: Awaited<ReturnType<typeof resolveModel>> | null = null;
+  private cachedModelAt = 0;
 
   constructor(deps: CoordinatorAgentDeps) {
     this.deps = deps;
@@ -195,6 +202,8 @@ export class CoordinatorAgent {
       getMissionBudgetStatus: deps.getMissionBudgetStatus,
       onDagMutation: deps.onDagMutation,
       onRunFinalize: deps.onRunFinalize,
+      onHardCapTriggered: deps.onHardCapTriggered,
+      onBudgetWarning: deps.onBudgetWarning,
     });
     this.systemPrompt = this.buildSystemPrompt();
 
@@ -360,16 +369,26 @@ export class CoordinatorAgent {
       }
     }
 
-    if (assistantText.trim()) {
-      this.conversationHistory.push({
-        role: "assistant",
-        content: assistantText,
-      });
-
-      // Notify the facade about coordinator messages (for chat display)
-      if (this.deps.onCoordinatorMessage) {
-        this.deps.onCoordinatorMessage(assistantText.trim());
+    // Persist the full response messages (tool calls + results + text) so the
+    // coordinator retains memory of what actions it took across turns.
+    try {
+      const responseMessages = await result.response;
+      if (responseMessages.messages && responseMessages.messages.length > 0) {
+        this.conversationHistory.push(...(responseMessages.messages as ModelMessage[]));
+      } else if (assistantText.trim()) {
+        // Fallback: at minimum record the text response
+        this.conversationHistory.push({ role: "assistant", content: assistantText });
       }
+    } catch {
+      // If response retrieval fails, fall back to text-only
+      if (assistantText.trim()) {
+        this.conversationHistory.push({ role: "assistant", content: assistantText });
+      }
+    }
+
+    // Notify the facade about coordinator messages (for chat display)
+    if (assistantText.trim() && this.deps.onCoordinatorMessage) {
+      this.deps.onCoordinatorMessage(assistantText.trim());
     }
   }
 
@@ -427,8 +446,6 @@ export class CoordinatorAgent {
       if (rules.costMode) ruleLines.push(`- Cost mode: ${rules.costMode}`);
       if (rules.maxParallelWorkers != null) ruleLines.push(`- Maximum parallel workers: ${rules.maxParallelWorkers}`);
       if (rules.laneStrategy) ruleLines.push(`- Lane strategy: ${rules.laneStrategy}`);
-      if (rules.permissionMode) ruleLines.push(`- Worker permission mode: ${rules.permissionMode}`);
-      if (rules.defaultModel) ruleLines.push(`- Default model: ${rules.defaultModel}`);
       if (rules.customInstructions) ruleLines.push(`- Custom instructions: ${rules.customInstructions}`);
       if (ruleLines.length > 0) {
         rulesSection = `\n## Rules (from user configuration)\n${ruleLines.join("\n")}`;
@@ -455,6 +472,27 @@ export class CoordinatorAgent {
       if (policyLines.length > 0) {
         policySection = `\n## Execution Policy (user-configured — MUST follow)\nThese settings were chosen by the user. You operate WITHIN these boundaries. You decide HOW to execute within them, but you do NOT override them.\n${policyLines.join("\n")}`;
       }
+    }
+
+    // Build phases section — user-defined guardrails on WHAT work happens
+    let phasesSection = "";
+    const phases = this.deps.phases;
+    if (phases && phases.length > 0) {
+      const phaseLines = phases
+        .sort((a, b) => a.position - b.position)
+        .map((p, i) => {
+          const parts: string[] = [];
+          const customTag = p.isCustom ? "[CUSTOM] " : "";
+          parts.push(`${i + 1}. ${customTag}${p.name.toUpperCase()} (model: ${p.model.modelId})`);
+          if (p.description) parts.push(`   Description: ${p.description}`);
+          if (p.instructions) parts.push(`   Instructions: ${p.instructions}`);
+          if (p.validationGate.tier !== "none") parts.push(`   Validation: ${p.validationGate.tier.replace("-", " ")} ${p.validationGate.required ? "(required)" : "(optional)"}`);
+          if (p.orderingConstraints.mustBeFirst) parts.push(`   Ordering: must be first`);
+          if (p.orderingConstraints.mustBeLast) parts.push(`   Ordering: must be last`);
+          if (p.orderingConstraints.canLoop) parts.push(`   Loop: can repeat${p.orderingConstraints.loopTarget ? ` (back to ${p.orderingConstraints.loopTarget})` : ""}`);
+          return parts.join("\n");
+        });
+      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\n${phaseLines.join("\n")}`;
     }
 
     // Build available workers section
@@ -501,6 +539,7 @@ Run ID: ${this.deps.runId}
 Mission ID: ${this.deps.missionId}
 ${rulesSection}
 ${policySection}
+${phasesSection}
 ${workersSection}
 ${projectSection}
 
@@ -604,11 +643,24 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - When you escalate via request_user_input, always provide: what you tried, what failed, what options you see
 
 ### Budget Awareness
-- Call get_budget_status before spawning multiple workers
+- Call get_budget_status before spawning multiple workers and between waves of work
 - Normal pressure: parallelize freely within reason (2-3 concurrent workers)
 - Elevated pressure: reduce parallelism, skip nice-to-have validation
 - Critical pressure: serialize everything, finish only essential work, finalize early
 - Never burn budget retrying the exact same approach
+- After each wave of workers completes, check budget before starting the next wave
+
+### Worker Prompt Discipline
+- Every worker prompt MUST include mission-critical constraints — never assume workers inherit your context
+- Front-load the WHY: workers perform better when they understand the purpose, not just the task
+- Include: what files to change, what patterns to follow, what to avoid, what "done" looks like
+- If the mission has architectural principles (e.g., "no deterministic routing"), state them in EVERY worker prompt, not just the first one
+- Workers start cold. If you learned something from a previous worker's failure, that knowledge only reaches the next worker if YOU put it in the prompt
+
+### Stuck Worker Detection
+- If a worker has been running for more than 5 minutes without producing output events, send it a message asking for a status update
+- If a worker hasn't made meaningful progress after 10 minutes, consider stopping it and spawning a replacement with clearer instructions
+- Don't wait for workers to time out on their own — proactively monitor and intervene
 
 ## Tool Quick Reference
 
@@ -645,7 +697,15 @@ Your initial plan is a hypothesis. Adjust it as you learn:
   // ─── Model Resolution ────────────────────────────────────────────
 
   private async resolveModel() {
+    const MODEL_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+    const now = Date.now();
+    if (this.cachedSdkModel && now - this.cachedModelAt < MODEL_CACHE_TTL_MS) {
+      return this.cachedSdkModel;
+    }
     const auth = await detectAllAuth();
-    return resolveModel(this.deps.modelId, auth);
+    const model = await resolveModel(this.deps.modelId, auth);
+    this.cachedSdkModel = model;
+    this.cachedModelAt = now;
+    return model;
   }
 }

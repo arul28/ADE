@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import type {
   AiFeatureKey,
   AiConfig,
+  AiChatConfig,
   AiSettingsStatus,
   AiModelDescriptor,
 } from "../../../shared/types";
@@ -118,6 +119,21 @@ export function AiFeaturesSection() {
     return result;
   }, [status]);
 
+  // Track per-feature model overrides locally (loaded from config)
+  const [featureModels, setFeatureModels] = useState<Record<string, string>>({});
+
+  // Load existing feature model overrides on mount
+  useEffect(() => {
+    window.ade.ai.getStatus().then((s) => {
+      // The overrides may be stored in the config — merge defaults
+      const defaults: Record<string, string> = {};
+      for (const f of FEATURES) {
+        defaults[f.key] = f.defaultModel;
+      }
+      setFeatureModels(defaults);
+    }).catch(() => {});
+  }, []);
+
   const handleToggle = useCallback(async (key: AiFeatureKey, enabled: boolean) => {
     if (saving) return;
     setSaving(true);
@@ -137,6 +153,42 @@ export function AiFeaturesSection() {
       setSaving(false);
     }
   }, [saving, status, loadStatus]);
+
+  const handleModelChange = useCallback(async (key: AiFeatureKey, modelId: string) => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      setFeatureModels((prev) => ({ ...prev, [key]: modelId }));
+      const updated = { ...featureModels, [key]: modelId };
+      await window.ade.ai.updateConfig({
+        featureModelOverrides: updated as AiConfig["featureModelOverrides"],
+      });
+    } finally {
+      setSaving(false);
+    }
+  }, [saving, featureModels]);
+
+  // Permission mode defaults
+  const [unifiedPerm, setUnifiedPerm] = useState<AiChatConfig["unifiedPermissionMode"]>("plan");
+  const [claudePerm, setClaudePerm] = useState<AiChatConfig["claudePermissionMode"]>("plan");
+  const [codexSandbox, setCodexSandbox] = useState<AiChatConfig["codexSandbox"]>("read-only");
+
+  const handlePermChange = useCallback(async (
+    field: "unifiedPermissionMode" | "claudePermissionMode" | "codexSandbox",
+    value: string
+  ) => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const chatPatch: Partial<AiChatConfig> = { [field]: value };
+      await window.ade.ai.updateConfig({ chat: chatPatch as AiConfig["chat"] });
+      if (field === "unifiedPermissionMode") setUnifiedPerm(value as AiChatConfig["unifiedPermissionMode"]);
+      if (field === "claudePermissionMode") setClaudePerm(value as AiChatConfig["claudePermissionMode"]);
+      if (field === "codexSandbox") setCodexSandbox(value as AiChatConfig["codexSandbox"]);
+    } finally {
+      setSaving(false);
+    }
+  }, [saving]);
 
   if (loading) {
     return (
@@ -224,9 +276,9 @@ export function AiFeaturesSection() {
                   opacity: enabled ? 1 : 0.4,
                   pointerEvents: enabled ? "auto" : "none",
                 }}
-                value={f.defaultModel}
+                value={featureModels[f.key] ?? f.defaultModel}
                 disabled={!enabled}
-                onChange={() => {/* model routing is read-only for now */}}
+                onChange={(e) => handleModelChange(f.key, e.target.value)}
               >
                 {allModels.length > 0 ? (
                   allModels.map((m) => (
@@ -257,6 +309,64 @@ export function AiFeaturesSection() {
             </div>
           );
         })}
+      </div>
+
+      {/* ── Default Chat Permission Modes ── */}
+      <div style={{ ...sectionLabelStyle, marginTop: 24 }}>DEFAULT CHAT PERMISSION MODES</div>
+      <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 8 }}>
+        Defaults for new chat sessions. Can be overridden per-session.
+      </div>
+
+      <div style={cardStyle({ padding: 16 })}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+          {/* Unified / API Models */}
+          <div>
+            <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
+              UNIFIED / API MODELS
+            </div>
+            <select
+              style={{ ...selectStyle, width: "100%" }}
+              value={unifiedPerm ?? "plan"}
+              onChange={(e) => handlePermChange("unifiedPermissionMode", e.target.value)}
+            >
+              <option value="plan">Plan</option>
+              <option value="edit">Edit</option>
+              <option value="full-auto">Full Auto</option>
+            </select>
+          </div>
+
+          {/* Claude CLI */}
+          <div>
+            <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
+              CLAUDE CLI
+            </div>
+            <select
+              style={{ ...selectStyle, width: "100%" }}
+              value={claudePerm ?? "plan"}
+              onChange={(e) => handlePermChange("claudePermissionMode", e.target.value)}
+            >
+              <option value="plan">Plan</option>
+              <option value="acceptEdits">Accept Edits</option>
+              <option value="bypassPermissions">Bypass Permissions</option>
+            </select>
+          </div>
+
+          {/* Codex CLI */}
+          <div>
+            <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
+              CODEX CLI
+            </div>
+            <select
+              style={{ ...selectStyle, width: "100%" }}
+              value={codexSandbox ?? "read-only"}
+              onChange={(e) => handlePermChange("codexSandbox", e.target.value)}
+            >
+              <option value="read-only">Default (Read-Only)</option>
+              <option value="workspace-write">Workspace Write</option>
+              <option value="danger-full-access">Full Access</option>
+            </select>
+          </div>
+        </div>
       </div>
     </div>
   );
