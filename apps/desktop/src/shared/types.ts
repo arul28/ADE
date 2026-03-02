@@ -933,6 +933,8 @@ export type AgentChatEvent =
       type: "done";
       turnId: string;
       status: "completed" | "interrupted" | "failed";
+      model?: string;
+      modelId?: ModelId;
       usage?: {
         inputTokens?: number | null;
         outputTokens?: number | null;

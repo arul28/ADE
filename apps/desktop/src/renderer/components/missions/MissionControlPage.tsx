@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import type {
   OrchestratorChatMessage,
   OrchestratorChatThread,
@@ -10,6 +10,7 @@ import { AgentPresencePanel } from "./AgentPresencePanel";
 import { ActivityFeed } from "./ActivityFeed";
 import { MissionComposer } from "./MissionComposer";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { useThreadEventRefresh } from "../../hooks/useThreadEventRefresh";
 
 type MissionControlPageProps = {
   missionId: string;
@@ -51,7 +52,6 @@ export function MissionControlPage({
   const [messages, setMessages] = useState<OrchestratorChatMessage[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState("");
-  const messageRefreshTimerRef = useRef<number | null>(null);
 
   // Compute progress
   const { completedCount, totalCount, pct, runningCount } = useMemo(() => {
@@ -92,15 +92,16 @@ export function MissionControlPage({
   // Fetch all messages across all threads for unified feed
   const refreshAllMessages = useCallback(async () => {
     try {
-      const allMsgs: OrchestratorChatMessage[] = [];
-      for (const thread of threads) {
-        const msgs = await window.ade.orchestrator.getThreadMessages({
-          missionId,
-          threadId: thread.id,
-          limit: 100
-        });
-        allMsgs.push(...msgs);
-      }
+      const results = await Promise.all(
+        threads.map((thread) =>
+          window.ade.orchestrator.getThreadMessages({
+            missionId,
+            threadId: thread.id,
+            limit: 100,
+          })
+        )
+      );
+      const allMsgs = results.flat();
       // Sort chronologically
       allMsgs.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
       setMessages(allMsgs);
@@ -114,30 +115,10 @@ export function MissionControlPage({
   }, [refreshAllMessages]);
 
   // Listen for thread events
-  useEffect(() => {
-    const unsub = window.ade.orchestrator.onThreadEvent((event) => {
-      if (event.missionId !== missionId) return;
-      if (
-        event.type === "message_appended" ||
-        event.type === "message_updated" ||
-        event.type === "worker_replay"
-      ) {
-        if (messageRefreshTimerRef.current !== null) {
-          window.clearTimeout(messageRefreshTimerRef.current);
-        }
-        messageRefreshTimerRef.current = window.setTimeout(() => {
-          messageRefreshTimerRef.current = null;
-          void refreshAllMessages();
-        }, 150);
-      }
-    });
-    return () => {
-      unsub();
-      if (messageRefreshTimerRef.current !== null) {
-        window.clearTimeout(messageRefreshTimerRef.current);
-      }
-    };
-  }, [missionId, refreshAllMessages]);
+  useThreadEventRefresh({
+    missionId,
+    onRefresh: refreshAllMessages,
+  });
 
   // Filter messages by selected agent
   const filteredMessages = useMemo(() => {

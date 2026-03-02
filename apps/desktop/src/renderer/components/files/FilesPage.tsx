@@ -37,6 +37,7 @@ import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { revealLabel } from "../../lib/platform";
 import type { PaneConfig, PaneSplit } from "../ui/PaneTilingLayout";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, outlineButton, primaryButton, dangerButton, cardStyle } from "../lanes/laneDesignTokens";
+import { cn } from "../ui/cn";
 type OpenTab = {
   path: string;
   content: string;
@@ -183,10 +184,6 @@ function applyConflictChoice(text: string, hunk: ConflictHunk, choice: "ours" | 
   const after = lines.slice(hunk.endLine);
   const middle = choice === "ours" ? hunk.ours : choice === "theirs" ? hunk.theirs : `${hunk.ours}\n${hunk.theirs}`;
   return [...before, middle, ...after].join("\n");
-}
-
-function cx(...parts: Array<string | false | null | undefined>) {
-  return parts.filter(Boolean).join(" ");
 }
 
 function parentDirOfPath(filePath: string): string {
@@ -1471,7 +1468,7 @@ export function FilesPage() {
             ) : null}
             {mode === "edit" ? (
               <div className="h-full">
-                <div ref={setEditorHostRef} className={cx("h-full", editorStatus === "failed" && "hidden")} />
+                <div ref={setEditorHostRef} className={cn("h-full", editorStatus === "failed" && "hidden")} />
                 {editorStatus === "loading" ? (
                   <div className="flex h-full items-center justify-center" style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
                     <span className="animate-pulse">LOADING EDITOR...</span>

@@ -122,16 +122,13 @@ export function AiFeaturesSection() {
   // Track per-feature model overrides locally (loaded from config)
   const [featureModels, setFeatureModels] = useState<Record<string, string>>({});
 
-  // Load existing feature model overrides on mount
+  // Load default feature model overrides on mount
   useEffect(() => {
-    window.ade.ai.getStatus().then((s) => {
-      // The overrides may be stored in the config — merge defaults
-      const defaults: Record<string, string> = {};
-      for (const f of FEATURES) {
-        defaults[f.key] = f.defaultModel;
-      }
-      setFeatureModels(defaults);
-    }).catch(() => {});
+    const defaults: Record<string, string> = {};
+    for (const f of FEATURES) {
+      defaults[f.key] = f.defaultModel;
+    }
+    setFeatureModels(defaults);
   }, []);
 
   const handleToggle = useCallback(async (key: AiFeatureKey, enabled: boolean) => {
@@ -158,15 +155,18 @@ export function AiFeaturesSection() {
     if (saving) return;
     setSaving(true);
     try {
-      setFeatureModels((prev) => ({ ...prev, [key]: modelId }));
-      const updated = { ...featureModels, [key]: modelId };
+      let updated: Record<string, string> = {};
+      setFeatureModels((prev) => {
+        updated = { ...prev, [key]: modelId };
+        return updated;
+      });
       await window.ade.ai.updateConfig({
         featureModelOverrides: updated as AiConfig["featureModelOverrides"],
       });
     } finally {
       setSaving(false);
     }
-  }, [saving, featureModels]);
+  }, [saving]);
 
   // Permission mode defaults
   const [unifiedPerm, setUnifiedPerm] = useState<AiChatConfig["unifiedPermissionMode"]>("plan");

@@ -14,10 +14,7 @@ import { getTerminalRuntimeHealth } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-
-function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
-}
+import { isChatToolType } from "../../lib/sessions";
 
 function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {
   if (state === "waiting-input") return "waiting input";

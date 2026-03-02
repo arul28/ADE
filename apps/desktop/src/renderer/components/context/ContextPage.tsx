@@ -11,70 +11,7 @@ import { cn } from "../ui/cn";
 import { GenerateDocsModal } from "./GenerateDocsModal";
 import { useAppStore } from "../../state/appStore";
 import { ArrowsClockwise, CaretRight, FileText, FolderSimple, Crosshair, GitMerge, ClipboardText, Rocket, Clock, BookOpenText } from "@phosphor-icons/react";
-
-// ─── Helpers ────────────────────────────────────────────────────────
-
-function relativeTime(ts: string | null | undefined): string {
-  if (!ts) return "never";
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return ts;
-  const diffMs = Date.now() - date.getTime();
-  if (diffMs < 60_000) return "just now";
-  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
-  if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
-  return `${Math.floor(diffMs / 86_400_000)}d ago`;
-}
-
-function shortId(value: string | null | undefined, size = 10): string {
-  const raw = (value ?? "").trim();
-  if (!raw) return "-";
-  return raw.length > size ? raw.slice(0, size) : raw;
-}
-
-// ─── Pack Body Parser ───────────────────────────────────────────────
-
-const INTERNAL_PACK_MARKER_RE = /^\s*<!--\s*ADE_[A-Z0-9_:-]+\s*-->\s*$/gm;
-const JSON_FENCE_RE = /^```json\s*\n([\s\S]*?)\n```/m;
-
-type PackSection = {
-  heading: string;
-  level: number;
-  content: string;
-  lines: string[];
-};
-
-function parsePackBody(rawBody: string): { header: Record<string, unknown> | null; sections: PackSection[] } {
-  let body = rawBody.replace(INTERNAL_PACK_MARKER_RE, "").replace(/\n{3,}/g, "\n\n").trimEnd();
-
-  // Extract JSON header
-  let header: Record<string, unknown> | null = null;
-  const jsonMatch = body.match(JSON_FENCE_RE);
-  if (jsonMatch?.[1]) {
-    try { header = JSON.parse(jsonMatch[1]); } catch { /* ignore */ }
-    body = body.replace(JSON_FENCE_RE, "").trimStart();
-  }
-
-  // Parse markdown sections
-  const lines = body.split("\n");
-  const sections: PackSection[] = [];
-  let current: PackSection | null = null;
-
-  for (const line of lines) {
-    const headingMatch = line.match(/^(#{1,4})\s+(.+)/);
-    if (headingMatch) {
-      if (current) sections.push(current);
-      current = { heading: headingMatch[2].trim(), level: headingMatch[1].length, content: "", lines: [] };
-    } else if (current) {
-      current.lines.push(line);
-      current.content += line + "\n";
-    } else if (line.trim()) {
-      current = { heading: "", level: 0, content: line + "\n", lines: [line] };
-    }
-  }
-  if (current) sections.push(current);
-
-  return { header, sections };
-}
+import { relativeTime, shortId, parsePackBody, type PackSection } from "./contextShared";
 
 // ─── Section Renderers ──────────────────────────────────────────────
 

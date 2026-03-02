@@ -9,6 +9,7 @@ import type {
 } from "../../../shared/types";
 import type { MissionPlanStepDraft } from "./missionPlanningService";
 import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
+import { nowIso } from "../shared/utils";
 
 export const BUILT_IN_PHASE_KEYS = {
   planning: "planning",
@@ -25,10 +26,6 @@ const DEFAULT_MODELS: Record<string, ModelConfig> = {
   [BUILT_IN_PHASE_KEYS.validation]: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
   [BUILT_IN_PHASE_KEYS.prAndConflicts]: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "low" },
 };
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
 
 export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
   return [

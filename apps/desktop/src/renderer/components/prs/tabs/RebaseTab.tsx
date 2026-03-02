@@ -5,20 +5,12 @@ import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
-import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
+import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
 import { StatusDot } from "../shared/StatusDot";
 import { ModelSelector } from "../shared/ModelSelector";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
-
-const TILING_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    { node: { type: "pane", id: "list" }, defaultSize: 36, minSize: 20 },
-    { node: { type: "pane", id: "detail" }, defaultSize: 64, minSize: 30 },
-  ],
-};
+import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 
 type RebaseTabProps = {
   rebaseNeeds: RebaseNeed[];
@@ -712,5 +704,5 @@ export function RebaseTab({
     ],
   );
 
-  return <PaneTilingLayout layoutId="prs:rebase:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
+  return <PaneTilingLayout layoutId="prs:rebase:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

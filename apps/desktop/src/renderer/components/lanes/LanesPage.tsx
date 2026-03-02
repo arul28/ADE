@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useClickOutside } from "../../hooks/useClickOutside";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X } from "@phosphor-icons/react";
@@ -159,27 +160,8 @@ export function LanesPage() {
     refreshLanes().catch(() => {});
   }, [primaryBranches, primaryLane?.id, primaryLane?.branchRef, refreshLanes]);
 
-  useEffect(() => {
-    if (!branchDropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
-        setBranchDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [branchDropdownOpen]);
-
-  useEffect(() => {
-    if (!addLaneDropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (addLaneDropdownRef.current && !addLaneDropdownRef.current.contains(e.target as Node)) {
-        setAddLaneDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [addLaneDropdownOpen]);
+  useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
+  useClickOutside(addLaneDropdownRef, () => setAddLaneDropdownOpen(false), addLaneDropdownOpen);
 
   /* ---- Conflict loading ---- */
 

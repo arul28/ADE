@@ -41,15 +41,12 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
+import { isRecord } from "../shared/utils";
 
 const TRUSTED_SHARED_HASH_KEY = "project_config:trusted_shared_hash";
 const VERSION = 1;
 const DEFAULT_GRACEFUL_MS = 7000;
 const EMPTY_CONTENT_HASH = createHash("sha256").update("").digest("hex");
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;

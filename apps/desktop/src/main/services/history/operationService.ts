@@ -1,20 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import type { ListOperationsArgs, OperationRecord } from "../../../shared/types";
+import { isRecord, safeJsonParse } from "../shared/utils";
 
 type OperationStatus = "running" | "succeeded" | "failed" | "canceled";
 
 type OperationMetadata = Record<string, unknown>;
 
 function safeParseMetadata(raw: string | null | undefined): OperationMetadata {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as OperationMetadata;
-  } catch {
-    return {};
-  }
+  const parsed = safeJsonParse(raw, null);
+  return isRecord(parsed) ? parsed : {};
 }
 
 function toJson(value: OperationMetadata): string {

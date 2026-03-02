@@ -5,15 +5,9 @@ import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
 import type { GitHubRepoRef, GitHubStatus } from "../../../shared/types";
 
+import { nowIso, asString } from "../shared/utils";
+
 const AUTH_STORE_FILE_NAME = "github-token.v1.bin";
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
 
 function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | null {
   const remoteUrl = remoteUrlRaw.trim();

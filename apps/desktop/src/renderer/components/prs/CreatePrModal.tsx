@@ -10,28 +10,30 @@ import type {
   CreateIntegrationPrResult,
 } from "../../../shared/types";
 
+import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+
 type CreateMode = "normal" | "queue" | "integration";
 type WizardStep = "select-type" | "configure" | "execute";
 
-/* ── design-system tokens (inline) ─────────────────────────────────── */
+/** Alias mapping from old `C` tokens to centralized COLORS. */
 const C = {
-  bgMain: "#0F0D14",
-  bgCard: "#13101A",
-  bgHeader: "#0C0A10",
-  bgInput: "#0C0A10",
-  border: "#1E1B26",
-  borderSubtle: "#27272A",
-  textPrimary: "#FAFAFA",
-  textSecondary: "#A1A1AA",
-  textMuted: "#71717A",
-  textDisabled: "#52525B",
-  accent: "#A78BFA",
-  accentSubtleBg: "#A78BFA18",
-  accentBorder: "#A78BFA30",
-  success: "#22C55E",
-  warning: "#F59E0B",
-  error: "#EF4444",
-  info: "#3B82F6",
+  bgMain: COLORS.pageBg,
+  bgCard: COLORS.cardBg,
+  bgHeader: COLORS.recessedBg,
+  bgInput: COLORS.recessedBg,
+  border: COLORS.border,
+  borderSubtle: COLORS.outlineBorder,
+  textPrimary: COLORS.textPrimary,
+  textSecondary: COLORS.textSecondary,
+  textMuted: COLORS.textMuted,
+  textDisabled: COLORS.textDim,
+  accent: COLORS.accent,
+  accentSubtleBg: COLORS.accentSubtle,
+  accentBorder: COLORS.accentBorder,
+  success: COLORS.success,
+  warning: COLORS.warning,
+  error: COLORS.danger,
+  info: COLORS.info,
 } as const;
 
 const MERGE_METHODS: { id: MergeMethod; label: string; desc: string }[] = [
@@ -48,11 +50,7 @@ const MODES: { id: CreateMode; label: string; icon: React.ElementType; desc: str
 
 /* ── label style helper ────────────────────────────────────────────── */
 const labelStyle: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 700,
-  fontFamily: "'JetBrains Mono', monospace",
-  textTransform: "uppercase" as const,
-  letterSpacing: "1px",
+  ...LABEL_STYLE,
   color: C.textSecondary,
   marginBottom: 8,
   display: "block",
@@ -63,7 +61,7 @@ const inputStyle: React.CSSProperties = {
   background: C.bgInput,
   border: `1px solid ${C.borderSubtle}`,
   color: C.textPrimary,
-  fontFamily: "'JetBrains Mono', monospace",
+  fontFamily: MONO_FONT,
   fontSize: 12,
   padding: "12px 16px",
   borderRadius: 0,

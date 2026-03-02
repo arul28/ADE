@@ -5,6 +5,7 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "./laneService";
 import type { AutoRebaseEventPayload, AutoRebaseLaneState, AutoRebaseLaneStatus, LaneSummary } from "../../../shared/types";
+import { isRecord, nowIso } from "../shared/utils";
 
 type StoredStatus = AutoRebaseLaneStatus;
 
@@ -12,16 +13,8 @@ const KEY_PREFIX = "auto_rebase:status:";
 const AUTO_REBASED_TTL_MS = 15 * 60_000;
 const RUN_DEBOUNCE_MS = 1_200;
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
 function keyForLane(laneId: string): string {
   return `${KEY_PREFIX}${laneId}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function sanitizeStoredStatus(value: unknown): StoredStatus | null {

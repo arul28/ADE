@@ -6,24 +6,14 @@ import type {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
+import { relativeWhen } from "../../lib/format";
+import { useThreadEventRefresh } from "../../hooks/useThreadEventRefresh";
 
 type AgentChannelsProps = {
   missionId: string;
   threads: OrchestratorChatThread[];
   onSendMessage: (threadId: string, content: string) => void;
 };
-
-function relativeWhen(iso: string): string {
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return iso;
-  const delta = Math.max(0, Date.now() - ts);
-  const mins = Math.floor(delta / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
 
 const STATUS_DOT: Record<string, string> = {
   active: "#22C55E",
@@ -39,7 +29,14 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const messageRefreshTimerRef = useRef<number | null>(null);
+  const visibleRef = useRef(true);
+
+  // Track visibility to pause polling when backgrounded
+  useEffect(() => {
+    const onVisChange = () => { visibleRef.current = document.visibilityState === "visible"; };
+    document.addEventListener("visibilitychange", onVisChange);
+    return () => document.removeEventListener("visibilitychange", onVisChange);
+  }, []);
 
   // Auto-select first thread (coordinator) if nothing selected
   useEffect(() => {
@@ -100,37 +97,24 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
     void refreshMessages(selectedThreadId);
     // Only poll for active threads — closed/completed threads won't receive new messages.
     if (selectedThread && selectedThread.status !== "active") return;
-    const interval = setInterval(() => void refreshMessages(selectedThreadId), 6_000);
+    const interval = setInterval(() => {
+      if (!visibleRef.current) return;
+      void refreshMessages(selectedThreadId);
+    }, 6_000);
     return () => clearInterval(interval);
   }, [refreshMessages, selectedThreadId, selectedThread]);
 
   // Listen for thread events
-  useEffect(() => {
-    const unsub = window.ade.orchestrator.onThreadEvent((event) => {
-      if (event.missionId !== missionId) return;
-      if (
-        event.type === "message_appended" ||
-        event.type === "message_updated" ||
-        event.type === "worker_replay"
-      ) {
-        if (!event.threadId || event.threadId === selectedThreadId) {
-          if (messageRefreshTimerRef.current !== null) {
-            window.clearTimeout(messageRefreshTimerRef.current);
-          }
-          messageRefreshTimerRef.current = window.setTimeout(() => {
-            messageRefreshTimerRef.current = null;
-            void refreshMessages(selectedThreadId);
-          }, 120);
-        }
-      }
-    });
-    return () => {
-      unsub();
-      if (messageRefreshTimerRef.current !== null) {
-        window.clearTimeout(messageRefreshTimerRef.current);
-      }
-    };
-  }, [missionId, selectedThreadId, refreshMessages]);
+  const handleThreadRefresh = useCallback(() => {
+    void refreshMessages(selectedThreadId);
+  }, [refreshMessages, selectedThreadId]);
+
+  useThreadEventRefresh({
+    missionId,
+    threadId: selectedThreadId,
+    onRefresh: handleThreadRefresh,
+    debounceMs: 120,
+  });
 
   // Auto-scroll
   useEffect(() => {
@@ -480,7 +464,7 @@ function ChannelButton({
   );
 }
 
-function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; attemptNameMap: Map<string, string> }) {
+const MessageBubble = React.memo(function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; attemptNameMap: Map<string, string> }) {
   const isUser = msg.role === "user";
   const isAgent = msg.role === "agent";
   const isWorker = msg.role === "worker";
@@ -642,4 +626,4 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
       </div>
     </div>
   );
-}
+});

@@ -25,6 +25,7 @@ import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { estimateTokenCost } from "./metricsAndUsage";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { isRecord, nowIso, parseJsonRecord } from "./orchestratorContext";
 
 type RunRow = {
   id: string;
@@ -76,24 +77,6 @@ type LaunchBudgetEstimate = {
   remainingWindowCostUsd: number | null;
   budgetLimitCostUsd: number | null;
 };
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseRecord(raw: string | null | undefined): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
 
 function toNonNegativeInt(value: unknown): number | null {
   const numeric = Number(value);
@@ -174,7 +157,7 @@ function resolvePhaseFromStep(args: {
   defaultPhaseKey: string;
   availablePhaseKeys: Set<string>;
 }): string {
-  const metadata = parseRecord(args.metadataJson);
+  const metadata = parseJsonRecord(args.metadataJson);
   const explicit = typeof metadata?.phaseKey === "string" ? metadata.phaseKey.trim() : "";
   if (explicit.length > 0 && args.availablePhaseKeys.has(explicit)) return explicit;
   return args.defaultPhaseKey;
@@ -606,7 +589,7 @@ export function createMissionBudgetService(args: {
       : [];
 
     const mode = await resolveBudgetMode();
-    const metadata = parseRecord(missionRow.metadata_json);
+    const metadata = parseJsonRecord(missionRow.metadata_json);
     const launchMeta = metadata && isRecord(metadata.launch) ? metadata.launch : null;
     const modelConfig = launchMeta && isRecord(launchMeta.modelConfig) ? launchMeta.modelConfig : null;
     const smartBudget = modelConfig && isRecord(modelConfig.smartBudget) ? modelConfig.smartBudget : null;

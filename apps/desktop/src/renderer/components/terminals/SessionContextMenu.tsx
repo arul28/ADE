@@ -1,9 +1,6 @@
 import React from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
-
-function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
-}
+import { isChatToolType } from "../../lib/sessions";
 
 export type SessionContextMenuState = {
   session: TerminalSessionSummary;

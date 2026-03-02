@@ -18,6 +18,7 @@ import { executeUnified, resumeUnified, type UnifiedExecutorOpts, type UnifiedRe
 import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
 import { enrichModelRegistry } from "../../../shared/modelRegistry";
+import { isRecord } from "../shared/utils";
 
 export type AiTaskType =
   | "planning"
@@ -182,10 +183,6 @@ const PROVIDER_DEFAULT_MODEL: Record<AgentProvider, string> = {
 };
 
 type ClaudeProviderConfig = NonNullable<NonNullable<ExecutorOpts["providerConfig"]>["claude"]>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function toStringOrNull(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";

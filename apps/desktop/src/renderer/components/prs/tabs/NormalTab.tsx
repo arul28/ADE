@@ -18,42 +18,40 @@ import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
-import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
+import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
-
-const TILING_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    { node: { type: "pane", id: "list" }, defaultSize: 36, minSize: 20 },
-    { node: { type: "pane", id: "detail" }, defaultSize: 64, minSize: 30 },
-  ],
-};
+import { COLORS, MONO_FONT, LABEL_STYLE as SHARED_LABEL_STYLE, inlineBadge } from "../../lanes/laneDesignTokens";
+import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
+import { normalizeBranchName } from "../shared/prHelpers";
 
 /* ---- Badge helpers ---- */
 
+function colorBadge(color: string): { color: string; bg: string; border: string } {
+  return { color, bg: `${color}18`, border: `${color}30` };
+}
+
 function stateChip(state: PrSummary["state"]): { label: string; color: string; bg: string; border: string } {
-  if (state === "draft") return { label: "DRAFT", color: "#A78BFA", bg: "#A78BFA18", border: "#A78BFA30" };
-  if (state === "open") return { label: "OPEN", color: "#3B82F6", bg: "#3B82F618", border: "#3B82F630" };
-  if (state === "merged") return { label: "MERGED", color: "#22C55E", bg: "#22C55E18", border: "#22C55E30" };
-  return { label: "CLOSED", color: "#A1A1AA", bg: "#A1A1AA18", border: "#A1A1AA30" };
+  if (state === "draft") return { label: "DRAFT", ...colorBadge(COLORS.accent) };
+  if (state === "open") return { label: "OPEN", ...colorBadge(COLORS.info) };
+  if (state === "merged") return { label: "MERGED", ...colorBadge(COLORS.success) };
+  return { label: "CLOSED", ...colorBadge(COLORS.textSecondary) };
 }
 
 function checksChip(status: PrSummary["checksStatus"]): { label: string; color: string; bg: string; border: string } {
-  if (status === "passing") return { label: "CHECKS", color: "#22C55E", bg: "#22C55E18", border: "#22C55E30" };
-  if (status === "failing") return { label: "CHECKS", color: "#EF4444", bg: "#EF444418", border: "#EF444430" };
-  if (status === "pending") return { label: "CHECKS", color: "#F59E0B", bg: "#F59E0B18", border: "#F59E0B30" };
-  return { label: "CHECKS", color: "#71717A", bg: "#71717A18", border: "#71717A30" };
+  if (status === "passing") return { label: "CHECKS", ...colorBadge(COLORS.success) };
+  if (status === "failing") return { label: "CHECKS", ...colorBadge(COLORS.danger) };
+  if (status === "pending") return { label: "CHECKS", ...colorBadge(COLORS.warning) };
+  return { label: "CHECKS", ...colorBadge(COLORS.textMuted) };
 }
 
 function reviewsChip(status: PrSummary["reviewStatus"]): { label: string; color: string; bg: string; border: string } {
-  if (status === "approved") return { label: "APPROVED", color: "#22C55E", bg: "#22C55E18", border: "#22C55E30" };
-  if (status === "changes_requested") return { label: "CHANGES", color: "#F59E0B", bg: "#F59E0B18", border: "#F59E0B30" };
-  if (status === "requested") return { label: "REVIEW", color: "#3B82F6", bg: "#3B82F618", border: "#3B82F630" };
-  return { label: "REVIEW", color: "#71717A", bg: "#71717A18", border: "#71717A30" };
+  if (status === "approved") return { label: "APPROVED", ...colorBadge(COLORS.success) };
+  if (status === "changes_requested") return { label: "CHANGES", ...colorBadge(COLORS.warning) };
+  if (status === "requested") return { label: "REVIEW", ...colorBadge(COLORS.info) };
+  return { label: "REVIEW", ...colorBadge(COLORS.textMuted) };
 }
 
 function formatTimestamp(iso: string): string {
@@ -62,41 +60,13 @@ function formatTimestamp(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function normalizeBranchName(ref: string): string {
-  const trimmed = ref.trim();
-  const branch = trimmed.startsWith("refs/heads/") ? trimmed.slice("refs/heads/".length) : trimmed;
-  return branch.startsWith("origin/") ? branch.slice("origin/".length) : branch;
-}
-
 /* ---- Inline style constants ---- */
 
-const LABEL_STYLE: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 700,
-  fontFamily: "JetBrains Mono, monospace",
-  textTransform: "uppercase",
-  letterSpacing: "1px",
-  color: "#71717A",
-};
+const LABEL_STYLE = SHARED_LABEL_STYLE;
 
 function InlineBadge({ label, color, bg, border }: { label: string; color: string; bg: string; border: string }) {
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        padding: "2px 8px",
-        fontSize: 10,
-        fontWeight: 700,
-        fontFamily: "JetBrains Mono, monospace",
-        textTransform: "uppercase",
-        letterSpacing: "1px",
-        color,
-        background: bg,
-        border: `1px solid ${border}`,
-        borderRadius: 0,
-      }}
-    >
+    <span style={inlineBadge(color, { background: bg, border: `1px solid ${border}` })}>
       {label}
     </span>
   );
@@ -106,23 +76,23 @@ function InlineBadge({ label, color, bg, border }: { label: string; color: strin
 
 function CheckStatusIcon({ check }: { check: PrCheck }) {
   if (check.status === "completed") {
-    if (check.conclusion === "success") return <CheckCircle size={14} weight="fill" style={{ color: "#22C55E" }} />;
-    if (check.conclusion === "failure") return <XCircle size={14} weight="fill" style={{ color: "#EF4444" }} />;
-    if (check.conclusion === "skipped" || check.conclusion === "cancelled") return <Circle size={14} weight="regular" style={{ color: "#71717A" }} />;
-    return <CheckCircle size={14} weight="regular" style={{ color: "#A1A1AA" }} />;
+    if (check.conclusion === "success") return <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} />;
+    if (check.conclusion === "failure") return <XCircle size={14} weight="fill" style={{ color: COLORS.danger }} />;
+    if (check.conclusion === "skipped" || check.conclusion === "cancelled") return <Circle size={14} weight="regular" style={{ color: COLORS.textMuted }} />;
+    return <CheckCircle size={14} weight="regular" style={{ color: COLORS.textSecondary }} />;
   }
-  if (check.status === "in_progress") return <Circle size={14} weight="fill" style={{ color: "#F59E0B" }} />;
-  return <Circle size={14} weight="regular" style={{ color: "#71717A" }} />;
+  if (check.status === "in_progress") return <Circle size={14} weight="fill" style={{ color: COLORS.warning }} />;
+  return <Circle size={14} weight="regular" style={{ color: COLORS.textMuted }} />;
 }
 
 /* ---- Review status label ---- */
 
 function reviewStateLabel(state: PrReview["state"]): { label: string; color: string } {
-  if (state === "approved") return { label: "APPROVED", color: "#22C55E" };
-  if (state === "changes_requested") return { label: "CHANGES REQUESTED", color: "#F59E0B" };
-  if (state === "commented") return { label: "COMMENTED", color: "#3B82F6" };
-  if (state === "dismissed") return { label: "DISMISSED", color: "#71717A" };
-  return { label: "PENDING", color: "#A1A1AA" };
+  if (state === "approved") return { label: "APPROVED", color: COLORS.success };
+  if (state === "changes_requested") return { label: "CHANGES REQUESTED", color: COLORS.warning };
+  if (state === "commented") return { label: "COMMENTED", color: COLORS.info };
+  if (state === "dismissed") return { label: "DISMISSED", color: COLORS.textMuted };
+  return { label: "PENDING", color: COLORS.textSecondary };
 }
 
 /* ---- Props ---- */
@@ -744,5 +714,5 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
     },
   }), [prs, selectedPr, selectedPrId, laneById, detailStatus, detailBusy, detailChecks, detailReviews, detailComments, actionBusy, actionError, actionResult, resolverOpen, resolverTargetLaneId, mergeMethod, deleteConfirm, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, navigate, onSelectPr, onRefresh]);
 
-  return <PaneTilingLayout layoutId="prs:normal:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
+  return <PaneTilingLayout layoutId="prs:normal:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

@@ -14,18 +14,10 @@ import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
-import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
+import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { usePrs } from "../state/PrsContext";
-
-const TILING_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    { node: { type: "pane", id: "list" }, defaultSize: 36, minSize: 20 },
-    { node: { type: "pane", id: "detail" }, defaultSize: 64, minSize: 30 },
-  ],
-};
+import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 
 type QueueGroup = {
   groupId: string;
@@ -710,5 +702,5 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
     },
   }), [queueGroups, selectedGroup, selectedGroupId, landBusy, landError, landResult, archiveOnLand, mergeMethod, deleteTarget, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectGroup, onRefresh]);
 
-  return <PaneTilingLayout layoutId="prs:queue:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
+  return <PaneTilingLayout layoutId="prs:queue:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

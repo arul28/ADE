@@ -14,6 +14,8 @@ import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
+import { formatDate } from "../../lib/format";
+import { quoteShellArg, commandArrayToLine, parseCommandLine } from "../../lib/shell";
 
 type StepId =
   | "welcome"
@@ -36,89 +38,6 @@ type DraftRow = {
 type StackDraftRow = ConfigStackButtonDefinition & { include: boolean };
 
 type AutomationDraftRow = ConfigAutomationRule & { include: boolean };
-
-function cx(...parts: Array<string | false | null | undefined>) {
-  return parts.filter(Boolean).join(" ");
-}
-
-function formatDate(ts: string | null): string {
-  if (!ts) return "-";
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
-}
-
-function quoteShellArg(arg: string): string {
-  if (!arg.length) return '""';
-  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(arg)) return arg;
-  return `"${arg.replace(/(["\\$`])/g, "\\$1")}"`;
-}
-
-function commandArrayToLine(command: string[]): string {
-  return command.map(quoteShellArg).join(" ");
-}
-
-function parseCommandLine(input: string): string[] {
-  const out: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
-
-  for (let i = 0; i < input.length; i += 1) {
-    const ch = input[i]!;
-
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-
-    if (quote === "'") {
-      if (ch === "'") quote = null;
-      else current += ch;
-      continue;
-    }
-
-    if (quote === '"') {
-      if (ch === '"') {
-        quote = null;
-      } else if (ch === "\\") {
-        const next = input[i + 1];
-        if (next == null) current += "\\";
-        else {
-          i += 1;
-          current += next;
-        }
-      } else {
-        current += ch;
-      }
-      continue;
-    }
-
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (current.length) {
-        out.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += ch;
-  }
-
-  if (escaped) current += "\\";
-  if (quote != null) throw new Error("Unclosed quote in command line");
-  if (current.length) out.push(current);
-  if (!out.length) throw new Error("Command line must not be empty");
-  return out;
-}
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
   const out: T[] = [];
@@ -1334,7 +1253,7 @@ export function OnboardingPage() {
                               <tr key={branchRef}>
                                 <td className="px-3 py-2 font-mono text-fg">{branchRef}</td>
                                 <td
-                                  className={cx(
+                                  className={cn(
                                     "px-3 py-2",
                                     res.status === "imported"
                                       ? "text-emerald-300"

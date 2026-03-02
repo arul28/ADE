@@ -17,6 +17,8 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
+import { statusToneOperation } from "../../lib/format";
+
 function parseMetadata(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null;
   try {
@@ -28,12 +30,7 @@ function parseMetadata(raw: string | null): Record<string, unknown> | null {
   }
 }
 
-function statusTone(status: OperationRecord["status"]): string {
-  if (status === "succeeded") return "text-emerald-400 border-emerald-900";
-  if (status === "failed") return "text-red-400 border-red-900";
-  if (status === "running") return "text-amber-400 border-amber-900";
-  return "text-muted-fg border-border";
-}
+const statusTone = (status: OperationRecord["status"]) => statusToneOperation(status);
 
 function statusBorderColor(status: OperationRecord["status"]): string {
   if (status === "succeeded") return "border-l-emerald-500/70";

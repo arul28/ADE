@@ -343,6 +343,10 @@ import {
 } from "./recoveryService";
 
 
+function budgetToEffort(budget: number): "low" | "medium" | "high" {
+  return budget < 1000 ? "low" : budget < 5000 ? "medium" : "high";
+}
+
 export function createAiOrchestratorService(args: {
   db: AdeDb;
   logger: Logger;
@@ -416,6 +420,19 @@ export function createAiOrchestratorService(args: {
   /** Debounce timers for event-driven coordinator evaluations, keyed by runId. */
   const pendingCoordinatorEvals = new Map<string, NodeJS.Timeout>();
 
+  /** Purge per-run Map entries when a run reaches terminal status. */
+  const purgeRunMaps = (runId: string): void => {
+    runTeamManifests.delete(runId);
+    runRecoveryLoopStates.delete(runId);
+    pendingIntegrations.delete(runId);
+    teamRuntimeStates.delete(runId);
+    const evalTimer = pendingCoordinatorEvals.get(runId);
+    if (evalTimer) {
+      clearTimeout(evalTimer);
+      pendingCoordinatorEvals.delete(runId);
+    }
+  };
+
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
   const coordinatorRecoveryAttempts = new Map<string, number>();
@@ -452,7 +469,19 @@ export function createAiOrchestratorService(args: {
   // routing has been removed — the coordinator AI handles all tactical decisions.
   // Type and defaults imported from orchestratorContext.
 
+  const callTypeConfigCache = new Map<string, { config: ResolvedCallTypeConfig; expiresAt: number }>();
+  const CALL_TYPE_CONFIG_TTL_MS = 30_000;
+
   const resolveCallTypeConfig = (missionId: string, callType: OrchestratorCallType): ResolvedCallTypeConfig => {
+    const cacheKey = `${missionId}:${callType}`;
+    const cached = callTypeConfigCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) return cached.config;
+    const config = resolveCallTypeConfigUncached(missionId, callType);
+    callTypeConfigCache.set(cacheKey, { config, expiresAt: Date.now() + CALL_TYPE_CONFIG_TTL_MS });
+    return config;
+  };
+
+  const resolveCallTypeConfigUncached = (missionId: string, callType: OrchestratorCallType): ResolvedCallTypeConfig => {
     const defaults = CALL_TYPE_DEFAULTS[callType];
     try {
       const row = db.get<{ metadata_json: string | null }>(
@@ -482,10 +511,7 @@ export function createAiOrchestratorService(args: {
           // Also check thinkingBudgets for per-call-type reasoning effort override
           const thinkingBudgets = launch && isRecord(launch.thinkingBudgets) ? launch.thinkingBudgets : null;
           const budgetForCallType = thinkingBudgets && typeof thinkingBudgets[callType] === "number" ? thinkingBudgets[callType] : null;
-          // Map token budget to reasoning effort: <1000 = low, <5000 = medium, >=5000 = high
-          const budgetEffort = budgetForCallType != null
-            ? budgetForCallType < 1000 ? "low" : budgetForCallType < 5000 ? "medium" : "high"
-            : null;
+          const budgetEffort = budgetForCallType != null ? budgetToEffort(budgetForCallType as number) : null;
           return {
             provider: "claude",
             model: topLevelModel,
@@ -498,7 +524,7 @@ export function createAiOrchestratorService(args: {
         if (thinkingBudgets) {
           const budgetForCallType = typeof thinkingBudgets[callType] === "number" ? thinkingBudgets[callType] : null;
           if (budgetForCallType != null) {
-            const budgetEffort = budgetForCallType < 1000 ? "low" : budgetForCallType < 5000 ? "medium" : "high";
+            const budgetEffort = budgetToEffort(budgetForCallType as number);
             return { ...defaults, reasoningEffort: budgetEffort };
           }
         }
@@ -7784,9 +7810,8 @@ Check all worker statuses and continue managing the mission from here. Read work
             stepsTotal: graph.steps.length
           }
         });
+        purgeRunMaps(runId);
         runRuntimeProfiles.delete(runId);
-        runTeamManifests.delete(runId);
-        runRecoveryLoopStates.delete(runId);
         activeHealthSweepRuns.delete(runId);
         for (const [attemptId, state] of workerStates.entries()) {
           if (state.runId !== runId) continue;
@@ -9223,6 +9248,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
 
     orchestratorService.cancelRun({ runId, reason });
+    purgeRunMaps(runId);
     void syncMissionFromRun(runId, "graceful_cancel");
 
     const run = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === runId);
@@ -13006,10 +13032,19 @@ Check all worker statuses and continue managing the mission from here. Read work
         propagateAttemptTokenUsage(event.runId, event.attemptId);
       }
 
+      // ── Shared graph fetch for safety check + coordinator routing ──
+      let cachedEventGraph: OrchestratorRunGraph | null = null;
+      const getEventGraph = (): OrchestratorRunGraph => {
+        if (!cachedEventGraph) {
+          cachedEventGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        }
+        return cachedEventGraph;
+      };
+
       // ── Safety check: always run (guardrail, not decision) ──
       if (event.reason === "attempt_completed" && event.stepId && event.runId) {
         try {
-          const safetyGraph = orchestratorService.getRunGraph({ runId: event.runId, timelineLimit: 0 });
+          const safetyGraph = getEventGraph();
           const step = safetyGraph.steps.find((s) => s.id === event.stepId);
           const meta = step?.metadata as Record<string, unknown> | null;
           const stepType = meta?.stepType as string | undefined;
@@ -13052,8 +13087,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           endCoordinatorAgentV2(runId);
         } else {
           try {
-            const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-            routeEventToCoordinator(coordAgent, event, { graph });
+            routeEventToCoordinator(coordAgent, event, { graph: getEventGraph() });
           } catch (routeError) {
             logger.debug("ai_orchestrator.coordinator_v2_route_failed", {
               runId,
@@ -13073,8 +13107,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const recovered = attemptCoordinatorRecovery(runId);
         if (recovered) {
           try {
-            const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-            routeEventToCoordinator(recovered, event, { graph });
+            routeEventToCoordinator(recovered, event, { graph: getEventGraph() });
           } catch (routeError) {
             logger.debug("ai_orchestrator.coordinator_v2_recovery_route_failed", {
               runId,

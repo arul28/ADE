@@ -7,6 +7,7 @@ import { TilingLayout } from "../lanes/TilingLayout";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { isChatToolType } from "../../lib/sessions";
 
 /* Inject global keyframe once */
 const BLINK_KEYFRAME_ID = "ade-industrial-blink";
@@ -15,10 +16,6 @@ if (typeof document !== "undefined" && !document.getElementById(BLINK_KEYFRAME_I
   style.id = BLINK_KEYFRAME_ID;
   style.textContent = `@keyframes industrialBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }`;
   document.head.appendChild(style);
-}
-
-function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 function statusDotColor(session: TerminalSessionSummary): string {

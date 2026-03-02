@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Pulse, Cpu, CurrencyDollar, Clock, CheckCircle, XCircle, SpinnerGap, ArrowUp, Archive } from "@phosphor-icons/react";
 import type { AggregatedUsageStats, MissionBudgetSnapshot } from "../../../shared/types";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
+import { formatTokens, formatCost } from "../../lib/format";
 
 const DEFAULT_MODEL_COLOR = "#71717A";
 
@@ -28,22 +29,11 @@ function getModelDisplayName(model: string, provider?: string): string {
   return desc?.displayName ?? provider ?? model;
 }
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
 function formatDuration(ms: number): string {
   if (ms < 1_000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1_000).toFixed(1)}s`;
   if (ms < 3_600_000) return `${(ms / 60_000).toFixed(1)}m`;
   return `${(ms / 3_600_000).toFixed(1)}h`;
-}
-
-function formatCost(usd: number): string {
-  if (usd < 0.01) return "<$0.01";
-  return `$${usd.toFixed(2)}`;
 }
 
 function formatBudgetMs(ms: number | null | undefined): string {

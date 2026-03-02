@@ -2,6 +2,7 @@ import React from "react";
 import { Play, Stop, DotsThreeVertical } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, inlineBadge } from "../lanes/laneDesignTokens";
 import type { ProcessDefinition, ProcessRuntime, ProcessRuntimeStatus } from "../../../shared/types";
+import { useClickOutside } from "../../hooks/useClickOutside";
 
 export type CommandCardProps = {
   definition: ProcessDefinition;
@@ -48,16 +49,7 @@ export function CommandCard({
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
 
-  React.useEffect(() => {
-    if (!menuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [menuOpen]);
+  useClickOutside(menuRef, () => setMenuOpen(false), menuOpen);
 
   const commandPreview = definition.command.join(" ");
 

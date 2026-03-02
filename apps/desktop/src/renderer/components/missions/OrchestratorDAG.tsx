@@ -2,6 +2,7 @@ import React, { useMemo, useState, useRef, useCallback, useEffect } from "react"
 import dagre from "dagre";
 import type { OrchestratorStep, OrchestratorAttempt, OrchestratorClaim, DagMutationEvent } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { relativeWhen, formatTime } from "../../lib/format";
 
 type Props = {
   steps: OrchestratorStep[];
@@ -131,26 +132,6 @@ function computeLayout(steps: OrchestratorStep[], attemptsByStep: Map<string, nu
 
 function truncateTitle(title: string, maxLen = 18): string {
   return title.length > maxLen ? title.slice(0, maxLen - 1) + "\u2026" : title;
-}
-
-/** Returns a human-readable relative time for an ISO timestamp. */
-function relativeWhen(iso: string): string {
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return iso;
-  const delta = Math.max(0, Date.now() - ts);
-  const mins = Math.floor(delta / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-/** Format a timestamp to HH:MM. */
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 /** Produce a short human description for a mutation. */

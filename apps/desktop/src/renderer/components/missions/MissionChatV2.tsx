@@ -21,25 +21,27 @@ import type {
   MissionStatus,
 } from "../../../shared/types";
 import { MentionInput, type MentionParticipant } from "../shared/MentionInput";
+import { relativeWhen } from "../../lib/format";
+import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 
-// ── Design tokens ──
-const MONO = "JetBrains Mono, monospace";
-const SANS = "'Space Grotesk', sans-serif";
-const BG_MAIN = "#13101A";
+// ── Design tokens (aliases for backward compat) ──
+const MONO = MONO_FONT;
+const SANS = SANS_FONT;
+const BG_MAIN = COLORS.cardBg;
 const BG_SIDEBAR = "#1a1625";
-const BG_INPUT = "#0d0a14";
-const BG_PAGE = "#0F0D14";
-const ACCENT = "#A78BFA";
+const BG_INPUT = COLORS.recessedBg;
+const BG_PAGE = COLORS.pageBg;
+const ACCENT = COLORS.accent;
 const BORDER = "#2a2535";
-const BORDER_SUBTLE = "#1E1B26";
-const TEXT_PRIMARY = "#FAFAFA";
-const TEXT_SECONDARY = "#A1A1AA";
-const TEXT_MUTED = "#71717A";
-const TEXT_DIM = "#52525B";
-const STATUS_GREEN = "#22c55e";
+const BORDER_SUBTLE = COLORS.border;
+const TEXT_PRIMARY = COLORS.textPrimary;
+const TEXT_SECONDARY = COLORS.textSecondary;
+const TEXT_MUTED = COLORS.textMuted;
+const TEXT_DIM = COLORS.textDim;
+const STATUS_GREEN = COLORS.success;
 const STATUS_GRAY = "#6b7280";
-const STATUS_RED = "#ef4444";
-const WARNING = "#f59e0b";
+const STATUS_RED = COLORS.danger;
+const WARNING = COLORS.warning;
 
 type MessageCategory = "all" | "coordinator" | "workers" | "system" | "user";
 
@@ -81,18 +83,6 @@ type MissionChatV2Props = {
   jumpTarget: OrchestratorChatTarget | null;
   onJumpHandled: () => void;
 };
-
-function relativeWhen(iso: string): string {
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return iso;
-  const delta = Math.max(0, Date.now() - ts);
-  const mins = Math.floor(delta / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
 
 const STATUS_DOT: Record<string, string> = {
   active: STATUS_GREEN,
@@ -1014,7 +1004,7 @@ function ChannelButton({
 
 // ── Message rendering ──
 
-function MessageBubble({
+const MessageBubble = React.memo(function MessageBubble({
   msg,
   attemptNameMap,
   isGlobalView,
@@ -1257,4 +1247,4 @@ function MessageBubble({
       </div>
     </div>
   );
-}
+});

@@ -14,6 +14,7 @@ import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../sha
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
+import { isChatToolType } from "../../lib/sessions";
 
 type PendingApproval = {
   itemId: string;
@@ -178,10 +179,6 @@ function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): 
   return Date.parse(b.startedAt) - Date.parse(a.startedAt);
 }
 
-function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
-}
-
 function inferAttachmentType(filePath: string): AgentChatFileRef["type"] {
   return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath) ? "image" : "file";
 }
@@ -292,9 +289,12 @@ export function AgentChatPane({
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
 
   const loadedHistoryRef = useRef<Set<string>>(new Set());
+  const draftSelectionLockedRef = useRef(false);
+  const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
+  const eventFlushTimerRef = useRef<number | null>(null);
+  const refreshSessionsTimerRef = useRef<number | null>(null);
 
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
@@ -390,11 +390,13 @@ export function AgentChatPane({
 
     const pinned = lockSessionId ?? initialSessionId ?? null;
     if (pinned) {
+      draftSelectionLockedRef.current = false;
       setSelectedSessionId(pinned);
       return;
     }
 
     setSelectedSessionId((current) => {
+      if (!current && draftSelectionLockedRef.current) return null;
       if (current && rows.some((row) => row.sessionId === current)) return current;
       return rows[0]?.sessionId ?? null;
     });
@@ -424,9 +426,14 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (lockSessionId) {
+      draftSelectionLockedRef.current = false;
       setSelectedSessionId(lockSessionId);
     }
   }, [lockSessionId]);
+
+  useEffect(() => {
+    draftSelectionLockedRef.current = false;
+  }, [laneId]);
 
   useEffect(() => {
     if (!selectedSession) return;
@@ -499,29 +506,85 @@ export function AgentChatPane({
     setAttachments([]);
   }, [selectedSessionId]);
 
+  const flushQueuedEvents = useCallback(() => {
+    const queued = pendingEventQueueRef.current;
+    if (!queued.length) return;
+    pendingEventQueueRef.current = [];
+
+    setEventsBySession((prev) => {
+      let next = prev;
+      const touchedSessionIds = new Set<string>();
+
+      for (const envelope of queued) {
+        const sessionId = envelope.sessionId;
+        const sessionEvents = next === prev ? (prev[sessionId] ?? []) : (next[sessionId] ?? []);
+        const updated = [...sessionEvents, envelope];
+        if (next === prev) {
+          next = { ...prev };
+        }
+        next[sessionId] = updated;
+        touchedSessionIds.add(sessionId);
+      }
+
+      if (!touchedSessionIds.size) return prev;
+
+      const activePatch: Record<string, boolean> = {};
+      const approvalPatch: Record<string, PendingApproval[]> = {};
+      for (const sessionId of touchedSessionIds) {
+        const derived = deriveRuntimeState(next[sessionId] ?? []);
+        activePatch[sessionId] = derived.turnActive;
+        approvalPatch[sessionId] = derived.pendingApprovals;
+      }
+
+      setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
+      setApprovalsBySession((approvalPrev) => ({ ...approvalPrev, ...approvalPatch }));
+
+      return next;
+    });
+  }, []);
+
+  const scheduleQueuedEventFlush = useCallback(() => {
+    if (eventFlushTimerRef.current != null) return;
+    eventFlushTimerRef.current = window.setTimeout(() => {
+      eventFlushTimerRef.current = null;
+      flushQueuedEvents();
+    }, 16);
+  }, [flushQueuedEvents]);
+
+  const scheduleSessionsRefresh = useCallback(() => {
+    if (refreshSessionsTimerRef.current != null) return;
+    refreshSessionsTimerRef.current = window.setTimeout(() => {
+      refreshSessionsTimerRef.current = null;
+      void refreshSessions().catch(() => {});
+    }, 120);
+  }, [refreshSessions]);
+
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
-      setEventsBySession((prev) => {
-        const sessionEvents = [...(prev[envelope.sessionId] ?? []), envelope];
-        const derived = deriveRuntimeState(sessionEvents);
-        setTurnActiveBySession((activePrev) => ({ ...activePrev, [envelope.sessionId]: derived.turnActive }));
-        setApprovalsBySession((approvalPrev) => ({ ...approvalPrev, [envelope.sessionId]: derived.pendingApprovals }));
-        return {
-          ...prev,
-          [envelope.sessionId]: sessionEvents
-        };
-      });
+      pendingEventQueueRef.current.push(envelope);
+      scheduleQueuedEventFlush();
 
       if (lockSessionId && envelope.sessionId === lockSessionId) {
+        draftSelectionLockedRef.current = false;
         setSelectedSessionId(lockSessionId);
       }
 
-      if (envelope.event.type === "done" || (envelope.event.type === "status" && envelope.event.turnStatus !== "started")) {
-        void refreshSessions().catch(() => {});
+      if (envelope.event.type === "done") {
+        scheduleSessionsRefresh();
       }
     });
     return unsubscribe;
-  }, [lockSessionId, refreshSessions]);
+  }, [lockSessionId, scheduleQueuedEventFlush, scheduleSessionsRefresh]);
+
+  useEffect(() => () => {
+    if (eventFlushTimerRef.current != null) {
+      window.clearTimeout(eventFlushTimerRef.current);
+    }
+    if (refreshSessionsTimerRef.current != null) {
+      window.clearTimeout(refreshSessionsTimerRef.current);
+    }
+    pendingEventQueueRef.current = [];
+  }, []);
 
   useEffect(() => {
     if (!modelId.trim().length) return;
@@ -578,8 +641,9 @@ export function AgentChatPane({
       permissionMode
     });
     loadedHistoryRef.current.delete(created.id);
+    draftSelectionLockedRef.current = false;
     setSelectedSessionId(created.id);
-    await refreshSessions();
+    void refreshSessions().catch(() => {});
     return created.id;
   }, [laneId, modelId, permissionMode, reasoningEffort, refreshSessions]);
 
@@ -737,7 +801,10 @@ export function AgentChatPane({
                       ? "border-b-accent bg-accent/[0.04] text-fg/90"
                       : "border-b-transparent text-fg/40 hover:bg-border/6 hover:text-fg/60"
                   )}
-                  onClick={() => setSelectedSessionId(session.sessionId)}
+                  onClick={() => {
+                    draftSelectionLockedRef.current = false;
+                    setSelectedSessionId(session.sessionId);
+                  }}
                 >
                   {desc?.color ? (
                     <span className="inline-block h-1.5 w-1.5 flex-shrink-0" style={{ backgroundColor: desc.color }} />
@@ -754,13 +821,12 @@ export function AgentChatPane({
             className="flex h-full shrink-0 items-center gap-1 border-l border-border/8 px-3 py-2 font-mono text-[10px] text-muted-fg/30 transition-colors hover:bg-accent/[0.04] hover:text-accent/60"
             title="New chat"
             onClick={() => {
-              setBusy(true);
+              draftSelectionLockedRef.current = true;
               setError(null);
-              createSession()
-                .catch((createError) => {
-                  setError(createError instanceof Error ? createError.message : String(createError));
-                })
-                .finally(() => setBusy(false));
+              setSelectedSessionId(null);
+              setDraft("");
+              setAttachments([]);
+              setSelectedContextPacks([]);
             }}
           >
             <Plus size={12} weight="bold" />

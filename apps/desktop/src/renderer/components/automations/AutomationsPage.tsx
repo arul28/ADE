@@ -26,14 +26,7 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
-function statusTone(status: string | null): string {
-  if (status === "succeeded") return "border-emerald-500/40 text-emerald-300";
-  if (status === "failed") return "border-red-500/40 text-red-300";
-  if (status === "running") return "border-amber-500/40 text-amber-300";
-  if (status === "skipped") return "border-border text-muted-fg";
-  if (status === "cancelled") return "border-border text-muted-fg";
-  return "border-border text-muted-fg";
-}
+import { statusToneAutomation as statusTone } from "../../lib/format";
 
 function formatWhen(ts: string | null): string {
   if (!ts) return "Never";

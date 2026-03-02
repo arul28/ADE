@@ -3,6 +3,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
 import type { RestackSuggestion, RestackSuggestionsEventPayload } from "../../../shared/types";
+import { isRecord, nowIso } from "../shared/utils";
 
 type StoredSuggestionState = {
   laneId: string;
@@ -16,16 +17,8 @@ type StoredSuggestionState = {
 
 const KEY_PREFIX = "restack:suggestion:";
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
 function keyForLane(laneId: string): string {
   return `${KEY_PREFIX}${laneId}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function sanitizeState(value: unknown): StoredSuggestionState | null {

@@ -37,32 +37,14 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { CiImportPanel } from "./CiImportPanel";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
+import { cn } from "../ui/cn";
+import { formatDate, formatDurationMs } from "../../lib/format";
+import { quoteShellArg, commandArrayToLine, parseCommandLine } from "../../lib/shell";
+
 const DEFAULT_PROCESS_COMMAND = '["npm", "run", "dev"]';
 const DEFAULT_PROCESS_COMMAND_LINE = "npm run dev";
 const DEFAULT_TEST_COMMAND = '["npm", "run", "test"]';
 const DEFAULT_ENV = "{}";
-
-function cx(...parts: Array<string | false | null | undefined>) {
-  return parts.filter(Boolean).join(" ");
-}
-
-function formatDate(ts: string | null): string {
-  if (!ts) return "-";
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString();
-}
-
-function formatDurationMs(ms: number | null): string {
-  if (ms == null || !Number.isFinite(ms)) return "-";
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
 
 function formatUptime(runtime: ProcessRuntime, nowMs: number): string {
   if (!runtime.startedAt) return "-";
@@ -188,83 +170,6 @@ function filterLog(raw: string, query: string): string {
   return lines.filter((line) => line.toLowerCase().includes(q)).join("\n");
 }
 
-function quoteShellArg(arg: string): string {
-  if (!arg.length) return '""';
-  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(arg)) return arg;
-  return `"${arg.replace(/(["\\$`])/g, "\\$1")}"`;
-}
-
-function commandArrayToLine(command: string[]): string {
-  if (!command.length) return "";
-  return command.map(quoteShellArg).join(" ");
-}
-
-function parseCommandLine(input: string): string[] {
-  const out: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
-
-  for (let i = 0; i < input.length; i += 1) {
-    const ch = input[i]!;
-
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-
-    if (quote === "'") {
-      if (ch === "'") {
-        quote = null;
-      } else {
-        current += ch;
-      }
-      continue;
-    }
-
-    if (quote === '"') {
-      if (ch === '"') {
-        quote = null;
-      } else if (ch === "\\") {
-        const next = input[i + 1];
-        if (next == null) {
-          current += "\\";
-        } else {
-          i += 1;
-          current += next;
-        }
-      } else {
-        current += ch;
-      }
-      continue;
-    }
-
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (current.length) {
-        out.push(current);
-        current = "";
-      }
-      continue;
-    }
-
-    current += ch;
-  }
-
-  if (escaped) current += "\\";
-  if (quote != null) throw new Error("Unclosed quote in command line");
-  if (current.length) out.push(current);
-  if (!out.length) throw new Error("Command line must not be empty");
-  return out;
-}
 
 type EditableProcessRow = {
   id: string;
@@ -1028,8 +933,8 @@ export function ProjectHomePage() {
               </Button>
 
               {stackStatuses.map(({ stack, status }) => (
-                <div key={stack.id} className={cx("inline-flex items-center gap-1.5 rounded-lg bg-card border border-border px-2.5 py-1.5 border-t-2 transition-colors duration-150", status === "running" ? "border-t-emerald-500/50" : status === "error" ? "border-t-red-500/50" : status === "partial" ? "border-t-amber-500/50" : "border-t-border/30")}>
-                  <Chip className={cx("text-xs", stackTone(status))}>{status}</Chip>
+                <div key={stack.id} className={cn("inline-flex items-center gap-1.5 rounded-lg bg-card border border-border px-2.5 py-1.5 border-t-2 transition-colors duration-150", status === "running" ? "border-t-emerald-500/50" : status === "error" ? "border-t-red-500/50" : status === "partial" ? "border-t-amber-500/50" : "border-t-border/30")}>
+                  <Chip className={cn("text-xs", stackTone(status))}>{status}</Chip>
                   <span className="text-xs font-semibold">{stack.name}</span>
                   <Button
                     size="sm"
@@ -1145,20 +1050,20 @@ export function ProjectHomePage() {
                     return (
                       <tr
                         key={definition.id}
-                        className={cx("cursor-pointer transition-colors duration-150 hover:bg-muted/40", active && "bg-accent/15 border-l-2 border-accent")}
+                        className={cn("cursor-pointer transition-colors duration-150 hover:bg-muted/40", active && "bg-accent/15 border-l-2 border-accent")}
                         onClick={() => setSelectedProcessId(definition.id)}
                       >
-                        <td className={cx("truncate py-2 font-medium", active ? "pl-2 pr-3" : "px-3")} title={definition.name}>
+                        <td className={cn("truncate py-2 font-medium", active ? "pl-2 pr-3" : "px-3")} title={definition.name}>
                           {definition.name}
                           {active && <span className="ml-2 font-bold text-accent">●</span>}
                         </td>
                         <td className="px-3 py-2">
-                          <span className={cx("inline-block rounded-full px-2 py-0.5 text-xs font-medium", statusBadgeBg(rowRuntime.status))}>
+                          <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", statusBadgeBg(rowRuntime.status))}>
                             {rowRuntime.status}
                           </span>
                         </td>
                         <td className="px-3 py-2">
-                          <span className={cx("inline-block rounded-full px-2 py-0.5 text-xs font-medium", readinessBadgeBg(rowRuntime.readiness))}>
+                          <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", readinessBadgeBg(rowRuntime.readiness))}>
                             {rowRuntime.readiness}
                           </span>
                         </td>
@@ -1289,13 +1194,13 @@ export function ProjectHomePage() {
               const last = latestRunBySuite.get(suite.id);
               const running = last?.status === "running";
               return (
-                <div key={suite.id} className={cx("rounded-lg bg-card border border-border p-3 border-l-[3px] transition-colors duration-150", last?.status === "passed" ? "border-l-emerald-500/50" : last?.status === "failed" ? "border-l-red-500/50" : last?.status === "running" ? "border-l-blue-500/50" : "border-l-border/20")}>
+                <div key={suite.id} className={cn("rounded-lg bg-card border border-border p-3 border-l-[3px] transition-colors duration-150", last?.status === "passed" ? "border-l-emerald-500/50" : last?.status === "failed" ? "border-l-red-500/50" : last?.status === "running" ? "border-l-blue-500/50" : "border-l-border/20")}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-fg">{suite.name}</div>
                       <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
                         <Chip>{suite.id}</Chip>
-                        <span className={cx("inline-block rounded-full px-2 py-0.5 text-xs font-medium", testStatusBadgeBg(last?.status))}>{last?.status ?? "never"}</span>
+                        <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", testStatusBadgeBg(last?.status))}>{last?.status ?? "never"}</span>
                         <Chip>duration: {formatDurationMs(last?.durationMs ?? null)}</Chip>
                         <Chip>time: {formatDate(last?.startedAt ?? null)}</Chip>
                       </div>
@@ -1339,14 +1244,14 @@ export function ProjectHomePage() {
                 {runs.map((run) => (
                   <button
                     key={run.id}
-                    className={cx(
+                    className={cn(
                       "flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition-colors duration-150 hover:bg-muted/40",
                       selectedRunId === run.id && "bg-accent/10 ring-1 ring-accent/30"
                     )}
                     onClick={() => setSelectedRunId(run.id)}
                   >
                     <span className="truncate font-medium">{run.suiteName}</span>
-                    <span className={cx("ml-2 shrink-0 inline-block rounded-full px-2 py-0.5 text-xs font-medium", testStatusBadgeBg(run.status))}>{run.status}</span>
+                    <span className={cn("ml-2 shrink-0 inline-block rounded-full px-2 py-0.5 text-xs font-medium", testStatusBadgeBg(run.status))}>{run.status}</span>
                   </button>
                 ))}
               </div>
@@ -1808,7 +1713,7 @@ export function ProjectHomePage() {
             }}
             title="Refresh"
           >
-            <RefreshCw size={16} weight="regular" className={cx(loading && "animate-spin")} />
+            <RefreshCw size={16} weight="regular" className={cn(loading && "animate-spin")} />
             Refresh
           </Button>
           <Button

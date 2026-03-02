@@ -371,8 +371,26 @@ function parseJsonLine(raw: string): JsonRpcEnvelope | null {
   }
 }
 
-function resolveClaudeModel(model: string): string {
-  return resolveClaudeCliModel(model);
+function resolveLegacyModelAliasToRegistryId(
+  model: string,
+  providerHint?: AgentChatProvider,
+): string | undefined {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized.length) return undefined;
+
+  // Handle older shorthand names seen in persisted sessions/config.
+  const compact = normalized.replace(/[\s._-]+/g, "");
+  const prefersUnifiedApiModel = providerHint === "unified";
+
+  if (compact === "4o" || compact === "gpt4o") {
+    return prefersUnifiedApiModel ? "openai/o4-mini-api" : "openai/o4-mini";
+  }
+
+  if (compact === "gptmini" || compact === "codexmini") {
+    return "openai/codex-mini-latest";
+  }
+
+  return undefined;
 }
 
 function resolveModelIdFromStoredValue(
@@ -381,6 +399,10 @@ function resolveModelIdFromStoredValue(
 ): string | undefined {
   const normalized = model.trim().toLowerCase();
   if (!normalized.length) return undefined;
+
+  const legacyAliasMatch = resolveLegacyModelAliasToRegistryId(normalized, providerHint);
+  if (legacyAliasMatch) return legacyAliasMatch;
+
   const matches = MODEL_REGISTRY.filter(
     (entry) =>
       entry.id.toLowerCase() === normalized
@@ -767,6 +789,33 @@ export function createAgentChatService(args: {
     onEvent?.(envelope);
   };
 
+  /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
+  const teardownRuntime = (managed: ManagedChatSession): void => {
+    if (managed.runtime?.kind === "codex") {
+      try { managed.runtime.reader.close(); } catch { /* ignore */ }
+      try { managed.runtime.process.kill(); } catch { /* ignore */ }
+      managed.runtime.pending.clear();
+      managed.runtime.approvals.clear();
+      managed.runtime = null;
+    }
+    if (managed.runtime?.kind === "claude") {
+      managed.runtime.abortController?.abort();
+      for (const pending of managed.runtime.approvals.values()) {
+        pending.resolve("cancel");
+      }
+      managed.runtime.approvals.clear();
+      managed.runtime = null;
+    }
+    if (managed.runtime?.kind === "unified") {
+      managed.runtime.abortController?.abort();
+      for (const pending of managed.runtime.pendingApprovals.values()) {
+        pending.resolve("cancel");
+      }
+      managed.runtime.pendingApprovals.clear();
+      managed.runtime = null;
+    }
+  };
+
   const finishSession = async (
     managed: ManagedChatSession,
     status: TerminalSessionStatus,
@@ -796,30 +845,7 @@ export function createAgentChatService(args: {
     managed.closed = true;
     persistChatState(managed);
 
-    // Clean up runtime resources
-    if (managed.runtime?.kind === "codex") {
-      try { managed.runtime.reader.close(); } catch { /* ignore */ }
-      try { managed.runtime.process.kill(); } catch { /* ignore */ }
-      managed.runtime.pending.clear();
-      managed.runtime.approvals.clear();
-      managed.runtime = null;
-    }
-    if (managed.runtime?.kind === "claude") {
-      managed.runtime.abortController?.abort();
-      for (const pending of managed.runtime.approvals.values()) {
-        pending.resolve("cancel");
-      }
-      managed.runtime.approvals.clear();
-      managed.runtime = null;
-    }
-    if (managed.runtime?.kind === "unified") {
-      managed.runtime.abortController?.abort();
-      for (const pending of managed.runtime.pendingApprovals.values()) {
-        pending.resolve("cancel");
-      }
-      managed.runtime.pendingApprovals.clear();
-      managed.runtime = null;
-    }
+    teardownRuntime(managed);
 
     try {
       onSessionEnded?.({ laneId: managed.session.laneId, sessionId: managed.session.id, exitCode: options?.exitCode ?? null });
@@ -923,16 +949,95 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
-  const runClaudeTurn = async (managed: ManagedChatSession, text: string, attachments: AgentChatFileRef[] = []): Promise<void> => {
-    if (!managed.runtime || managed.runtime.kind !== "claude") {
-      throw new Error(`Claude runtime is not available for session '${managed.session.id}'.`);
+  // ── Helpers for unified turn logic ──
+
+  const mapReasoningEffortToThinking = (effort: string | null | undefined): import("../../../shared/types").ThinkingLevel | null => {
+    if (!effort) return null;
+    const map: Record<string, import("../../../shared/types").ThinkingLevel> = {
+      none: "none",
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      max: "max",
+      xhigh: "xhigh",
+      extra_high: "max",
+    };
+    return map[effort] ?? null;
+  };
+
+  const classifyUnifiedError = (
+    error: unknown,
+    providerFamily: string,
+    modelDisplayName: string,
+  ): {
+    message: string;
+    errorInfo: { category: "auth" | "rate_limit" | "budget" | "network" | "unknown"; provider?: string; model?: string };
+  } => {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const lower = rawMessage.toLowerCase();
+
+    const statusCode = (error as { status?: number; statusCode?: number })?.status
+      ?? (error as { status?: number; statusCode?: number })?.statusCode
+      ?? null;
+
+    if (statusCode === 429 || lower.includes("rate limit") || lower.includes("429") || lower.includes("too many requests")) {
+      return {
+        message: `Rate limited by ${providerFamily}. The middleware will retry automatically. If this persists, try a different model.`,
+        errorInfo: { category: "rate_limit", provider: providerFamily, model: modelDisplayName },
+      };
     }
 
-    const runtime = managed.runtime;
+    if (
+      statusCode === 401 || statusCode === 403
+      || lower.includes("unauthorized") || lower.includes("forbidden")
+      || lower.includes("authentication failed") || lower.includes("invalid api key")
+      || lower.includes("api key") || lower.includes("invalid_api_key")
+    ) {
+      return {
+        message: `Authentication failed for ${modelDisplayName}. Check your API key in Settings.`,
+        errorInfo: { category: "auth", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
+    if (lower.includes("budget") || lower.includes("cost limit") || lower.includes("spending limit")) {
+      return {
+        message: "Session budget limit reached. Increase budget in Settings or start a new session.",
+        errorInfo: { category: "budget", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
+    if (
+      lower.includes("timeout") || lower.includes("timed out") || lower.includes("econnrefused")
+      || lower.includes("enotfound") || lower.includes("network") || lower.includes("fetch failed")
+      || lower.includes("econnreset") || lower.includes("socket hang up")
+    ) {
+      return {
+        message: `Connection to ${providerFamily} timed out. Check your network or try again.`,
+        errorInfo: { category: "network", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
+    return {
+      message: rawMessage,
+      errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
+    };
+  };
+
+  // ── Shared streaming turn for both Claude and Unified runtimes ──
+
+  const runTurn = async (managed: ManagedChatSession, text: string, attachments: AgentChatFileRef[] = []): Promise<void> => {
+    const runtimeKind = managed.runtime?.kind;
+    if (runtimeKind !== "claude" && runtimeKind !== "unified") {
+      throw new Error(`Streaming runtime is not available for session '${managed.session.id}'.`);
+    }
+
+    const runtime = managed.runtime as ClaudeRuntime | UnifiedRuntime;
     if (runtime.busy) {
       throw new Error("A turn is already active. Use steer or interrupt.");
     }
 
+    const isUnified = runtimeKind === "unified";
     const turnId = randomUUID();
     runtime.busy = true;
     runtime.activeTurnId = turnId;
@@ -948,69 +1053,115 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "user_message", text, attachments, turnId });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
 
-    const chatConfig = resolveChatConfig();
-    const claudePermissionMode = managed.session.permissionMode
-      ? mapSessionPermissionToClaude(managed.session.permissionMode)
-      : chatConfig.claudePermissionMode;
     const abortController = new AbortController();
     runtime.abortController = abortController;
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
 
-    const canUseTool = async (toolName: string, toolInput: unknown): Promise<PermissionResult> => {
-      const itemId = randomUUID();
-      emitChatEvent(managed, {
-        type: "approval_request",
-        itemId,
-        kind: "tool_call",
-        description: `Tool '${toolName}' requests approval`,
-        detail: toolInput,
-        turnId
-      });
-
-      const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
-        runtime.approvals.set(itemId, { resolve });
-      });
-      runtime.approvals.delete(itemId);
-
-      if (decision === "accept" || decision === "accept_for_session") {
-        return { behavior: "allow" };
-      }
-
-      return {
-        behavior: "deny",
-        message: `Tool '${toolName}' blocked by user decision.`,
-        interrupt: false
-      };
-    };
-
     try {
-      const claudeOpts: Record<string, unknown> = {
+      // Provider-specific stream creation
+      let stream: ReturnType<typeof streamText>;
+
+      if (isUnified) {
+        const unifiedRt = runtime as UnifiedRuntime;
+
+        const tools = createUniversalToolSet(managed.laneWorktreePath, {
+          permissionMode: unifiedRt.permissionMode,
+          onAskUser: async (question) => {
+            const askItemId = randomUUID();
+            emitChatEvent(managed, {
+              type: "approval_request",
+              itemId: askItemId,
+              kind: "tool_call",
+              description: question,
+              detail: { tool: "askUser", question },
+              turnId,
+            });
+
+            const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
+              unifiedRt.pendingApprovals.set(askItemId, { resolve });
+            });
+            unifiedRt.pendingApprovals.delete(askItemId);
+            return decision === "accept" ? "yes" : decision === "decline" ? "no" : String(decision);
+          },
+        });
+
+        const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
+        const providerOptions = buildProviderOptions(unifiedRt.modelDescriptor, thinkingLevel);
+
+        stream = streamText({
+          model: unifiedRt.resolvedModel,
+          messages: runtime.messages.map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          })),
+          tools,
+          providerOptions: providerOptions as any,
+          stopWhen: stepCountIs(20),
+          abortSignal: abortController.signal,
+        });
+      } else {
+        const claudeRt = runtime as ClaudeRuntime;
+        const chatConfig = resolveChatConfig();
+        const claudePermissionMode = managed.session.permissionMode
+          ? mapSessionPermissionToClaude(managed.session.permissionMode)
+          : chatConfig.claudePermissionMode;
+
+        const canUseTool = async (toolName: string, toolInput: unknown): Promise<PermissionResult> => {
+          const itemId = randomUUID();
+          emitChatEvent(managed, {
+            type: "approval_request",
+            itemId,
+            kind: "tool_call",
+            description: `Tool '${toolName}' requests approval`,
+            detail: toolInput,
+            turnId
+          });
+
+          const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
+            claudeRt.approvals.set(itemId, { resolve });
+          });
+          claudeRt.approvals.delete(itemId);
+
+          if (decision === "accept" || decision === "accept_for_session") {
+            return { behavior: "allow" };
+          }
+
+          return {
+            behavior: "deny",
+            message: `Tool '${toolName}' blocked by user decision.`,
+            interrupt: false
+          };
+        };
+
+        const claudeOpts: Record<string, unknown> = {
           cwd: managed.laneWorktreePath,
           permissionMode: claudePermissionMode,
           settingSources: [],
           maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
           canUseTool
-      };
-      if (managed.session.reasoningEffort) {
-        const tokens = CLAUDE_EFFORT_TO_TOKENS[managed.session.reasoningEffort];
-        if (tokens) {
-          claudeOpts.maxThinkingTokens = tokens;
+        };
+        if (managed.session.reasoningEffort) {
+          const tokens = CLAUDE_EFFORT_TO_TOKENS[managed.session.reasoningEffort];
+          if (tokens) {
+            claudeOpts.maxThinkingTokens = tokens;
+          }
         }
+
+        stream = streamText({
+          model: claudeProvider(resolveClaudeCliModel(managed.session.model), claudeOpts as any),
+          messages: runtime.messages.map((message) => ({ role: message.role, content: message.content })) as any,
+          abortSignal: abortController.signal
+        });
       }
 
-      const stream = streamText({
-        model: claudeProvider(resolveClaudeModel(managed.session.model), claudeOpts as any),
-        messages: runtime.messages.map((message) => ({ role: message.role, content: message.content })) as any,
-        abortSignal: abortController.signal
-      });
-
+      // ── Shared stream processing loop ──
       for await (const part of stream.fullStream as AsyncIterable<any>) {
         if (!part || typeof part !== "object") continue;
 
         if (part.type === "text-delta") {
-          const delta = String(part.text ?? "");
+          const delta = String(part.text ?? part.textDelta ?? "");
           if (!delta.length) continue;
           assistantText += delta;
           emitChatEvent(managed, {
@@ -1022,8 +1173,8 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        if (part.type === "reasoning-delta") {
-          const delta = String(part.text ?? "");
+        if (part.type === "reasoning" || part.type === "reasoning-delta") {
+          const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
           if (!delta.length) continue;
           emitChatEvent(managed, {
             type: "reasoning",
@@ -1038,7 +1189,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "tool_call",
             tool: String(part.toolName ?? "tool"),
-            args: part.input,
+            args: part.input ?? part.args ?? part.arguments,
             itemId: String(part.toolCallId ?? randomUUID()),
             turnId
           });
@@ -1049,7 +1200,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "tool_result",
             tool: String(part.toolName ?? "tool"),
-            result: part.output,
+            result: part.output ?? part.result,
             itemId: String(part.toolCallId ?? randomUUID()),
             turnId,
             status: part.preliminary ? "running" : "completed"
@@ -1081,283 +1232,6 @@ export function createAgentChatService(args: {
         }
 
         if (part.type === "finish") {
-          const totalUsage = part.totalUsage as
-            | {
-                inputTokens?: number;
-                outputTokens?: number;
-              }
-            | undefined;
-          usage = {
-            inputTokens: totalUsage?.inputTokens ?? null,
-            outputTokens: totalUsage?.outputTokens ?? null
-          };
-          continue;
-        }
-
-        if (part.type === "error") {
-          emitChatEvent(managed, {
-            type: "error",
-            message: String(part.error ?? "Claude stream error."),
-            turnId
-          });
-        }
-      }
-
-      if (assistantText.trim().length) {
-        runtime.messages.push({ role: "assistant", content: assistantText });
-      }
-
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-      runtime.abortController = null;
-      managed.session.status = "idle";
-
-      emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
-      emitChatEvent(managed, {
-        type: "done",
-        turnId,
-        status: "completed",
-        ...(usage ? { usage } : {})
-      });
-
-      const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
-      if (endSha) {
-        sessionService.setHeadShaEnd(managed.session.id, endSha);
-      }
-
-      persistChatState(managed);
-
-      if (runtime.pendingSteers.length) {
-        const steerText = runtime.pendingSteers.shift() ?? "";
-        if (steerText.trim().length) {
-          await runClaudeTurn(managed, steerText, []);
-        }
-      }
-    } catch (error) {
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-      runtime.abortController = null;
-
-      if (runtime.interrupted) {
-        managed.session.status = "idle";
-        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        emitChatEvent(managed, { type: "done", turnId, status: "interrupted" });
-      } else {
-        managed.session.status = "idle";
-        emitChatEvent(managed, {
-          type: "error",
-          message: error instanceof Error ? error.message : String(error),
-          turnId
-        });
-        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
-        emitChatEvent(managed, { type: "done", turnId, status: "failed" });
-      }
-
-      persistChatState(managed);
-    }
-  };
-
-  // ── Unified runtime turn (API-key / local models via streamText + universal tools) ──
-
-  const mapReasoningEffortToThinking = (effort: string | null | undefined): import("../../../shared/types").ThinkingLevel | null => {
-    if (!effort) return null;
-    const map: Record<string, import("../../../shared/types").ThinkingLevel> = {
-      none: "none",
-      minimal: "minimal",
-      low: "low",
-      medium: "medium",
-      high: "high",
-      max: "max",
-      xhigh: "xhigh",
-      extra_high: "max",
-    };
-    return map[effort] ?? null;
-  };
-
-  const classifyUnifiedError = (
-    error: unknown,
-    providerFamily: string,
-    modelDisplayName: string,
-  ): {
-    message: string;
-    errorInfo: { category: "auth" | "rate_limit" | "budget" | "network" | "unknown"; provider?: string; model?: string };
-  } => {
-    const rawMessage = error instanceof Error ? error.message : String(error);
-    const lower = rawMessage.toLowerCase();
-
-    // Check for status code in error message or error object properties
-    const statusCode = (error as { status?: number; statusCode?: number })?.status
-      ?? (error as { status?: number; statusCode?: number })?.statusCode
-      ?? null;
-
-    // Rate limit (429)
-    if (statusCode === 429 || lower.includes("rate limit") || lower.includes("429") || lower.includes("too many requests")) {
-      return {
-        message: `Rate limited by ${providerFamily}. The middleware will retry automatically. If this persists, try a different model.`,
-        errorInfo: { category: "rate_limit", provider: providerFamily, model: modelDisplayName },
-      };
-    }
-
-    // Auth errors (401/403)
-    if (
-      statusCode === 401 || statusCode === 403
-      || lower.includes("unauthorized") || lower.includes("forbidden")
-      || lower.includes("authentication failed") || lower.includes("invalid api key")
-      || lower.includes("api key") || lower.includes("invalid_api_key")
-    ) {
-      return {
-        message: `Authentication failed for ${modelDisplayName}. Check your API key in Settings.`,
-        errorInfo: { category: "auth", provider: providerFamily, model: modelDisplayName },
-      };
-    }
-
-    // Budget exhaustion
-    if (lower.includes("budget") || lower.includes("cost limit") || lower.includes("spending limit")) {
-      return {
-        message: "Session budget limit reached. Increase budget in Settings or start a new session.",
-        errorInfo: { category: "budget", provider: providerFamily, model: modelDisplayName },
-      };
-    }
-
-    // Network / timeout errors
-    if (
-      lower.includes("timeout") || lower.includes("timed out") || lower.includes("econnrefused")
-      || lower.includes("enotfound") || lower.includes("network") || lower.includes("fetch failed")
-      || lower.includes("econnreset") || lower.includes("socket hang up")
-    ) {
-      return {
-        message: `Connection to ${providerFamily} timed out. Check your network or try again.`,
-        errorInfo: { category: "network", provider: providerFamily, model: modelDisplayName },
-      };
-    }
-
-    // Generic / unknown
-    return {
-      message: rawMessage,
-      errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
-    };
-  };
-
-  const runUnifiedTurn = async (managed: ManagedChatSession, text: string, attachments: AgentChatFileRef[] = []): Promise<void> => {
-    if (!managed.runtime || managed.runtime.kind !== "unified") {
-      throw new Error(`Unified runtime is not available for session '${managed.session.id}'.`);
-    }
-
-    const runtime = managed.runtime;
-    if (runtime.busy) {
-      throw new Error("A turn is already active. Use steer or interrupt.");
-    }
-
-    const turnId = randomUUID();
-    runtime.busy = true;
-    runtime.activeTurnId = turnId;
-    runtime.interrupted = false;
-    managed.session.status = "active";
-
-    const attachmentHint = attachments.length
-      ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
-      : "";
-    const userContent = `${text}${attachmentHint}`;
-
-    runtime.messages.push({ role: "user", content: userContent });
-    emitChatEvent(managed, { type: "user_message", text, attachments, turnId });
-    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-
-    const abortController = new AbortController();
-    runtime.abortController = abortController;
-
-    let assistantText = "";
-    let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
-
-    try {
-      const tools = createUniversalToolSet(managed.laneWorktreePath, {
-        permissionMode: runtime.permissionMode,
-        onAskUser: async (question) => {
-          const askItemId = randomUUID();
-          emitChatEvent(managed, {
-            type: "approval_request",
-            itemId: askItemId,
-            kind: "tool_call",
-            description: question,
-            detail: { tool: "askUser", question },
-            turnId,
-          });
-
-          const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
-            runtime.pendingApprovals.set(askItemId, { resolve });
-          });
-          runtime.pendingApprovals.delete(askItemId);
-          return decision === "accept" ? "yes" : decision === "decline" ? "no" : String(decision);
-        },
-      });
-
-      const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
-      const providerOptions = buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
-
-      const stream = streamText({
-        model: runtime.resolvedModel,
-        messages: runtime.messages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        })),
-        tools,
-        providerOptions: providerOptions as any,
-        stopWhen: stepCountIs(20),
-        abortSignal: abortController.signal,
-      });
-
-      for await (const part of stream.fullStream as AsyncIterable<any>) {
-        if (!part || typeof part !== "object") continue;
-
-        if (part.type === "text-delta") {
-          const delta = String(part.text ?? part.textDelta ?? "");
-          if (!delta.length) continue;
-          assistantText += delta;
-          emitChatEvent(managed, {
-            type: "text",
-            text: delta,
-            turnId,
-            itemId: typeof part.id === "string" ? part.id : undefined,
-          });
-          continue;
-        }
-
-        if (part.type === "reasoning" || part.type === "reasoning-delta") {
-          const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
-          if (!delta.length) continue;
-          emitChatEvent(managed, {
-            type: "reasoning",
-            text: delta,
-            turnId,
-            itemId: typeof part.id === "string" ? part.id : undefined,
-          });
-          continue;
-        }
-
-        if (part.type === "tool-call") {
-          emitChatEvent(managed, {
-            type: "tool_call",
-            tool: String(part.toolName ?? "tool"),
-            args: part.input ?? part.args ?? part.arguments,
-            itemId: String(part.toolCallId ?? randomUUID()),
-            turnId,
-          });
-          continue;
-        }
-
-        if (part.type === "tool-result") {
-          emitChatEvent(managed, {
-            type: "tool_result",
-            tool: String(part.toolName ?? "tool"),
-            result: part.output ?? part.result,
-            itemId: String(part.toolCallId ?? randomUUID()),
-            turnId,
-            status: "completed",
-          });
-          continue;
-        }
-
-        if (part.type === "finish") {
           const usagePayload = (part.totalUsage ?? part.usage) as
             | {
                 inputTokens?: number;
@@ -1376,12 +1250,13 @@ export function createAgentChatService(args: {
         if (part.type === "error") {
           emitChatEvent(managed, {
             type: "error",
-            message: String(part.error ?? "Unified stream error."),
-            turnId,
+            message: String(part.error ?? "Stream error."),
+            turnId
           });
         }
       }
 
+      // ── Shared turn completion ──
       if (assistantText.trim().length) {
         runtime.messages.push({ role: "assistant", content: assistantText });
       }
@@ -1396,7 +1271,9 @@ export function createAgentChatService(args: {
         type: "done",
         turnId,
         status: "completed",
-        ...(usage ? { usage } : {}),
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        ...(usage ? { usage } : {})
       });
 
       const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
@@ -1406,10 +1283,11 @@ export function createAgentChatService(args: {
 
       persistChatState(managed);
 
+      // Process queued steers
       if (runtime.pendingSteers.length) {
         const steerText = runtime.pendingSteers.shift() ?? "";
         if (steerText.trim().length) {
-          await runUnifiedTurn(managed, steerText, []);
+          await runTurn(managed, steerText, []);
         }
       }
     } catch (error) {
@@ -1420,25 +1298,47 @@ export function createAgentChatService(args: {
       if (runtime.interrupted) {
         managed.session.status = "idle";
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        emitChatEvent(managed, { type: "done", turnId, status: "interrupted" });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
       } else {
         managed.session.status = "idle";
 
-        // Classify the error for actionable UI messages
-        const { message: errorMessage, errorInfo } = classifyUnifiedError(
-          error,
-          runtime.modelDescriptor.family,
-          runtime.modelDescriptor.displayName,
-        );
+        // Unified runtime provides classified error messages; Claude uses raw error text
+        if (isUnified) {
+          const unifiedRt = runtime as UnifiedRuntime;
+          const { message: errorMessage, errorInfo } = classifyUnifiedError(
+            error,
+            unifiedRt.modelDescriptor.family,
+            unifiedRt.modelDescriptor.displayName,
+          );
 
-        emitChatEvent(managed, {
-          type: "error",
-          message: errorMessage,
-          turnId,
-          errorInfo,
-        });
+          emitChatEvent(managed, {
+            type: "error",
+            message: errorMessage,
+            turnId,
+            errorInfo,
+          });
+        } else {
+          emitChatEvent(managed, {
+            type: "error",
+            message: error instanceof Error ? error.message : String(error),
+            turnId
+          });
+        }
+
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
-        emitChatEvent(managed, { type: "done", turnId, status: "failed" });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "failed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
       }
 
       persistChatState(managed);
@@ -1623,7 +1523,13 @@ export function createAgentChatService(args: {
           : {})
       });
 
-      emitChatEvent(managed, { type: "done", turnId, status });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
 
       const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
       if (endSha) {
@@ -2098,7 +2004,12 @@ export function createAgentChatService(args: {
 
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
 
-    const normalizedInputModel = model.trim() || (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL);
+    const normalizedInputModel = model.trim()
+      || (provider === "codex"
+        ? DEFAULT_CODEX_MODEL
+        : provider === "claude"
+          ? DEFAULT_CLAUDE_MODEL
+          : "");
     // Resolve modelId from registry if provided
     const resolvedModelId = modelId && getModelById(modelId)
       ? modelId
@@ -2207,59 +2118,10 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaStart(sessionId, headStart);
     }
 
-    try {
-      // Try unified path first for models that are not CLI-wrapped
-      if (managed.session.provider === "unified" && resolvedModelId && !isModelCliWrapped(resolvedModelId)) {
-        const result = await startUnifiedSession(managed);
-        if (result === "handled") {
-          sessionService.setResumeCommand(sessionId, `chat:unified:${sessionId}`);
-          persistChatState(managed);
-          return managed.session;
-        }
-      }
-
-      if (managed.session.provider === "unified") {
-        throw new Error(`Unable to initialize unified runtime for model '${managed.session.model}'.`);
-      }
-
-      // Legacy runtime paths
-      if (managed.session.provider === "codex") {
-        const runtime = await ensureCodexSessionRuntime(managed);
-        const config = resolveChatConfig();
-        const codexPolicy = managed.session.permissionMode
-          ? mapSessionPermissionToCodex(managed.session.permissionMode)
-          : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
-        const response = await runtime.request<{
-          thread?: { id?: string };
-          model?: string;
-        }>("thread/start", {
-          model: normalizedModel,
-          ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
-          cwd: lane.worktreePath,
-          approvalPolicy: codexPolicy.approvalPolicy,
-          sandbox: codexPolicy.sandbox,
-          experimentalRawEvents: false,
-          persistExtendedHistory: true
-        });
-
-        const threadId = typeof response.thread?.id === "string" ? response.thread.id : undefined;
-        if (threadId) {
-          managed.session.threadId = threadId;
-          runtime.threadResumed = true;
-          sessionService.setResumeCommand(sessionId, `chat:codex:${threadId}`);
-        }
-      } else {
-        ensureClaudeSessionRuntime(managed);
-      }
-
-      persistChatState(managed);
-      return managed.session;
-    } catch (error) {
-      await finishSession(managed, "failed", {
-        summary: error instanceof Error ? error.message : String(error)
-      }).catch(() => {});
-      throw error;
-    }
+    // Lazy runtime boot: keep new-chat creation fast and start runtime/thread
+    // on first send/resume instead of blocking UI during session creation.
+    persistChatState(managed);
+    return managed.session;
   };
 
   const sendMessage = async ({ sessionId, text, attachments = [], reasoningEffort }: AgentChatSendArgs): Promise<void> => {
@@ -2279,14 +2141,14 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "unified") {
       if (!managed.runtime || managed.runtime.kind !== "unified") {
         const restarted = await startUnifiedSession(managed);
-        if (restarted !== "handled" || !managed.runtime || managed.runtime.kind !== "unified") {
+        if (restarted !== "handled" || !managed.runtime) {
           throw new Error(`Unified runtime is not available for session '${managed.session.id}'.`);
         }
       }
       if (reasoningEffort) {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
       }
-      await runUnifiedTurn(managed, trimmed, attachments);
+      await runTurn(managed, trimmed, attachments);
       return;
     }
 
@@ -2344,6 +2206,27 @@ export function createAgentChatService(args: {
           runtime.threadResumed = true;
           persistChatState(managed);
         }
+      } else if (!runtime.threadResumed && !threadIdToResume) {
+        const config = resolveChatConfig();
+        const codexPolicy = managed.session.permissionMode
+          ? mapSessionPermissionToCodex(managed.session.permissionMode)
+          : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
+        const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
+          model: managed.session.model,
+          ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+          cwd: managed.laneWorktreePath,
+          approvalPolicy: codexPolicy.approvalPolicy,
+          sandbox: codexPolicy.sandbox,
+          experimentalRawEvents: false,
+          persistExtendedHistory: true
+        });
+        const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
+        if (newThreadId) {
+          managed.session.threadId = newThreadId;
+          sessionService.setResumeCommand(sessionId, `chat:codex:${newThreadId}`);
+        }
+        runtime.threadResumed = true;
+        persistChatState(managed);
       }
 
       await sendCodexMessage(managed, trimmed, attachments);
@@ -2356,7 +2239,7 @@ export function createAgentChatService(args: {
     }
 
     ensureClaudeSessionRuntime(managed);
-    await runClaudeTurn(managed, trimmed, attachments);
+    await runTurn(managed, trimmed, attachments);
   };
 
   const steer = async ({ sessionId, text }: AgentChatSteerArgs): Promise<void> => {
@@ -2378,7 +2261,7 @@ export function createAgentChatService(args: {
         persistChatState(managed);
         return;
       }
-      await runUnifiedTurn(managed, trimmed, []);
+      await runTurn(managed, trimmed, []);
       return;
     }
 
@@ -2420,7 +2303,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    await runClaudeTurn(managed, trimmed, []);
+    await runTurn(managed, trimmed, []);
   };
 
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
@@ -2647,8 +2530,8 @@ export function createAgentChatService(args: {
 
   const dispose = async ({ sessionId }: AgentChatDisposeArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
-    let clearClaudeRuntimeAfterFinish = false;
 
+    // Interrupt active codex turn before teardown
     if (managed.runtime?.kind === "codex") {
       try {
         if (managed.session.threadId && managed.runtime.activeTurnId) {
@@ -2660,49 +2543,21 @@ export function createAgentChatService(args: {
       } catch {
         // ignore interrupt failures while disposing
       }
-
-      try {
-        managed.runtime.reader.close();
-      } catch {
-        // ignore
-      }
-      try {
-        managed.runtime.process.kill();
-      } catch {
-        // ignore
-      }
-      managed.runtime.pending.clear();
-      managed.runtime.approvals.clear();
-      managed.runtime = null;
     }
 
+    // Mark streaming runtimes as interrupted so the catch block handles gracefully
     if (managed.runtime?.kind === "claude") {
       managed.runtime.interrupted = true;
-      managed.runtime.abortController?.abort();
-      for (const pending of managed.runtime.approvals.values()) {
-        pending.resolve("cancel");
-      }
-      managed.runtime.approvals.clear();
-      clearClaudeRuntimeAfterFinish = true;
     }
-
     if (managed.runtime?.kind === "unified") {
       managed.runtime.interrupted = true;
-      managed.runtime.abortController?.abort();
-      for (const pending of managed.runtime.pendingApprovals.values()) {
-        pending.resolve("cancel");
-      }
-      managed.runtime.pendingApprovals.clear();
-      clearClaudeRuntimeAfterFinish = true;
     }
+
+    teardownRuntime(managed);
 
     await finishSession(managed, "disposed", {
       summary: managed.preview ? `Session closed: ${managed.preview}` : "Session closed."
     });
-
-    if (clearClaudeRuntimeAfterFinish) {
-      managed.runtime = null;
-    }
   };
 
   const disposeAll = async (): Promise<void> => {

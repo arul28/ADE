@@ -3,10 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import type { TerminalSessionSummary, TerminalSessionStatus, TerminalToolType } from "../../../shared/types";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
-
-function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
-}
+import { isChatToolType } from "../../lib/sessions";
 
 function inferToolFromResumeCommand(command: string): string | null {
   const n = command.trim().toLowerCase();

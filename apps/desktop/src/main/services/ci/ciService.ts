@@ -20,13 +20,10 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import { isRecord, nowIso } from "../shared/utils";
 
 const CI_STATE_KEY = "ci:import_state";
 const MAX_BYTES = 280_000;
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
 
 function fileExists(absPath: string): boolean {
   try {
@@ -70,10 +67,6 @@ function slugify(input: string): string {
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
   return s.length ? s : "ci";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseNameOnly(raw: string): string[] {

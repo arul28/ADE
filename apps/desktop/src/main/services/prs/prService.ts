@@ -62,6 +62,7 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import { runGit, runGitOrThrow } from "../git/git";
+import { asNumber, asString, nowIso } from "../shared/utils";
 
 type PullRequestRow = {
   id: string;
@@ -99,20 +100,6 @@ type PrGroupMemberLookupRow = {
   lane_name: string | null;
   pr_number: number | null;
 };
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function asNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
 
 function branchNameFromRef(ref: string): string {
   const trimmed = ref.trim();

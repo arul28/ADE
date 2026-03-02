@@ -32,6 +32,18 @@ import {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
+import { asRecord, nowIso, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+
+const VALIDATION_CONTRACT_SCHEMA = z
+  .object({
+    level: z.enum(["step", "milestone", "mission"]),
+    tier: z.enum(["self", "spot-check", "dedicated"]),
+    required: z.boolean(),
+    criteria: z.string(),
+    evidence: z.array(z.string()).default([]),
+    maxRetries: z.number().int().min(0).max(10).default(1),
+  })
+  .optional();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -53,23 +65,6 @@ function findRunningAttempt(
       (a) => a.stepId === stepId && a.status === "running",
     ) ?? null
   );
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-const TERMINAL_STEP_STATUSES = new Set([
-  "succeeded",
-  "failed",
-  "skipped",
-  "superseded",
-  "canceled",
-]);
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
 }
 
 function resolveTeamRuntimeConfig(graph: OrchestratorRunGraph): TeamRuntimeConfig | null {
@@ -482,16 +477,7 @@ export function createCoordinatorToolSet(deps: {
         .optional()
         .describe("Optional source worker step key to replace. When set, lane and handoff context are inherited."),
       replacementReason: z.string().optional().describe("Optional reason for replacement"),
-      validationContract: z
-        .object({
-          level: z.enum(["step", "milestone", "mission"]),
-          tier: z.enum(["self", "spot-check", "dedicated"]),
-          required: z.boolean(),
-          criteria: z.string(),
-          evidence: z.array(z.string()).default([]),
-          maxRetries: z.number().int().min(0).max(10).default(1),
-        })
-        .optional()
+      validationContract: VALIDATION_CONTRACT_SCHEMA
         .describe("Optional validation contract attached to this worker step"),
       dependsOn: z
         .array(z.string())
@@ -1223,16 +1209,7 @@ export function createCoordinatorToolSet(deps: {
       validatorWorkerId: z.string().optional().describe("Validator worker step key"),
       targetWorkerId: z.string().optional().describe("Target worker step key being validated (optional for mission-level reports)"),
       validationId: z.string().optional().describe("Optional caller-provided validation id"),
-      contract: z
-        .object({
-          level: z.enum(["step", "milestone", "mission"]),
-          tier: z.enum(["self", "spot-check", "dedicated"]),
-          required: z.boolean(),
-          criteria: z.string(),
-          evidence: z.array(z.string()).default([]),
-          maxRetries: z.number().int().min(0).max(10).default(1),
-        })
-        .optional(),
+      contract: VALIDATION_CONTRACT_SCHEMA,
       verdict: z.enum(["pass", "fail"]),
       summary: z.string(),
       findings: z
@@ -1561,16 +1538,7 @@ export function createCoordinatorToolSet(deps: {
           role: z.string().optional(),
           laneId: z.string().nullable().optional(),
           replaces: z.array(z.string()).default([]),
-          validationContract: z
-            .object({
-              level: z.enum(["step", "milestone", "mission"]),
-              tier: z.enum(["self", "spot-check", "dedicated"]),
-              required: z.boolean(),
-              criteria: z.string(),
-              evidence: z.array(z.string()).default([]),
-              maxRetries: z.number().int().min(0).max(10).default(1),
-            })
-            .optional(),
+          validationContract: VALIDATION_CONTRACT_SCHEMA,
         })
       ).default([]),
     }),

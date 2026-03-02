@@ -20,6 +20,7 @@ import type { createPackService } from "../packs/packService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createTestService } from "../tests/testService";
 import cron from "node-cron";
+import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
 type CronTask = {
   stop: () => void;
@@ -59,19 +60,9 @@ type AutomationActionRow = {
   output: string | null;
 };
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
 function safeJsonParseRecord(raw: string | null): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  const parsed = safeJsonParse(raw, null);
+  return isRecord(parsed) ? parsed : null;
 }
 
 function clampText(raw: string, max: number): string {

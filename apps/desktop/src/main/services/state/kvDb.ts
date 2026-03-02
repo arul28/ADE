@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
 import type { Database, SqlJsStatic } from "sql.js";
 import type { Logger } from "../logging/logger";
+import { safeJsonParse } from "../shared/utils";
 
 export type SqlValue = string | number | null | Uint8Array;
 
@@ -49,9 +50,7 @@ export type AdeDb = {
   close: () => void;
 };
 
-const require = createRequire(
-  typeof __filename !== "undefined" ? __filename : import.meta.url
-);
+const require = createRequire(__filename);
 const FLUSH_DEBOUNCE_MS = 500;
 
 function resolveSqlJsWasmDir(): string {
@@ -64,13 +63,6 @@ function ensureParentDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
-function safeJsonParse<T>(raw: string): T | null {
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
 
 function mapExecRows(rows: { columns: string[]; values: unknown[][] }[]): Record<string, unknown>[] {
   const first = rows[0];
@@ -2414,7 +2406,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     getJson: <T,>(key: string): T | null => {
       const raw = getString(key);
       if (raw == null) return null;
-      return safeJsonParse<T>(raw);
+      return safeJsonParse<T | null>(raw, null);
     },
     setJson: (key: string, value: unknown) => {
       setString(key, JSON.stringify(value));

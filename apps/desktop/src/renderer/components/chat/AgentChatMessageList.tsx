@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -19,7 +19,9 @@ import {
   Robot
 } from "@phosphor-icons/react";
 import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
+import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
+import { formatTime } from "../../lib/format";
 
 type RenderEnvelope = {
   key: string;
@@ -27,95 +29,123 @@ type RenderEnvelope = {
   event: AgentChatEvent;
 };
 
-function formatTime(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
+function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnvelope, sequence: number): void {
+  const { event } = envelope;
+  const prev = out[out.length - 1];
 
-function collapseEvents(events: AgentChatEventEnvelope[]): RenderEnvelope[] {
-  const out: RenderEnvelope[] = [];
-
-  for (let i = 0; i < events.length; i += 1) {
-    const envelope = events[i]!;
-    const { event } = envelope;
-    const prev = out[out.length - 1];
-
-    if (prev?.event.type === "text" && event.type === "text") {
-      const prevTurn = prev.event.turnId ?? null;
-      const nextTurn = event.turnId ?? null;
-      const prevItem = prev.event.itemId ?? null;
-      const nextItem = event.itemId ?? null;
-      if (prevTurn === nextTurn && prevItem === nextItem) {
-        prev.event = {
+  if (prev?.event.type === "text" && event.type === "text") {
+    const prevTurn = prev.event.turnId ?? null;
+    const nextTurn = event.turnId ?? null;
+    const prevItem = prev.event.itemId ?? null;
+    const nextItem = event.itemId ?? null;
+    if (prevTurn === nextTurn && prevItem === nextItem) {
+      out[out.length - 1] = {
+        ...prev,
+        timestamp: envelope.timestamp,
+        event: {
           ...prev.event,
           text: `${prev.event.text}${event.text}`
-        };
-        prev.timestamp = envelope.timestamp;
-        continue;
-      }
+        }
+      };
+      return;
     }
+  }
 
-    if (prev?.event.type === "reasoning" && event.type === "reasoning") {
-      const prevTurn = prev.event.turnId ?? null;
-      const nextTurn = event.turnId ?? null;
-      const prevItem = prev.event.itemId ?? null;
-      const nextItem = event.itemId ?? null;
-      if (prevTurn === nextTurn && prevItem === nextItem) {
-        prev.event = {
+  if (prev?.event.type === "reasoning" && event.type === "reasoning") {
+    const prevTurn = prev.event.turnId ?? null;
+    const nextTurn = event.turnId ?? null;
+    const prevItem = prev.event.itemId ?? null;
+    const nextItem = event.itemId ?? null;
+    if (prevTurn === nextTurn && prevItem === nextItem) {
+      out[out.length - 1] = {
+        ...prev,
+        timestamp: envelope.timestamp,
+        event: {
           ...prev.event,
           text: `${prev.event.text}${event.text}`
-        };
-        prev.timestamp = envelope.timestamp;
-        continue;
-      }
+        }
+      };
+      return;
     }
+  }
 
-    if (prev?.event.type === "command" && event.type === "command") {
-      const prevTurn = prev.event.turnId ?? null;
-      const nextTurn = event.turnId ?? null;
-      if (prev.event.itemId === event.itemId && prevTurn === nextTurn) {
-        const mergedOutput =
-          event.output.length && event.output.startsWith(prev.event.output)
-            ? event.output
-            : `${prev.event.output}${event.output}`;
-        prev.event = {
+  if (prev?.event.type === "command" && event.type === "command") {
+    const prevTurn = prev.event.turnId ?? null;
+    const nextTurn = event.turnId ?? null;
+    if (prev.event.itemId === event.itemId && prevTurn === nextTurn) {
+      const mergedOutput =
+        event.output.length && event.output.startsWith(prev.event.output)
+          ? event.output
+          : `${prev.event.output}${event.output}`;
+      out[out.length - 1] = {
+        ...prev,
+        timestamp: envelope.timestamp,
+        event: {
           ...prev.event,
           output: mergedOutput,
           status: event.status,
           exitCode: event.exitCode ?? prev.event.exitCode,
           durationMs: event.durationMs ?? prev.event.durationMs
-        };
-        prev.timestamp = envelope.timestamp;
-        continue;
-      }
+        }
+      };
+      return;
     }
+  }
 
-    if (prev?.event.type === "file_change" && event.type === "file_change") {
-      const prevTurn = prev.event.turnId ?? null;
-      const nextTurn = event.turnId ?? null;
-      if (prev.event.itemId === event.itemId && prevTurn === nextTurn && prev.event.path === event.path) {
-        const mergedDiff =
-          event.diff.length && event.diff.startsWith(prev.event.diff)
-            ? event.diff
-            : `${prev.event.diff}${event.diff}`;
-        prev.event = {
+  if (prev?.event.type === "file_change" && event.type === "file_change") {
+    const prevTurn = prev.event.turnId ?? null;
+    const nextTurn = event.turnId ?? null;
+    if (prev.event.itemId === event.itemId && prevTurn === nextTurn && prev.event.path === event.path) {
+      const mergedDiff =
+        event.diff.length && event.diff.startsWith(prev.event.diff)
+          ? event.diff
+          : `${prev.event.diff}${event.diff}`;
+      out[out.length - 1] = {
+        ...prev,
+        timestamp: envelope.timestamp,
+        event: {
           ...prev.event,
           diff: mergedDiff,
           status: event.status
-        };
-        prev.timestamp = envelope.timestamp;
-        continue;
-      }
+        }
+      };
+      return;
     }
-
-    out.push({
-      key: `${envelope.sessionId}:${i}:${envelope.timestamp}`,
-      timestamp: envelope.timestamp,
-      event
-    });
   }
 
+  out.push({
+    key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
+    timestamp: envelope.timestamp,
+    event
+  });
+}
+
+function collapseEvents(events: AgentChatEventEnvelope[]): RenderEnvelope[] {
+  const out: RenderEnvelope[] = [];
+  for (let i = 0; i < events.length; i += 1) {
+    appendCollapsedEvent(out, events[i]!, i);
+  }
+  return out;
+}
+
+function collapseEventsIncremental(
+  events: AgentChatEventEnvelope[],
+  prevEvents: AgentChatEventEnvelope[],
+  prevRows: RenderEnvelope[],
+): RenderEnvelope[] {
+  if (!prevEvents.length || events.length < prevEvents.length) {
+    return collapseEvents(events);
+  }
+
+  // Fast path: most updates append events at the tail during streaming.
+  if (events[prevEvents.length - 1] !== prevEvents[prevEvents.length - 1]) {
+    return collapseEvents(events);
+  }
+
+  const out = prevRows.slice();
+  for (let i = prevEvents.length; i < events.length; i += 1) {
+    appendCollapsedEvent(out, events[i]!, i);
+  }
   return out;
 }
 
@@ -142,7 +172,7 @@ function PlanStepIcon({ status }: { status: string }) {
 
 /* ── Markdown renderer ── */
 
-function MarkdownBlock({ markdown }: { markdown: string }) {
+const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown: string }) {
   return (
     <div className="prose ade-prose-themed max-w-none text-[12.5px] leading-[1.65] prose-headings:mb-2 prose-headings:mt-3 prose-headings:font-sans prose-headings:text-fg/90 prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0">
       <ReactMarkdown
@@ -178,7 +208,7 @@ function MarkdownBlock({ markdown }: { markdown: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 /* ── Collapsible card ── */
 
@@ -313,7 +343,26 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
 
 /* ── Main event renderer ── */
 
-function renderEvent(envelope: RenderEnvelope, onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void) {
+function resolveModelLabel(modelId?: string, model?: string): string | null {
+  if (modelId) {
+    const desc = getModelById(modelId);
+    if (desc) return `${desc.displayName} (${modelId})`;
+    return modelId;
+  }
+  if (model) {
+    const desc = getModelById(model);
+    return desc?.displayName ?? model;
+  }
+  return null;
+}
+
+function renderEvent(
+  envelope: RenderEnvelope,
+  options?: {
+    onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void;
+    turnModelLabel?: string | null;
+  }
+) {
   const event = envelope.event;
 
   /* ── User message ── */
@@ -352,6 +401,11 @@ function renderEvent(envelope: RenderEnvelope, onApproval?: (itemId: string, dec
             <span className="ml-auto font-mono text-[9px] text-muted-fg/30">{formatTime(envelope.timestamp)}</span>
           </div>
           <MarkdownBlock markdown={event.text} />
+          {options?.turnModelLabel ? (
+            <div className="mt-2 border-t border-accent/10 pt-1.5 font-mono text-[9px] uppercase tracking-[1.4px] text-muted-fg/35">
+              Model · {options.turnModelLabel}
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -615,7 +669,7 @@ function renderEvent(envelope: RenderEnvelope, onApproval?: (itemId: string, dec
 
   /* ── Approval request ── */
   if (event.type === "approval_request") {
-    const handleApproval = onApproval ? (d: AgentChatApprovalDecision) => onApproval(event.itemId, d) : undefined;
+    const handleApproval = options?.onApproval ? (d: AgentChatApprovalDecision) => options.onApproval?.(event.itemId, d) : undefined;
     return (
       <div className="border border-amber-500/15 bg-gradient-to-r from-amber-500/[0.06] to-transparent p-4 shadow-[0_0_24px_-8px_rgba(245,158,11,0.1)]">
         <div className="mb-2 flex items-center gap-2">
@@ -718,6 +772,37 @@ function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: str
 
 /* ── Main component ── */
 
+type EventRowProps = {
+  envelope: RenderEnvelope;
+  showTurnDivider: boolean;
+  turnDividerLabel: string | null;
+  turnModelLabel: string | null;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void;
+};
+
+const EventRow = React.memo(function EventRow({
+  envelope,
+  showTurnDivider,
+  turnDividerLabel,
+  turnModelLabel,
+  onApproval,
+}: EventRowProps) {
+  return (
+    <div className="space-y-2">
+      {showTurnDivider && turnDividerLabel ? (
+        <div className="flex items-center gap-3 py-2">
+          <div className="h-px flex-1 bg-accent/8" />
+          <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-accent/25">
+            {turnDividerLabel}
+          </span>
+          <div className="h-px flex-1 bg-accent/8" />
+        </div>
+      ) : null}
+      {renderEvent(envelope, { onApproval, turnModelLabel })}
+    </div>
+  );
+});
+
 export function AgentChatMessageList({
   events,
   showStreamingIndicator = false,
@@ -730,9 +815,28 @@ export function AgentChatMessageList({
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: RenderEnvelope[] }>({
+    events: [],
+    rows: [],
+  });
   const [stickToBottom, setStickToBottom] = useState(true);
+  const stickToBottomRef = useRef(true);
+  const onApprovalRef = useRef(onApproval);
 
-  const rows = useMemo(() => collapseEvents(events), [events]);
+  useEffect(() => {
+    onApprovalRef.current = onApproval;
+  }, [onApproval]);
+
+  const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision) => {
+    onApprovalRef.current?.(itemId, decision);
+  }, []);
+
+  const rows = useMemo(() => {
+    const cached = collapseCacheRef.current;
+    const nextRows = collapseEventsIncremental(events, cached.events, cached.rows);
+    collapseCacheRef.current = { events, rows: nextRows };
+    return nextRows;
+  }, [events]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
 
   // Map turnId → sequential turn number for display
@@ -748,6 +852,22 @@ export function AgentChatMessageList({
     return map;
   }, [rows]);
 
+  const turnModelLabelMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const envelope of events) {
+      const evt = envelope.event;
+      if (evt.type !== "done") continue;
+      const modelLabel = resolveModelLabel(evt.modelId, evt.model);
+      if (!evt.turnId || !modelLabel) continue;
+      map.set(evt.turnId, modelLabel);
+    }
+    return map;
+  }, [events]);
+
+  useEffect(() => {
+    stickToBottomRef.current = stickToBottom;
+  }, [stickToBottom]);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !stickToBottom) return;
@@ -761,7 +881,11 @@ export function AgentChatMessageList({
       onScroll={(event) => {
         const target = event.currentTarget;
         const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
-        setStickToBottom(distanceFromBottom < 72);
+        const nextStick = distanceFromBottom < 72;
+        if (nextStick !== stickToBottomRef.current) {
+          stickToBottomRef.current = nextStick;
+          setStickToBottom(nextStick);
+        }
       }}
     >
       {rows.length === 0 ? (
@@ -779,19 +903,19 @@ export function AgentChatMessageList({
             const previous = rows[index - 1];
             const previousTurn = previous && "turnId" in previous.event ? previous.event.turnId ?? null : null;
             const showTurnDivider = currentTurn && currentTurn !== previousTurn;
+            const turnDividerLabel = showTurnDivider
+              ? `Turn ${String(turnNumberMap.get(currentTurn!) ?? 0).padStart(2, "0")} · ${formatTime(envelope.timestamp)}`
+              : null;
+            const turnModelLabel = currentTurn ? (turnModelLabelMap.get(currentTurn) ?? null) : null;
             return (
-              <div key={envelope.key} className="space-y-2">
-                {showTurnDivider ? (
-                  <div className="flex items-center gap-3 py-2">
-                    <div className="h-px flex-1 bg-accent/8" />
-                    <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-accent/25">
-                      Turn {String(turnNumberMap.get(currentTurn!) ?? 0).padStart(2, "0")} · {formatTime(envelope.timestamp)}
-                    </span>
-                    <div className="h-px flex-1 bg-accent/8" />
-                  </div>
-                ) : null}
-                {renderEvent(envelope, onApproval)}
-              </div>
+              <EventRow
+                key={envelope.key}
+                envelope={envelope}
+                showTurnDivider={Boolean(showTurnDivider)}
+                turnDividerLabel={turnDividerLabel}
+                turnModelLabel={turnModelLabel}
+                onApproval={handleApproval}
+              />
             );
           })}
 

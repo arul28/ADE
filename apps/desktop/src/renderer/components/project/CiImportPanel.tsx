@@ -4,13 +4,7 @@ import type { CiImportMode, CiJobCandidate, CiScanResult } from "../../../shared
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
-
-function formatDate(ts: string | null): string {
-  if (!ts) return "-";
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
-}
+import { formatDate } from "../../lib/format";
 
 function safetyTone(safety: CiJobCandidate["safety"]): string {
   if (safety === "local-safe") return "text-emerald-200 bg-emerald-900/15";

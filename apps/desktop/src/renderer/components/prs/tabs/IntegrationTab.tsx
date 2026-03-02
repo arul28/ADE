@@ -10,27 +10,14 @@ import type {
 } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
-import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
+import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
 import { ConflictFilePreview } from "../ConflictFilePreview";
-
-const TILING_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    { node: { type: "pane", id: "list" }, defaultSize: 36, minSize: 20 },
-    { node: { type: "pane", id: "detail" }, defaultSize: 64, minSize: 30 },
-  ],
-};
-
-function normalizeBranchName(ref: string): string {
-  const trimmed = ref.trim();
-  const branch = trimmed.startsWith("refs/heads/") ? trimmed.slice("refs/heads/".length) : trimmed;
-  return branch.startsWith("origin/") ? branch.slice("origin/".length) : branch;
-}
+import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
+import { normalizeBranchName } from "../shared/prHelpers";
 
 /* ---- Outcome dot with design-system colors ---- */
 
@@ -2506,5 +2493,5 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
 
-  return <PaneTilingLayout layoutId="prs:integration:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
+  return <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

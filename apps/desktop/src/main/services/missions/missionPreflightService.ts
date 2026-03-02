@@ -13,14 +13,7 @@ import type {
 import { createBuiltInPhaseCards, validatePhaseSequence } from "./phaseEngine";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import type { MissionBudgetService } from "../orchestrator/missionBudgetService";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
+import { isRecord, nowIso } from "../shared/utils";
 
 function toNonEmptyString(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";

@@ -81,6 +81,9 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
+import { asRecord, nowIso, parseJsonRecord, parseJsonArray, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+import { parseNumericDependencyIndices } from "./missionLifecycle";
+import { shellEscapeArg } from "./baseOrchestratorAdapter";
 
 type RunRow = {
   id: string;
@@ -363,7 +366,6 @@ const CONTEXT_PROFILES: Record<OrchestratorContextProfileId, OrchestratorContext
   }
 };
 
-const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "superseded", "canceled"]);
 const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "succeeded_with_risk", "failed", "canceled"]);
 const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
   "transient",
@@ -405,10 +407,6 @@ const DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG: ResolvedOrchestratorRuntimeConfig = {
   fileReservationGuardMode: "warn"
 };
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
 function normalizeIsoTimestamp(value: unknown, fallbackIso: string): string {
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw.length) return fallbackIso;
@@ -423,33 +421,10 @@ function branchNameFromRef(ref: string): string {
   return trimmed.startsWith("refs/heads/") ? trimmed.slice("refs/heads/".length) : trimmed;
 }
 
-function parseRecord(raw: string | null): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
 function parseArray(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((entry) => String(entry ?? "").trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
+  return parseJsonArray(raw)
+    .map((entry) => String(entry ?? "").trim())
+    .filter(Boolean);
 }
 
 function isExecutionPolicyRecord(value: unknown): boolean {
@@ -731,7 +706,7 @@ function toRun(row: RunRow): OrchestratorRun {
     startedAt: row.started_at,
     completedAt: row.completed_at,
     lastError: row.last_error,
-    metadata: parseRecord(row.metadata_json)
+    metadata: parseJsonRecord(row.metadata_json)
   };
 }
 
@@ -755,7 +730,7 @@ function toStep(row: StepRow): OrchestratorStep {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
-    metadata: parseRecord(row.metadata_json)
+    metadata: parseJsonRecord(row.metadata_json)
   };
 }
 
@@ -786,7 +761,7 @@ function toAttempt(row: AttemptRow): OrchestratorAttempt {
           }
         })())
       : null,
-    metadata: parseRecord(row.metadata_json)
+    metadata: parseJsonRecord(row.metadata_json)
   };
 }
 
@@ -804,8 +779,8 @@ function toClaim(row: ClaimRow): OrchestratorClaim {
     heartbeatAt: row.heartbeat_at,
     expiresAt: row.expires_at,
     releasedAt: row.released_at,
-    policy: parseRecord(row.policy_json),
-    metadata: parseRecord(row.metadata_json)
+    policy: parseJsonRecord(row.policy_json),
+    metadata: parseJsonRecord(row.metadata_json)
   };
 }
 
@@ -848,7 +823,7 @@ function toHandoff(row: HandoffRow): MissionStepHandoff {
     attemptId: row.attempt_id,
     handoffType: row.handoff_type,
     producer: row.producer,
-    payload: parseRecord(row.payload_json) ?? {},
+    payload: parseJsonRecord(row.payload_json) ?? {},
     createdAt: row.created_at
   };
 }
@@ -865,7 +840,7 @@ function toArtifact(row: ArtifactRow): OrchestratorArtifact {
     artifactKey: row.artifact_key,
     kind: validKinds.includes(kind) ? kind : "custom",
     value: row.value,
-    metadata: parseRecord(row.metadata_json) ?? {},
+    metadata: parseJsonRecord(row.metadata_json) ?? {},
     declared: row.declared === 1,
     createdAt: row.created_at
   };
@@ -880,13 +855,13 @@ function toTimelineEvent(row: TimelineRow): OrchestratorTimelineEvent {
     claimId: row.claim_id,
     eventType: row.event_type,
     reason: row.reason,
-    detail: parseRecord(row.detail_json),
+    detail: parseJsonRecord(row.detail_json),
     createdAt: row.created_at
   };
 }
 
 function toRuntimeEvent(row: RuntimeEventRow): OrchestratorRuntimeBusEvent {
-  const payload = parseRecord(row.payload_json);
+  const payload = parseJsonRecord(row.payload_json);
   const threadId = typeof payload?.threadId === "string" ? payload.threadId.trim() : "";
   const messageId = typeof payload?.messageId === "string" ? payload.messageId.trim() : "";
   const replyToRaw = typeof payload?.replyTo === "string" ? payload.replyTo.trim() : "";
@@ -949,10 +924,6 @@ function sha256(data: Buffer | string): string {
 function clipText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, Math.max(0, maxChars - 14))}\n...<truncated>`;
-}
-
-function shellEscapeArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function normalizeRepoRelativePath(projectRoot: string, rawPath: string): string | null {
@@ -1043,7 +1014,13 @@ function doFileClaimsOverlap(leftScopeValue: string, rightScopeValue: string): b
   return true;
 }
 
+const docPathsCache = new Map<string, { paths: string[]; expiresAt: number }>();
+const DOC_PATHS_CACHE_TTL_MS = 60_000;
+
 function readDocPaths(projectRoot: string): string[] {
+  const cached = docPathsCache.get(projectRoot);
+  if (cached && Date.now() < cached.expiresAt) return cached.paths;
+
   const out: string[] = [];
   const canonical = path.join(projectRoot, "docs", "PRD.md");
   if (fs.existsSync(canonical)) out.push(canonical);
@@ -1070,7 +1047,9 @@ function readDocPaths(projectRoot: string): string[] {
     }
   };
   walk(architectureRoot);
-  return out.sort((a, b) => a.localeCompare(b));
+  const paths = out.sort((a, b) => a.localeCompare(b));
+  docPathsCache.set(projectRoot, { paths, expiresAt: Date.now() + DOC_PATHS_CACHE_TTL_MS });
+  return paths;
 }
 
 function resolveStepPolicy(step: OrchestratorStep): StepPolicy {
@@ -1157,18 +1136,6 @@ function parseAutopilotConfig(metadata: Record<string, unknown> | null | undefin
     ownerId,
     parallelismCap
   };
-}
-
-function parseNumericDependencyIndices(metadata: Record<string, unknown>): number[] {
-  const candidates = metadata.dependencyIndices;
-  if (!Array.isArray(candidates)) return [];
-  const out: number[] = [];
-  for (const entry of candidates) {
-    const value = Number(entry);
-    if (!Number.isFinite(value)) continue;
-    out.push(Math.floor(value));
-  }
-  return out;
 }
 
 function parseStepPolicyFromMetadata(metadata: Record<string, unknown>): StartOrchestratorRunStepInput["policy"] | undefined {
@@ -1391,7 +1358,7 @@ export function createOrchestratorService({
   const appendRunNarrative = (runId: string, stepKey: string, summary: string): void => {
     const runRow = getRunRow(runId);
     if (!runRow) return;
-    const meta = parseRecord(runRow.metadata_json) ?? {};
+    const meta = parseJsonRecord(runRow.metadata_json) ?? {};
     const narrative: Array<{ stepKey: string; summary: string; at: string }> = Array.isArray(meta.runNarrative)
       ? (meta.runNarrative as Array<{ stepKey: string; summary: string; at: string }>)
       : [];
@@ -1972,7 +1939,7 @@ export function createOrchestratorService({
       if (args.scopeKind === "task" && args.stepId) {
         const stepRow = getStepRow(args.stepId);
         if (stepRow) {
-          const stepMeta = parseRecord(stepRow.metadata_json) ?? {};
+          const stepMeta = parseJsonRecord(stepRow.metadata_json) ?? {};
           const updatedMeta = {
             ...stepMeta,
             claimedBy: args.ownerId,
@@ -2464,7 +2431,7 @@ export function createOrchestratorService({
   const evaluateRunStatusWithPolicy = (runId: string): OrchestratorRunStatus => {
     const steps = listStepRows(runId).map(toStep);
     const runRow = getRunRow(runId);
-    const runMetadata = runRow ? parseRecord(runRow.metadata_json) : null;
+    const runMetadata = runRow ? parseJsonRecord(runRow.metadata_json) : null;
     const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
       ? (runMetadata.executionPolicy as MissionExecutionPolicy)
       : DEFAULT_EXECUTION_POLICY;
@@ -2626,14 +2593,20 @@ export function createOrchestratorService({
     const docsRefs: OrchestratorDocsRef[] = [];
     const fullDocs: Array<{ path: string; content: string; truncated: boolean }> = [];
 
-    for (const abs of docsPaths) {
+    const docReadResults = await Promise.all(
+      docsPaths.map(async (abs) => {
+        try {
+          return { abs, buf: await fs.promises.readFile(abs) };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    for (const result of docReadResults) {
+      if (!result) continue;
+      const { abs, buf } = result;
       const rel = path.relative(projectRoot, abs).replace(/\\/g, "/");
-      let buf: Buffer;
-      try {
-        buf = fs.readFileSync(abs);
-      } catch {
-        continue;
-      }
       const digest = sha256(buf);
       const bytes = buf.length;
       if (args.contextProfile.docsMode === "full_docs") {
@@ -2808,7 +2781,7 @@ export function createOrchestratorService({
         `,
         [projectId]
       );
-      const report = parseRecord(latest?.report_json ?? null);
+      const report = parseJsonRecord(latest?.report_json ?? null);
       const status = typeof report?.overallStatus === "string" ? report.overallStatus : "unknown";
       if (status === "pass" || status === "warn" || status === "fail") return status;
       return "unknown";
@@ -3484,7 +3457,7 @@ export function createOrchestratorService({
       const row = getStepRow(args.step.id);
       if (!row) return;
       const next = {
-        ...(parseRecord(row.metadata_json) ?? {}),
+        ...(parseJsonRecord(row.metadata_json) ?? {}),
         ...patch
       };
       db.run(
@@ -4323,7 +4296,7 @@ export function createOrchestratorService({
       const fallbackExecutor = requestedRunMode === "manual" ? "manual" : requestedExecutor === "manual" ? "unified" : requestedExecutor;
       const autopilotEnabled = requestedRunMode === "autopilot" && fallbackExecutor !== "manual";
       const autopilotOwnerId = String(args.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
-      const missionMetadata = parseRecord(mission.metadata_json) ?? {};
+      const missionMetadata = parseJsonRecord(mission.metadata_json) ?? {};
       const plannerSummary = asRecord(asRecord(missionMetadata.plannerPlan)?.missionSummary);
       const plannerParallelismRaw = Number(
         args.metadata?.plannerParallelismCap ?? plannerSummary?.parallelismCap ?? Number.NaN
@@ -4336,7 +4309,7 @@ export function createOrchestratorService({
       );
 
       const descriptors = missionSteps.map((row, index) => {
-        const metadata = parseRecord(row.metadata_json) ?? {};
+        const metadata = parseJsonRecord(row.metadata_json) ?? {};
         const stepIndex = Number.isFinite(Number(row.step_index)) ? Number(row.step_index) : index;
         const explicitKey = typeof metadata.stepKey === "string" ? metadata.stepKey.trim() : "";
         const stepKey = explicitKey.length ? explicitKey : `mission_step_${stepIndex}_${index}`;
@@ -4609,7 +4582,7 @@ export function createOrchestratorService({
           reasons: string[];
         } => {
           const latestRunRow = getRunRow(runId);
-          const latestRunMetadata = latestRunRow ? parseRecord(latestRunRow.metadata_json) : null;
+          const latestRunMetadata = latestRunRow ? parseJsonRecord(latestRunRow.metadata_json) : null;
           const aiDecisions = asRecord(latestRunMetadata?.aiDecisions);
           const aiParallelismRaw = Number(aiDecisions?.parallelismCap ?? Number.NaN);
           const aiParallelismCap = Number.isFinite(aiParallelismRaw)
@@ -5080,7 +5053,7 @@ export function createOrchestratorService({
       const reasonCodes = new Set<string>();
       for (const row of insufficientRows) {
         if (row.run_id) blockedRunIds.add(row.run_id);
-        const metadata = parseRecord(row.metadata_json);
+        const metadata = parseJsonRecord(row.metadata_json);
         const rawCodes = Array.isArray(metadata?.reasonCodes)
           ? (metadata?.reasonCodes as unknown[])
           : Array.isArray(metadata?.insufficientReasons)
@@ -5470,7 +5443,7 @@ export function createOrchestratorService({
         [projectId, args.attemptId, args.ownerId]
       );
       for (const claim of activeClaims) {
-        const policy = parseRecord(claim.policy_json) ?? {};
+        const policy = parseJsonRecord(claim.policy_json) ?? {};
         const ttlMsRaw = Number(policy.ttlMs ?? runtimeConfig.workerHeartbeatTimeoutMs);
         const ttlMs =
           Number.isFinite(ttlMsRaw) && ttlMsRaw > 0 ? ttlMsRaw : runtimeConfig.workerHeartbeatTimeoutMs;
@@ -6436,7 +6409,7 @@ export function createOrchestratorService({
 	          computedBackoff,
 	          JSON.stringify(envelope),
 	          JSON.stringify({
-	            ...(parseRecord(attemptRow.metadata_json) ?? {}),
+	            ...(parseJsonRecord(attemptRow.metadata_json) ?? {}),
 	            ...(args.metadata ?? {}),
 	            ...(fileReservationCheck
 	              ? {
@@ -6743,7 +6716,7 @@ export function createOrchestratorService({
       const attemptTokens = Number(args.metadata?.tokensConsumed ?? 0);
       if (attemptTokens > 0) {
         const currentRunRow = getRunRow(run.id);
-        const currentRunMeta = currentRunRow ? (parseRecord(currentRunRow.metadata_json) ?? {}) : (run.metadata ?? {});
+        const currentRunMeta = currentRunRow ? (parseJsonRecord(currentRunRow.metadata_json) ?? {}) : (run.metadata ?? {});
         const currentTotal = Number(currentRunMeta.tokensConsumed ?? 0);
         const newTotal = currentTotal + attemptTokens;
         const updatedMeta = { ...currentRunMeta, tokensConsumed: newTotal };
@@ -6803,7 +6776,7 @@ export function createOrchestratorService({
       ) {
         const latestAttempt = getAttemptRow(args.attemptId);
         const latestMetadata =
-          (latestAttempt ? toAttempt(latestAttempt).metadata : null) ?? parseRecord(attemptRow.metadata_json) ?? {};
+          (latestAttempt ? toAttempt(latestAttempt).metadata : null) ?? parseJsonRecord(attemptRow.metadata_json) ?? {};
         db.run(
           `
             update orchestrator_attempts
@@ -6994,7 +6967,7 @@ export function createOrchestratorService({
       }
       if (args.metadata && typeof args.metadata === "object" && !Array.isArray(args.metadata)) {
         patch.metadata_json = JSON.stringify({
-          ...(parseRecord(runRow.metadata_json) ?? {}),
+          ...(parseJsonRecord(runRow.metadata_json) ?? {}),
           ...args.metadata
         });
       }
@@ -7998,7 +7971,7 @@ export function createOrchestratorService({
       emit({ type: "orchestrator-step-updated", runId, stepId: removeStepId, reason: "skipped" });
 
       // 2. Update keepStep metadata with merged instructions
-      const keepMeta: Record<string, unknown> = parseRecord(keepRow.metadata_json) ?? {};
+      const keepMeta: Record<string, unknown> = parseJsonRecord(keepRow.metadata_json) ?? {};
       keepMeta.mergedInstructions = mergedInstructions;
       keepMeta.consolidatedFrom = removeStep.stepKey;
       db.run(
@@ -8953,7 +8926,7 @@ export function createOrchestratorService({
       const evaluation = evaluateRunCompletion(
         steps,
         (() => {
-          const runMeta = parseRecord(runRow.metadata_json);
+          const runMeta = parseJsonRecord(runRow.metadata_json);
           return runMeta && isExecutionPolicyRecord(runMeta.executionPolicy)
             ? (runMeta.executionPolicy as MissionExecutionPolicy)
             : DEFAULT_EXECUTION_POLICY;
@@ -8978,7 +8951,7 @@ export function createOrchestratorService({
       }
 
       // Persist completion diagnostics
-      const existingMeta = parseRecord(runRow.metadata_json) ?? {};
+      const existingMeta = parseJsonRecord(runRow.metadata_json) ?? {};
       const updatedMeta = {
         ...existingMeta,
         completionDiagnostics: evaluation.diagnostics,
@@ -9303,7 +9276,7 @@ export function createOrchestratorService({
         sessionId: row.session_id,
         status: row.status as OrchestratorTeamMemberStatus,
         claimedTaskIds: parseArray(row.claimed_task_ids_json),
-        metadata: parseRecord(row.metadata_json),
+        metadata: parseJsonRecord(row.metadata_json),
         createdAt: row.created_at,
         updatedAt: row.updated_at
       }));

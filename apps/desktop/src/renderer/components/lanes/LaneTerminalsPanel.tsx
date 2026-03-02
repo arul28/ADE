@@ -17,6 +17,7 @@ import { TerminalSettingsDialog, readLaunchTracked, persistLaunchTracked } from 
 import { TilingLayout } from "./TilingLayout";
 import { useNavigate } from "react-router-dom";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
+import { isChatToolType } from "../../lib/sessions";
 
 const tabTrigger =
   "flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:bg-accent/10 data-[state=active]:ring-1 data-[state=active]:ring-accent/50";
@@ -50,10 +51,6 @@ function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
   if (id === "cursor") return "cursor";
   if (id === "continue") return "continue";
   return "other";
-}
-
-function isChatToolType(toolType: TerminalToolType | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
 export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string | null } = {}) {

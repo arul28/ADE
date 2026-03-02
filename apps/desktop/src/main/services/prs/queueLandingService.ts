@@ -11,6 +11,7 @@ import type {
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
+import { nowIso } from "../shared/utils";
 
 type QueueLandingRow = {
   id: string;
@@ -22,10 +23,6 @@ type QueueLandingRow = {
   started_at: string;
   completed_at: string | null;
 };
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
 
 function parseEntries(raw: string): QueueLandingEntry[] {
   try {

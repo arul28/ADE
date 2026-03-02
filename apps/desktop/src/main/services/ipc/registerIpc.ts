@@ -347,7 +347,7 @@ import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
-import type { createMissionService } from "../missions/missionService";
+import { normalizeMissionStatus, type createMissionService } from "../missions/missionService";
 import type { createMissionPreflightService } from "../missions/missionPreflightService";
 import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionPlanningService";
 import type { createMissionBudgetService } from "../orchestrator/missionBudgetService";
@@ -355,6 +355,7 @@ import type { createOrchestratorService } from "../orchestrator/orchestratorServ
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { createMemoryService } from "../memory/memoryService";
 import { redactSecrets } from "../../utils/redaction";
+import { getErrorMessage, isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
 export type AppContext = {
   db: AdeDb;
@@ -416,14 +417,8 @@ function escapeCsvCell(value: string | null | undefined): string {
 }
 
 function parseRecord(raw: string | null | undefined): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  const parsed = safeJsonParse(raw, null);
+  return isRecord(parsed) ? parsed : null;
 }
 
 const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
@@ -441,22 +436,6 @@ function normalizePackType(value: string): PackType {
     return value;
   }
   return "project";
-}
-
-function normalizeMissionStatus(value: string): MissionStatus {
-  if (
-    value === "queued" ||
-    value === "planning" ||
-    value === "plan_review" ||
-    value === "in_progress" ||
-    value === "intervention_required" ||
-    value === "completed" ||
-    value === "failed" ||
-    value === "canceled"
-  ) {
-    return value;
-  }
-  return "queued";
 }
 
 function sha256Utf8(value: string): string {
@@ -493,6 +472,22 @@ function buildMissionPlannerDocsDigest(projectRoot: string): Array<{ path: strin
   }
   docs.sort((a, b) => a.path.localeCompare(b.path));
   return docs.slice(0, 60);
+}
+
+async function safeRefreshMissionPack(
+  ctx: AppContext,
+  missionId: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await ctx.packService.refreshMissionPack({ missionId, reason });
+  } catch (error) {
+    ctx.logger.warn("packs.refresh_mission_pack_failed", {
+      missionId,
+      reason,
+      error: getErrorMessage(error)
+    });
+  }
 }
 
 function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
@@ -541,7 +536,7 @@ function buildMissionPlanningContextBundle(args: {
 }
 
 function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapshot {
-  const generatedAt = new Date().toISOString();
+  const generatedAt = nowIso();
 
   const packCountsRows = ctx.db.all<{ pack_type: string; count: number }>(
     `
@@ -883,7 +878,7 @@ export function registerIpc({
       ctx.logger.warn("ipc.timing_failed", {
         op,
         durationMs,
-        err: error instanceof Error ? error.message : String(error),
+        err: getErrorMessage(error),
         ...meta
       });
       throw error;
@@ -1035,7 +1030,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectClearLocalData, async (_event, arg: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> => {
     const ctx = getCtx();
-    const clearedAt = new Date().toISOString();
+    const clearedAt = nowIso();
     const deletedPaths: string[] = [];
 
     const rmrf = (absPath: string) => {
@@ -1112,7 +1107,7 @@ export function registerIpc({
       return { cancelled: true };
     }
 
-    const exportedAt = new Date().toISOString();
+    const exportedAt = nowIso();
     const bundle = {
       exportedAt,
       project: ctx.project,
@@ -1480,18 +1475,7 @@ export function registerIpc({
         autopilotExecutor: defaultExecutorKind
       });
 
-      try {
-        await ctx.packService.refreshMissionPack({
-          missionId: created.id,
-          reason: "mission_created"
-        });
-      } catch (error) {
-        ctx.logger.warn("packs.refresh_mission_pack_failed", {
-          missionId: created.id,
-          reason: "mission_created",
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      await safeRefreshMissionPack(ctx, created.id, "mission_created");
 
       void (async () => {
         try {
@@ -1513,7 +1497,7 @@ export function registerIpc({
             });
           }
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = getErrorMessage(error);
           ctx.logger.warn("missions.autostart_failed", {
             missionId: created.id,
             runMode,
@@ -1577,18 +1561,7 @@ export function registerIpc({
       },
       plannerPlan: planning.plan
     });
-    try {
-      await ctx.packService.refreshMissionPack({
-        missionId: created.id,
-        reason: "mission_created"
-      });
-    } catch (error) {
-      ctx.logger.warn("packs.refresh_mission_pack_failed", {
-        missionId: created.id,
-        reason: "mission_created",
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
+    await safeRefreshMissionPack(ctx, created.id, "mission_created");
 
     const detail = ctx.missionService.get(created.id);
     if (detail) return detail;
@@ -1598,18 +1571,7 @@ export function registerIpc({
   ipcMain.handle(IPC.missionsUpdate, async (_event, arg: UpdateMissionArgs): Promise<MissionDetail> => {
     const ctx = getCtx();
     const updated = ctx.missionService.update(arg);
-    try {
-      await ctx.packService.refreshMissionPack({
-        missionId: updated.id,
-        reason: "mission_updated"
-      });
-    } catch (error) {
-      ctx.logger.warn("packs.refresh_mission_pack_failed", {
-        missionId: updated.id,
-        reason: "mission_updated",
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
+    await safeRefreshMissionPack(ctx, updated.id, "mission_updated");
     return updated;
   });
 
@@ -1621,36 +1583,14 @@ export function registerIpc({
   ipcMain.handle(IPC.missionsUpdateStep, async (_event, arg: UpdateMissionStepArgs): Promise<MissionStep> => {
     const ctx = getCtx();
     const updated = ctx.missionService.updateStep(arg);
-    try {
-      await ctx.packService.refreshMissionPack({
-        missionId: updated.missionId,
-        reason: "mission_step_updated"
-      });
-    } catch (error) {
-      ctx.logger.warn("packs.refresh_mission_pack_failed", {
-        missionId: updated.missionId,
-        reason: "mission_step_updated",
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
+    await safeRefreshMissionPack(ctx, updated.missionId, "mission_step_updated");
     return updated;
   });
 
   ipcMain.handle(IPC.missionsAddArtifact, async (_event, arg: AddMissionArtifactArgs): Promise<MissionArtifact> => {
     const ctx = getCtx();
     const artifact = ctx.missionService.addArtifact(arg);
-    try {
-      await ctx.packService.refreshMissionPack({
-        missionId: artifact.missionId,
-        reason: "mission_artifact_added"
-      });
-    } catch (error) {
-      ctx.logger.warn("packs.refresh_mission_pack_failed", {
-        missionId: artifact.missionId,
-        reason: "mission_artifact_added",
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
+    await safeRefreshMissionPack(ctx, artifact.missionId, "mission_artifact_added");
     return artifact;
   });
 
@@ -1659,18 +1599,7 @@ export function registerIpc({
     async (_event, arg: AddMissionInterventionArgs): Promise<MissionIntervention> => {
       const ctx = getCtx();
       const intervention = ctx.missionService.addIntervention(arg);
-      try {
-        await ctx.packService.refreshMissionPack({
-          missionId: intervention.missionId,
-          reason: "mission_intervention_added"
-        });
-      } catch (error) {
-        ctx.logger.warn("packs.refresh_mission_pack_failed", {
-          missionId: intervention.missionId,
-          reason: "mission_intervention_added",
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      await safeRefreshMissionPack(ctx, intervention.missionId, "mission_intervention_added");
       return intervention;
     }
   );
@@ -1680,18 +1609,7 @@ export function registerIpc({
     async (_event, arg: ResolveMissionInterventionArgs): Promise<MissionIntervention> => {
       const ctx = getCtx();
       const intervention = ctx.missionService.resolveIntervention(arg);
-      try {
-        await ctx.packService.refreshMissionPack({
-          missionId: intervention.missionId,
-          reason: "mission_intervention_resolved"
-        });
-      } catch (error) {
-        ctx.logger.warn("packs.refresh_mission_pack_failed", {
-          missionId: intervention.missionId,
-          reason: "mission_intervention_resolved",
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      await safeRefreshMissionPack(ctx, intervention.missionId, "mission_intervention_resolved");
       return intervention;
     }
   );
@@ -1787,7 +1705,7 @@ export function registerIpc({
     } catch (error) {
       ctx.logger.warn("ipc.orchestrator_cancel_graceful_failed", {
         runId: arg?.runId ?? null,
-        error: error instanceof Error ? error.message : String(error)
+        error: getErrorMessage(error)
       });
       ctx.orchestratorService.cancelRun(arg);
     }
@@ -3041,7 +2959,7 @@ export function registerIpc({
         ? rows.filter((row) => row.status === status)
         : rows;
 
-    const exportedAt = new Date().toISOString();
+    const exportedAt = nowIso();
     const projectSlug = ctx.project.displayName.replace(/[^a-zA-Z0-9._-]+/g, "_");
     const dateStamp = exportedAt.slice(0, 10);
     const defaultPath = path.join(ctx.project.rootPath, `ade-history-${projectSlug}-${dateStamp}.${format}`);

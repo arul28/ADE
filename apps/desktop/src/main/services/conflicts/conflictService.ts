@@ -64,6 +64,7 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createPackService } from "../packs/packService";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
+import { asString, isRecord, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -154,22 +155,9 @@ const PREFILTER_MAX_TOUCHED_FILES = 800;
 const STALE_MS = 5 * 60_000;
 const EXTERNAL_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
 function safeJsonArray<T>(raw: string | null): T[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch {
-    return [];
-  }
+  const parsed = safeJsonParse(raw, null);
+  return Array.isArray(parsed) ? (parsed as T[]) : [];
 }
 
 function toIsoPlusMinutes(minutes: number): string {
@@ -215,13 +203,6 @@ function extractOverlapFiles(row: ConflictPredictionRow | undefined): string[] {
     ...overlaps.map((value) => value.trim()).filter(Boolean),
     ...conflicting.map((value) => value.path?.trim() ?? "").filter(Boolean)
   ]);
-}
-
-function parseDiffNameOnly(stdout: string): string[] {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
 async function readHeadSha(cwd: string, ref = "HEAD"): Promise<string> {
@@ -270,10 +251,6 @@ async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string):
     if (Number.isFinite(del)) deletions += del;
   }
   return { files, insertions, deletions };
-}
-
-function uniqueSorted(values: Iterable<string>): string[] {
-  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
 }
 
 function safeSegment(raw: string): string {
@@ -384,14 +361,8 @@ function rowToProposal(row: ConflictProposalRow): ConflictProposal {
 }
 
 function safeParseMetadata(raw: string | null | undefined): Record<string, unknown> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+  const parsed = safeJsonParse(raw, null);
+  return isRecord(parsed) ? parsed : {};
 }
 
 function writePatchFile(content: string): string {

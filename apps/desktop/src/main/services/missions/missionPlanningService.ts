@@ -24,6 +24,7 @@ import type {
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { isRecord } from "../shared/utils";
 
 type MissionPlanningLogger = {
   debug?: (event: string, data?: Record<string, unknown>) => void;
@@ -133,10 +134,6 @@ function stableStringify(value: unknown): string {
     return out;
   };
   return JSON.stringify(visit(value));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function toStringArray(value: unknown): string[] {

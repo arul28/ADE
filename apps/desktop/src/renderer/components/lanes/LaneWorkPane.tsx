@@ -4,10 +4,7 @@ import { useAppStore } from "../../state/appStore";
 import { LaneTerminalsPanel } from "./LaneTerminalsPanel";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
-
-function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
-}
+import { isChatToolType } from "../../lib/sessions";
 
 const WORK_TABS = [
   { id: "terminal" as const, num: "01", label: "TERMINAL", Icon: Terminal },

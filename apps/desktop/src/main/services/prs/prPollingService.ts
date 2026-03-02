@@ -2,10 +2,7 @@ import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "./prService";
 import type { PrEventPayload, PrNotificationKind, PrSummary } from "../../../shared/types";
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
+import { nowIso } from "../shared/utils";
 
 function clampMs(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;

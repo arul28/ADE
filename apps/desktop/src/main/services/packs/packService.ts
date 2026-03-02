@@ -8,6 +8,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
+import { parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type {
   Checkpoint,
@@ -106,14 +107,9 @@ type ParsedNumStat = {
 };
 
 function safeJsonParseArray(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((entry) => String(entry));
-  } catch {
-    return [];
-  }
+  const parsed = safeJsonParse<unknown>(raw, null);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((entry) => String(entry));
 }
 
 function readFileIfExists(filePath: string): string {
@@ -444,16 +440,6 @@ function moduleFromPath(relPath: string): string {
   return first || ".";
 }
 
-function parseDiffNameOnly(stdout: string): string[] {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function uniqueSorted(values: Iterable<string>): string[] {
-  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-}
 
 function normalizeConflictStatus(value: string): ConflictStatusValue | null {
   const v = value.trim();

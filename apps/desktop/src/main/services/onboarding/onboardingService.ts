@@ -15,6 +15,7 @@ import type {
   ProjectConfigFile
 } from "../../../shared/types";
 import { runGit, runGitOrThrow } from "../git/git";
+import { isRecord } from "../shared/utils";
 
 const STATUS_KEY = "onboarding:status";
 
@@ -32,10 +33,6 @@ function dirExists(absPath: string): boolean {
   } catch {
     return false;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function safeReadText(absPath: string, maxBytes: number): string {

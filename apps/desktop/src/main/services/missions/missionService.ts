@@ -59,6 +59,7 @@ import {
   validatePhaseSequence,
   groupMissionStepsByPhase,
 } from "./phaseEngine";
+import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "partially_completed", "failed", "canceled"]);
 
@@ -224,32 +225,14 @@ type CreateMissionInternalArgs = CreateMissionArgs & {
   plannerPlan?: PlannerPlan | null;
 };
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function safeParseRecord(raw: string | null): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  const parsed = safeJsonParse(raw, null);
+  return isRecord(parsed) ? parsed : null;
 }
 
 function safeParseArray(raw: string | null): unknown[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const parsed = safeJsonParse(raw, null);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 function coerceNumber(value: unknown): number | undefined {
@@ -403,7 +386,7 @@ function sanitizeFilePart(value: string): string {
   return cleaned.length ? cleaned : "phase-profile";
 }
 
-function normalizeMissionStatus(value: string): MissionStatus {
+export function normalizeMissionStatus(value: string): MissionStatus {
   if (
     value === "queued" ||
     value === "planning" ||

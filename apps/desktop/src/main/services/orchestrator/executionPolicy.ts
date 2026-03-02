@@ -31,6 +31,7 @@ import {
 } from "../../../shared/types";
 
 import { getModelById } from "../../../shared/modelRegistry";
+import { TERMINAL_STEP_STATUSES } from "./orchestratorContext";
 
 // ─────────────────────────────────────────────────────
 // Default policy
@@ -144,8 +145,6 @@ export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionP
 // ─────────────────────────────────────────────────────
 // Completion evaluator
 // ─────────────────────────────────────────────────────
-
-const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "superseded", "canceled"]);
 
 export function evaluateRunCompletion(
   steps: OrchestratorStep[],

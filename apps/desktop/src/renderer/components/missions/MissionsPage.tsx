@@ -91,6 +91,7 @@ import { ModelSelector } from "./ModelSelector";
 import { SmartBudgetPanel } from "./SmartBudgetPanel";
 import { MissionPromptInput } from "./MissionPromptInput";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
+import { relativeWhen, formatDurationMs } from "../../lib/format";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
 
@@ -297,18 +298,6 @@ const NOISY_EVENT_TYPES = new Set([
   "dynamic_cap",
 ]);
 const PLANNER_STEP_KEY = "planner";
-
-function relativeWhen(iso: string): string {
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return iso;
-  const delta = Math.max(0, Date.now() - ts);
-  const mins = Math.floor(delta / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
 
 function compactText(value: string, maxChars = 140): string {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -5345,6 +5334,13 @@ function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null }) {
   const [transcriptTail, setTranscriptTail] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const transcriptRef = useRef<HTMLPreElement>(null);
+  const visibleRef = useRef(true);
+
+  useEffect(() => {
+    const onVisChange = () => { visibleRef.current = document.visibilityState === "visible"; };
+    document.addEventListener("visibilitychange", onVisChange);
+    return () => document.removeEventListener("visibilitychange", onVisChange);
+  }, []);
 
   const activeAttempts = useMemo(() => {
     if (!runGraph) return [];
@@ -5387,6 +5383,7 @@ function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null }) {
     };
     void readTail();
     const timer = window.setInterval(() => {
+      if (!visibleRef.current) return;
       void readTail();
     }, 2_000);
     return () => {
@@ -5538,15 +5535,6 @@ function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null }) {
 }
 
 /* ════════════════════ HOME DASHBOARD ════════════════════ */
-
-function formatDurationMs(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "--";
-  const totalSeconds = Math.floor(value / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
 
 function MissionsHomeDashboard({
   snapshot,

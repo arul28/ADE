@@ -409,6 +409,7 @@ export const DECISION_TIMEOUT_CAP_MS_BY_HOURS: Record<number, number> = {
   24: 24 * 60 * 60 * 1_000,
   48: 48 * 60 * 60 * 1_000
 };
+export const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "superseded", "canceled"]);
 export const TRANSIENT_ERROR_CLASSES = new Set(["transient", "claim_conflict", "resume_recovered"]);
 
 export const CALL_TYPE_DEFAULTS: Record<OrchestratorCallType, ResolvedCallTypeConfig> = {
@@ -528,6 +529,11 @@ export async function runBestEffortWithTimeout(args: {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+export function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 export function asBool(value: unknown, fallback = false): boolean {
