@@ -935,7 +935,12 @@ export function registerIpc({
       if (target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
         throw new Error("Unsupported editor target.");
       }
-      const targetPath = relRaw ? path.resolve(rootRaw, relRaw) : path.resolve(rootRaw);
+      const rootPath = path.resolve(rootRaw);
+      const targetPath = relRaw ? path.resolve(rootPath, relRaw) : rootPath;
+      const relToRoot = path.relative(rootPath, targetPath);
+      if (relToRoot.startsWith("..") || path.isAbsolute(relToRoot)) {
+        throw new Error("relativePath escapes rootPath.");
+      }
 
       if (target === "finder") {
         shell.showItemInFolder(targetPath);

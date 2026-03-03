@@ -187,17 +187,6 @@ export function buildFullPrompt(
     ].join("\n")
   );
 
-  // Budget pressure directive injection
-  const budgetDirective = step.metadata?.budgetDirective;
-  if (typeof budgetDirective === "string" && budgetDirective.length > 0) {
-    systemParts.push(
-      [
-        "COST AWARENESS:",
-        budgetDirective
-      ].join("\n")
-    );
-  }
-
   const instructions =
     typeof step.metadata?.instructions === "string" ? step.metadata.instructions.trim() : "";
   if (instructions) {

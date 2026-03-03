@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createCoordinatorToolSet, type CoordinatorWorkerDeliveryStatus } from "./coordinatorTools";
 
@@ -37,6 +40,11 @@ function createCoordinatorHarness(args: {
   graph: any;
   missionMetadata?: Record<string, unknown> | null;
   onRunFinalize?: (input: { runId: string; succeeded: boolean; summary?: string; reason?: string }) => void;
+  missionLaneId?: string | null;
+  getMissionBudgetStatus?: () => Promise<any>;
+  onHardCapTriggered?: (detail: string) => void;
+  onBudgetWarning?: (pressure: "warning" | "critical", detail: string) => void;
+  projectRoot?: string;
 }) {
   const graph = {
     run: { metadata: {}, ...(args.graph?.run ?? {}) },
@@ -106,6 +114,27 @@ function createCoordinatorHarness(args: {
       });
       return created;
     }),
+    supersedeStep: vi.fn(
+      ({
+        stepId,
+        replacementStepId,
+        replacementStepKey,
+      }: {
+        stepId: string;
+        replacementStepId?: string | null;
+        replacementStepKey?: string | null;
+      }) => {
+        const step = graph.steps.find((entry: any) => entry.id === stepId);
+        if (!step) return null;
+        step.status = "superseded";
+        step.metadata = {
+          ...(step.metadata ?? {}),
+          supersededByStepId: replacementStepId ?? null,
+          supersededByStepKey: replacementStepKey ?? null,
+        };
+        return step;
+      }
+    ),
     updateStepDependencies: vi.fn(({ stepId, dependencyStepKeys }: { stepId: string; dependencyStepKeys: string[] }) => {
       const idByKey = new Map(graph.steps.map((entry: any) => [entry.stepKey, entry.id]));
       const step = graph.steps.find((entry: any) => entry.id === stepId);
@@ -151,13 +180,333 @@ function createCoordinatorHarness(args: {
     missionId: "mission-1",
     logger,
     db,
-    projectRoot: "/tmp",
+    projectRoot: args.projectRoot ?? "/tmp",
     onDagMutation,
     onRunFinalize: args.onRunFinalize,
+    getMissionBudgetStatus: args.getMissionBudgetStatus,
+    onHardCapTriggered: args.onHardCapTriggered,
+    onBudgetWarning: args.onBudgetWarning,
+    missionLaneId: args.missionLaneId ?? undefined,
   });
 
-  return { tools, orchestratorService, db, graph, onDagMutation, missionService, mission };
+  return { tools, orchestratorService, db, graph, onDagMutation, missionService, mission, logger };
 }
+
+describe("coordinatorTools mission lane fallback", () => {
+  it("uses missionLaneId when spawning workers without an explicit lane", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph,
+      missionLaneId: "mission-lane-42",
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "worker-no-lane",
+      provider: "claude",
+      prompt: "Do work",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      workerId: expect.stringContaining("worker_worker-no-lane_"),
+    });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        steps: [
+          expect.objectContaining({
+            laneId: "mission-lane-42",
+          }),
+        ],
+      })
+    );
+  });
+
+  it("routes request_specialist workers to missionLaneId when no explicit lane is provided", async () => {
+    const graph = {
+      run: {
+        metadata: {
+          teamRuntime: {
+            enabled: true,
+            template: {
+              roles: [
+                {
+                  name: "validator",
+                  capabilities: ["validation"],
+                  defaultModel: { provider: "codex", model: "gpt-5.3-codex" }
+                }
+              ]
+            }
+          }
+        }
+      },
+      steps: [],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph,
+      missionLaneId: "mission-lane-42",
+    });
+
+    const result = await (tools.request_specialist as any).execute({
+      role: "validator",
+      objective: "Review implementation changes and test outcomes.",
+      reason: "Need an independent validation pass.",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      role: "validator",
+    });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        steps: [
+          expect.objectContaining({
+            laneId: "mission-lane-42",
+          }),
+        ],
+      })
+    );
+  });
+});
+
+describe("coordinatorTools budget hard-cap guards", () => {
+  it("spawn_worker blocks and reports hard caps before mutating the DAG", async () => {
+    const getMissionBudgetStatus = vi.fn(async () => ({
+      perProvider: [
+        {
+          provider: "claude",
+          fiveHour: { usedPct: 96 },
+          weekly: { usedPct: 32 },
+        },
+      ],
+      hardCaps: {
+        fiveHourTriggered: true,
+        weeklyTriggered: false,
+        apiKeyTriggered: false,
+        fiveHourHardStopPercent: 95,
+        weeklyHardStopPercent: 90,
+        apiKeySpentUsd: 0,
+        apiKeyMaxSpendUsd: null,
+      },
+    }));
+    const onHardCapTriggered = vi.fn();
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: { run: { metadata: {} }, steps: [], attempts: [] },
+      getMissionBudgetStatus,
+      onHardCapTriggered,
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "blocked-worker",
+      provider: "claude",
+      prompt: "Do work",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      hardCapTriggered: true,
+    });
+    expect(String(result.error)).toContain("Cannot spawn worker:");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(onHardCapTriggered).toHaveBeenCalledTimes(1);
+    expect(String(onHardCapTriggered.mock.calls[0]?.[0] ?? "")).toContain("5hr usage");
+  });
+
+  it("request_specialist blocks on hard caps before worker creation", async () => {
+    const getMissionBudgetStatus = vi.fn(async () => ({
+      perProvider: [
+        {
+          provider: "codex",
+          fiveHour: { usedPct: 12 },
+          weekly: { usedPct: 91 },
+        },
+      ],
+      hardCaps: {
+        fiveHourTriggered: false,
+        weeklyTriggered: true,
+        apiKeyTriggered: false,
+        fiveHourHardStopPercent: 95,
+        weeklyHardStopPercent: 90,
+        apiKeySpentUsd: 0,
+        apiKeyMaxSpendUsd: null,
+      },
+    }));
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            teamRuntime: {
+              enabled: true,
+              template: {
+                roles: [
+                  {
+                    name: "validator",
+                    capabilities: ["validation"],
+                    defaultModel: { provider: "codex", model: "gpt-5.3-codex" }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        steps: [],
+        attempts: [],
+      },
+      getMissionBudgetStatus,
+    });
+
+    const result = await (tools.request_specialist as any).execute({
+      role: "validator",
+      objective: "Validate test integrity.",
+      reason: "Independent verifier required.",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      hardCapTriggered: true,
+    });
+    expect(String(result.error)).toContain("Cannot spawn specialist:");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("revise_plan blocks replacement worker spawning when hard caps are active", async () => {
+    const getMissionBudgetStatus = vi.fn(async () => ({
+      perProvider: [],
+      hardCaps: {
+        fiveHourTriggered: false,
+        weeklyTriggered: false,
+        apiKeyTriggered: true,
+        fiveHourHardStopPercent: 95,
+        weeklyHardStopPercent: 90,
+        apiKeySpentUsd: 51.25,
+        apiKeyMaxSpendUsd: 50,
+      },
+    }));
+    const { tools, orchestratorService, onDagMutation, graph } = createCoordinatorHarness({
+      graph: {
+        run: { metadata: {} },
+        steps: [
+          {
+            id: "step-legacy",
+            stepKey: "legacy",
+            stepIndex: 0,
+            title: "Legacy",
+            laneId: null,
+            status: "pending",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {}
+          }
+        ],
+        attempts: [],
+      },
+      getMissionBudgetStatus,
+    });
+
+    const result = await (tools.revise_plan as any).execute({
+      mode: "partial",
+      replaceStepKeys: ["legacy"],
+      replacementMap: [],
+      dependencyPatches: [],
+      reason: "Need better plan.",
+      newSteps: [
+        {
+          key: "replacement",
+          title: "Replacement",
+          description: "Implement replacement task.",
+          dependsOn: [],
+          provider: "claude",
+          replaces: ["legacy"]
+        }
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      hardCapTriggered: true,
+    });
+    expect(String(result.error)).toContain("Cannot revise plan");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(orchestratorService.supersedeStep).not.toHaveBeenCalled();
+    expect(orchestratorService.updateStepDependencies).not.toHaveBeenCalled();
+    expect(orchestratorService.appendRuntimeEvent).not.toHaveBeenCalled();
+    expect(orchestratorService.appendTimelineEvent).not.toHaveBeenCalled();
+    expect(onDagMutation).not.toHaveBeenCalled();
+    expect(graph.steps.find((entry: any) => entry.id === "step-legacy")?.status).toBe("pending");
+  });
+});
+
+describe("coordinatorTools revise_plan failure atomicity", () => {
+  it("returns validation errors before applying supersede or dependency mutations", async () => {
+    const { tools, orchestratorService, onDagMutation, graph } = createCoordinatorHarness({
+      graph: {
+        run: { metadata: {} },
+        steps: [
+          {
+            id: "step-legacy",
+            stepKey: "legacy",
+            stepIndex: 0,
+            title: "Legacy",
+            laneId: null,
+            status: "pending",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {}
+          }
+        ],
+        attempts: [],
+      },
+    });
+
+    const result = await (tools.revise_plan as any).execute({
+      mode: "partial",
+      replaceStepKeys: ["legacy"],
+      replacementMap: [],
+      dependencyPatches: [],
+      reason: "Plan rewrite requested.",
+      newSteps: [
+        {
+          key: "replacement",
+          title: "Replacement",
+          description: "Implement replacement task.",
+          dependsOn: [],
+          provider: "claude",
+          replaces: ["legacy"],
+          validationContract: {
+            level: "step",
+            tier: "dedicated",
+            required: true,
+            criteria: "",
+            evidence: [],
+            maxRetries: 2
+          }
+        }
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+    });
+    expect(String(result.error)).toContain("Invalid validation contract");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(orchestratorService.supersedeStep).not.toHaveBeenCalled();
+    expect(orchestratorService.updateStepDependencies).not.toHaveBeenCalled();
+    expect(orchestratorService.appendRuntimeEvent).not.toHaveBeenCalled();
+    expect(orchestratorService.appendTimelineEvent).not.toHaveBeenCalled();
+    expect(onDagMutation).not.toHaveBeenCalled();
+    expect(graph.steps.find((entry: any) => entry.id === "step-legacy")?.status).toBe("pending");
+  });
+});
 
 describe("coordinatorTools delivery status", () => {
   it("send_message returns delivered send status when worker session accepts message", async () => {
@@ -729,5 +1078,407 @@ describe("coordinatorTools report_validation milestone behavior", () => {
     });
     expect(result.interventionId).toBeTruthy();
     expect(missionService.addIntervention).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("coordinatorTools retry_step safety", () => {
+  it("rejects retry when an attempt is still running to prevent overlapping execution", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [
+        {
+          id: "step-1",
+          stepKey: "worker-1",
+          stepIndex: 0,
+          title: "Worker 1",
+          laneId: null,
+          status: "failed",
+          dependencyStepIds: [],
+          retryLimit: 2,
+          retryCount: 1,
+          metadata: { instructions: "old" },
+        },
+      ],
+      attempts: [
+        {
+          id: "attempt-running",
+          stepId: "step-1",
+          status: "running",
+          executorSessionId: "session-1",
+        },
+      ],
+    };
+    const { tools, db } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.retry_step as any).execute({
+      workerId: "worker-1",
+      adjustedInstructions: "Try again with stricter validation.",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(String(result.error)).toContain("still running");
+    expect(db.run).not.toHaveBeenCalled();
+  });
+
+  it("requires a failed or terminal source step before retrying", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [
+        {
+          id: "step-1",
+          stepKey: "worker-1",
+          stepIndex: 0,
+          title: "Worker 1",
+          laneId: null,
+          status: "ready",
+          dependencyStepIds: [],
+          retryLimit: 2,
+          retryCount: 0,
+          metadata: { instructions: "old" },
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, db } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.retry_step as any).execute({
+      workerId: "worker-1",
+      adjustedInstructions: "Retry instructions.",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(String(result.error)).toContain("failed or terminal");
+    expect(db.run).not.toHaveBeenCalled();
+  });
+});
+
+describe("coordinatorTools revise_plan validation atomicity", () => {
+  it("validates replacementMap targets before creating any new steps", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [
+        {
+          id: "step-old",
+          stepKey: "old-worker",
+          stepIndex: 0,
+          title: "Old worker",
+          laneId: null,
+          status: "pending",
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          metadata: {},
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, orchestratorService, graph: mutableGraph, onDagMutation } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.revise_plan as any).execute({
+      mode: "partial",
+      replaceStepKeys: ["old-worker"],
+      replacementMap: [{ oldStepKey: "old-worker", newStepKey: "missing-new-step" }],
+      dependencyPatches: [],
+      reason: "Need a better worker split",
+      newSteps: [
+        {
+          key: "new-worker",
+          title: "New worker",
+          description: "Implement replacement flow",
+          dependsOn: [],
+          replaces: ["old-worker"],
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(String(result.error)).toContain("replacementMap references unknown newStepKey");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(mutableGraph.steps).toHaveLength(1);
+    expect(onDagMutation).not.toHaveBeenCalled();
+  });
+
+  it("validates dependency patches before mutating the graph", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [
+        {
+          id: "step-old",
+          stepKey: "old-worker",
+          stepIndex: 0,
+          title: "Old worker",
+          laneId: null,
+          status: "pending",
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          metadata: {},
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, orchestratorService, graph: mutableGraph } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.revise_plan as any).execute({
+      mode: "partial",
+      replaceStepKeys: ["old-worker"],
+      replacementMap: [],
+      dependencyPatches: [
+        {
+          stepKey: "new-worker",
+          dependencyStepKeys: ["unknown-dependency"],
+        },
+      ],
+      reason: "Rewire dependencies",
+      newSteps: [
+        {
+          key: "new-worker",
+          title: "New worker",
+          description: "Implement replacement flow",
+          dependsOn: [],
+          replaces: ["old-worker"],
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(String(result.error)).toContain("unknown dependency keys");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(mutableGraph.steps).toHaveLength(1);
+  });
+});
+
+describe("coordinatorTools hard-cap fail-closed behavior", () => {
+  it("blocks spawn_worker when budget telemetry fails", async () => {
+    const onHardCapTriggered = vi.fn();
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: { run: { metadata: {} }, steps: [], attempts: [] },
+      getMissionBudgetStatus: async () => {
+        throw new Error("telemetry offline");
+      },
+      onHardCapTriggered,
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "blocked-worker",
+      provider: "claude",
+      prompt: "Do work",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      hardCapTriggered: true,
+    });
+    expect(String(result.error)).toContain("Budget telemetry unavailable");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(onHardCapTriggered).toHaveBeenCalledWith(expect.stringContaining("Budget telemetry unavailable"));
+  });
+
+  it("blocks revise_plan spawning when budget telemetry fails", async () => {
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: { metadata: {} },
+        steps: [
+          {
+            id: "step-old",
+            stepKey: "old-worker",
+            stepIndex: 0,
+            title: "Old worker",
+            laneId: null,
+            status: "pending",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {},
+          },
+        ],
+        attempts: [],
+      },
+      getMissionBudgetStatus: async () => {
+        throw new Error("telemetry unavailable");
+      },
+    });
+
+    const result = await (tools.revise_plan as any).execute({
+      mode: "partial",
+      replaceStepKeys: ["old-worker"],
+      replacementMap: [],
+      dependencyPatches: [],
+      reason: "Need alternate approach",
+      newSteps: [
+        {
+          key: "new-worker",
+          title: "New worker",
+          description: "Replacement implementation",
+          dependsOn: [],
+          replaces: ["old-worker"],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      hardCapTriggered: true,
+    });
+    expect(String(result.error)).toContain("Budget telemetry unavailable");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+});
+
+describe("coordinatorTools file path containment", () => {
+  it("read_file rejects absolute paths that only share a root prefix", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-root-"));
+    const siblingRoot = `${projectRoot}-evil`;
+    fs.mkdirSync(siblingRoot, { recursive: true });
+    const outsideFile = path.join(siblingRoot, "secret.txt");
+    fs.writeFileSync(outsideFile, "leak", "utf-8");
+    const { tools } = createCoordinatorHarness({
+      graph: { run: { metadata: {} }, steps: [], attempts: [] },
+      projectRoot,
+    });
+
+    const result = await (tools.read_file as any).execute({
+      filePath: outsideFile,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "Path is outside project root",
+    });
+  });
+
+  it("read_step_output sanitizes traversal-like keys and reads only project-scoped output", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-step-output-root-"));
+    const maliciousKey = "../../sensitive";
+    const sanitized = maliciousKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const outputDir = path.join(projectRoot, ".ade");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const scopedFile = path.join(outputDir, `step-output-${sanitized}.md`);
+    fs.writeFileSync(scopedFile, "scoped output", "utf-8");
+
+    const { tools } = createCoordinatorHarness({
+      graph: { run: { metadata: {} }, steps: [], attempts: [] },
+      projectRoot,
+    });
+
+    const result = await (tools.read_step_output as any).execute({
+      stepKey: maliciousKey,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      stepKey: maliciousKey,
+      content: "scoped output",
+    });
+  });
+});
+
+describe("coordinatorTools completion DAG events", () => {
+  it("emits status_changed DAG events when complete_mission skips pending/ready/blocked steps", async () => {
+    const graph = {
+      run: { metadata: { teamRuntime: { policyOverrides: { requireValidatorPass: false } } } },
+      steps: [
+        {
+          id: "step-pending",
+          stepKey: "pending-step",
+          stepIndex: 0,
+          title: "Pending",
+          laneId: null,
+          status: "pending",
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          metadata: {},
+        },
+        {
+          id: "step-ready",
+          stepKey: "ready-step",
+          stepIndex: 1,
+          title: "Ready",
+          laneId: null,
+          status: "ready",
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          metadata: {},
+        },
+        {
+          id: "step-blocked",
+          stepKey: "blocked-step",
+          stepIndex: 2,
+          title: "Blocked",
+          laneId: null,
+          status: "blocked",
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          metadata: {},
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, onDagMutation } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.complete_mission as any).execute({ summary: "Mission complete" });
+
+    expect(result.ok).toBe(true);
+    const skipEvents = onDagMutation.mock.calls
+      .map((call) => call[0]?.mutation)
+      .filter((mutation: any) => mutation?.type === "status_changed" && mutation?.newStatus === "skipped");
+    expect(skipEvents).toHaveLength(3);
+    expect(skipEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ stepKey: "pending-step" }),
+        expect.objectContaining({ stepKey: "ready-step" }),
+        expect.objectContaining({ stepKey: "blocked-step" }),
+      ])
+    );
+  });
+});
+
+describe("coordinatorTools autopilot scheduling logging", () => {
+  it("logs debug context when retry_step autopilot scheduling fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const graph = {
+        run: { metadata: {} },
+        steps: [
+          {
+            id: "step-1",
+            stepKey: "worker-1",
+            stepIndex: 0,
+            title: "Worker 1",
+            laneId: null,
+            status: "failed",
+            dependencyStepIds: [],
+            retryLimit: 2,
+            retryCount: 1,
+            metadata: { instructions: "old" },
+          },
+        ],
+        attempts: [],
+      };
+      const { tools, orchestratorService, logger } = createCoordinatorHarness({ graph });
+      orchestratorService.startReadyAutopilotAttempts.mockRejectedValueOnce(new Error("queue unavailable"));
+
+      const result = await (tools.retry_step as any).execute({
+        workerId: "worker-1",
+        adjustedInstructions: "Retry with safer ordering.",
+      });
+
+      expect(result.ok).toBe(true);
+      await vi.runAllTimersAsync();
+      expect(logger.debug).toHaveBeenCalledWith(
+        "coordinator.retry_step.autopilot_schedule_failed",
+        expect.objectContaining({
+          runId: "run-1",
+          workerId: "worker-1",
+          error: "queue unavailable",
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

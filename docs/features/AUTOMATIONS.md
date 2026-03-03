@@ -12,8 +12,8 @@ This document is retained for historical context only.
 
 Beginning in Phase 4, ADE moves to an **agent-first** model where automation behavior is represented as an **Automation Agent** under the unified Agents system.
 
-- Route: `/automations` is legacy and replaced by `/agents`.
-- Config: `automations:` is legacy and migrates to `agents:`.
+- Route: current runtime route is `/automations`; `/agents` is a compatibility alias.
+- Config: current runtime key is `automations:`. `agents:` remains roadmap direction.
 - Runtime: non-interactive automation executions run as agent runtimes with standard policy, memory, and audit semantics.
 
 ---
@@ -25,4 +25,3 @@ Beginning in Phase 4, ADE moves to an **agent-first** model where automation beh
 - [docs/architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md)
 - [docs/architecture/CONTEXT_CONTRACT.md](../architecture/CONTEXT_CONTRACT.md)
 - [docs/final-plan.md](../final-plan.md)
-

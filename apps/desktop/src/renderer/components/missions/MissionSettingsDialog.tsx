@@ -3,14 +3,18 @@ import {
   GearSix,
   X,
   Plus,
+  Warning,
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type { PhaseProfile } from "../../../shared/types";
-import { MODEL_REGISTRY, MODEL_FAMILIES, type ProviderFamily } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 import {
   type MissionSettingsDraft,
   type PlannerProvider,
+  toApiPermissionMode,
+  toClaudePermissionMode,
+  toCodexApprovalMode,
+  toCodexSandboxPermissions,
   toTeammatePlanMode,
 } from "./missionHelpers";
 
@@ -376,7 +380,7 @@ export function MissionSettingsDialog({
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
               <label className="text-xs">
-                <div style={settingsLabelStyle}>DEFAULT PLANNER MODEL</div>
+                <div style={settingsLabelStyle}>DEFAULT PLANNER PROVIDER</div>
                 <div className="mt-1">
                   <select
                     style={settingsInputStyle}
@@ -384,17 +388,8 @@ export function MissionSettingsDialog({
                     onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value as PlannerProvider })}
                   >
                     <option value="auto">Auto</option>
-                    {([...new Set(MODEL_REGISTRY.map((m) => m.family))] as ProviderFamily[]).map((family) => {
-                      const familyModels = MODEL_REGISTRY.filter((m) => m.family === family && !m.deprecated);
-                      if (!familyModels.length) return null;
-                      return (
-                        <optgroup key={family} label={MODEL_FAMILIES[family]?.displayName ?? family}>
-                          {familyModels.map((m) => (
-                            <option key={m.id} value={m.id}>{m.displayName}</option>
-                          ))}
-                        </optgroup>
-                      );
-                    })}
+                    <option value="claude">Claude</option>
+                    <option value="codex">Codex</option>
                   </select>
                 </div>
               </label>
@@ -423,7 +418,7 @@ export function MissionSettingsDialog({
 
           <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
             <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>WORKER PERMISSIONS</div>
-            <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>CLAUDE WORKER</div>
                 <label className="text-xs block">
@@ -432,11 +427,12 @@ export function MissionSettingsDialog({
                     style={settingsInputStyle}
                     value={draft.claudePermissionMode}
                     disabled={draft.claudeDangerouslySkip}
-                    onChange={(e) => onDraftChange({ claudePermissionMode: e.target.value })}
+                    onChange={(e) => onDraftChange({ claudePermissionMode: toClaudePermissionMode(e.target.value) })}
                   >
-                    <option value="plan">Plan (read-only)</option>
-                    <option value="acceptEdits">Accept edits</option>
-                    <option value="bypassPermissions">Bypass permissions</option>
+                    <option value="default">Ask Permissions</option>
+                    <option value="acceptEdits">Accept Edits</option>
+                    <option value="plan">Plan Mode</option>
+                    <option value="bypassPermissions">Bypass Permissions</option>
                   </select>
                 </label>
                 <label className="flex items-center gap-2 text-xs" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
@@ -459,7 +455,7 @@ export function MissionSettingsDialog({
                   <select
                     style={settingsInputStyle}
                     value={draft.codexSandboxPermissions}
-                    onChange={(e) => onDraftChange({ codexSandboxPermissions: e.target.value })}
+                    onChange={(e) => onDraftChange({ codexSandboxPermissions: toCodexSandboxPermissions(e.target.value) })}
                   >
                     <option value="read-only">Read-only</option>
                     <option value="workspace-write">Workspace write</option>
@@ -471,7 +467,7 @@ export function MissionSettingsDialog({
                   <select
                     style={settingsInputStyle}
                     value={draft.codexApprovalMode}
-                    onChange={(e) => onDraftChange({ codexApprovalMode: e.target.value })}
+                    onChange={(e) => onDraftChange({ codexApprovalMode: toCodexApprovalMode(e.target.value) })}
                   >
                     <option value="suggest">Suggest</option>
                     <option value="auto-edit">Auto-edit</option>
@@ -489,7 +485,39 @@ export function MissionSettingsDialog({
                   />
                 </label>
               </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>API MODELS</div>
+                <label className="text-xs block">
+                  <div style={settingsLabelStyle}>PERMISSION MODE</div>
+                  <select
+                    style={settingsInputStyle}
+                    value={draft.apiPermissionMode}
+                    onChange={(e) => onDraftChange({ apiPermissionMode: toApiPermissionMode(e.target.value) })}
+                  >
+                    <option value="plan">Plan (read-only)</option>
+                    <option value="edit">Edit (no shell)</option>
+                    <option value="full-auto">Full-Auto</option>
+                  </select>
+                </label>
+                <div className="text-[11px]" style={{ color: COLORS.textMuted }}>
+                  API/local models use ADE&apos;s built-in sandbox for bash command filtering.
+                </div>
+              </div>
             </div>
+            {(
+              (draft.claudePermissionMode !== "bypassPermissions" && !draft.claudeDangerouslySkip) ||
+              draft.codexApprovalMode !== "full-auto" ||
+              draft.apiPermissionMode !== "full-auto"
+            ) && (
+              <div
+                className="mt-2 flex items-center gap-1"
+                style={{ fontSize: 10, color: "#F59E0B", fontFamily: MONO_FONT }}
+              >
+                <Warning size={12} weight="bold" />
+                Workers using restricted permissions may pause for approval during autonomous execution.
+              </div>
+            )}
           </div>
 
           <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>

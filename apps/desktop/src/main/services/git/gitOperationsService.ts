@@ -45,13 +45,15 @@ function isUnsupportedIgnoreOtherWorktreesError(message: string): boolean {
 }
 
 function ensureRelativeRepoPath(relPath: string): string {
-  const normalized = relPath.trim().replace(/\\/g, "/");
+  const normalized = relPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!normalized.length) throw new Error("File path is required");
   if (normalized.includes("\0")) throw new Error("Invalid file path");
   if (path.isAbsolute(normalized)) throw new Error("Path must be repo-relative");
+  if (normalized.startsWith(":")) throw new Error("Pathspec magic is not allowed");
   if (normalized.startsWith("../") || normalized === ".." || normalized.includes("/../")) {
     throw new Error("Path escapes lane root");
   }
+  if (normalized === ".") throw new Error("Path must point to a file");
   return normalized;
 }
 

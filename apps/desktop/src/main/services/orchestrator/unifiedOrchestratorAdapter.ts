@@ -4,6 +4,11 @@ import type { OrchestratorExecutorAdapter } from "./orchestratorService";
 import { createBaseOrchestratorAdapter, shellEscapeArg } from "./baseOrchestratorAdapter";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import {
+  DEFAULT_CLAUDE_PERMISSION_MODE,
+  DEFAULT_CODEX_APPROVAL_MODE,
+  DEFAULT_CODEX_SANDBOX_PERMISSIONS
+} from "./orchestratorConstants";
 
 /**
  * Build environment variable assignments for worker identity.
@@ -219,7 +224,7 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
         const permissionMode =
           typeof step.metadata?.permissionMode === "string" && step.metadata.permissionMode.trim().length
             ? step.metadata.permissionMode.trim()
-            : permissionConfig?.claude?.permissionMode ?? "acceptEdits";
+            : permissionConfig?.claude?.permissionMode ?? DEFAULT_CLAUDE_PERMISSION_MODE;
 
         const dangerouslySkip = permissionConfig?.claude?.dangerouslySkipPermissions === true;
         const allowedTools = permissionConfig?.claude?.allowedTools ?? [];
@@ -256,16 +261,21 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
         const approvalMode =
           typeof step.metadata?.approvalMode === "string" && step.metadata.approvalMode.trim().length
             ? step.metadata.approvalMode.trim()
-            : permissionConfig?.codex?.approvalMode ?? "full-auto";
+            : permissionConfig?.codex?.approvalMode ?? DEFAULT_CODEX_APPROVAL_MODE;
 
         const approvalPolicy =
-          approvalMode === "suggest" ? "untrusted" :
-          approvalMode === "auto-edit" ? "on-request" : "never";
+          approvalMode === "suggest" || approvalMode === "untrusted"
+            ? "untrusted"
+            : approvalMode === "auto-edit" || approvalMode === "on-request" || approvalMode === "on-failure"
+              ? "on-request"
+              : approvalMode === "never" || approvalMode === "full-auto"
+                ? "never"
+                : "on-request";
 
         const sandboxMode =
           typeof step.metadata?.sandboxPermissions === "string" && step.metadata.sandboxPermissions.trim().length
             ? step.metadata.sandboxPermissions.trim()
-            : permissionConfig?.codex?.sandboxPermissions ?? "workspace-write";
+            : permissionConfig?.codex?.sandboxPermissions ?? DEFAULT_CODEX_SANDBOX_PERMISSIONS;
 
         const writablePaths = permissionConfig?.codex?.writablePaths ?? [];
 

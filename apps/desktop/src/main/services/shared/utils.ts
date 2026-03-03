@@ -5,6 +5,8 @@
  * Import from here instead of re-declaring locally.
  */
 
+import path from "node:path";
+
 // ── Type guards ─────────────────────────────────────────────────────
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,4 +61,20 @@ export function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T
   } catch {
     return fallback;
   }
+}
+
+// ── Path helpers ────────────────────────────────────────────────────
+
+/** Returns true if `candidate` is equal to or nested inside `root`. */
+export function isWithinDir(root: string, candidate: string): boolean {
+  const rel = path.relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+// ── String helpers ──────────────────────────────────────────────────
+
+/** Return trimmed string or null if empty/non-string. */
+export function toOptionalString(value: unknown): string | null {
+  const raw = typeof value === "string" ? value.trim() : "";
+  return raw.length > 0 ? raw : null;
 }

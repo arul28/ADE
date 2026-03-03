@@ -415,12 +415,17 @@ describe("agentChatService", () => {
       codex.onRequest("thread/start", (msg) => {
         codex.respond(msg.id!, { thread: { id: "thread-1" } });
       });
+      codex.onRequest("turn/start", (msg) => {
+        codex.respond(msg.id!, { turn: { id: "turn-bootstrap" } });
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
 
       const session = await fixture.service.createSession({
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-5.3-codex"
       });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "bootstrap" });
 
       expect(session.provider).toBe("codex");
       const initialize = codex.sent.find((entry) => entry.method === "initialize");
@@ -448,13 +453,18 @@ describe("agentChatService", () => {
         threadStart = msg;
         codex.respond(msg.id!, { thread: { id: "thread-abc" } });
       });
+      codex.onRequest("turn/start", (msg) => {
+        codex.respond(msg.id!, { turn: { id: "turn-thread-start" } });
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
 
-      await fixture.service.createSession({
+      const session = await fixture.service.createSession({
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-5.3-codex",
         reasoningEffort: "high"
       });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot-thread" });
 
       expect(threadStart).toBeTruthy();
       const threadStartParams = (threadStart as SentMessage | null)?.params as any;
@@ -578,8 +588,11 @@ describe("agentChatService", () => {
 
       codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
       codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-approval" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
 
       const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot-approval" });
 
       codex.serverRequest(7001, "item/commandExecution/requestApproval", {
         itemId: "cmd-approval-1",
@@ -659,8 +672,11 @@ describe("agentChatService", () => {
 
       codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
       codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-error" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
 
-      await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot-error" });
 
       codex.notify("error", {
         turnId: "turn-err",
@@ -1212,8 +1228,11 @@ describe("agentChatService", () => {
 
       codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
       codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-dispose" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
 
       const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot-dispose" });
       await fixture.service.dispose({ sessionId: session.id });
 
       expect(codex.proc.kill).toHaveBeenCalled();

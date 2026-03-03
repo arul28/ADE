@@ -43,7 +43,6 @@ import type {
   ProjectConfigSnapshot,
   StartOrchestratorRunFromMissionArgs,
   SteerMissionResult,
-  PrStrategy,
   MissionDashboardSnapshot,
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
@@ -81,6 +80,7 @@ import {
   toClaudePermissionMode,
   toCodexSandboxPermissions,
   toCodexApprovalMode,
+  toApiPermissionMode,
   compactText,
   isPlannerStreamMessage,
   formatMetricSample,
@@ -91,7 +91,7 @@ import {
   type SteeringEntry,
   type MissionSettingsDraft,
 } from "./missionHelpers";
-import { CreateMissionDialog, type CreateDraft } from "./CreateMissionDialog";
+import { CreateMissionDialog, type CreateDraft, type CreateMissionDefaults } from "./CreateMissionDialog";
 import { MissionSettingsDialog } from "./MissionSettingsDialog";
 import { PlanTab } from "./PlanTab";
 import { WorkTab } from "./WorkTab";
@@ -1145,6 +1145,19 @@ export default function MissionsPage() {
     selectedMission.status === "planning" ||
     selectedMission.status === "intervention_required"
   );
+  const defaultCreateLaneId = useMemo(
+    () => lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null,
+    [lanes]
+  );
+  const createMissionDefaults = useMemo<CreateMissionDefaults>(() => ({
+    plannerProvider: missionSettingsDraft.defaultPlannerProvider,
+    claudePermissionMode: missionSettingsDraft.claudePermissionMode,
+    claudeDangerouslySkip: missionSettingsDraft.claudeDangerouslySkip,
+    codexSandboxPermissions: missionSettingsDraft.codexSandboxPermissions,
+    codexApprovalMode: missionSettingsDraft.codexApprovalMode,
+    codexConfigPath: missionSettingsDraft.codexConfigPath,
+    apiPermissionMode: missionSettingsDraft.apiPermissionMode,
+  }), [missionSettingsDraft]);
 
   const applyMissionSettingsSnapshot = useCallback((snapshot: ProjectConfigSnapshot) => {
     const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
@@ -1159,13 +1172,11 @@ export default function MissionsPage() {
     const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
     const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
     const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
-    const orchLocal = localOrchestrator as Record<string, unknown>;
-    const orchEffective = effectiveOrchestrator as Record<string, unknown>;
-    const effectivePrStrategy = (orchLocal.defaultPrStrategy ?? orchEffective.defaultPrStrategy ?? { kind: "integration", targetBranch: "main", draft: true }) as PrStrategy;
+    const localApi = isRecord(localPermissions.api) ? localPermissions.api : {};
+    const effectiveApi = isRecord(effectivePermissions.api) ? effectivePermissions.api : {};
 
     setMissionSettingsSnapshot(snapshot);
     setMissionSettingsDraft({
-      defaultPrStrategy: effectivePrStrategy,
       defaultPlannerProvider: toPlannerProvider(
         readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto")
       ),
@@ -1178,7 +1189,7 @@ export default function MissionsPage() {
       ),
       requirePlanReview: readBool(localOrchestrator.requirePlanReview, effectiveOrchestrator.requirePlanReview, false),
       claudePermissionMode: toClaudePermissionMode(
-        readString(localClaude.permissionMode, effectiveClaude.permissionMode, "acceptEdits")
+        readString(localClaude.permissionMode, effectiveClaude.permissionMode, "bypassPermissions")
       ),
       claudeDangerouslySkip: readBool(localClaude.dangerouslySkipPermissions, effectiveClaude.dangerouslySkipPermissions, false),
       codexSandboxPermissions: toCodexSandboxPermissions(
@@ -1187,7 +1198,10 @@ export default function MissionsPage() {
       codexApprovalMode: toCodexApprovalMode(
         readString(localCodex.approvalMode, effectiveCodex.approvalMode, "full-auto")
       ),
-      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, "")
+      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, ""),
+      apiPermissionMode: toApiPermissionMode(
+        readString(localApi.permissionMode, effectiveApi.permissionMode, "full-auto")
+      ),
     });
   }, []);
 
@@ -1212,15 +1226,16 @@ export default function MissionsPage() {
       const localPermissions = isRecord(localAi.permissions) ? localAi.permissions : {};
       const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
       const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
+      const localApi = isRecord(localPermissions.api) ? localPermissions.api : {};
 
       const normalizedPlannerProvider = toPlannerProvider(missionSettingsDraft.defaultPlannerProvider);
       const normalizedClaudePermissionMode = toClaudePermissionMode(missionSettingsDraft.claudePermissionMode);
       const normalizedCodexSandbox = toCodexSandboxPermissions(missionSettingsDraft.codexSandboxPermissions);
       const normalizedCodexApproval = toCodexApprovalMode(missionSettingsDraft.codexApprovalMode);
+      const normalizedApiPermissionMode = toApiPermissionMode(missionSettingsDraft.apiPermissionMode);
 
       const nextOrchestrator: Record<string, unknown> = {
         ...localOrchestrator,
-        defaultPrStrategy: missionSettingsDraft.defaultPrStrategy,
         defaultPlannerProvider: normalizedPlannerProvider,
         teammatePlanMode: toTeammatePlanMode(missionSettingsDraft.teammatePlanMode),
         requirePlanReview: missionSettingsDraft.requirePlanReview
@@ -1249,6 +1264,11 @@ export default function MissionsPage() {
         delete nextCodex.configPath;
       }
 
+      const nextApi: Record<string, unknown> = {
+        ...localApi,
+        permissionMode: normalizedApiPermissionMode
+      };
+
       const saved = await window.ade.projectConfig.save({
         shared: snapshot.shared,
         local: {
@@ -1259,7 +1279,8 @@ export default function MissionsPage() {
             permissions: {
               ...localPermissions,
               claude: nextClaude,
-              codex: nextCodex
+              codex: nextCodex,
+              api: nextApi
             }
           }
         }
@@ -1495,8 +1516,7 @@ export default function MissionsPage() {
   const handleLaunchMission = useCallback(async (draft: CreateDraft) => {
     const prompt = draft.prompt.trim();
     if (!prompt) { setError("Mission prompt is required."); return; }
-    const fallbackLaneId = lanes.find((l) => l.laneType === "primary")?.id ?? lanes[0]?.id ?? "";
-    const resolvedLaneId = draft.laneId.trim() || fallbackLaneId;
+    const resolvedLaneId = draft.laneId.trim() || defaultCreateLaneId || "";
     setCreateBusy(true);
     try {
       const created = await window.ade.missions.create({
@@ -1507,12 +1527,17 @@ export default function MissionsPage() {
         allowPlanningQuestions: draft.allowPlanningQuestions,
         allowCompletionWithRisk: draft.allowCompletionWithRisk,
         teamRuntime: draft.teamRuntime,
+        executionPolicy: {
+          prStrategy: draft.prStrategy,
+          ...(draft.teamRuntime ? { teamRuntime: draft.teamRuntime } : {}),
+        },
         modelConfig: {
           ...draft.modelConfig,
           decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
         },
         phaseProfileId: draft.phaseProfileId,
         phaseOverride: draft.phaseOverride,
+        permissionConfig: draft.permissionConfig,
         autostart: true,
         launchMode: "autopilot",
       });
@@ -1527,7 +1552,7 @@ export default function MissionsPage() {
     } finally {
       setCreateBusy(false);
     }
-  }, [lanes, refreshMissionList, loadMissionDetail, loadOrchestratorGraph]);
+  }, [defaultCreateLaneId, refreshMissionList, loadMissionDetail, loadOrchestratorGraph]);
 
   const handleStartRun = useCallback(async () => {
     if (!selectedMission) return;
@@ -2306,6 +2331,8 @@ export default function MissionsPage() {
             onLaunch={handleLaunchMission}
             busy={createBusy}
             lanes={mappedLanes}
+            defaultLaneId={defaultCreateLaneId}
+            missionDefaults={createMissionDefaults}
           />
         )}
       </AnimatePresence>

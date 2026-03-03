@@ -2553,8 +2553,6 @@ export function createAgentChatService(args: {
       managed.runtime.interrupted = true;
     }
 
-    teardownRuntime(managed);
-
     await finishSession(managed, "disposed", {
       summary: managed.preview ? `Session closed: ${managed.preview}` : "Session closed."
     });

@@ -593,12 +593,26 @@ export function parseChatDeliveryState(value: unknown): OrchestratorChatDelivery
 
 export function parseChatTarget(value: unknown): OrchestratorChatTarget | null {
   if (!isRecord(value)) return null;
-  const kind = value.kind === "coordinator" || value.kind === "worker" || value.kind === "workers" ? value.kind : null;
+  const kind =
+    value.kind === "coordinator"
+    || value.kind === "teammate"
+    || value.kind === "worker"
+    || value.kind === "workers"
+      ? value.kind
+      : null;
   if (!kind) return null;
   if (kind === "coordinator") {
     return {
       kind: "coordinator",
       runId: typeof value.runId === "string" ? value.runId : null
+    };
+  }
+  if (kind === "teammate") {
+    return {
+      kind: "teammate",
+      runId: typeof value.runId === "string" ? value.runId : null,
+      teamMemberId: typeof value.teamMemberId === "string" ? value.teamMemberId : null,
+      sessionId: typeof value.sessionId === "string" ? value.sessionId : null
     };
   }
   if (kind === "workers") {
@@ -867,6 +881,14 @@ export function sanitizeChatTarget(target: OrchestratorChatTarget | null | undef
       runId: toOptionalString(target.runId)
     };
   }
+  if (target.kind === "teammate") {
+    return {
+      kind: "teammate",
+      runId: toOptionalString(target.runId),
+      teamMemberId: toOptionalString(target.teamMemberId),
+      sessionId: toOptionalString(target.sessionId)
+    };
+  }
   if (target.kind === "workers") {
     return {
       kind: "workers",
@@ -905,12 +927,27 @@ export function workerThreadIdentity(target: OrchestratorChatTarget | null | und
   return null;
 }
 
+export function teammateThreadIdentity(target: OrchestratorChatTarget | null | undefined): string | null {
+  if (!target || target.kind !== "teammate") return null;
+  const options = [target.teamMemberId, target.sessionId, target.runId];
+  for (const value of options) {
+    const normalized = toOptionalString(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 export function deriveThreadTitle(args: {
   target: OrchestratorChatTarget | null | undefined;
   step: { stepKey: string; title: string } | null | undefined;
   lane: { name: string } | null | undefined;
   fallback?: string;
 }): string {
+  const teammate = args.target && args.target.kind === "teammate" ? args.target : null;
+  if (teammate) {
+    const teammateLabel = toOptionalString(teammate.teamMemberId) ?? toOptionalString(teammate.sessionId);
+    return teammateLabel ? `Teammate: ${teammateLabel}` : "Teammate";
+  }
   const target = args.target && args.target.kind === "worker" ? args.target : null;
   const stepLabel = args.step?.title || args.step?.stepKey || target?.stepKey || null;
   const suffix =

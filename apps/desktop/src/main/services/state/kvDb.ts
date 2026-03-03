@@ -252,6 +252,18 @@ function migrate(db: Database) {
     "terminal_sessions",
     ["status"]
   );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_terminal_sessions_started_at on terminal_sessions(started_at desc)",
+    "terminal_sessions",
+    ["started_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_terminal_sessions_lane_started_at on terminal_sessions(lane_id, started_at desc)",
+    "terminal_sessions",
+    ["lane_id", "started_at"]
+  );
 
   // Phase 2 process/test config and history tables.
   db.run(`

@@ -4,8 +4,7 @@
 // monitor progress, steer execution, and complete missions autonomously.
 // ---------------------------------------------------------------------------
 
-import { streamText, stepCountIs } from "ai";
-import type { ModelMessage } from "@ai-sdk/provider-utils";
+import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { createCoordinatorToolSet, type CoordinatorSendWorkerMessageFn } from "./coordinatorTools";
 import {
   formatRuntimeEvent,
@@ -93,6 +92,10 @@ export type CoordinatorAgentDeps = {
   onBudgetWarning?: (pressure: "warning" | "critical", detail: string) => void;
   /** Runtime worker delivery bridge used by coordinator messaging tools. */
   sendWorkerMessageToSession?: CoordinatorSendWorkerMessageFn;
+  /** Primary mission lane ID — all mission work should happen in this lane (or children of it). */
+  missionLaneId?: string;
+  /** Callback to create a new lane branching from the mission's base lane. */
+  provisionLane?: (name: string, description?: string) => Promise<{ laneId: string; name: string }>;
 };
 
 type QueuedEvent = {
@@ -207,6 +210,8 @@ export class CoordinatorAgent {
       onHardCapTriggered: deps.onHardCapTriggered,
       onBudgetWarning: deps.onBudgetWarning,
       sendWorkerMessageToSession: deps.sendWorkerMessageToSession,
+      missionLaneId: deps.missionLaneId,
+      provisionLane: deps.provisionLane,
     });
     this.wrapDagMutationToolsWithCheckpoint();
     this.systemPrompt = this.buildSystemPrompt();
@@ -670,6 +675,51 @@ You are autonomous WITHIN user-configured settings. This means:
 
 If the user disabled testing, do NOT spawn test workers. If the user set a specific worker model, use THAT model. If the user chose manual PR strategy, do NOT create PRs automatically. You decide HOW to accomplish the mission — the user decides WHAT constraints you operate under.
 
+## Scope Awareness — Right-Size Your Approach
+
+Match your approach to the mission's actual complexity:
+
+**ONE worker suffices when:**
+- Task touches fewer than 20 files that are logically connected
+- Changes are sequential (each depends on the previous)
+- Total context fits comfortably in a single agent session
+- No file-level conflicts possible between parallel edits
+
+**MULTIPLE workers when:**
+- Genuinely independent workstreams exist (e.g., frontend + backend + tests)
+- Different expertise needed (e.g., DB migration + API changes + UI updates)
+- Context would overflow a single agent's window
+- Work can meaningfully proceed in parallel without coordination overhead
+
+**Same-lane parallelism (workers share one worktree):**
+- Use when parallel tasks touch NON-OVERLAPPING files
+- Workers can edit different files concurrently in the same worktree
+- Commits must be serialized — only one worker commits at a time
+- If ANY file overlap is possible, use separate lanes instead
+
+**Separate lanes (each worker gets its own worktree):**
+- Use when tasks might touch overlapping files
+- Use for large, isolated workstreams that benefit from clean git history
+- Each lane is a fresh git worktree branching from the base — cheap to create
+- Lanes merge back via the configured PR strategy
+
+Do NOT overcomplicate simple tasks. A one-file bug fix does not need 3 workers, 5 milestones, and a validation gate. Read the code, understand the scope, and scale your approach accordingly. The overhead of coordination should never exceed the cost of the work itself.
+
+## Lane Management Rules
+
+**CRITICAL: Never assign workers to the base lane.** All mission work happens in mission-created lanes.
+
+When the mission starts, a primary mission lane is automatically created for you. Use it for:
+- Sequential tasks that build on each other
+- Simple missions that don't need parallelism
+
+For parallel workstreams, create additional lanes with \`provision_lane\`:
+- Group sequential tasks into shared lanes
+- Create separate lanes for independent workstreams that might touch overlapping files
+- Same-lane parallelism is allowed when workers touch non-overlapping files
+
+After workers complete, use \`get_worker_output\` to check which files were modified.
+
 ## How You Work
 
 ### 1. Understand Before Planning
@@ -786,10 +836,15 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Work is good | mark_step_complete |
 | Work needs fixing | mark_step_failed, then retry_step |
 | Need different approach | mark_step_failed, then spawn_worker |
+| Create a new lane | provision_lane |
+| Transfer step to lane | transfer_lane |
 | Non-critical and failing | skip_step |
 | Restructure the plan | revise_plan (with dependencyPatches) |
 | Persist durable memory | update_mission_state |
 | Reload durable memory | read_mission_state |
+| Insert milestone | insert_milestone |
+| Request specialist | request_specialist |
+| Stop a worker | stop_worker |
 | Check budget pressure | get_budget_status |
 | Need human input | request_user_input |
 | Mission complete | complete_mission |

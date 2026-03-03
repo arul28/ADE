@@ -7,6 +7,9 @@ import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
 import { UsageDashboard } from "../missions/UsageDashboard";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
+import { AutomationsSection } from "../settings/AutomationsSection";
+import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
+import { KeybindingsSection } from "../settings/KeybindingsSection";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
 
@@ -506,6 +509,9 @@ export function SettingsPage() {
         {section === "providers" && <ProvidersSection />}
         {section === "github" && <GitHubSection />}
         {section === "context" && <ContextSection />}
+        {section === "automations" && <AutomationsSection />}
+        {section === "terminals" && <TerminalProfilesSection />}
+        {section === "keybindings" && <KeybindingsSection />}
         {section === "ai-features" && <AiFeaturesSection />}
         {section === "phase-profiles" && <PhaseProfilesSection />}
         {section === "usage" && <UsageDashboard missionId={null} />}

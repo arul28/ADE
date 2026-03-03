@@ -1,6 +1,7 @@
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
 import { createBaseOrchestratorAdapter, shellEscapeArg } from "./baseOrchestratorAdapter";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
+import { DEFAULT_CLAUDE_PERMISSION_MODE } from "./orchestratorConstants";
 
 export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
   return createBaseOrchestratorAdapter({
@@ -16,7 +17,7 @@ export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
       const permissionMode =
         typeof step.metadata?.permissionMode === "string" && step.metadata.permissionMode.trim().length
           ? step.metadata.permissionMode.trim()
-          : permissionConfig?.claude?.permissionMode ?? "acceptEdits";
+          : permissionConfig?.claude?.permissionMode ?? DEFAULT_CLAUDE_PERMISSION_MODE;
 
       const dangerouslySkip = permissionConfig?.claude?.dangerouslySkipPermissions === true;
 
@@ -58,7 +59,7 @@ export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
       const permissionMode =
         typeof step.metadata?.permissionMode === "string" && step.metadata.permissionMode.trim().length
           ? step.metadata.permissionMode.trim()
-          : permissionConfig?.claude?.permissionMode ?? "acceptEdits";
+          : permissionConfig?.claude?.permissionMode ?? DEFAULT_CLAUDE_PERMISSION_MODE;
 
       return {
         adapterKind: "claude",

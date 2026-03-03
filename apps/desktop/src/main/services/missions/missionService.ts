@@ -2435,6 +2435,7 @@ export function createMissionService({
           ...(args.modelConfig ? { modelConfig: args.modelConfig } : {}),
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
           ...(args.teamRuntime ? { teamRuntime: args.teamRuntime } : {}),
+          ...(args.permissionConfig ? { permissionConfig: args.permissionConfig } : {}),
           phaseProfileId: selectedProfile?.id ?? null,
           hasPhaseOverride: hasExplicitOverride
         },

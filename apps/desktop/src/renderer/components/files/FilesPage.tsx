@@ -178,6 +178,14 @@ function parseConflictHunks(text: string): ConflictHunk[] {
   return hunks;
 }
 
+function parentPathOf(filePath: string): string | undefined {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!normalized.length) return undefined;
+  const slash = normalized.lastIndexOf("/");
+  if (slash <= 0) return undefined;
+  return normalized.slice(0, slash);
+}
+
 function applyConflictChoice(text: string, hunk: ConflictHunk, choice: "ours" | "theirs" | "both"): string {
   const lines = text.split("\n");
   const before = lines.slice(0, hunk.startLine - 1);
@@ -575,11 +583,18 @@ export function FilesPage() {
     }
   }, [refreshTreeNow, workspaceId]);
 
-  const scheduleTreeRefresh = useCallback((delayMs = 140) => {
+  const scheduleTreeRefresh = useCallback((parentPath?: string, delayMs = 140) => {
+    const normalizedParent = parentPath?.trim() ? parentPath : undefined;
+    if (normalizedParent) {
+      const state = treeRefreshStateRef.current;
+      if (!state.queuedFull) {
+        state.queuedParents.add(normalizedParent);
+      }
+    }
     if (watcherRefreshTimerRef.current != null) return;
     watcherRefreshTimerRef.current = window.setTimeout(() => {
       watcherRefreshTimerRef.current = null;
-      void refreshTree().catch(() => {});
+      void refreshTree(normalizedParent).catch(() => {});
     }, delayMs);
   }, [refreshTree]);
 
@@ -819,7 +834,12 @@ export function FilesPage() {
 
     const unsub = window.ade.files.onChange((ev) => {
       if (ev.workspaceId !== workspaceId) return;
-      scheduleTreeRefresh();
+      if (ev.type === "renamed") {
+        scheduleTreeRefresh(parentPathOf(ev.oldPath ?? ""));
+        scheduleTreeRefresh(parentPathOf(ev.path));
+        return;
+      }
+      scheduleTreeRefresh(parentPathOf(ev.path));
     });
 
     return () => {

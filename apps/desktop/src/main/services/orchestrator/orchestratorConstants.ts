@@ -10,6 +10,7 @@ import type {
   OrchestratorContextView,
   IntegrationPrPolicy,
   PrDepth,
+  WorkerSandboxConfig,
 } from "../../../shared/types";
 
 /** Map legacy step statuses to task statuses for backward-compatible reads */
@@ -96,6 +97,74 @@ export const DEFAULT_INTEGRATION_PR_POLICY: IntegrationPrPolicy = {
   createIntegrationLane: true,
   prDepth: "resolve-conflicts" as PrDepth,
   draft: true
+};
+
+/** Safe-by-default worker permission fallbacks when project/mission config omits provider settings. */
+export const DEFAULT_CLAUDE_PERMISSION_MODE = "acceptEdits";
+export const DEFAULT_CODEX_APPROVAL_MODE = "auto-edit";
+export const DEFAULT_CODEX_SANDBOX_PERMISSIONS = "workspace-write";
+
+/**
+ * Default sandbox configuration for API-model workers.
+ * Based on the Claude sandbox rules in .claude/hooks/sandbox.py,
+ * filtered to universal patterns (no project-specific AWS/MCP rules).
+ * CLI-wrapped models (Claude, Codex) skip this — they have native sandboxing.
+ */
+export const DEFAULT_WORKER_SANDBOX_CONFIG: WorkerSandboxConfig = {
+  blockedCommands: [
+    "\\brm\\s+-rf\\s+/",
+    "\\brm\\s+-rf\\s+~",
+    "\\bsudo\\b",
+    "\\bchmod\\s+777\\b",
+    "\\bcurl\\b.*\\|\\s*sh",
+    "\\bwget\\b.*\\|\\s*sh",
+    "\\beval\\b",
+    ">\\s*/etc/",
+    ">\\s*/usr/",
+    ">\\s*/var/",
+    "\\bmkfs\\b",
+    "\\bdd\\b\\s+if=",
+    "\\bshutdown\\b",
+    "\\breboot\\b",
+    ":\\(\\)\\{",
+  ],
+  safeCommands: [
+    "^pnpm\\s",
+    "^npm\\s",
+    "^yarn\\s",
+    "^npx\\s",
+    "^git\\s+status\\b",
+    "^git\\s+diff\\b",
+    "^git\\s+log\\b",
+    "^git\\s+show\\b",
+    "^git\\s+branch\\s*$",
+    "^git\\s+ls-files\\b",
+    "^ls\\s",
+    "^ls$",
+    "^pwd\\b",
+    "^echo\\s",
+    "^date\\b",
+    "^node\\s",
+    "^tsx\\s",
+    "^vitest\\s",
+    "^jest\\s",
+    "^eslint\\s",
+    "^prettier\\s",
+    "^tsc\\b",
+    "^lsof\\s",
+    "^ps\\s",
+  ],
+  protectedFiles: [
+    "\\.env$",
+    "\\.env\\.",
+    "secrets?\\.json$",
+    "credentials\\.json$",
+    "\\.pem$",
+    "\\.key$",
+    "/\\.git/",
+  ],
+  allowedPaths: ["./"],
+  blockByDefault: false,
 };
 
 /**

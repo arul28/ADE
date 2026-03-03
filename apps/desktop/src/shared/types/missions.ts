@@ -6,6 +6,32 @@ import type { ModelConfig } from "./models";
 import type { MissionModelConfig } from "./models";
 import type { PrStrategy } from "./prs";
 import type { OrchestratorExecutorKind, TeamRuntimeConfig, RecoveryLoopPolicy, IntegrationPrPolicy } from "./orchestrator";
+import type { AiClaudePermissionMode, AiCodexApprovalMode, AiCodexSandboxPermissions, AiApiPermissionMode } from "./config";
+
+/** Per-provider permission overrides set at mission launch time. */
+export type MissionClaudePermissionMode = AiClaudePermissionMode;
+export type MissionCodexApprovalMode = AiCodexApprovalMode;
+export type MissionCodexSandboxPermissions = AiCodexSandboxPermissions;
+export type MissionApiPermissionMode = AiApiPermissionMode;
+
+export type MissionPermissionConfig = {
+  claude?: {
+    permissionMode?: MissionClaudePermissionMode;
+    settingsSources?: Array<"user" | "project" | "local">;
+    maxBudgetUsd?: number;
+    sandbox?: boolean;
+    dangerouslySkipPermissions?: boolean;
+    allowedTools?: string[];
+  };
+  codex?: {
+    sandboxPermissions?: MissionCodexSandboxPermissions;
+    approvalMode?: MissionCodexApprovalMode;
+    writablePaths?: string[];
+    commandAllowlist?: string[];
+    configPath?: string;
+  };
+  api?: { permissionMode?: MissionApiPermissionMode };
+};
 
 export type MissionStatus =
   | "queued"
@@ -443,6 +469,8 @@ export type CreateMissionArgs = {
   phaseProfileId?: string | null;
   /** Optional mission-scoped phase override sequence */
   phaseOverride?: PhaseCard[];
+  /** Per-provider worker permission overrides for this mission */
+  permissionConfig?: MissionPermissionConfig;
 };
 
 export type MissionPreflightCheckId =

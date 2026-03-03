@@ -196,7 +196,9 @@ export function buildRunStateSnapshot(ctx: OrchestratorContext, runId: string): 
   const autopilot = typeof runMeta.autopilot === "object" && runMeta.autopilot && !Array.isArray(runMeta.autopilot)
     ? (runMeta.autopilot as Record<string, unknown>)
     : {};
-  const parallelismCap = Math.max(1, Math.min(32, Number(autopilot.parallelismCap ?? 4)));
+  const rawParallelismCap = Number(autopilot.parallelismCap ?? 4);
+  const normalizedParallelismCap = Number.isFinite(rawParallelismCap) ? Math.floor(rawParallelismCap) : 4;
+  const parallelismCap = Math.max(1, Math.min(32, normalizedParallelismCap));
 
   const runningLaneIds = new Set(
     graph.steps.filter((s) => s.status === "running" && s.laneId).map((s) => s.laneId!)
@@ -232,6 +234,51 @@ export function pruneSessionRuntimeSignals(ctx: OrchestratorContext): void {
 import type { CoordinatorAgent } from "./coordinatorAgent";
 import { formatRuntimeEvent } from "./coordinatorEventFormatter";
 
+const MAX_ROUTED_COORDINATOR_MESSAGE_CHARS = 6000;
+const COORDINATOR_EVENT_DEDUPE_WINDOW_MS = 750;
+const COORDINATOR_ROUTE_RATE_WINDOW_MS = 1_000;
+const COORDINATOR_ROUTE_RATE_LIMIT = 24;
+const COORDINATOR_ROUTING_CRITICAL_REASONS = new Set([
+  "finalized",
+  "attempt_completed",
+  "completed",
+  "failed",
+  "skipped",
+  "intervention_opened",
+  "intervention_resolved",
+]);
+
+type CoordinatorRouteGuardState = {
+  lastFingerprint: string | null;
+  lastFingerprintAtMs: number;
+  routeWindowStartedAtMs: number;
+  routedInWindow: number;
+  suppressedCount: number;
+};
+
+const coordinatorRouteGuards = new WeakMap<CoordinatorAgent, CoordinatorRouteGuardState>();
+
+function getCoordinatorRouteGuardState(coordinator: CoordinatorAgent): CoordinatorRouteGuardState {
+  const existing = coordinatorRouteGuards.get(coordinator);
+  if (existing) return existing;
+  const created: CoordinatorRouteGuardState = {
+    lastFingerprint: null,
+    lastFingerprintAtMs: 0,
+    routeWindowStartedAtMs: 0,
+    routedInWindow: 0,
+    suppressedCount: 0,
+  };
+  coordinatorRouteGuards.set(coordinator, created);
+  return created;
+}
+
+function clipRoutedCoordinatorMessage(message: string): string {
+  const normalized = message.trim();
+  if (normalized.length <= MAX_ROUTED_COORDINATOR_MESSAGE_CHARS) return normalized;
+  const suffix = "\n[router-truncated]";
+  return `${normalized.slice(0, MAX_ROUTED_COORDINATOR_MESSAGE_CHARS - suffix.length)}${suffix}`;
+}
+
 /**
  * Route a runtime event to a CoordinatorAgent instance.
  * Formats the event into tiered context and injects it.
@@ -242,8 +289,42 @@ export function routeEventToCoordinator(
   context?: { graph?: OrchestratorRunGraph },
 ): void {
   const formatted = formatRuntimeEvent(event, context);
-  const message = formatted.digest
+  let message = formatted.digest
     ? `${formatted.summary}\n${formatted.digest}`
     : formatted.summary;
-  coordinator.injectEvent(event, message);
+  const nowMs = Date.now();
+  const state = getCoordinatorRouteGuardState(coordinator);
+  const fingerprint = `${event.type}:${event.reason}:${event.stepId ?? ""}:${event.attemptId ?? ""}:${message.slice(0, 220)}`;
+  const isCritical = COORDINATOR_ROUTING_CRITICAL_REASONS.has(String(event.reason ?? "").trim().toLowerCase());
+  const isDuplicate =
+    state.lastFingerprint === fingerprint
+    && nowMs - state.lastFingerprintAtMs < COORDINATOR_EVENT_DEDUPE_WINDOW_MS;
+  if (isDuplicate && !isCritical) {
+    state.lastFingerprint = fingerprint;
+    state.lastFingerprintAtMs = nowMs;
+    state.suppressedCount += 1;
+    return;
+  }
+
+  if (nowMs - state.routeWindowStartedAtMs >= COORDINATOR_ROUTE_RATE_WINDOW_MS) {
+    state.routeWindowStartedAtMs = nowMs;
+    state.routedInWindow = 0;
+  }
+  if (state.routedInWindow >= COORDINATOR_ROUTE_RATE_LIMIT && !isCritical) {
+    state.lastFingerprint = fingerprint;
+    state.lastFingerprintAtMs = nowMs;
+    state.suppressedCount += 1;
+    return;
+  }
+
+  state.lastFingerprint = fingerprint;
+  state.lastFingerprintAtMs = nowMs;
+  state.routedInWindow += 1;
+
+  if (state.suppressedCount > 0) {
+    message += `\n[router] Suppressed ${state.suppressedCount} repetitive runtime event(s).`;
+    state.suppressedCount = 0;
+  }
+
+  coordinator.injectEvent(event, clipRoutedCoordinatorMessage(message));
 }

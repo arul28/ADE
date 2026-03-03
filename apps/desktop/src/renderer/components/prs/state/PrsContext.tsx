@@ -152,6 +152,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
+  const prsRefreshTimer = React.useRef<number | null>(null);
+  const prsRef = React.useRef<PrWithConflicts[]>([]);
+  prsRef.current = prs;
 
   // Load merge contexts for all PRs
   const loadMergeContexts = useCallback(async (prList: PrWithConflicts[]) => {
@@ -186,11 +189,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         window.ade.prs.listWithConflicts(),
         window.ade.lanes.list({ includeStatus: false }),
       ]);
+      const prsChanged = !jsonEqual(prsRef.current, prList);
 
       // Stable-reference updates: only replace state when data actually changed
       // to avoid unnecessary re-render cascades in child components.
       setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
       setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
+      prsRef.current = prList;
 
       // Clear selectedPrId if the PR no longer exists
       setSelectedPrId((prev) => {
@@ -198,7 +203,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         return prev;
       });
 
-      await loadMergeContexts(prList);
+      if (prsChanged) {
+        await loadMergeContexts(prList);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -212,10 +219,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  // Use a ref to check the latest prs list without adding it as a dependency
-  const prsRef = React.useRef(prs);
-  prsRef.current = prs;
 
   // Load detail data when selected PR changes
   useEffect(() => {
@@ -272,10 +275,26 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Subscribe to PR events
   useEffect(() => {
+    const scheduleRefresh = () => {
+      if (prsRefreshTimer.current != null) return;
+      prsRefreshTimer.current = window.setTimeout(() => {
+        prsRefreshTimer.current = null;
+        void refresh();
+      }, 300);
+    };
+
     const unsub = window.ade.prs.onEvent((event: PrEventPayload) => {
       if (event.type === "prs-updated") {
-        // Full refresh on PR list change
-        refresh();
+        setPrs((prev) => {
+          const byId = new Map(prev.map((pr) => [pr.id, pr.conflictAnalysis] as const));
+          const next: PrWithConflicts[] = event.prs.map((pr) => ({
+            ...pr,
+            conflictAnalysis: byId.get(pr.id) ?? null,
+          }));
+          prsRef.current = next;
+          return jsonEqual(prev, next) ? prev : next;
+        });
+        scheduleRefresh();
       } else if (event.type === "queue-state") {
         setQueueStates((prev) => {
           const existing = prev[event.groupId];
@@ -300,7 +319,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         });
       }
     });
-    return unsub;
+    return () => {
+      unsub();
+      if (prsRefreshTimer.current != null) {
+        window.clearTimeout(prsRefreshTimer.current);
+        prsRefreshTimer.current = null;
+      }
+    };
   }, [refresh]);
 
   // Subscribe to rebase events

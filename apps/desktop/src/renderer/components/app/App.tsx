@@ -139,6 +139,7 @@ export function App() {
             <Route path="/prs" element={guarded(<PRsPage />)} />
             <Route path="/history" element={guarded(<HistoryPage />)} />
             <Route path="/automations" element={guarded(<AutomationsPage />)} />
+            <Route path="/agents" element={<Navigate to="/automations" replace />} />
             <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
             <Route path="/settings" element={guarded(<SettingsPage />)} />
           </Route>

@@ -71,7 +71,10 @@ import type {
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_CONTEXT_VIEW_POLICIES,
-  DEFAULT_ROLE_ISOLATION_RULES
+  DEFAULT_ROLE_ISOLATION_RULES,
+  DEFAULT_CLAUDE_PERMISSION_MODE,
+  DEFAULT_CODEX_APPROVAL_MODE,
+  DEFAULT_CODEX_SANDBOX_PERMISSIONS
 } from "./orchestratorConstants";
 import { evaluateRunCompletion, evaluateRunCompletionFromPhases, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import { createUnifiedOrchestratorAdapter, cleanupMcpConfigFile } from "./unifiedOrchestratorAdapter";
@@ -804,6 +807,9 @@ export function createOrchestratorService({
       }
     });
   };
+
+  const runCanStartAttempts = (status: OrchestratorRunStatus): boolean =>
+    status === "queued" || status === "bootstrapping" || status === "active";
 
   const expireClaims = () => {
     const now = nowIso();
@@ -2955,9 +2961,9 @@ export function createOrchestratorService({
             commandParts.push("--model", shellEscapeArg(effectiveModel));
           }
           if (kind === "codex") {
-            commandParts.push("--sandbox", requiresPlanApproval ? "read-only" : "workspace-write");
+            commandParts.push("--sandbox", requiresPlanApproval ? "read-only" : DEFAULT_CODEX_SANDBOX_PERMISSIONS);
           } else {
-            commandParts.push("--permission-mode", requiresPlanApproval ? "plan" : "acceptEdits");
+            commandParts.push("--permission-mode", requiresPlanApproval ? "plan" : DEFAULT_CLAUDE_PERMISSION_MODE);
           }
           commandParts.push(shellEscapeArg(prompt));
           const startupCommand = commandParts.join(" ");
@@ -3640,7 +3646,7 @@ export function createOrchestratorService({
         const runRow = getRunRow(runId);
         if (!runRow) return 0;
         const run = toRun(runRow);
-        if (TERMINAL_RUN_STATUSES.has(run.status)) return 0;
+        if (!runCanStartAttempts(run.status)) return 0;
 
         const autopilot = parseAutopilotConfig(run.metadata, DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers);
         if (!autopilot.enabled) return 0;
@@ -3666,6 +3672,10 @@ export function createOrchestratorService({
         let loops = 0;
         while (loops < 12) {
           loops += 1;
+          const loopRunRow = getRunRow(runId);
+          if (!loopRunRow) break;
+          const loopRunStatus = normalizeRunStatus(loopRunRow.status);
+          if (!runCanStartAttempts(loopRunStatus)) break;
           this.tick({ runId });
           const effectiveCapState = computeEffectiveParallelismCap();
           const effectiveCap = effectiveCapState.cap;
@@ -4580,6 +4590,9 @@ export function createOrchestratorService({
 
       const run = toRun(runRow);
       let step = toStep(stepRow);
+      if (!runCanStartAttempts(run.status)) {
+        throw new Error(`Cannot start attempt for run in status '${run.status}'.`);
+      }
       if (step.status !== "ready") {
         throw new Error(`Step is not ready: ${step.id} (${step.status})`);
       }
@@ -5083,36 +5096,75 @@ export function createOrchestratorService({
 
       const adapter = adapters.get(executorKind) ?? defaultAdapterFor(executorKind);
       if (adapter) {
-        // Read permission config from project config for worker adapters
+        // Start from safe defaults, then layer project and mission overrides.
         const permissionConfig = (() => {
+          const config: NonNullable<OrchestratorExecutorStartArgs["permissionConfig"]> = {
+            claude: {
+              permissionMode: DEFAULT_CLAUDE_PERMISSION_MODE
+            },
+            codex: {
+              approvalMode: DEFAULT_CODEX_APPROVAL_MODE,
+              sandboxPermissions: DEFAULT_CODEX_SANDBOX_PERMISSIONS
+            }
+          };
           const snapshot = projectConfigService?.get();
           const ai = asRecord(snapshot?.effective?.ai);
           const permissions = asRecord(ai?.permissions);
-          if (!permissions) return undefined;
+          if (!permissions) return config;
           const claudePerms = asRecord(permissions.claude);
           const codexPerms = asRecord(permissions.codex);
-          if (!claudePerms && !codexPerms) return undefined;
-          const config: NonNullable<OrchestratorExecutorStartArgs["permissionConfig"]> = {};
           if (claudePerms) {
             config.claude = {
-              permissionMode: typeof claudePerms.permissionMode === "string" ? claudePerms.permissionMode : undefined,
-              dangerouslySkipPermissions: typeof claudePerms.dangerouslySkipPermissions === "boolean" ? claudePerms.dangerouslySkipPermissions : undefined,
-              allowedTools: Array.isArray(claudePerms.allowedTools) ? claudePerms.allowedTools.filter((v): v is string => typeof v === "string") : undefined,
-              settingsSources: Array.isArray(claudePerms.settingsSources) ? claudePerms.settingsSources.filter((v): v is string => typeof v === "string") : undefined,
-              sandbox: typeof claudePerms.sandbox === "boolean" ? claudePerms.sandbox : undefined,
+              ...config.claude,
+              permissionMode: typeof claudePerms.permissionMode === "string" ? claudePerms.permissionMode : config.claude?.permissionMode,
+              dangerouslySkipPermissions: typeof claudePerms.dangerouslySkipPermissions === "boolean" ? claudePerms.dangerouslySkipPermissions : config.claude?.dangerouslySkipPermissions,
+              allowedTools: Array.isArray(claudePerms.allowedTools) ? claudePerms.allowedTools.filter((v): v is string => typeof v === "string") : config.claude?.allowedTools,
+              settingsSources: Array.isArray(claudePerms.settingsSources) ? claudePerms.settingsSources.filter((v): v is string => typeof v === "string") : config.claude?.settingsSources,
+              sandbox: typeof claudePerms.sandbox === "boolean" ? claudePerms.sandbox : config.claude?.sandbox,
             };
           }
           if (codexPerms) {
             config.codex = {
-              sandboxPermissions: typeof codexPerms.sandboxPermissions === "string" ? codexPerms.sandboxPermissions : undefined,
-              approvalMode: typeof codexPerms.approvalMode === "string" ? codexPerms.approvalMode : undefined,
-              writablePaths: Array.isArray(codexPerms.writablePaths) ? codexPerms.writablePaths.filter((v): v is string => typeof v === "string") : undefined,
-              commandAllowlist: Array.isArray(codexPerms.commandAllowlist) ? codexPerms.commandAllowlist.filter((v): v is string => typeof v === "string") : undefined,
-              configPath: typeof codexPerms.configPath === "string" ? codexPerms.configPath : undefined,
+              ...config.codex,
+              sandboxPermissions: typeof codexPerms.sandboxPermissions === "string" ? codexPerms.sandboxPermissions : config.codex?.sandboxPermissions,
+              approvalMode: typeof codexPerms.approvalMode === "string" ? codexPerms.approvalMode : config.codex?.approvalMode,
+              writablePaths: Array.isArray(codexPerms.writablePaths) ? codexPerms.writablePaths.filter((v): v is string => typeof v === "string") : config.codex?.writablePaths,
+              commandAllowlist: Array.isArray(codexPerms.commandAllowlist) ? codexPerms.commandAllowlist.filter((v): v is string => typeof v === "string") : config.codex?.commandAllowlist,
+              configPath: typeof codexPerms.configPath === "string" ? codexPerms.configPath : config.codex?.configPath,
             };
           }
           return config;
         })();
+
+        // Merge mission-level permission overrides if present
+        if (run.missionId) {
+          try {
+            const missionRow = db.get<{ metadata_json: string | null }>(
+              `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+              [run.missionId, projectId]
+            );
+            if (missionRow?.metadata_json) {
+              const meta = asRecord(JSON.parse(missionRow.metadata_json));
+              const missionPerms = asRecord(asRecord(meta?.launch)?.permissionConfig);
+              const missionClaude = asRecord(missionPerms?.claude);
+              const missionCodex = asRecord(missionPerms?.codex);
+              if (missionClaude && typeof missionClaude.permissionMode === "string") {
+                permissionConfig.claude = {
+                  ...(permissionConfig.claude ?? {}),
+                  permissionMode: missionClaude.permissionMode
+                };
+              }
+              if (missionCodex && typeof missionCodex.approvalMode === "string") {
+                permissionConfig.codex = {
+                  ...(permissionConfig.codex ?? {}),
+                  approvalMode: missionCodex.approvalMode
+                };
+              }
+            }
+          } catch {
+            // Non-critical: fall back to project-level permissions
+          }
+        }
 
         // Recovery-aware retry: read checkpoint and previous attempt data when retrying
         const recoveryContext = await (async (): Promise<{ previousCheckpoint?: string; previousAttemptSummary?: string }> => {
@@ -5907,6 +5959,12 @@ export function createOrchestratorService({
       if (!runRow) throw new Error(`Run not found: ${args.runId}`);
       const run = toRun(runRow);
       if (TERMINAL_RUN_STATUSES.has(run.status)) return run;
+      if (run.status === "completing") return run;
+      if (run.status === "paused") {
+        updateRunStatus(run.id, "active", {
+          last_error: null
+        });
+      }
 
       // Recover in-flight attempts as restart-failures so scheduler can retry deterministically.
       const runningAttempts = db.all<AttemptRow>(
@@ -6024,7 +6082,7 @@ export function createOrchestratorService({
 
       const resumed = this.tick({ runId: run.id });
       const autopilot = parseAutopilotConfig(resumed.metadata, DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers);
-      if (autopilot.enabled) {
+      if (autopilot.enabled && runCanStartAttempts(resumed.status)) {
         void this
           .startReadyAutopilotAttempts({
             runId: run.id,
@@ -7976,7 +8034,11 @@ export function createOrchestratorService({
             and not exists (
               select 1 from orchestrator_runtime_events r
               where r.project_id = e.project_id and r.run_id = e.run_id
-                and r.step_id = e.step_id and r.event_type = 'intervention_resolved'
+                and (
+                  r.step_id = e.step_id
+                  or (r.step_id is null and e.step_id is null)
+                )
+                and r.event_type = 'intervention_resolved'
             )
         `,
         [projectId, runId]

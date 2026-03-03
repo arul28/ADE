@@ -6,7 +6,7 @@ import type { PackDeltaDigestV1, PackExport, PackType } from "../../../shared/ty
 import { openKvDb } from "../state/kvDb";
 import { createMissionService } from "../missions/missionService";
 import { createOrchestratorService } from "./orchestratorService";
-import { createAiOrchestratorService } from "./aiOrchestratorService";
+import { createAiOrchestratorService, deriveFallbackLaneStrategyDecision } from "./aiOrchestratorService";
 
 function createLogger() {
   return {
@@ -531,7 +531,7 @@ async function createFixture(args: {
 }
 
 describe("aiOrchestratorService", () => {
-  it("blocks mission run at plan review when configured and opens approval intervention", async () => {
+  it("starts mission directly without opening plan-review intervention when requirePlanReview is true", async () => {
     const fixture = await createFixture({ requirePlanReview: true });
     let started: any;
     try {
@@ -550,6 +550,7 @@ describe("aiOrchestratorService", () => {
       expect(started.started).toBeTruthy();
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("in_progress");
+      expect(refreshed?.interventions ?? []).toHaveLength(0);
       expect(fixture.orchestratorService.listRuns({ missionId: mission.id }).length).toBe(1);
     } finally {
       fixture.dispose();
@@ -576,6 +577,167 @@ describe("aiOrchestratorService", () => {
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("in_progress");
       expect(fixture.orchestratorService.listRuns({ missionId: mission.id }).length).toBe(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not activate runs when coordinator startup fails", async () => {
+    const fixture = await createFixture();
+    let noRootService: ReturnType<typeof createAiOrchestratorService> | null = null;
+    try {
+      fixture.aiOrchestratorService.dispose();
+      noRootService = createAiOrchestratorService({
+        db: fixture.db,
+        logger: createLogger(),
+        missionService: fixture.missionService,
+        orchestratorService: fixture.orchestratorService,
+        laneService: fixture.laneService,
+        projectConfigService: fixture.projectConfigService,
+        aiIntegrationService: fixture.aiIntegrationService,
+        projectRoot: undefined
+      });
+
+      const mission = fixture.missionService.create({
+        prompt: "Verify coordinator startup gating.",
+        laneId: fixture.laneId
+      });
+      const launched = await noRootService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "codex"
+      });
+      expect(launched.started).toBeTruthy();
+
+      const run = fixture.orchestratorService.listRuns({ missionId: mission.id })[0];
+      expect(run?.status).toBe("paused");
+      expect(fixture.orchestratorService.listAttempts({ runId: run?.id ?? "missing" })).toHaveLength(0);
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.status).toBe("intervention_required");
+      expect(
+        refreshed?.interventions.some(
+          (entry) =>
+            entry.status === "open"
+            && entry.interventionType === "failed_step"
+            && String(entry.metadata?.reasonCode ?? "") === "coordinator_start_failed"
+        )
+      ).toBe(true);
+    } finally {
+      noRootService?.dispose();
+      fixture.dispose();
+    }
+  });
+
+  it("pauses runs and blocks fallback runtime handling when coordinator is unavailable", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Ensure coordinator ownership on runtime events.",
+        laneId: fixture.laneId
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "codex",
+            ownerId: "autopilot-owner",
+            parallelismCap: 1
+          }
+        },
+        steps: [{ stepKey: "guarded-step", title: "Guarded step", stepIndex: 0, executorKind: "codex" }]
+      });
+      fixture.db.run(`update orchestrator_runs set status = 'active', updated_at = ? where id = ?`, [new Date().toISOString(), started.run.id]);
+      const step = fixture.orchestratorService.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId: started.run.id,
+        stepId: step.id,
+        attemptId: "attempt-without-coordinator",
+        at: new Date().toISOString(),
+        reason: "completed"
+      });
+
+      const updatedRun = fixture.orchestratorService.listRuns({ missionId: mission.id }).find((run) => run.id === started.run.id);
+      expect(updatedRun?.status).toBe("paused");
+      expect(fixture.orchestratorService.listAttempts({ runId: started.run.id })).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("propagates attempt token usage for attempt-updated completed events", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Track token propagation for completed attempt events.",
+        laneId: fixture.laneId
+      });
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "token-step", title: "Token step", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual" }]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const step = fixture.orchestratorService.listSteps(runId).find((entry) => entry.stepKey === "token-step");
+      if (!step) throw new Error("Missing token-step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: step.id,
+        ownerId: "token-owner",
+        executorKind: "manual"
+      });
+      fixture.db.run(`alter table orchestrator_attempts add column session_id text`);
+      fixture.db.run(
+        `update orchestrator_attempts set session_id = ?, executor_session_id = ? where id = ?`,
+        ["token-session-1", "token-session-1", attempt.id]
+      );
+      fixture.db.run(
+        `
+          insert into ai_usage_log(
+            id, timestamp, feature, provider, model, input_tokens, output_tokens, duration_ms, success, session_id
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "usage-token-1",
+          new Date().toISOString(),
+          "orchestrator",
+          "claude",
+          "sonnet",
+          70,
+          50,
+          200,
+          1,
+          "token-session-1"
+        ]
+      );
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: step.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "completed"
+      });
+
+      const runRow = fixture.db.get<{ metadata_json: string | null }>(
+        `select metadata_json from orchestrator_runs where id = ? limit 1`,
+        [runId]
+      );
+      const metadata = runRow?.metadata_json ? JSON.parse(runRow.metadata_json) : {};
+      expect(Number(metadata.tokensConsumed ?? 0)).toBeGreaterThanOrEqual(120);
     } finally {
       fixture.dispose();
     }
@@ -1934,6 +2096,59 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("resumeActiveTeamRuntimes pages through all active runs instead of stopping at 10", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Recover all active team runtimes after restart.",
+        laneId: fixture.laneId
+      });
+
+      const runIds: string[] = [];
+      for (let index = 0; index < 12; index += 1) {
+        const started = fixture.orchestratorService.startRun({
+          missionId: mission.id,
+          steps: [],
+          metadata: { seed: index }
+        });
+        runIds.push(started.run.id);
+
+        const ts = `2026-03-03T00:${String(index).padStart(2, "0")}:00.000Z`;
+        fixture.db.run(
+          `update orchestrator_runs set status = 'active', created_at = ?, updated_at = ? where id = ?`,
+          [ts, ts, started.run.id]
+        );
+        fixture.db.run(
+          `
+            insert into orchestrator_run_state(
+              run_id,
+              phase,
+              completion_requested,
+              completion_validated,
+              last_validation_error,
+              coordinator_session_id,
+              teammate_ids_json,
+              created_at,
+              updated_at
+            ) values (?, 'executing', 0, 0, null, null, '[]', ?, ?)
+            on conflict(run_id) do update set
+              phase = excluded.phase,
+              updated_at = excluded.updated_at
+          `,
+          [started.run.id, ts, ts]
+        );
+      }
+
+      const resumeRunSpy = vi.spyOn(fixture.orchestratorService, "resumeRun");
+      fixture.aiOrchestratorService.resumeActiveTeamRuntimes();
+      await waitFor(() => resumeRunSpy.mock.calls.length >= runIds.length, 6_000);
+
+      expect(resumeRunSpy.mock.calls.length).toBe(runIds.length);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("clears persisted runtime rows once attempts become terminal", async () => {
     const fixture = await createFixture();
     try {
@@ -2632,6 +2847,97 @@ describe("aiOrchestratorService", () => {
     } finally {
       fixture.dispose();
     }
+  });
+
+  it("reuses persisted mission lane on plan-review re-entry instead of creating duplicates", async () => {
+    let laneCounter = 0;
+    const laneService = {
+      list: vi.fn(async () => [
+        { id: "lane-1", laneType: "primary" }
+      ]),
+      createChild: vi.fn(async () => {
+        laneCounter += 1;
+        return { id: `mission-lane-${laneCounter}`, name: `Mission Lane ${laneCounter}` };
+      }),
+    };
+    const fixture = await createFixture({ laneService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Run mission with restart-safe lane reuse.",
+        laneId: fixture.laneId,
+      });
+
+      const firstStart = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual",
+      });
+      expect(firstStart.started).toBeTruthy();
+      const firstRunId = firstStart.started!.run.id;
+
+      const metadataRow = fixture.db.get<{ metadata_json: string | null }>(
+        `select metadata_json from orchestrator_runs where id = ? limit 1`,
+        [firstRunId]
+      );
+      const metadata = metadataRow?.metadata_json ? JSON.parse(metadataRow.metadata_json) : {};
+      expect(metadata.missionLaneId).toBe("mission-lane-1");
+
+      const reentryStart = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        forcePlanReviewBypass: true,
+        runMode: "manual",
+        defaultExecutorKind: "manual",
+      });
+
+      expect(reentryStart.started?.run.id).toBe(firstRunId);
+      expect(laneService.createChild).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("fallback lane strategy keeps independent roots off a single forced base lane", () => {
+    const decision = deriveFallbackLaneStrategyDecision({
+      baseLaneId: "lane-base",
+      descriptors: [
+        {
+          id: "step-1",
+          index: 0,
+          title: "Root A",
+          kind: "implementation",
+          laneId: "lane-base",
+          stepType: "implementation",
+          stepKey: "root-a",
+          dependencyStepKeys: [],
+        },
+        {
+          id: "step-2",
+          index: 1,
+          title: "Root B",
+          kind: "implementation",
+          laneId: null,
+          stepType: "implementation",
+          stepKey: "root-b",
+          dependencyStepKeys: [],
+        },
+        {
+          id: "step-3",
+          index: 2,
+          title: "Integrate",
+          kind: "integration",
+          laneId: null,
+          stepType: "integration",
+          stepKey: "join",
+          dependencyStepKeys: ["root-a", "root-b"],
+        },
+      ] as any,
+    });
+
+    const assignments = new Map(decision.stepAssignments.map((entry) => [entry.stepKey, entry.laneLabel]));
+    expect(decision.strategy).toBe("dependency_parallel");
+    expect(assignments.get("root-a")).toBe("base");
+    expect(assignments.get("root-b")).toMatch(/^parallel-/);
+    expect(assignments.get("join")).toBe("base");
   });
 
   it("auto-creates lanes for independent parallel steps and assigns downstream lanes", async () => {

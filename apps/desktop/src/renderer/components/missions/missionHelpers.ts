@@ -10,6 +10,10 @@ import {
   Pulse,
 } from "@phosphor-icons/react";
 import type {
+  MissionApiPermissionMode,
+  MissionClaudePermissionMode,
+  MissionCodexApprovalMode,
+  MissionCodexSandboxPermissions,
   MissionPriority,
   MissionStatus,
   OrchestratorAttempt,
@@ -146,7 +150,7 @@ export const WORKER_STATUS_HEX: Record<string, string> = {
 
 export type WorkspaceTab = "plan" | "work" | "dag" | "chat" | "activity" | "details";
 export type MissionListViewMode = "list" | "board";
-export type PlannerProvider = "auto" | (string & {});
+export type PlannerProvider = "auto" | "claude" | "codex";
 export type TeammatePlanMode = "auto" | "off" | "required";
 export type SteeringEntry = { directive: string; appliedAt: string };
 
@@ -155,33 +159,35 @@ export const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; h
   { key: "planning", label: "PLANNING", hex: "#3B82F6" },
   { key: "plan_review", label: "REVIEW", hex: "#06B6D4" },
   { key: "in_progress", label: "RUNNING", hex: "#22C55E" },
+  { key: "intervention_required", label: "ACTION", hex: "#F59E0B" },
   { key: "completed", label: "DONE", hex: "#22C55E" },
   { key: "partially_completed", label: "PARTIAL", hex: "#F59E0B" },
   { key: "failed", label: "FAILED", hex: "#EF4444" },
+  { key: "canceled", label: "CANCELED", hex: "#71717A" },
 ];
 
 export type MissionSettingsDraft = {
-  defaultPrStrategy: import("../../../shared/types").PrStrategy;
   defaultPlannerProvider: PlannerProvider;
   teammatePlanMode: TeammatePlanMode;
   requirePlanReview: boolean;
-  claudePermissionMode: string;
+  claudePermissionMode: MissionClaudePermissionMode;
   claudeDangerouslySkip: boolean;
-  codexSandboxPermissions: string;
-  codexApprovalMode: string;
+  codexSandboxPermissions: MissionCodexSandboxPermissions;
+  codexApprovalMode: Extract<MissionCodexApprovalMode, "suggest" | "auto-edit" | "full-auto">;
   codexConfigPath: string;
+  apiPermissionMode: MissionApiPermissionMode;
 };
 
 export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
-  defaultPrStrategy: { kind: "integration", targetBranch: "main", draft: true },
   defaultPlannerProvider: "auto",
   teammatePlanMode: "auto",
   requirePlanReview: false,
-  claudePermissionMode: "acceptEdits",
+  claudePermissionMode: "bypassPermissions",
   claudeDangerouslySkip: false,
   codexSandboxPermissions: "workspace-write",
   codexApprovalMode: "full-auto",
-  codexConfigPath: ""
+  codexConfigPath: "",
+  apiPermissionMode: "full-auto",
 };
 
 /* ════════════════════ PURE UTILITY FUNCTIONS ════════════════════ */
@@ -204,9 +210,10 @@ export function readString(primary: unknown, fallback: unknown, defaultValue: st
 
 export function toPlannerProvider(value: string): PlannerProvider {
   if (value === "auto") return "auto";
-  if (getModelById(value)) return value;
-  if (value === "claude") return "anthropic/claude-sonnet-4-6";
-  if (value === "codex") return "openai/gpt-5.3-codex";
+  if (value === "claude" || value === "codex") return value;
+  const model = getModelById(value);
+  if (model?.family === "anthropic") return "claude";
+  if (model?.family === "openai") return "codex";
   return "auto";
 }
 
@@ -214,20 +221,24 @@ export function toTeammatePlanMode(value: string): TeammatePlanMode {
   return value === "off" || value === "required" || value === "auto" ? value : "auto";
 }
 
-export function toClaudePermissionMode(value: string): "plan" | "acceptEdits" | "bypassPermissions" {
-  return value === "plan" || value === "acceptEdits" || value === "bypassPermissions" ? value : "acceptEdits";
+export function toClaudePermissionMode(value: string): MissionClaudePermissionMode {
+  return value === "default" || value === "plan" || value === "acceptEdits" || value === "bypassPermissions" ? value : "default";
 }
 
-export function toCodexSandboxPermissions(value: string): "read-only" | "workspace-write" | "danger-full-access" {
+export function toCodexSandboxPermissions(value: string): MissionCodexSandboxPermissions {
   return value === "read-only" || value === "workspace-write" || value === "danger-full-access" ? value : "workspace-write";
 }
 
-export function toCodexApprovalMode(value: string): "suggest" | "auto-edit" | "full-auto" {
+export function toCodexApprovalMode(value: string): Extract<MissionCodexApprovalMode, "suggest" | "auto-edit" | "full-auto"> {
   if (value === "suggest" || value === "auto-edit" || value === "full-auto") return value;
   if (value === "untrusted") return "suggest";
   if (value === "on-request" || value === "on-failure") return "auto-edit";
   if (value === "never") return "full-auto";
   return "full-auto";
+}
+
+export function toApiPermissionMode(value: string): MissionApiPermissionMode {
+  return value === "plan" || value === "edit" || value === "full-auto" ? value : "full-auto";
 }
 
 export function formatElapsed(startedAt: string | null, endedAt?: string | null): string {

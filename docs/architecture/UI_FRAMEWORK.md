@@ -82,30 +82,31 @@ Routes are defined in `apps/desktop/src/renderer/components/app/App.tsx`. Curren
 - `/onboarding`
 - `/lanes`
 - `/files`
-- `/terminals`
+- `/terminals` (legacy redirect to `/work`)
+- `/work`
 - `/conflicts`
-- `/context`
+- `/context` (legacy redirect to `/settings`)
 - `/graph`
 - `/prs`
 - `/history`
-- `/agents`
+- `/automations`
+- `/agents` (compatibility alias to `/automations`)
 - `/missions`
 - `/settings`
 
-Primary left-rail nav (`TabNav`) exposes 12 tabs:
+Primary left-rail nav (`TabNav`) exposes 11 tabs:
 
 1. Play
 2. Lanes
 3. Files
-4. Terminals
+4. Work
 5. Conflicts
-6. Context
-7. Graph
-8. PRs
-9. History
-10. Agents
-11. Missions
-12. Settings
+6. Graph
+7. PRs
+8. History
+9. Agents
+10. Missions
+11. Settings
 
 The shell is composed by `AppShell` + `TopBar` + `TabNav`, with each route rendering a feature page in the content region.
 
@@ -161,12 +162,12 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 - `files/`: workspace browser/editor
 - `terminals/`: global terminal/session surfaces
 - `conflicts/`: risk, merge simulation, resolution workflows
-- `context/`: context generation (`ContextPage.tsx`), `contextShared.ts` (~15 consolidated functions), doc generation
+- `context/`: shared context helpers used by Settings context/docs surfaces (`contextShared.ts`)
 - `packs/`: pack visualization
 - `graph/`: topology canvas (decomposed, see below)
 - `prs/`: PR operations, status surfaces, shared utilities (`prs/shared/prHelpers.ts`, `prs/shared/tilingConstants.ts`)
 - `history/`: operations timeline surfaces
-- `agents/`: agent cards, builder wizard, findings, morning briefing, run history
+- `automations/`: automation/agent control surfaces
 - `missions/`: mission orchestration UI (decomposed, see below)
 - `onboarding/`: first-run setup flows
 - `settings/`: settings subsections (keybindings, terminal profiles, agents, data management)

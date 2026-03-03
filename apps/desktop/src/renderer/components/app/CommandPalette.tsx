@@ -35,6 +35,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       { id: "go-prs", title: "Go to PRs", shortcut: "G R", group: "Navigation", run: () => navigate("/prs") },
       { id: "go-history", title: "Go to History", shortcut: "G H", group: "Navigation", run: () => navigate("/history") },
       { id: "go-missions", title: "Go to Missions", shortcut: "G M", group: "Navigation", run: () => navigate("/missions") },
+      { id: "go-agents", title: "Go to Agents", hint: "Automation and agent workflows", group: "Navigation", run: () => navigate("/agents") },
       { id: "go-settings", title: "Go to Settings", shortcut: "G S", group: "Navigation", run: () => navigate("/settings") },
       { id: "go-settings-general", title: "Go to General Settings", hint: "Provider, model, theme", group: "Settings", run: () => navigate("/settings") },
       { id: "go-settings-github", title: "Go to GitHub Settings", hint: "Token, repos, PRs", group: "Settings", run: () => navigate("/settings") },
@@ -73,10 +74,10 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       },
       {
         id: "action-automations",
-        title: "Go to Automations",
+        title: "Go to Agents",
         hint: "CI/CD and automation rules",
         group: "Actions",
-        run: () => navigate("/automations")
+        run: () => navigate("/agents")
       },
       {
         id: "lane-next",

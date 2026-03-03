@@ -36,6 +36,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
 import { asRecord, nowIso, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
 import { readMissionStateDocument, updateMissionStateDocument } from "./missionStateDoc";
+import { isWithinDir } from "../shared/utils";
 
 const VALIDATION_CONTRACT_SCHEMA = z
   .object({
@@ -381,6 +382,10 @@ export function createCoordinatorToolSet(deps: {
   onHardCapTriggered?: (detail: string) => void;
   onBudgetWarning?: (pressure: "warning" | "critical", detail: string) => void;
   sendWorkerMessageToSession?: CoordinatorSendWorkerMessageFn;
+  /** Primary mission lane ID — used by provision_lane to branch new lanes. */
+  missionLaneId?: string;
+  /** Callback to create a new lane branching from the mission's base lane. */
+  provisionLane?: (name: string, description?: string) => Promise<{ laneId: string; name: string }>;
 }): Record<string, Tool> {
   const {
     orchestratorService,
@@ -393,6 +398,16 @@ export function createCoordinatorToolSet(deps: {
     projectRoot,
     onDagMutation
   } = deps;
+  const missionLaneId = typeof deps.missionLaneId === "string" && deps.missionLaneId.trim().length > 0
+    ? deps.missionLaneId.trim()
+    : null;
+  const resolvedProjectRoot = path.resolve(projectRoot);
+
+  const normalizeLaneId = (value: string | null | undefined): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
 
   /** Track last emitted budget pressure to avoid spamming soft warnings. */
   let lastEmittedBudgetPressure: "normal" | "warning" | "critical" = "normal";
@@ -459,7 +474,10 @@ export function createCoordinatorToolSet(deps: {
    * Shared budget hard cap check — refuses worker spawning when budget limits are triggered.
    * Returns `{ blocked: false }` if spawning is allowed, or `{ blocked: true, detail, hardCaps }` if blocked.
    */
-  async function checkBudgetHardCaps(): Promise<{
+  async function checkBudgetHardCaps(options?: {
+    failClosedOnTelemetryError?: boolean;
+    operation?: "spawn_worker" | "request_specialist" | "revise_plan";
+  }): Promise<{
     blocked: boolean;
     detail?: string;
     hardCaps?: MissionBudgetHardCapStatus;
@@ -499,10 +517,20 @@ export function createCoordinatorToolSet(deps: {
       }
       return { blocked: true, detail, hardCaps: caps };
     } catch (budgetErr) {
-      // Budget check failure is non-blocking — log and continue
+      const errorMessage = budgetErr instanceof Error ? budgetErr.message : String(budgetErr);
       logger.debug("coordinator.budget_hard_cap_check_failed", {
-        error: budgetErr instanceof Error ? budgetErr.message : String(budgetErr),
+        error: errorMessage,
+        failClosedOnTelemetryError: options?.failClosedOnTelemetryError === true,
+        operation: options?.operation ?? null,
       });
+      if (options?.failClosedOnTelemetryError) {
+        const operation = options.operation ?? "high_cost_operation";
+        const detail = `Budget telemetry unavailable while evaluating ${operation}: ${errorMessage}`;
+        if (deps.onHardCapTriggered) {
+          deps.onHardCapTriggered(detail);
+        }
+        return { blocked: true, detail };
+      }
       return { blocked: false };
     }
   }
@@ -543,8 +571,9 @@ export function createCoordinatorToolSet(deps: {
     const replacementResultReport = asRecord(replacementSourceMeta.lastResultReport) ?? {};
     const replacementValidationReport = asRecord(replacementSourceMeta.lastValidationReport);
     const replacementAttempt = replacementSourceStep ? findLatestCompletedAttempt(g, replacementSourceStep.id) : null;
-    const inheritedLaneId = replacementSourceStep?.laneId ?? null;
-    const effectiveLaneId = args.laneId ?? inheritedLaneId;
+    const inheritedLaneId = normalizeLaneId(replacementSourceStep?.laneId ?? null);
+    const explicitLaneId = normalizeLaneId(args.laneId ?? null);
+    const effectiveLaneId = explicitLaneId ?? inheritedLaneId ?? missionLaneId;
     const maxIndex = g.steps.reduce(
       (max, s) => Math.max(max, s.stepIndex),
       -1,
@@ -721,7 +750,10 @@ export function createCoordinatorToolSet(deps: {
         }
 
         // Hard cap check: refuse to spawn if budget hard caps are triggered
-        const budgetCheck = await checkBudgetHardCaps();
+        const budgetCheck = await checkBudgetHardCaps({
+          failClosedOnTelemetryError: true,
+          operation: "spawn_worker",
+        });
         if (budgetCheck.blocked) {
           logger.warn("coordinator.spawn_worker.hard_cap_blocked", { name, detail: budgetCheck.detail });
           return {
@@ -1040,7 +1072,10 @@ export function createCoordinatorToolSet(deps: {
         }
 
         // Hard cap check: refuse to spawn specialist if budget hard caps are triggered
-        const budgetCheck = await checkBudgetHardCaps();
+        const budgetCheck = await checkBudgetHardCaps({
+          failClosedOnTelemetryError: true,
+          operation: "request_specialist",
+        });
         if (budgetCheck.blocked) {
           logger.warn("coordinator.request_specialist.hard_cap_blocked", { role, detail: budgetCheck.detail });
           return {
@@ -1092,7 +1127,12 @@ export function createCoordinatorToolSet(deps: {
           void orchestratorService.startReadyAutopilotAttempts({
             runId,
             reason: "coordinator_request_specialist",
-          }).catch(() => {});
+          }).catch((error) => {
+            logger.debug("coordinator.request_specialist.autopilot_schedule_failed", {
+              runId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }, 100);
 
         return {
@@ -1432,6 +1472,32 @@ export function createCoordinatorToolSet(deps: {
             error: `No completed or running attempt found for worker '${workerId}'`,
           };
         if (latest) {
+          // Extract filesChanged from the result envelope outputs
+          const outputs = latest.resultEnvelope?.outputs as Record<string, unknown> | null | undefined;
+          let filesChanged: string[] = [];
+          if (outputs) {
+            const raw = outputs.filesChanged ?? outputs.files_changed ?? [];
+            if (Array.isArray(raw)) {
+              filesChanged = raw.map((f) => String(f ?? "").trim()).filter(Boolean);
+            }
+          }
+          // Fallback: check worker digest table if no files from envelope
+          if (filesChanged.length === 0) {
+            try {
+              const digestRow = db.get<{ files_changed_json: string | null }>(
+                `select files_changed_json from worker_digests where attempt_id = ? limit 1`,
+                [latest.id],
+              );
+              if (digestRow?.files_changed_json) {
+                const parsed = JSON.parse(digestRow.files_changed_json);
+                if (Array.isArray(parsed)) {
+                  filesChanged = parsed.map((f: unknown) => String(f ?? "").trim()).filter(Boolean);
+                }
+              }
+            } catch {
+              // Non-fatal: digest lookup failure doesn't block output retrieval
+            }
+          }
           return {
             ok: true,
             workerId,
@@ -1441,6 +1507,7 @@ export function createCoordinatorToolSet(deps: {
             success: latest.resultEnvelope?.success ?? null,
             warnings: latest.resultEnvelope?.warnings ?? [],
             errorMessage: latest.errorMessage ?? null,
+            filesChanged,
           };
         }
         return {
@@ -1788,7 +1855,13 @@ export function createCoordinatorToolSet(deps: {
             void orchestratorService.startReadyAutopilotAttempts({
               runId,
               reason: "milestone_validation_passed",
-            }).catch(() => {});
+            }).catch((error) => {
+              logger.debug("coordinator.report_validation.autopilot_schedule_failed", {
+                runId,
+                stepKey: targetStep.stepKey,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
           }, 100);
           milestoneMarkedComplete = true;
         }
@@ -2154,7 +2227,10 @@ export function createCoordinatorToolSet(deps: {
 
         // Hard cap check: refuse to spawn replacement workers if budget hard caps are triggered
         if (newSteps.length > 0) {
-          const budgetCheck = await checkBudgetHardCaps();
+          const budgetCheck = await checkBudgetHardCaps({
+            failClosedOnTelemetryError: true,
+            operation: "revise_plan",
+          });
           if (budgetCheck.blocked) {
             logger.warn("coordinator.revise_plan.hard_cap_blocked", { detail: budgetCheck.detail });
             return {
@@ -2166,45 +2242,146 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
+        const teamRuntime = resolveTeamRuntimeConfig(initialGraph);
+        const stepByKey = new Map(initialGraph.steps.map((step) => [step.stepKey, step] as const));
         const existingStepKeys = new Set(initialGraph.steps.map((step) => step.stepKey));
-        const createdSteps: OrchestratorStep[] = [];
+        const requestNewStepKeys = new Set<string>();
+        const knownStepKeysAfterCreation = new Set(existingStepKeys);
+        const parsedNewSteps: Array<{
+          key: string;
+          title: string;
+          description: string;
+          provider: "claude" | "codex";
+          roleName: string | null;
+          laneId: string | null;
+          dependsOn: string[];
+          replaces: string[];
+          parsedContract: ValidationContract | null;
+          replacementSourceStep: OrchestratorStep | null;
+        }> = [];
+        const parsedDependencyPatches: Array<{ stepKey: string; dependencyStepKeys: string[] }> = [];
+        const replacementPlanByOldStepKey = new Map<string, string | null>();
+
+        for (const targetKey of uniqueTargets) {
+          if (!stepByKey.has(targetKey)) {
+            return { ok: false, error: `Replacement target step '${targetKey}' was not found.` };
+          }
+        }
+
         for (const entry of newSteps) {
           const normalizedKey = entry.key.trim();
           if (!normalizedKey.length) {
             return { ok: false, error: "Each new plan step requires a non-empty key." };
           }
+          if (requestNewStepKeys.has(normalizedKey)) {
+            return { ok: false, error: `Duplicate new step key '${normalizedKey}' in revise_plan request.` };
+          }
+          const replaces = [...new Set(entry.replaces.map((candidate) => candidate.trim()).filter((candidate) => candidate.length > 0))];
+          const unknownReplacements = replaces.filter((candidate) => !stepByKey.has(candidate));
+          if (unknownReplacements.length > 0) {
+            return {
+              ok: false,
+              error: `Step '${normalizedKey}' replaces unknown step keys: ${unknownReplacements.join(", ")}`
+            };
+          }
           if (
             existingStepKeys.has(normalizedKey) &&
             !uniqueTargets.includes(normalizedKey) &&
-            !entry.replaces.some((candidate) => candidate.trim() === normalizedKey)
+            !replaces.includes(normalizedKey)
           ) {
             return { ok: false, error: `Step key '${normalizedKey}' already exists.` };
+          }
+          const normalizedRole = entry.role?.trim() ?? "";
+          if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
+            return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
           }
           const parsedContract = parseValidationContract(entry.validationContract ?? null);
           if (entry.validationContract && !parsedContract) {
             return { ok: false, error: `Invalid validation contract for step '${entry.key}'.` };
           }
-          const replacementSourceKey =
-            entry.replaces
-              .map((candidate) => candidate.trim())
-              .find((candidate) => candidate.length > 0 && resolveStep(initialGraph, candidate)) ??
-            null;
-          const replacementSourceStep = replacementSourceKey ? resolveStep(initialGraph, replacementSourceKey) : null;
-          const spawnResult = spawnWorkerStep({
-            stepKey: normalizedKey,
-            name: entry.title,
+          const dependsOn = [...new Set(entry.dependsOn.map((candidate) => candidate.trim()).filter((candidate) => candidate.length > 0))];
+          const replacementSourceStep = replaces.length > 0 ? (stepByKey.get(replaces[0]) ?? null) : null;
+          parsedNewSteps.push({
+            key: normalizedKey,
+            title: entry.title,
+            description: entry.description,
             provider: entry.provider ?? "claude",
-            prompt: entry.description,
-            dependsOn: entry.dependsOn,
-            roleName: entry.role ?? null,
+            roleName: normalizedRole.length > 0 ? normalizedRole : null,
             laneId: entry.laneId ?? replacementSourceStep?.laneId ?? null,
-            replacementForWorkerId: replacementSourceStep?.stepKey ?? null,
+            dependsOn,
+            replaces,
+            parsedContract,
+            replacementSourceStep,
+          });
+          requestNewStepKeys.add(normalizedKey);
+          knownStepKeysAfterCreation.add(normalizedKey);
+          for (const replacedKey of replaces) {
+            replacementPlanByOldStepKey.set(replacedKey, normalizedKey);
+          }
+        }
+
+        for (const planned of parsedNewSteps) {
+          const unknownDeps = planned.dependsOn.filter((depKey) => !knownStepKeysAfterCreation.has(depKey));
+          if (unknownDeps.length > 0) {
+            return {
+              ok: false,
+              error: `New step '${planned.key}' references unknown dependency keys: ${unknownDeps.join(", ")}`
+            };
+          }
+        }
+
+        for (const entry of replacementMap) {
+          const oldStepKey = entry.oldStepKey.trim();
+          if (!oldStepKey.length) continue;
+          if (!stepByKey.has(oldStepKey)) {
+            return { ok: false, error: `replacementMap references unknown oldStepKey '${oldStepKey}'.` };
+          }
+          const newStepKey = entry.newStepKey?.trim() ?? "";
+          if (!newStepKey.length) {
+            replacementPlanByOldStepKey.set(oldStepKey, null);
+            continue;
+          }
+          if (!knownStepKeysAfterCreation.has(newStepKey)) {
+            return { ok: false, error: `replacementMap references unknown newStepKey '${newStepKey}'.` };
+          }
+          replacementPlanByOldStepKey.set(oldStepKey, newStepKey);
+        }
+
+        for (const patch of dependencyPatches) {
+          const stepKey = patch.stepKey.trim();
+          if (!stepKey.length) continue;
+          if (!knownStepKeysAfterCreation.has(stepKey)) {
+            return { ok: false, error: `dependencyPatches references unknown step '${stepKey}'.` };
+          }
+          const nextDeps = [...new Set(patch.dependencyStepKeys.map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
+          const unknownDeps = nextDeps.filter((depKey) => !knownStepKeysAfterCreation.has(depKey));
+          if (unknownDeps.length > 0) {
+            return {
+              ok: false,
+              error: `dependencyPatches for '${stepKey}' references unknown dependency keys: ${unknownDeps.join(", ")}`
+            };
+          }
+          parsedDependencyPatches.push({ stepKey, dependencyStepKeys: nextDeps });
+        }
+
+        const createdSteps: OrchestratorStep[] = [];
+        const createdStepByKey = new Map<string, OrchestratorStep>();
+        for (const plannedStep of parsedNewSteps) {
+          const spawnResult = spawnWorkerStep({
+            stepKey: plannedStep.key,
+            name: plannedStep.title,
+            provider: plannedStep.provider,
+            prompt: plannedStep.description,
+            dependsOn: plannedStep.dependsOn,
+            roleName: plannedStep.roleName,
+            laneId: plannedStep.laneId,
+            replacementForWorkerId: plannedStep.replacementSourceStep?.stepKey ?? null,
             replacementReason: `Plan revised: ${reason.trim()}`,
-            validationContract: parsedContract
+            validationContract: plannedStep.parsedContract
           });
           if (spawnResult.step) {
             createdSteps.push(spawnResult.step);
-            existingStepKeys.add(spawnResult.step.stepKey);
+            createdStepByKey.set(spawnResult.step.stepKey, spawnResult.step);
             onDagMutation({
               runId,
               mutation: { type: "step_added", step: spawnResult.step },
@@ -2215,27 +2392,14 @@ export function createCoordinatorToolSet(deps: {
         }
 
         const replacementByOldStepKey = new Map<string, OrchestratorStep | null>();
-        for (const stepInput of newSteps) {
-          const created = createdSteps.find((step) => step.stepKey === stepInput.key.trim());
-          if (!created) continue;
-          for (const replacedKey of stepInput.replaces ?? []) {
-            const normalized = replacedKey.trim();
-            if (normalized.length > 0) {
-              replacementByOldStepKey.set(normalized, created);
-            }
-          }
-        }
-        for (const entry of replacementMap) {
-          const oldStepKey = entry.oldStepKey.trim();
-          if (!oldStepKey.length) continue;
-          const newStepKey = entry.newStepKey?.trim() ?? "";
-          if (!newStepKey.length) {
+        for (const [oldStepKey, newStepKey] of replacementPlanByOldStepKey.entries()) {
+          if (!newStepKey?.length) {
             replacementByOldStepKey.set(oldStepKey, null);
             continue;
           }
-          const mappedStep = createdSteps.find((step) => step.stepKey === newStepKey) ?? resolveStep(graph(), newStepKey);
+          const mappedStep = createdStepByKey.get(newStepKey) ?? resolveStep(graph(), newStepKey);
           if (!mappedStep) {
-            return { ok: false, error: `replacementMap references unknown newStepKey '${newStepKey}'.` };
+            throw new Error(`Replacement step '${newStepKey}' is unavailable while applying revise_plan.`);
           }
           replacementByOldStepKey.set(oldStepKey, mappedStep);
         }
@@ -2267,22 +2431,12 @@ export function createCoordinatorToolSet(deps: {
         }
 
         const postSupersede = graph();
-        const knownStepKeys = new Set(postSupersede.steps.map((step) => step.stepKey));
-        for (const patch of dependencyPatches) {
-          const stepKey = patch.stepKey.trim();
-          if (!stepKey.length) continue;
-          const targetStep = resolveStep(postSupersede, stepKey);
+        for (const patch of parsedDependencyPatches) {
+          const targetStep = resolveStep(postSupersede, patch.stepKey);
           if (!targetStep) {
-            return { ok: false, error: `dependencyPatches references unknown step '${stepKey}'.` };
+            throw new Error(`Dependency patch target step '${patch.stepKey}' is unavailable while applying revise_plan.`);
           }
-          const nextDeps = [...new Set(patch.dependencyStepKeys.map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
-          const unknownDeps = nextDeps.filter((depKey) => !knownStepKeys.has(depKey));
-          if (unknownDeps.length > 0) {
-            return {
-              ok: false,
-              error: `dependencyPatches for '${stepKey}' references unknown dependency keys: ${unknownDeps.join(", ")}`
-            };
-          }
+          const nextDeps = patch.dependencyStepKeys;
           orchestratorService.updateStepDependencies({
             runId,
             stepId: targetStep.id,
@@ -2339,7 +2493,12 @@ export function createCoordinatorToolSet(deps: {
           void orchestratorService.startReadyAutopilotAttempts({
             runId,
             reason: "coordinator_revise_plan",
-          }).catch(() => {});
+          }).catch((error) => {
+            logger.debug("coordinator.revise_plan.autopilot_schedule_failed", {
+              runId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }, 100);
 
         return {
@@ -2470,6 +2629,28 @@ export function createCoordinatorToolSet(deps: {
         return { ok: false, error: msg };
       }
     }
+  });
+
+  const provision_lane = tool({
+    description:
+      "Create a new lane (git worktree) branching from the base lane. Use this when you need to isolate parallel workstreams or when tasks might touch overlapping files.",
+    inputSchema: z.object({
+      name: z.string().describe("Human-readable name for the lane (e.g. 'auth-backend', 'ui-refactor')"),
+      description: z.string().optional().describe("Optional description of what this lane is for"),
+    }),
+    execute: async ({ name, description }) => {
+      if (!deps.provisionLane) {
+        return { ok: false, error: "Lane provisioning is not available (no lane service configured)." };
+      }
+      try {
+        const result = await deps.provisionLane(name, description);
+        return { ok: true, laneId: result.laneId, name: result.name };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.provision_lane.error", { name, error: msg });
+        return { ok: false, error: msg };
+      }
+    },
   });
 
   // ─── Task Management ──────────────────────────────────────────
@@ -2764,7 +2945,13 @@ export function createCoordinatorToolSet(deps: {
           void orchestratorService.startReadyAutopilotAttempts({
             runId,
             reason: "coordinator_mark_step_complete",
-          }).catch(() => {});
+          }).catch((error) => {
+            logger.debug("coordinator.mark_step_complete.autopilot_schedule_failed", {
+              runId,
+              workerId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }, 100);
         logger.info("coordinator.mark_step_complete", { workerId, summary });
         return { ok: true, workerId, newStatus: "succeeded" };
@@ -2835,6 +3022,19 @@ export function createCoordinatorToolSet(deps: {
         const step = resolveStep(g, workerId);
         if (!step)
           return { ok: false, error: `Step not found: ${workerId}` };
+        const running = findRunningAttempt(g, step.id);
+        if (running) {
+          return {
+            ok: false,
+            error: `Cannot retry step '${workerId}' while attempt '${running.id}' is still running.`
+          };
+        }
+        if (step.status !== "failed" && !TERMINAL_STEP_STATUSES.has(step.status)) {
+          return {
+            ok: false,
+            error: `Step '${workerId}' must be failed or terminal before retry (current status: ${step.status}).`
+          };
+        }
         // Update step metadata with revised instructions
         const existingMeta = (step.metadata ?? {}) as Record<string, unknown>;
         const originalInstructions = existingMeta.instructions;
@@ -2862,7 +3062,13 @@ export function createCoordinatorToolSet(deps: {
           void orchestratorService.startReadyAutopilotAttempts({
             runId,
             reason: "coordinator_retry_step",
-          }).catch(() => {});
+          }).catch((error) => {
+            logger.debug("coordinator.retry_step.autopilot_schedule_failed", {
+              runId,
+              workerId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }, 100);
         logger.info("coordinator.retry_step", { workerId });
         return { ok: true, workerId, newStatus: "pending", retryCount: step.retryCount + 1 };
@@ -2926,6 +3132,12 @@ export function createCoordinatorToolSet(deps: {
               runId,
               stepId: step.id,
               reason: "Mission completed by coordinator",
+            });
+            onDagMutation({
+              runId,
+              mutation: { type: "status_changed", stepKey: step.stepKey, newStatus: "skipped" },
+              timestamp: nowIso(),
+              source: "coordinator",
             });
           }
         }
@@ -3314,15 +3526,17 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ filePath, maxLines }) => {
       try {
-        const fullPath = path.resolve(projectRoot, filePath);
+        const fullPath = path.resolve(resolvedProjectRoot, filePath);
         // Security: ensure path is within project root
-        if (!fullPath.startsWith(projectRoot)) {
+        if (!isWithinDir(resolvedProjectRoot, fullPath)) {
           return { ok: false, error: "Path is outside project root" };
         }
-        if (!fs.existsSync(fullPath)) {
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(fullPath);
+        } catch {
           return { ok: false, error: `File not found: ${filePath}` };
         }
-        const stat = fs.statSync(fullPath);
         if (stat.isDirectory()) {
           const entries = fs.readdirSync(fullPath).slice(0, 100);
           return { ok: true, type: "directory", entries };
@@ -3356,14 +3570,16 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ stepKey }) => {
       try {
         const sanitized = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const filePath = path.resolve(projectRoot, `.ade/step-output-${sanitized}.md`);
-        if (!filePath.startsWith(projectRoot)) {
+        const filePath = path.resolve(resolvedProjectRoot, `.ade/step-output-${sanitized}.md`);
+        if (!isWithinDir(resolvedProjectRoot, filePath)) {
           return { ok: false, error: "Path is outside project root" };
         }
-        if (!fs.existsSync(filePath)) {
+        let content: string;
+        try {
+          content = fs.readFileSync(filePath, "utf-8");
+        } catch {
           return { ok: false, error: `Step output file not found for step: ${stepKey}` };
         }
-        const content = fs.readFileSync(filePath, "utf-8");
         return { ok: true, stepKey, content };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -3465,12 +3681,10 @@ export function createCoordinatorToolSet(deps: {
         for (const f of keyFiles) {
           const fp = path.resolve(projectRoot, f);
           try {
-            if (fs.existsSync(fp)) {
-              const content = fs.readFileSync(fp, "utf-8");
-              docs[f] = content.slice(0, 4_000);
-            }
+            const content = fs.readFileSync(fp, "utf-8");
+            docs[f] = content.slice(0, 4_000);
           } catch {
-            // Skip unreadable files
+            // Skip missing/unreadable files
           }
         }
         // Top-level directory listing
@@ -3514,6 +3728,7 @@ export function createCoordinatorToolSet(deps: {
     revise_plan,
     update_tool_profiles,
     transfer_lane,
+    provision_lane,
     create_task,
     update_task,
     assign_task,

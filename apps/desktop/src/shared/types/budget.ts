@@ -25,28 +25,6 @@ export type SmartBudgetConfig = {
   apiKeyMaxSpendUsd?: number;
 };
 
-export type BudgetSteeringAction =
-  | "downgrade_models"
-  | "inject_conciseness"
-  | "skip_optional_phases"
-  | "reduce_parallelism"
-  | "warn_workers"
-  | "switch_provider";
-
-export type BudgetPressureLevel = "none" | "approaching" | "exceeded";
-
-export type BudgetPressureSnapshot = {
-  level: BudgetPressureLevel;
-  fiveHourSpendUsd: number;
-  weeklySpendUsd: number;
-  fiveHourThresholdUsd: number;
-  weeklyThresholdUsd: number;
-  fiveHourPct: number;
-  weeklyPct: number;
-  activeActions: BudgetSteeringAction[];
-  message: string;
-};
-
 export type MissionBudgetPressure = "normal" | "warning" | "critical";
 
 export type MissionBudgetScopeSnapshot = {

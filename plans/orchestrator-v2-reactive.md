@@ -127,55 +127,51 @@ not a function that runs every 30 seconds.
 
 ## Scaling: One System, Any Scope
 
-### Scope Detection (Pre-Planning)
+### Scope Inference (Current Runtime)
 
-Before creating any plan, a fast AI triage classifies the mission:
+Scope is now inferred from the mission graph and active runtime profile, not from a
+separate `missionTriage` classifier call.
 
 ```typescript
-type MissionScope = "single" | "sequential" | "parallel" | "swarm";
+type MissionScope = "small" | "medium" | "large" | "very_large";
 
-async function triageMission(goal: string, context: ProjectContext): Promise<{
-  scope: MissionScope;
-  estimatedSteps: number;
-  estimatedAgents: number;
-  reasoning: string;
-}> {
-  // Fast AI call (haiku-class model, <2s)
-  // Input: mission goal + project context
-  // Decision factors:
-  //   - How many files likely affected?
-  //   - Are changes independent or coupled?
-  //   - Does this fit in one agent's context window?
-  //   - Is there natural parallelism?
+function deriveScopeFromStepCount(stepCount: number): MissionScope {
+  if (stepCount <= 3) return "small";
+  if (stepCount <= 8) return "medium";
+  if (stepCount <= 20) return "large";
+  return "very_large";
 }
+
+const runtimeProfile = resolveActiveRuntimeProfile(missionId);
+const useAiPlanner = runtimeProfile.planning.useAiPlanner;
+// If true, plan with AI; if false, execute existing mission steps.
 ```
 
 ### Scope → Behavior Mapping
 
 | Scope | Planning | Coordinator | DAG | Agents |
 |-------|----------|-------------|-----|--------|
-| **single** | No planner. Coordinator writes instructions directly. | Lightweight: spawn 1 agent, wait, done. | 1 node (or hidden) | 1 |
-| **sequential** | Coordinator outlines 2-4 steps. No formal planner. | Active: spawn step 1, evaluate, spawn step 2... | 2-4 linear nodes | 1-2 concurrent |
-| **parallel** | Full planner generates DAG. Coordinator reviews. | Full: manages parallel agents, cross-agent comms. | Full DAG with parallelism | 3-8 concurrent |
-| **swarm** | Full planner + coordinator can fan-out dynamically. | Full + proactive: rebalances work, splits steps. | Dynamic DAG, grows/shrinks | 5-15+ concurrent |
+| **small** | Usually policy-off (existing steps), or lightweight planner output. | Lightweight: spawn 1 worker, validate, finish. | Minimal DAG | 1 |
+| **medium** | Planner optional based on runtime profile. | Active sequencing with selective parallelism. | 3-8 steps, mostly linear | 1-3 concurrent |
+| **large** | AI planner typically enabled. | Full coordination with plan mutations. | Full DAG with dependencies | 3-8 concurrent |
+| **very_large** | AI planner enabled + dynamic revisions. | Proactive rebalancing, fan-out, and steering. | Dynamic DAG, grows/shrinks | 5-15+ concurrent |
 
 **Key insight:** The coordinator is the SAME agent in all cases. It just makes different
-decisions based on scope. For a "single" scope mission, it decides "one agent can handle
-this" and doesn't use any plan mutation tools. For a "swarm" mission, it actively manages
-the DAG, fans out, rebalances, and coordinates.
+decisions based on inferred scope and runtime policy. On small missions it stays lightweight;
+on very large missions it actively mutates the DAG, fans out, and coordinates.
 
 ### Single-Agent Fast Path
 
 ```
 User: "Fix the typo in README.md"
   ↓
-Triage: scope=single, 1 step, 1 agent
+Runtime profile: planner disabled, use existing/simple step graph
   ↓
 Coordinator spawns 1 agent with direct instructions
   ↓
 Agent completes → Coordinator reads output → Done
   ↓
-Total AI calls: 1 (triage) + 1 (coordinator spawn) = 2
+Total AI calls: 1 (coordinator execution path)
 vs. V1: 1 (planner) + 1 (lane provisioner) + 1 (team synthesizer) + 8 (completion handlers) = 11
 ```
 
@@ -484,31 +480,27 @@ function onRuntimeEvent(event: OrchestratorRuntimeEvent) {
 #### 2D: Scope-aware mission launch
 
 ```typescript
-// src/main/services/orchestrator/missionLauncher.ts
+// src/main/services/orchestrator/aiOrchestratorService.ts
 
-export async function launchMission(goal: string, opts?: MissionLaunchOpts) {
-  // Step 1: Fast triage
-  const triage = await triageMissionScope(goal, projectContext);
+export async function launchMission(missionId: string, args: MissionRunStartArgs) {
+  const runtimeProfile = resolveActiveRuntimeProfile(missionId);
 
-  // Step 2: Plan (or don't)
-  let initialPlan: OrchestratorStep[] | undefined;
-
-  if (triage.scope === "single") {
-    // No planning needed — coordinator will spawn one agent directly
-    initialPlan = undefined;
-  } else if (triage.scope === "sequential") {
-    // Coordinator creates its own lightweight plan
-    initialPlan = undefined;
-  } else {
-    // Full AI planner for parallel/swarm scopes
-    initialPlan = await runAIPlanner(goal, triage, opts);
+  // Step 1: Optional planning (policy-driven)
+  if (runtimeProfile.planning.useAiPlanner) {
+    await planWithAI({ missionId, provider: args.defaultExecutorKind ?? "claude" });
   }
+  // else: keep existing mission steps (planner policy-off)
 
-  // Step 3: Start coordinator
-  const coordinator = new CoordinatorAgent(ctx);
-  await coordinator.start(mission, initialPlan);
+  // Step 2: Start coordinator
+  startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig, {
+    userRules,
+    projectContext,
+    availableProviders,
+    phases,
+    missionLaneId
+  });
 
-  // That's it. Coordinator takes over from here.
+  // Coordinator takes over reactively from here.
 }
 ```
 
@@ -697,7 +689,7 @@ After typing the goal, show a quick preview before launching:
 
 ### What Gets Simplified
 - Event routing: instead of dispatching to 8 handlers, routes to coordinator
-- Mission launch: scope triage → optional planner → coordinator start
+- Mission launch: runtime profile → optional planner → coordinator start
 - DAG management: coordinator mutates via tools, events drive UI
 - Parallelism decisions: coordinator decides, not a separate AI service
 

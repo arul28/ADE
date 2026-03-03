@@ -361,10 +361,9 @@ Main-process mission logic lives in:
 **Other orchestrator modules**:
 
 - `apps/desktop/src/main/services/orchestrator/metaReasoner.ts` — AI meta-reasoner for dynamic fan-out decisions
-- `apps/desktop/src/main/services/orchestrator/budgetPressureService.ts` — budget pressure analysis
-- `apps/desktop/src/main/services/orchestrator/missionBudgetService.ts` — mission-level budget enforcement and tracking
+- `apps/desktop/src/main/services/orchestrator/missionBudgetService.ts` — mission-level budget enforcement, usage snapshots, and pressure/hard-cap evaluation
 - `apps/desktop/src/main/services/orchestrator/coordinatorAgent.ts` — coordinator agent session setup and tool registration
-- `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` — Vercel AI SDK coordinator tools
+- `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` — Vercel AI SDK coordinator tools, including `get_budget_status` and spawn-time hard-cap checks
 - `apps/desktop/src/main/services/orchestrator/executionPolicy.ts` — execution policy resolution
 - `apps/desktop/src/main/services/orchestrator/planningPipeline.ts` — mission planning pipeline
 - `apps/desktop/src/main/services/orchestrator/teamRuntimeConfig.ts` — team runtime template configuration

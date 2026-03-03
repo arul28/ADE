@@ -27,6 +27,9 @@ import { runGit } from "../git/git";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 
+const MAX_EDITOR_READ_BYTES = 5 * 1024 * 1024;
+const GIT_STATUS_CACHE_TTL_MS = 1_000;
+
 function isWithinDir(dir: string, candidate: string): boolean {
   const rel = path.relative(dir, candidate);
   return !rel.startsWith("..") && !path.isAbsolute(rel);
@@ -147,6 +150,10 @@ function ensureSafePath(rootPath: string, relPath: string): { absPath: string; n
   return { absPath, normalizedRel };
 }
 
+function isWorkspaceRootRelativePath(normalizedRel: string): boolean {
+  return normalizedRel === "" || normalizedRel === ".";
+}
+
 function writeTextAtomicAbs(absPath: string, text: string): void {
   fs.mkdirSync(path.dirname(absPath), { recursive: true });
   const tmp = `${absPath}.tmp-${randomUUID()}`;
@@ -188,6 +195,7 @@ export function createFileService({
   const indexService = createFileSearchIndexService();
   const ignoreCache = new Map<string, boolean>();
   const ignoredPrefixCache = new Set<string>();
+  const gitStatusCache = new Map<string, { fetchedAt: number; map: Map<string, FileTreeChangeStatus> }>();
 
   const clearIgnoreCacheForRoot = (rootPath: string): void => {
     const prefix = `${rootPath}::`;
@@ -201,6 +209,10 @@ export function createFileService({
         ignoredPrefixCache.delete(key);
       }
     }
+  };
+
+  const invalidateGitStatusCache = (rootPath: string): void => {
+    gitStatusCache.delete(rootPath);
   };
 
   const resolveWorkspace = (workspaceId: string) => laneService.resolveWorkspaceById(workspaceId);
@@ -268,6 +280,12 @@ export function createFileService({
   };
 
   const getGitStatusMap = async (rootPath: string): Promise<Map<string, FileTreeChangeStatus>> => {
+    const cached = gitStatusCache.get(rootPath);
+    const now = Date.now();
+    if (cached && now - cached.fetchedAt <= GIT_STATUS_CACHE_TTL_MS) {
+      return cached.map;
+    }
+
     const res = await runGit(["status", "--porcelain=v1"], { cwd: rootPath, timeoutMs: 10_000 });
     const out = new Map<string, FileTreeChangeStatus>();
     if (res.exitCode !== 0) return out;
@@ -291,6 +309,7 @@ export function createFileService({
       else if (combined.length) out.set(normalized, "M");
       else out.set(normalized, null);
     }
+    gitStatusCache.set(rootPath, { fetchedAt: now, map: out });
     return out;
   };
 
@@ -400,6 +419,7 @@ export function createFileService({
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       const { absPath } = ensureSafePath(worktreePath, relPath);
       writeTextAtomicAbs(absPath, text);
+      invalidateGitStatusCache(worktreePath);
       if (onLaneWorktreeMutation) {
         onLaneWorktreeMutation({
           laneId,
@@ -430,6 +450,14 @@ export function createFileService({
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
       const stat = fs.statSync(absPath);
+      if (!stat.isFile()) {
+        throw new Error("Path is not a file.");
+      }
+      if (stat.size > MAX_EDITOR_READ_BYTES) {
+        throw new Error(
+          `Refusing to open files larger than ${Math.round(MAX_EDITOR_READ_BYTES / (1024 * 1024))}MB in the editor.`
+        );
+      }
       const buf = fs.readFileSync(absPath);
       const isBinary = hasNullByte(buf);
       return {
@@ -445,6 +473,7 @@ export function createFileService({
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
       writeTextAtomicAbs(absPath, args.text);
+      invalidateGitStatusCache(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -465,6 +494,7 @@ export function createFileService({
       if (!fs.existsSync(absPath)) {
         fs.writeFileSync(absPath, args.content ?? "", "utf8");
       }
+      invalidateGitStatusCache(workspace.rootPath);
       indexService.onFileChanged({
         workspaceId: args.workspaceId,
         rootPath: workspace.rootPath,
@@ -479,6 +509,7 @@ export function createFileService({
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath } = ensureSafePath(workspace.rootPath, args.path);
       fs.mkdirSync(absPath, { recursive: true });
+      invalidateGitStatusCache(workspace.rootPath);
       indexService.invalidateWorkspace(args.workspaceId);
       emitLaneMutation(args.workspaceId, "directory_create");
     },
@@ -489,6 +520,7 @@ export function createFileService({
       const { absPath: newAbs, normalizedRel: newRel } = ensureSafePath(workspace.rootPath, args.newPath);
       fs.mkdirSync(path.dirname(newAbs), { recursive: true });
       fs.renameSync(oldAbs, newAbs);
+      invalidateGitStatusCache(workspace.rootPath);
       if (oldRel === ".gitignore" || newRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -506,7 +538,11 @@ export function createFileService({
     deletePath(args: FilesDeleteArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      if (isWorkspaceRootRelativePath(normalizedRel)) {
+        throw new Error("Refusing to delete workspace root.");
+      }
       fs.rmSync(absPath, { recursive: true, force: true });
+      invalidateGitStatusCache(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -534,6 +570,7 @@ export function createFileService({
           senderId
         },
         (ev) => {
+          invalidateGitStatusCache(workspace.rootPath);
           if (ev.path === ".gitignore") {
             clearIgnoreCacheForRoot(workspace.rootPath);
           }

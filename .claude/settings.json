@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/arul/Versic/.claude/hooks/sandbox.sh"
+            "command": ".claude/hooks/sandbox.sh"
           }
         ]
       }

@@ -143,7 +143,7 @@ describe("AgentChatPane", () => {
     });
   });
 
-  it("creates new session when New chat is clicked", async () => {
+  it("creates a new session on first submit after New chat is clicked", async () => {
     setupWindowAde();
     render(<AgentChatPane laneId="lane-1" />);
 
@@ -153,6 +153,13 @@ describe("AgentChatPane", () => {
 
     await act(async () => {
       fireEvent.click(screen.getByTitle("New chat"));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
+        target: { value: "hello" },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
     });
 
     await waitFor(() => {

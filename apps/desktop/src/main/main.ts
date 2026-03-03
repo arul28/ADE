@@ -652,6 +652,9 @@ app.whenReady().then(async () => {
     orchestratorService.registerExecutorAdapter(createClaudeOrchestratorAdapter());
     orchestratorService.registerExecutorAdapter(createCodexOrchestratorAdapter());
 
+    // Resume any active team runtimes that were running before app restart
+    setImmediate(() => aiOrchestratorService.resumeActiveTeamRuntimes());
+
     const automationPlannerService = createAutomationPlannerService({
       logger,
       projectRoot,

@@ -764,6 +764,93 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("blocks startAttempt and autopilot dispatch when run is paused or completing", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "codex",
+            ownerId: "autopilot-owner",
+            parallelismCap: 1
+          }
+        },
+        steps: [
+          {
+            stepKey: "status-guarded",
+            title: "Status Guarded",
+            stepIndex: 0,
+            executorKind: "codex"
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      fixture.service.pauseRun({ runId: started.run.id, reason: "operator pause" });
+      await expect(
+        fixture.service.startAttempt({
+          runId: started.run.id,
+          stepId: step.id,
+          ownerId: "owner"
+        })
+      ).rejects.toThrow(/status 'paused'/i);
+      expect(
+        await fixture.service.startReadyAutopilotAttempts({
+          runId: started.run.id,
+          reason: "paused_guard"
+        })
+      ).toBe(0);
+
+      fixture.db.run(`update orchestrator_runs set status = 'completing', updated_at = ? where id = ?`, [new Date().toISOString(), started.run.id]);
+      await expect(
+        fixture.service.startAttempt({
+          runId: started.run.id,
+          stepId: step.id,
+          ownerId: "owner"
+        })
+      ).rejects.toThrow(/status 'completing'/i);
+      expect(
+        await fixture.service.startReadyAutopilotAttempts({
+          runId: started.run.id,
+          reason: "completing_guard"
+        })
+      ).toBe(0);
+
+      expect(fixture.service.listAttempts({ runId: started.run.id })).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("resumeRun unpauses paused runs safely", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "resume-guard",
+            title: "Resume Guard",
+            stepIndex: 0
+          }
+        ]
+      });
+      fixture.service.pauseRun({ runId: started.run.id, reason: "manual_pause" });
+      const paused = fixture.service.listRuns({ missionId: fixture.missionId }).find((run) => run.id === started.run.id);
+      expect(paused?.status).toBe("paused");
+
+      const resumed = fixture.service.resumeRun({ runId: started.run.id });
+      expect(resumed.status).toBe("active");
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 30 });
+      expect(timeline.some((entry) => entry.eventType === "run_resumed")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("uses deterministic-by-default profile and supports explicit narrative opt-in profile", async () => {
     const fixture = await createFixture();
     try {
@@ -1989,6 +2076,48 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("matches null step ids when resolving run-level interventions during finalize", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "finalize-step", title: "Finalize Step", stepIndex: 0 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded"
+      });
+
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: null,
+        eventType: "intervention_opened",
+        eventKey: "run-level-intervention"
+      });
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: null,
+        eventType: "intervention_resolved",
+        eventKey: "run-level-intervention-resolved"
+      });
+
+      const finalized = fixture.service.finalizeRun({ runId: started.run.id });
+      expect(finalized.finalized).toBe(true);
+      expect(finalized.blockers).toHaveLength(0);
+      expect(finalized.finalStatus).toBe("succeeded");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("supports claim heartbeat and expiry recovery for blocked collision steps", async () => {
     const fixture = await createFixture();
     try {
@@ -2427,6 +2556,127 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("applies mission-level permission overrides even when project ai.permissions are absent", async () => {
+    const fixture = await createFixture();
+    try {
+      fixture.db.run(
+        `update missions set metadata_json = ? where id = ? and project_id = ?`,
+        [
+          JSON.stringify({
+            launch: {
+              permissionConfig: {
+                claude: { permissionMode: "plan" },
+                codex: { approvalMode: "auto-edit" }
+              }
+            }
+          }),
+          fixture.missionId,
+          fixture.projectId
+        ]
+      );
+
+      let capturedPermissionConfig: Record<string, unknown> | undefined;
+      fixture.service.registerExecutorAdapter({
+        kind: "claude",
+        start: async (args) => {
+          capturedPermissionConfig = args.permissionConfig as Record<string, unknown> | undefined;
+          return {
+            status: "completed",
+            result: {
+              schema: "ade.orchestratorAttempt.v1",
+              success: true,
+              summary: "ok",
+              outputs: null,
+              warnings: [],
+              sessionId: null,
+              trackedSession: false
+            }
+          };
+        }
+      });
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "permissions-override",
+            title: "Permissions override",
+            stepIndex: 0,
+            executorKind: "claude"
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+
+      expect(attempt.status).toBe("succeeded");
+      const claude = capturedPermissionConfig?.claude as Record<string, unknown> | undefined;
+      const codex = capturedPermissionConfig?.codex as Record<string, unknown> | undefined;
+      expect(claude?.permissionMode).toBe("plan");
+      expect(codex?.approvalMode).toBe("auto-edit");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("uses safe permission defaults when project and mission permission settings are missing", async () => {
+    const fixture = await createFixture();
+    try {
+      let capturedPermissionConfig: Record<string, unknown> | undefined;
+      fixture.service.registerExecutorAdapter({
+        kind: "codex",
+        start: async (args) => {
+          capturedPermissionConfig = args.permissionConfig as Record<string, unknown> | undefined;
+          return {
+            status: "completed",
+            result: {
+              schema: "ade.orchestratorAttempt.v1",
+              success: true,
+              summary: "ok",
+              outputs: null,
+              warnings: [],
+              sessionId: null,
+              trackedSession: false
+            }
+          };
+        }
+      });
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "permissions-defaults",
+            title: "Permissions defaults",
+            stepIndex: 0,
+            executorKind: "codex"
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+
+      expect(attempt.status).toBe("succeeded");
+      const claude = capturedPermissionConfig?.claude as Record<string, unknown> | undefined;
+      const codex = capturedPermissionConfig?.codex as Record<string, unknown> | undefined;
+      expect(claude?.permissionMode).toBe("acceptEdits");
+      expect(codex?.approvalMode).toBe("auto-edit");
+      expect(codex?.sandboxPermissions).toBe("workspace-write");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("enforces total budget limit in startAttempt", async () => {
     const fixture = await createFixture({
       projectConfigService: {
@@ -2531,6 +2781,63 @@ describe("orchestratorService", () => {
 
       const timeline2 = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
       expect(timeline2.some((e) => e.eventType === "budget_exceeded")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps tick as a no-op for paused runs", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "paused-guard", title: "Paused guard", stepIndex: 0 }]
+      });
+
+      const paused = fixture.service.pauseRun({
+        runId: started.run.id,
+        reason: "manual_pause_for_review"
+      });
+      expect(paused.status).toBe("paused");
+
+      const before = fixture.service.listRuns({ missionId: fixture.missionId }).find((run) => run.id === started.run.id);
+      const timelineBefore = fixture.service.listTimeline({ runId: started.run.id, limit: 100 }).length;
+
+      const ticked = fixture.service.tick({ runId: started.run.id });
+      const after = fixture.service.listRuns({ missionId: fixture.missionId }).find((run) => run.id === started.run.id);
+      const timelineAfter = fixture.service.listTimeline({ runId: started.run.id, limit: 100 }).length;
+
+      expect(ticked.status).toBe("paused");
+      expect(after?.status).toBe("paused");
+      expect(after?.updatedAt).toBe(before?.updatedAt);
+      expect(timelineAfter).toBe(timelineBefore);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps tick as a no-op for completing runs", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "completion-guard", title: "Completion guard", stepIndex: 0 }]
+      });
+
+      const completing = fixture.service.requestCompletion(started.run.id);
+      expect(completing.status).toBe("completing");
+
+      const before = fixture.service.listRuns({ missionId: fixture.missionId }).find((run) => run.id === started.run.id);
+      const timelineBefore = fixture.service.listTimeline({ runId: started.run.id, limit: 100 }).length;
+
+      const ticked = fixture.service.tick({ runId: started.run.id });
+      const after = fixture.service.listRuns({ missionId: fixture.missionId }).find((run) => run.id === started.run.id);
+      const timelineAfter = fixture.service.listTimeline({ runId: started.run.id, limit: 100 }).length;
+
+      expect(ticked.status).toBe("completing");
+      expect(after?.status).toBe("completing");
+      expect(after?.updatedAt).toBe(before?.updatedAt);
+      expect(timelineAfter).toBe(timelineBefore);
     } finally {
       fixture.dispose();
     }

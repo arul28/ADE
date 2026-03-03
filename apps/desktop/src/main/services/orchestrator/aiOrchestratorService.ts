@@ -450,6 +450,96 @@ import {
 } from "./workerDeliveryService";
 import type { WorkerDeliveryDeps, RouteToCoordinatorDeps } from "./workerDeliveryService";
 
+export function deriveFallbackLaneStrategyDecision(args: {
+  descriptors: ParallelMissionStepDescriptor[];
+  baseLaneId: string;
+}): {
+  strategy: "single_lane" | "dependency_parallel" | "phase_parallel";
+  maxParallelLanes: number;
+  rationale: string;
+  confidence: number;
+  stepAssignments: Array<{
+    stepKey: string;
+    laneLabel: string;
+    rationale?: string;
+  }>;
+} {
+  const ordered = [...args.descriptors].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+  const assignmentByStepKey = new Map<string, { laneLabel: string; rationale: string }>();
+  const existingLaneLabelByLaneId = new Map<string, string>();
+  let existingLaneCounter = 0;
+  const assignLane = (stepKey: string, laneLabel: string, rationale: string): void => {
+    assignmentByStepKey.set(stepKey, { laneLabel, rationale });
+  };
+
+  for (const descriptor of ordered) {
+    const existingLaneId = toOptionalString(descriptor.laneId);
+    if (!existingLaneId || existingLaneId === args.baseLaneId) continue;
+    let laneLabel = existingLaneLabelByLaneId.get(existingLaneId);
+    if (!laneLabel) {
+      existingLaneCounter += 1;
+      laneLabel = `existing-${existingLaneCounter}`;
+      existingLaneLabelByLaneId.set(existingLaneId, laneLabel);
+    }
+    assignLane(descriptor.stepKey, laneLabel, `Preserved existing mission lane '${existingLaneId}'.`);
+  }
+
+  const independentRoots = ordered.filter((descriptor) =>
+    descriptor.dependencyStepKeys.length === 0
+    && isParallelCandidateStepType(descriptor.stepType)
+    && !assignmentByStepKey.has(descriptor.stepKey)
+  );
+  if (independentRoots.length > 1) {
+    assignLane(independentRoots[0]!.stepKey, "base", "Primary root stream anchored on the base lane.");
+    independentRoots.slice(1).forEach((descriptor, index) => {
+      assignLane(
+        descriptor.stepKey,
+        `parallel-${index + 1}`,
+        "Independent root step assigned to a dedicated fallback parallel lane."
+      );
+    });
+  } else if (independentRoots.length === 1) {
+    assignLane(independentRoots[0]!.stepKey, "base", "Single root stream runs on the base lane.");
+  }
+
+  for (const descriptor of ordered) {
+    if (assignmentByStepKey.has(descriptor.stepKey)) continue;
+    const dependencyLabels = [...new Set(descriptor.dependencyStepKeys
+      .map((depKey) => assignmentByStepKey.get(depKey)?.laneLabel ?? null)
+      .filter((label): label is string => typeof label === "string" && label.length > 0))];
+    if (dependencyLabels.length === 1) {
+      assignLane(descriptor.stepKey, dependencyLabels[0]!, "Inherited lane from sole dependency chain.");
+    } else if (dependencyLabels.length > 1) {
+      assignLane(descriptor.stepKey, "base", "Multi-lane dependencies converge on the base lane.");
+    } else {
+      assignLane(descriptor.stepKey, "base", "No lane signal found; defaulting to base lane.");
+    }
+  }
+
+  if (![...assignmentByStepKey.values()].some((assignment) => assignment.laneLabel === "base")) {
+    const anchor = ordered[0];
+    if (anchor) {
+      assignLane(anchor.stepKey, "base", "Anchor fallback strategy with one base-lane step.");
+    }
+  }
+
+  const fallbackLabels = [...new Set(ordered.map((descriptor) => assignmentByStepKey.get(descriptor.stepKey)?.laneLabel ?? "base"))];
+  return {
+    strategy: fallbackLabels.length > 1 ? "dependency_parallel" : "single_lane",
+    maxParallelLanes: Math.max(1, fallbackLabels.length),
+    rationale: "Deterministic fallback lane strategy derived from dependencies and existing lane signals.",
+    confidence: 0.6,
+    stepAssignments: ordered.map((descriptor) => {
+      const assignment = assignmentByStepKey.get(descriptor.stepKey);
+      return {
+        stepKey: descriptor.stepKey,
+        laneLabel: assignment?.laneLabel ?? "base",
+        rationale: assignment?.rationale ?? "No lane signal found; defaulting to base lane."
+      };
+    })
+  };
+}
+
 
 export function createAiOrchestratorService(args: {
   db: AdeDb;
@@ -504,6 +594,7 @@ export function createAiOrchestratorService(args: {
   const pendingIntegrations = new Map<string, PendingIntegrationContext>();
   const pendingCoordinatorEvals = new Map<string, NodeJS.Timeout>();
   const milestoneReadyNotificationSignatures = new Map<string, string>();
+  const runWatchdogTimers = new Map<string, Set<NodeJS.Timeout>>();
 
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
@@ -586,6 +677,23 @@ export function createAiOrchestratorService(args: {
       clearTimeout(evalTimer);
       pendingCoordinatorEvals.delete(runId);
     }
+    const watchdogTimers = runWatchdogTimers.get(runId);
+    if (watchdogTimers) {
+      for (const timer of watchdogTimers) clearTimeout(timer);
+      runWatchdogTimers.delete(runId);
+    }
+  };
+
+  const scheduleRunWatchdogTimer = (runId: string, delayMs: number, callback: () => void): NodeJS.Timeout => {
+    const timers = runWatchdogTimers.get(runId) ?? new Set<NodeJS.Timeout>();
+    runWatchdogTimers.set(runId, timers);
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      if (timers.size === 0) runWatchdogTimers.delete(runId);
+      callback();
+    }, delayMs);
+    timers.add(timer);
+    return timer;
   };
   // Delegated to missionLifecycle.ts
   const getMaxCoordinatorRecoveries = (missionId?: string | null) => getMaxCoordinatorRecoveriesCtx(ctx, missionId);
@@ -678,6 +786,7 @@ export function createAiOrchestratorService(args: {
       availableProviders?: import("./coordinatorAgent").CoordinatorAvailableProvider[];
       phases?: import("../../../shared/types").PhaseCard[];
       skipInitialActivationMessage?: boolean;
+      missionLaneId?: string;
     },
   ): CoordinatorAgent | null => {
     if (!projectRoot) {
@@ -755,14 +864,25 @@ export function createAiOrchestratorService(args: {
         projectContext: opts?.projectContext,
         availableProviders: opts?.availableProviders,
         phases: opts?.phases,
+        missionLaneId: opts?.missionLaneId,
+        provisionLane: laneService
+          ? async (name: string, description?: string) => {
+              const result = await createLaneFromBase(name, { description, folder: `Mission: ${missionId}`, missionId });
+              if (!result) throw new Error("No base lane available for provisioning.");
+              return result;
+            }
+          : undefined,
       });
 
       coordinatorAgents.set(runId, agent);
 
       // Inject the mission prompt — the coordinator takes it from here
       if (!opts?.skipInitialActivationMessage) {
+        const laneContext = opts?.missionLaneId
+          ? `\n\nA primary mission lane has been created for you (lane ID: ${opts.missionLaneId}). All workers should be assigned to this lane or to additional lanes you create with provision_lane. NEVER assign workers to the base lane directly.`
+          : "";
         agent.injectMessage(
-          `You have been activated. Your mission:\n\n${missionGoal}\n\nYou have full authority. Read the mission, think about the approach, create tasks, spawn workers, and complete the mission. Start now.`,
+          `You have been activated. Your mission:\n\n${missionGoal}\n\nYou have full authority. Read the mission, think about the approach, create tasks, spawn workers, and complete the mission. Start now.${laneContext}`,
         );
       }
 
@@ -833,6 +953,9 @@ export function createAiOrchestratorService(args: {
       return null;
     }
 
+    const nextAttempt = attempts + 1;
+    coordinatorRecoveryAttempts.set(runId, nextAttempt);
+
     try {
       // Clean up the dead agent
       const deadAgent = coordinatorAgents.get(runId);
@@ -849,6 +972,10 @@ export function createAiOrchestratorService(args: {
       if (!mission) return null;
 
       const missionGoal = mission.prompt || mission.title;
+      const recoveredMissionLaneId = resolvePersistedMissionLaneIdForRun(runId);
+      if (recoveredMissionLaneId) {
+        persistMissionLaneIdForRun(runId, recoveredMissionLaneId);
+      }
       const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
       const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, { missionId });
 
@@ -858,11 +985,10 @@ export function createAiOrchestratorService(args: {
         projectContext: projectCtx,
         availableProviders,
         phases,
+        missionLaneId: recoveredMissionLaneId ?? undefined,
       });
 
       if (!newAgent) return null;
-
-      coordinatorRecoveryAttempts.set(runId, attempts + 1);
 
       // Build recovery context from current run state
       const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
@@ -885,7 +1011,7 @@ export function createAiOrchestratorService(args: {
 
       newAgent.injectMessage(
         `[COORDINATOR RECOVERY] You are taking over a mission that was in progress.
-The previous coordinator crashed (recovery attempt ${attempts + 1} of ${maxRecoveries}). Here is the current state:
+The previous coordinator crashed (recovery attempt ${nextAttempt} of ${maxRecoveries}). Here is the current state:
 
 Mission: ${missionGoal}
 
@@ -904,12 +1030,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       logger.info("ai_orchestrator.coordinator_recovered", {
         runId,
         missionId,
-        recoveryAttempt: attempts + 1,
+        recoveryAttempt: nextAttempt,
       });
 
       emitOrchestratorMessage(
         missionId,
-        `Coordinator recovered (attempt ${attempts + 1}/${maxRecoveries}). Resuming mission control.`,
+        `Coordinator recovered (attempt ${nextAttempt}/${maxRecoveries}). Resuming mission control.`,
         null,
         { role: "coordinator_v2", runId },
       );
@@ -918,6 +1044,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     } catch (error) {
       logger.warn("ai_orchestrator.coordinator_recovery_failed", {
         runId,
+        recoveryAttempt: nextAttempt,
         error: error instanceof Error ? error.message : String(error),
       });
       return null;
@@ -1315,19 +1442,139 @@ Check all worker statuses and continue managing the mission from here. Read work
     plannerSessionBySessionId.set(state.sessionId, state);
   };
 
+  /**
+   * Resolve the primary lane ID. Returns null if lane service is unavailable.
+   */
+  const resolvePrimaryLaneId = async (): Promise<string | null> => {
+    if (!laneService || typeof laneService.list !== "function") return null;
+    const lanes = await laneService.list({ includeArchived: false });
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
+    return primary?.id?.trim() || null;
+  };
+
   const resolvePlannerLaneId = async (mission: MissionDetail): Promise<string> => {
     const missionLaneId = toOptionalString(mission.laneId);
     if (missionLaneId) return missionLaneId;
-    if (!laneService || typeof laneService.list !== "function") {
-      throw new Error("Mission planning lane could not be resolved.");
-    }
-    const lanes = await laneService.list({ includeArchived: false });
-    const preferred = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
-    const laneId = preferred && typeof preferred.id === "string" ? preferred.id.trim() : "";
-    if (!laneId.length) {
-      throw new Error("Mission planning lane could not be resolved.");
-    }
+    const laneId = await resolvePrimaryLaneId();
+    if (!laneId) throw new Error("Mission planning lane could not be resolved.");
     return laneId;
+  };
+
+  /**
+   * Create a lane branching from the primary lane.
+   * Used for both initial mission lane creation and dynamic provisioning.
+   * Returns { laneId, name } or null if unavailable.
+   */
+  const createLaneFromBase = async (
+    name: string,
+    opts: { description?: string; folder?: string; missionId: string },
+  ): Promise<{ laneId: string; name: string } | null> => {
+    if (!laneService) return null;
+    const baseLaneId = await resolvePrimaryLaneId();
+    if (!baseLaneId) {
+      logger.warn("ai_orchestrator.lane_create_skip", { missionId: opts.missionId, reason: "no_base_lane" });
+      return null;
+    }
+    const child = await laneService.createChild({
+      parentLaneId: baseLaneId,
+      name,
+      description: opts.description,
+      folder: opts.folder,
+    });
+    logger.info("ai_orchestrator.lane_created", {
+      missionId: opts.missionId,
+      laneId: child.id,
+      name,
+      baseLaneId,
+    });
+    return { laneId: child.id, name: child.name };
+  };
+
+  /**
+   * Create a dedicated mission lane. Returns the lane ID or null on failure.
+   */
+  const createMissionLane = async (missionId: string, missionTitle: string): Promise<string | null> => {
+    try {
+      const result = await createLaneFromBase(
+        `m-${missionId.slice(0, 6)}-${slugify(missionTitle)}`,
+        { description: `Mission lane for ${missionTitle}`, folder: `Mission: ${missionTitle}`, missionId },
+      );
+      return result?.laneId ?? null;
+    } catch (error) {
+      logger.warn("ai_orchestrator.mission_lane_creation_failed", {
+        missionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const readMissionLaneIdFromRunMetadata = (metadata: Record<string, unknown>): string | null => {
+    const directLaneId = toOptionalString(metadata.missionLaneId);
+    if (directLaneId) return directLaneId;
+
+    const coordinatorMeta = isRecord(metadata.coordinator) ? metadata.coordinator : null;
+    const coordinatorLaneId = coordinatorMeta ? toOptionalString(coordinatorMeta.missionLaneId) : null;
+    if (coordinatorLaneId) return coordinatorLaneId;
+
+    const teamRuntimeMeta = isRecord(metadata.teamRuntime) ? metadata.teamRuntime : null;
+    return teamRuntimeMeta ? toOptionalString(teamRuntimeMeta.missionLaneId) : null;
+  };
+
+  const persistMissionLaneIdForRun = (runId: string, laneId: string): void => {
+    const normalizedRunId = toOptionalString(runId);
+    const normalizedLaneId = toOptionalString(laneId);
+    if (!normalizedRunId || !normalizedLaneId) return;
+    updateRunMetadata(normalizedRunId, (metadata) => {
+      metadata.missionLaneId = normalizedLaneId;
+      const coordinatorMeta = isRecord(metadata.coordinator) ? { ...metadata.coordinator } : {};
+      coordinatorMeta.missionLaneId = normalizedLaneId;
+      metadata.coordinator = coordinatorMeta;
+      const teamRuntimeMeta = isRecord(metadata.teamRuntime) ? { ...metadata.teamRuntime } : {};
+      teamRuntimeMeta.missionLaneId = normalizedLaneId;
+      metadata.teamRuntime = teamRuntimeMeta;
+    });
+  };
+
+  const resolvePersistedMissionLaneIdForRun = (runId: string): string | null => {
+    const normalizedRunId = toOptionalString(runId);
+    if (!normalizedRunId) return null;
+
+    const metadataLaneId = readMissionLaneIdFromRunMetadata(getRunMetadata(normalizedRunId));
+    if (metadataLaneId) return metadataLaneId;
+
+    const derivedLaneRow = db.get<{ lane_id: string | null }>(
+      `
+        select lane_id
+        from orchestrator_steps
+        where run_id = ?
+          and lane_id is not null
+        group by lane_id
+        order by count(*) desc, min(step_index) asc, lane_id asc
+        limit 1
+      `,
+      [normalizedRunId]
+    );
+    return toOptionalString(derivedLaneRow?.lane_id);
+  };
+
+  const ensureMissionLaneForRun = async (args: {
+    runId: string;
+    missionId: string;
+    missionTitle: string;
+    createIfMissing?: boolean;
+  }): Promise<string | null> => {
+    const persistedLaneId = resolvePersistedMissionLaneIdForRun(args.runId);
+    if (persistedLaneId) {
+      persistMissionLaneIdForRun(args.runId, persistedLaneId);
+      return persistedLaneId;
+    }
+    if (args.createIfMissing === false) return null;
+    const createdLaneId = await createMissionLane(args.missionId, args.missionTitle);
+    if (createdLaneId) {
+      persistMissionLaneIdForRun(args.runId, createdLaneId);
+    }
+    return createdLaneId;
   };
 
   const recordRuntimeEvent = (args: {
@@ -2214,6 +2461,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     runId: string;
     reason: string;
   }): Promise<number> => {
+    const run = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === args.runId) ?? null;
+    if (!run) return 0;
+    if (run.status !== "active" && run.status !== "bootstrapping" && run.status !== "queued") return 0;
+    const coordinator = coordinatorAgents.get(args.runId);
+    if (!coordinator?.isAlive) return 0;
     emitMilestoneReadinessToCoordinator({ runId: args.runId, reason: args.reason });
     return orchestratorService.startReadyAutopilotAttempts({ runId: args.runId, reason: args.reason });
   };
@@ -2660,13 +2912,20 @@ Check all worker statuses and continue managing the mission from here. Read work
     // Initialize runtime state
     initTeamRuntimeState(runId, null);
 
-    // 1. Spawn coordinator agent
+    // 1. Create mission lane + spawn coordinator agent
+    const teamMission = missionService.get(missionId);
+    const teamMissionLaneId = await ensureMissionLaneForRun({
+      runId,
+      missionId,
+      missionTitle: teamMission?.title ?? missionGoal.slice(0, 60),
+    });
     const { userRules: teamUserRules, projectCtx: teamProjectCtx, availableProviders: teamProviders, phases: teamPhases } = gatherCoordinatorContext(missionId, { missionId });
     const coordinatorAgent = startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig, {
       userRules: teamUserRules,
       projectContext: teamProjectCtx,
       availableProviders: teamProviders,
       phases: teamPhases,
+      missionLaneId: teamMissionLaneId ?? undefined,
     });
     const coordinatorMemberId = randomUUID();
     const now = nowIso();
@@ -2928,10 +3187,19 @@ Check all worker statuses and continue managing the mission from here. Read work
   const resumeActiveTeamRuntimes = (): void => {
     void (async () => {
       try {
-        const activeRuns = db.all<{ id: string; mission_id: string; status: string; metadata_json: string | null }>(
-          `select id, mission_id, status, metadata_json from orchestrator_runs where status in ('active', 'bootstrapping', 'queued') order by created_at desc limit 10`
-        );
-        for (const run of activeRuns) {
+        const pageSize = 100;
+        let offset = 0;
+        while (true) {
+          const activeRuns = db.all<{ id: string; mission_id: string; status: string; metadata_json: string | null }>(
+            `select id, mission_id, status, metadata_json
+               from orchestrator_runs
+              where status in ('active', 'bootstrapping', 'queued')
+              order by created_at desc, id desc
+              limit ? offset ?`,
+            [pageSize, offset]
+          );
+          if (!activeRuns.length) break;
+          for (const run of activeRuns) {
           const runtimeState = getTeamRuntimeStateForRun(run.id);
           if (!runtimeState || runtimeState.phase === "done" || runtimeState.phase === "failed") continue;
 
@@ -2965,6 +3233,10 @@ Check all worker statuses and continue managing the mission from here. Read work
 
           const coordinatorModelConfig = resolveOrchestratorModelConfig(run.mission_id, "coordinator");
           const missionGoal = mission.prompt || mission.title;
+          const resumeMissionLaneId = resolvePersistedMissionLaneIdForRun(run.id);
+          if (resumeMissionLaneId) {
+            persistMissionLaneIdForRun(run.id, resumeMissionLaneId);
+          }
           const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(run.mission_id, { missionId: run.mission_id });
           const agent = startCoordinatorAgentV2(run.mission_id, run.id, missionGoal, coordinatorModelConfig, {
             userRules,
@@ -2972,6 +3244,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             availableProviders,
             phases,
             skipInitialActivationMessage: true,
+            missionLaneId: resumeMissionLaneId ?? undefined,
           });
 
           if (agent) {
@@ -3033,6 +3306,9 @@ Check all worker statuses and continue managing the mission from here. Read work
               hasCheckpoint: Boolean(checkpoint),
             });
           }
+        }
+          if (activeRuns.length < pageSize) break;
+          offset += activeRuns.length;
         }
       } catch (error) {
         logger.debug("ai_orchestrator.team_runtime_resume_failed", {
@@ -3180,9 +3456,38 @@ Check all worker statuses and continue managing the mission from here. Read work
 
         const missionId = graph.run.missionId;
 
+        const existingCoordinator = coordinatorAgents.get(runId) ?? null;
+        let coordinator = existingCoordinator?.isAlive ? existingCoordinator : null;
+        if (!coordinator && existingCoordinator && !existingCoordinator.isAlive) {
+          const recovered = attemptCoordinatorRecovery(runId);
+          if (recovered?.isAlive) coordinator = recovered;
+        }
+        if (!coordinator) {
+          pauseRunWithIntervention({
+            runId,
+            missionId,
+            source: "transition_decision",
+            reasonCode: existingCoordinator ? "coordinator_recovery_failed" : "coordinator_unavailable",
+            title: existingCoordinator ? "Coordinator recovery failed" : "Coordinator unavailable",
+            body: existingCoordinator
+              ? "Coordinator agent terminated and could not be recovered. Mission paused to prevent non-autonomous fallback logic."
+              : "Coordinator agent is not available for this run. Mission paused to prevent non-autonomous fallback logic.",
+            requestedAction: "Resume after coordinator runtime is healthy, or restart the mission run.",
+            metadata: {
+              evaluationReason: reason
+            }
+          });
+          logger.warn("ai_orchestrator.coordinator_eval_no_live_coordinator", {
+            runId,
+            missionId,
+            reason,
+            hadCoordinator: Boolean(existingCoordinator)
+          });
+          return;
+        }
+
         // Route status event directly to coordinator agent
-        const coordAgent = coordinatorAgents.get(runId);
-        if (coordAgent?.isAlive) {
+        {
           const now = Date.now();
           const runStartedAt = Date.parse(graph.run.createdAt);
           const missionDurationSec = Math.round((now - runStartedAt) / 1000);
@@ -3223,7 +3528,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             ...stepGraph,
           ].join("\n");
 
-          coordAgent.injectMessage(statusMessage);
+          coordinator.injectMessage(statusMessage);
         }
 
         // Always start any newly-ready steps after evaluation
@@ -5674,12 +5979,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     const baseLaneId = mission.laneId ?? descriptors.find((step) => step.laneId)?.laneId ?? null;
     if (!baseLaneId) return { createdLaneIds: [], assignedSteps: 0 };
 
-    const laneStrategySignals = {
-      candidateSteps: descriptors.filter((step) => isParallelCandidateStepType(step.stepType)).length,
-      blockedSteps: descriptors.filter((step) => step.dependencyStepKeys.length > 0).length,
-      dependencyEdges: descriptors.reduce((sum, step) => sum + step.dependencyStepKeys.length, 0),
-      currentParallelLanes: Math.max(1, new Set(descriptors.map((step) => step.laneId).filter(Boolean)).size)
-    };
     let laneStrategyDecision: {
       strategy: "single_lane" | "dependency_parallel" | "phase_parallel";
       maxParallelLanes: number;
@@ -5691,19 +5990,11 @@ Check all worker statuses and continue managing the mission from here. Read work
         rationale?: string;
       }>;
     };
-    // Lane strategy is now handled by the coordinator agent.
-    // Deterministic fallback: assign all steps to a single lane.
-    laneStrategyDecision = {
-      strategy: "single_lane",
-      maxParallelLanes: 1,
-      rationale: "Deterministic single-lane fallback (coordinator handles lane decisions).",
-      confidence: 1.0,
-      stepAssignments: descriptors.map((descriptor) => ({
-        stepKey: descriptor.stepKey,
-        laneLabel: "main",
-        rationale: "default assignment"
-      }))
-    };
+    laneStrategyDecision = deriveFallbackLaneStrategyDecision({
+      descriptors,
+      baseLaneId
+    });
+    const ordered = [...descriptors].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
 
     const descriptorByStepKey = new Map(descriptors.map((step) => [step.stepKey, step] as const));
     const assignmentsByStepKey = new Map<string, string>();
@@ -5742,7 +6033,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       throw new Error(message);
     }
 
-    const ordered = [...descriptors].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
     const laneLabelToStepKeys = new Map<string, string[]>();
     for (const descriptor of ordered) {
       const laneLabel = assignmentsByStepKey.get(descriptor.stepKey)!;
@@ -6213,16 +6503,38 @@ Check all worker statuses and continue managing the mission from here. Read work
       const teamRuntimeConfigRaw = resolveMissionTeamRuntime(missionId) ?? policy.teamRuntime ?? null;
       const teamRuntimeConfig = teamRuntimeConfigRaw ? normalizeTeamRuntimeConfig(missionId, teamRuntimeConfigRaw) : null;
 
+    let coordinatorStarted = false;
     if (teamRuntimeConfig?.enabled) {
       // Full team runtime: coordinator + teammates
       const missionGoal = initialMission.prompt || initialMission.title;
-      void spawnTeamRuntime({
-        runId,
-        missionId,
-        missionGoal,
-        config: teamRuntimeConfig,
-        coordinatorModelConfig,
-      }).then(() => {
+      try {
+        const spawnedRuntime = await spawnTeamRuntime({
+          runId,
+          missionId,
+          missionGoal,
+          config: teamRuntimeConfig,
+          coordinatorModelConfig,
+        });
+        coordinatorStarted = Boolean(spawnedRuntime.coordinatorAgent?.isAlive);
+        if (!coordinatorStarted) {
+          updateTeamRuntimePhase(runId, "failed");
+          pauseRunWithIntervention({
+            runId,
+            missionId,
+            source: "transition_decision",
+            reasonCode: "coordinator_start_failed",
+            title: "Coordinator startup failed",
+            body: "Coordinator runtime did not start successfully. Run activation was blocked to prevent autonomous fallback behavior.",
+            requestedAction: "Resolve coordinator startup health, then resume the run.",
+            metadata: {
+              startupPath: "team_runtime_spawn"
+            }
+          });
+          await syncMissionFromRun(runId, "coordinator_start_failed", {
+            nextMissionStatus: "intervention_required"
+          });
+          return;
+        }
         // Transition run from bootstrapping to active
         const ts = nowIso();
         db.run(
@@ -6230,24 +6542,65 @@ Check all worker statuses and continue managing the mission from here. Read work
           [ts, runId]
         );
         updateTeamRuntimePhase(runId, "executing");
-      }).catch((error) => {
+      } catch (error) {
         logger.error("ai_orchestrator.team_runtime_spawn_failed", {
           missionId,
           runId,
           error: error instanceof Error ? error.message : String(error),
         });
         updateTeamRuntimePhase(runId, "failed");
-      });
+        pauseRunWithIntervention({
+          runId,
+          missionId,
+          source: "transition_decision",
+          reasonCode: "coordinator_start_failed",
+          title: "Coordinator startup failed",
+          body: `Team runtime startup failed: ${error instanceof Error ? error.message : String(error)}`,
+          requestedAction: "Resolve coordinator startup health, then resume the run.",
+          metadata: {
+            startupPath: "team_runtime_spawn_exception"
+          }
+        });
+        await syncMissionFromRun(runId, "coordinator_start_failed", {
+          nextMissionStatus: "intervention_required"
+        });
+        return;
+      }
     } else {
       // Single coordinator agent (no teammates)
       const missionGoal = initialMission.prompt || initialMission.title;
       const { userRules: soloRules, projectCtx: soloCtx, availableProviders: soloProviders, phases: soloPhases } = gatherCoordinatorContext(missionId, args);
-      startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig, {
+      const soloMissionLaneId = await ensureMissionLaneForRun({
+        runId,
+        missionId,
+        missionTitle: initialMission.title,
+      });
+      const coordinatorAgent = startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig, {
         userRules: soloRules,
         projectContext: soloCtx,
         availableProviders: soloProviders,
         phases: soloPhases,
+        missionLaneId: soloMissionLaneId ?? undefined,
       });
+      coordinatorStarted = Boolean(coordinatorAgent?.isAlive);
+      if (!coordinatorStarted) {
+        pauseRunWithIntervention({
+          runId,
+          missionId,
+          source: "transition_decision",
+          reasonCode: "coordinator_start_failed",
+          title: "Coordinator startup failed",
+          body: "Coordinator runtime did not start successfully. Run activation was blocked to prevent autonomous fallback behavior.",
+          requestedAction: "Resolve coordinator startup health, then resume the run.",
+          metadata: {
+            startupPath: "single_coordinator_start"
+          }
+        });
+        await syncMissionFromRun(runId, "coordinator_start_failed", {
+          nextMissionStatus: "intervention_required"
+        });
+        return;
+      }
 
       // Transition run to active
       const ts = nowIso();
@@ -6260,15 +6613,15 @@ Check all worker statuses and continue managing the mission from here. Read work
     void syncMissionFromRun(runId, "mission_run_started");
 
     // ── Start autopilot ──
-    setTimeout(() => {
+    scheduleRunWatchdogTimer(runId, 300, () => {
       void startReadyAutopilotAttemptsWithMilestoneReadiness({
         runId,
         reason: "post_planner_ramp_up",
       }).catch(() => {});
-    }, 300);
+    });
 
     // ── Execution watchdog ──
-    setTimeout(() => {
+    scheduleRunWatchdogTimer(runId, 20_000, () => {
       try {
         const graph = orchestratorService.getRunGraph({ runId });
         if (!graph) return;
@@ -6305,7 +6658,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           error: error instanceof Error ? error.message : String(error)
         });
       }
-    }, 20_000);
+    });
   };
 
   const startMissionRun = async (args: MissionRunStartArgs): Promise<MissionRunStartResult> => {
@@ -6326,18 +6679,39 @@ Check all worker statuses and continue managing the mission from here. Read work
         // Resume the coordinator for the existing run
         const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
         const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
-        startCoordinatorAgentV2(missionId, activeRun.id, missionGoal, coordinatorModelConfig, {
+        const resumeMissionLaneId = await ensureMissionLaneForRun({
+          runId: activeRun.id,
+          missionId,
+          missionTitle: initialMission.title,
+        });
+        const resumedCoordinator = startCoordinatorAgentV2(missionId, activeRun.id, missionGoal, coordinatorModelConfig, {
           userRules,
           projectContext: projectCtx,
           availableProviders,
           phases,
+          missionLaneId: resumeMissionLaneId ?? undefined,
         });
-
-        const ts = nowIso();
-        db.run(
-          `update orchestrator_runs set status = 'active', updated_at = ? where id = ? and status in ('bootstrapping', 'queued', 'paused')`,
-          [ts, activeRun.id]
-        );
+        const coordinatorStarted = Boolean(resumedCoordinator?.isAlive);
+        if (coordinatorStarted) {
+          const ts = nowIso();
+          db.run(
+            `update orchestrator_runs set status = 'active', updated_at = ? where id = ? and status in ('bootstrapping', 'queued', 'paused')`,
+            [ts, activeRun.id]
+          );
+        } else {
+          pauseRunWithIntervention({
+            runId: activeRun.id,
+            missionId,
+            source: "transition_decision",
+            reasonCode: "coordinator_start_failed",
+            title: "Coordinator startup failed",
+            body: "Coordinator runtime failed to start while resuming this run. Activation was blocked to preserve coordinator-owned autonomy.",
+            requestedAction: "Resolve coordinator startup health, then resume the run.",
+            metadata: {
+              startupPath: "force_plan_review_bypass_resume"
+            }
+          });
+        }
 
         const steps = orchestratorService.listSteps(activeRun.id);
         const existingGraph = getRunGraphSafe(activeRun.id);
@@ -6351,7 +6725,10 @@ Check all worker statuses and continue managing the mission from here. Read work
         );
         return {
           blockedByPlanReview: false,
-          started: { run: activeRun, steps },
+          started: {
+            run: orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === activeRun.id) ?? activeRun,
+            steps
+          },
           mission: missionService.get(missionId)
         };
       }
@@ -6369,30 +6746,60 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
     });
 
-    // Mark run as active
+    // ── Gather context for the coordinator ──
+    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
+
+    // ── Create a dedicated mission lane ──
+    const missionLaneId = await ensureMissionLaneForRun({
+      runId: started.run.id,
+      missionId,
+      missionTitle: initialMission.title,
+    });
+
+    // ── Spawn the coordinator — the AI brain takes over ──
+    const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
+    const coordinatorAgent = startCoordinatorAgentV2(missionId, started.run.id, missionGoal, coordinatorModelConfig, {
+      userRules,
+      projectContext: projectCtx,
+      availableProviders,
+      phases,
+      missionLaneId: missionLaneId ?? undefined,
+    });
+    if (!coordinatorAgent?.isAlive) {
+      pauseRunWithIntervention({
+        runId: started.run.id,
+        missionId,
+        source: "transition_decision",
+        reasonCode: "coordinator_start_failed",
+        title: "Coordinator startup failed",
+        body: "Coordinator runtime did not start successfully. Mission activation and autopilot were blocked to prevent non-autonomous fallback behavior.",
+        requestedAction: "Resolve coordinator startup health, then resume the run.",
+        metadata: {
+          startupPath: "start_mission_run"
+        }
+      });
+      const failedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
+      return {
+        blockedByPlanReview: false,
+        started: {
+          run: failedRun,
+          steps: orchestratorService.listSteps(started.run.id)
+        },
+        mission: missionService.get(missionId),
+      };
+    }
+
+    // Mark run as active only after coordinator startup succeeds.
     const runStartTs = nowIso();
     db.run(
       `update orchestrator_runs set status = 'active', started_at = coalesce(started_at, ?), updated_at = ? where id = ?`,
       [runStartTs, runStartTs, started.run.id]
     );
-
     transitionMissionStatus(missionId, "in_progress");
     emitOrchestratorMessage(
       missionId,
       "Mission started. The AI orchestrator is now in control."
     );
-
-    // ── Gather context for the coordinator ──
-    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
-
-    // ── Spawn the coordinator — the AI brain takes over ──
-    const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
-    startCoordinatorAgentV2(missionId, started.run.id, missionGoal, coordinatorModelConfig, {
-      userRules,
-      projectContext: projectCtx,
-      availableProviders,
-      phases,
-    });
 
     const initialGraph = getRunGraphSafe(started.run.id);
     updateMissionStateDoc(
@@ -7332,6 +7739,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         });
       });
     }, HEALTH_SWEEP_INTERVAL_MS);
+    healthSweepTimerRef.current = healthSweepTimer;
     if (!disposed) {
       void runHealthSweep("startup").catch((error) => {
         logger.debug("ai_orchestrator.health_sweep_startup_failed", {
@@ -7984,16 +8392,68 @@ Check all worker statuses and continue managing the mission from here. Read work
       const runId = event.runId;
       updateWorkerStateFromEvent(event);
 
-      // ── Check if coordinator is alive — if so, IT makes all decisions ──
-      const coordAgent = coordinatorAgents.get(runId);
-      const coordinatorOwned = coordAgent?.isAlive === true;
-
       const isStepCompletionEvent = event.stepId && (event.reason === "attempt_completed" || event.reason === "skipped");
       const isAttemptCompletionShadowEvent =
         event.type === "orchestrator-attempt-updated" &&
         event.reason === "completed" &&
         Boolean(event.stepId) &&
         Boolean(event.attemptId);
+      const isAttemptCompletionEvent = (event.reason === "attempt_completed" || event.reason === "completed") && Boolean(event.attemptId);
+
+      // ── Shared graph fetch for coordinator routing + follow-up checks ──
+      let cachedEventGraph: OrchestratorRunGraph | null = null;
+      const getEventGraph = (): OrchestratorRunGraph => {
+        if (!cachedEventGraph) {
+          cachedEventGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        }
+        return cachedEventGraph;
+      };
+
+      // ── Strict coordinator ownership gate ──
+      const existingCoordinator = coordinatorAgents.get(runId) ?? null;
+      let coordinator = existingCoordinator?.isAlive ? existingCoordinator : null;
+      if (!coordinator && existingCoordinator && !existingCoordinator.isAlive) {
+        const recovered = attemptCoordinatorRecovery(runId);
+        if (recovered?.isAlive) coordinator = recovered;
+      }
+      if (!coordinator) {
+        if (event.reason !== "finalized") {
+          const missionId = getMissionIdForRun(runId);
+          if (missionId) {
+            pauseRunWithIntervention({
+              runId,
+              missionId,
+              stepId: event.stepId ?? null,
+              source: "transition_decision",
+              reasonCode: existingCoordinator ? "coordinator_recovery_failed" : "coordinator_unavailable",
+              title: existingCoordinator ? "Coordinator recovery failed" : "Coordinator unavailable",
+              body: existingCoordinator
+                ? "Coordinator agent terminated and could not be recovered. Mission paused to prevent non-autonomous fallback logic."
+                : "Coordinator agent is not available for this run. Mission paused to prevent non-autonomous fallback logic.",
+              requestedAction: "Resume after coordinator runtime is healthy, or restart the mission run.",
+              metadata: {
+                runtimeEventType: event.type,
+                runtimeEventReason: event.reason,
+                attemptId: event.attemptId ?? null
+              }
+            });
+          }
+        }
+        logger.warn("ai_orchestrator.coordinator_unavailable", {
+          runId,
+          eventType: event.type,
+          reason: event.reason,
+          recovered: false
+        });
+        return;
+      }
+
+      // Run finalized — coordinator's job is done, shut it down
+      if (event.reason === "finalized") {
+        void syncMissionFromRun(runId, event.reason);
+        endCoordinatorAgentV2(runId);
+        return;
+      }
 
       // ── Hooks: always fire (observability, not decisions) ──
       if (isStepCompletionEvent && event.stepId) {
@@ -8013,21 +8473,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
 
       // ── Token consumption: always propagate (bookkeeping, not decisions) ──
-      if (event.reason === "attempt_completed" && event.attemptId) {
+      if (isAttemptCompletionEvent && event.attemptId) {
         propagateAttemptTokenUsage(event.runId, event.attemptId);
       }
 
-      // ── Shared graph fetch for safety check + coordinator routing ──
-      let cachedEventGraph: OrchestratorRunGraph | null = null;
-      const getEventGraph = (): OrchestratorRunGraph => {
-        if (!cachedEventGraph) {
-          cachedEventGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-        }
-        return cachedEventGraph;
-      };
-
       // ── Safety check: always run (guardrail, not decision) ──
-      if (event.reason === "attempt_completed" && event.stepId && event.runId) {
+      if (isAttemptCompletionEvent && event.stepId && event.runId) {
         try {
           const safetyGraph = getEventGraph();
           const step = safetyGraph.steps.find((s) => s.id === event.stepId);
@@ -8084,81 +8535,15 @@ Check all worker statuses and continue managing the mission from here. Read work
       // transition handlers, quality gates, retry decisions, failure diagnosis,
       // fan-out analysis, or intervention auto-resolution.
       // ────────────────────────────────────────────────────────────────────
-      if (coordinatorOwned) {
-        // Route event to the coordinator — it will decide what to do
-        if (event.reason === "completed" || event.reason === "run_failed") {
-          endCoordinatorAgentV2(runId);
-        } else {
-          try {
-            routeEventToCoordinator(coordAgent, event, { graph: getEventGraph() });
-          } catch (routeError) {
-            logger.debug("ai_orchestrator.coordinator_v2_route_failed", {
-              runId,
-              reason: event.reason,
-              error: routeError instanceof Error ? routeError.message : String(routeError),
-            });
-          }
-        }
-        return; // Coordinator handles everything — no deterministic fallthrough
-      }
-
-      // ────────────────────────────────────────────────────────────────────
-      // COORDINATOR RECOVERY: If coordinator existed but died, attempt to
-      // restart it. We do NOT fall back to deterministic decision handlers.
-      // ────────────────────────────────────────────────────────────────────
-      if (coordAgent && !coordAgent.isAlive) {
-        const recovered = attemptCoordinatorRecovery(runId);
-        if (recovered) {
-          try {
-            routeEventToCoordinator(recovered, event, { graph: getEventGraph() });
-          } catch (routeError) {
-            logger.debug("ai_orchestrator.coordinator_v2_recovery_route_failed", {
-              runId,
-              reason: event.reason,
-              error: routeError instanceof Error ? routeError.message : String(routeError),
-            });
-          }
-          return; // Recovered coordinator handles it
-        }
-      }
-
-      // ────────────────────────────────────────────────────────────────────
-      // STRICT AUTONOMY: If no live coordinator is available, pause and
-      // escalate. We do not execute legacy deterministic strategy logic.
-      // ────────────────────────────────────────────────────────────────────
-      if (!coordAgent || !coordAgent.isAlive) {
-        if (event.reason !== "completed" && event.reason !== "run_failed") {
-          const missionId = getMissionIdForRun(runId);
-          if (missionId) {
-            pauseRunWithIntervention({
-              runId,
-              missionId,
-              stepId: event.stepId ?? null,
-              source: "transition_decision",
-              reasonCode: coordAgent ? "coordinator_recovery_failed" : "coordinator_unavailable",
-              title: coordAgent ? "Coordinator recovery failed" : "Coordinator unavailable",
-              body: coordAgent
-                ? "Coordinator agent terminated and could not be recovered. Mission paused to prevent non-autonomous fallback logic."
-                : "Coordinator agent is not available for this run. Mission paused to prevent non-autonomous fallback logic.",
-              requestedAction: "Resume after coordinator runtime is healthy, or restart the mission run.",
-              metadata: {
-                runtimeEventType: event.type,
-                runtimeEventReason: event.reason,
-                attemptId: event.attemptId ?? null
-              }
-            });
-          }
-        }
-        logger.warn("ai_orchestrator.coordinator_unavailable", {
+      try {
+        routeEventToCoordinator(coordinator, event, { graph: getEventGraph() });
+      } catch (routeError) {
+        logger.debug("ai_orchestrator.coordinator_v2_route_failed", {
           runId,
-          eventType: event.type,
           reason: event.reason,
-          recovered: false
+          error: routeError instanceof Error ? routeError.message : String(routeError),
         });
-        return;
       }
-
-      // Unreachable guard: all non-coordinator-owned paths return above.
       return;
     },
 
@@ -8217,6 +8602,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       for (const [rid, evalTimer] of pendingCoordinatorEvals.entries()) {
         clearTimeout(evalTimer);
         pendingCoordinatorEvals.delete(rid);
+      }
+      for (const [runId, timers] of runWatchdogTimers.entries()) {
+        for (const timer of timers) {
+          clearTimeout(timer);
+        }
+        runWatchdogTimers.delete(runId);
       }
       syncLocks.clear();
       workerStates.clear();

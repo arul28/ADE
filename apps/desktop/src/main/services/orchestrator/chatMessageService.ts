@@ -32,6 +32,7 @@ import {
   parseChatDeliveryState,
   parseThreadType,
   sanitizeChatTarget,
+  teammateThreadIdentity,
   workerThreadIdentity,
   deriveThreadTitle,
   toOptionalString,
@@ -418,7 +419,8 @@ export type ThreadRow = {
 // ── Thread Management ────────────────────────────────────────────
 
 export function parseThreadRow(row: ThreadRow): OrchestratorChatThread {
-  return {
+  const metadata = parseJsonRecord(row.metadata_json);
+  const thread: OrchestratorChatThread = {
     id: row.id,
     missionId: row.mission_id,
     threadType: normalizeThreadType(row.thread_type),
@@ -433,8 +435,9 @@ export function parseThreadRow(row: ThreadRow): OrchestratorChatThread {
     unreadCount: Number.isFinite(Number(row.unread_count)) ? Math.max(0, Math.floor(Number(row.unread_count))) : 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    metadata: parseJsonRecord(row.metadata_json)
+    metadata
   };
+  return thread;
 }
 
 export function getThreadById(ctx: OrchestratorContext, missionId: string, threadId: string): OrchestratorChatThread | null {
@@ -484,6 +487,24 @@ export function upsertThread(
     throw new Error(`Mission not found: ${args.missionId}`);
   }
   const target = sanitizeChatTarget(args.target);
+  const runId = (target && "runId" in target ? target.runId : null) ?? null;
+  const isWorkerTarget = target?.kind === "worker";
+  const isTeammateTarget = target?.kind === "teammate";
+  const stepId = isWorkerTarget ? target.stepId ?? null : null;
+  const stepKey = isWorkerTarget ? target.stepKey ?? null : null;
+  const attemptId = isWorkerTarget ? target.attemptId ?? null : null;
+  const sessionId = isWorkerTarget
+    ? target.sessionId ?? null
+    : isTeammateTarget
+      ? target.sessionId ?? null
+      : null;
+  const laneId = isWorkerTarget ? target.laneId ?? missionIdentity.laneId : missionIdentity.laneId;
+  const metadataJson =
+    args.metadata
+      ? JSON.stringify(args.metadata)
+      : isTeammateTarget && target.teamMemberId
+        ? JSON.stringify({ teamMemberId: target.teamMemberId })
+        : null;
   const now = nowIso();
   ctx.db.run(
     `
@@ -524,14 +545,14 @@ export function upsertThread(
       args.missionId,
       args.threadType,
       args.title,
-      (target && "runId" in target ? target.runId : null) ?? null,
-      target?.kind === "worker" ? target.stepId ?? null : null,
-      target?.kind === "worker" ? target.stepKey ?? null : null,
-      target?.kind === "worker" ? target.attemptId ?? null : null,
-      target?.kind === "worker" ? target.sessionId ?? null : null,
-      target?.kind === "worker" ? target.laneId ?? missionIdentity.laneId : missionIdentity.laneId,
+      runId,
+      stepId,
+      stepKey,
+      attemptId,
+      sessionId,
+      laneId,
       args.status ?? DEFAULT_THREAD_STATUS,
-      args.metadata ? JSON.stringify(args.metadata) : null,
+      metadataJson,
       now,
       now
     ]
@@ -541,17 +562,19 @@ export function upsertThread(
     missionId: args.missionId,
     threadType: args.threadType,
     title: args.title,
-    runId: target?.runId ?? null,
-    stepId: target?.kind === "worker" ? target.stepId ?? null : null,
-    stepKey: target?.kind === "worker" ? target.stepKey ?? null : null,
-    attemptId: target?.kind === "worker" ? target.attemptId ?? null : null,
-    sessionId: target?.kind === "worker" ? target.sessionId ?? null : null,
-    laneId: target?.kind === "worker" ? target.laneId ?? missionIdentity.laneId : missionIdentity.laneId,
+    runId,
+    stepId,
+    stepKey,
+    attemptId,
+    sessionId,
+    laneId,
     status: args.status ?? "active",
     unreadCount: 0,
     createdAt: now,
     updatedAt: now,
-    metadata: args.metadata ?? null
+    metadata:
+      args.metadata
+      ?? (isTeammateTarget && target.teamMemberId ? { teamMemberId: target.teamMemberId } : null)
   };
   emitThreadEvent(ctx, {
     type: "thread_updated",
@@ -594,7 +617,12 @@ export function ensureThreadForTarget(
     const existing = getThreadById(ctx, missionId, requestedThreadId);
     if (existing) return existing;
     const target = sanitizeChatTarget(args.target);
-    const threadType: OrchestratorChatThreadType = target?.kind === "worker" ? "worker" : "coordinator";
+    const threadType: OrchestratorChatThreadType =
+      target?.kind === "worker"
+        ? "worker"
+        : target?.kind === "teammate"
+          ? "teammate"
+          : "coordinator";
     return upsertThread(ctx, {
       missionId,
       threadId: requestedThreadId,
@@ -612,6 +640,25 @@ export function ensureThreadForTarget(
   const target = sanitizeChatTarget(args.target);
   if (!target || target.kind === "coordinator" || target.kind === "workers") {
     return ensureMissionThread(ctx, missionId);
+  }
+  if (target.kind === "teammate") {
+    const identity = teammateThreadIdentity(target);
+    const fallbackId = `teammate:${missionId}:${identity ?? randomUUID()}`;
+    const existing = getThreadById(ctx, missionId, fallbackId);
+    if (existing) return existing;
+    return upsertThread(ctx, {
+      missionId,
+      threadId: fallbackId,
+      threadType: "teammate",
+      title: deriveThreadTitle({
+        target,
+        step: null,
+        lane: null,
+        fallback: args.fallbackTitle ?? undefined
+      }),
+      target,
+      metadata: target.teamMemberId ? { teamMemberId: target.teamMemberId } : null
+    });
   }
   const identity = workerThreadIdentity(target);
   const fallbackId = `worker:${missionId}:${identity ?? randomUUID()}`;
@@ -1236,10 +1283,12 @@ export function sendThreadMessageCtx(
     threadId: threadArgs.threadId ?? null,
     target
   });
-  const visibilityFallback = target?.kind === "worker" ? DEFAULT_WORKER_CHAT_VISIBILITY : DEFAULT_CHAT_VISIBILITY;
+  const isWorkerTarget = target?.kind === "worker";
+  const isTeammateTarget = target?.kind === "teammate";
+  const visibilityFallback = isWorkerTarget ? DEFAULT_WORKER_CHAT_VISIBILITY : DEFAULT_CHAT_VISIBILITY;
   const visibility = normalizeChatVisibility(threadArgs.visibilityMode, visibilityFallback);
   const deliveryState: OrchestratorChatDeliveryState =
-    target?.kind === "worker" ? "queued" : DEFAULT_CHAT_DELIVERY;
+    isWorkerTarget || isTeammateTarget ? "queued" : DEFAULT_CHAT_DELIVERY;
   const msg = appendChatMessageCtx(ctx, {
     id: randomUUID(),
     missionId: threadArgs.missionId,
@@ -1250,11 +1299,16 @@ export function sendThreadMessageCtx(
     target: target ?? (thread.threadType === "coordinator" ? { kind: "coordinator", runId: thread.runId ?? null } : null),
     visibility,
     deliveryState,
-    sourceSessionId: target?.kind === "worker" ? target.sessionId ?? null : null,
-    attemptId: target?.kind === "worker" ? target.attemptId ?? null : null,
-    laneId: target?.kind === "worker" ? target.laneId ?? null : null,
+    sourceSessionId:
+      isWorkerTarget
+        ? target.sessionId ?? null
+        : isTeammateTarget
+          ? target.sessionId ?? null
+          : null,
+    attemptId: isWorkerTarget ? target.attemptId ?? null : null,
+    laneId: isWorkerTarget ? target.laneId ?? null : null,
     runId: target?.runId ?? thread.runId ?? null,
-    stepKey: target?.kind === "worker" ? target.stepKey ?? null : null,
+    stepKey: isWorkerTarget ? target.stepKey ?? null : null,
     metadata: threadArgs.metadata ?? null
   });
   if ((ctx.chatMessages.get(threadArgs.missionId)?.length ?? 0) >= CONTEXT_CHECKPOINT_CHAT_THRESHOLD) {
@@ -1287,6 +1341,26 @@ export function sendThreadMessageCtx(
         error: error instanceof Error ? error.message : String(error)
       });
     });
+  } else if (msg.target?.kind === "teammate") {
+    const teammateSessionId = toOptionalString(msg.target.sessionId);
+    if (!teammateSessionId) {
+      updateChatMessage(ctx, msg.id, (current) => ({ ...current, deliveryState: "failed" }));
+      return msg;
+    }
+    void Promise.resolve()
+      .then(async () => {
+        await deps.sendWorkerMessageToSession(teammateSessionId, msg.content);
+        updateChatMessage(ctx, msg.id, (current) => ({ ...current, deliveryState: "delivered" }));
+      })
+      .catch((error: unknown) => {
+        updateChatMessage(ctx, msg.id, (current) => ({ ...current, deliveryState: "failed" }));
+        ctx.logger.debug("ai_orchestrator.teammate_delivery_failed", {
+          missionId: threadArgs.missionId,
+          threadId: msg.threadId ?? null,
+          sessionId: teammateSessionId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
   } else {
     deps.routeMessageToCoordinator(msg);
   }

@@ -28,7 +28,7 @@ const mainItems = [
   { to: "/graph", label: "Graph", icon: Graph },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
   { to: "/history", label: "History", icon: ClockCounterClockwise },
-  { to: "/automations", label: "Automations", icon: Robot },
+  { to: "/automations", label: "Agents", icon: Robot },
   { to: "/missions", label: "Missions", icon: Strategy },
 ] as const;
 

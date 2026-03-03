@@ -256,7 +256,7 @@ describe("resolveMissionChatSelection", () => {
     expect(selected).toBe("worker:auth");
   });
 
-  it("does not jump to a worker thread from a different run", () => {
+  it("jumps to the worker thread matching the jump target run when step keys overlap", () => {
     const threads = [
       makeThread(),
       makeThread({
@@ -356,6 +356,31 @@ describe("resolveMissionChatSelection", () => {
     });
 
     expect(selected).toBe("worker:run-1");
+  });
+
+  it("jumps to teammate thread when jump target requests teammate routing", () => {
+    const threads = [
+      makeThread(),
+      makeThread({
+        id: "teammate:run-1:tm-1",
+        threadType: "teammate",
+        title: "Teammate tm-1",
+        runId: "run-1"
+      })
+    ];
+    const jumpTarget: OrchestratorChatTarget = {
+      kind: "teammate",
+      runId: "run-1",
+      teamMemberId: "tm-1"
+    };
+
+    const selected = resolveMissionChatSelection({
+      threads,
+      selectedThreadId: "mission:mission-1",
+      jumpTarget
+    });
+
+    expect(selected).toBe("teammate:run-1:tm-1");
   });
 
   it("falls back to mission thread when selected thread no longer exists", () => {

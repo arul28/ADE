@@ -252,8 +252,20 @@ export type AiBudgetLimit = {
 
 export type AiBudgets = Partial<Record<AiFeatureKey, AiBudgetLimit>>;
 
+export type AiClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
+export type AiCodexSandboxPermissions = "read-only" | "workspace-write" | "danger-full-access";
+export type AiCodexApprovalMode =
+  | "untrusted"
+  | "on-request"
+  | "on-failure"
+  | "never"
+  | "suggest"
+  | "auto-edit"
+  | "full-auto";
+export type AiApiPermissionMode = "plan" | "edit" | "full-auto";
+
 export type AiClaudePermissionSettings = {
-  permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+  permissionMode?: AiClaudePermissionMode;
   settingsSources?: Array<"user" | "project" | "local">;
   maxBudgetUsd?: number;
   sandbox?: boolean;
@@ -262,16 +274,21 @@ export type AiClaudePermissionSettings = {
 };
 
 export type AiCodexPermissionSettings = {
-  sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
-  approvalMode?: "untrusted" | "on-request" | "on-failure" | "never" | "suggest" | "auto-edit" | "full-auto";
+  sandboxPermissions?: AiCodexSandboxPermissions;
+  approvalMode?: AiCodexApprovalMode;
   writablePaths?: string[];
   commandAllowlist?: string[];
   configPath?: string;
 };
 
+export type AiApiPermissionSettings = {
+  permissionMode?: AiApiPermissionMode;
+};
+
 export type AiPermissionSettings = {
   claude?: AiClaudePermissionSettings;
   codex?: AiCodexPermissionSettings;
+  api?: AiApiPermissionSettings;
 };
 
 export type WorkerSafetyPolicy = {
@@ -279,6 +296,19 @@ export type WorkerSafetyPolicy = {
   sandbox?: boolean;
   allowedTools?: string[];
   deniedTools?: string[];
+};
+
+export type WorkerSandboxConfig = {
+  /** Regex patterns for bash commands that are always blocked */
+  blockedCommands: string[];
+  /** Regex patterns for bash commands that are always allowed */
+  safeCommands: string[];
+  /** Regex patterns for files that cannot be modified */
+  protectedFiles: string[];
+  /** Paths workers can access, relative to project root (default: ["./"]) */
+  allowedPaths: string[];
+  /** If true, commands not matching safe or blocked lists are blocked (default: false) */
+  blockByDefault: boolean;
 };
 
 export type AiConflictResolutionConfig = {
@@ -312,7 +342,7 @@ export type AiOrchestratorConfig = {
   maxTotalTokenBudget?: number;
   maxPerStepTokenBudget?: number;
   defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
-  defaultPlannerProvider?: string;
+  defaultPlannerProvider?: "auto" | "claude" | "codex";
   autoResolveInterventions?: boolean;
   interventionConfidenceThreshold?: number;
   hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;
@@ -328,7 +358,7 @@ export type AiChatConfig = {
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
   /** Default permission mode for new unified/API-model chat sessions */
-  unifiedPermissionMode?: "plan" | "edit" | "full-auto";
+  unifiedPermissionMode?: AiApiPermissionMode;
 };
 export type AiConfig = {
   mode?: ProviderMode;

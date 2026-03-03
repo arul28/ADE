@@ -1,4 +1,4 @@
-/** Shared utilities and types for ContextSection and ContextPage. */
+/** Shared utilities and types for context/docs renderer surfaces. */
 
 /** Returns a human-readable relative time for a timestamp (or "never" if null). */
 export function relativeTime(ts: string | null | undefined): string {

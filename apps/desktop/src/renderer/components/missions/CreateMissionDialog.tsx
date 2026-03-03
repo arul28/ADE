@@ -26,6 +26,11 @@ import type {
   OrchestratorDecisionTimeoutCapHours,
   AggregatedUsageStats,
   TeamRuntimeConfig,
+  MissionPermissionConfig,
+  MissionApiPermissionMode,
+  MissionClaudePermissionMode,
+  MissionCodexApprovalMode,
+  MissionCodexSandboxPermissions,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { MODEL_REGISTRY } from "../../../shared/modelRegistry";
@@ -47,17 +52,89 @@ export type CreateDraft = {
   phaseProfileId: string | null;
   phaseOverride: PhaseCard[];
   teamRuntime?: TeamRuntimeConfig;
+  permissionConfig: MissionPermissionConfig;
+};
+
+export type CreateMissionDefaults = {
+  plannerProvider?: "auto" | "claude" | "codex";
+  claudePermissionMode?: MissionClaudePermissionMode;
+  claudeDangerouslySkip?: boolean;
+  codexSandboxPermissions?: MissionCodexSandboxPermissions;
+  codexApprovalMode?: Extract<MissionCodexApprovalMode, "suggest" | "auto-edit" | "full-auto">;
+  codexConfigPath?: string;
+  apiPermissionMode?: MissionApiPermissionMode;
 };
 
 const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
 
-const DEFAULT_MODEL_CONFIG: MissionModelConfig = {
-  profileId: "standard",
-  orchestratorModel: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
-  decisionTimeoutCapHours: 24,
-  intelligenceConfig: BUILT_IN_PROFILES[0].intelligenceConfig,
-  smartBudget: { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 },
+const DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER: Record<"claude" | "codex", MissionModelConfig["orchestratorModel"]> = {
+  claude: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+  codex: { provider: "codex", modelId: "gpt-5.3-codex", thinkingLevel: "medium" },
 };
+
+const HIGH_TEAMMATE_COUNT_GUARDRAIL_THRESHOLD = 5;
+
+function buildDefaultModelConfig(
+  defaults: CreateMissionDefaults | null | undefined,
+  builtInProfiles: typeof BUILT_IN_PROFILES = BUILT_IN_PROFILES,
+): MissionModelConfig {
+  const firstProfile = builtInProfiles[0];
+  const plannerProvider = defaults?.plannerProvider ?? "auto";
+  const orchestratorModel =
+    plannerProvider === "claude" || plannerProvider === "codex"
+      ? DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER[plannerProvider]
+      : DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER.claude;
+  return {
+    profileId: plannerProvider === "auto" ? (firstProfile?.id ?? undefined) : undefined,
+    orchestratorModel,
+    decisionTimeoutCapHours: 24,
+    intelligenceConfig: firstProfile?.intelligenceConfig,
+    smartBudget: { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 },
+  };
+}
+
+function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | undefined): MissionPermissionConfig {
+  const claudePermissionMode =
+    defaults?.claudeDangerouslySkip === true
+      ? "bypassPermissions"
+      : (defaults?.claudePermissionMode ?? "bypassPermissions");
+  const codexConfigPath = defaults?.codexConfigPath?.trim() ?? "";
+  return {
+    claude: { permissionMode: claudePermissionMode },
+    codex: {
+      sandboxPermissions: defaults?.codexSandboxPermissions ?? "workspace-write",
+      approvalMode: defaults?.codexApprovalMode ?? "full-auto",
+      ...(codexConfigPath.length > 0 ? { configPath: codexConfigPath } : {}),
+    },
+    api: { permissionMode: defaults?.apiPermissionMode ?? "full-auto" },
+  };
+}
+
+export function resolveLaunchLaneId(args: { draftLaneId: string; defaultLaneId?: string | null }): string {
+  const explicit = args.draftLaneId.trim();
+  if (explicit.length > 0) return explicit;
+  const fallback = String(args.defaultLaneId ?? "").trim();
+  return fallback;
+}
+
+export function buildCreateMissionDraft(
+  defaults: CreateMissionDefaults | null | undefined,
+  builtInProfiles: typeof BUILT_IN_PROFILES = BUILT_IN_PROFILES,
+): CreateDraft {
+  return {
+    title: "",
+    prompt: "",
+    laneId: "",
+    priority: "normal",
+    allowPlanningQuestions: true,
+    allowCompletionWithRisk: true,
+    prStrategy: { kind: "integration", targetBranch: "main", draft: true },
+    modelConfig: buildDefaultModelConfig(defaults, builtInProfiles),
+    phaseProfileId: null,
+    phaseOverride: [],
+    permissionConfig: createDefaultPermissionConfig(defaults),
+  };
+}
 
 function validatePhaseOrder(cards: PhaseCard[]): string[] {
   if (!cards.length) return ["At least one phase is required."];
@@ -115,18 +192,23 @@ function CreateMissionDialogInner({
   onLaunch,
   busy,
   lanes,
+  defaultLaneId,
+  missionDefaults,
 }: {
   open: boolean;
   onClose: () => void;
   onLaunch: (draft: CreateDraft) => void;
   busy: boolean;
   lanes: Array<{ id: string; name: string }>;
+  defaultLaneId?: string | null;
+  missionDefaults?: CreateMissionDefaults | null;
 }) {
   const sortedLanes = useMemo(
     () => [...lanes].sort((a, b) => a.name.localeCompare(b.name)),
     [lanes]
   );
-  const [selectedProfileId, setSelectedProfileId] = useState<string>("standard");
+  const initialDraft = useMemo(() => buildCreateMissionDraft(missionDefaults), [missionDefaults]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>(initialDraft.modelConfig.profileId ?? "custom");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>([]);
   const [phaseLoading, setPhaseLoading] = useState(false);
@@ -141,22 +223,13 @@ function CreateMissionDialogInner({
   const [preflightRunning, setPreflightRunning] = useState(false);
   const [preflightResult, setPreflightResult] = useState<MissionPreflightResult | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<CreateDraft>({
-    title: "",
-    prompt: "",
-    laneId: "",
-    priority: "normal",
-    allowPlanningQuestions: true,
-    allowCompletionWithRisk: true,
-    prStrategy: { kind: "integration", targetBranch: "main", draft: true },
-    modelConfig: { ...DEFAULT_MODEL_CONFIG },
-    phaseProfileId: null,
-    phaseOverride: [],
-  });
+  const [teamBudgetGuardrailConfirmed, setTeamBudgetGuardrailConfirmed] = useState(false);
+  const [draft, setDraft] = useState<CreateDraft>(initialDraft);
 
   useEffect(() => {
     if (!open) return;
-    setSelectedProfileId("standard");
+    const resetDraft = buildCreateMissionDraft(missionDefaults);
+    setSelectedProfileId(resetDraft.modelConfig.profileId ?? "custom");
     setAttachments([]);
     setPhaseError(null);
     setExpandedPhases({});
@@ -165,18 +238,8 @@ function CreateMissionDialogInner({
     setPreflightRunning(false);
     setPreflightResult(null);
     setPreflightError(null);
-    setDraft({
-      title: "",
-      prompt: "",
-      laneId: "",
-      priority: "normal",
-      allowPlanningQuestions: true,
-      allowCompletionWithRisk: true,
-      prStrategy: { kind: "integration", targetBranch: "main", draft: true },
-      modelConfig: { ...DEFAULT_MODEL_CONFIG },
-      phaseProfileId: null,
-      phaseOverride: [],
-    });
+    setTeamBudgetGuardrailConfirmed(false);
+    setDraft(resetDraft);
 
     let cancelled = false;
     setPhaseLoading(true);
@@ -208,7 +271,7 @@ function CreateMissionDialogInner({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, missionDefaults]);
 
   useEffect(() => {
     if (!open) return;
@@ -303,12 +366,35 @@ function CreateMissionDialogInner({
     };
   }, [aiDetectedAuth]);
 
+  const teamBudgetGuardrailTeammateCount = draft.teamRuntime?.enabled
+    ? Math.max(1, draft.teamRuntime.teammateCount ?? 2)
+    : 0;
+  const teamBudgetGuardrailActive = teamBudgetGuardrailTeammateCount >= HIGH_TEAMMATE_COUNT_GUARDRAIL_THRESHOLD
+    && draft.modelConfig.smartBudget?.enabled !== true;
+  const teamBudgetGuardrailEnabled = draft.teamRuntime?.enabled === true;
+  const teamBudgetGuardrailSmartBudget = draft.modelConfig.smartBudget?.enabled === true;
+
+  useEffect(() => {
+    setTeamBudgetGuardrailConfirmed(false);
+  }, [teamBudgetGuardrailEnabled, teamBudgetGuardrailTeammateCount, teamBudgetGuardrailSmartBudget]);
+
   const handleLaunch = useCallback(() => {
     if (!draft.prompt.trim()) return;
     if (validatePhaseOrder(activePhases).length > 0) return;
+    const resolvedLaneId = resolveLaunchLaneId({
+      draftLaneId: draft.laneId,
+      defaultLaneId
+    });
+    if (teamBudgetGuardrailActive && !teamBudgetGuardrailConfirmed) {
+      const confirmed = window.confirm(
+        `Team runtime is configured with ${teamBudgetGuardrailTeammateCount} teammates while Smart Budget is disabled. This can increase token/cost burn quickly. Continue?`
+      );
+      if (!confirmed) return;
+      setTeamBudgetGuardrailConfirmed(true);
+    }
     if (launchStage === "preflight") {
       if (!preflightResult?.canLaunch) return;
-      onLaunch({ ...draft, phaseOverride: activePhases });
+      onLaunch({ ...draft, laneId: resolvedLaneId, phaseOverride: activePhases });
       return;
     }
     setPreflightError(null);
@@ -317,17 +403,22 @@ function CreateMissionDialogInner({
       launch: {
         title: draft.title.trim() || undefined,
         prompt: draft.prompt.trim(),
-        laneId: draft.laneId.trim() || undefined,
+        laneId: resolvedLaneId || undefined,
         priority: draft.priority,
         allowPlanningQuestions: draft.allowPlanningQuestions,
         allowCompletionWithRisk: draft.allowCompletionWithRisk,
         teamRuntime: draft.teamRuntime,
+        executionPolicy: {
+          prStrategy: draft.prStrategy,
+          ...(draft.teamRuntime ? { teamRuntime: draft.teamRuntime } : {}),
+        },
         modelConfig: {
           ...draft.modelConfig,
           decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
         },
         phaseProfileId: draft.phaseProfileId,
         phaseOverride: activePhases,
+        permissionConfig: draft.permissionConfig,
       }
     })
       .then((result) => {
@@ -341,7 +432,17 @@ function CreateMissionDialogInner({
       .finally(() => {
         setPreflightRunning(false);
       });
-  }, [draft, activePhases, launchStage, onLaunch, preflightResult?.canLaunch]);
+  }, [
+    draft,
+    activePhases,
+    launchStage,
+    onLaunch,
+    preflightResult?.canLaunch,
+    teamBudgetGuardrailActive,
+    teamBudgetGuardrailConfirmed,
+    teamBudgetGuardrailTeammateCount,
+    defaultLaneId,
+  ]);
 
   if (!open) return null;
 
@@ -704,7 +805,105 @@ function CreateMissionDialogInner({
                   )}
                 </div>
 
-                {/* d. Phase Configuration */}
+                {/* d. Worker Permissions */}
+                <div className="space-y-2">
+                  <span style={dlgLabelStyle}>
+                    <Shield size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+                    WORKER PERMISSIONS
+                  </span>
+                  <div className="grid grid-cols-3 gap-3">
+                    {/* Claude */}
+                    <label className="space-y-1 text-[10px]">
+                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>CLAUDE</span>
+                      <select
+                        value={draft.permissionConfig?.claude?.permissionMode ?? "bypassPermissions"}
+                        onChange={(e) => {
+                          const mode = e.target.value as MissionClaudePermissionMode;
+                          setDraft((p) => ({
+                            ...p,
+                            permissionConfig: {
+                              ...p.permissionConfig,
+                              claude: { ...p.permissionConfig?.claude, permissionMode: mode },
+                            },
+                          }));
+                        }}
+                        className="h-7 w-full px-2 outline-none"
+                        style={dlgInputStyle}
+                      >
+                        <option value="default">Ask Permissions</option>
+                        <option value="acceptEdits">Accept Edits</option>
+                        <option value="plan">Plan Mode</option>
+                        <option value="bypassPermissions">Bypass Permissions</option>
+                      </select>
+                    </label>
+                    {/* Codex */}
+                    <label className="space-y-1 text-[10px]">
+                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>CODEX</span>
+                      <select
+                        value={draft.permissionConfig?.codex?.approvalMode ?? "full-auto"}
+                        onChange={(e) => {
+                          const mode = e.target.value as Extract<MissionCodexApprovalMode, "suggest" | "full-auto">;
+                          setDraft((p) => ({
+                            ...p,
+                            permissionConfig: {
+                              ...p.permissionConfig,
+                              codex: { ...p.permissionConfig?.codex, approvalMode: mode },
+                            },
+                          }));
+                        }}
+                        className="h-7 w-full px-2 outline-none"
+                        style={dlgInputStyle}
+                      >
+                        <option value="suggest">Default Permissions</option>
+                        <option value="full-auto">Full Access</option>
+                      </select>
+                    </label>
+                    {/* API Models */}
+                    <label className="space-y-1 text-[10px]">
+                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>API MODELS</span>
+                      <select
+                        value={draft.permissionConfig?.api?.permissionMode ?? "full-auto"}
+                        onChange={(e) => {
+                          const mode = e.target.value as MissionApiPermissionMode;
+                          setDraft((p) => ({
+                            ...p,
+                            permissionConfig: {
+                              ...p.permissionConfig,
+                              api: { ...p.permissionConfig?.api, permissionMode: mode },
+                            },
+                          }));
+                        }}
+                        className="h-7 w-full px-2 outline-none"
+                        style={dlgInputStyle}
+                      >
+                        <option value="plan">Plan (read-only)</option>
+                        <option value="edit">Edit (no shell)</option>
+                        <option value="full-auto">Full-Auto</option>
+                      </select>
+                    </label>
+                  </div>
+                  {(
+                    (draft.permissionConfig?.claude?.permissionMode && draft.permissionConfig.claude.permissionMode !== "bypassPermissions") ||
+                    (draft.permissionConfig?.codex?.approvalMode && draft.permissionConfig.codex.approvalMode !== "full-auto") ||
+                    (draft.permissionConfig?.api?.permissionMode && draft.permissionConfig.api.permissionMode !== "full-auto")
+                  ) && (
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "#F59E0B",
+                        fontFamily: MONO_FONT,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                      }}
+                    >
+                      <Warning size={12} weight="bold" />
+                      Workers using restricted permissions may pause for approval during autonomous execution.
+                    </div>
+                  )}
+                </div>
+
+                {/* e. Phase Configuration */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span style={dlgLabelStyle}>
@@ -1280,6 +1479,15 @@ function CreateMissionDialogInner({
                       </label>
                     </div>
                   )}
+                  {teamBudgetGuardrailActive ? (
+                    <div
+                      className="ml-5 flex items-center gap-1"
+                      style={{ fontSize: 10, color: "#F59E0B", fontFamily: MONO_FONT }}
+                    >
+                      <Warning size={12} weight="bold" />
+                      {`${teamBudgetGuardrailTeammateCount} teammates with Smart Budget disabled. Launch requires explicit confirmation.`}
+                    </div>
+                  ) : null}
                 </div>
           </div>
 

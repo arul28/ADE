@@ -23,6 +23,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
+import { isWithinDir } from "../shared/utils";
 
 type ManagedTerminationReason = "stopped" | "killed" | "crashed" | "restart";
 
@@ -139,6 +140,30 @@ function keyFor(laneId: string, processId: string): string {
   return `${laneId}:${processId}`;
 }
 
+function resolveSafeProcessLogPath(processLogsDir: string, laneId: string, processId: string): string {
+  const laneSegment = laneId.trim();
+  const processSegment = processId.trim();
+  if (!laneSegment.length || !processSegment.length) {
+    throw new Error("laneId and processId are required.");
+  }
+  if (laneSegment.includes("\0") || processSegment.includes("\0")) {
+    throw new Error("Invalid process log path.");
+  }
+  if (
+    laneSegment.includes("/") ||
+    laneSegment.includes("\\") ||
+    processSegment.includes("/") ||
+    processSegment.includes("\\")
+  ) {
+    throw new Error("Invalid process log path.");
+  }
+  const resolved = path.resolve(processLogsDir, laneSegment, `${processSegment}.log`);
+  if (!isWithinDir(processLogsDir, resolved)) {
+    throw new Error("Invalid process log path.");
+  }
+  return resolved;
+}
+
 export function createProcessService({
   db,
   projectId,
@@ -159,11 +184,12 @@ export function createProcessService({
   const entries = new Map<string, ManagedProcessEntry>();
   const nowIso = () => new Date().toISOString();
 
-  const processLogPath = (laneId: string, processId: string) => path.join(processLogsDir, laneId, `${processId}.log`);
+  const processLogPath = (laneId: string, processId: string) =>
+    resolveSafeProcessLogPath(processLogsDir, laneId, processId);
 
   const fileSizeOrZero = (filePath: string): number => {
     try {
-      return fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+      return fs.statSync(filePath).size;
     } catch {
       return 0;
     }
@@ -828,8 +854,8 @@ export function createProcessService({
     },
 
     getLogTail({ laneId, processId, maxBytes }: { laneId: string; processId: string; maxBytes?: number }): string {
-      const entry = entries.get(keyFor(laneId, processId)) ?? ensureEntry(laneId, processId, null);
-      return readTail(entry.runtime.logPath ?? processLogPath(laneId, processId), clampMaxBytes(maxBytes, 180_000));
+      const safePath = processLogPath(laneId, processId);
+      return readTail(safePath, clampMaxBytes(maxBytes, 180_000));
     },
 
     disposeAll() {

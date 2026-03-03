@@ -34,7 +34,6 @@ export function RunPage() {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [scanPanelOpen, setScanPanelOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [nowTick, setNowTick] = useState(Date.now());
 
   const effectiveLaneId = runLaneId ?? selectedLaneId ?? lanes[0]?.id ?? null;
   const effectiveLaneName = lanes.find((l) => l.id === effectiveLaneId)?.name ?? null;
@@ -45,12 +44,6 @@ export function RunPage() {
       selectRunLane(selectedLaneId);
     }
   }, [runLaneId, selectedLaneId, selectRunLane]);
-
-  // Tick for uptime display
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   // Load config, definitions, runtime
   const refreshAll = useCallback(async () => {
