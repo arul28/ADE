@@ -69,13 +69,15 @@ React SPA in `apps/desktop/src/renderer` renders product surfaces and forwards a
 
 Core service groups:
 
-- Project/context bootstrapping: project service, config service, keybindings, terminal profiles, agent tools, onboarding, CI
-- Core execution: lane/session/pty/file/diff/git/process/test/history
-- Context and risk systems: pack service, conflict service, restack suggestion service, auto-rebase service, job engine
-- AI Integration: AI integration service (AgentExecutor interface, dual SDK), AI orchestrator service, MCP server, GitHub service, PR service + polling, models.dev service (dynamic pricing/capabilities), middleware (logging, retry, cost guard, reasoning extraction), provider options (tier passthrough), universal tools (API-key/local model support)
-- Agent Chat: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn, unified runtime for API-key/local models with permission modes, persisted as `codex-chat` / `claude-chat` / `ai-chat` sessions)
-- Agents: agent service (automation, Night Shift, watcher, review agents) + agent planner service + agent identity service
-- Missions: mission service (Phase 1 mission lifecycle CRUD + eventing)
+- **Project/context bootstrapping**: project service, config service, keybindings, terminal profiles, agent tools, onboarding, CI
+- **Core execution**: lane/session/pty/file/diff/git/process/test/history
+- **Context and risk systems**: pack service (decomposed: `packService.ts` core + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts`), conflict service, restack suggestion service, auto-rebase service, job engine
+- **AI Integration**: AI integration service (AgentExecutor interface, dual SDK), AI orchestrator service (decomposed: `aiOrchestratorService.ts` core + `chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`), orchestrator service (decomposed: `orchestratorService.ts` core + `orchestratorQueries.ts`, `stepPolicyResolver.ts`, `orchestratorConstants.ts`), MCP server, GitHub service, PR service + polling, models.dev service (dynamic pricing/capabilities), middleware (logging, retry, cost guard, reasoning extraction), provider options (tier passthrough), universal tools (API-key/local model support)
+- **Agent Chat**: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn, unified runtime for API-key/local models with permission modes, persisted as `codex-chat` / `claude-chat` / `ai-chat` sessions)
+- **Agents**: agent service (automation, Night Shift, watcher, review agents) + agent planner service + agent identity service
+- **Missions**: mission service (mission lifecycle CRUD + eventing)
+- **Shared types**: `src/shared/types/` directory (17 domain modules with barrel `index.ts` -- replaces former monolithic `types.ts`)
+- **Shared utilities**: backend utils (`src/main/services/shared/utils.ts`), renderer formatting/shell/session libs (`src/renderer/lib/`), shared React hooks (`src/renderer/hooks/`)
 
 Additional runtime loops:
 
@@ -154,6 +156,10 @@ Desktop architecture is mature and production-oriented for current scope:
 - Head-change and session-end pipelines keep packs/conflicts/agents synchronized.
 - AI integration service provides local AI execution via AgentExecutor interface (dual SDK) and MCP server.
 - Agent chat service provides native interactive chat with Codex (via App Server) and Claude (via community provider) with full session tracking.
+- Type system modularized: 17 domain-scoped type modules in `src/shared/types/` replace the former monolithic `types.ts`.
+- Large services decomposed: AI orchestrator (8 extracted modules), orchestrator service (2 extracted modules), pack service (4 extracted modules) all follow a core-plus-modules pattern with shared context objects.
+- Shared utilities consolidated: backend `utils.ts`, renderer `format.ts`/`shell.ts`/`sessions.ts`, and shared React hooks eliminate cross-service duplication.
+- Model system unified: `modelRegistry.ts` includes pricing fields directly; `modelProfiles.ts` derives from the registry instead of maintaining parallel lists.
 
 ### Planned Services
 

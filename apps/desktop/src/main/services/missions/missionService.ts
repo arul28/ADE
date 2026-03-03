@@ -42,6 +42,8 @@ import type {
   ExportPhaseProfileArgs,
   ExportPhaseProfileResult,
   PlannerPlan,
+  PlannerClarifyingQuestion,
+  PlannerClarifyingAnswer,
   ResolveMissionInterventionArgs,
   DeleteMissionArgs,
   UpdateMissionArgs,
@@ -97,6 +99,17 @@ const STEP_TRANSITIONS: Record<MissionStepStatus, Set<MissionStepStatus>> = {
   failed: new Set(["failed", "running", "canceled"]),
   skipped: new Set(["skipped"]),
   canceled: new Set(["canceled"])
+};
+
+const PLANNER_CLARIFY_SOURCE = "planner_clarifying_question";
+
+type PlannerClarifyingInterventionMetadata = {
+  source: typeof PLANNER_CLARIFY_SOURCE;
+  questionIndex: number;
+  question: string;
+  context?: string;
+  defaultAssumption?: string;
+  impact?: string;
 };
 
 type MissionRow = {
@@ -245,6 +258,67 @@ function coerceNumber(value: unknown): number | undefined {
 function coerceBoolean(value: unknown, fallback = false): boolean {
   if (typeof value === "boolean") return value;
   return fallback;
+}
+
+function normalizePlannerClarifyingQuestion(value: unknown): PlannerClarifyingQuestion | null {
+  if (!isRecord(value)) return null;
+  const question = String(value.question ?? "").trim();
+  if (!question.length) return null;
+  const context = String(value.context ?? "").trim();
+  const defaultAssumption = String(value.defaultAssumption ?? "").trim();
+  const impact = String(value.impact ?? "").trim();
+  return {
+    question,
+    ...(context.length ? { context: context.slice(0, 800) } : {}),
+    ...(defaultAssumption.length ? { defaultAssumption: defaultAssumption.slice(0, 800) } : {}),
+    ...(impact.length ? { impact: impact.slice(0, 800) } : {})
+  };
+}
+
+function normalizePlannerClarifyingQuestions(value: unknown): PlannerClarifyingQuestion[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => normalizePlannerClarifyingQuestion(entry))
+    .filter((entry): entry is PlannerClarifyingQuestion => entry != null)
+    .slice(0, 10);
+}
+
+function normalizePlannerClarifyingAnswer(value: unknown): PlannerClarifyingAnswer | null {
+  if (!isRecord(value)) return null;
+  const question = String(value.question ?? "").trim();
+  const answer = String(value.answer ?? "").trim();
+  if (!question.length || !answer.length) return null;
+  const questionIndexRaw = Number(value.questionIndex);
+  const source = value.source === "default_assumption" ? "default_assumption" : "user";
+  const answeredAtRaw = String(value.answeredAt ?? "").trim();
+  const context = String(value.context ?? "").trim();
+  const defaultAssumption = String(value.defaultAssumption ?? "").trim();
+  const impact = String(value.impact ?? "").trim();
+  return {
+    questionIndex: Number.isFinite(questionIndexRaw) ? Math.max(0, Math.floor(questionIndexRaw)) : 0,
+    question,
+    answer,
+    source,
+    answeredAt: answeredAtRaw.length ? answeredAtRaw : nowIso(),
+    ...(context.length ? { context: context.slice(0, 800) } : {}),
+    ...(defaultAssumption.length ? { defaultAssumption: defaultAssumption.slice(0, 800) } : {}),
+    ...(impact.length ? { impact: impact.slice(0, 800) } : {})
+  };
+}
+
+function normalizePlannerClarifyingAnswers(value: unknown): PlannerClarifyingAnswer[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => normalizePlannerClarifyingAnswer(entry))
+    .filter((entry): entry is PlannerClarifyingAnswer => entry != null)
+    .slice(0, 20);
+}
+
+function isPlannerClarifyingInterventionMetadata(
+  metadata: Record<string, unknown> | null
+): metadata is PlannerClarifyingInterventionMetadata {
+  if (!metadata) return false;
+  return metadata.source === PLANNER_CLARIFY_SOURCE && Number.isFinite(Number(metadata.questionIndex));
 }
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -860,6 +934,14 @@ export function createMissionService({
       [next, startedAt, completedAt, updatedAt, args.missionId, projectId]
     );
 
+    if (next === "plan_review") {
+      try {
+        ensurePlanReviewClarifyingQuestionInterventions(args.missionId);
+      } catch {
+        // Best-effort intervention hydration. Status transition should still succeed.
+      }
+    }
+
     if (previous !== next) {
       recordEvent({
         missionId: args.missionId,
@@ -1021,6 +1103,185 @@ export function createMissionService({
       resolvedAt: null,
       metadata: args.metadata ?? null
     };
+  };
+
+  const parsePlannerPlanFromMissionMetadata = (missionId: string): {
+    metadata: Record<string, unknown>;
+    plannerPlan: Record<string, unknown>;
+  } | null => {
+    const row = db.get<{ metadata_json: string | null }>(
+      "select metadata_json from missions where id = ? and project_id = ? limit 1",
+      [missionId, projectId]
+    );
+    const metadata = safeParseRecord(row?.metadata_json ?? null);
+    if (!metadata) return null;
+    const plannerPlan = isRecord(metadata.plannerPlan) ? metadata.plannerPlan : null;
+    if (!plannerPlan) return null;
+    return { metadata, plannerPlan };
+  };
+
+  const propagatePlannerClarifyingAnswersToSteps = (args: {
+    missionId: string;
+    questions: PlannerClarifyingQuestion[];
+    answers: PlannerClarifyingAnswer[];
+    updatedAt: string;
+  }) => {
+    const stepRows = db.all<{ id: string; metadata_json: string | null }>(
+      `
+        select id, metadata_json
+        from mission_steps
+        where mission_id = ?
+          and project_id = ?
+      `,
+      [args.missionId, projectId]
+    );
+    for (const row of stepRows) {
+      const metadata = safeParseRecord(row.metadata_json) ?? {};
+      metadata.plannerClarifyingQuestions = args.questions;
+      metadata.plannerClarifyingAnswers = args.answers;
+      db.run(
+        `
+          update mission_steps
+          set metadata_json = ?,
+              updated_at = ?
+          where id = ?
+            and mission_id = ?
+            and project_id = ?
+        `,
+        [JSON.stringify(metadata), args.updatedAt, row.id, args.missionId, projectId]
+      );
+    }
+  };
+
+  const persistPlannerClarifyingAnswer = (args: {
+    missionId: string;
+    questionIndex: number;
+    note: string | null;
+    status: Exclude<MissionInterventionStatus, "open">;
+    fallbackQuestion?: string;
+    fallbackContext?: string;
+    fallbackDefaultAssumption?: string;
+    fallbackImpact?: string;
+  }) => {
+    const parsed = parsePlannerPlanFromMissionMetadata(args.missionId);
+    if (!parsed) return;
+
+    const questions = normalizePlannerClarifyingQuestions(parsed.plannerPlan.clarifyingQuestions);
+    const existingAnswers = normalizePlannerClarifyingAnswers(parsed.plannerPlan.clarifyingAnswers);
+    const question = questions[args.questionIndex] ?? {
+      question: args.fallbackQuestion ?? `Clarifying question ${args.questionIndex + 1}`,
+      ...(args.fallbackContext ? { context: args.fallbackContext } : {}),
+      ...(args.fallbackDefaultAssumption ? { defaultAssumption: args.fallbackDefaultAssumption } : {}),
+      ...(args.fallbackImpact ? { impact: args.fallbackImpact } : {})
+    };
+
+    const noteValue = String(args.note ?? "").trim();
+    const defaultAssumption = question.defaultAssumption ?? args.fallbackDefaultAssumption ?? "Proceed with conservative assumptions.";
+    const useUserAnswer = args.status === "resolved" && noteValue.length > 0;
+    const answer: PlannerClarifyingAnswer = {
+      questionIndex: Math.max(0, args.questionIndex),
+      question: question.question,
+      answer: useUserAnswer ? noteValue : defaultAssumption,
+      source: useUserAnswer ? "user" : "default_assumption",
+      answeredAt: nowIso(),
+      ...(question.context ? { context: question.context } : {}),
+      ...(defaultAssumption ? { defaultAssumption } : {}),
+      ...(question.impact ? { impact: question.impact } : {})
+    };
+
+    const mergedAnswers = [
+      ...existingAnswers.filter((entry) => entry.questionIndex !== answer.questionIndex),
+      answer
+    ].sort((a, b) => a.questionIndex - b.questionIndex || a.question.localeCompare(b.question));
+
+    parsed.plannerPlan.clarifyingQuestions = questions;
+    parsed.plannerPlan.clarifyingAnswers = mergedAnswers;
+    parsed.metadata.plannerPlan = parsed.plannerPlan;
+
+    const updatedAt = nowIso();
+    db.run(
+      `
+        update missions
+        set metadata_json = ?,
+            updated_at = ?
+        where id = ?
+          and project_id = ?
+      `,
+      [JSON.stringify(parsed.metadata), updatedAt, args.missionId, projectId]
+    );
+
+    propagatePlannerClarifyingAnswersToSteps({
+      missionId: args.missionId,
+      questions,
+      answers: mergedAnswers,
+      updatedAt
+    });
+  };
+
+  const ensurePlanReviewClarifyingQuestionInterventions = (missionId: string) => {
+    const parsed = parsePlannerPlanFromMissionMetadata(missionId);
+    if (!parsed) return;
+    const questions = normalizePlannerClarifyingQuestions(parsed.plannerPlan.clarifyingQuestions);
+    if (!questions.length) return;
+
+    const existingRows = db.all<{ metadata_json: string | null; status: string }>(
+      `
+        select metadata_json, status
+        from mission_interventions
+        where mission_id = ?
+          and project_id = ?
+          and intervention_type = 'manual_input'
+      `,
+      [missionId, projectId]
+    );
+
+    const seenQuestionIndexes = new Set<number>();
+    for (const row of existingRows) {
+      const metadata = safeParseRecord(row.metadata_json);
+      if (!isPlannerClarifyingInterventionMetadata(metadata)) continue;
+      seenQuestionIndexes.add(Math.max(0, Math.floor(Number(metadata.questionIndex))));
+    }
+
+    const createdInterventions: string[] = [];
+    for (let index = 0; index < questions.length; index += 1) {
+      if (seenQuestionIndexes.has(index)) continue;
+      const question = questions[index]!;
+      const bodyParts = [
+        question.question,
+        question.context ? `Context: ${question.context}` : null,
+        question.impact ? `Impact: ${question.impact}` : null,
+        question.defaultAssumption ? `Default assumption if unanswered: ${question.defaultAssumption}` : null,
+      ].filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+      const intervention = insertIntervention({
+        missionId,
+        interventionType: "manual_input",
+        title: `Planning clarification ${index + 1}/${questions.length}`,
+        body: bodyParts.join("\n\n"),
+        requestedAction: "Provide guidance or dismiss to accept the default assumption.",
+        metadata: {
+          source: PLANNER_CLARIFY_SOURCE,
+          questionIndex: index,
+          question: question.question,
+          ...(question.context ? { context: question.context } : {}),
+          ...(question.defaultAssumption ? { defaultAssumption: question.defaultAssumption } : {}),
+          ...(question.impact ? { impact: question.impact } : {})
+        }
+      });
+      createdInterventions.push(intervention.id);
+    }
+
+    if (!createdInterventions.length) return;
+
+    recordEvent({
+      missionId,
+      eventType: "mission_intervention_added",
+      actor: "system",
+      summary: `Planner requested ${createdInterventions.length} clarification question${createdInterventions.length === 1 ? "" : "s"}.`,
+      payload: {
+        interventionIds: createdInterventions,
+        source: PLANNER_CLARIFY_SOURCE
+      }
+    });
   };
 
   const profilesDir = projectRoot ? path.join(projectRoot, ".ade", "profiles") : null;
@@ -2082,7 +2343,7 @@ export function createMissionService({
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
       const autopilotExecutor = args.autopilotExecutor ?? "codex";
-      const allowPlanningQuestions = args.allowPlanningQuestions === true;
+      const allowPlanningQuestions = args.allowPlanningQuestions !== false;
       const launchModelRaw = typeof args.orchestratorModel === "string" ? args.orchestratorModel.trim().toLowerCase() : "";
       const launchModel =
         launchModelRaw === "opus" || launchModelRaw === "sonnet" || launchModelRaw === "haiku"
@@ -2140,6 +2401,12 @@ export function createMissionService({
         prompt,
         laneId
       });
+      const plannerClarifyingQuestions = plannerPlan
+        ? normalizePlannerClarifyingQuestions(plannerPlan.clarifyingQuestions)
+        : [];
+      const plannerClarifyingAnswers = plannerPlan
+        ? normalizePlannerClarifyingAnswers(plannerPlan.clarifyingAnswers)
+        : [];
       const rawStepsToPersist: MissionPlanStepDraft[] =
         Array.isArray(args.plannedSteps) && args.plannedSteps.length
           ? [...args.plannedSteps].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title))
@@ -2150,7 +2417,17 @@ export function createMissionService({
               kind: step.kind,
               metadata: step.metadata
             }));
-      const stepsToPersist = applyPhaseCardsToPlanSteps(rawStepsToPersist, selectedPhases);
+      const stepsToPersist = applyPhaseCardsToPlanSteps(
+        rawStepsToPersist.map((step) => ({
+          ...step,
+          metadata: {
+            ...(isRecord(step.metadata) ? step.metadata : {}),
+            ...(plannerClarifyingQuestions.length ? { plannerClarifyingQuestions } : {}),
+            ...(plannerClarifyingAnswers.length ? { plannerClarifyingAnswers } : {})
+          }
+        })),
+        selectedPhases
+      );
 
       const id = randomUUID();
       const createdAt = nowIso();
@@ -2223,6 +2500,8 @@ export function createMissionService({
         plannerPlan: plannerPlan
           ? {
               schemaVersion: plannerPlan.schemaVersion,
+              clarifyingQuestions: plannerClarifyingQuestions,
+              clarifyingAnswers: plannerClarifyingAnswers,
               missionSummary: plannerPlan.missionSummary,
               assumptions: plannerPlan.assumptions,
               risks: plannerPlan.risks,
@@ -3065,7 +3344,13 @@ export function createMissionService({
       const keepPlanReview =
         missionStatus === "plan_review" &&
         intervention.status === "open" &&
-        intervention.interventionType === "approval_required";
+        (
+          intervention.interventionType === "approval_required"
+          || (
+            intervention.interventionType === "manual_input"
+            && isPlannerClarifyingInterventionMetadata(isRecord(intervention.metadata) ? intervention.metadata : null)
+          )
+        );
       const shouldPauseMission = args.pauseMission !== false;
       if (!keepPlanReview && shouldPauseMission) {
         upsertMissionStatus({
@@ -3148,6 +3433,24 @@ export function createMissionService({
           ...(note ? { note } : {})
         }
       });
+
+      const interventionMetadata = safeParseRecord(row.metadata_json);
+      if (
+        row.intervention_type === "manual_input"
+        && isPlannerClarifyingInterventionMetadata(interventionMetadata)
+      ) {
+        persistPlannerClarifyingAnswer({
+          missionId,
+          questionIndex: Math.max(0, Math.floor(Number(interventionMetadata.questionIndex))),
+          note,
+          status: targetStatus,
+          fallbackQuestion: typeof interventionMetadata.question === "string" ? interventionMetadata.question : undefined,
+          fallbackContext: typeof interventionMetadata.context === "string" ? interventionMetadata.context : undefined,
+          fallbackDefaultAssumption:
+            typeof interventionMetadata.defaultAssumption === "string" ? interventionMetadata.defaultAssumption : undefined,
+          fallbackImpact: typeof interventionMetadata.impact === "string" ? interventionMetadata.impact : undefined
+        });
+      }
 
       const openCount = db.get<{ count: number }>(
         `

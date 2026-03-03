@@ -217,6 +217,141 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
+  it("creates planner clarification interventions when entering plan_review", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+
+    const created = service.create({
+      prompt: "Prepare a plan with open API auth ambiguity.",
+      laneId,
+      plannerPlan: {
+        schemaVersion: "1.0",
+        clarifyingQuestions: [
+          {
+            question: "Should the new endpoint require JWT authentication?",
+            context: "Current /api endpoints use JWT while /public endpoints do not.",
+            defaultAssumption: "Use JWT authentication by default.",
+            impact: "Changes middleware and test cases."
+          }
+        ],
+        missionSummary: {
+          title: "API auth plan",
+          objective: "Plan auth behavior",
+          domain: "backend",
+          complexity: "medium",
+          strategy: "sequential",
+          parallelismCap: 1
+        },
+        assumptions: [],
+        risks: [],
+        steps: [],
+        handoffPolicy: { externalConflictDefault: "intervention" }
+      }
+    });
+
+    service.update({ missionId: created.id, status: "planning" });
+    const review = service.update({ missionId: created.id, status: "plan_review" });
+    expect(review.status).toBe("plan_review");
+    const manualInputs = review.interventions.filter(
+      (entry) => entry.status === "open" && entry.interventionType === "manual_input"
+    );
+    expect(manualInputs).toHaveLength(1);
+    expect(manualInputs[0]?.title).toContain("Planning clarification");
+    expect(manualInputs[0]?.body).toContain("Should the new endpoint require JWT authentication?");
+
+    dispose();
+  });
+
+  it("stores planner clarification answers in mission and step metadata", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+
+    const created = service.create({
+      prompt: "Plan rollout strategy for auth changes.",
+      laneId,
+      plannerPlan: {
+        schemaVersion: "1.0",
+        clarifyingQuestions: [
+          {
+            question: "Should rollout be behind a feature flag?",
+            defaultAssumption: "Enable behind a feature flag by default."
+          },
+          {
+            question: "Should we keep legacy fallback for one release?",
+            defaultAssumption: "Keep fallback for one release."
+          }
+        ],
+        missionSummary: {
+          title: "Rollout plan",
+          objective: "Decide rollout controls",
+          domain: "backend",
+          complexity: "medium",
+          strategy: "sequential",
+          parallelismCap: 1
+        },
+        assumptions: [],
+        risks: [],
+        steps: [],
+        handoffPolicy: { externalConflictDefault: "intervention" }
+      }
+    });
+
+    service.update({ missionId: created.id, status: "planning" });
+    const review = service.update({ missionId: created.id, status: "plan_review" });
+    const interventions = review.interventions
+      .filter((entry) => entry.status === "open" && entry.interventionType === "manual_input")
+      .sort((a, b) => a.title.localeCompare(b.title));
+    expect(interventions).toHaveLength(2);
+
+    service.resolveIntervention({
+      missionId: created.id,
+      interventionId: interventions[0]!.id,
+      status: "resolved",
+      note: "Yes, enforce a feature flag for first release."
+    });
+
+    service.resolveIntervention({
+      missionId: created.id,
+      interventionId: interventions[1]!.id,
+      status: "dismissed"
+    });
+
+    const missionRow = db.get<{ metadata_json: string | null }>(
+      "select metadata_json from missions where id = ? and project_id = ? limit 1",
+      [created.id, projectId]
+    );
+    const missionMetadata = missionRow?.metadata_json ? JSON.parse(missionRow.metadata_json) : {};
+    const plannerPlan = missionMetadata?.plannerPlan ?? {};
+    const answers = Array.isArray(plannerPlan.clarifyingAnswers) ? plannerPlan.clarifyingAnswers : [];
+    expect(answers).toHaveLength(2);
+    expect(
+      answers.some(
+        (entry: any) =>
+          entry.question === "Should rollout be behind a feature flag?"
+          && entry.answer === "Yes, enforce a feature flag for first release."
+          && entry.source === "user"
+      )
+    ).toBe(true);
+    expect(
+      answers.some(
+        (entry: any) =>
+          entry.question === "Should we keep legacy fallback for one release?"
+          && entry.answer === "Keep fallback for one release."
+          && entry.source === "default_assumption"
+      )
+    ).toBe(true);
+
+    const stepRow = db.get<{ metadata_json: string | null }>(
+      "select metadata_json from mission_steps where mission_id = ? and project_id = ? order by step_index asc limit 1",
+      [created.id, projectId]
+    );
+    const stepMetadata = stepRow?.metadata_json ? JSON.parse(stepRow.metadata_json) : {};
+    const stepAnswers = Array.isArray(stepMetadata.plannerClarifyingAnswers) ? stepMetadata.plannerClarifyingAnswers : [];
+    expect(stepAnswers).toHaveLength(2);
+
+    dispose();
+  });
+
   it("rejects invalid mission and step transitions", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });

@@ -29,6 +29,16 @@ type SessionState = {
     maxCalls: number;
     windowMs: number;
   };
+  memoryAddEvents: number[];
+  memoryAddRateLimit: {
+    maxCalls: number;
+    windowMs: number;
+  };
+  memorySearchEvents: number[];
+  memorySearchRateLimit: {
+    maxCalls: number;
+    windowMs: number;
+  };
 };
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -181,6 +191,33 @@ const TOOL_SPECS: ToolSpec[] = [
         laneId: { type: "string" },
         waitForResolutionMs: { type: "number", minimum: 0, maximum: 3600000 },
         pollIntervalMs: { type: "number", minimum: 100, maximum: 10000 }
+      }
+    }
+  },
+  {
+    name: "memory_add",
+    description: "Save important discoveries to project memory for future missions and workers.",
+    inputSchema: {
+      type: "object",
+      required: ["content", "category"],
+      additionalProperties: false,
+      properties: {
+        content: { type: "string", minLength: 1 },
+        category: { type: "string", enum: ["fact", "preference", "pattern", "decision", "gotcha"] },
+        importance: { type: "string", enum: ["low", "medium", "high"], default: "medium" }
+      }
+    }
+  },
+  {
+    name: "memory_search",
+    description: "Search project memories for relevant context from earlier missions and workers.",
+    inputSchema: {
+      type: "object",
+      required: ["query"],
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", minLength: 1 },
+        limit: { type: "number", minimum: 1, maximum: 50, default: 5 }
       }
     }
   },
@@ -637,7 +674,8 @@ const READ_ONLY_TOOLS = new Set([
   "get_lane_status",
   "list_lanes",
   "simulate_integration",
-  "get_pr_health"
+  "get_pr_health",
+  "memory_search"
 ]);
 
 const MUTATION_TOOLS = new Set([
@@ -648,7 +686,8 @@ const MUTATION_TOOLS = new Set([
   "create_queue",
   "create_integration",
   "rebase_lane",
-  "land_queue_next"
+  "land_queue_next",
+  "memory_add"
 ]);
 
 const ORCHESTRATION_TOOLS = new Set([
@@ -727,6 +766,42 @@ function assertNonEmptyString(value: unknown, field: string): string {
 function normalizeExportLevel(value: unknown, fallback: ContextExportLevel = "standard"): ContextExportLevel {
   if (value === "lite" || value === "standard" || value === "deep") return value;
   return fallback;
+}
+
+type MemoryToolCategory = "fact" | "preference" | "pattern" | "decision" | "gotcha";
+type MemoryToolImportance = "low" | "medium" | "high";
+type SharedFactType = "api_pattern" | "schema_change" | "config" | "architectural" | "gotcha";
+
+function parseMemoryToolCategory(value: unknown): MemoryToolCategory {
+  const category = asTrimmedString(value);
+  if (
+    category === "fact" ||
+    category === "preference" ||
+    category === "pattern" ||
+    category === "decision" ||
+    category === "gotcha"
+  ) {
+    return category;
+  }
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    "category must be one of: fact, preference, pattern, decision, gotcha"
+  );
+}
+
+function parseMemoryToolImportance(value: unknown): MemoryToolImportance {
+  const importance = asOptionalTrimmedString(value) ?? "medium";
+  if (importance === "low" || importance === "medium" || importance === "high") {
+    return importance;
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "importance must be one of: low, medium, high");
+}
+
+function mapMemoryCategoryToSharedFactType(category: MemoryToolCategory): SharedFactType {
+  if (category === "pattern") return "api_pattern";
+  if (category === "preference") return "config";
+  if (category === "gotcha") return "gotcha";
+  return "architectural";
 }
 
 function jsonText(value: unknown): string {
@@ -1266,6 +1341,26 @@ function ensureAskUserAllowed(session: SessionState): void {
   GLOBAL_ASK_USER_RATE_LIMIT.events.push(now);
 }
 
+function ensureMemoryAddAllowed(session: SessionState): void {
+  const now = Date.now();
+  const cutoff = now - session.memoryAddRateLimit.windowMs;
+  session.memoryAddEvents = session.memoryAddEvents.filter((ts) => ts >= cutoff);
+  if (session.memoryAddEvents.length >= session.memoryAddRateLimit.maxCalls) {
+    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "memory_add rate limit exceeded.");
+  }
+  session.memoryAddEvents.push(now);
+}
+
+function ensureMemorySearchAllowed(session: SessionState): void {
+  const now = Date.now();
+  const cutoff = now - session.memorySearchRateLimit.windowMs;
+  session.memorySearchEvents = session.memorySearchEvents.filter((ts) => ts >= cutoff);
+  if (session.memorySearchEvents.length >= session.memorySearchRateLimit.maxCalls) {
+    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "memory_search rate limit exceeded.");
+  }
+  session.memorySearchEvents.push(now);
+}
+
 
 async function runTool(args: {
   runtime: AdeMcpRuntime;
@@ -1442,6 +1537,98 @@ async function runTool(args: {
       intervention: latest,
       awaitingUserResponse: true,
       timedOut: true
+    };
+  }
+
+  if (name === "memory_add") {
+    ensureMemoryAddAllowed(session);
+
+    const content = assertNonEmptyString(toolArgs.content, "content");
+    const category = parseMemoryToolCategory(toolArgs.category);
+    const importance = parseMemoryToolImportance(toolArgs.importance);
+
+    let memoryWritten = false;
+    let memoryId: string | null = null;
+    let memoryError: string | null = null;
+    try {
+      const memory = runtime.memoryService.addMemory({
+        projectId: runtime.projectId,
+        scope: "project",
+        category,
+        content,
+        importance,
+        ...(callerCtx.runId ? { sourceRunId: callerCtx.runId } : {})
+      });
+      memoryWritten = true;
+      memoryId = memory.id;
+    } catch (error) {
+      memoryError = error instanceof Error ? error.message : String(error);
+    }
+
+    const sharedFactAttempted = Boolean(callerCtx.runId);
+    const sharedFactType = mapMemoryCategoryToSharedFactType(category);
+    let sharedFactWritten = false;
+    let sharedFactId: string | null = null;
+    let sharedFactError: string | null = null;
+
+    if (sharedFactAttempted) {
+      try {
+        const sharedFact = runtime.memoryService.addSharedFact({
+          runId: callerCtx.runId as string,
+          stepId: callerCtx.stepId ?? undefined,
+          factType: sharedFactType,
+          content
+        });
+        sharedFactWritten = true;
+        sharedFactId = sharedFact.id;
+      } catch (error) {
+        sharedFactError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return {
+      content,
+      category,
+      importance,
+      memory: {
+        written: memoryWritten,
+        id: memoryId,
+        ...(memoryError ? { error: memoryError } : {})
+      },
+      sharedFact: {
+        attempted: sharedFactAttempted,
+        written: sharedFactWritten,
+        id: sharedFactId,
+        ...(sharedFactAttempted
+          ? {
+              runId: callerCtx.runId,
+              stepId: callerCtx.stepId ?? null,
+              factType: sharedFactType
+            }
+          : {}),
+        ...(sharedFactError ? { error: sharedFactError } : {})
+      },
+      wroteAny: memoryWritten || sharedFactWritten
+    };
+  }
+
+  if (name === "memory_search") {
+    ensureMemorySearchAllowed(session);
+
+    const query = assertNonEmptyString(toolArgs.query, "query");
+    const limit = Math.max(1, Math.min(50, Math.floor(asNumber(toolArgs.limit, 5))));
+    const memories = runtime.memoryService.searchMemories(query, runtime.projectId, undefined, limit);
+
+    return {
+      query,
+      count: memories.length,
+      memories: memories.map((memory) => ({
+        id: memory.id,
+        category: memory.category,
+        content: memory.content,
+        importance: memory.importance,
+        createdAt: memory.createdAt
+      }))
     };
   }
 
@@ -2462,6 +2649,16 @@ export function createMcpRequestHandler(args: {
     askUserEvents: [],
     askUserRateLimit: {
       maxCalls: 6,
+      windowMs: 60_000
+    },
+    memoryAddEvents: [],
+    memoryAddRateLimit: {
+      maxCalls: 10,
+      windowMs: 60_000
+    },
+    memorySearchEvents: [],
+    memorySearchRateLimit: {
+      maxCalls: 20,
       windowMs: 60_000
     }
   };

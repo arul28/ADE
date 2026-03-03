@@ -344,6 +344,7 @@ function inferPhaseKeyFromStep(kind: string, metadata: MissionStepMetadata | Rec
 
   if (lowerType === "analysis") return BUILT_IN_PHASE_KEYS.planning;
   if (lowerType === "test" || lowerKind === "validation") return BUILT_IN_PHASE_KEYS.testing;
+  if (lowerType === "milestone") return BUILT_IN_PHASE_KEYS.validation;
   if (lowerType === "review") return BUILT_IN_PHASE_KEYS.validation;
   if (lowerType === "integration" || lowerType === "merge" || lowerKind === "integration") return BUILT_IN_PHASE_KEYS.prAndConflicts;
   if (lowerKind === "summary") return BUILT_IN_PHASE_KEYS.validation;

@@ -7,30 +7,22 @@ import {
   ControlButton,
   Controls,
   Edge,
-  EdgeProps,
-  Handle,
   MarkerType,
   MiniMap,
   Node,
-  NodeProps,
   Panel,
-  Position,
   ReactFlow,
   ReactFlowProvider,
   applyEdgeChanges,
   applyNodeChanges,
-  getBezierPath,
   useReactFlow
 } from "@xyflow/react";
-import { Warning, ArrowSquareOut, Funnel, Flag, GitBranch, GitMerge, Stack, Plus, MagnifyingGlass, Shield, Sparkle, Star, Tag, Lightning, Cube, SquaresFour } from "@phosphor-icons/react";
+import { Warning, ArrowSquareOut, Funnel, Plus, MagnifyingGlass, Cube, SquaresFour } from "@phosphor-icons/react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type {
   BatchAssessmentResult,
   ConflictStatus,
-  ConflictProposal,
-  ConflictProposalPreview,
   EnvironmentMapping,
-  GraphFilterState,
   GraphLayoutPreset,
   GraphLayoutSnapshot,
   GraphPersistedState,
@@ -44,11 +36,6 @@ import type {
   MergeMethod,
   MergeSimulationResult,
   PackSummary,
-  PrCheck,
-  PrReview,
-  PrReviewStatus,
-  PrState,
-  PrStatus,
   PrSummary,
   IntegrationProposal
 } from "../../../shared/types";
@@ -58,734 +45,56 @@ import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { Graph3DScene, type Graph3DNode, type Graph3DEdge } from "./Graph3DScene";
-
-type GraphNodeData = {
-  lane: LaneSummary;
-  status: ConflictStatus["status"] | "unknown";
-  remoteSync: GitUpstreamSyncStatus | null;
-  autoRebaseStatus: AutoRebaseLaneStatus | null;
-  activeSessions: number;
-  collapsedChildCount: number;
-  dimmed: boolean;
-  activityBucket: "min" | "low" | "medium" | "high";
-  viewMode: GraphViewMode;
-  lastActivityAt: string | null;
-  environment: { env: string; color: string | null } | null;
-  highlight: boolean;
-  restackFailed: boolean;
-  restackPulse: boolean;
-  mergeInProgress: boolean;
-  mergeDisappearing: boolean;
-  isIntegration: boolean;
-  focusGlow: boolean;
-  isVirtualProposal: boolean;
-  proposalOutcome?: "clean" | "conflict" | "blocked";
-  proposalId?: string;
-};
-
-type RestackPublishOutcome =
-  | { status: "done"; message?: string }
-  | { status: "skipped"; message: string };
-
-type GraphPrOverlay = {
-  prId: string;
-  laneId: string;
-  baseLaneId: string;
-  number: number;
-  title: string;
-  url: string;
-  state: PrState;
-  checksStatus: PrStatus["checksStatus"];
-  reviewStatus: PrReviewStatus;
-  lastSyncedAt: string | null;
-  mergeInProgress: boolean;
-};
-
-type GraphEdgeData = {
-  edgeType: "topology" | "stack" | "risk" | "integration" | "proposal";
-  riskLevel?: "none" | "low" | "medium" | "high";
-  overlapCount?: number;
-  stale?: boolean;
-  dimmed?: boolean;
-  highlight?: boolean;
-  proposalConflict?: boolean;
-  pr?: GraphPrOverlay;
-};
-
-type BatchStepStatus = "pending" | "running" | "done" | "failed" | "skipped";
-type BatchStep = {
-  laneId: string;
-  laneName: string;
-  status: BatchStepStatus;
-  error?: string;
-};
-
-type BatchProgress = { completedPairs: number; totalPairs: number };
-
-type GraphTextPromptState = {
-  title: string;
-  message?: string;
-  placeholder?: string;
-  value: string;
-  confirmLabel: string;
-  validate?: (value: string) => string | null;
-  resolve: (value: string | null) => void;
-};
-
-type PrDialogState = {
-  laneId: string;
-  baseLaneId: string;
-  baseBranch: string;
-  title: string;
-  body: string;
-  draft: boolean;
-  loadingDraft: boolean;
-  creating: boolean;
-  existingPr: PrSummary | null;
-  loadingDetails: boolean;
-  status: PrStatus | null;
-  checks: PrCheck[];
-  reviews: PrReview[];
-  mergeMethod: MergeMethod;
-  merging: boolean;
-  error: string | null;
-};
-
-type ConflictPanelState = {
-  laneAId: string;
-  laneBId: string;
-  loading: boolean;
-  result: MergeSimulationResult | null;
-  error: string | null;
-  applyLaneId: string;
-  preview: ConflictProposalPreview | null;
-  preparing: boolean;
-  proposal: ConflictProposal | null;
-  proposing: boolean;
-  applyMode: "unstaged" | "staged" | "commit";
-  commitMessage: string;
-  applying: boolean;
-};
-
-type IntegrationDialogState = {
-  laneIds: string[];
-  name: string;
-  busy: boolean;
-  step: string | null;
-  error: string | null;
-};
-
-const VIEW_MODES: GraphViewMode[] = ["stack", "risk", "activity", "all"];
-const ICON_OPTIONS: Array<{ key: LaneIcon; label: string; icon: React.ReactNode }> = [
-  { key: null, label: "None", icon: <span className="text-xs">○</span> },
-  { key: "star", label: "Star", icon: <Star size={14} weight="regular" /> },
-  { key: "flag", label: "Flag", icon: <Flag size={14} weight="regular" /> },
-  { key: "bolt", label: "Bolt", icon: <Lightning size={14} weight="regular" /> },
-  { key: "shield", label: "Shield", icon: <Shield size={14} weight="regular" /> },
-  { key: "tag", label: "Tag", icon: <Tag size={14} weight="regular" /> }
-];
-const COLOR_PALETTE = ["#dc2626", "#ea580c", "#ca8a04", "#16a34a", "#2563eb", "#9333ea", "#1f2937", "#f8fafc"];
-const DEFAULT_PRESET = "__default__";
-const BATCH_OPERATION_LABELS: Record<string, string> = {
-  restack: "Rebase",
-  restack_publish: "Restack + Publish",
-  push: "Push",
-  fetch: "Fetch",
-  archive: "Archive",
-  delete: "Delete",
-  sync: "Pull"
-};
-
-function batchOperationLabel(operation: string): string {
-  return BATCH_OPERATION_LABELS[operation] ?? operation;
-}
-
-function edgePairKey(a: string, b: string): string {
-  return a < b ? `${a}::${b}` : `${b}::${a}`;
-}
-
-function proposalSourceLaneIds(proposal: IntegrationProposal): string[] {
-  const sourceLaneIds = (proposal as { sourceLaneIds?: unknown }).sourceLaneIds;
-  if (!Array.isArray(sourceLaneIds)) return [];
-  return sourceLaneIds.filter((laneId): laneId is string => typeof laneId === "string");
-}
-
-function proposalSteps(proposal: IntegrationProposal): IntegrationProposal["steps"] {
-  const steps = (proposal as { steps?: unknown }).steps;
-  return Array.isArray(steps) ? (steps as IntegrationProposal["steps"]) : [];
-}
-
-function proposalLaneSummaries(proposal: IntegrationProposal): IntegrationProposal["laneSummaries"] {
-  const laneSummaries = (proposal as { laneSummaries?: unknown }).laneSummaries;
-  return Array.isArray(laneSummaries) ? (laneSummaries as IntegrationProposal["laneSummaries"]) : [];
-}
-
-function proposalPairwiseResults(proposal: IntegrationProposal): IntegrationProposal["pairwiseResults"] {
-  const pairwiseResults = (proposal as { pairwiseResults?: unknown }).pairwiseResults;
-  return Array.isArray(pairwiseResults) ? (pairwiseResults as IntegrationProposal["pairwiseResults"]) : [];
-}
-
-function laneSummaryConflictsWith(laneSummary: IntegrationProposal["laneSummaries"][number]): string[] {
-  const conflictsWith = (laneSummary as { conflictsWith?: unknown }).conflictsWith;
-  if (!Array.isArray(conflictsWith)) return [];
-  return conflictsWith.filter((laneId): laneId is string => typeof laneId === "string");
-}
-
-function sameIdSet(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const setA = new Set(a);
-  if (setA.size !== b.length) return false;
-  for (const id of b) {
-    if (!setA.has(id)) return false;
-  }
-  return true;
-}
-
-function toRelativeTime(iso: string | null): string {
-  if (!iso) return "No recent activity";
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return "No recent activity";
-  const delta = Math.max(0, Date.now() - ts);
-  const minutes = Math.floor(delta / 60_000);
-  if (minutes < 1) return "active just now";
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  const days = Math.floor(hours / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
-}
-
-function buildDefaultFilter(): GraphFilterState {
-  return {
-    status: [],
-    laneTypes: [],
-    tags: [],
-    hidePrimary: false,
-    hideAttached: false,
-    hideArchived: true,
-    rootLaneId: null,
-    search: ""
-  };
-}
-
-function createSnapshot(viewMode: GraphViewMode): GraphLayoutSnapshot {
-  return {
-    nodePositions: {},
-    collapsedLaneIds: [],
-    viewMode,
-    filters: buildDefaultFilter(),
-    updatedAt: new Date().toISOString()
-  };
-}
-
-function createDefaultState(): GraphPersistedState {
-  const basePreset: GraphLayoutPreset = {
-    name: DEFAULT_PRESET,
-    byViewMode: {
-      stack: createSnapshot("stack"),
-      risk: createSnapshot("risk"),
-      activity: createSnapshot("activity"),
-      all: createSnapshot("all")
-    },
-    updatedAt: new Date().toISOString()
-  };
-  return {
-    presets: [basePreset],
-    activePreset: DEFAULT_PRESET
-  };
-}
-
-function ensureGraphState(state: GraphPersistedState | null | undefined): GraphPersistedState {
-  if (!state || !Array.isArray(state.presets) || state.presets.length === 0) {
-    return createDefaultState();
-  }
-  const validPreset = state.presets.find((preset) => preset.name === state.activePreset) ?? state.presets[0]!;
-  const normalizeSnapshot = (viewMode: GraphViewMode): GraphLayoutSnapshot => {
-    const existing = validPreset.byViewMode?.[viewMode];
-    if (!existing) return createSnapshot(viewMode);
-    return {
-      nodePositions: existing.nodePositions ?? {},
-      collapsedLaneIds: existing.collapsedLaneIds ?? [],
-      viewMode,
-      filters: existing.filters ?? buildDefaultFilter(),
-      updatedAt: existing.updatedAt ?? new Date().toISOString()
-    };
-  };
-  return {
-    activePreset: validPreset.name,
-    presets: state.presets.map((preset) => ({
-      name: preset.name,
-      updatedAt: preset.updatedAt ?? new Date().toISOString(),
-      byViewMode: {
-        stack: preset.byViewMode?.stack ? { ...normalizeSnapshot("stack"), ...preset.byViewMode.stack, viewMode: "stack" } : createSnapshot("stack"),
-        risk: preset.byViewMode?.risk ? { ...normalizeSnapshot("risk"), ...preset.byViewMode.risk, viewMode: "risk" } : createSnapshot("risk"),
-        activity: preset.byViewMode?.activity ? { ...normalizeSnapshot("activity"), ...preset.byViewMode.activity, viewMode: "activity" } : createSnapshot("activity"),
-        all: preset.byViewMode?.all ? { ...normalizeSnapshot("all"), ...preset.byViewMode.all, viewMode: "all" } : createSnapshot("all")
-      }
-    }))
-  };
-}
-
-function laneStatusGroup(status: ConflictStatus["status"] | undefined): GraphStatusFilter {
-  if (status === "conflict-active" || status === "conflict-predicted") return "conflict";
-  if (status === "behind-base") return "at-risk";
-  if (status === "merge-ready") return "clean";
-  return "unknown";
-}
-
-function riskStrokeColor(level: GraphEdgeData["riskLevel"]): string {
-  if (level === "high") return "#dc2626";
-  if (level === "medium") return "#f59e0b";
-  if (level === "low") return "#16a34a";
-  return "#6b7280";
-}
-
-function proposalOutcomeColor(outcome: GraphNodeData["proposalOutcome"]): string {
-  if (outcome === "blocked") return "#EF4444";
-  if (outcome === "conflict") return "#F59E0B";
-  return "#22C55E";
-}
-
-function prOverlayColor(pr: GraphPrOverlay): string {
-  if (pr.state === "draft") return "#a855f7";
-  if (pr.checksStatus === "failing") return "#dc2626";
-  if (pr.reviewStatus === "changes_requested") return "#f59e0b";
-  if (pr.checksStatus === "passing") return "#16a34a";
-  if (pr.checksStatus === "pending") return "#38bdf8";
-  return "#6b7280";
-}
-
-function prCiDotColor(pr: GraphPrOverlay): string {
-  if (pr.checksStatus === "failing") return "#dc2626";
-  if (pr.checksStatus === "passing") return "#16a34a";
-  if (pr.checksStatus === "pending") return "#f59e0b";
-  return "#6b7280";
-}
-
-function iconGlyph(icon: LaneIcon): React.ReactNode {
-  if (icon === "star") return <Star size={14} weight="regular" />;
-  if (icon === "flag") return <Flag size={14} weight="regular" />;
-  if (icon === "bolt") return <Lightning size={14} weight="regular" />;
-  if (icon === "shield") return <Shield size={14} weight="regular" />;
-  if (icon === "tag") return <Tag size={14} weight="regular" />;
-  return null;
-}
-
-function nodeDimensions(lane: LaneSummary, bucket: GraphNodeData["activityBucket"], mode: GraphViewMode): { width: number; height: number } {
-  if (mode === "activity") {
-    if (bucket === "min") return { width: 100, height: 50 };
-    if (bucket === "low") return { width: 130, height: 65 };
-    if (bucket === "high") return { width: 200, height: 100 };
-    return { width: 160, height: 80 };
-  }
-  if (lane.laneType === "primary") return { width: 200, height: 100 };
-  return { width: 160, height: 80 };
-}
-
-function buildTreeDepth(lanes: LaneSummary[]): Map<string, number> {
-  const byId = new Map(lanes.map((lane) => [lane.id, lane] as const));
-  const cache = new Map<string, number>();
-  const visit = (laneId: string): number => {
-    const existing = cache.get(laneId);
-    if (existing != null) return existing;
-    const lane = byId.get(laneId);
-    if (!lane || !lane.parentLaneId || !byId.has(lane.parentLaneId)) {
-      cache.set(laneId, 0);
-      return 0;
-    }
-    const depth = visit(lane.parentLaneId) + 1;
-    cache.set(laneId, depth);
-    return depth;
-  };
-  for (const lane of lanes) visit(lane.id);
-  return cache;
-}
-
-function branchNameFromRef(ref: string): string {
-  const trimmed = (ref ?? "").trim();
-  if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
-  return trimmed;
-}
-
-function escapeRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function globToRegExp(glob: string): RegExp {
-  const parts = glob.split("*").map(escapeRegex);
-  return new RegExp(`^${parts.join(".*")}$`);
-}
-
-function computeAutoLayout(
-  lanes: LaneSummary[],
-  viewMode: GraphViewMode,
-  activityScoreByLaneId: Record<string, number>,
-  environmentByLaneId: Record<string, { env: string; color: string | null }>
-): Record<string, { x: number; y: number }> {
-  const positions: Record<string, { x: number; y: number }> = {};
-  if (lanes.length === 0) return positions;
-
-  if (viewMode === "stack") {
-    const depthMap = buildTreeDepth(lanes);
-    const lanesByDepth = new Map<number, LaneSummary[]>();
-    for (const lane of lanes) {
-      const depth = depthMap.get(lane.id) ?? 0;
-      const list = lanesByDepth.get(depth) ?? [];
-      list.push(lane);
-      lanesByDepth.set(depth, list);
-    }
-    for (const [depth, levelLanes] of lanesByDepth.entries()) {
-      levelLanes.sort((a, b) => a.name.localeCompare(b.name));
-      levelLanes.forEach((lane, index) => {
-        positions[lane.id] = { x: index * 220, y: depth * 170 };
-      });
-    }
-    return positions;
-  }
-
-  if (viewMode === "risk") {
-    const radius = Math.max(180, lanes.length * 24);
-    const centerX = 380;
-    const centerY = 260;
-    lanes.forEach((lane, index) => {
-      const angle = (index / lanes.length) * Math.PI * 2;
-      positions[lane.id] = {
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius
-      };
-    });
-    return positions;
-  }
-
-  if (viewMode === "activity") {
-    const sorted = [...lanes].sort((a, b) => (activityScoreByLaneId[b.id] ?? 0) - (activityScoreByLaneId[a.id] ?? 0));
-    const cols = Math.max(1, Math.ceil(Math.sqrt(sorted.length)));
-    sorted.forEach((lane, index) => {
-      positions[lane.id] = {
-        x: (index % cols) * 230,
-        y: Math.floor(index / cols) * 180
-      };
-    });
-    return positions;
-  }
-
-  const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0]!;
-  positions[primary.id] = { x: 420, y: 240 };
-  const rest = lanes.filter((lane) => lane.id !== primary.id);
-  const core = rest.filter((lane) => Boolean(environmentByLaneId[lane.id]));
-  const others = rest.filter((lane) => !environmentByLaneId[lane.id]);
-
-  const innerRadius = Math.max(160, core.length * 26);
-  core.forEach((lane, index) => {
-    const angle = (index / Math.max(1, core.length)) * Math.PI * 2;
-    positions[lane.id] = {
-      x: 420 + Math.cos(angle) * innerRadius,
-      y: 240 + Math.sin(angle) * innerRadius
-    };
-  });
-
-  const outerRadius = Math.max(260, others.length * 26);
-  others.forEach((lane, index) => {
-    const angle = (index / Math.max(1, others.length)) * Math.PI * 2;
-    positions[lane.id] = {
-      x: 420 + Math.cos(angle) * outerRadius,
-      y: 240 + Math.sin(angle) * outerRadius
-    };
-  });
-  return positions;
-}
-
-function collectDescendants(lanes: LaneSummary[], rootId: string): Set<string> {
-  const childrenByParent = new Map<string, string[]>();
-  for (const lane of lanes) {
-    if (!lane.parentLaneId) continue;
-    const list = childrenByParent.get(lane.parentLaneId) ?? [];
-    list.push(lane.id);
-    childrenByParent.set(lane.parentLaneId, list);
-  }
-  const out = new Set<string>();
-  const queue = [rootId];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    for (const child of childrenByParent.get(current) ?? []) {
-      if (out.has(child)) continue;
-      out.add(child);
-      queue.push(child);
-    }
-  }
-  return out;
-}
-
-function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
-  const lane = data.lane;
-  const dimensions = nodeDimensions(lane, data.activityBucket, data.viewMode);
-  const remoteSync = data.remoteSync;
-  const autoRebase = data.autoRebaseStatus;
-  const stackStale = Boolean(lane.parentLaneId && lane.status.behind > 0);
-  const remoteDiverged = Boolean(remoteSync?.diverged);
-  const remoteNeedsPublish = Boolean(remoteSync && ((remoteSync.hasUpstream === false) || remoteSync.ahead > 0));
-  const remoteNeedsPull = Boolean(remoteSync?.hasUpstream && remoteSync.recommendedAction === "pull");
-  const statusColor =
-    data.status === "conflict-active" || data.status === "conflict-predicted"
-      ? "text-red-300"
-      : data.status === "behind-base"
-        ? "text-amber-300"
-        : data.status === "merge-ready"
-          ? "text-emerald-300"
-          : "text-muted-fg";
-
-  return (
-    <div
-      className={cn(
-        "group relative rounded-lg border bg-card/90 px-2 py-1.5 text-[11px] shadow-sm transition-all duration-150",
-        lane.laneType === "attached" ? "border-dashed text-muted-fg" : "border-border text-fg",
-        lane.laneType === "primary" && "border-[3px] border-accent",
-        data.isIntegration && "border-2",
-        selected && "ring-2 ring-accent",
-        data.dimmed && "opacity-20 scale-50",
-        data.highlight && "scale-[1.02] shadow-[0_2px_8px_rgba(0,0,0,0.2)]",
-        data.activityBucket === "high" && "shadow-[0_0_18px_rgba(34,197,94,0.2)]",
-        data.restackFailed && "border-red-500 ring-1 ring-red-500/80",
-        data.restackPulse && "ade-node-failed-pulse",
-        data.mergeInProgress && "ade-node-merging",
-        data.mergeDisappearing && "ade-node-disappear",
-        data.focusGlow && "ring-2 ring-purple-400/60 shadow-[0_0_20px_rgba(167,139,250,0.35)]"
-      )}
-      style={{
-        width: dimensions.width,
-        minHeight: dimensions.height,
-        borderColor: data.isIntegration ? "#A78BFA" : (lane.color ?? data.environment?.color ?? undefined)
-      }}
-    >
-      <div className="flex items-center gap-1">
-        {iconGlyph(lane.icon)}
-        <span className="truncate font-semibold">{lane.name}</span>
-        {data.isIntegration ? (
-          <span
-            className="ml-auto flex items-center gap-0.5 rounded px-1 py-0 text-[9px] font-medium uppercase tracking-wider"
-            style={{ color: "#A78BFA", backgroundColor: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)" }}
-            title="Integration lane"
-          >
-            <GitBranch size={10} weight="bold" />
-            Integration
-          </span>
-        ) : null}
-      </div>
-      <div className="truncate text-[11px] text-muted-fg">{lane.branchRef}</div>
-      <div className="mt-1 flex flex-wrap items-center gap-1">
-        <Chip className="px-1 py-0 text-[10px]">{lane.status.dirty ? "dirty" : "clean"}</Chip>
-        <Chip className="px-1 py-0 text-[10px]" title={`Compared to base ${lane.baseRef}`}>
-          base {lane.status.ahead}↑/{lane.status.behind}↓
-        </Chip>
-        {remoteSync ? (
-          remoteSync.hasUpstream ? (
-            <Chip className="px-1 py-0 text-[10px]" title={`Compared to ${remoteSync.upstreamRef ?? "upstream"}`}>
-              remote {remoteSync.ahead}↑/{remoteSync.behind}↓
-            </Chip>
-          ) : (
-            <Chip className="px-1 py-0 text-[10px] text-amber-700" title="No upstream branch configured. Push once to publish this lane.">
-              unpublished
-            </Chip>
-          )
-        ) : (
-          <Chip className="px-1 py-0 text-[10px] text-muted-fg">remote ?</Chip>
-        )}
-        <Chip className={cn("px-1 py-0 text-[10px]", statusColor)}>{data.status}</Chip>
-        {stackStale ? <Chip className="px-1 py-0 text-[10px] text-amber-700">stack stale</Chip> : null}
-        {autoRebase?.state === "autoRebased" ? <Chip className="px-1 py-0 text-[10px] text-emerald-300">auto rebased</Chip> : null}
-        {autoRebase?.state === "rebasePending" ? <Chip className="px-1 py-0 text-[10px] text-amber-700">rebase pending</Chip> : null}
-        {autoRebase?.state === "rebaseConflict" ? <Chip className="px-1 py-0 text-[10px] text-red-300">rebase conflict</Chip> : null}
-        {remoteDiverged ? <Chip className="px-1 py-0 text-[10px] text-red-300">diverged</Chip> : null}
-        {!remoteDiverged && remoteNeedsPublish ? <Chip className="px-1 py-0 text-[10px] text-emerald-300">push</Chip> : null}
-        {!remoteDiverged && !remoteNeedsPublish && remoteNeedsPull ? <Chip className="px-1 py-0 text-[10px] text-sky-300">pull</Chip> : null}
-        {data.environment ? (
-          <span
-            className="rounded border px-1 py-0 text-[10px] uppercase tracking-wide"
-            style={{
-              borderColor: data.environment.color ?? undefined,
-              color: data.environment.color ?? "var(--color-muted-fg)",
-              backgroundColor: data.environment.color ? `${data.environment.color}22` : undefined
-            }}
-            title={`Environment: ${data.environment.env}`}
-          >
-            {data.environment.env.slice(0, 10)}
-          </span>
-        ) : null}
-        {data.mergeInProgress ? <Chip className="px-1 py-0 text-[10px] text-accent">merging</Chip> : null}
-        {data.activeSessions > 0 ? <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" title="Active sessions" /> : null}
-      </div>
-      {lane.tags.length > 0 ? (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {lane.tags.slice(0, 3).map((tag) => (
-            <span key={tag} className="rounded bg-surface-recessed px-1 text-[10px] text-muted-fg">
-              {tag}
-            </span>
-          ))}
-        </div>
-      ) : null}
-      {data.collapsedChildCount > 0 ? (
-        <div className="mt-1 inline-flex items-center gap-1 rounded border border-border/10 bg-card/60 px-1 text-[11px]">
-          <Stack size={12} weight="regular" />
-          {data.collapsedChildCount} children
-        </div>
-      ) : null}
-      <Handle
-        id="target"
-        type="target"
-        position={Position.Top}
-        style={{ width: 8, height: 8, opacity: 0, pointerEvents: "none", border: 0, background: "transparent" }}
-      />
-      <Handle
-        id="source"
-        type="source"
-        position={Position.Bottom}
-        style={{ width: 8, height: 8, opacity: 0, pointerEvents: "none", border: 0, background: "transparent" }}
-      />
-      <div className="pointer-events-none absolute inset-0 rounded-lg opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-hover:shadow-[0_2px_8px_rgba(0,0,0,0.2)]" />
-    </div>
-  );
-}
-
-function GraphProposalNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
-  const borderColor = proposalOutcomeColor(data.proposalOutcome);
-  return (
-    <div
-      className={cn(
-        "group relative rounded-lg border-2 border-dashed bg-card/90 px-2 py-1.5 text-[11px] shadow-sm transition-all duration-150",
-        selected && "ring-2 ring-accent",
-        data.dimmed && "opacity-30",
-        data.highlight && "shadow-[0_2px_8px_rgba(0,0,0,0.2)]"
-      )}
-      style={{ width: 220, minHeight: 84, borderColor }}
-    >
-      <div className="flex items-center justify-between gap-1">
-        <span
-          className="inline-flex items-center rounded px-1 py-0 text-[9px] font-semibold uppercase tracking-[0.08em]"
-          style={{ color: borderColor, backgroundColor: `${borderColor}1f`, border: `1px solid ${borderColor}55` }}
-        >
-          PROPOSED
-        </span>
-        {data.proposalOutcome ? (
-          <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: borderColor }}>
-            {data.proposalOutcome}
-          </span>
-        ) : null}
-      </div>
-      <div className="mt-1 flex items-center gap-1 text-fg">
-        <GitMerge size={14} weight="bold" style={{ color: borderColor }} />
-        <span className="truncate font-semibold">{data.lane.name}</span>
-      </div>
-      <div className="mt-0.5 truncate text-[10px] text-muted-fg">{data.lane.baseRef}</div>
-      <Handle
-        id="target"
-        type="target"
-        position={Position.Top}
-        style={{ width: 8, height: 8, opacity: 0, pointerEvents: "none", border: 0, background: "transparent" }}
-      />
-      <Handle
-        id="source"
-        type="source"
-        position={Position.Bottom}
-        style={{ width: 8, height: 8, opacity: 0, pointerEvents: "none", border: 0, background: "transparent" }}
-      />
-      <div className="pointer-events-none absolute inset-0 rounded-lg opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-hover:shadow-[0_2px_8px_rgba(0,0,0,0.2)]" />
-    </div>
-  );
-}
-
-function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
-  const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, selected } = props;
-  const [path, labelX, labelY] = getBezierPath({
-    sourceX,
-    sourceY,
-    targetX,
-    targetY,
-    sourcePosition: sourcePosition ?? Position.Bottom,
-    targetPosition: targetPosition ?? Position.Top
-  });
-  const pr = data?.pr;
-  const color =
-    data?.edgeType === "proposal"
-      ? data.proposalConflict
-        ? "#F59E0B"
-        : "#22C55E"
-      : data?.edgeType === "integration"
-      ? "#A78BFA"
-      : data?.edgeType === "risk"
-        ? riskStrokeColor(data.riskLevel)
-        : pr
-          ? prOverlayColor(pr)
-          : data?.edgeType === "stack"
-            ? "#38bdf8"
-            : "#6b7280";
-  const width = data?.edgeType === "proposal" ? 2.2 : data?.edgeType === "integration" ? 2.4 : pr && data?.edgeType !== "risk" ? 2.6 : data?.edgeType === "stack" ? 3 : 1.8;
-  const dash = data?.edgeType === "proposal" ? "6 4" : data?.edgeType === "risk" ? "5 3" : data?.edgeType === "integration" ? "8 4" : undefined;
-  const effectiveWidth = (selected ? width + 1 : width) + (data?.highlight ? 0.5 : 0);
-  const effectiveOpacity = data?.dimmed ? 0.16 : data?.highlight ? 1 : data?.stale ? 0.55 : 0.9;
-  const badgeColor = pr ? prOverlayColor(pr) : "#6b7280";
-  const dotColor = pr ? prCiDotColor(pr) : "#6b7280";
-  const badgeText = pr ? `PR #${pr.number}` : "";
-  const badgeWidth = Math.max(64, badgeText.length * 6 + 26);
-  const badgeHeight = 18;
-  return (
-    <g>
-      <path
-        id={id}
-        className="ade-edge-path"
-        d={path}
-        markerEnd={markerEnd}
-        fill="none"
-        stroke={color}
-        strokeWidth={effectiveWidth}
-        strokeDasharray={dash}
-        opacity={effectiveOpacity}
-      />
-      {pr ? (
-        <g transform={`translate(${labelX}, ${labelY})`} className={pr.mergeInProgress ? "ade-pr-badge-pulse" : undefined}>
-          <rect
-            x={-badgeWidth / 2}
-            y={-badgeHeight / 2}
-            width={badgeWidth}
-            height={badgeHeight}
-            rx={8}
-            fill={badgeColor}
-            fillOpacity={0.18}
-            stroke={badgeColor}
-            strokeOpacity={0.75}
-            strokeWidth={1}
-          />
-          <circle
-            cx={-badgeWidth / 2 + 10}
-            cy={0}
-            r={3}
-            fill={dotColor}
-            className={pr.checksStatus === "pending" ? "ade-pr-ci-pending" : undefined}
-          />
-          <text
-            x={-badgeWidth / 2 + 18}
-            y={3}
-            fontSize={10}
-            fill="var(--color-fg)"
-            fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
-          >
-            {badgeText}
-          </text>
-        </g>
-      ) : null}
-    </g>
-  );
-}
+import type {
+  GraphNodeData,
+  GraphEdgeData,
+  GraphPrOverlay,
+  BatchStep,
+  BatchProgress,
+  GraphTextPromptState,
+  PrDialogState,
+  ConflictPanelState,
+  IntegrationDialogState,
+  RestackPublishOutcome
+} from "./graphTypes";
+import {
+  VIEW_MODES,
+  ICON_OPTIONS,
+  COLOR_PALETTE,
+  DEFAULT_PRESET,
+  batchOperationLabel,
+  edgePairKey,
+  proposalSourceLaneIds,
+  proposalSteps,
+  proposalLaneSummaries,
+  proposalPairwiseResults,
+  laneSummaryConflictsWith,
+  sameIdSet,
+  toRelativeTime,
+  laneStatusGroup,
+  nodeDimensions,
+  branchNameFromRef,
+  globToRegExp,
+  collectDescendants,
+  isIntegrationLane
+} from "./graphHelpers";
+import {
+  buildDefaultFilter,
+  createSnapshot,
+  createDefaultState,
+  ensureGraphState,
+  computeAutoLayout
+} from "./graphLayout";
+import { GraphLaneNode } from "./graphNodes/LaneNode";
+import { GraphProposalNode } from "./graphNodes/ProposalNode";
+import { RiskEdge } from "./graphEdges/RiskEdge";
+import { TextPromptModal } from "./graphDialogs/TextPromptModal";
+import { PrDialog } from "./graphDialogs/PrDialog";
+import { ConflictPanel } from "./graphDialogs/ConflictPanel";
+import { IntegrationDialog } from "./graphDialogs/IntegrationDialog";
 
 const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
 const edgeTypes = { custom: RiskEdge };
-
-function isIntegrationLane(lane: LaneSummary): boolean {
-  return (
-    (lane.description != null && lane.description.includes("Integration lane")) ||
-    lane.name.startsWith("integration/")
-  );
-}
-
 function GraphInner() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();

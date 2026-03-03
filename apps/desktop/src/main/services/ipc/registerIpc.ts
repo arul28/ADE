@@ -267,6 +267,7 @@ import type {
   OrchestratorRunGraph,
   OrchestratorStep,
   OrchestratorTimelineEvent,
+  PauseOrchestratorRunArgs,
   ResumeOrchestratorRunArgs,
   StartOrchestratorAttemptArgs,
   StartOrchestratorRunFromMissionArgs,
@@ -308,6 +309,8 @@ import type {
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
+  GetMissionStateDocumentArgs,
+  MissionStateDocument,
   GetMissionBudgetStatusArgs,
   MissionBudgetSnapshot,
   SendAgentMessageArgs,
@@ -353,6 +356,7 @@ import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionP
 import type { createMissionBudgetService } from "../orchestrator/missionBudgetService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
+import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
 import { redactSecrets } from "../../utils/redaction";
 import { getErrorMessage, isRecord, nowIso, safeJsonParse } from "../shared/utils";
@@ -1347,6 +1351,11 @@ export function registerIpc({
         : prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "Mission";
     const plannerEngine = arg?.plannerEngine ?? "auto";
     const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : null;
+    const phaseCards = (() => {
+      const missionId = typeof arg?.missionId === "string" ? arg.missionId.trim() : "";
+      if (!missionId.length) return undefined;
+      return ctx.missionService.getPhaseConfiguration(missionId)?.selectedPhases;
+    })();
     const planning = await planMissionOnce({
       missionId: typeof arg?.missionId === "string" ? arg.missionId.trim() : undefined,
       title,
@@ -1355,6 +1364,7 @@ export function registerIpc({
       plannerEngine,
       timeoutMs: arg?.planningTimeoutMs,
       allowPlanningQuestions: arg?.allowPlanningQuestions,
+      phaseCards,
       model: arg?.model,
       projectRoot: ctx.project.rootPath,
       contextBundle: buildMissionPlanningContextBundle({
@@ -1364,6 +1374,8 @@ export function registerIpc({
         targetMachineId: null
       }),
       aiIntegrationService: ctx.aiIntegrationService,
+      memoryService: ctx.memoryService ?? undefined,
+      memoryProjectId: ctx.projectId,
       logger: ctx.logger
     });
     const plannedSteps = plannerPlanToMissionSteps({
@@ -1530,6 +1542,7 @@ export function registerIpc({
       plannerEngine,
       timeoutMs: arg?.planningTimeoutMs,
       allowPlanningQuestions: arg?.allowPlanningQuestions,
+      phaseCards: Array.isArray(arg?.phaseOverride) ? arg.phaseOverride : undefined,
       model: arg?.orchestratorModel ?? arg?.modelConfig?.orchestratorModel?.modelId,
       projectRoot: ctx.project.rootPath,
       contextBundle: buildMissionPlanningContextBundle({
@@ -1539,6 +1552,8 @@ export function registerIpc({
         targetMachineId
       }),
       aiIntegrationService: ctx.aiIntegrationService,
+      memoryService: ctx.memoryService ?? undefined,
+      memoryProjectId: ctx.projectId,
       logger: ctx.logger
     });
 
@@ -1691,6 +1706,14 @@ export function registerIpc({
   ipcMain.handle(IPC.orchestratorTickRun, async (_event, arg: TickOrchestratorRunArgs): Promise<OrchestratorRun> => {
     const ctx = getCtx();
     return ctx.orchestratorService.tick(arg);
+  });
+
+  ipcMain.handle(IPC.orchestratorPauseRun, async (_event, arg: PauseOrchestratorRunArgs): Promise<OrchestratorRun> => {
+    const ctx = getCtx();
+    return ctx.orchestratorService.pauseRun({
+      runId: arg.runId,
+      reason: arg.reason ?? "Paused from Missions UI.",
+    });
   });
 
   ipcMain.handle(IPC.orchestratorResumeRun, async (_event, arg: ResumeOrchestratorRunArgs): Promise<OrchestratorRun> => {
@@ -1903,6 +1926,33 @@ export function registerIpc({
     async (_event, arg: { runId: string }): Promise<ExecutionPlanPreview | null> => {
       const ctx = getCtx();
       return ctx.aiOrchestratorService.getExecutionPlanPreview(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetMissionStateDocument,
+    async (_event, arg: GetMissionStateDocumentArgs): Promise<MissionStateDocument | null> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getMissionStateDocument(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetCheckpointStatus,
+    async (
+      _event,
+      arg: { runId: string }
+    ): Promise<{ savedAt: string; turnCount: number; compactionCount: number } | null> => {
+      const ctx = getCtx();
+      const runId = arg?.runId?.trim();
+      if (!runId) return null;
+      const checkpoint = await readCoordinatorCheckpoint(ctx.project.rootPath, runId);
+      if (!checkpoint) return null;
+      return {
+        savedAt: checkpoint.savedAt,
+        turnCount: checkpoint.turnCount,
+        compactionCount: checkpoint.compactionCount
+      };
     }
   );
 

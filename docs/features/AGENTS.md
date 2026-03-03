@@ -4,7 +4,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-02
 
 ---
 
@@ -209,12 +209,14 @@ The tool is created with a `sendCallback` and the current attempt ID, ensuring m
 
 #### Message Delivery
 
-Messages are delivered through two mechanisms depending on agent type:
+Messages are delivered through the `workerDeliveryService` (`apps/desktop/src/main/services/orchestrator/workerDeliveryService.ts`, 1,329 lines), which handles routing to agents of different types:
 
 | Agent Type | Delivery Mechanism |
 |---|---|
 | **SDK agents** (Vercel AI SDK) | Messages delivered as tool results or injected into the conversation context |
 | **PTY agents** (CLI-based) | Messages delivered via PTY stdin injection with structured formatting |
+
+The delivery service is a focused module extracted from the AI orchestrator during the service decomposition, centralizing all message delivery logic that was previously spread across the monolithic `aiOrchestratorService`.
 
 #### @Mention System
 
@@ -228,7 +230,8 @@ Messages support `@mention` syntax for targeting and notification:
 #### IPC and Backend Routing
 
 - `sendAgentMessage()` IPC handler receives messages from the renderer or from agents.
-- Backend routing logic delivers messages to the correct agent based on target parsing.
+- Backend routing logic in `workerDeliveryService` delivers messages to the correct agent based on target parsing.
+- Chat message threading and reconciliation is managed by `chatMessageService` (`apps/desktop/src/main/services/orchestrator/chatMessageService.ts`, 1,849 lines).
 - Messages are persisted in the chat transcript (JSONL files) for durability.
 
 #### Message Schema
@@ -923,6 +926,11 @@ The Agents tab is the unified launch pad for all background work. Task Agents se
 | `aiIntegrationService` | Exists | Routes AI tasks via AgentExecutor interface. Also provides: `logUsage()` for recording every AI call to `ai_usage_log` table, daily budget enforcement via `checkBudget()`, feature flags, and subscription mode detection (guest/subscription). |
 | `memoryService` | Exists | Scoped memory namespaces (runtime-thread/run/project/identity/daily-log). Manages candidate promotion, shared facts, and memory queries for agent prompt injection. |
 | `compactionEngine` | Exists | SDK agent context compaction at 70% threshold, pre-compaction fact writeback, transcript persistence, session resume support. |
+| `workerTracking` | Exists | Worker state management and event handling. Extracted from `aiOrchestratorService` into `apps/desktop/src/main/services/orchestrator/workerTracking.ts` (1,087 lines). Tracks worker lifecycle, heartbeats, and status transitions. |
+| `workerDeliveryService` | Exists | Inter-agent message delivery to SDK and PTY agents. Extracted from `aiOrchestratorService` into `apps/desktop/src/main/services/orchestrator/workerDeliveryService.ts` (1,329 lines). Centralizes all message routing logic. |
+| `chatMessageService` | Exists | Chat/messaging, threading, and message reconciliation. Extracted from `aiOrchestratorService` into `apps/desktop/src/main/services/orchestrator/chatMessageService.ts` (1,849 lines). Manages all chat-related operations for missions. |
+| `missionLifecycle` | Exists | Mission run management and hook dispatch. Extracted from `aiOrchestratorService` into `apps/desktop/src/main/services/orchestrator/missionLifecycle.ts` (1,045 lines). |
+| `recoveryService` | Exists | Failure recovery, health sweep, and hydration. Extracted from `aiOrchestratorService` into `apps/desktop/src/main/services/orchestrator/recoveryService.ts` (412 lines). |
 | `metaReasoner` | Exists | AI meta-reasoner for dynamic fan-out decisions. Analyzes agent output and recommends parallelization strategies. |
 | `testService` | Exists | Implements `run-tests` action |
 | `ptyService` | Exists | Provides `session-end` events via terminal session lifecycle |
@@ -1923,7 +1931,8 @@ Phase 4 delivers:
 The existing Automations engine (trigger-action pipelines, NL-to-rule planner, trust enforcement, job engine) forms the complete foundation. All AUTO-001 through AUTO-029 items are implemented and become the `automation` agent type within the new Agents system.
 
 **Hivemind contributions to Phase 4 readiness**: The Orchestrator Evolution (Hivemind) workstreams delivered several capabilities that directly support Phase 4:
-- **Inter-agent messaging** (`teamMessageTool`, `sendAgentMessage()` IPC, @mention system) provides the communication infrastructure agents need.
+- **Inter-agent messaging** (`teamMessageTool`, `sendAgentMessage()` IPC, @mention system) provides the communication infrastructure agents need. Message delivery is now centralized in `workerDeliveryService` (1,329 lines) and chat threading in `chatMessageService` (1,849 lines), both extracted from the AI orchestrator during the service decomposition.
+- **Worker tracking** (`workerTracking`, 1,087 lines) provides dedicated worker state management and event handling, extracted from the AI orchestrator.
 - **Memory service** with candidate promotion and shared facts gives agents persistent knowledge across runs.
 - **Context compaction engine** ensures long-running agent sessions (critical for Night Shift) can operate within context window limits.
 - **Agent identity schema** (`agent_identities` table) provides the storage foundation for identity CRUD.

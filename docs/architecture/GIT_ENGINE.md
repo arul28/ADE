@@ -301,7 +301,7 @@ Renderer: user clicks "Commit"
         --> operationService.finish()
         --> onHeadChanged() (if HEAD moved)
           --> jobEngine.onHeadChanged()
-            --> packService.refreshLanePack()
+            --> packService.refreshLanePack()  (delegates to projectPackBuilder)
             --> packService.refreshProjectPack()
   <-- GitActionResult { operationId, preHeadSha, postHeadSha }
 ```

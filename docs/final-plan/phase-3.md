@@ -2,7 +2,7 @@
 
 **Status**: In Progress
 **Dependencies**: Phases 1-2 complete (Agent SDKs, AgentExecutor, MCP server)
-**Last updated**: 2026-03-01
+**Last updated**: 2026-03-02
 
 ## Overview
 
@@ -21,12 +21,16 @@ Phase 3 delivers two things: (1) autonomous orchestration foundations that make 
 - [AUTOMATIONS.md](../features/AUTOMATIONS.md) — automation rules (Night Shift absorbed here in Phase 4)
 - [ONBOARDING_AND_SETTINGS.md](../features/ONBOARDING_AND_SETTINGS.md) — phase profile management, AI usage dashboard
 - [SECURITY_AND_PRIVACY.md](../architecture/SECURITY_AND_PRIVACY.md) — trust model for unattended execution
+- [SYSTEM_OVERVIEW.md](../architecture/SYSTEM_OVERVIEW.md) — type system architecture, shared utilities, orchestrator decomposition
+- [DATA_MODEL.md](../architecture/DATA_MODEL.md) — TypeScript types architecture
+- [UI_FRAMEWORK.md](../architecture/UI_FRAMEWORK.md) — component decomposition tables
+- [DESKTOP_APP.md](../architecture/DESKTOP_APP.md) — updated service graph
 
 ---
 
 ## What's Shipped
 
-Phase 3 has already delivered 20+ workstreams across two waves. The orchestrator is operational — it plans, spawns workers, executes multi-lane missions, recovers from failures, and provides real-time observability. Tasks 1-6 are now in baseline; remaining work is focused on reflection protocol and full integration soak coverage.
+Phase 3 has already delivered 20+ workstreams across four waves. The orchestrator is operational — it plans, spawns workers, executes multi-lane missions, recovers from failures, and provides real-time observability. A major codebase refactoring (Wave 4) decomposed the orchestrator, pack service, type system, and frontend into modular architectures. Tasks 1-6 are now in baseline; remaining work is focused on reflection protocol and full integration soak coverage.
 
 ### Wave 1: Core Orchestrator (W1-W12)
 
@@ -39,6 +43,20 @@ Evolved the orchestrator into an intelligent multi-agent system. Slack-like miss
 ### Wave 3: Model System & Dynamic Pricing (shipped 2026-03-01)
 
 Model registry expansion to 40+ models across 8 provider families with auth-type classification (`cli-subscription`, `api-key`, `openrouter`, `local`). Runtime enrichment via `enrichModelRegistry()` with models.dev API integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded pricing). Provider options rewrite to pure tier-string passthrough (`providerOptions.ts`) -- no more invented token budgets. Reasoning tiers standardized per provider (Claude CLI: low/medium/high; Claude API: low/medium/high/max; Codex: minimal/low/medium/high/xhigh). UnifiedModelSelector redesigned to group by auth type, hide unavailable models, and link to Settings. Universal tools (`universalTools.ts`) for API-key and local models with permission modes (plan/edit/full-auto). Middleware layer (`middleware.ts`) for logging, retry, cost guard, and reasoning extraction. GPT-5.3 Codex Spark model support. Orchestrator call types simplified from 6 to 2 (coordinator, chat_response).
+
+### Wave 4: Codebase Refactoring & Modularization (shipped 2026-03-02)
+
+Major structural cleanup targeting long-term maintainability and extraction readiness (Phase 7). Net result: 27 files changed, -14,370 lines, 0 TypeScript errors.
+
+**AI Orchestrator decomposition**: `aiOrchestratorService.ts` reduced from 13,210 to 7,677 lines (42% reduction) by extracting 9 domain-specific modules: `chatMessageService.ts` (1,849 lines, chat/messaging), `workerDeliveryService.ts` (1,329 lines, inter-agent delivery), `workerTracking.ts` (1,087 lines, worker state management), `missionLifecycle.ts` (1,045 lines, mission run management), `recoveryService.ts` (412 lines, failure recovery), `modelConfigResolver.ts` (181 lines, model resolution), `orchestratorQueries.ts` (757 lines, DB queries/normalizers), `stepPolicyResolver.ts` (338 lines, step policy resolution), `orchestratorConstants.ts` (115 lines, runtime constants). All modules share state through an `OrchestratorContext` object. The deterministic `orchestratorService.ts` was also reduced from 9,285 to 8,313 lines.
+
+**Pack service decomposition**: `packService.ts` reduced from 5,728 to 3,176 lines (45% reduction) by extracting `packUtils.ts`, `projectPackBuilder.ts`, `missionPackBuilder.ts`, and `conflictPackBuilder.ts`.
+
+**Type system modernization**: The monolithic `src/shared/types.ts` (5,740 lines) was replaced by `src/shared/types/` directory with 17 domain-scoped modules (`core.ts`, `missions.ts`, `orchestrator.ts`, `models.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `conflicts.ts`, `packs.ts`, `sessions.ts`, `chat.ts`, `config.ts`, `files.ts`, `automations.ts`, `budget.ts`, `usage.ts`) plus a barrel `index.ts`. Existing imports continue to work unchanged. 16 dead types were deleted.
+
+**Frontend decomposition**: `MissionsPage.tsx` reduced from 5,637 to 2,225 lines (60% reduction, 8 extracted components). `WorkspaceGraphPage.tsx` reduced from 4,830 to 4,139 lines (11 extracted files).
+
+**Shared utilities**: Backend `src/main/services/shared/utils.ts` replaced 60+ duplicate utility functions. Frontend `src/renderer/lib/format.ts`, `shell.ts`, `sessions.ts` consolidated common renderer utilities. Model system unified around `modelRegistry.ts` as single source of truth with pricing fields, with `modelProfiles.ts` deriving from registry instead of maintaining parallel lists.
 
 ### What's Still Missing
 
@@ -80,7 +98,7 @@ Task 1 and Task 2 are implemented in the runtime baseline. This section records 
 ### Delivered in Task 1 (Orchestrator Autonomy Core)
 
 - **Team runtime foundations**:
-  - Team template and role definition schema is live in shared types/runtime config.
+  - Team template and role definition schema is live in `src/shared/types/` domain modules and runtime config.
   - Required role-capability enforcement is active at run boot (coordinator/planner/validator capabilities must exist).
   - Role-aware specialist spawning is available through `request_specialist`.
 - **Structured worker reporting**:
@@ -366,7 +384,7 @@ Subscription providers (Claude Pro/Max, ChatGPT Plus) don't expose precise billi
 
 ## Remaining Work
 
-The Phase 3 plan is organized into 8 tasks total. Tasks 1-4 are now complete; active remaining execution is Tasks 5-8. Each task is self-contained — an agent given this document and the codebase should be able to implement any individual task. Tasks remain dependency-ordered, with limited parallelization opportunities where noted.
+The Phase 3 plan is organized into 8 tasks total. Tasks 1-6 are now complete; active remaining execution is Tasks 7-8. Each task is self-contained — an agent given this document and the codebase should be able to implement any individual task. Tasks remain dependency-ordered, with limited parallelization opportunities where noted.
 
 ---
 
@@ -1113,7 +1131,7 @@ Task 6: Budget & Usage Tracking ────────────────
 Task 7: Reflection Protocol ──────────────────────┘
 ```
 
-**Execution state (2026-02-28):**
+**Execution state (2026-03-02):**
 
 1. **Task 1** (Orchestrator Autonomy Core) — complete
 2. **Task 2** (Validation & Lane Continuity) — complete

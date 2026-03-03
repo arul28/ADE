@@ -22,39 +22,6 @@ import {
 } from "./compactionEngine";
 import type { AdeDb } from "../state/kvDb";
 
-export type PendingMessage = {
-  id: string;
-  content: string;
-  fromAttemptId: string | null;
-  priority: "normal" | "urgent";
-  receivedAt: string;
-};
-
-/** Per-session queue of messages waiting to be injected into a running agent. */
-const sessionPendingMessages = new Map<string, PendingMessage[]>();
-
-export function enqueuePendingMessage(sessionId: string, msg: PendingMessage): void {
-  const queue = sessionPendingMessages.get(sessionId) ?? [];
-  // Urgent messages go to the front
-  if (msg.priority === "urgent") {
-    queue.unshift(msg);
-  } else {
-    queue.push(msg);
-  }
-  sessionPendingMessages.set(sessionId, queue);
-}
-
-export function drainPendingMessages(sessionId: string): PendingMessage[] {
-  const queue = sessionPendingMessages.get(sessionId);
-  if (!queue || queue.length === 0) return [];
-  sessionPendingMessages.delete(sessionId);
-  return queue;
-}
-
-export function getPendingMessageCount(sessionId: string): number {
-  return sessionPendingMessages.get(sessionId)?.length ?? 0;
-}
-
 export type UnifiedExecutorOpts = {
   modelId: string;
   prompt: string;
@@ -129,6 +96,7 @@ export async function* executeUnified(
     tools = createCodingToolSet(opts.cwd, {
       memoryService: opts.memoryService as any,
       projectId: opts.projectId,
+      runId: opts.runId,
     });
   }
 

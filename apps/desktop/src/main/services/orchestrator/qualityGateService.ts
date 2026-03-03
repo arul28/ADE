@@ -24,7 +24,7 @@ import type {
 } from "../../../shared/types";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
-} from "../../../shared/types";
+} from "./orchestratorConstants";
 
 /**
  * Check whether a step type should trigger quality gate evaluation.

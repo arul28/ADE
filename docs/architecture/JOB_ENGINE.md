@@ -28,7 +28,7 @@
 
 The Job Engine is ADE's background task scheduling system. It processes asynchronous work triggered by system events -- terminal session endings, git HEAD changes, and lane dirty state changes -- ensuring that context packs remain current and conflict predictions stay fresh without blocking the user's interactive workflow.
 
-The engine is an in-process queue with per-lane deduplication for pack refreshes and a debounced conflict prediction queue. After each deterministic pack refresh, the engine optionally triggers AI narrative generation (via Vercel AI SDK using configured providers: CLI/API/local) in a non-blocking async flow. Conflict prediction runs on a debounced schedule (900ms-1500ms depending on trigger type) plus a periodic 120-second interval.
+The engine is an in-process queue with per-lane deduplication for pack refreshes and a debounced conflict prediction queue. The pack service it depends on has been decomposed into sub-modules (`packUtils`, `projectPackBuilder`, `missionPackBuilder`, `conflictPackBuilder`), but the job engine interacts only with the top-level `packService` facade. After each deterministic pack refresh, the engine optionally triggers AI narrative generation (via Vercel AI SDK using configured providers: CLI/API/local) in a non-blocking async flow. Conflict prediction runs on a debounced schedule (900ms-1500ms depending on trigger type) plus a periodic 120-second interval.
 
 Phase 1.5 introduces a separate orchestrator runtime service for mission step scheduling/execution state machines. The job engine remains focused on background context maintenance (packs, narratives, conflict prediction) and does not coordinate orchestrator step transitions.
 
@@ -183,7 +183,7 @@ type RefreshRequest = {
 
 ### Lane Refresh Pipeline
 
-When a lane refresh is triggered, the engine executes two pack operations in sequence:
+When a lane refresh is triggered, the engine executes two pack operations in sequence. Internally, `packService` delegates to specialized builders (`projectPackBuilder` for project packs, `missionPackBuilder` for mission packs, `conflictPackBuilder` for conflict context) but the job engine only calls the top-level `packService` methods:
 
 ```
 Event received (session end or HEAD change)

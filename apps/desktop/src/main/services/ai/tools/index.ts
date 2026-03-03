@@ -12,7 +12,7 @@ export type CodingToolSet = Record<string, Tool>;
 
 export function createCodingToolSet(
   _cwd: string,
-  opts?: { memoryService?: ReturnType<typeof createMemoryService>; projectId?: string }
+  opts?: { memoryService?: ReturnType<typeof createMemoryService>; projectId?: string; runId?: string }
 ): CodingToolSet {
   const tools: CodingToolSet = {
     edit: editFileTool,
@@ -23,7 +23,7 @@ export function createCodingToolSet(
     webSearch: webSearchTool,
   };
   if (opts?.memoryService && opts?.projectId) {
-    const memTools = createMemoryTools(opts.memoryService, opts.projectId);
+    const memTools = createMemoryTools(opts.memoryService, opts.projectId, opts.runId);
     Object.assign(tools, memTools);
   }
   return tools;

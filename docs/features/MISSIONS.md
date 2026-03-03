@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-27
+> Last updated: 2026-03-02
 >
 > **Phase 4 Status: Agent-First Runtime Migration In Progress**
 
@@ -340,16 +340,49 @@ Main-process mission logic lives in:
 
 - `apps/desktop/src/main/services/missions/missionService.ts`
 
-AI orchestrator and integration services:
+**Orchestrator service** (run lifecycle and step management):
 
-- `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` — orchestrator run lifecycle, step/attempt management, claims, and timeline
-- `apps/desktop/src/main/services/orchestrator/metaReasoner.ts` — AI meta-reasoner for dynamic fan-out decisions, analyzes agent output to determine parallelization strategy
-- `apps/desktop/src/main/services/orchestrator/aiDecisionService.ts` — AI-driven orchestration decisions (budget pressure, wave scheduling)
+- `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` (8,313 lines) — orchestrator run lifecycle, step/attempt management, claims, and timeline
+- `apps/desktop/src/main/services/orchestrator/orchestratorQueries.ts` (757 lines) — DB queries and row-to-domain mappers, extracted from orchestratorService
+- `apps/desktop/src/main/services/orchestrator/stepPolicyResolver.ts` (338 lines) — step policy resolution and file claim logic, extracted from orchestratorService
+
+**AI orchestrator service** (coordinator session and agent management), decomposed from a 13,210-line monolith into focused modules (42% reduction):
+
+- `apps/desktop/src/main/services/orchestrator/aiOrchestratorService.ts` (7,677 lines) — AI orchestrator session management, MCP server coordination, streaming output relay
+- `apps/desktop/src/main/services/orchestrator/chatMessageService.ts` (1,849 lines) — all chat/messaging, threading, and message reconciliation
+- `apps/desktop/src/main/services/orchestrator/workerDeliveryService.ts` (1,329 lines) — inter-agent message delivery to SDK and PTY agents
+- `apps/desktop/src/main/services/orchestrator/workerTracking.ts` (1,087 lines) — worker state management and event handling
+- `apps/desktop/src/main/services/orchestrator/missionLifecycle.ts` (1,045 lines) — mission run management and hook dispatch
+- `apps/desktop/src/main/services/orchestrator/recoveryService.ts` (412 lines) — failure recovery, health sweep, and hydration
+- `apps/desktop/src/main/services/orchestrator/modelConfigResolver.ts` (181 lines) — model config resolution with 30-second TTL cache
+- `apps/desktop/src/main/services/orchestrator/orchestratorContext.ts` (1,334 lines) — OrchestratorContext type definition (22+ Map objects for runtime state)
+- `apps/desktop/src/main/services/orchestrator/orchestratorConstants.ts` (115 lines) — runtime constants shared across orchestrator modules
+
+**Other orchestrator modules**:
+
+- `apps/desktop/src/main/services/orchestrator/metaReasoner.ts` — AI meta-reasoner for dynamic fan-out decisions
+- `apps/desktop/src/main/services/orchestrator/budgetPressureService.ts` — budget pressure analysis
+- `apps/desktop/src/main/services/orchestrator/missionBudgetService.ts` — mission-level budget enforcement and tracking
+- `apps/desktop/src/main/services/orchestrator/coordinatorAgent.ts` — coordinator agent session setup and tool registration
+- `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` — Vercel AI SDK coordinator tools
+- `apps/desktop/src/main/services/orchestrator/executionPolicy.ts` — execution policy resolution
+- `apps/desktop/src/main/services/orchestrator/planningPipeline.ts` — mission planning pipeline
+- `apps/desktop/src/main/services/orchestrator/teamRuntimeConfig.ts` — team runtime template configuration
+- `apps/desktop/src/main/services/orchestrator/teamRuntimeState.ts` — team runtime state management
+- `apps/desktop/src/main/services/orchestrator/runtimeEventRouter.ts` — runtime event routing and dispatch
+- `apps/desktop/src/main/services/orchestrator/metricsAndUsage.ts` — metrics collection and usage tracking
+
+**Supporting services**:
+
 - `aiIntegrationService` — AgentExecutor interface, Claude/Codex SDK integration, CLI spawning, model/provider settings
-- `aiOrchestratorService` — AI orchestrator session management, MCP server coordination, streaming output relay
 - `apps/desktop/src/main/services/memory/memoryService.ts` — scoped memory namespaces (runtime-thread, run, project, identity, daily-log) with candidate promotion flow
 - `apps/desktop/src/main/services/ai/compactionEngine.ts` — SDK agent context compaction, transcript persistence, session resume
 - `apps/desktop/src/main/services/ai/tools/teamMessageTool.ts` — Vercel AI SDK tool for agent-initiated inter-agent messaging
+
+**Shared utilities**:
+
+- `apps/desktop/src/main/services/shared/utils.ts` — backend utility functions replacing 60+ duplicates across services
+- `apps/desktop/src/renderer/lib/format.ts` — frontend formatting helpers
 
 Responsibilities:
 
@@ -359,6 +392,10 @@ Responsibilities:
 - intervention and artifact creation/resolution,
 - event recording + broadcast,
 - AI orchestrator session lifecycle and streaming,
+- chat/messaging threading and reconciliation,
+- worker delivery and state tracking,
+- mission run management and hook dispatch,
+- failure recovery, health sweeps, and hydration,
 - Vercel AI SDK streaming relay to renderer.
 
 ### IPC Channels
@@ -411,25 +448,38 @@ Preload bridge and renderer typings are defined in:
 
 - `apps/desktop/src/preload/preload.ts`
 - `apps/desktop/src/preload/global.d.ts`
-- `apps/desktop/src/shared/types.ts`
+- `apps/desktop/src/shared/types/` (17 domain files with barrel re-export via `index.ts`: `core.ts`, `models.ts`, `git.ts`, `lanes.ts`, `conflicts.ts`, `prs.ts`, `files.ts`, `sessions.ts`, `chat.ts`, `missions.ts`, `orchestrator.ts`, `config.ts`, `automations.ts`, `packs.ts`, `budget.ts`, `usage.ts`)
 
 Vercel AI SDK streaming is relayed from main process to renderer via IPC event channels, enabling real-time agent output display in the mission detail surface.
 
 ### Renderer Components
 
-Missions renderer entrypoint:
+Missions renderer entrypoint, decomposed from a 5,637-line monolith into focused modules (60% reduction):
 
-- `apps/desktop/src/renderer/components/missions/MissionsPage.tsx`
-- `MissionsPage` now contains the Task 4 workspace tabs (`plan`, `work`, `dag`, `chat`, `activity`, `details`), mission home dashboard rendering, and launch/settings phase profile management UI.
+- `apps/desktop/src/renderer/components/missions/MissionsPage.tsx` (2,226 lines) — workspace tab shell and mission routing
+- `apps/desktop/src/renderer/components/missions/missionHelpers.ts` (519 lines) — shared mission utility functions, formatters, and status logic
+- `apps/desktop/src/renderer/components/missions/CreateMissionDialog.tsx` (1,610 lines) — mission creation wizard with pre-flight checks and phase configuration
+- `apps/desktop/src/renderer/components/missions/MissionSettingsDialog.tsx` (589 lines) — mission settings and phase profile management
+- `apps/desktop/src/renderer/components/missions/PlanTab.tsx` (194 lines) — hierarchical phase/milestone/task plan view with runtime statuses
+- `apps/desktop/src/renderer/components/missions/WorkTab.tsx` (209 lines) — follow-mode worker monitor with transcript tails and tool usage
+- `apps/desktop/src/renderer/components/missions/StepDetailPanel.tsx` (271 lines) — step inspector with lane assignment, status, heartbeat, dependencies, and completion criteria
+- `apps/desktop/src/renderer/components/missions/ActivityNarrativeHeader.tsx` (154 lines) — rolling run narrative header display
+- `apps/desktop/src/renderer/components/missions/MissionsHomeDashboard.tsx` (101 lines) — no-selection dashboard with active/recent mission cards and weekly stats
 
 Mission chat (Slack-style):
 
-- `apps/desktop/src/renderer/components/missions/MissionChatV2.tsx` — Slack-style chat with sidebar channels, @mention autocomplete, and real-time message streaming. Replaces the previous `MissionChat` component.
-- `apps/desktop/src/renderer/components/shared/MentionInput.tsx` — @mention autocomplete input component shared across chat surfaces.
+- `apps/desktop/src/renderer/components/missions/MissionChatV2.tsx` — Slack-style chat with sidebar channels, @mention autocomplete, and real-time message streaming
+- `apps/desktop/src/renderer/components/missions/AgentChannels.tsx` — Slack-style agent channel list for MissionChatV2 sidebar
+- `apps/desktop/src/renderer/components/shared/MentionInput.tsx` — @mention autocomplete input component shared across chat surfaces
 
-Usage and details:
+Usage, DAG, and details:
 
-- `apps/desktop/src/renderer/components/missions/UsageDashboard.tsx` — Context budget panel and usage visualization in the Details tab.
+- `apps/desktop/src/renderer/components/missions/UsageDashboard.tsx` — context budget panel and usage visualization in the Details tab
+- `apps/desktop/src/renderer/components/missions/SmartBudgetPanel.tsx` — smart budget management panel
+- `apps/desktop/src/renderer/components/missions/OrchestratorActivityFeed.tsx` — real-time orchestrator activity feed
+- `apps/desktop/src/renderer/components/missions/OrchestratorDAG.tsx` — step dependency graph with animated edge transitions
+- `apps/desktop/src/renderer/components/missions/ModelProfileSelector.tsx` — orchestrator model and profile selection
+- `apps/desktop/src/renderer/components/missions/ModelSelector.tsx` — model picker for mission configuration
 
 Route and navigation wiring:
 

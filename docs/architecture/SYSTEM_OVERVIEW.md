@@ -110,10 +110,50 @@ Key UI subsystems:
 
 **Technology**: Node.js (Electron main process), sql.js (SQLite WASM), node-pty, child_process
 
-The Local Core Engine is the brain of ADE. It runs exclusively in Electron's main process and is the only component permitted to mutate the repository, filesystem, or spawn processes. It is organized as a set of services, each created via a factory function pattern:
+The Local Core Engine is the brain of ADE. It runs exclusively in Electron's main process and is the only component permitted to mutate the repository, filesystem, or spawn processes. It is organized as a set of services, each created via a factory function pattern. Large services have been decomposed into focused modules while preserving a single entry point per service boundary.
 
-| Service | Module | Responsibility |
-|---------|--------|----------------|
+#### Type System
+
+Shared types live in `src/shared/types/`, a directory of 17 domain-scoped modules re-exported through a barrel `index.ts`. Each module owns the types for one domain:
+
+| Module | Domain |
+|--------|--------|
+| `core.ts` | Foundational enums, base interfaces, common utility types |
+| `lanes.ts` | Lane state, worktree metadata, stacking |
+| `conflicts.ts` | Conflict predictions, risk matrix, resolution proposals |
+| `prs.ts` | Pull request state, checks, reviews, stacked/integration flows |
+| `git.ts` | Git operation results, ref metadata, diff structures |
+| `files.ts` | File tree, workspace entries, search results |
+| `sessions.ts` | Terminal/chat session lifecycle, transcript metadata |
+| `chat.ts` | ChatEvent union, chat session state, approval types |
+| `missions.ts` | Mission lifecycle, step plans, interventions, artifacts |
+| `orchestrator.ts` | Run/step/attempt state, claims, gate reports, worker state |
+| `config.ts` | Project config schema, trust model, provider settings |
+| `automations.ts` | Agent definitions, identity profiles, automation rules |
+| `packs.ts` | Pack structures, export tiers, delta formats |
+| `budget.ts` | Budget caps, usage accounting, subscription tracking |
+| `models.ts` | Model descriptors, provider families, pricing, registry types |
+| `usage.ts` | Token usage, cost aggregation, billing events |
+
+Runtime constants (status maps, default isolation rules, legacy mappings) live in `src/main/services/orchestrator/orchestratorConstants.ts`, separate from the type definitions.
+
+#### Shared Utilities
+
+Common utility code is consolidated into shared modules to eliminate duplication:
+
+| Module | Location | Purpose |
+|--------|----------|---------|
+| `utils.ts` | `src/main/services/shared/` | Backend utilities: `isRecord`, `nowIso`, `asString`, `asNumber`, `uniqueSorted`, `parseDiffNameOnly`, `getErrorMessage`, `safeJsonParse` -- replaces 60+ scattered duplicates |
+| `format.ts` | `src/renderer/lib/` | Frontend formatting: `relativeWhen`, `formatDate`, `formatTime`, `formatDurationMs`, `formatTokens`, `formatCost`, `statusTone` |
+| `shell.ts` | `src/renderer/lib/` | Shell utilities for renderer |
+| `sessions.ts` | `src/renderer/lib/` | Session display helpers |
+| `useClickOutside.ts` | `src/renderer/hooks/` | Shared React hook for click-outside detection |
+| `useThreadEventRefresh.ts` | `src/renderer/hooks/` | Shared React hook for thread event refresh |
+
+#### Service Table
+
+| Service | Module(s) | Responsibility |
+|---------|-----------|----------------|
 | `laneService` | `laneService.ts` | Lane CRUD, worktree creation/removal, status computation |
 | `sessionService` | `sessionService.ts` | Terminal session lifecycle (create, end, query) |
 | `ptyService` | `ptyService.ts` | PTY spawning via node-pty, transcript capture, data broadcast |
@@ -121,19 +161,19 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 | `fileService` | `fileService.ts` | Full file operations: workspace listing, tree browsing (with gitignore), read, write, create, rename, delete, watch (chokidar), quick-open (fuzzy), text search |
 | `gitService` | `gitOperationsService.ts` | All git operations (stage, commit, stash, sync, push, etc.) |
 | `operationService` | `operationService.ts` | Operation history tracking with pre/post HEAD SHAs |
-| `packService` | `packService.ts` | Pack materialization (lane packs, project packs, session deltas) |
+| `packService` | `packService.ts` + `packUtils.ts`, `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts` | Pack materialization and assembly. Core orchestration in `packService.ts` (3.2K lines); domain-specific assembly decomposed into builders for project packs (~1K), mission packs (~1K), and conflict packs (~330). Shared helpers in `packUtils.ts` (~550). |
 | `jobEngine` | `jobEngine.ts` | Async job scheduling with deduplication |
 | `processService` | `processService.ts` | Dev process lifecycle management |
 | `testService` | `testService.ts` | Test suite execution and result tracking |
 | `projectConfigService` | `projectConfigService.ts` | YAML config loading, validation, trust model |
 | `aiIntegrationService` | `aiIntegrationService.ts` | AI provider routing, CLI spawning, narrative/proposal generation |
 | `missionService` | `missionService.ts` | Mission lifecycle, step tracking, intervention management |
-| `missionPlanningService` | `missionPlanningService.ts` | AI-powered and deterministic mission planning |
-| `orchestratorService` | `orchestratorService.ts` | Run/step/attempt state machine, claim management, context snapshots |
+| `missionPlanningService` | `missionPlanningService.ts` | AI-powered mission planning (fail-hard, no deterministic fallback) |
+| `orchestratorService` | `orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` | Run/step/attempt state machine, claim management, context snapshots. DB row types, normalizers, and parse helpers extracted to `orchestratorQueries.ts` (~760 lines). Step policy resolution and file claim helpers extracted to `stepPolicyResolver.ts` (~340 lines). |
+| `aiOrchestratorService` | `aiOrchestratorService.ts` (~7.7K lines) + 8 extracted modules (see below) | AI orchestrator coordination layer. Decomposed from a 13.2K-line monolith into a focused core plus domain-specific modules. |
 | `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, unified API/local backend, ChatEvent streaming |
 | `metaReasoner` | `metaReasoner.ts` | AI-driven fan-out dispatch analysis, dynamic step injection, fan-out strategy selection |
 | `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, pre-compaction writeback, conversation replacement |
-| `messageDelivery` | (in `aiOrchestratorService.ts`) | Inter-agent messaging: `deliverMessageToAgent()`, `parseMentions()`, `routeMessage()`, @mention routing |
 | `memoryService` | `memoryService.ts` | Three-tier memory with sqlite-vec vector search, composite scoring, pre-compaction flush, consolidation, and `.ade/memory/` git sync |
 | `ctoAgent` | *Planned* | MCP entry point for external agent systems — intent classification, routing to mission/task/review/query handlers, identity-based learned routing |
 | `externalMcpClient` | *Planned* | Connects to external MCP servers for extended agent capabilities — lazy connect, permission integration, tool manifest merging |
@@ -144,6 +184,32 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 | `browserProfileService` | *Planned* | Chrome profile isolation per lane |
 | `computeBackendService` | *Planned* | Compute backend abstraction and selection |
 | `daytonaService` | *Planned* | Daytona SDK integration (opt-in cloud sandbox) |
+
+#### AI Orchestrator Module Decomposition
+
+The AI orchestrator (`aiOrchestratorService.ts`) was decomposed from a 13.2K-line monolith into a 7.7K-line core plus eight extracted modules. All modules receive an `OrchestratorContext` object (defined in `orchestratorContext.ts`) that holds the 22+ mutable `Map` objects constituting orchestrator state. Extracted functions follow the pattern `fooCtx(ctx: OrchestratorContext, ...args)`, with thin wrappers in the main file: `const foo = (...args) => fooCtx(ctx, ...args)`. Cross-module dependencies are passed via typed deps objects.
+
+| Module | Lines | Responsibility |
+|--------|-------|----------------|
+| `orchestratorContext.ts` | ~1,330 | `OrchestratorContext` type definition -- all 22+ Map objects as mutable state |
+| `chatMessageService.ts` | ~1,850 | All chat/messaging: `appendChatMessage`, `listChatThreads`, `getThreadMessages`, `sendThreadMessage`, `sendChat`, `getChat`, `sendAgentMessage`, `parseMentions`, `routeMessage`, `deliverMessageToAgent`, `getGlobalChat`, `getActiveAgents`, reconciliation functions |
+| `workerDeliveryService.ts` | ~1,330 | Inter-agent message delivery: `resolveWorkerDeliveryContext`, `deliverWorkerMessage`, `replayQueuedWorkerMessages`, `routeMessageToWorker`, `routeMessageToCoordinator` |
+| `workerTracking.ts` | ~1,090 | Worker state management + `updateWorkerStateFromEvent` (457-line event handler) |
+| `missionLifecycle.ts` | ~1,050 | Mission run management, hook dispatch (`dispatchOrchestratorHook`, `maybeDispatchTeammateIdleHook`) |
+| `orchestratorQueries.ts` | ~760 | DB row types, constants, normalizer functions, parse helpers, row-to-domain mappers (shared with `orchestratorService.ts`) |
+| `recoveryService.ts` | ~410 | Failure recovery, health sweep, hydration |
+| `stepPolicyResolver.ts` | ~340 | Step policy resolution, file claim helpers, `readDocPaths` cache (shared with `orchestratorService.ts`) |
+| `modelConfigResolver.ts` | ~180 | Model config resolution with 30s TTL cache: `resolveCallTypeConfig`, `resolveOrchestratorModelConfig`, `resolveMissionLaunchPlannerModel` |
+| `orchestratorConstants.ts` | ~115 | Runtime constants: `LEGACY_STEP_TO_TASK_STATUS`, `DEFAULT_ROLE_ISOLATION_RULES`, etc. |
+
+#### Model System
+
+The model registry and profiles are unified in two shared modules:
+
+| Module | Location | Purpose |
+|--------|----------|---------|
+| `modelRegistry.ts` | `src/shared/` | Canonical registry of 40+ models across 8 provider families. `ModelDescriptor` includes pricing fields and `getModelPricing()` accessor. Provider-to-CLI mapping uses a flat `FAMILY_TO_CLI` lookup map instead of nested ternaries. |
+| `modelProfiles.ts` | `src/shared/` | Model profiles derived from `MODEL_REGISTRY` instead of maintaining parallel lists. Ensures profiles stay in sync with the registry automatically. |
 
 All services are instantiated in `main.ts` and wired together through dependency injection. The `AppContext` type aggregates all service instances and is passed to the IPC registration layer.
 
@@ -170,7 +236,9 @@ The Agent Chat Service provides a native interactive chat interface inside ADE, 
 
 #### Model Registry & Dynamic Pricing
 
-The model registry (`modelRegistry.ts`) catalogs 40+ models across 8 provider families, classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). At startup, `modelsDevService` fetches live pricing and capabilities from `models.dev`, caching locally with 6-hour refresh. `enrichModelRegistry()` updates context windows and capabilities; `updateModelPricing()` merges pricing via a Proxy-based `MODEL_PRICING` object. Provider options use pure tier-string passthrough (`providerOptions.ts`) -- no invented token budgets. A middleware layer (`middleware.ts`) handles logging, retry, cost guards, and reasoning extraction.
+The model registry (`modelRegistry.ts`) catalogs 40+ models across 8 provider families, classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). Each `ModelDescriptor` includes pricing fields directly, with a `getModelPricing()` accessor and a flat `FAMILY_TO_CLI` lookup map for provider-to-CLI resolution. Model profiles (`modelProfiles.ts`) are derived from `MODEL_REGISTRY` rather than maintained as parallel lists, ensuring they stay in sync automatically.
+
+At startup, `modelsDevService` fetches live pricing and capabilities from `models.dev`, caching locally with 6-hour refresh. `enrichModelRegistry()` updates context windows and capabilities; `updateModelPricing()` merges pricing via a Proxy-based `MODEL_PRICING` object. Provider options use pure tier-string passthrough (`providerOptions.ts`) -- no invented token budgets. A middleware layer (`middleware.ts`) handles logging, retry, cost guards, and reasoning extraction.
 
 #### MCP Server
 
@@ -184,7 +252,9 @@ The MCP server (`apps/mcp-server`) exposes ADE's internal tools to AI processes 
 
 #### AI Orchestrator
 
-The AI Orchestrator coordinates multi-step mission execution using a Claude session with **in-process Vercel AI SDK coordinator tools** (13 tools in `coordinatorTools.ts`), not the MCP server:
+The AI Orchestrator coordinates multi-step mission execution using a Claude session with **in-process Vercel AI SDK coordinator tools** (13 tools in `coordinatorTools.ts`), not the MCP server. The orchestrator codebase has been decomposed into a modular architecture: the core `aiOrchestratorService.ts` (~7.7K lines) delegates to domain-specific modules for chat messaging, worker delivery, worker tracking, mission lifecycle, recovery, model config resolution, and query/persistence. All modules share state through an `OrchestratorContext` object holding 22+ mutable Maps, with cross-module dependencies passed via typed deps objects.
+
+Key orchestrator responsibilities:
 
 - Receives mission prompt and context packs from the mission service.
 - Plans execution strategy (sequential, parallel-lite, parallel-first) based on mission complexity.
@@ -192,6 +262,9 @@ The AI Orchestrator coordinates multi-step mission execution using a Claude sess
 - Manages context windows through token-budgeted pack exports (Lite/Standard/Deep).
 - Routes interventions back to the ADE UI when human input is required.
 - Tracks claims, heartbeats, and gate reports for coordinating concurrent agent work.
+- Delivers inter-agent messages via `workerDeliveryService.ts` (PTY write for terminal agents, conversation injection for SDK agents).
+- Routes @mention-based messaging through `chatMessageService.ts` with `parseMentions()` and `routeMessage()`.
+- Resolves model configuration per call type with 30s TTL caching via `modelConfigResolver.ts`.
 
 #### Per-Task-Type Routing
 

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-03-02
 
 ---
 
@@ -324,7 +324,7 @@ The typical workflow for managing conflicts in ADE:
 | `gitService` | Exists | Provides `git merge-tree` execution, temp index operations, diff computation |
 | `jobEngine` | Exists | Triggers periodic conflict prediction jobs, manages job queue and deduplication |
 | `operationService` | Exists | Records resolution applications as operations for history/undo |
-| `packService` | Exists | Generates conflict packs and bounded exports (`LaneExport*`, `ConflictExport*`) used for AI proposal jobs |
+| `packService` | Exists | Generates conflict packs and bounded exports (`LaneExport*`, `ConflictExport*`) used for AI proposal jobs. Conflict-specific pack assembly is handled by the `conflictPackBuilder` sub-module. |
 
 **AI resolution integration** (via AgentExecutor):
 
@@ -525,7 +525,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 |-----------|---------|
 | `conflictService.ts` | ~1800 lines — full conflict prediction engine, pairwise risk computation, merge simulation, batch assessment, external CLI resolver, proposal lifecycle, integration lane support |
 | `gitConflictState.ts` | Git conflict state detection (`detectConflictKind` — checks for `rebase-apply`, `rebase-merge`, `MERGE_HEAD` in git dir) |
-| Conflict UI (7 components) | `ConflictsPage.tsx` (~1500 lines, 4-pane PaneTilingLayout), `ConflictFileDiff.tsx`, `ConflictSummary.tsx`, `MergeSimulationPanel.tsx`, `RiskMatrix.tsx` (with animated transitions and progress), `RiskTooltip.tsx`, `extensionToLanguage.ts` |
+| Conflict UI (7 components) | `ConflictsPage.tsx` (~1500 lines, 4-pane PaneTilingLayout), `ConflictFileDiff.tsx`, `ConflictSummary.tsx`, `MergeSimulationPanel.tsx`, `RiskMatrix.tsx` (with animated transitions and progress), `RiskTooltip.tsx`, `extensionToLanguage.ts`. Note: the graph canvas also has its own inline `ConflictPanel.tsx` (extracted to `graph/graphDialogs/ConflictPanel.tsx`) for showing conflict details on risk edge click without navigating away. |
 | Job engine integration | Periodic prediction jobs via `processService`, configurable intervals |
 | Database schema | `conflict_predictions` + `conflict_proposals` tables with SHA tracking, expiry, and proposal lifecycle |
 | Git merge-tree integration | Dry-merge via `git merge-tree` for zero-side-effect conflict detection |

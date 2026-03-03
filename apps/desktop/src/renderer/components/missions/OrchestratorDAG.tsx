@@ -3,6 +3,7 @@ import dagre from "dagre";
 import type { OrchestratorStep, OrchestratorAttempt, OrchestratorClaim, DagMutationEvent } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { relativeWhen, formatTime } from "../../lib/format";
+import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 
 type Props = {
   steps: OrchestratorStep[];
@@ -31,6 +32,7 @@ const PHASE_TINT: Record<string, string> = {
   implementation: "rgba(139, 92, 246, 0.06)",
   test: "rgba(6, 182, 212, 0.06)",
   validation: "rgba(6, 182, 212, 0.06)",
+  milestone: "rgba(167, 139, 250, 0.14)",
   review: "rgba(245, 158, 11, 0.06)",
   integration: "rgba(16, 185, 129, 0.06)",
   merge: "rgba(236, 72, 153, 0.06)",
@@ -43,6 +45,31 @@ function getPhaseKind(step: OrchestratorStep): string {
   const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
   const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
   return stepType || taskType || "";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function resolveMilestoneValidationCriteria(step: OrchestratorStep): string | null {
+  const meta = asRecord(step.metadata);
+  if (!meta) return null;
+
+  const doneCriteria = typeof meta.doneCriteria === "string" ? meta.doneCriteria.trim() : "";
+  if (doneCriteria.length > 0) return doneCriteria;
+
+  const contract = asRecord(meta.validationContract);
+  const contractCriteria = typeof contract?.criteria === "string" ? contract.criteria.trim() : "";
+  if (contractCriteria.length > 0) return contractCriteria;
+
+  const planStep = asRecord(meta.planStep);
+  const outputContract = asRecord(planStep?.outputContract);
+  const completionCriteria = typeof outputContract?.completionCriteria === "string"
+    ? outputContract.completionCriteria.trim()
+    : "";
+  if (completionCriteria.length > 0) return completionCriteria;
+
+  return null;
 }
 
 const BASE_NODE_W = 160;
@@ -164,6 +191,7 @@ type TooltipInfo = {
   status: string;
   heartbeat: string;
   stepKey: string;
+  validationCriteria: string | null;
   x: number;
   y: number;
 };
@@ -295,12 +323,15 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
 
     const rect = containerRef.current.getBoundingClientRect();
     const hb = resolveHeartbeatForStep(stepId, attemptIdsByStep.get(stepId) ?? new Set(), claims ?? []);
+    const phaseKind = getPhaseKind(step).toLowerCase();
+    const validationCriteria = phaseKind === "milestone" ? resolveMilestoneValidationCriteria(step) : null;
 
     setTooltip({
       title: step.title,
       status: step.status,
       heartbeat: hb ? relativeWhen(hb) : "--",
       stepKey: step.stepKey,
+      validationCriteria,
       x: event.clientX - rect.left + 12,
       y: event.clientY - rect.top - 8,
     });
@@ -385,7 +416,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
     return (
       <div
         className="flex items-center justify-center p-6"
-        style={{ border: "1px solid #1E1B26", background: "#13101A", color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" }}
+        style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" }}
       >
         No steps to display
       </div>
@@ -393,7 +424,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
   }
 
   return (
-    <div style={{ border: "1px solid #1E1B26", background: "#13101A" }}>
+    <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
       {/* Header with mutation badge */}
       {mutationCount > 0 && (
         <div
@@ -402,8 +433,8 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
             alignItems: "center",
             gap: 8,
             padding: "4px 10px",
-            borderBottom: "1px solid #1E1B26",
-            fontFamily: "JetBrains Mono, monospace",
+            borderBottom: `1px solid ${COLORS.border}`,
+            fontFamily: MONO_FONT,
             fontSize: 10,
           }}
         >
@@ -423,7 +454,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
           >
             Plan revised {mutationCount}x
           </span>
-          <span style={{ color: "#52525B" }}>
+          <span style={{ color: COLORS.textDim }}>
             Last: {recentMutations.length > 0 ? describeMutation(recentMutations[recentMutations.length - 1]!.mutation) : "--"}
           </span>
         </div>
@@ -497,9 +528,10 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
             const isRunning = node.step.status === "running";
             const isHovered = hoveredId === node.step.id;
             const isSelected = selectedStepId === node.step.id;
-            const phaseKind = getPhaseKind(node.step);
+            const phaseKind = getPhaseKind(node.step).toLowerCase();
             const phaseTint = PHASE_TINT[phaseKind] ?? "transparent";
             const isMergeNode = MERGE_NODE_KINDS.has(phaseKind);
+            const isMilestoneNode = phaseKind === "milestone";
             const isGateNode = phaseKind === "review" || phaseKind === "validation";
             const isSkipped = node.step.status === "skipped";
             const isSuperseded = node.step.status === "superseded";
@@ -507,6 +539,9 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
             const isFailed = node.step.status === "failed";
             const isSucceeded = node.step.status === "succeeded";
             const nodeW = node.nodeW;
+            const milestoneAccent = "var(--color-accent, #A78BFA)";
+            const diamondPoints = `${nodeW / 2},0 ${nodeW},${NODE_H / 2} ${nodeW / 2},${NODE_H} 0,${NODE_H / 2}`;
+            const diamondInnerPoints = `${nodeW / 2},4 ${nodeW - 4},${NODE_H / 2} ${nodeW / 2},${NODE_H - 4} 4,${NODE_H / 2}`;
 
             // Animation state from mutations
             const animState = nodeAnimStates.get(node.step.id) ?? "normal";
@@ -528,17 +563,27 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
               >
                 {/* Selected node highlight ring */}
                 {isSelected && !isRunning && (
-                  <rect
-                    x={-3}
-                    y={-3}
-                    width={nodeW + 6}
-                    height={NODE_H + 6}
-                    rx={0}
-                    fill="none"
-                    stroke="#A78BFA"
-                    strokeWidth={2}
-                    opacity={0.6}
-                  />
+                  isMilestoneNode ? (
+                    <polygon
+                      points={`${nodeW / 2},-3 ${nodeW + 3},${NODE_H / 2} ${nodeW / 2},${NODE_H + 3} -3,${NODE_H / 2}`}
+                      fill="none"
+                      stroke="#A78BFA"
+                      strokeWidth={2}
+                      opacity={0.6}
+                    />
+                  ) : (
+                    <rect
+                      x={-3}
+                      y={-3}
+                      width={nodeW + 6}
+                      height={NODE_H + 6}
+                      rx={0}
+                      fill="none"
+                      stroke="#A78BFA"
+                      strokeWidth={2}
+                      opacity={0.6}
+                    />
+                  )
                 )}
                 <g
                   style={{
@@ -550,13 +595,28 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                 >
                 {/* Running: spinning ring (thin blue border, 4s rotation) */}
                 {isRunning && (
-                  <rect x={-3} y={-3} width={nodeW + 6} height={NODE_H + 6} rx={0}
-                    fill="none" stroke="#3b82f6" strokeWidth={1.5}
-                    strokeDasharray="12 8" opacity={0.7}>
-                    <animateTransform attributeName="transform" type="rotate"
-                      from={`0 ${nodeW/2} ${NODE_H/2}`} to={`360 ${nodeW/2} ${NODE_H/2}`}
-                      dur="4s" repeatCount="indefinite" />
-                  </rect>
+                  isMilestoneNode ? (
+                    <polygon
+                      points={`${nodeW / 2},-3 ${nodeW + 3},${NODE_H / 2} ${nodeW / 2},${NODE_H + 3} -3,${NODE_H / 2}`}
+                      fill="none"
+                      stroke="#3b82f6"
+                      strokeWidth={1.5}
+                      strokeDasharray="12 8"
+                      opacity={0.7}
+                    >
+                      <animateTransform attributeName="transform" type="rotate"
+                        from={`0 ${nodeW / 2} ${NODE_H / 2}`} to={`360 ${nodeW / 2} ${NODE_H / 2}`}
+                        dur="4s" repeatCount="indefinite" />
+                    </polygon>
+                  ) : (
+                    <rect x={-3} y={-3} width={nodeW + 6} height={NODE_H + 6} rx={0}
+                      fill="none" stroke="#3b82f6" strokeWidth={1.5}
+                      strokeDasharray="12 8" opacity={0.7}>
+                      <animateTransform attributeName="transform" type="rotate"
+                        from={`0 ${nodeW / 2} ${NODE_H / 2}`} to={`360 ${nodeW / 2} ${NODE_H / 2}`}
+                        dur="4s" repeatCount="indefinite" />
+                    </rect>
+                  )
                 )}
 
                 {/* Running glow pulse */}
@@ -582,22 +642,47 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                 )}
 
                 {/* Phase tint background */}
-                <rect
-                  width={nodeW}
-                  height={NODE_H}
-                  rx={0}
-                  fill={phaseTint}
-                />
+                {isMilestoneNode ? (
+                  <polygon
+                    points={diamondPoints}
+                    fill={phaseTint}
+                  />
+                ) : (
+                  <rect
+                    width={nodeW}
+                    height={NODE_H}
+                    rx={0}
+                    fill={phaseTint}
+                  />
+                )}
 
                 {/* Node background -- diamond shape for gates, regular for others */}
-                {isGateNode ? (
+                {isMilestoneNode ? (
+                  <>
+                    <polygon
+                      points={diamondPoints}
+                      fill={isHovered ? COLORS.hoverBg : COLORS.cardBg}
+                      stroke={statusColor}
+                      strokeWidth={isHovered ? 2 : 1.5}
+                      opacity={0.95}
+                    />
+                    <polygon
+                      points={diamondInnerPoints}
+                      fill="none"
+                      stroke={milestoneAccent}
+                      strokeWidth={1}
+                      strokeDasharray="3 2"
+                      opacity={0.9}
+                    />
+                  </>
+                ) : isGateNode ? (
                   <rect
                     x={4}
                     y={4}
                     width={nodeW - 8}
                     height={NODE_H - 8}
                     rx={0}
-                    fill={isHovered ? "#1A1720" : "#13101A"}
+                    fill={isHovered ? COLORS.hoverBg : COLORS.cardBg}
                     stroke={statusColor}
                     strokeWidth={isHovered ? 2 : 1.5}
                     strokeDasharray="4 2"
@@ -608,7 +693,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                     width={nodeW}
                     height={NODE_H}
                     rx={0}
-                    fill={isHovered ? "#1A1720" : "#13101A"}
+                    fill={isHovered ? COLORS.hoverBg : COLORS.cardBg}
                     stroke={statusColor}
                     strokeWidth={isHovered ? 2 : 1.5}
                     opacity={0.9}
@@ -618,7 +703,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                     width={nodeW}
                     height={NODE_H}
                     rx={0}
-                    fill={isHovered ? "#1A1720" : "#13101A"}
+                    fill={isHovered ? COLORS.hoverBg : COLORS.cardBg}
                     stroke={statusColor}
                     strokeWidth={isHovered ? 2 : 1.5}
                     opacity={0.9}
@@ -626,21 +711,32 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                 )}
 
                 {/* Status indicator bar at top */}
-                <rect
-                  x={8}
-                  y={0}
-                  width={nodeW - 16}
-                  height={3}
-                  rx={0}
-                  fill={statusColor}
-                />
+                {isMilestoneNode ? (
+                  <rect
+                    x={10}
+                    y={NODE_H / 2 - 1.5}
+                    width={nodeW - 20}
+                    height={3}
+                    rx={0}
+                    fill={statusColor}
+                  />
+                ) : (
+                  <rect
+                    x={8}
+                    y={0}
+                    width={nodeW - 16}
+                    height={3}
+                    rx={0}
+                    fill={statusColor}
+                  />
+                )}
 
                 {/* Title text -- strikethrough for skipped/superseded steps */}
                 <text
                   x={nodeW / 2}
                   y={26}
                   textAnchor="middle"
-                  fill={isSkipped || isSuperseded ? "#71717A" : "#FAFAFA"}
+                  fill={isSkipped || isSuperseded ? COLORS.textMuted : COLORS.textPrimary}
                   fontSize={11}
                   fontWeight={500}
                   fontFamily="'Space Grotesk', sans-serif"
@@ -746,29 +842,37 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
               top: tooltip.y,
               pointerEvents: "none",
               zIndex: 50,
-              background: "#1A1720",
-              border: "1px solid #27272A",
+              background: COLORS.hoverBg,
+              border: `1px solid ${COLORS.outlineBorder}`,
               padding: "6px 10px",
               maxWidth: 260,
-              fontFamily: "JetBrains Mono, monospace",
+              fontFamily: MONO_FONT,
             }}
           >
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#FAFAFA", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {tooltip.title}
             </div>
-            <div style={{ marginTop: 2, fontSize: 9, color: "#A1A1AA", display: "flex", gap: 8 }}>
+            <div style={{ marginTop: 2, fontSize: 9, color: COLORS.textSecondary, display: "flex", gap: 8 }}>
               <span>
-                <span style={{ color: "#71717A", textTransform: "uppercase", letterSpacing: "0.5px" }}>Status: </span>
+                <span style={{ color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.5px" }}>Status: </span>
                 <span style={{ color: STATUS_COLORS[tooltip.status] ?? "#6b7280" }}>{tooltip.status}</span>
               </span>
               <span>
-                <span style={{ color: "#71717A", textTransform: "uppercase", letterSpacing: "0.5px" }}>HB: </span>
+                <span style={{ color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.5px" }}>HB: </span>
                 <span>{tooltip.heartbeat}</span>
               </span>
             </div>
-            <div style={{ marginTop: 1, fontSize: 9, color: "#52525B" }}>
+            <div style={{ marginTop: 1, fontSize: 9, color: COLORS.textDim }}>
               {tooltip.stepKey}
             </div>
+            {tooltip.validationCriteria && (
+              <div style={{ marginTop: 4, fontSize: 9, color: "#D4D4D8", maxWidth: 240, whiteSpace: "normal", lineHeight: "1.3" }}>
+                <span style={{ color: "var(--color-accent, #A78BFA)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  Validation:
+                </span>{" "}
+                {tooltip.validationCriteria}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -777,7 +881,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
       {recentMutations.length > 0 && (
         <div
           style={{
-            borderTop: "1px solid #1E1B26",
+            borderTop: `1px solid ${COLORS.border}`,
             maxHeight: 140,
             overflowY: "auto",
             padding: "4px 0",
@@ -791,12 +895,12 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                 alignItems: "baseline",
                 gap: 6,
                 padding: "2px 10px",
-                fontFamily: "JetBrains Mono, monospace",
+                fontFamily: MONO_FONT,
                 fontSize: 10,
                 lineHeight: "16px",
               }}
             >
-              <span style={{ color: "#52525B", flexShrink: 0 }}>
+              <span style={{ color: COLORS.textDim, flexShrink: 0 }}>
                 {formatTime(entry.timestamp)}
               </span>
               <span
@@ -815,11 +919,11 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
               >
                 {MUTATION_ICONS[entry.mutation.type] ?? "?"}
               </span>
-              <span style={{ color: "#A1A1AA", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <span style={{ color: COLORS.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {describeMutation(entry.mutation)}
               </span>
               {entry.source !== "coordinator" && (
-                <span style={{ color: "#52525B", flexShrink: 0 }}>
+                <span style={{ color: COLORS.textDim, flexShrink: 0 }}>
                   [{entry.source}]
                 </span>
               )}

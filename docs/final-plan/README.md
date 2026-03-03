@@ -88,24 +88,24 @@ Baseline derived from code in `apps/desktop`.
   - Memory architecture: agent identities table, promotion flow (candidate/promoted/archived), auto-promotion, Context Budget Panel
   - Activity narrative: Run Narrative section in Activity tab
   - UI bug fixes: removed `ExecutionPlanPreview`, fixed duplicate progress bar, fixed DAG SVG spinning animation, tab renames (usage->details, channels->chat)
+- **Codebase Refactoring & Modularization (shipped 2026-03-02):** AI orchestrator decomposed (`aiOrchestratorService.ts` 13.2K -> 7.7K lines + 9 extracted modules). Pack service decomposed (`packService.ts` 5.7K -> 3.2K lines + 4 builder modules). Type system modernized (monolithic `types.ts` replaced by `src/shared/types/` with 17 domain modules). Frontend decomposed (`MissionsPage.tsx` 60% reduction, `WorkspaceGraphPage.tsx` 11 extracted files). Shared backend/frontend utilities consolidated. Net -14,370 lines, 0 TypeScript errors.
 
 ### 2.3 Architectural leverage and constraints
 
 - Main process is already service-oriented and extraction-friendly.
 - IPC surface is broad (`234` channels in `apps/desktop/src/shared/ipc.ts`).
-- `registerIpc.ts` concentration remains a known extraction bottleneck.
+- `registerIpc.ts` concentration remains a known extraction bottleneck (targeted for Phase 7).
 - Core product behavior is local-first and fully operational without any cloud backend.
 - Orchestrator runtime (deterministic kernel) is shipped infrastructure; AI orchestration sits on top.
+- **Codebase modularized (2026-03-02)**: AI orchestrator decomposed into 9 domain modules (42% size reduction), pack service decomposed into 4 builder modules (45% reduction), type system split into 17 domain files, frontend components decomposed (MissionsPage 60% reduction). Shared utilities consolidated. This decomposition directly enables Phase 7 core extraction.
 
 ### 2.4 Confirmed gaps
 
 Not implemented yet:
 
-- Remaining Phase 3 package after Task 1-4 (pre-flight, budget pressure orchestration, reflection protocol, and full integration soak coverage)
+- Remaining Phase 3 Tasks 7-8 (reflection protocol and full integration soak coverage)
 - CTO agent (persistent project-aware assistant, replaces Concierge)
 - Night Shift mode in Automations (overnight execution with morning briefing)
-- Pre-mission launch validation (pre-flight checklist)
-- Tiered validation system (self-check, spot-check, milestone-gate)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
 - Compute backend abstraction (local/VPS/Daytona)
 - Integration sandbox for lane-set verification
@@ -115,9 +115,9 @@ Not implemented yet:
 - Mission Introspection (reflection protocol for system self-improvement)
 - Provider usage telemetry parity (CLI/API/local) and budget UX refinements
 
-### 2.5 Phase 3 Status Snapshot (2026-02-27 update)
+### 2.5 Phase 3 Status Snapshot (2026-03-02 update)
 
-Phase 3 encompasses both orchestrator autonomy and the missions overhaul.
+Phase 3 encompasses both orchestrator autonomy and the missions overhaul. The codebase was significantly refactored in Wave 4 (2026-03-02), decomposing the orchestrator, pack service, type system, and frontend into modular architectures to improve maintainability and prepare for Phase 7 core extraction.
 
 Implemented in baseline:
 
@@ -128,13 +128,12 @@ Remaining execution tracks (see `phase-3.md` for full detail):
 
 3. **Task 3: Mission Phases Engine & Profiles** — implemented (phase cards/profiles, per-mission overrides, profile import/export, runtime phase transition telemetry)
 4. **Task 4: Mission UI Overhaul** — implemented (Plan tab, Work tab, home dashboard, mission settings profile management, phase-aware details)
-5. **Task 5: Pre-Flight, Intervention & HITL** — pending (pre-flight checklist, granular intervention, escalation chain)
-6. **Task 6: Budget & Usage Tracking** — pending (budget-aware orchestration, dual-mode budget, subscription usage)
+5. **Task 5: Pre-Flight, Intervention & HITL** — implemented (pre-flight checklist, granular intervention, escalation chain)
+6. **Task 6: Budget & Usage Tracking** — implemented (budget-aware orchestration, dual-mode budget, subscription usage)
 7. **Task 7: Reflection Protocol** — pending (reflection logs, retrospectives, improvement changelog)
 8. **Task 8: Integration Testing** — pending (extended orchestrator soak tests, missions overhaul coverage expansion)
 
-Task 3 and Task 4 are now baseline and form required input contracts for Tasks 5-8.
-Immediate next execution focus is Task 5 and Task 6 in parallel.
+Tasks 1-6 are now baseline. Immediate next execution focus is Task 7 (Reflection Protocol), with Task 8 (Integration Testing) as the final broad soak pass.
 
 ---
 
@@ -162,7 +161,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server, Claude SDK, unified API/local runtime) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Hivemind + Tasks 1-4 shipped; Tasks 5-8 remaining) |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Waves 1-4 + Tasks 1-6 shipped; Tasks 7-8 remaining) |
 | Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
 | Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Implemented (Task 2 baseline, coordinator-driven loop) |
 | Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
@@ -172,12 +171,12 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Phase Profiles (settings-based mission templates) | Phase 3 | Phase 3 | Implemented (Task 3) |
 | Mission Plan Tab (hierarchical task list, real-time) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Mission Work Tab (follow-mode worker output) | Phase 3 | Phase 3 | Implemented (Task 4) |
-| Pre-Mission Launch System (pre-flight checklist) | Phase 3 | Phase 3 | Next (Task 5) |
-| Tiered Validation System (self/spot-check/gate) | Phase 3 | Phase 3 | Next (Task 5) |
-| Intervention Granularity (per-worker pause) | Phase 3 | Phase 3 | Next (Task 5) |
+| Pre-Mission Launch System (pre-flight checklist) | Phase 3 | Phase 3 | Implemented (Task 5) |
+| Tiered Validation System (self/spot-check/gate) | Phase 3 | Phase 3 | Implemented (Task 5) |
+| Intervention Granularity (per-worker pause) | Phase 3 | Phase 3 | Implemented (Task 5) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Planned |
 | Night Shift Mode (in Automations) | Phase 4 | Phase 3 | Planned |
-| Budget Management (subscription + API key) | Phase 3 | Phase 3 | Next (Task 6) |
+| Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
 | Play runtime isolation | Phase 5 | Phase 3 | Planned |
 | Compute backend abstraction | Phase 5.5 | Phase 5 | Planned |
 | Computer Use (agent GUI interaction) | Phase 5.5 | Phase 5 | Planned |
@@ -188,6 +187,9 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Relay + Machines | Phase 8 | Phase 7 | Planned |
 | iOS app | Phase 9 | Phase 8 | Planned |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Planned |
+| Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Planned (covered in Phase 4 W3) |
+| Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
+| Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Planned (covered in Phase 4 W4) |
 | .ade/ Portable State | Phase 4 | Phase 3 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned |
 | OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) | Planned |

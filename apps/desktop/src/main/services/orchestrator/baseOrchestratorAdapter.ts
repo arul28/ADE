@@ -5,7 +5,7 @@ import type {
 } from "./orchestratorService";
 import type { OrchestratorWorkerRole, OrchestratorContextView, OrchestratorStep, OrchestratorExecutorKind, TerminalToolType, TeamRuntimeConfig } from "../../../shared/types";
 import type { createMemoryService } from "../memory/memoryService";
-import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "../../../shared/types";
+import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "./orchestratorConstants";
 
 // ─────────────────────────────────────────────────────
 // Shared helpers
@@ -406,7 +406,7 @@ export function buildFullPrompt(
           "- You can report progress, blockers, and discoveries",
           "- Focus on your claimed task — the coordinator manages task distribution",
           "- When your task is done, report completion and the coordinator will assign more work or finalize the run",
-          "- If you discover something relevant to other tasks, share it as a shared fact"
+          "- If you discover something relevant to other tasks, write it with memoryAdd so it is preserved in project memories and shared facts"
         ].join("\n")
       );
     }
@@ -439,6 +439,38 @@ export function buildFullPrompt(
     ].join("\n")
   );
 
+  // Durable step output file
+  {
+    const sanitizedStepKeyForOutput = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+    systemParts.push(
+      [
+        `STEP OUTPUT FILE: When you complete your task, write a structured summary file at:`,
+        `  .ade/step-output-${sanitizedStepKeyForOutput}.md`,
+        "",
+        "The file MUST contain these sections:",
+        "## Summary",
+        "1-2 sentence description of what was accomplished.",
+        "",
+        "## Files Changed",
+        "Bulleted list of files created or modified.",
+        "",
+        "## Tests",
+        "Test results if any tests were run (passed/failed/skipped counts).",
+        "",
+        "## Validation",
+        "Any validation performed and results.",
+        "",
+        "## Warnings",
+        "Any issues, concerns, or risks discovered.",
+        "",
+        "## Next Steps",
+        "Suggested follow-up work if applicable.",
+        "",
+        "This file is your durable output record. The orchestrator reads it to understand what you accomplished, especially after context compaction when conversation history is lost."
+      ].join("\n")
+    );
+  }
+
   // Compaction context — preserved across context summarization
   {
     const completedSteps = args.allSteps.filter((s) => s.status === "succeeded").length;
@@ -458,7 +490,7 @@ export function buildFullPrompt(
         `- Shared facts count: ${sharedFacts.length}`,
         `- Run progress: ${completedSteps}/${totalSteps} steps complete`,
         "When your context is summarized/compacted, preserve this section and any important discoveries.",
-        "Before compaction, write important discoveries as shared facts using the memoryAdd tool."
+        "Before compaction, write important discoveries using memoryAdd so they are preserved in project memories and shared facts."
       ].join("\n")
     );
   }

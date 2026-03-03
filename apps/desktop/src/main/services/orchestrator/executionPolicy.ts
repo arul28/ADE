@@ -28,7 +28,7 @@ import {
   DEFAULT_ROLE_ISOLATION_RULES,
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_INTEGRATION_PR_POLICY
-} from "../../../shared/types";
+} from "./orchestratorConstants";
 
 import { getModelById } from "../../../shared/modelRegistry";
 import { TERMINAL_STEP_STATUSES } from "./orchestratorContext";
@@ -134,6 +134,7 @@ export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionP
   if (primary === "analysis" || secondary === "analysis") return "planning";
   if (primary === "code" || primary === "implementation" || secondary === "code" || secondary === "implementation") return "implementation";
   if (primary === "test" || primary === "validation" || secondary === "test" || secondary === "validation") return "testing";
+  if (primary === "milestone" || secondary === "milestone") return "validation";
   if ((primary === "review" && (secondary === "test" || secondary === "validation")) || (secondary === "review" && primary === "test")) {
     return "testReview";
   }
@@ -247,6 +248,42 @@ export function evaluateRunCompletion(
         blocking: true
       });
     }
+  }
+
+  const requiredValidationMissingStepKeys = steps
+    .filter((step) => step.status === "succeeded")
+    .filter((step) => {
+      const meta = step.metadata ?? {};
+      const validationContract =
+        typeof meta.validationContract === "object" && meta.validationContract
+          ? (meta.validationContract as Record<string, unknown>)
+          : null;
+      if (validationContract?.required !== true) return false;
+
+      const lastValidationReport =
+        typeof meta.lastValidationReport === "object" && meta.lastValidationReport
+          ? (meta.lastValidationReport as Record<string, unknown>)
+          : null;
+      const lastVerdict = typeof lastValidationReport?.verdict === "string" ? lastValidationReport.verdict.toLowerCase() : "";
+      const validationState = typeof meta.validationState === "string" ? meta.validationState.toLowerCase() : "";
+      const validationPassedAt = typeof meta.validationPassedAt === "string" ? meta.validationPassedAt.trim() : "";
+      const hasPassingValidation = lastVerdict === "pass" || validationState === "pass" || validationPassedAt.length > 0;
+      return !hasPassingValidation;
+    })
+    .map((step) => step.stepKey);
+
+  if (requiredValidationMissingStepKeys.length > 0) {
+    const blocking = policy.validation.mode === "required";
+    diagnostics.push({
+      phase: "validation",
+      code: "required_validation_missing",
+      message: "Succeeded steps are missing a passing required validation contract.",
+      blocking,
+      details: { stepKeys: requiredValidationMissingStepKeys }
+    });
+    riskFactors.push(
+      `required_validation_missing: ${requiredValidationMissingStepKeys.join(", ")}`
+    );
   }
 
   // Compute overall status

@@ -14,6 +14,12 @@ import type {
   MissionBudgetSnapshot,
   MissionBudgetProviderSnapshot,
   MissionBudgetHardCapStatus,
+  MissionStateDecision,
+  MissionStateDocumentPatch,
+  MissionStateIssue,
+  MissionStateProgress,
+  MissionStateStepOutcome,
+  MissionStateStepOutcomePartial,
   OrchestratorRunGraph,
   OrchestratorStep,
   OrchestratorAttempt,
@@ -25,14 +31,11 @@ import type {
   ValidationContract,
   ValidationResultReport,
 } from "../../../shared/types";
-import {
-  enqueuePendingMessage,
-  type PendingMessage,
-} from "../ai/unifiedExecutor";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
 import { asRecord, nowIso, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+import { readMissionStateDocument, updateMissionStateDocument } from "./missionStateDoc";
 
 const VALIDATION_CONTRACT_SCHEMA = z
   .object({
@@ -44,6 +47,87 @@ const VALIDATION_CONTRACT_SCHEMA = z
     maxRetries: z.number().int().min(0).max(10).default(1),
   })
   .optional();
+
+const STEP_OUTCOME_SCHEMA = z.object({
+  stepKey: z.string(),
+  stepName: z.string(),
+  phase: z.string(),
+  status: z.enum(["succeeded", "failed", "skipped", "in_progress"]),
+  summary: z.string(),
+  filesChanged: z.array(z.string()).default([]),
+  testsRun: z
+    .object({
+      passed: z.number().int().min(0),
+      failed: z.number().int().min(0),
+      skipped: z.number().int().min(0),
+    })
+    .optional(),
+  validation: z
+    .object({
+      verdict: z.enum(["pass", "fail"]).nullable(),
+      findings: z.array(z.string()).default([]),
+    })
+    .optional(),
+  warnings: z.array(z.string()).default([]),
+  completedAt: z.string().nullable(),
+});
+
+const STEP_OUTCOME_PARTIAL_SCHEMA = z.object({
+  stepName: z.string().optional(),
+  phase: z.string().optional(),
+  status: z.enum(["succeeded", "failed", "skipped", "in_progress"]).optional(),
+  summary: z.string().optional(),
+  filesChanged: z.array(z.string()).optional(),
+  testsRun: z
+    .object({
+      passed: z.number().int().min(0).optional(),
+      failed: z.number().int().min(0).optional(),
+      skipped: z.number().int().min(0).optional(),
+    })
+    .optional(),
+  validation: z
+    .object({
+      verdict: z.enum(["pass", "fail"]).nullable().optional(),
+      findings: z.array(z.string()).optional(),
+    })
+    .optional(),
+  warnings: z.array(z.string()).optional(),
+  completedAt: z.string().nullable().optional(),
+});
+
+const DECISION_SCHEMA = z.object({
+  timestamp: z.string(),
+  decision: z.string(),
+  rationale: z.string(),
+  context: z.string(),
+});
+
+const ISSUE_SCHEMA = z.object({
+  id: z.string(),
+  severity: z.enum(["low", "medium", "high"]),
+  description: z.string(),
+  affectedSteps: z.array(z.string()).default([]),
+  status: z.enum(["open", "mitigated", "resolved"]),
+});
+
+const PROGRESS_PARTIAL_SCHEMA = z.object({
+  currentPhase: z.string().optional(),
+  completedSteps: z.number().int().min(0).optional(),
+  totalSteps: z.number().int().min(0).optional(),
+  activeWorkers: z.array(z.string()).optional(),
+  blockedSteps: z.array(z.string()).optional(),
+  failedSteps: z.array(z.string()).optional(),
+});
+
+export type CoordinatorWorkerDeliveryStatus =
+  | { ok: true; delivered: true; method: "send" | "steer" }
+  | { ok: true; delivered: false; reason: "worker_busy_steered"; method: "steer" }
+  | { ok: false; delivered: false; reason: "no_active_session" | "delivery_failed"; error?: string };
+
+export type CoordinatorSendWorkerMessageFn = (args: {
+  sessionId: string;
+  text: string;
+}) => Promise<CoordinatorWorkerDeliveryStatus>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,6 +149,34 @@ function findRunningAttempt(
       (a) => a.stepId === stepId && a.status === "running",
     ) ?? null
   );
+}
+
+function resolveCurrentPhase(graph: OrchestratorRunGraph): string {
+  const runMeta = asRecord(graph.run.metadata);
+  const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+  const phaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+  if (phaseName.length > 0) return phaseName;
+  const phaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+  if (phaseKey.length > 0) return phaseKey;
+  const activeStep = graph.steps.find((step) => !TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
+  const stepMeta = asRecord(activeStep?.metadata);
+  const fromStepName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
+  if (fromStepName.length > 0) return fromStepName;
+  const fromStepKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
+  if (fromStepKey.length > 0) return fromStepKey;
+  return "unknown";
+}
+
+function buildMissionStateProgress(graph: OrchestratorRunGraph): MissionStateProgress {
+  const completedSteps = graph.steps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status)).length;
+  return {
+    currentPhase: resolveCurrentPhase(graph),
+    completedSteps,
+    totalSteps: graph.steps.length,
+    activeWorkers: graph.steps.filter((step) => step.status === "running").map((step) => step.stepKey),
+    blockedSteps: graph.steps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
+    failedSteps: graph.steps.filter((step) => step.status === "failed").map((step) => step.stepKey),
+  };
 }
 
 function resolveTeamRuntimeConfig(graph: OrchestratorRunGraph): TeamRuntimeConfig | null {
@@ -153,6 +265,48 @@ function parseValidationContract(value: unknown): ValidationContract | null {
   };
 }
 
+function resolveValidationStateFromStepMetadata(metadata: Record<string, unknown>): "pass" | "fail" | "pending" {
+  const stateRaw = typeof metadata.validationState === "string" ? metadata.validationState.trim().toLowerCase() : "";
+  if (stateRaw === "pass" || stateRaw === "fail") {
+    return stateRaw;
+  }
+  const lastValidationReport = asRecord(metadata.lastValidationReport);
+  const reportVerdict = typeof lastValidationReport?.verdict === "string"
+    ? lastValidationReport.verdict.trim().toLowerCase()
+    : "";
+  if (reportVerdict === "pass" || reportVerdict === "fail") {
+    return reportVerdict;
+  }
+  return "pending";
+}
+
+function resolveRequireValidatorPassFlag(metadata: Record<string, unknown> | null): boolean | null {
+  if (!metadata) return null;
+  const candidates = [
+    metadata,
+    asRecord(metadata.policyOverrides),
+    asRecord(metadata.missionPolicyFlags),
+    asRecord(metadata.executionPolicy),
+    asRecord(metadata.teamRuntime),
+    asRecord(asRecord(metadata.teamRuntime)?.policyOverrides),
+    asRecord(asRecord(metadata.executionPolicy)?.teamRuntime),
+    asRecord(asRecord(asRecord(metadata.executionPolicy)?.teamRuntime)?.policyOverrides),
+    asRecord(metadata.launch),
+    asRecord(asRecord(metadata.launch)?.teamRuntime),
+    asRecord(asRecord(asRecord(metadata.launch)?.teamRuntime)?.policyOverrides),
+    asRecord(asRecord(metadata.launch)?.executionPolicy),
+    asRecord(asRecord(asRecord(metadata.launch)?.executionPolicy)?.teamRuntime),
+    asRecord(asRecord(asRecord(asRecord(metadata.launch)?.executionPolicy)?.teamRuntime)?.policyOverrides),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (typeof candidate.requireValidatorPass === "boolean") {
+      return candidate.requireValidatorPass;
+    }
+  }
+  return null;
+}
+
 function buildStalenessSignals(graph: OrchestratorRunGraph): string[] {
   const signals: string[] = [];
   const nowMs = Date.now();
@@ -226,6 +380,7 @@ export function createCoordinatorToolSet(deps: {
   onRunFinalize?: (args: { runId: string; succeeded: boolean; summary?: string; reason?: string }) => void;
   onHardCapTriggered?: (detail: string) => void;
   onBudgetWarning?: (pressure: "warning" | "critical", detail: string) => void;
+  sendWorkerMessageToSession?: CoordinatorSendWorkerMessageFn;
 }): Record<string, Tool> {
   const {
     orchestratorService,
@@ -245,6 +400,59 @@ export function createCoordinatorToolSet(deps: {
   /** Shorthand to get a fresh graph snapshot. */
   function graph(): OrchestratorRunGraph {
     return orchestratorService.getRunGraph({ runId });
+  }
+
+  function isValidatorPassRequired(g: OrchestratorRunGraph): boolean {
+    const runMeta = asRecord(g.run.metadata);
+    const fromRun = resolveRequireValidatorPassFlag(runMeta);
+    if (typeof fromRun === "boolean") return fromRun;
+
+    try {
+      const missionRow = db.get<{ metadata_json: string | null }>(
+        `select metadata_json from missions where id = ? limit 1`,
+        [missionId]
+      );
+      if (missionRow?.metadata_json) {
+        const missionMetaRaw = JSON.parse(missionRow.metadata_json);
+        const missionMeta = asRecord(missionMetaRaw);
+        const fromMission = resolveRequireValidatorPassFlag(missionMeta);
+        if (typeof fromMission === "boolean") return fromMission;
+      }
+    } catch {
+      // Non-blocking — default policy remains enabled.
+    }
+
+    return true;
+  }
+
+  function resolveMissionGoal(): string {
+    const mission = missionService.get(missionId);
+    const prompt = typeof mission?.prompt === "string" ? mission.prompt.trim() : "";
+    if (prompt.length > 0) return prompt;
+    const title = typeof mission?.title === "string" ? mission.title.trim() : "";
+    if (title.length > 0) return title;
+    return `Mission ${missionId}`;
+  }
+
+  async function deliverToWorkerSession(sessionId: string, text: string): Promise<CoordinatorWorkerDeliveryStatus> {
+    if (!deps.sendWorkerMessageToSession) {
+      return {
+        ok: false,
+        delivered: false,
+        reason: "delivery_failed",
+        error: "Worker delivery transport is unavailable."
+      };
+    }
+    try {
+      return await deps.sendWorkerMessageToSession({ sessionId, text });
+    } catch (error) {
+      return {
+        ok: false,
+        delivered: false,
+        reason: "delivery_failed",
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   /**
@@ -627,6 +835,165 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
+  const insert_milestone = tool({
+    description:
+      "Insert a milestone gate into the mission DAG. Milestones require dedicated validator pass before they can be completed.",
+    inputSchema: z.object({
+      name: z.string().describe("Human-readable milestone name"),
+      dependsOn: z
+        .array(z.string())
+        .default([])
+        .describe("Step keys this milestone depends on"),
+      validationCriteria: z.string().describe("Validation criteria that must pass for this milestone"),
+      gatesSteps: z
+        .array(z.string())
+        .optional()
+        .describe("Optional step keys that should be gated on this milestone"),
+    }),
+    execute: async ({ name, dependsOn, validationCriteria, gatesSteps }) => {
+      try {
+        const g = graph();
+        const normalizedName = name.trim();
+        if (!normalizedName.length) {
+          return { ok: false, error: "Milestone name is required." };
+        }
+        const normalizedCriteria = validationCriteria.trim();
+        if (!normalizedCriteria.length) {
+          return { ok: false, error: "validationCriteria is required for insert_milestone." };
+        }
+
+        const normalizedDependsOn = [...new Set(
+          dependsOn.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+        )];
+        const unknownDependsOn = normalizedDependsOn.filter((entry) => !resolveStep(g, entry));
+        if (unknownDependsOn.length > 0) {
+          return {
+            ok: false,
+            error: `Unknown dependency step keys: ${unknownDependsOn.join(", ")}`
+          };
+        }
+
+        const normalizedGatesSteps = [...new Set(
+          (gatesSteps ?? []).map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+        )];
+        const unknownGates = normalizedGatesSteps.filter((entry) => !resolveStep(g, entry));
+        if (unknownGates.length > 0) {
+          return {
+            ok: false,
+            error: `Unknown gatesSteps step keys: ${unknownGates.join(", ")}`
+          };
+        }
+
+        const maxIndex = g.steps.reduce(
+          (max, step) => Math.max(max, step.stepIndex),
+          -1,
+        );
+        const slug = normalizedName
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, "_")
+          .replace(/^_+|_+$/g, "") || "milestone";
+        let milestoneStepKey = `milestone_${slug}_${Date.now()}`;
+        let disambiguator = 1;
+        while (resolveStep(g, milestoneStepKey)) {
+          disambiguator += 1;
+          milestoneStepKey = `milestone_${slug}_${Date.now()}_${disambiguator}`;
+        }
+        const milestoneContract: ValidationContract = {
+          level: "milestone",
+          tier: "dedicated",
+          required: true,
+          criteria: normalizedCriteria,
+          maxRetries: 2,
+          evidence: []
+        };
+        const created = orchestratorService.addSteps({
+          runId,
+          steps: [
+            {
+              stepKey: milestoneStepKey,
+              title: normalizedName,
+              stepIndex: maxIndex + 1,
+              dependencyStepKeys: normalizedDependsOn,
+              executorKind: "manual",
+              metadata: {
+                instructions: `Milestone gate: ${normalizedCriteria}`,
+                stepType: "milestone",
+                isMilestone: true,
+                milestoneValidationCriteria: normalizedCriteria,
+                validationContract: milestoneContract
+              }
+            }
+          ]
+        });
+        const milestoneStep = created[0] ?? null;
+        if (!milestoneStep) {
+          return { ok: false, error: "Failed to create milestone step." };
+        }
+
+        onDagMutation({
+          runId,
+          mutation: { type: "step_added", step: milestoneStep },
+          timestamp: nowIso(),
+          source: "coordinator",
+        });
+
+        const gatedStepsPatched: Array<{ stepKey: string; dependencyStepKeys: string[] }> = [];
+        if (normalizedGatesSteps.length > 0) {
+          const refreshed = graph();
+          const stepKeyById = new Map(refreshed.steps.map((step) => [step.id, step.stepKey] as const));
+          for (const gatedStepKey of normalizedGatesSteps) {
+            const gatedStep = resolveStep(refreshed, gatedStepKey);
+            if (!gatedStep) continue;
+            const existingDependencyStepKeys = gatedStep.dependencyStepIds
+              .map((depId) => stepKeyById.get(depId))
+              .filter((depKey): depKey is string => typeof depKey === "string" && depKey.length > 0);
+            const nextDependencyStepKeys = [...new Set([
+              ...existingDependencyStepKeys,
+              milestoneStep.stepKey
+            ])];
+            orchestratorService.updateStepDependencies({
+              runId,
+              stepId: gatedStep.id,
+              dependencyStepKeys: nextDependencyStepKeys
+            });
+            onDagMutation({
+              runId,
+              mutation: { type: "dependency_changed", stepKey: gatedStep.stepKey, newDeps: nextDependencyStepKeys },
+              timestamp: nowIso(),
+              source: "coordinator",
+            });
+            gatedStepsPatched.push({
+              stepKey: gatedStep.stepKey,
+              dependencyStepKeys: nextDependencyStepKeys
+            });
+          }
+        }
+
+        logger.info("coordinator.insert_milestone", {
+          milestoneStepKey: milestoneStep.stepKey,
+          dependsOn: normalizedDependsOn,
+          gatesSteps: normalizedGatesSteps
+        });
+        return {
+          ok: true,
+          milestone: {
+            stepId: milestoneStep.id,
+            stepKey: milestoneStep.stepKey,
+            name: milestoneStep.title,
+            status: milestoneStep.status,
+            validationContract: milestoneContract
+          },
+          dependsOn: normalizedDependsOn,
+          gatesStepsPatched: gatedStepsPatched
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.insert_milestone.error", { name, error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
   const request_specialist = tool({
     description:
       "Request a specialist worker for a specific role. Use when the current worker should not continue alone.",
@@ -795,41 +1162,66 @@ export function createCoordinatorToolSet(deps: {
         const g = graph();
         const step = resolveStep(g, workerId);
         if (!step)
-          return { ok: false, error: `Worker not found: ${workerId}` };
+          return {
+            ok: false,
+            delivered: false,
+            reason: "no_active_session" as const,
+            error: `Worker not found: ${workerId}`
+          };
         const attempt = findRunningAttempt(g, step.id);
         if (!attempt)
           return {
             ok: false,
+            delivered: false,
+            reason: "no_active_session" as const,
             error: `No running attempt found for worker '${workerId}'`,
           };
         const sessionId = attempt.executorSessionId;
         if (!sessionId)
           return {
             ok: false,
+            delivered: false,
+            reason: "no_active_session" as const,
             error: `No session ID for running worker '${workerId}'`,
           };
-        const pending: PendingMessage = {
-          id: randomUUID(),
-          content,
-          fromAttemptId: null,
-          priority: "normal",
-          receivedAt: nowIso(),
-        };
-        enqueuePendingMessage(sessionId, pending);
+        const messageId = randomUUID();
+        const delivery = await deliverToWorkerSession(sessionId, content);
         orchestratorService.appendRuntimeEvent({
           runId,
           stepId: step.id,
           attemptId: attempt.id,
           sessionId,
           eventType: "coordinator_steering",
-          payload: { message: content, priority: "normal" },
+          payload: {
+            message: content,
+            priority: "normal",
+            messageId,
+            delivered: delivery.delivered,
+            method: delivery.ok ? delivery.method : null,
+            reason: delivery.ok
+              ? (delivery.delivered ? null : delivery.reason)
+              : delivery.reason
+          },
         });
-        logger.info("coordinator.send_message", { workerId, sessionId });
-        return { ok: true, workerId, sessionId, messageId: pending.id };
+        logger.info("coordinator.send_message", {
+          workerId,
+          sessionId,
+          delivered: delivery.delivered,
+          method: delivery.ok ? delivery.method : null,
+          reason: delivery.ok
+            ? (delivery.delivered ? null : delivery.reason)
+            : delivery.reason
+        });
+        return {
+          ...delivery,
+          workerId,
+          sessionId,
+          messageId
+        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.send_message.error", { workerId, error: msg });
-        return { ok: false, error: msg };
+        return { ok: false, delivered: false, reason: "delivery_failed", error: msg };
       }
     },
   });
@@ -847,23 +1239,36 @@ export function createCoordinatorToolSet(deps: {
       try {
         const g = graph();
         const fromStep = resolveStep(g, fromWorkerId);
-        if (!fromStep) return { ok: false, error: `Sender worker not found: ${fromWorkerId}` };
+        if (!fromStep) {
+          return {
+            ok: false,
+            delivered: false,
+            reason: "no_active_session",
+            error: `Sender worker not found: ${fromWorkerId}`
+          };
+        }
         const toStep = resolveStep(g, toWorkerId);
-        if (!toStep) return { ok: false, error: `Recipient worker not found: ${toWorkerId}` };
+        if (!toStep) {
+          return {
+            ok: false,
+            delivered: false,
+            reason: "no_active_session",
+            error: `Recipient worker not found: ${toWorkerId}`
+          };
+        }
         const recipientAttempt = findRunningAttempt(g, toStep.id);
         if (!recipientAttempt?.executorSessionId) {
-          return { ok: false, error: `Recipient worker '${toWorkerId}' has no running session.` };
+          return {
+            ok: false,
+            delivered: false,
+            reason: "no_active_session",
+            error: `Recipient worker '${toWorkerId}' has no running session.`
+          };
         }
-        const deliveryPriority: PendingMessage["priority"] =
-          priority === "high" || priority === "urgent" ? "urgent" : "normal";
-        const pending: PendingMessage = {
-          id: randomUUID(),
-          content,
-          fromAttemptId: findRunningAttempt(g, fromStep.id)?.id ?? null,
-          priority: deliveryPriority,
-          receivedAt: nowIso(),
-        };
-        enqueuePendingMessage(recipientAttempt.executorSessionId, pending);
+        const deliveryPriority = priority === "high" || priority === "urgent" ? "urgent" : "normal";
+        const messageId = randomUUID();
+        const fromAttemptId = findRunningAttempt(g, fromStep.id)?.id ?? null;
+        const delivery = await deliverToWorkerSession(recipientAttempt.executorSessionId, content);
         orchestratorService.appendRuntimeEvent({
           runId,
           stepId: toStep.id,
@@ -876,7 +1281,13 @@ export function createCoordinatorToolSet(deps: {
             message: content,
             priority,
             deliveryPriority,
-            messageId: pending.id
+            messageId,
+            delivered: delivery.delivered,
+            method: delivery.ok ? delivery.method : null,
+            reason: delivery.ok
+              ? (delivery.delivered ? null : delivery.reason)
+              : delivery.reason,
+            fromAttemptId
           },
         });
         orchestratorService.appendTimelineEvent({
@@ -890,12 +1301,18 @@ export function createCoordinatorToolSet(deps: {
             toWorkerId,
             priority,
             deliveryPriority,
-            messageId: pending.id
+            messageId,
+            delivered: delivery.delivered,
+            method: delivery.ok ? delivery.method : null,
+            reason: delivery.ok
+              ? (delivery.delivered ? null : delivery.reason)
+              : delivery.reason,
+            fromAttemptId
           },
         });
         return {
-          ok: true,
-          messageId: pending.id,
+          ...delivery,
+          messageId,
           fromWorkerId,
           toWorkerId,
           priority
@@ -907,7 +1324,7 @@ export function createCoordinatorToolSet(deps: {
           toWorkerId,
           error: msg
         });
-        return { ok: false, error: msg };
+        return { ok: false, delivered: false, reason: "delivery_failed", error: msg };
       }
     }
   });
@@ -921,33 +1338,63 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ content }) => {
       try {
         const g = graph();
-        const runningAttempts = g.attempts.filter(
-          (a) => a.status === "running" && a.executorSessionId,
+        const runningAttempts = g.attempts.filter((a) => a.status === "running");
+        const results = await Promise.all(
+          runningAttempts.map(async (attempt) => {
+            const step = g.steps.find((candidate) => candidate.id === attempt.stepId) ?? null;
+            const sessionId = attempt.executorSessionId ?? null;
+            const messageId = randomUUID();
+            if (!sessionId) {
+              return {
+                workerId: step?.stepKey ?? null,
+                stepId: step?.id ?? attempt.stepId,
+                attemptId: attempt.id,
+                sessionId: null,
+                messageId,
+                ok: false as const,
+                delivered: false as const,
+                reason: "no_active_session" as const,
+              };
+            }
+            const delivery = await deliverToWorkerSession(sessionId, content);
+            return {
+              workerId: step?.stepKey ?? null,
+              stepId: step?.id ?? attempt.stepId,
+              attemptId: attempt.id,
+              sessionId,
+              messageId,
+              ...delivery
+            };
+          })
         );
-        let delivered = 0;
-        for (const attempt of runningAttempts) {
-          if (!attempt.executorSessionId) continue;
-          const pending: PendingMessage = {
-            id: randomUUID(),
-            content,
-            fromAttemptId: null,
-            priority: "normal",
-            receivedAt: nowIso(),
-          };
-          enqueuePendingMessage(attempt.executorSessionId, pending);
-          delivered++;
-        }
+        const delivered = results.filter((result) => result.ok && result.delivered).length;
+        const queued = results.filter((result) => result.ok && !result.delivered).length;
+        const failed = results.filter((result) => !result.ok).length;
         orchestratorService.appendRuntimeEvent({
           runId,
           eventType: "coordinator_broadcast",
-          payload: { content, recipientCount: delivered },
+          payload: {
+            content,
+            recipientCount: results.length,
+            delivered,
+            queued,
+            failed,
+            results
+          },
         });
-        logger.info("coordinator.broadcast", { delivered });
-        return { ok: true, delivered };
+        logger.info("coordinator.broadcast", { recipients: results.length, delivered, queued, failed });
+        return {
+          ok: true,
+          recipientCount: results.length,
+          delivered,
+          queued,
+          failed,
+          results
+        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.broadcast.error", { error: msg });
-        return { ok: false, error: msg };
+        return { ok: false, error: msg, delivered: false, reason: "delivery_failed" };
       }
     },
   });
@@ -1300,6 +1747,8 @@ export function createCoordinatorToolSet(deps: {
           validatorWorkerId: validatorStep?.stepKey ?? validatorWorkerId?.trim() ?? null
         };
         const maxRetriesExceeded = verdict === "fail" && report.retriesUsed >= resolvedContract.maxRetries;
+        const targetStepMeta = asRecord(targetStep?.metadata) ?? {};
+        const targetIsMilestone = targetStepMeta.isMilestone === true;
         const nextMetadata = {
           ...existingMeta,
           lastValidationReport: report,
@@ -1321,6 +1770,27 @@ export function createCoordinatorToolSet(deps: {
             stepId: targetStep.id,
             metadata: nextMetadata
           });
+        }
+        let milestoneMarkedComplete = false;
+        if (targetStep && targetIsMilestone && verdict === "pass" && !TERMINAL_STEP_STATUSES.has(targetStep.status)) {
+          const ts = nowIso();
+          db.run(
+            `update orchestrator_steps set status = 'succeeded', completed_at = ?, updated_at = ? where id = ? and run_id = ?`,
+            [ts, ts, targetStep.id, runId],
+          );
+          onDagMutation({
+            runId,
+            mutation: { type: "status_changed", stepKey: targetStep.stepKey, newStatus: "succeeded" },
+            timestamp: ts,
+            source: "coordinator",
+          });
+          setTimeout(() => {
+            void orchestratorService.startReadyAutopilotAttempts({
+              runId,
+              reason: "milestone_validation_passed",
+            }).catch(() => {});
+          }, 100);
+          milestoneMarkedComplete = true;
         }
         orchestratorService.appendRuntimeEvent({
           runId,
@@ -1365,10 +1835,38 @@ export function createCoordinatorToolSet(deps: {
             }
           });
         }
+        let escalationInterventionId: string | null = null;
+        if (maxRetriesExceeded && resolvedContract.required) {
+          const findingSummary = report.findings.slice(0, 3).map((entry) => `${entry.code}: ${entry.message}`).join("; ");
+          const escalationQuestion = targetStep
+            ? `Validation retries exhausted for "${targetStep.stepKey}". Should we continue with a workaround, re-scope, or pause this mission?`
+            : "Validation retries exhausted for a required contract. Should we continue with a workaround, re-scope, or pause this mission?";
+          const escalationContext = [
+            `Validation contract tier: ${resolvedContract.tier}`,
+            `Validation level: ${resolvedContract.level}`,
+            `Retries used: ${report.retriesUsed}/${resolvedContract.maxRetries}`,
+            `Summary: ${report.summary}`,
+            findingSummary.length > 0 ? `Findings: ${findingSummary}` : null,
+          ]
+            .filter((entry): entry is string => Boolean(entry))
+            .join("\n");
+          const escalation = openHumanIntervention({
+            question: escalationQuestion,
+            context: escalationContext,
+            urgency: "high",
+            source: "request_user_input",
+            canProceedWithoutAnswer: false,
+          });
+          if (escalation.ok) {
+            escalationInterventionId = escalation.interventionId;
+          }
+        }
         return {
           ok: true,
           report,
           maxRetriesExceeded,
+          milestoneMarkedComplete,
+          interventionId: escalationInterventionId,
           recommendedAction: maxRetriesExceeded
             ? "escalate_human_or_replan"
             : verdict === "fail"
@@ -1501,6 +1999,98 @@ export function createCoordinatorToolSet(deps: {
         return { ok: false, error: msg };
       }
     }
+  });
+
+  const read_mission_state = tool({
+    description:
+      "Read the durable mission state document from disk. Use this to refresh your understanding before major decisions.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const state = await readMissionStateDocument({
+          projectRoot,
+          runId,
+        });
+        return {
+          ok: true,
+          exists: Boolean(state),
+          state,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.read_mission_state.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
+  const update_mission_state = tool({
+    description:
+      "Write a partial update into the durable mission state document (merge semantics). Use after significant decisions and updates.",
+    inputSchema: z
+      .object({
+        addStepOutcome: STEP_OUTCOME_SCHEMA.optional(),
+        updateStepOutcome: z
+          .object({
+            stepKey: z.string(),
+            updates: STEP_OUTCOME_PARTIAL_SCHEMA,
+          })
+          .optional(),
+        addDecision: DECISION_SCHEMA.optional(),
+        addIssue: ISSUE_SCHEMA.optional(),
+        resolveIssue: z.object({ id: z.string(), resolution: z.string() }).optional(),
+        updateProgress: PROGRESS_PARTIAL_SCHEMA.optional(),
+      })
+      .refine(
+        (value) =>
+          Boolean(
+            value.addStepOutcome ||
+            value.updateStepOutcome ||
+            value.addDecision ||
+            value.addIssue ||
+            value.resolveIssue ||
+            value.updateProgress
+          ),
+        { message: "At least one mission state update field is required." }
+      ),
+    execute: async ({ addStepOutcome, updateStepOutcome, addDecision, addIssue, resolveIssue, updateProgress }) => {
+      try {
+        const graphSnapshot = graph();
+        const patch: MissionStateDocumentPatch = {
+          updateProgress: {
+            ...buildMissionStateProgress(graphSnapshot),
+            ...(updateProgress ?? {}),
+          },
+        };
+        if (addStepOutcome) patch.addStepOutcome = addStepOutcome as MissionStateStepOutcome;
+        if (updateStepOutcome) {
+          patch.updateStepOutcome = {
+            stepKey: updateStepOutcome.stepKey,
+            updates: updateStepOutcome.updates as MissionStateStepOutcomePartial,
+          };
+        }
+        if (addDecision) patch.addDecision = addDecision as MissionStateDecision;
+        if (addIssue) patch.addIssue = addIssue as MissionStateIssue;
+        if (resolveIssue) patch.resolveIssue = resolveIssue;
+
+        const nextState = await updateMissionStateDocument({
+          projectRoot,
+          missionId,
+          runId,
+          goal: resolveMissionGoal(),
+          patch,
+          initialProgress: buildMissionStateProgress(graphSnapshot),
+        });
+        return {
+          ok: true,
+          state: nextState,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.update_mission_state.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    },
   });
 
   const revise_plan = tool({
@@ -2123,6 +2713,24 @@ export function createCoordinatorToolSet(deps: {
         if (TERMINAL_STEP_STATUSES.has(step.status)) {
           return { ok: false, error: `Step '${workerId}' is already terminal (${step.status})` };
         }
+        const stepMeta = asRecord(step.metadata) ?? {};
+        const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
+        const validationState = resolveValidationStateFromStepMetadata(stepMeta);
+        const requireValidatorPass = isValidatorPassRequired(g);
+        if (validationContract?.required && validationState !== "pass" && requireValidatorPass) {
+          return {
+            ok: false,
+            error: `Step '${workerId}' requires validator pass before completion (current validation state: ${validationState}).`,
+            hint: "Run report_validation with verdict='pass' for this step, or disable the mission policy flag requireValidatorPass to bypass.",
+            policy: { requireValidatorPass },
+            validation: {
+              required: true,
+              state: validationState,
+              tier: validationContract.tier,
+              criteria: validationContract.criteria
+            }
+          };
+        }
         // Cancel running attempt if any
         const running = findRunningAttempt(g, step.id);
         if (running) {
@@ -2276,13 +2884,42 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ summary }) => {
       try {
+        const g = graph();
+        const requireValidatorPass = isValidatorPassRequired(g);
+        if (requireValidatorPass) {
+          const blockers = g.steps
+            .filter((step) => step.status === "succeeded")
+            .flatMap((step) => {
+              const stepMeta = asRecord(step.metadata) ?? {};
+              const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
+              if (!validationContract?.required) return [];
+              const validationState = resolveValidationStateFromStepMetadata(stepMeta);
+              if (validationState === "pass") return [];
+              return [{
+                stepKey: step.stepKey,
+                status: step.status,
+                validationState,
+                tier: validationContract.tier,
+                criteria: validationContract.criteria
+              }];
+            });
+          if (blockers.length > 0) {
+            return {
+              ok: false,
+              error: `Mission cannot be completed: ${blockers.length} step(s) require validator pass before completion.`,
+              hint: "Submit passing validation reports for blocked steps, or disable requireValidatorPass in mission policy to bypass.",
+              policy: { requireValidatorPass },
+              blockers
+            };
+          }
+        }
+
         orchestratorService.appendRuntimeEvent({
           runId,
           eventType: "done",
           payload: { summary, completedBy: "coordinator" },
         });
         // Mark all remaining ready/blocked steps as skipped
-        const g = graph();
         for (const step of g.steps) {
           if (step.status === "ready" || step.status === "blocked" || step.status === "pending") {
             orchestratorService.skipStep({
@@ -2710,6 +3347,31 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
+  const read_step_output = tool({
+    description:
+      "Read a worker's structured step output file (.ade/step-output-{stepKey}.md). Workers write these files as durable output records when they complete their tasks. Use this to understand what a worker accomplished, especially after context compaction.",
+    inputSchema: z.object({
+      stepKey: z.string().describe("The step key to read the output file for"),
+    }),
+    execute: async ({ stepKey }) => {
+      try {
+        const sanitized = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const filePath = path.resolve(projectRoot, `.ade/step-output-${sanitized}.md`);
+        if (!filePath.startsWith(projectRoot)) {
+          return { ok: false, error: "Path is outside project root" };
+        }
+        if (!fs.existsSync(filePath)) {
+          return { ok: false, error: `Step output file not found for step: ${stepKey}` };
+        }
+        const content = fs.readFileSync(filePath, "utf-8");
+        return { ok: true, stepKey, content };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
   const search_files = tool({
     description:
       "Search project files by name pattern or content. Use to find relevant code or files.",
@@ -2835,6 +3497,7 @@ export function createCoordinatorToolSet(deps: {
 
   return {
     spawn_worker,
+    insert_milestone,
     request_specialist,
     stop_worker,
     send_message,
@@ -2846,6 +3509,8 @@ export function createCoordinatorToolSet(deps: {
     report_result,
     report_validation,
     read_mission_status,
+    read_mission_state,
+    update_mission_state,
     revise_plan,
     update_tool_profiles,
     transfer_lane,
@@ -2863,6 +3528,7 @@ export function createCoordinatorToolSet(deps: {
     ask_user,
     request_user_input,
     read_file,
+    read_step_output,
     search_files,
     get_project_context,
   };

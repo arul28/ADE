@@ -254,7 +254,7 @@ async function callTool(
 }
 
 describe("mcpServer", () => {
-  it("lists the full tool surface (35 tools)", async () => {
+  it("lists the full tool surface (38 tools)", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
 
@@ -270,6 +270,8 @@ describe("mcpServer", () => {
         "check_conflicts",
         "merge_lane",
         "ask_user",
+        "memory_add",
+        "memory_search",
         "run_tests",
         "get_lane_status",
         "list_lanes",
@@ -295,7 +297,7 @@ describe("mcpServer", () => {
         "get_evaluation_report"
       ])
     );
-    expect(names.length).toBe(35);
+    expect(names.length).toBe(38);
   });
 
   it("supports read_context contracts for all pack scopes", async () => {

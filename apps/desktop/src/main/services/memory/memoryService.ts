@@ -112,12 +112,19 @@ export function createMemoryService(db: AdeDb) {
     return rows.map(mapMemoryRow);
   }
 
-  function searchMemories(query: string, projectId: string, scope?: MemoryScope, limit = 10): Memory[] {
+  function searchMemories(
+    query: string,
+    projectId: string,
+    scope?: MemoryScope,
+    limit = 10,
+    status: MemoryStatus | MemoryStatus[] = "promoted"
+  ): Memory[] {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     if (!words.length) return [];
 
     const conditions = words.map(() => "LOWER(content) LIKE ?").join(" AND ");
     const params: (string | number | null)[] = words.map(w => `%${w}%`);
+    const statuses = Array.isArray(status) ? status : [status];
 
     let sql = `SELECT * FROM memories WHERE project_id = ? AND ${conditions}`;
     params.unshift(projectId);
@@ -125,6 +132,11 @@ export function createMemoryService(db: AdeDb) {
     if (scope) {
       sql += ` AND scope = ?`;
       params.push(scope);
+    }
+
+    if (statuses.length) {
+      sql += ` AND status IN (${statuses.map(() => "?").join(", ")})`;
+      params.push(...statuses);
     }
 
     sql += ` ORDER BY CASE importance WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC, last_accessed_at DESC LIMIT ?`;
@@ -157,7 +169,7 @@ export function createMemoryService(db: AdeDb) {
     const limits: Record<MemoryBudgetLevel, number> = { lite: 3, standard: 8, deep: 20 };
     const limit = limits[level];
     const rows = db.all<Record<string, unknown>>(
-      `SELECT * FROM memories WHERE project_id = ?
+      `SELECT * FROM memories WHERE project_id = ? AND status = 'promoted'
        ORDER BY
          CASE importance WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
          access_count DESC,

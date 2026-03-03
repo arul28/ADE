@@ -1,8 +1,25 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { createMemoryService } from "../../memory/memoryService";
+import type { SharedFact, createMemoryService } from "../../memory/memoryService";
 
-export function createMemoryTools(memoryService: ReturnType<typeof createMemoryService>, projectId: string) {
+function mapCategoryToFactType(category: "fact" | "pattern" | "decision" | "gotcha"): SharedFact["factType"] {
+  switch (category) {
+    case "pattern":
+      return "api_pattern";
+    case "gotcha":
+      return "gotcha";
+    case "decision":
+    case "fact":
+    default:
+      return "architectural";
+  }
+}
+
+export function createMemoryTools(
+  memoryService: ReturnType<typeof createMemoryService>,
+  projectId: string,
+  runId?: string
+) {
   const memorySearch = tool({
     description: "Search project memory for relevant context, patterns, decisions, or gotchas from previous sessions.",
     inputSchema: z.object({
@@ -39,6 +56,19 @@ export function createMemoryTools(memoryService: ReturnType<typeof createMemoryS
         content,
         importance
       });
+
+      if (runId) {
+        try {
+          memoryService.addSharedFact({
+            runId,
+            factType: mapCategoryToFactType(category),
+            content
+          });
+        } catch {
+          // Best-effort: project memory writes must not fail if shared facts persistence fails.
+        }
+      }
+
       return { saved: true, id: memory.id };
     }
   });

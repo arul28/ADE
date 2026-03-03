@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import fs from "node:fs";
+import nodePath from "node:path";
 import type {
   MissionDetail,
   MissionStep,
@@ -8,7 +8,6 @@ import type {
   MissionPlannerEngine,
   MissionStepStatus,
   MissionStatus,
-  ModelCapabilityProfile,
   CancelOrchestratorRunArgs,
   OrchestratorExecutorKind,
   OrchestratorRun,
@@ -47,7 +46,6 @@ import type {
   ListOrchestratorLaneDecisionsArgs,
   MissionMetricsConfig,
   MissionMetricSample,
-  MissionMetricToggle,
   GetMissionMetricsArgs,
   SetMissionMetricsConfigArgs,
   OrchestratorThreadEvent,
@@ -64,40 +62,35 @@ import type {
   RecoveryLoopPolicy,
   AggregatedUsageStats,
   GetAggregatedUsageArgs,
-  UsageModelBreakdown,
-  UsageRecentSession,
-  UsageActiveSession,
-  UsageMissionBreakdown,
   RecoveryLoopState,
   RecoveryDiagnosisTier,
   RecoveryDiagnosis,
-  OrchestratorContextView,
   IntegrationPrPolicy,
-  PrDepth,
   PrStrategy,
   StartOrchestratorRunStepInput,
-  OrchestratorArtifactKind,
   OrchestratorRunStatus,
   OrchestratorTeamMember,
   OrchestratorTeamRuntimeState,
   TeamRuntimeConfig,
-  TeamTemplate,
-  RoleDefinition,
-  MissionPolicyFlags,
   FinalizeRunArgs,
   FinalizeRunResult,
   RunCompletionBlocker,
-  RunCompletionValidation,
-  SLASH_COMMAND_TRANSLATIONS
+  GetMissionStateDocumentArgs,
+  MissionStateDocument,
+  MissionStateDocumentPatch,
+  MissionStatePendingIntervention,
+  MissionStateProgress,
+  MissionStateStepOutcome,
 } from "../../../shared/types";
 import type { ModelConfig, OrchestratorCallType, MissionModelConfig } from "../../../shared/types";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_CONTEXT_VIEW_POLICIES,
-  DEFAULT_INTEGRATION_PR_POLICY
-} from "../../../shared/types";
-import { resolveCallTypeModel, modelConfigToServiceModel, thinkingLevelToReasoningEffort, legacyToModelConfig } from "../../../shared/modelProfiles";
-import { resolveExecutionPolicy, DEFAULT_EXECUTION_POLICY, buildExecutionPlanPreview } from "./executionPolicy";
+  DEFAULT_INTEGRATION_PR_POLICY,
+  SLASH_COMMAND_TRANSLATIONS,
+} from "./orchestratorConstants";
+import { modelConfigToServiceModel, thinkingLevelToReasoningEffort, legacyToModelConfig } from "../../../shared/modelProfiles";
+import { DEFAULT_EXECUTION_POLICY, buildExecutionPlanPreview } from "./executionPolicy";
 import { getModelById, getAvailableModels, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { detectAllAuth } from "../ai/authDetector";
 import type { Logger } from "../logging/logger";
@@ -109,10 +102,17 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPrService } from "../prs/prService";
+import { createMemoryService } from "../memory/memoryService";
 import { planMissionOnce, plannerPlanToMissionSteps, MissionPlanningError, cleanupPlanTempFiles } from "../missions/missionPlanningService";
 import { analyzeForFanOut, type MetaReasonerRunState } from "./metaReasoner";
 import { CoordinatorAgent } from "./coordinatorAgent";
 import { routeEventToCoordinator } from "./runtimeEventRouter";
+import {
+  deleteCoordinatorCheckpoint,
+  readCoordinatorCheckpoint,
+  readMissionStateDocument,
+  updateMissionStateDocument,
+} from "./missionStateDoc";
 
 // ── Module imports (extracted from this file) ────────────────────
 import type {
@@ -151,7 +151,6 @@ import {
   PLAN_REVIEW_INTERVENTION_TITLE,
   STEERING_DIRECTIVES_METADATA_KEY,
   ORCHESTRATOR_CHAT_METADATA_KEY,
-  ORCHESTRATOR_CHAT_SESSION_METADATA_KEY,
   MAX_PERSISTED_STEERING_DIRECTIVES,
   MAX_PERSISTED_CHAT_MESSAGES,
   HEALTH_SWEEP_INTERVAL_MS,
@@ -159,11 +158,9 @@ import {
   STALE_ATTEMPT_GRACE_MS,
   WORKER_WAITING_INPUT_INTERVENTION_COOLDOWN_MS,
   WORKER_EVENT_HEARTBEAT_INTERVAL_MS,
-  MAX_CHAT_CONTEXT_CHARS,
   MAX_CHAT_CONTEXT_MESSAGES,
   MAX_CHAT_LINE_CHARS,
   MAX_LATEST_CHAT_MESSAGE_CHARS,
-  SESSION_SIGNAL_RETENTION_MS,
   GRACEFUL_CANCEL_NOTIFY_TIMEOUT_MS,
   GRACEFUL_CANCEL_INTERRUPT_TIMEOUT_MS,
   GRACEFUL_CANCEL_DISPOSE_TIMEOUT_MS,
@@ -172,7 +169,6 @@ import {
   MAX_STEERING_CONTEXT_DIRECTIVES,
   MAX_STEERING_CONTEXT_CHARS,
   MAX_STEERING_DIRECTIVES_PER_STEP,
-  ATTEMPT_RUNTIME_PERSIST_INTERVAL_MS,
   MAX_RUNTIME_SIGNAL_PREVIEW_CHARS,
   DEFAULT_METRIC_TOGGLES,
   KNOWN_METRIC_TOGGLES,
@@ -201,7 +197,6 @@ import {
   ORCHESTRATOR_HOOK_MAX_TIMEOUT_MS,
   ORCHESTRATOR_HOOK_MAX_CAPTURE_CHARS,
   ORCHESTRATOR_HOOK_LOG_PREVIEW_CHARS,
-  DECISION_TIMEOUT_CAP_MS_BY_HOURS,
   TRANSIENT_ERROR_CLASSES,
   CALL_TYPE_DEFAULTS,
   // Utility functions
@@ -210,16 +205,12 @@ import {
   runBestEffortWithTimeout,
   isRecord,
   asBool,
-  asString,
-  parseSteeringDirective,
   parseChatVisibility,
   classifyFailureTier,
   parseChatDeliveryState,
   parseChatTarget,
   parseThreadType,
-  fallbackLegacyChatMessageId,
   parseChatMessage,
-  parseChatSessionState,
   normalizeSignalText,
   digestSignalText,
   buildQuestionThreadLink,
@@ -230,8 +221,6 @@ import {
   workerStateFromRuntimeSignal,
   parseTerminalRuntimeState,
   clipHookLogText,
-  parseOrchestratorHookConfig,
-  readOrchestratorHooksConfig,
   parseJsonRecord,
   parseJsonArray,
   missionThreadId,
@@ -250,13 +239,9 @@ import {
   deriveMissionStatusFromRun,
   buildOutcomeSummary,
   buildConflictResolutionInstructions,
-  normalizeReasoningEffort,
   extractRunFailureMessage,
-  inferPrStrategy,
   runOrchestratorHookCommand,
-  deriveRuntimeProfileFromPolicy,
   getModelCapabilities,
-  getModelCapabilitiesFromRegistry,
 } from "./orchestratorContext";
 
 // Re-export public functions that external consumers depend on
@@ -269,8 +254,8 @@ import {
 
 // Import from runtime event router module
 import {
-  buildRunStateSnapshot,
-  pruneSessionRuntimeSignals,
+  buildRunStateSnapshot as buildRunStateSnapshotCtx,
+  pruneSessionRuntimeSignals as pruneSessionRuntimeSignalsCtx,
 } from "./runtimeEventRouter";
 
 // Import from mission lifecycle module
@@ -282,6 +267,36 @@ import {
   slugify,
   isParallelCandidateStepType,
   toStepKey,
+  stepTitleForMessage,
+  isRetryQueuedForStep,
+  extractOutcomeTags,
+  resolveAttemptOwnerId,
+  resolveAttemptOwnerIdFromRows,
+  isAllowedStepCompletionMissionStatus,
+  validateTransitionDecisionSafety,
+  deriveTransitionMissionStatus,
+  summarizeCurrentPlanForReplan,
+  TERMINAL_PHASE_STEP_STATUSES,
+  applyAIDecisionDirectives as applyAIDecisionDirectivesCtx,
+  discoverProjectDocs as discoverProjectDocsCtx,
+  buildStepInputsFromMissionSteps as buildStepInputsFromMissionStepsCtx,
+  resolveActivePolicy as resolveActivePolicyCtx,
+  resolveActiveRuntimeProfile as resolveActiveRuntimeProfileCtx,
+  resolveMissionParallelismCap as resolveMissionParallelismCapCtx,
+  resolveMissionLaneStrategyParallelismCap as resolveMissionLaneStrategyParallelismCapCtx,
+  transitionMissionStatus as transitionMissionStatusCtx,
+  resolveMissionObjectiveForReplan as resolveMissionObjectiveForReplanCtx,
+  getMaxCoordinatorRecoveries as getMaxCoordinatorRecoveriesCtx,
+  requestMissionReplanAnalysis as requestMissionReplanAnalysisCtx,
+  formatReplanInterventionBody,
+  dispatchOrchestratorHookCtx,
+  maybeDispatchTeammateIdleHookCtx,
+} from "./missionLifecycle";
+import type { HookDispatchDeps } from "./missionLifecycle";
+import type {
+  AiTransitionDirectives,
+  AiTransitionDecision,
+  MissionReplanAnalysis,
 } from "./missionLifecycle";
 
 // Import from planning pipeline module
@@ -293,59 +308,147 @@ import {
 
 // Quality gate module imports removed — quality evaluation is the coordinator's domain
 
+// Import from team runtime config module
+import {
+  DEFAULT_MISSION_POLICY_FLAGS,
+  DEFAULT_TEAM_TEMPLATE,
+  resolveMissionTeamRuntime as resolveMissionTeamRuntimeCtx,
+  normalizeTeamRuntimeConfig as normalizeTeamRuntimeConfigFn,
+} from "./teamRuntimeConfig";
+
+// Import from team runtime state module
+import {
+  registerTeamMember as registerTeamMemberCtx,
+  updateTeamMemberStatus as updateTeamMemberStatusCtx,
+  getTeamMembersForRun as getTeamMembersForRunCtx,
+  initTeamRuntimeState as initTeamRuntimeStateCtx,
+  updateTeamRuntimePhase as updateTeamRuntimePhaseCtx,
+  getTeamRuntimeStateForRun as getTeamRuntimeStateForRunCtx,
+} from "./teamRuntimeState";
+
 // Import from chat message module
 import {
-  emitThreadEvent,
-  getMissionMetadata,
-  updateMissionMetadata,
-  getMissionIdentity,
-  getMissionIdForRun,
-  getRunMetadata,
-  updateRunMetadata,
-  loadSteeringDirectivesFromMetadata,
-  loadChatMessagesFromMetadata,
-  loadChatSessionStateFromMetadata,
-  persistChatSessionState,
+  emitThreadEvent as emitThreadEventCtx,
+  getMissionMetadata as getMissionMetadataCtx,
+  updateMissionMetadata as updateMissionMetadataCtx,
+  getMissionIdentity as getMissionIdentityCtx,
+  getMissionIdForRun as getMissionIdForRunCtx,
+  getRunMetadata as getRunMetadataCtx,
+  updateRunMetadata as updateRunMetadataCtx,
+  loadSteeringDirectivesFromMetadata as loadSteeringDirectivesCtx,
+  loadChatMessagesFromMetadata as loadChatMessagesCtx,
+  loadChatSessionStateFromMetadata as loadChatSessionStateCtx,
+  persistChatSessionState as persistChatSessionStateCtx,
   formatRecentChatContext,
-  buildRecentChatContext,
-  formatOrchestratorContent,
-  emitOrchestratorMessage,
-  parseMentions,
+  buildRecentChatContext as buildRecentChatContextCtx,
+  formatOrchestratorContent as formatOrchestratorContentCtx,
+  emitOrchestratorMessage as emitOrchestratorMessageCtx,
   normalizeDeliveryError,
   isBusyDeliveryError,
   isNoActiveTurnError,
   computeWorkerRetryBackoffMs,
+  getThreadById as getThreadByIdCtx,
+  upsertThread as upsertThreadCtx,
+  ensureMissionThread as ensureMissionThreadCtx,
+  ensureThreadForTarget as ensureThreadForTargetCtx,
+  parseChatMessageRow as parseChatMessageRowCtx,
+  getChatMessageById as getChatMessageByIdCtx,
+  loadChatMessagesFromDb as loadChatMessagesFromDbCtx,
+  parseThreadRow as parseThreadRowCtx,
+  summarizeRunForChat as summarizeRunForChatCtx,
+  persistUpdatedChatMessage as persistUpdatedChatMessageCtx,
+  updateChatMessage as updateChatMessageCtx,
+  appendChatMessageCtx,
+  listChatThreadsCtx,
+  getThreadMessagesCtx,
+  sendWorkersBroadcastMessageCtx,
+  sendThreadMessageCtx,
+  sendChatCtx,
+  getChatCtx,
+  sendAgentMessageCtx,
+  parseMentionsCtx,
+  routeMessageCtx,
+  deliverMessageToAgentCtx,
+  getGlobalChatCtx,
+  getActiveAgentsCtx,
+  sendAgentMessageWithMentionsCtx,
+  backfillLegacyThreadMessagesCtx,
+  reconcileMissingThreadRowsCtx,
+  reconcileWorkerThreadLinksCtx,
+  reconcileUnreadSanityCtx,
+  reconcileThreadedMessagingStateCtx,
 } from "./chatMessageService";
+import type { ChatRoutingDeps, ReconciliationDeps } from "./chatMessageService";
 
 // Import from worker tracking module
 import {
-  getWorkerStates,
-  upsertWorkerState,
-  parseWorkerDigestRow,
-  listWorkerDigests,
-  getWorkerDigest,
-  getContextCheckpoint,
-  listLaneDecisions,
+  getWorkerStates as getWorkerStatesCtx,
+  upsertWorkerState as upsertWorkerStateCtx,
+  parseWorkerDigestRow as parseWorkerDigestRowCtx,
+  listWorkerDigests as listWorkerDigestsCtx,
+  getWorkerDigest as getWorkerDigestCtx,
+  getContextCheckpoint as getContextCheckpointCtx,
+  listLaneDecisions as listLaneDecisionsCtx,
+  buildWorkerDigestFromAttempt as buildWorkerDigestFromAttemptCtx,
+  emitWorkerDigest as emitWorkerDigestCtx,
+  extractAndRegisterArtifacts as extractAndRegisterArtifactsCtx,
+  updateWorkerStateFromEventCtx,
 } from "./workerTracking";
+import type { UpdateWorkerStateDeps } from "./workerTracking";
 
-// Import from metrics and usage module
 import {
-  estimateTokenCost,
-  getAggregatedUsage,
-  propagateAttemptTokenUsage,
-  setMissionMetricsConfig,
+  setMissionMetricsConfig as setMissionMetricsConfigCtx,
+  getMissionMetrics as getMissionMetricsCtx,
+  getAggregatedUsage as getAggregatedUsageCtx,
+  propagateAttemptTokenUsage as propagateAttemptTokenUsageCtx,
+  createContextCheckpoint as createContextCheckpointCtx,
+  recordLaneDecision as recordLaneDecisionCtx,
+  recordMissionMetricSample as recordMissionMetricSampleCtx,
 } from "./metricsAndUsage";
 
 // Import from recovery service module
 import {
-  ensureAttemptRuntimeTracker,
-  updateAttemptStagnationTracker,
+  ensureAttemptRuntimeTracker as ensureAttemptRuntimeTrackerCtx,
+  updateAttemptStagnationTracker as updateAttemptStagnationTrackerCtx,
+  getTrackedSessionState as getTrackedSessionStateCtx,
+  listRunningAttemptsForSession as listRunningAttemptsForSessionCtx,
+  hydratePersistedAttemptRuntimeState as hydratePersistedAttemptRuntimeStateCtx,
+  deletePersistedAttemptRuntimeState as deletePersistedAttemptRuntimeStateCtx,
+  persistAttemptRuntimeState as persistAttemptRuntimeStateCtx,
 } from "./recoveryService";
 
+// Import from model config resolver module
+import {
+  resolveCallTypeConfig as resolveCallTypeConfigCtx,
+  resolveMissionLaunchPlannerModel as resolveMissionLaunchPlannerModelCtx,
+  resolveMissionDecisionTimeoutCapMs as resolveMissionDecisionTimeoutCapMsCtx,
+  resolveAiDecisionLikeTimeoutMs as resolveAiDecisionLikeTimeoutMsCtx,
+  resolveOrchestratorModelConfig as resolveOrchestratorModelConfigCtx,
+  resolveOrchestratorModel as resolveOrchestratorModelCtx,
+  resolveMissionModelConfig as resolveMissionModelConfigCtx,
+} from "./modelConfigResolver";
 
-function budgetToEffort(budget: number): "low" | "medium" | "high" {
-  return budget < 1000 ? "low" : budget < 5000 ? "medium" : "high";
-}
+// Import from worker delivery module
+import {
+  readWorkerDeliveryMetadataCtx,
+  selectAttemptDeliveryContextCtx,
+  resolveWorkerDeliveryContextCtx,
+  persistThreadWorkerLinksCtx,
+  upsertWorkerDeliveryInterventionCtx,
+  updateWorkerDeliveryStateCtx,
+  markWorkerDeliveryInFlightCtx,
+  failWorkerDeliveryStaleInFlightCtx,
+  resolveWorkerDeliverySessionCtx,
+  sendWorkerMessageToSessionCtx,
+  sendWorkerMessageToSessionWithStatusCtx,
+  deliverWorkerMessageCtx,
+  replayQueuedWorkerMessagesCtx,
+  routeMessageToCoordinatorCtx,
+  maybeEmitWorkerQueuedNoticeCtx,
+  routeMessageToWorkerCtx,
+} from "./workerDeliveryService";
+import type { WorkerDeliveryDeps, RouteToCoordinatorDeps } from "./workerDeliveryService";
+
 
 export function createAiOrchestratorService(args: {
   db: AdeDb;
@@ -379,6 +482,7 @@ export function createAiOrchestratorService(args: {
     onDagMutation,
     hookCommandRunner = runOrchestratorHookCommand
   } = args;
+  const plannerMemoryService = createMemoryService(db);
   const syncLocks = new Set<string>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
   const activeSteeringDirectives = new Map<string, UserSteeringDirective[]>();
@@ -396,29 +500,74 @@ export function createAiOrchestratorService(args: {
   const workerDeliveryInterventionCooldowns = new Map<string, number>();
   const runTeamManifests = new Map<string, TeamManifest>();
   const runRecoveryLoopStates = new Map<string, RecoveryLoopState>();
-  // Deterministic decision lock sets removed
-
-
-  /** Tracks active integration resolution contexts so we can resume after worker steps complete. Keyed by runId. */
-  type PendingIntegrationContext = {
-    proposalId: string;
-    missionId: string;
-    integrationLaneName: string;
-    integrationLaneId: string;
-    baseBranch: string;
-    isDraft: boolean;
-    prDepth: PrDepth;
-    conflictStepKeys: string[];      // step keys of the conflict resolution workers
-    reviewStepKey: string | null;     // step key of the PR review worker (open-and-comment only)
-    laneIdArray: string[];
-    missionTitle: string;
-  };
   const pendingIntegrations = new Map<string, PendingIntegrationContext>();
-
-  let healthSweepTimer: NodeJS.Timeout | null = null;
-  let disposed = false;
-  /** Debounce timers for event-driven coordinator evaluations, keyed by runId. */
   const pendingCoordinatorEvals = new Map<string, NodeJS.Timeout>();
+  const milestoneReadyNotificationSignatures = new Map<string, string>();
+
+  // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
+  const coordinatorAgents = new Map<string, CoordinatorAgent>();
+  const coordinatorRecoveryAttempts = new Map<string, number>();
+
+  // Team runtime state tracking
+  const teamRuntimeStates = new Map<string, OrchestratorTeamRuntimeState>();
+
+  // Call type config cache
+  const callTypeConfigCache = new Map<string, { config: ResolvedCallTypeConfig; expiresAt: number }>();
+
+  // Scalar mutable state wrapped for ctx
+  const disposedRef = { current: false };
+  const healthSweepTimerRef = { current: null as NodeJS.Timeout | null };
+  // Legacy compat: local `disposed` and `healthSweepTimer` aliases
+  let disposed = false;
+  let healthSweepTimer: NodeJS.Timeout | null = null;
+
+  // ── OrchestratorContext — shared state for extracted modules ──
+  const ctx: import("./orchestratorContext").OrchestratorContext = {
+    db,
+    logger,
+    missionService,
+    orchestratorService,
+    agentChatService: agentChatService ?? null,
+    laneService: laneService ?? null,
+    projectConfigService: projectConfigService ?? null,
+    aiIntegrationService: aiIntegrationService ?? null,
+    prService: prService ?? null,
+    missionBudgetService: missionBudgetService ?? null,
+    projectRoot,
+    onThreadEvent,
+    onDagMutation,
+    hookCommandRunner,
+    syncLocks,
+    workerStates,
+    activeSteeringDirectives,
+    runRuntimeProfiles,
+    chatMessages,
+    activeChatSessions,
+    chatTurnQueues,
+    plannerSessionByMissionId,
+    plannerSessionBySessionId,
+    activeHealthSweepRuns,
+    sessionRuntimeSignals,
+    attemptRuntimeTrackers,
+    sessionSignalQueues,
+    workerDeliveryThreadQueues,
+    workerDeliveryInterventionCooldowns,
+    runTeamManifests,
+    runRecoveryLoopStates,
+    aiTimeoutBudgetStepLocks: new Set(),
+    aiTimeoutBudgetRunLocks: new Set(),
+    aiRetryDecisionLocks: new Set(),
+    coordinatorSessions: new Map(),
+    pendingIntegrations,
+    coordinatorThinkingLoops: new Map(),
+    pendingCoordinatorEvals,
+    coordinatorAgents,
+    coordinatorRecoveryAttempts,
+    teamRuntimeStates,
+    callTypeConfigCache,
+    disposed: disposedRef,
+    healthSweepTimer: healthSweepTimerRef,
+  };
 
   /** Purge per-run Map entries when a run reaches terminal status. */
   const purgeRunMaps = (runId: string): void => {
@@ -426,402 +575,30 @@ export function createAiOrchestratorService(args: {
     runRecoveryLoopStates.delete(runId);
     pendingIntegrations.delete(runId);
     teamRuntimeStates.delete(runId);
+    for (const key of milestoneReadyNotificationSignatures.keys()) {
+      if (key.startsWith(`${runId}::`)) {
+        milestoneReadyNotificationSignatures.delete(key);
+      }
+    }
     const evalTimer = pendingCoordinatorEvals.get(runId);
     if (evalTimer) {
       clearTimeout(evalTimer);
       pendingCoordinatorEvals.delete(runId);
     }
   };
+  // Delegated to missionLifecycle.ts
+  const getMaxCoordinatorRecoveries = (missionId?: string | null) => getMaxCoordinatorRecoveriesCtx(ctx, missionId);
 
-  // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
-  const coordinatorAgents = new Map<string, CoordinatorAgent>();
-  const coordinatorRecoveryAttempts = new Map<string, number>();
-  const DEFAULT_MAX_COORDINATOR_RECOVERIES = 3;
+  // ── Orchestrator Call Type Resolution (delegated to modelConfigResolver) ──
+  const resolveCallTypeConfig = (missionId: string, callType: OrchestratorCallType) =>
+    resolveCallTypeConfigCtx(ctx, missionId, callType);
 
-  const getMaxCoordinatorRecoveries = (missionId?: string | null): number => {
-    // Check mission-specific metadata first
-    if (missionId) {
-      try {
-        const metadata = getMissionMetadata(missionId);
-        const missionMax = (metadata as Record<string, unknown>)?.maxCoordinatorRecoveries;
-        if (typeof missionMax === "number" && Number.isFinite(missionMax) && missionMax >= 0) {
-          return missionMax;
-        }
-      } catch { /* fall through */ }
-    }
-    // Then project config
-    try {
-      const config = readConfig(projectConfigService);
-      const execPolicy = config.defaultExecutionPolicy;
-      const policyMax = (execPolicy as Record<string, unknown> | null)?.maxCoordinatorRecoveries;
-      if (typeof policyMax === "number" && Number.isFinite(policyMax) && policyMax >= 0) {
-        return policyMax;
-      }
-    } catch { /* use default */ }
-    return DEFAULT_MAX_COORDINATOR_RECOVERIES;
-  };
+  // ── Team runtime config (delegated to teamRuntimeConfig module) ──
+  const resolveMissionTeamRuntime = (missionId: string) => resolveMissionTeamRuntimeCtx(ctx, missionId);
+  const normalizeTeamRuntimeConfig = (missionId: string, config: TeamRuntimeConfig) => normalizeTeamRuntimeConfigFn(missionId, config);
 
-  // Team runtime state tracking
-  const teamRuntimeStates = new Map<string, OrchestratorTeamRuntimeState>();
-
-  // ── Orchestrator Call Type Resolution ─────────────────────────────
-  // Only coordinator-legitimate call types remain. Deterministic per-micro-decision
-  // routing has been removed — the coordinator AI handles all tactical decisions.
-  // Type and defaults imported from orchestratorContext.
-
-  const callTypeConfigCache = new Map<string, { config: ResolvedCallTypeConfig; expiresAt: number }>();
-  const CALL_TYPE_CONFIG_TTL_MS = 30_000;
-
-  const resolveCallTypeConfig = (missionId: string, callType: OrchestratorCallType): ResolvedCallTypeConfig => {
-    const cacheKey = `${missionId}:${callType}`;
-    const cached = callTypeConfigCache.get(cacheKey);
-    if (cached && Date.now() < cached.expiresAt) return cached.config;
-    const config = resolveCallTypeConfigUncached(missionId, callType);
-    callTypeConfigCache.set(cacheKey, { config, expiresAt: Date.now() + CALL_TYPE_CONFIG_TTL_MS });
-    return config;
-  };
-
-  const resolveCallTypeConfigUncached = (missionId: string, callType: OrchestratorCallType): ResolvedCallTypeConfig => {
-    const defaults = CALL_TYPE_DEFAULTS[callType];
-    try {
-      const row = db.get<{ metadata_json: string | null }>(
-        "select metadata_json from missions where id = ? limit 1",
-        [missionId]
-      );
-      if (row?.metadata_json) {
-        const metadata = JSON.parse(row.metadata_json);
-        const launch = isRecord(metadata.launch) ? metadata.launch : null;
-
-        // Priority 1: Per-call-type intelligence config (most specific)
-        const intelligenceConfig = launch && isRecord(launch.intelligenceConfig) ? launch.intelligenceConfig : null;
-        if (intelligenceConfig) {
-          const callConfig = isRecord(intelligenceConfig[callType]) ? intelligenceConfig[callType] : null;
-          if (callConfig) {
-            return {
-              provider: typeof callConfig.provider === "string" ? callConfig.provider as "claude" | "codex" : defaults.provider,
-              model: typeof callConfig.modelId === "string" ? callConfig.modelId : defaults.model,
-              reasoningEffort: typeof callConfig.thinkingLevel === "string" ? callConfig.thinkingLevel : defaults.reasoningEffort,
-            };
-          }
-        }
-
-        // Priority 2: Top-level orchestratorModel (applies to all call types)
-        const topLevelModel = typeof launch?.orchestratorModel === "string" ? launch.orchestratorModel.trim().toLowerCase() : null;
-        if (topLevelModel && (topLevelModel === "opus" || topLevelModel === "sonnet" || topLevelModel === "haiku")) {
-          // Also check thinkingBudgets for per-call-type reasoning effort override
-          const thinkingBudgets = launch && isRecord(launch.thinkingBudgets) ? launch.thinkingBudgets : null;
-          const budgetForCallType = thinkingBudgets && typeof thinkingBudgets[callType] === "number" ? thinkingBudgets[callType] : null;
-          const budgetEffort = budgetForCallType != null ? budgetToEffort(budgetForCallType as number) : null;
-          return {
-            provider: "claude",
-            model: topLevelModel,
-            reasoningEffort: budgetEffort ?? defaults.reasoningEffort,
-          };
-        }
-
-        // Also check thinkingBudgets even without explicit model override
-        const thinkingBudgets = launch && isRecord(launch.thinkingBudgets) ? launch.thinkingBudgets : null;
-        if (thinkingBudgets) {
-          const budgetForCallType = typeof thinkingBudgets[callType] === "number" ? thinkingBudgets[callType] : null;
-          if (budgetForCallType != null) {
-            const budgetEffort = budgetToEffort(budgetForCallType as number);
-            return { ...defaults, reasoningEffort: budgetEffort };
-          }
-        }
-      }
-    } catch { /* ignore parse errors */ }
-    // Priority 3: Built-in defaults per call type
-    return defaults;
-  };
-
-  const DEFAULT_MISSION_POLICY_FLAGS: MissionPolicyFlags = {
-    clarificationMode: "auto_if_uncertain",
-    maxClarificationQuestions: 5,
-    strictTdd: false,
-    requireValidatorPass: true,
-    maxParallelWorkers: 4,
-    riskApprovalMode: "confirm_high_risk"
-  };
-
-  const REQUIRED_TEAM_CAPABILITIES = ["coordinator", "planner", "validator"] as const;
-
-  const DEFAULT_TEAM_TEMPLATE: TeamTemplate = {
-    id: "default-autonomy-template",
-    name: "Autonomous Team",
-    roles: [
-      {
-        name: "coordinator",
-        description: "Mission lead that plans, delegates, and decides recovery strategy.",
-        capabilities: ["coordinator", "planner"],
-        defaultModel: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "high" },
-        maxInstances: 1,
-        toolProfile: {
-          allowedTools: [
-            "spawn_worker",
-            "request_specialist",
-            "revise_plan",
-            "retry_step",
-            "skip_step",
-            "read_mission_status",
-            "message_worker",
-            "read_file",
-            "search_files",
-            "get_project_context",
-            "report_status",
-            "report_result",
-            "report_validation",
-            "update_tool_profiles",
-            "transfer_lane"
-          ]
-        }
-      },
-      {
-        name: "implementer",
-        description: "Executes implementation tasks and reports structured progress/results.",
-        capabilities: ["implementation"],
-        defaultModel: { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
-        maxInstances: 12
-      },
-      {
-        name: "validator",
-        description: "Validates outputs at gates and returns actionable remediation guidance.",
-        capabilities: ["validator", "review", "testing"],
-        defaultModel: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
-        maxInstances: 4
-      }
-    ],
-    policyDefaults: DEFAULT_MISSION_POLICY_FLAGS,
-    constraints: {
-      maxWorkers: 20,
-      requiredRoles: [...REQUIRED_TEAM_CAPABILITIES]
-    }
-  };
-
-  const toClampedToolProfileMap = (value: unknown): TeamRuntimeConfig["toolProfiles"] => {
-    if (!isRecord(value)) return undefined;
-    const out: Record<string, { allowedTools: string[]; blockedTools?: string[]; mcpServers?: string[]; notes?: string }> = {};
-    for (const [key, raw] of Object.entries(value)) {
-      if (!isRecord(raw)) continue;
-      const allowedTools = Array.isArray(raw.allowedTools)
-        ? raw.allowedTools.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-        : [];
-      if (!allowedTools.length) continue;
-      const blockedTools = Array.isArray(raw.blockedTools)
-        ? raw.blockedTools.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-        : undefined;
-      const mcpServers = Array.isArray(raw.mcpServers)
-        ? raw.mcpServers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-        : undefined;
-      out[key] = {
-        allowedTools,
-        ...(blockedTools && blockedTools.length > 0 ? { blockedTools } : {}),
-        ...(mcpServers && mcpServers.length > 0 ? { mcpServers } : {}),
-        ...(typeof raw.notes === "string" && raw.notes.trim().length > 0 ? { notes: raw.notes.trim() } : {})
-      };
-    }
-    return Object.keys(out).length > 0 ? out : undefined;
-  };
-
-  const parsePolicyFlags = (value: unknown): MissionPolicyFlags | undefined => {
-    if (!isRecord(value)) return undefined;
-    const maxQuestions = Number(value.maxClarificationQuestions);
-    const maxParallelWorkers = Number(value.maxParallelWorkers);
-    return {
-      clarificationMode:
-        value.clarificationMode === "always" ||
-        value.clarificationMode === "auto_if_uncertain" ||
-        value.clarificationMode === "off"
-          ? value.clarificationMode
-          : undefined,
-      maxClarificationQuestions: Number.isFinite(maxQuestions) ? Math.max(1, Math.min(20, Math.floor(maxQuestions))) : undefined,
-      strictTdd: typeof value.strictTdd === "boolean" ? value.strictTdd : undefined,
-      requireValidatorPass: typeof value.requireValidatorPass === "boolean" ? value.requireValidatorPass : undefined,
-      maxParallelWorkers: Number.isFinite(maxParallelWorkers) ? Math.max(1, Math.min(32, Math.floor(maxParallelWorkers))) : undefined,
-      riskApprovalMode:
-        value.riskApprovalMode === "auto" ||
-        value.riskApprovalMode === "confirm_high_risk" ||
-        value.riskApprovalMode === "confirm_all"
-          ? value.riskApprovalMode
-          : undefined
-    };
-  };
-
-  const parseRoleDefinition = (value: unknown): RoleDefinition | null => {
-    if (!isRecord(value)) return null;
-    const name = typeof value.name === "string" ? value.name.trim() : "";
-    if (!name.length) return null;
-    const description = typeof value.description === "string" ? value.description.trim() : "";
-    const capabilities = Array.isArray(value.capabilities)
-      ? value.capabilities.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-      : [];
-    const defaultModel = isRecord(value.defaultModel) ? value.defaultModel : null;
-    const provider = defaultModel?.provider === "claude" || defaultModel?.provider === "codex" ? defaultModel.provider : null;
-    const modelId = typeof defaultModel?.modelId === "string" ? defaultModel.modelId.trim() : "";
-    if (!provider || !modelId.length) return null;
-    const maxInstancesRaw = Number(value.maxInstances);
-    return {
-      name,
-      description: description.length ? description : `${name} role`,
-      capabilities,
-      defaultModel: {
-        provider,
-        modelId,
-        ...(defaultModel?.thinkingLevel && typeof defaultModel.thinkingLevel === "string"
-          ? { thinkingLevel: defaultModel.thinkingLevel as ModelConfig["thinkingLevel"] }
-          : {})
-      },
-      ...(Number.isFinite(maxInstancesRaw) && maxInstancesRaw > 0
-        ? { maxInstances: Math.max(1, Math.min(100, Math.floor(maxInstancesRaw))) }
-        : {})
-    };
-  };
-
-  const parseTeamTemplate = (value: unknown): TeamTemplate | null => {
-    if (!isRecord(value)) return null;
-    const id = typeof value.id === "string" && value.id.trim().length > 0
-      ? value.id.trim()
-      : DEFAULT_TEAM_TEMPLATE.id;
-    const name = typeof value.name === "string" && value.name.trim().length > 0
-      ? value.name.trim()
-      : DEFAULT_TEAM_TEMPLATE.name;
-    const roles = Array.isArray(value.roles)
-      ? value.roles.map((entry) => parseRoleDefinition(entry)).filter((entry): entry is RoleDefinition => !!entry)
-      : [];
-    const constraints = isRecord(value.constraints) ? value.constraints : null;
-    const maxWorkersRaw = Number(constraints?.maxWorkers);
-    const requiredRoles = Array.isArray(constraints?.requiredRoles)
-      ? constraints.requiredRoles.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-      : [...REQUIRED_TEAM_CAPABILITIES];
-    return {
-      id,
-      name,
-      roles: roles.length > 0 ? roles : DEFAULT_TEAM_TEMPLATE.roles,
-      policyDefaults: {
-        ...DEFAULT_MISSION_POLICY_FLAGS,
-        ...(parsePolicyFlags(value.policyDefaults) ?? {})
-      },
-      constraints: {
-        maxWorkers: Number.isFinite(maxWorkersRaw) ? Math.max(1, Math.min(100, Math.floor(maxWorkersRaw))) : DEFAULT_TEAM_TEMPLATE.constraints.maxWorkers,
-        requiredRoles
-      }
-    };
-  };
-
-  const missingRequiredCapabilities = (template: TeamTemplate): string[] => {
-    const roleNames = new Set(template.roles.map((role) => role.name.toLowerCase()));
-    const roleCapabilities = new Set(
-      template.roles.flatMap((role) => role.capabilities.map((capability) => capability.toLowerCase()))
-    );
-    const required = template.constraints.requiredRoles.length
-      ? template.constraints.requiredRoles
-      : [...REQUIRED_TEAM_CAPABILITIES];
-    const missing: string[] = [];
-    for (const requiredEntry of required) {
-      const normalized = requiredEntry.toLowerCase();
-      if (roleNames.has(normalized)) continue;
-      if (roleCapabilities.has(normalized)) continue;
-      missing.push(requiredEntry);
-    }
-    return missing;
-  };
-
-  /** Resolve team runtime config from mission launch metadata */
-  const resolveMissionTeamRuntime = (missionId: string): TeamRuntimeConfig | null => {
-    try {
-      const row = db.get<{ metadata_json: string | null }>(
-        "select metadata_json from missions where id = ? limit 1",
-        [missionId]
-      );
-      if (row?.metadata_json) {
-        const metadata = JSON.parse(row.metadata_json);
-        const launch = isRecord(metadata.launch) ? metadata.launch : null;
-        const teamRuntime = launch && isRecord(launch.teamRuntime) ? launch.teamRuntime : null;
-        if (teamRuntime && teamRuntime.enabled === true) {
-          const parsedTemplate = parseTeamTemplate(teamRuntime.template);
-          const template = parsedTemplate ?? DEFAULT_TEAM_TEMPLATE;
-          const missing = missingRequiredCapabilities(template);
-          if (missing.length > 0) {
-            throw new Error(`teamRuntime template missing required roles/capabilities: ${missing.join(", ")}`);
-          }
-          const teammateCount = typeof teamRuntime.teammateCount === "number"
-            ? Math.max(0, Math.min(20, Math.floor(teamRuntime.teammateCount)))
-            : 2;
-          const boundedTeammateCount = Math.min(teammateCount, Math.max(0, template.constraints.maxWorkers - 1));
-          return {
-            enabled: true,
-            targetProvider: (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "codex") ? teamRuntime.targetProvider : "auto",
-            teammateCount: boundedTeammateCount,
-            template,
-            toolProfiles: toClampedToolProfileMap(teamRuntime.toolProfiles),
-            mcpServerAllowlist: Array.isArray(teamRuntime.mcpServerAllowlist)
-              ? (teamRuntime.mcpServerAllowlist as unknown[])
-                  .map((entry: unknown) => String(entry ?? "").trim())
-                  .filter((entry) => entry.length > 0)
-              : undefined,
-            policyOverrides: parsePolicyFlags(teamRuntime.policyOverrides)
-          };
-        }
-      }
-    } catch (error) {
-      logger.warn("ai_orchestrator.team_runtime_config_invalid", {
-        missionId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      throw error;
-    }
-    return null;
-  };
-
-  const normalizeTeamRuntimeConfig = (missionId: string, config: TeamRuntimeConfig): TeamRuntimeConfig => {
-    if (!config.enabled) return config;
-    const template = parseTeamTemplate(config.template) ?? DEFAULT_TEAM_TEMPLATE;
-    const missing = missingRequiredCapabilities(template);
-    if (missing.length > 0) {
-      throw new Error(`teamRuntime template missing required roles/capabilities: ${missing.join(", ")}`);
-    }
-    const teammateCount = Math.max(
-      0,
-      Math.min(
-        20,
-        Math.min(
-          Number.isFinite(Number(config.teammateCount)) ? Math.floor(Number(config.teammateCount)) : 2,
-          Math.max(0, template.constraints.maxWorkers - 1)
-        )
-      )
-    );
-    const policyOverrides = {
-      ...DEFAULT_MISSION_POLICY_FLAGS,
-      ...(config.policyOverrides ?? {})
-    };
-    return {
-      ...config,
-      targetProvider:
-        config.targetProvider === "claude" || config.targetProvider === "codex" || config.targetProvider === "auto"
-          ? config.targetProvider
-          : "auto",
-      teammateCount,
-      template,
-      policyOverrides
-    };
-  };
-
-  const emitThreadEvent = (event: Omit<OrchestratorThreadEvent, "at">) => {
-    if (disposed) return;
-    try {
-      onThreadEvent?.({
-        ...event,
-        at: nowIso()
-      });
-    } catch (error) {
-      logger.debug("ai_orchestrator.thread_event_emit_failed", {
-        type: event.type,
-        missionId: event.missionId,
-        threadId: event.threadId ?? null,
-        messageId: event.messageId ?? null,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
+  // ── Context-delegated helpers (wired to chatMessageService) ──────
+  const emitThreadEvent = (event: Omit<OrchestratorThreadEvent, "at">): void => emitThreadEventCtx(ctx, event);
 
   const emitDagMutation = (event: DagMutationEvent) => {
     if (disposed) return;
@@ -836,777 +613,49 @@ export function createAiOrchestratorService(args: {
     }
   };
 
-  const getMissionMetadata = (missionId: string): Record<string, unknown> => {
-    const row = db.get<{ metadata_json: string | null }>(
-      `select metadata_json from missions where id = ? limit 1`,
-      [missionId]
-    );
-    if (!row?.metadata_json) return {};
-    try {
-      return JSON.parse(row.metadata_json) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
-  };
+  const getMissionMetadata = (missionId: string): Record<string, unknown> => getMissionMetadataCtx(ctx, missionId);
+  const updateMissionMetadata = (missionId: string, mutate: (metadata: Record<string, unknown>) => void): void => updateMissionMetadataCtx(ctx, missionId, mutate);
+  const getMissionIdentity = (missionId: string) => getMissionIdentityCtx(ctx, missionId);
+  const getMissionIdForRun = (runId: string): string | null => getMissionIdForRunCtx(ctx, runId);
+  const getRunMetadata = (runId: string): Record<string, unknown> => getRunMetadataCtx(ctx, runId);
+  const updateRunMetadata = (runId: string, mutate: (metadata: Record<string, unknown>) => void): boolean => updateRunMetadataCtx(ctx, runId, mutate);
 
-  const updateMissionMetadata = (missionId: string, mutate: (metadata: Record<string, unknown>) => void) => {
-    const metadata = getMissionMetadata(missionId);
-    mutate(metadata);
-    db.run(
-      `update missions set metadata_json = ?, updated_at = ? where id = ?`,
-      [JSON.stringify(metadata), nowIso(), missionId]
-    );
-  };
+  // ── Thread management (delegated to chatMessageService) ─────────
+  const parseThreadRow = parseThreadRowCtx;
+  const getThreadById = (missionId: string, threadId: string) => getThreadByIdCtx(ctx, missionId, threadId);
+  const upsertThread = (args: Parameters<typeof upsertThreadCtx>[1]) => upsertThreadCtx(ctx, args);
+  const ensureMissionThread = (missionId: string) => ensureMissionThreadCtx(ctx, missionId);
+  const ensureThreadForTarget = (args: Parameters<typeof ensureThreadForTargetCtx>[1]) => ensureThreadForTargetCtx(ctx, args);
 
-  const getMissionIdentity = (missionId: string): { projectId: string; laneId: string | null } | null => {
-    const row = db.get<{ project_id: string; lane_id: string | null }>(
-      `select project_id, lane_id from missions where id = ? limit 1`,
-      [missionId]
-    );
-    if (!row?.project_id) return null;
-    return {
-      projectId: row.project_id,
-      laneId: row.lane_id ?? null
-    };
-  };
+  const loadSteeringDirectivesFromMetadata = (missionId: string) => loadSteeringDirectivesCtx(ctx, missionId);
+  const loadChatMessagesFromMetadata = (missionId: string) => loadChatMessagesCtx(ctx, missionId);
 
-  const getMissionIdForRun = (runId: string): string | null => {
-    const row = db.get<{ mission_id: string | null }>(
-      `select mission_id from orchestrator_runs where id = ? limit 1`,
-      [runId]
-    );
-    return toOptionalString(row?.mission_id);
-  };
+  const parseChatMessageRow = parseChatMessageRowCtx;
+  const getChatMessageById = (messageId: string) => getChatMessageByIdCtx(ctx, messageId);
 
-  const getRunMetadata = (runId: string): Record<string, unknown> => {
-    const row = db.get<{ metadata_json: string | null }>(
-      `select metadata_json from orchestrator_runs where id = ? limit 1`,
-      [runId]
-    );
-    if (!row?.metadata_json) return {};
-    try {
-      const parsed = JSON.parse(row.metadata_json);
-      return isRecord(parsed) ? parsed : {};
-    } catch {
-      return {};
-    }
-  };
-
-  const updateRunMetadata = (runId: string, mutate: (metadata: Record<string, unknown>) => void): boolean => {
-    const row = db.get<{ id: string; metadata_json: string | null }>(
-      `select id, metadata_json from orchestrator_runs where id = ? limit 1`,
-      [runId]
-    );
-    if (!row?.id) return false;
-    const metadata = (() => {
-      if (!row.metadata_json) return {} as Record<string, unknown>;
-      try {
-        const parsed = JSON.parse(row.metadata_json);
-        return isRecord(parsed) ? parsed : {};
-      } catch {
-        return {} as Record<string, unknown>;
-      }
-    })();
-    mutate(metadata);
-    db.run(
-      `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ?`,
-      [JSON.stringify(metadata), nowIso(), runId]
-    );
-    return true;
-  };
-
-  const parseThreadRow = (row: {
-    id: string;
-    mission_id: string;
-    thread_type: string;
-    title: string;
-    run_id: string | null;
-    step_id: string | null;
-    step_key: string | null;
-    attempt_id: string | null;
-    session_id: string | null;
-    lane_id: string | null;
-    status: string;
-    unread_count: number | null;
-    metadata_json: string | null;
-    created_at: string;
-    updated_at: string;
-  }): OrchestratorChatThread => {
-    return {
-      id: row.id,
-      missionId: row.mission_id,
-      threadType: normalizeThreadType(row.thread_type),
-      title: String(row.title ?? DEFAULT_CHAT_THREAD_TITLE),
-      runId: row.run_id ?? null,
-      stepId: row.step_id ?? null,
-      stepKey: row.step_key ?? null,
-      attemptId: row.attempt_id ?? null,
-      sessionId: row.session_id ?? null,
-      laneId: row.lane_id ?? null,
-      status: row.status === "closed" ? "closed" : "active",
-      unreadCount: Number.isFinite(Number(row.unread_count)) ? Math.max(0, Math.floor(Number(row.unread_count))) : 0,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      metadata: parseJsonRecord(row.metadata_json)
-    };
-  };
-
-  const getThreadById = (missionId: string, threadId: string): OrchestratorChatThread | null => {
-    const row = db.get<{
-      id: string;
-      mission_id: string;
-      thread_type: string;
-      title: string;
-      run_id: string | null;
-      step_id: string | null;
-      step_key: string | null;
-      attempt_id: string | null;
-      session_id: string | null;
-      lane_id: string | null;
-      status: string;
-      unread_count: number | null;
-      metadata_json: string | null;
-      created_at: string;
-      updated_at: string;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          thread_type,
-          title,
-          run_id,
-          step_id,
-          step_key,
-          attempt_id,
-          session_id,
-          lane_id,
-          status,
-          unread_count,
-          metadata_json,
-          created_at,
-          updated_at
-        from orchestrator_chat_threads
-        where mission_id = ?
-          and id = ?
-        limit 1
-      `,
-      [missionId, threadId]
-    );
-    if (!row) return null;
-    return parseThreadRow(row);
-  };
-
-  const upsertThread = (args: {
-    missionId: string;
-    threadId: string;
-    threadType: OrchestratorChatThreadType;
-    title: string;
-    target: OrchestratorChatTarget | null;
-    status?: "active" | "closed";
-    metadata?: Record<string, unknown> | null;
-  }): OrchestratorChatThread => {
-    const missionIdentity = getMissionIdentity(args.missionId);
-    if (!missionIdentity) {
-      throw new Error(`Mission not found: ${args.missionId}`);
-    }
-    const target = sanitizeChatTarget(args.target);
-    const now = nowIso();
-    db.run(
-      `
-        insert into orchestrator_chat_threads(
-          id,
-          project_id,
-          mission_id,
-          thread_type,
-          title,
-          run_id,
-          step_id,
-          step_key,
-          attempt_id,
-          session_id,
-          lane_id,
-          status,
-          unread_count,
-          metadata_json,
-          created_at,
-          updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-        on conflict(id) do update set
-          thread_type = excluded.thread_type,
-          title = excluded.title,
-          run_id = excluded.run_id,
-          step_id = excluded.step_id,
-          step_key = excluded.step_key,
-          attempt_id = excluded.attempt_id,
-          session_id = excluded.session_id,
-          lane_id = excluded.lane_id,
-          status = excluded.status,
-          metadata_json = excluded.metadata_json,
-          updated_at = excluded.updated_at
-      `,
-      [
-        args.threadId,
-        missionIdentity.projectId,
-        args.missionId,
-        args.threadType,
-        args.title,
-        (target && "runId" in target ? target.runId : null) ?? null,
-        target?.kind === "worker" ? target.stepId ?? null : null,
-        target?.kind === "worker" ? target.stepKey ?? null : null,
-        target?.kind === "worker" ? target.attemptId ?? null : null,
-        target?.kind === "worker" ? target.sessionId ?? null : null,
-        target?.kind === "worker" ? target.laneId ?? missionIdentity.laneId : missionIdentity.laneId,
-        args.status ?? DEFAULT_THREAD_STATUS,
-        args.metadata ? JSON.stringify(args.metadata) : null,
-        now,
-        now
-      ]
-    );
-    const nextThread = getThreadById(args.missionId, args.threadId) ?? {
-      id: args.threadId,
-      missionId: args.missionId,
-      threadType: args.threadType,
-      title: args.title,
-      runId: target?.runId ?? null,
-      stepId: target?.kind === "worker" ? target.stepId ?? null : null,
-      stepKey: target?.kind === "worker" ? target.stepKey ?? null : null,
-      attemptId: target?.kind === "worker" ? target.attemptId ?? null : null,
-      sessionId: target?.kind === "worker" ? target.sessionId ?? null : null,
-      laneId: target?.kind === "worker" ? target.laneId ?? missionIdentity.laneId : missionIdentity.laneId,
-      status: args.status ?? "active",
-      unreadCount: 0,
-      createdAt: now,
-      updatedAt: now,
-      metadata: args.metadata ?? null
-    };
-    emitThreadEvent({
-      type: "thread_updated",
-      missionId: args.missionId,
-      threadId: nextThread.id,
-      runId: nextThread.runId ?? null,
-      reason: "upsert_thread"
-    });
-    return nextThread;
-  };
-
-  const ensureMissionThread = (missionId: string): OrchestratorChatThread => {
-    const id = missionThreadId(missionId);
-    const existing = getThreadById(missionId, id);
-    if (existing) return existing;
-    return upsertThread({
-      missionId,
-      threadId: id,
-      threadType: "coordinator",
-      title: DEFAULT_CHAT_THREAD_TITLE,
-      target: {
-        kind: "coordinator",
-        runId: null
-      }
-    });
-  };
-
-  const ensureThreadForTarget = (args: {
-    missionId: string;
-    threadId?: string | null;
-    target?: OrchestratorChatTarget | null;
-    fallbackTitle?: string | null;
-  }): OrchestratorChatThread => {
-    const missionId = args.missionId;
-    const requestedThreadId = toOptionalString(args.threadId);
-    if (requestedThreadId) {
-      const existing = getThreadById(missionId, requestedThreadId);
-      if (existing) return existing;
-      const target = sanitizeChatTarget(args.target);
-      const threadType: OrchestratorChatThreadType = target?.kind === "worker" ? "worker" : "coordinator";
-      return upsertThread({
-        missionId,
-        threadId: requestedThreadId,
-        threadType,
-        title: deriveThreadTitle({
-          target,
-          step: null,
-          lane: null,
-          fallback: args.fallbackTitle ?? undefined
-        }),
-        target
-      });
-    }
-
-    const target = sanitizeChatTarget(args.target);
-    if (!target || target.kind === "coordinator" || target.kind === "workers") {
-      return ensureMissionThread(missionId);
-    }
-    const identity = workerThreadIdentity(target);
-    const fallbackId = `worker:${missionId}:${identity ?? randomUUID()}`;
-    const existing = getThreadById(missionId, fallbackId);
-    if (existing) return existing;
-    return upsertThread({
-      missionId,
-      threadId: fallbackId,
-      threadType: "worker",
-      title: deriveThreadTitle({
-        target,
-        step: null,
-        lane: null,
-        fallback: args.fallbackTitle ?? undefined
-      }),
-      target
-    });
-  };
-
-  const loadSteeringDirectivesFromMetadata = (missionId: string): UserSteeringDirective[] => {
-    if (activeSteeringDirectives.has(missionId)) {
-      return activeSteeringDirectives.get(missionId) ?? [];
-    }
-    const metadata = getMissionMetadata(missionId);
-    const stored = Array.isArray(metadata[STEERING_DIRECTIVES_METADATA_KEY])
-      ? metadata[STEERING_DIRECTIVES_METADATA_KEY] as unknown[]
-      : [];
-    const parsed = stored
-      .map((entry) => parseSteeringDirective(entry, missionId))
-      .filter((entry): entry is UserSteeringDirective => !!entry)
-      .slice(-MAX_PERSISTED_STEERING_DIRECTIVES);
-    if (parsed.length > 0) {
-      activeSteeringDirectives.set(missionId, parsed);
-    }
-    return parsed;
-  };
-
-  const loadChatMessagesFromMetadata = (missionId: string): OrchestratorChatMessage[] => {
-    if (chatMessages.has(missionId)) {
-      return chatMessages.get(missionId) ?? [];
-    }
-    const metadata = getMissionMetadata(missionId);
-    const stored = Array.isArray(metadata[ORCHESTRATOR_CHAT_METADATA_KEY])
-      ? metadata[ORCHESTRATOR_CHAT_METADATA_KEY] as unknown[]
-      : [];
-    const parsed = stored
-      .map((entry, index) => parseChatMessage(entry, missionId, index))
-      .filter((entry): entry is OrchestratorChatMessage => !!entry)
-      .slice(-MAX_PERSISTED_CHAT_MESSAGES);
-    if (parsed.length > 0) {
-      chatMessages.set(missionId, parsed);
-    }
-    return parsed;
-  };
-
-  const parseChatMessageRow = (row: {
-    id: string;
-    mission_id: string;
-    role: string;
-    content: string;
-    timestamp: string;
-    step_key: string | null;
-    thread_id: string | null;
-    target_json: string | null;
-    visibility: string | null;
-    delivery_state: string | null;
-    source_session_id: string | null;
-    attempt_id: string | null;
-    lane_id: string | null;
-    run_id: string | null;
-    metadata_json: string | null;
-  }): OrchestratorChatMessage | null => {
-    const role = row.role === "user" || row.role === "worker" || row.role === "orchestrator" ? row.role : null;
-    if (!role) return null;
-    return {
-      id: row.id,
-      missionId: row.mission_id,
-      role,
-      content: row.content,
-      timestamp: row.timestamp,
-      stepKey: row.step_key ?? null,
-      threadId: row.thread_id ?? null,
-      target: parseChatTarget(parseJsonRecord(row.target_json)),
-      visibility: normalizeChatVisibility(row.visibility),
-      deliveryState: normalizeChatDeliveryState(row.delivery_state),
-      sourceSessionId: row.source_session_id ?? null,
-      attemptId: row.attempt_id ?? null,
-      laneId: row.lane_id ?? null,
-      runId: row.run_id ?? null,
-      metadata: parseJsonRecord(row.metadata_json)
-    };
-  };
-
-  const getChatMessageById = (messageId: string): OrchestratorChatMessage | null => {
-    const row = db.get<{
-      id: string;
-      mission_id: string;
-      role: string;
-      content: string;
-      timestamp: string;
-      step_key: string | null;
-      thread_id: string | null;
-      target_json: string | null;
-      visibility: string | null;
-      delivery_state: string | null;
-      source_session_id: string | null;
-      attempt_id: string | null;
-      lane_id: string | null;
-      run_id: string | null;
-      metadata_json: string | null;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          role,
-          content,
-          timestamp,
-          step_key,
-          thread_id,
-          target_json,
-          visibility,
-          delivery_state,
-          source_session_id,
-          attempt_id,
-          lane_id,
-          run_id,
-          metadata_json
-        from orchestrator_chat_messages
-        where id = ?
-        limit 1
-      `,
-      [messageId]
-    );
-    return row ? parseChatMessageRow(row) : null;
-  };
-
-  const persistUpdatedChatMessage = (next: OrchestratorChatMessage): OrchestratorChatMessage => {
-    const normalized: OrchestratorChatMessage = {
-      ...next,
-      target: sanitizeChatTarget(next.target ?? null),
-      visibility: normalizeChatVisibility(next.visibility),
-      deliveryState: normalizeChatDeliveryState(next.deliveryState),
-      metadata: isRecord(next.metadata) ? next.metadata : null
-    };
-    db.run(
-      `
-        update orchestrator_chat_messages
-        set
-          thread_id = ?,
-          step_key = ?,
-          target_json = ?,
-          visibility = ?,
-          delivery_state = ?,
-          source_session_id = ?,
-          attempt_id = ?,
-          lane_id = ?,
-          run_id = ?,
-          metadata_json = ?
-        where id = ?
-      `,
-      [
-        normalized.threadId ?? missionThreadId(normalized.missionId),
-        normalized.stepKey ?? null,
-        normalized.target ? JSON.stringify(normalized.target) : null,
-        normalizeChatVisibility(normalized.visibility),
-        normalizeChatDeliveryState(normalized.deliveryState),
-        normalized.sourceSessionId ?? null,
-        normalized.attemptId ?? null,
-        normalized.laneId ?? null,
-        normalized.runId ?? null,
-        normalized.metadata ? JSON.stringify(normalized.metadata) : null,
-        normalized.id
-      ]
-    );
-
-    const current = chatMessages.get(normalized.missionId);
-    if (current?.length) {
-      const nextMessages = current.map((entry) => (entry.id === normalized.id ? normalized : entry));
-      chatMessages.set(normalized.missionId, nextMessages);
-    }
-
-    try {
-      updateMissionMetadata(normalized.missionId, (metadata) => {
-        const existing = Array.isArray(metadata[ORCHESTRATOR_CHAT_METADATA_KEY])
-          ? (metadata[ORCHESTRATOR_CHAT_METADATA_KEY] as unknown[])
-          : [];
-        metadata[ORCHESTRATOR_CHAT_METADATA_KEY] = existing.map((entry, index) => {
-          const parsed = parseChatMessage(entry, normalized.missionId, index);
-          return parsed?.id === normalized.id ? normalized : entry;
-        });
-      });
-    } catch (error) {
-      logger.debug("ai_orchestrator.chat_metadata_message_update_failed", {
-        missionId: normalized.missionId,
-        messageId: normalized.id,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-
-    emitThreadEvent({
-      type: "message_updated",
-      missionId: normalized.missionId,
-      threadId: normalized.threadId ?? missionThreadId(normalized.missionId),
-      messageId: normalized.id,
-      runId: normalized.runId ?? null,
-      reason: "message_update"
-    });
-    emitThreadEvent({
-      type: "thread_updated",
-      missionId: normalized.missionId,
-      threadId: normalized.threadId ?? missionThreadId(normalized.missionId),
-      runId: normalized.runId ?? null,
-      reason: "message_update"
-    });
-
-    return normalized;
-  };
-
+  // Delegated to chatMessageService.ts
+  const persistUpdatedChatMessage = (next: OrchestratorChatMessage) => persistUpdatedChatMessageCtx(ctx, next);
   const updateChatMessage = (
     messageId: string,
     updater: (current: OrchestratorChatMessage) => OrchestratorChatMessage
-  ): OrchestratorChatMessage | null => {
-    const current = getChatMessageById(messageId);
-    if (!current) return null;
-    const next = updater(current);
-    if (next.id !== current.id || next.missionId !== current.missionId) {
-      throw new Error("Chat message identity cannot change during update.");
-    }
-    return persistUpdatedChatMessage(next);
-  };
+  ) => updateChatMessageCtx(ctx, messageId, updater);
 
   const loadChatMessagesFromDb = (args: {
     missionId: string;
     threadId?: string | null;
     limit?: number;
     before?: string | null;
-  }): OrchestratorChatMessage[] => {
-    const limit = clampLimit(args.limit, MAX_PERSISTED_CHAT_MESSAGES, 500);
-    const rows = db.all<{
-      id: string;
-      mission_id: string;
-      role: string;
-      content: string;
-      timestamp: string;
-      step_key: string | null;
-      thread_id: string | null;
-      target_json: string | null;
-      visibility: string | null;
-      delivery_state: string | null;
-      source_session_id: string | null;
-      attempt_id: string | null;
-      lane_id: string | null;
-      run_id: string | null;
-      metadata_json: string | null;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          role,
-          content,
-          timestamp,
-          step_key,
-          thread_id,
-          target_json,
-          visibility,
-          delivery_state,
-          source_session_id,
-          attempt_id,
-          lane_id,
-          run_id,
-          metadata_json
-        from orchestrator_chat_messages
-        where mission_id = ?
-          and (? is null or thread_id = ?)
-          and (? is null or timestamp < ?)
-        order by timestamp desc
-        limit ?
-      `,
-      [
-        args.missionId,
-        args.threadId ?? null,
-        args.threadId ?? null,
-        args.before ?? null,
-        args.before ?? null,
-        limit
-      ]
-    );
-    if (!rows.length) return [];
-    return rows
-      .map((row) => parseChatMessageRow(row))
-      .filter((entry): entry is OrchestratorChatMessage => !!entry)
-      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-  };
+  }): OrchestratorChatMessage[] => loadChatMessagesFromDbCtx(ctx, args);
 
-  const loadChatSessionStateFromMetadata = (missionId: string): OrchestratorChatSessionState | null => {
-    if (activeChatSessions.has(missionId)) {
-      return activeChatSessions.get(missionId) ?? null;
-    }
-    const metadata = getMissionMetadata(missionId);
-    const parsed = parseChatSessionState(metadata[ORCHESTRATOR_CHAT_SESSION_METADATA_KEY]);
-    if (parsed) {
-      activeChatSessions.set(missionId, parsed);
-      return parsed;
-    }
-    return null;
-  };
+  const loadChatSessionStateFromMetadata = (missionId: string) => loadChatSessionStateCtx(ctx, missionId);
+  const persistChatSessionState = (missionId: string, state: OrchestratorChatSessionState) =>
+    persistChatSessionStateCtx(ctx, missionId, state);
 
-  const persistChatSessionState = (missionId: string, state: OrchestratorChatSessionState) => {
-    activeChatSessions.set(missionId, state);
-    try {
-      updateMissionMetadata(missionId, (metadata) => {
-        metadata[ORCHESTRATOR_CHAT_SESSION_METADATA_KEY] = state;
-      });
-    } catch (error) {
-      logger.debug("ai_orchestrator.chat_session_persist_failed", {
-        missionId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
-
-  const appendChatMessage = (message: OrchestratorChatMessage): OrchestratorChatMessage => {
-    if (disposed) {
-      return {
-        ...message,
-        target: sanitizeChatTarget(message.target ?? null),
-        visibility: normalizeChatVisibility(message.visibility),
-        deliveryState: normalizeChatDeliveryState(message.deliveryState),
-        metadata: isRecord(message.metadata) ? message.metadata : null
-      };
-    }
-    const thread = ensureThreadForTarget({
-      missionId: message.missionId,
-      threadId: message.threadId ?? null,
-      target: message.target ?? null
-    });
-    const normalized: OrchestratorChatMessage = {
-      ...message,
-      threadId: thread.id,
-      visibility: normalizeChatVisibility(message.visibility),
-      deliveryState: normalizeChatDeliveryState(message.deliveryState),
-      target: sanitizeChatTarget(message.target ?? null),
-      metadata: isRecord(message.metadata) ? message.metadata : null
-    };
-    const existing = chatMessages.has(normalized.missionId)
-      ? chatMessages.get(normalized.missionId) ?? []
-      : loadChatMessagesFromMetadata(normalized.missionId);
-    const next = [...existing, normalized].slice(-MAX_PERSISTED_CHAT_MESSAGES);
-    chatMessages.set(message.missionId, next);
-    try {
-      updateMissionMetadata(normalized.missionId, (metadata) => {
-        metadata[ORCHESTRATOR_CHAT_METADATA_KEY] = next;
-      });
-    } catch (error) {
-      logger.debug("ai_orchestrator.chat_persist_failed", {
-        missionId: normalized.missionId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-    const missionIdentity = getMissionIdentity(normalized.missionId);
-    if (missionIdentity) {
-      const createdAt = nowIso();
-      db.run(
-        `
-          insert into orchestrator_chat_messages(
-            id,
-            project_id,
-            mission_id,
-            thread_id,
-            role,
-            content,
-            timestamp,
-            step_key,
-            target_json,
-            visibility,
-            delivery_state,
-            source_session_id,
-            attempt_id,
-            lane_id,
-            run_id,
-            metadata_json,
-            created_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          normalized.id,
-          missionIdentity.projectId,
-          normalized.missionId,
-          normalized.threadId ?? missionThreadId(normalized.missionId),
-          normalized.role,
-          normalized.content,
-          normalized.timestamp,
-          normalized.stepKey ?? null,
-          normalized.target ? JSON.stringify(normalized.target) : null,
-          normalizeChatVisibility(normalized.visibility),
-          normalizeChatDeliveryState(normalized.deliveryState),
-          normalized.sourceSessionId ?? null,
-          normalized.attemptId ?? null,
-          normalized.laneId ?? null,
-          normalized.runId ?? null,
-          normalized.metadata ? JSON.stringify(normalized.metadata) : null,
-          createdAt
-        ]
-      );
-      const unreadIncrement = normalized.role === "user" ? 0 : 1;
-      db.run(
-        `
-          update orchestrator_chat_threads
-          set updated_at = ?,
-              unread_count = case when ? > 0 then unread_count + ? else unread_count end
-          where id = ?
-        `,
-        [normalized.timestamp, unreadIncrement, unreadIncrement, normalized.threadId ?? missionThreadId(normalized.missionId)]
-      );
-    }
-    emitThreadEvent({
-      type: "message_appended",
-      missionId: normalized.missionId,
-      threadId: normalized.threadId ?? missionThreadId(normalized.missionId),
-      messageId: normalized.id,
-      runId: normalized.runId ?? null,
-      reason: "append_message",
-      metadata: {
-        role: normalized.role,
-        deliveryState: normalized.deliveryState ?? null
-      }
-    });
-    emitThreadEvent({
-      type: "thread_updated",
-      missionId: normalized.missionId,
-      threadId: normalized.threadId ?? missionThreadId(normalized.missionId),
-      runId: normalized.runId ?? null,
-      reason: "append_message"
-    });
-    return normalized;
-  };
+  const appendChatMessage = (message: OrchestratorChatMessage): OrchestratorChatMessage =>
+    appendChatMessageCtx(ctx, message);
 
   /** Format orchestrator messages for the activity feed — keep them concise and prefixed */
-  const formatOrchestratorContent = (
-    content: string,
-    stepKey?: string | null,
-    metadata?: Record<string, unknown> | null
-  ): string => {
-    // Coordinator messages pass through as-is (they're already concise if prompted correctly)
-    if (metadata?.role === "coordinator") return content;
-
-    let formatted = content;
-
-    // Strip raw JSON blocks
-    formatted = formatted.replace(/```json[\s\S]*?```/g, "[json data]");
-    // Strip code blocks
-    formatted = formatted.replace(/```[\s\S]*?```/g, "[code block]");
-    // Strip raw file contents (unified diff format)
-    formatted = formatted.replace(/^[-+]{3}\s.*$/gm, "").replace(/^@@.*@@.*$/gm, "");
-    // Collapse multiple newlines
-    formatted = formatted.replace(/\n{3,}/g, "\n\n").trim();
-
-    // Truncate if still too long
-    if (formatted.length > 200) {
-      formatted = `${formatted.slice(0, 197).trimEnd()}...`;
-    }
-
-    // Prefix with step key for identification
-    if (stepKey) {
-      formatted = `[${stepKey}] ${formatted}`;
-    }
-
-    return formatted;
-  };
+  const formatOrchestratorContent = formatOrchestratorContentCtx;
 
   // ── Coordinator Session Management ──────────────────────────────
   // Spins up a persistent AI coordinator session for a mission run.
@@ -1627,6 +676,7 @@ export function createAiOrchestratorService(args: {
       projectContext?: import("./coordinatorAgent").CoordinatorProjectContext;
       availableProviders?: import("./coordinatorAgent").CoordinatorAvailableProvider[];
       phases?: import("../../../shared/types").PhaseCard[];
+      skipInitialActivationMessage?: boolean;
     },
   ): CoordinatorAgent | null => {
     if (!projectRoot) {
@@ -1697,6 +747,8 @@ export function createAiOrchestratorService(args: {
             { budgetPressure: pressure, source: "budget_soft_warning" }
           );
         },
+        sendWorkerMessageToSession: async ({ sessionId, text }) =>
+          sendWorkerMessageToSessionWithStatusCtx(ctx, sessionId, text),
         enableCompaction: true,
         userRules: opts?.userRules,
         projectContext: opts?.projectContext,
@@ -1707,9 +759,11 @@ export function createAiOrchestratorService(args: {
       coordinatorAgents.set(runId, agent);
 
       // Inject the mission prompt — the coordinator takes it from here
-      agent.injectMessage(
-        `You have been activated. Your mission:\n\n${missionGoal}\n\nYou have full authority. Read the mission, think about the approach, create tasks, spawn workers, and complete the mission. Start now.`,
-      );
+      if (!opts?.skipInitialActivationMessage) {
+        agent.injectMessage(
+          `You have been activated. Your mission:\n\n${missionGoal}\n\nYou have full authority. Read the mission, think about the approach, create tasks, spawn workers, and complete the mission. Start now.`,
+        );
+      }
 
       logger.info("ai_orchestrator.coordinator_agent_v2_started", {
         missionId,
@@ -1874,18 +928,201 @@ Check all worker statuses and continue managing the mission from here. Read work
     content: string,
     stepKey?: string | null,
     metadata?: Record<string, unknown> | null
-  ): OrchestratorChatMessage => {
-    const formattedContent = formatOrchestratorContent(content, stepKey, metadata);
-    const msg: OrchestratorChatMessage = {
-      id: randomUUID(),
-      missionId,
-      role: "orchestrator",
-      content: formattedContent,
-      timestamp: new Date().toISOString(),
-      stepKey: stepKey ?? null,
-      metadata: metadata ? { ...metadata, rawContent: content !== formattedContent ? content : undefined } : null
+  ): OrchestratorChatMessage => emitOrchestratorMessageCtx(ctx, missionId, content, stepKey, metadata, { appendChatMessage });
+
+  const MISSION_STATE_TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>([
+    "succeeded",
+    "failed",
+    "skipped",
+    "superseded",
+    "canceled",
+  ]);
+
+  const toMissionStateStepStatus = (status: OrchestratorStepStatus): MissionStateStepOutcome["status"] => {
+    if (status === "succeeded") return "succeeded";
+    if (status === "failed") return "failed";
+    if (status === "skipped" || status === "superseded" || status === "canceled") return "skipped";
+    return "in_progress";
+  };
+
+  const missionGoalForStateDoc = (missionId: string): string => {
+    const mission = missionService.get(missionId);
+    const prompt = typeof mission?.prompt === "string" ? mission.prompt.trim() : "";
+    if (prompt.length > 0) return prompt;
+    const title = typeof mission?.title === "string" ? mission.title.trim() : "";
+    if (title.length > 0) return title;
+    return `Mission ${missionId}`;
+  };
+
+  const currentPhaseFromGraph = (graph: OrchestratorRunGraph): string => {
+    const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
+    const phaseRuntime = isRecord(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
+    const phaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    if (phaseName.length > 0) return phaseName;
+    const phaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    if (phaseKey.length > 0) return phaseKey;
+    const activeStep = graph.steps.find((step) => !MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
+    const activeMeta = isRecord(activeStep?.metadata) ? activeStep.metadata : {};
+    const activePhaseName = typeof activeMeta.phaseName === "string" ? activeMeta.phaseName.trim() : "";
+    if (activePhaseName.length > 0) return activePhaseName;
+    const activePhaseKey = typeof activeMeta.phaseKey === "string" ? activeMeta.phaseKey.trim() : "";
+    if (activePhaseKey.length > 0) return activePhaseKey;
+    return "unknown";
+  };
+
+  const buildMissionStateProgressFromGraph = (graph: OrchestratorRunGraph): MissionStateProgress => ({
+    currentPhase: currentPhaseFromGraph(graph),
+    completedSteps: graph.steps.filter((step) => MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)).length,
+    totalSteps: graph.steps.length,
+    activeWorkers: graph.steps.filter((step) => step.status === "running").map((step) => step.stepKey),
+    blockedSteps: graph.steps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
+    failedSteps: graph.steps.filter((step) => step.status === "failed").map((step) => step.stepKey),
+  });
+
+  const pendingInterventionsForMission = (missionId: string): MissionStatePendingIntervention[] => {
+    const mission = missionService.get(missionId);
+    if (!mission) return [];
+    return mission.interventions
+      .filter((entry) => entry.status === "open")
+      .map((entry) => ({
+        id: entry.id,
+        type: entry.interventionType,
+        title: entry.title,
+        createdAt: entry.createdAt,
+      }));
+  };
+
+  const updateMissionStateDoc = (
+    runId: string,
+    patch: MissionStateDocumentPatch,
+    options?: { graph?: OrchestratorRunGraph | null }
+  ): void => {
+    if (!projectRoot) return;
+    const graph =
+      options?.graph ??
+      (() => {
+        try {
+          return orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        } catch {
+          return null;
+        }
+      })();
+    const missionId = graph?.run.missionId ?? getMissionIdForRun(runId);
+    if (!missionId) return;
+    const progress = graph ? buildMissionStateProgressFromGraph(graph) : undefined;
+    const normalizedPatch: MissionStateDocumentPatch = {
+      ...patch,
+      ...(progress
+        ? {
+            updateProgress: {
+              ...progress,
+              ...(patch.updateProgress ?? {}),
+            },
+          }
+        : {}),
     };
-    return appendChatMessage(msg);
+    void updateMissionStateDocument({
+      projectRoot,
+      missionId,
+      runId,
+      goal: missionGoalForStateDoc(missionId),
+      patch: normalizedPatch,
+      initialProgress: progress,
+    }).catch((error) => {
+      logger.debug("ai_orchestrator.mission_state_update_failed", {
+        runId,
+        missionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const resolveMissionStateStepPhase = (step: OrchestratorStep): string => {
+    const stepMeta = isRecord(step.metadata) ? step.metadata : {};
+    const phaseName = typeof stepMeta.phaseName === "string" ? stepMeta.phaseName.trim() : "";
+    if (phaseName.length > 0) return phaseName;
+    const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
+    if (phaseKey.length > 0) return phaseKey;
+    return "unknown";
+  };
+
+  const buildMissionStateStepOutcomeFromGraph = (
+    graph: OrchestratorRunGraph,
+    stepId: string
+  ): MissionStateStepOutcome | null => {
+    const step = graph.steps.find((entry) => entry.id === stepId) ?? null;
+    if (!step) return null;
+
+    const attemptsForStep = graph.attempts
+      .filter((attempt) => attempt.stepId === step.id)
+      .sort((a, b) => {
+        const aTime = Date.parse(a.completedAt ?? a.startedAt ?? a.createdAt);
+        const bTime = Date.parse(b.completedAt ?? b.startedAt ?? b.createdAt);
+        if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+          return bTime - aTime;
+        }
+        if (a.attemptNumber !== b.attemptNumber) {
+          return b.attemptNumber - a.attemptNumber;
+        }
+        return b.createdAt.localeCompare(a.createdAt);
+      });
+    const latestAttempt = attemptsForStep[0] ?? null;
+    const digest = latestAttempt ? buildWorkerDigestFromAttempt({ graph, attempt: latestAttempt }) : null;
+    const fallbackSummary =
+      step.status === "failed"
+        ? latestAttempt?.errorMessage ?? `Step ${step.stepKey} failed.`
+        : step.status === "succeeded"
+          ? `Step ${step.stepKey} completed.`
+          : step.status === "skipped" || step.status === "superseded" || step.status === "canceled"
+            ? `Step ${step.stepKey} was skipped.`
+            : `Step ${step.stepKey} is in progress.`;
+    // Best-effort: try to read durable step output file for enriched summary
+    let stepOutputContent: string | null = null;
+    if (projectRoot) {
+      try {
+        const sanitizedKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const outputPath = nodePath.resolve(projectRoot, `.ade/step-output-${sanitizedKey}.md`);
+        if (fs.existsSync(outputPath)) {
+          stepOutputContent = fs.readFileSync(outputPath, "utf-8").trim();
+        }
+      } catch {
+        // Non-critical — fall back to digest summary
+      }
+    }
+
+    // If we have a step output file, extract the Summary section to enrich the outcome
+    let enrichedSummary: string | null = null;
+    if (stepOutputContent) {
+      const summaryMatch = stepOutputContent.match(/^## Summary\s*\n([\s\S]*?)(?=\n## |\n*$)/m);
+      if (summaryMatch?.[1]?.trim()) {
+        enrichedSummary = summaryMatch[1].trim();
+      }
+    }
+
+    const summarySource = enrichedSummary || digest?.summary?.trim() || fallbackSummary;
+    const summary = summarySource.length > 0 ? summarySource.slice(0, 320) : `Step ${step.stepKey} update.`;
+    const testsRun = digest?.testsRun
+      ? {
+          passed: Math.max(0, Math.floor(Number(digest.testsRun.passed ?? 0) || 0)),
+          failed: Math.max(0, Math.floor(Number(digest.testsRun.failed ?? 0) || 0)),
+          skipped: Math.max(0, Math.floor(Number(digest.testsRun.skipped ?? 0) || 0)),
+        }
+      : undefined;
+
+    return {
+      stepKey: step.stepKey,
+      stepName: step.title,
+      phase: resolveMissionStateStepPhase(step),
+      status: toMissionStateStepStatus(step.status),
+      summary,
+      filesChanged: digest?.filesChanged ?? [],
+      ...(testsRun ? { testsRun } : {}),
+      warnings: digest?.warnings ?? [],
+      completedAt:
+        MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)
+          ? step.completedAt ?? latestAttempt?.completedAt ?? nowIso()
+          : null,
+    };
   };
 
   const upsertPlannerThread = (args: {
@@ -2035,24 +1272,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     flushPlannerStreamBuffer(state, false);
   };
 
-  const beginPlannerTurn = (state: PlannerAgentSessionState): Deferred<PlannerTurnCompletion> => {
-    if (state.turn && !state.turn.settled) {
-      state.turn.resolve({
-        status: "interrupted",
-        rawOutput: state.rawOutput,
-        error: "Planner turn was interrupted by a newer turn."
-      });
-    }
-    state.rawOutput = "";
-    state.rawOutputTruncated = false;
-    state.streamBuffer = "";
-    state.lastStreamFlushAtMs = 0;
-    state.activeTurnId = null;
-    const turn = createDeferred<PlannerTurnCompletion>();
-    state.turn = turn;
-    return turn;
-  };
-
   const completePlannerTurn = (
     state: PlannerAgentSessionState,
     status: PlannerTurnCompletionStatus,
@@ -2148,6 +1367,93 @@ Check all worker statuses and continue managing the mission from here. Read work
   }) => {
     try {
       orchestratorService.appendRuntimeEvent(args);
+
+      if (args.eventType === "validation_report") {
+        const payload = isRecord(args.payload) ? args.payload : {};
+        const scope = isRecord(payload.scope) ? payload.scope : {};
+        const verdict =
+          payload.verdict === "pass" || payload.verdict === "fail"
+            ? payload.verdict
+            : null;
+        const findings = Array.isArray(payload.findings)
+          ? payload.findings
+              .map((entry) => {
+                if (!isRecord(entry)) return "";
+                const severity = typeof entry.severity === "string" ? entry.severity.trim() : "";
+                const code = typeof entry.code === "string" ? entry.code.trim() : "";
+                const message = typeof entry.message === "string" ? entry.message.trim() : "";
+                const composed = [severity, code, message].filter((part) => part.length > 0).join(" ");
+                return composed.trim();
+              })
+              .filter((entry) => entry.length > 0)
+          : [];
+        const graph = (() => {
+          try {
+            return orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
+          } catch {
+            return null;
+          }
+        })();
+        const targetStep =
+          graph?.steps.find((step) => step.id === args.stepId)
+          ?? (() => {
+            const key = typeof scope.stepKey === "string" ? scope.stepKey.trim() : "";
+            if (!key.length || !graph) return null;
+            return graph.steps.find((step) => step.stepKey === key) ?? null;
+          })();
+        const stepKey =
+          targetStep?.stepKey
+          ?? (typeof scope.stepKey === "string" ? scope.stepKey.trim() : "");
+        if (stepKey.length > 0) {
+          const stepMeta = isRecord(targetStep?.metadata) ? targetStep.metadata : {};
+          const phase =
+            (typeof stepMeta.phaseName === "string" && stepMeta.phaseName.trim().length > 0
+              ? stepMeta.phaseName.trim()
+              : typeof stepMeta.phaseKey === "string" && stepMeta.phaseKey.trim().length > 0
+                ? stepMeta.phaseKey.trim()
+                : "unknown");
+          updateMissionStateDoc(args.runId, {
+            updateStepOutcome: {
+              stepKey,
+              updates: {
+                ...(targetStep ? { stepName: targetStep.title, phase } : {}),
+                validation: {
+                  verdict,
+                  findings,
+                },
+              },
+            },
+          }, { graph });
+        }
+      } else if (args.eventType === "plan_revised") {
+        const payload = isRecord(args.payload) ? args.payload : {};
+        const reason = typeof payload.reason === "string" ? payload.reason.trim() : "Coordinator revised the plan.";
+        const replaced = Array.isArray(payload.replacedStepKeys)
+          ? payload.replacedStepKeys.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+          : [];
+        const added = Array.isArray(payload.newStepKeys)
+          ? payload.newStepKeys.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+          : [];
+        const contextParts = [
+          replaced.length > 0 ? `Replaced: ${replaced.join(", ")}` : "",
+          added.length > 0 ? `Added: ${added.join(", ")}` : "",
+        ].filter((entry) => entry.length > 0);
+        updateMissionStateDoc(args.runId, {
+          addDecision: {
+            timestamp: nowIso(),
+            decision: "Plan revised",
+            rationale: reason,
+            context: contextParts.join(" | ") || "Plan changed based on coordinator runtime assessment.",
+          },
+        });
+      } else if (args.eventType === "intervention_opened" || args.eventType === "intervention_resolved") {
+        const missionId = getMissionIdForRun(args.runId);
+        if (missionId) {
+          updateMissionStateDoc(args.runId, {
+            pendingInterventions: pendingInterventionsForMission(missionId),
+          });
+        }
+      }
     } catch (error) {
       logger.debug("ai_orchestrator.runtime_event_append_failed", {
         runId: args.runId,
@@ -2160,218 +1466,17 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
-  const dispatchOrchestratorHook = (hookArgs: {
-    event: OrchestratorHookEvent;
-    runId: string;
-    stepId?: string | null;
-    attemptId?: string | null;
-    sessionId?: string | null;
-    reason: string;
-    triggerSource: string;
-    eventAt?: string | null;
-    metadata?: Record<string, unknown> | null;
-  }): void => {
-    const config = readConfig(projectConfigService);
-    const hook = config.hooks[hookArgs.event];
-    if (!hook?.command) return;
-    const missionId = getMissionIdForRun(hookArgs.runId);
-    const commandPreview = clipHookLogText(hook.command);
-    const commandDigest = createHash("sha256").update(hook.command).digest("hex").slice(0, 16);
-    const occurredAt = hookArgs.eventAt && hookArgs.eventAt.trim().length > 0 ? hookArgs.eventAt : nowIso();
-    const runtimeEventBase = {
-      source: "orchestrator_hook",
-      hookEvent: hookArgs.event,
-      missionId,
-      reason: hookArgs.reason,
-      triggerSource: hookArgs.triggerSource,
-      commandDigest,
-      commandPreview,
-      timeoutMs: hook.timeoutMs
-    };
-    recordRuntimeEvent({
-      runId: hookArgs.runId,
-      stepId: hookArgs.stepId ?? null,
-      attemptId: hookArgs.attemptId ?? null,
-      sessionId: hookArgs.sessionId ?? null,
-      eventType: "progress",
-      eventKey: `hook_dispatch:${hookArgs.event}:${hookArgs.attemptId ?? hookArgs.stepId ?? "none"}:${Date.now()}`,
-      occurredAt,
-      payload: {
-        ...runtimeEventBase,
-        phase: "started",
-        ...(hookArgs.metadata ?? {})
-      }
-    });
-    logger.info("ai_orchestrator.hook_dispatch_started", {
-      runId: hookArgs.runId,
-      stepId: hookArgs.stepId ?? null,
-      attemptId: hookArgs.attemptId ?? null,
-      sessionId: hookArgs.sessionId ?? null,
-      ...runtimeEventBase
-    });
+  const hookDispatchDeps: HookDispatchDeps = { recordRuntimeEvent };
 
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (typeof value === "string") env[key] = value;
-    }
-    env.ADE_HOOK_EVENT = hookArgs.event;
-    env.ADE_HOOK_RUN_ID = hookArgs.runId;
-    env.ADE_HOOK_STEP_ID = hookArgs.stepId ?? "";
-    env.ADE_HOOK_ATTEMPT_ID = hookArgs.attemptId ?? "";
-    env.ADE_HOOK_SESSION_ID = hookArgs.sessionId ?? "";
-    env.ADE_HOOK_REASON = hookArgs.reason;
-    env.ADE_HOOK_TRIGGER = hookArgs.triggerSource;
-    env.ADE_HOOK_MISSION_ID = missionId ?? "";
-    env.ADE_HOOK_METADATA_JSON = JSON.stringify({
-      event: hookArgs.event,
-      runId: hookArgs.runId,
-      stepId: hookArgs.stepId ?? null,
-      attemptId: hookArgs.attemptId ?? null,
-      sessionId: hookArgs.sessionId ?? null,
-      missionId,
-      reason: hookArgs.reason,
-      triggerSource: hookArgs.triggerSource,
-      occurredAt,
-      ...(hookArgs.metadata ?? {})
-    });
+  const dispatchOrchestratorHook = (hookArgs: Parameters<typeof dispatchOrchestratorHookCtx>[1]) =>
+    dispatchOrchestratorHookCtx(ctx, hookArgs, hookDispatchDeps);
 
-    void hookCommandRunner({
-      command: hook.command,
-      cwd: projectRoot ?? process.cwd(),
-      timeoutMs: hook.timeoutMs,
-      env
-    }).then((result) => {
-      const stdoutPreview = clipHookLogText(result.stdout);
-      const stderrPreview = clipHookLogText(result.stderr);
-      const success = result.spawnError == null && !result.timedOut && result.exitCode === 0;
-      const logPayload = {
-        runId: hookArgs.runId,
-        stepId: hookArgs.stepId ?? null,
-        attemptId: hookArgs.attemptId ?? null,
-        sessionId: hookArgs.sessionId ?? null,
-        ...runtimeEventBase,
-        exitCode: result.exitCode,
-        signal: result.signal,
-        timedOut: result.timedOut,
-        durationMs: result.durationMs,
-        stdoutPreview,
-        stderrPreview,
-        spawnError: result.spawnError
-      };
-      if (success) {
-        logger.info("ai_orchestrator.hook_execution_succeeded", logPayload);
-      } else {
-        logger.warn("ai_orchestrator.hook_execution_failed", logPayload);
-      }
-      recordRuntimeEvent({
-        runId: hookArgs.runId,
-        stepId: hookArgs.stepId ?? null,
-        attemptId: hookArgs.attemptId ?? null,
-        sessionId: hookArgs.sessionId ?? null,
-        eventType: "progress",
-        eventKey: `hook_result:${hookArgs.event}:${hookArgs.attemptId ?? hookArgs.stepId ?? "none"}:${Date.now()}`,
-        payload: {
-          ...runtimeEventBase,
-          phase: success ? "succeeded" : "failed",
-          success,
-          exitCode: result.exitCode,
-          signal: result.signal,
-          timedOut: result.timedOut,
-          durationMs: result.durationMs,
-          stdoutPreview,
-          stderrPreview,
-          spawnError: result.spawnError,
-          ...(hookArgs.metadata ?? {})
-        }
-      });
-    }).catch((error) => {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.warn("ai_orchestrator.hook_execution_failed", {
-        runId: hookArgs.runId,
-        stepId: hookArgs.stepId ?? null,
-        attemptId: hookArgs.attemptId ?? null,
-        sessionId: hookArgs.sessionId ?? null,
-        ...runtimeEventBase,
-        error: errorMessage
-      });
-      recordRuntimeEvent({
-        runId: hookArgs.runId,
-        stepId: hookArgs.stepId ?? null,
-        attemptId: hookArgs.attemptId ?? null,
-        sessionId: hookArgs.sessionId ?? null,
-        eventType: "progress",
-        eventKey: `hook_result:${hookArgs.event}:${hookArgs.attemptId ?? hookArgs.stepId ?? "none"}:${Date.now()}`,
-        payload: {
-          ...runtimeEventBase,
-          phase: "failed",
-          success: false,
-          error: errorMessage,
-          ...(hookArgs.metadata ?? {})
-        }
-      });
-    });
-  };
+  const maybeDispatchTeammateIdleHook = (idleArgs: Parameters<typeof maybeDispatchTeammateIdleHookCtx>[1]) =>
+    maybeDispatchTeammateIdleHookCtx(ctx, idleArgs, hookDispatchDeps);
 
-  const maybeDispatchTeammateIdleHook = (idleArgs: {
-    runId: string;
-    stepId: string;
-    attemptId: string;
-    sessionId?: string | null;
-    previousState: OrchestratorWorkerStatus | null;
-    nextState: OrchestratorWorkerStatus;
-    reason: string;
-    triggerSource: "runtime_signal" | "health_sweep";
-    runtimeState?: TerminalRuntimeState | null;
-    preview?: string | null;
-    laneId?: string | null;
-  }): void => {
-    if (idleArgs.nextState !== "idle" && idleArgs.nextState !== "waiting_input") return;
-    if (idleArgs.previousState === idleArgs.nextState) return;
-    dispatchOrchestratorHook({
-      event: "TeammateIdle",
-      runId: idleArgs.runId,
-      stepId: idleArgs.stepId,
-      attemptId: idleArgs.attemptId,
-      sessionId: idleArgs.sessionId ?? null,
-      reason: idleArgs.reason,
-      triggerSource: idleArgs.triggerSource,
-      metadata: {
-        previousState: idleArgs.previousState,
-        nextState: idleArgs.nextState,
-        runtimeState: idleArgs.runtimeState ?? null,
-        laneId: idleArgs.laneId ?? null,
-        preview: clipHookLogText(idleArgs.preview)
-      }
-    });
-  };
-
-  const resolveActivePolicy = (missionId: string): MissionExecutionPolicy => {
-    const metadata = getMissionMetadata(missionId);
-    const config = readConfig(projectConfigService);
-
-    // 1) Mission metadata explicit policy
-    if (isRecord(metadata.executionPolicy)) {
-      return resolveExecutionPolicy({
-        missionMetadata: metadata.executionPolicy as Partial<MissionExecutionPolicy>
-      });
-    }
-
-    // 2) Project default execution policy
-    if (config.defaultExecutionPolicy) {
-      return resolveExecutionPolicy({
-        projectConfig: config.defaultExecutionPolicy
-      });
-    }
-
-    // 3) Built-in default policy
-    return DEFAULT_EXECUTION_POLICY;
-  };
-
-  const resolveActiveRuntimeProfile = (missionId: string): MissionRuntimeProfile => {
-    const config = readConfig(projectConfigService);
-    const policy = resolveActivePolicy(missionId);
-    return deriveRuntimeProfileFromPolicy(policy, config);
-  };
+  // Delegated to missionLifecycle.ts
+  const resolveActivePolicy = (missionId: string) => resolveActivePolicyCtx(ctx, missionId);
+  const resolveActiveRuntimeProfile = (missionId: string) => resolveActiveRuntimeProfileCtx(ctx, missionId);
 
   const getSteeringContext = (missionId: string): string => {
     const directives = activeSteeringDirectives.get(missionId) ?? loadSteeringDirectivesFromMetadata(missionId);
@@ -2456,14 +1561,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     return updated;
   };
 
-  const getWorkerStates = (args: { runId: string }): OrchestratorWorkerState[] => {
-    const result: OrchestratorWorkerState[] = [];
-    for (const state of workerStates.values()) {
-      if (state.runId === args.runId) result.push(state);
-    }
-    return result;
-  };
-
+  // Delegate to workerTracking module via ctx
+  const getWorkerStates = (args: { runId: string }) => getWorkerStatesCtx(ctx, args);
   const upsertWorkerState = (
     attemptId: string,
     update: {
@@ -2475,231 +1574,17 @@ Check all worker statuses and continue managing the mission from here. Read work
       outcomeTags?: string[];
       completedAt?: string | null;
     }
-  ) => {
-    const now = nowIso();
-    const existing = workerStates.get(attemptId);
-    if (existing) {
-      existing.state = update.state;
-      existing.lastHeartbeatAt = now;
-      if (update.sessionId !== undefined) existing.sessionId = update.sessionId;
-      if (update.outcomeTags) existing.outcomeTags = update.outcomeTags;
-      if (update.completedAt !== undefined) existing.completedAt = update.completedAt;
-    } else {
-      workerStates.set(attemptId, {
-        attemptId,
-        stepId: update.stepId,
-        runId: update.runId,
-        sessionId: update.sessionId ?? null,
-        executorKind: update.executorKind,
-        state: update.state,
-        lastHeartbeatAt: now,
-        spawnedAt: now,
-        completedAt: update.completedAt ?? null,
-        outcomeTags: update.outcomeTags ?? []
-      });
-    }
-  };
+  ) => upsertWorkerStateCtx(ctx, attemptId, update);
 
-  const ensureAttemptRuntimeTracker = (attemptId: string): AttemptRuntimeTracker => {
-    const existing = attemptRuntimeTrackers.get(attemptId);
-    if (existing) return existing;
-    const next: AttemptRuntimeTracker = {
-      lastPreviewDigest: null,
-      digestSinceMs: Date.now(),
-      repeatCount: 0,
-      lastWaitingInterventionAtMs: 0,
-      lastEventHeartbeatAtMs: 0,
-      lastWaitingNotifiedAtMs: 0,
-      lastQuestionThreadId: null,
-      lastQuestionMessageId: null,
-      lastPersistedAtMs: 0
-    };
-    attemptRuntimeTrackers.set(attemptId, next);
-    return next;
-  };
+  // Delegate to recoveryService module via ctx
+  const ensureAttemptRuntimeTracker = (attemptId: string) => ensureAttemptRuntimeTrackerCtx(ctx, attemptId);
 
-  const deletePersistedAttemptRuntimeState = (attemptId: string) => {
-    try {
-      db.run(`delete from orchestrator_attempt_runtime where attempt_id = ?`, [attemptId]);
-    } catch (error) {
-      logger.debug("ai_orchestrator.runtime_state_delete_failed", {
-        attemptId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
+  // Delegated to recoveryService.ts
+  const deletePersistedAttemptRuntimeState = (attemptId: string) => deletePersistedAttemptRuntimeStateCtx(ctx, attemptId);
+  const persistAttemptRuntimeState = (args: Parameters<typeof persistAttemptRuntimeStateCtx>[1]) => persistAttemptRuntimeStateCtx(ctx, args);
 
-  const persistAttemptRuntimeState = (args: {
-    attemptId: string;
-    sessionId: string | null;
-    runtimeState: TerminalRuntimeState | null;
-    lastSignalAt: string | null;
-    lastOutputPreview: string | null;
-    force?: boolean;
-  }) => {
-    const attemptId = String(args.attemptId ?? "").trim();
-    if (!attemptId.length) return;
-    const tracker = ensureAttemptRuntimeTracker(attemptId);
-    const nowMs = Date.now();
-    if (!args.force && nowMs - tracker.lastPersistedAtMs < ATTEMPT_RUNTIME_PERSIST_INTERVAL_MS) return;
-    const updatedAt = nowIso();
-    try {
-      db.run(
-        `
-          insert into orchestrator_attempt_runtime(
-            attempt_id,
-            session_id,
-            runtime_state,
-            last_signal_at,
-            last_output_preview,
-            last_preview_digest,
-            digest_since_ms,
-            repeat_count,
-            last_waiting_intervention_at_ms,
-            last_event_heartbeat_at_ms,
-            last_waiting_notified_at_ms,
-            updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          on conflict(attempt_id) do update set
-            session_id = excluded.session_id,
-            runtime_state = excluded.runtime_state,
-            last_signal_at = excluded.last_signal_at,
-            last_output_preview = excluded.last_output_preview,
-            last_preview_digest = excluded.last_preview_digest,
-            digest_since_ms = excluded.digest_since_ms,
-            repeat_count = excluded.repeat_count,
-            last_waiting_intervention_at_ms = excluded.last_waiting_intervention_at_ms,
-            last_event_heartbeat_at_ms = excluded.last_event_heartbeat_at_ms,
-            last_waiting_notified_at_ms = excluded.last_waiting_notified_at_ms,
-            updated_at = excluded.updated_at
-        `,
-        [
-          attemptId,
-          args.sessionId,
-          args.runtimeState,
-          args.lastSignalAt,
-          args.lastOutputPreview,
-          tracker.lastPreviewDigest,
-          Math.max(0, Math.floor(tracker.digestSinceMs)),
-          Math.max(0, Math.floor(tracker.repeatCount)),
-          Math.max(0, Math.floor(tracker.lastWaitingInterventionAtMs)),
-          Math.max(0, Math.floor(tracker.lastEventHeartbeatAtMs)),
-          Math.max(0, Math.floor(tracker.lastWaitingNotifiedAtMs)),
-          updatedAt
-        ]
-      );
-      tracker.lastPersistedAtMs = nowMs;
-    } catch (error) {
-      logger.debug("ai_orchestrator.runtime_state_persist_failed", {
-        attemptId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
-
-  const hydratePersistedAttemptRuntimeState = () => {
-    const nowMs = Date.now();
-    try {
-      db.run(
-        `
-          delete from orchestrator_attempt_runtime
-          where attempt_id in (
-            select r.attempt_id
-            from orchestrator_attempt_runtime r
-            left join orchestrator_attempts a on a.id = r.attempt_id
-            where a.id is null or a.status != 'running'
-          )
-        `
-      );
-    } catch (error) {
-      logger.debug("ai_orchestrator.runtime_state_prune_failed", {
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-
-    const rows = db.all<{
-      attempt_id: string;
-      session_id: string | null;
-      runtime_state: string | null;
-      last_signal_at: string | null;
-      last_output_preview: string | null;
-      last_preview_digest: string | null;
-      digest_since_ms: number | null;
-      repeat_count: number | null;
-      last_waiting_intervention_at_ms: number | null;
-      last_event_heartbeat_at_ms: number | null;
-      last_waiting_notified_at_ms: number | null;
-    }>(
-      `
-        select
-          r.attempt_id as attempt_id,
-          r.session_id as session_id,
-          r.runtime_state as runtime_state,
-          r.last_signal_at as last_signal_at,
-          r.last_output_preview as last_output_preview,
-          r.last_preview_digest as last_preview_digest,
-          r.digest_since_ms as digest_since_ms,
-          r.repeat_count as repeat_count,
-          r.last_waiting_intervention_at_ms as last_waiting_intervention_at_ms,
-          r.last_event_heartbeat_at_ms as last_event_heartbeat_at_ms,
-          r.last_waiting_notified_at_ms as last_waiting_notified_at_ms
-        from orchestrator_attempt_runtime r
-        join orchestrator_attempts a on a.id = r.attempt_id
-        where a.status = 'running'
-      `
-    );
-    if (!rows.length) return;
-
-    for (const row of rows) {
-      const attemptId = String(row.attempt_id ?? "").trim();
-      if (!attemptId.length) continue;
-      const tracker: AttemptRuntimeTracker = {
-        lastPreviewDigest: typeof row.last_preview_digest === "string" ? row.last_preview_digest : null,
-        digestSinceMs: Number.isFinite(Number(row.digest_since_ms))
-          ? Math.max(0, Math.floor(Number(row.digest_since_ms)))
-          : nowMs,
-        repeatCount: Number.isFinite(Number(row.repeat_count))
-          ? Math.max(0, Math.floor(Number(row.repeat_count)))
-          : 0,
-        lastWaitingInterventionAtMs: Number.isFinite(Number(row.last_waiting_intervention_at_ms))
-          ? Math.max(0, Math.floor(Number(row.last_waiting_intervention_at_ms)))
-          : 0,
-        lastEventHeartbeatAtMs: Number.isFinite(Number(row.last_event_heartbeat_at_ms))
-          ? Math.max(0, Math.floor(Number(row.last_event_heartbeat_at_ms)))
-          : 0,
-        lastWaitingNotifiedAtMs: Number.isFinite(Number(row.last_waiting_notified_at_ms))
-          ? Math.max(0, Math.floor(Number(row.last_waiting_notified_at_ms)))
-          : 0,
-        lastQuestionThreadId: null,
-        lastQuestionMessageId: null,
-        lastPersistedAtMs: nowMs
-      };
-      attemptRuntimeTrackers.set(attemptId, tracker);
-
-      const sessionId = typeof row.session_id === "string" ? row.session_id.trim() : "";
-      const runtimeState = parseTerminalRuntimeState(row.runtime_state);
-      const at = typeof row.last_signal_at === "string" && row.last_signal_at.trim().length ? row.last_signal_at : nowIso();
-      if (!sessionId.length || !runtimeState) continue;
-      const existing = sessionRuntimeSignals.get(sessionId);
-      if (existing) {
-        const existingMs = Date.parse(existing.at);
-        const nextMs = Date.parse(at);
-        if (Number.isFinite(existingMs) && Number.isFinite(nextMs) && existingMs > nextMs) {
-          continue;
-        }
-      }
-      sessionRuntimeSignals.set(sessionId, {
-        laneId: "",
-        sessionId,
-        runtimeState,
-        lastOutputPreview:
-          typeof row.last_output_preview === "string" && row.last_output_preview.trim().length
-            ? row.last_output_preview.trim()
-            : null,
-        at
-      });
-    }
-  };
+  // Delegated to recoveryService.ts
+  const hydratePersistedAttemptRuntimeState = () => hydratePersistedAttemptRuntimeStateCtx(ctx);
 
   const hydrateRuntimeSignalsFromEventBus = () => {
     let events: ReturnType<typeof orchestratorService.listRuntimeEvents>;
@@ -2865,36 +1750,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
-  const updateAttemptStagnationTracker = (attemptId: string, preview: string | null): { digest: string | null; stagnantMs: number } => {
-    const tracker = ensureAttemptRuntimeTracker(attemptId);
-    const now = Date.now();
-    const digest = digestSignalText(preview);
-    if (!digest) {
-      tracker.lastPreviewDigest = null;
-      tracker.repeatCount = 0;
-      tracker.digestSinceMs = now;
-      return { digest: null, stagnantMs: 0 };
-    }
-    if (tracker.lastPreviewDigest !== digest) {
-      tracker.lastPreviewDigest = digest;
-      tracker.repeatCount = 1;
-      tracker.digestSinceMs = now;
-      return { digest, stagnantMs: 0 };
-    }
-    tracker.repeatCount += 1;
-    return { digest, stagnantMs: Math.max(0, now - tracker.digestSinceMs) };
-  };
+  const updateAttemptStagnationTracker = (attemptId: string, preview: string | null) =>
+    updateAttemptStagnationTrackerCtx(ctx, attemptId, preview);
 
-  const resolveAttemptOwnerIdFromRows = (attemptMetadataJson: string | null, runMetadataJson: string | null): string => {
-    const attemptMeta = parseJsonRecord(attemptMetadataJson);
-    const explicitOwner = typeof attemptMeta?.ownerId === "string" ? attemptMeta.ownerId.trim() : "";
-    if (explicitOwner.length > 0) return explicitOwner;
-    const runMeta = parseJsonRecord(runMetadataJson);
-    const autopilot = runMeta && isRecord(runMeta.autopilot) ? runMeta.autopilot : null;
-    const owner = autopilot && typeof autopilot.ownerId === "string" ? autopilot.ownerId.trim() : "";
-    if (owner.length > 0) return owner;
-    return "orchestrator-autopilot";
-  };
 
   const ensureManualInputIntervention = (args: {
     missionId: string;
@@ -2978,172 +1836,10 @@ Check all worker statuses and continue managing the mission from here. Read work
     return intervention;
   };
 
-  const extractOutcomeTags = (attempt: OrchestratorRunGraph["attempts"][number]): string[] => {
-    const tags: string[] = [];
-    if (attempt.resultEnvelope) {
-      const envelope = attempt.resultEnvelope;
-      if (envelope.warnings?.length) tags.push("has_warnings", `warnings:${envelope.warnings.length}`);
-      if (envelope.outputs && isRecord(envelope.outputs)) {
-        const filesModified = Number(envelope.outputs.filesModified ?? envelope.outputs.files_modified);
-        if (Number.isFinite(filesModified)) tags.push(`files_modified:${filesModified}`);
-        const testsPassed = Number(envelope.outputs.testsPassed ?? envelope.outputs.tests_passed);
-        if (Number.isFinite(testsPassed)) tags.push(`tests_passed:${testsPassed}`);
-      }
-    }
-    const durationMs = attempt.completedAt && attempt.startedAt
-      ? Date.parse(attempt.completedAt) - Date.parse(attempt.startedAt)
-      : null;
-    if (durationMs != null && Number.isFinite(durationMs)) {
-      const category = durationMs < 10_000 ? "fast" : durationMs < 60_000 ? "normal" : "slow";
-      tags.push(`duration_category:${category}`);
-    }
-    return tags;
-  };
 
-  /**
-   * Extract artifacts from a completed attempt's result envelope and register them
-   * in the artifact registry. Compares produced artifacts against planner-declared
-   * artifactHints and logs warnings for any that are missing.
-   */
-  const extractAndRegisterArtifacts = (args: {
-    graph: OrchestratorRunGraph;
-    attempt: OrchestratorRunGraph["attempts"][number];
-  }): void => {
-    try {
-      const { graph, attempt } = args;
-      const envelope = attempt.resultEnvelope;
-      if (!envelope) return;
-      const outputs = envelope.outputs;
-      if (!outputs || !isRecord(outputs)) return;
+  const extractAndRegisterArtifacts = (args: Parameters<typeof extractAndRegisterArtifactsCtx>[1]) =>
+    extractAndRegisterArtifactsCtx(ctx, args);
 
-      const step = graph.steps.find((s) => s.id === attempt.stepId);
-      const stepMeta = step && isRecord(step.metadata) ? step.metadata : {};
-      const planStep = isRecord(stepMeta.planStep) ? stepMeta.planStep : null;
-      const artifactHints: string[] = Array.isArray(planStep?.artifactHints)
-        ? (planStep!.artifactHints as unknown[]).map((h) => String(h ?? "").trim()).filter(Boolean)
-        : [];
-      const declaredKeySet = new Set(artifactHints);
-      const registeredKeys = new Set<string>();
-
-      const register = (artifactKey: string, kind: OrchestratorArtifactKind, value: string, metadata?: Record<string, unknown>) => {
-        const isDeclared = declaredKeySet.has(artifactKey);
-        orchestratorService.registerArtifact({
-          missionId: graph.run.missionId,
-          runId: attempt.runId,
-          stepId: attempt.stepId,
-          attemptId: attempt.id,
-          artifactKey,
-          kind,
-          value,
-          metadata: metadata ?? {},
-          declared: isDeclared
-        });
-        registeredKeys.add(artifactKey);
-        logger.debug("ai_orchestrator.artifact_registered", {
-          runId: attempt.runId,
-          stepId: attempt.stepId,
-          attemptId: attempt.id,
-          artifactKey,
-          kind,
-          declared: isDeclared
-        });
-      };
-
-      // Extract file artifacts from filesChanged / filesModified
-      const filesChangedRaw = outputs.filesChanged ?? outputs.files_changed ?? outputs.filesModified ?? outputs.files_modified;
-      if (Array.isArray(filesChangedRaw) && filesChangedRaw.length > 0) {
-        const files = filesChangedRaw.map((f) => String(f ?? "").trim()).filter(Boolean);
-        if (files.length > 0) {
-          register("files_changed", "file", files.join(", "), { fileCount: files.length, files: files.slice(0, 50) });
-        }
-      }
-
-      // Extract test report artifacts
-      const testsPassed = Number(outputs.testsPassed ?? outputs.tests_passed);
-      const testsFailed = Number(outputs.testsFailed ?? outputs.tests_failed);
-      const testsSkipped = Number(outputs.testsSkipped ?? outputs.tests_skipped);
-      if (Number.isFinite(testsPassed) || Number.isFinite(testsFailed)) {
-        const testSummary = typeof outputs.testsSummary === "string"
-          ? outputs.testsSummary
-          : typeof outputs.tests_summary === "string"
-            ? outputs.tests_summary
-            : `passed: ${testsPassed || 0}, failed: ${testsFailed || 0}, skipped: ${testsSkipped || 0}`;
-        register("test_results", "test_report", testSummary, {
-          passed: Number.isFinite(testsPassed) ? testsPassed : 0,
-          failed: Number.isFinite(testsFailed) ? testsFailed : 0,
-          skipped: Number.isFinite(testsSkipped) ? testsSkipped : 0
-        });
-      }
-
-      // Extract branch artifact
-      const branchName = outputs.branchName ?? outputs.branch_name ?? outputs.branch;
-      if (typeof branchName === "string" && branchName.trim().length > 0) {
-        register("feature_branch", "branch", branchName.trim());
-      }
-
-      // Extract PR artifact
-      const prUrl = outputs.prUrl ?? outputs.pr_url ?? outputs.pullRequestUrl ?? outputs.pull_request_url;
-      if (typeof prUrl === "string" && prUrl.trim().length > 0) {
-        register("implementation_pr", "pr", prUrl.trim());
-      }
-
-      // Match remaining output keys against declared artifactHints
-      for (const hintKey of artifactHints) {
-        if (registeredKeys.has(hintKey)) continue;
-        // Check if outputs has a matching key (camelCase or snake_case)
-        const value = outputs[hintKey] ?? outputs[hintKey.replace(/_([a-z])/g, (_, c) => c.toUpperCase())];
-        if (value != null) {
-          const strValue = typeof value === "string" ? value : JSON.stringify(value);
-          register(hintKey, "custom", strValue, { raw: value });
-        }
-      }
-
-      // Validate: warn for any declared hints that were not produced
-      const missingHints = artifactHints.filter((hint) => !registeredKeys.has(hint));
-      if (missingHints.length > 0) {
-        logger.info("ai_orchestrator.artifact_hints_missing", {
-          runId: attempt.runId,
-          stepId: attempt.stepId,
-          attemptId: attempt.id,
-          stepKey: step?.stepKey ?? null,
-          missingHints,
-          producedKeys: Array.from(registeredKeys)
-        });
-        // Record a timeline event for the missing artifacts
-        orchestratorService.appendTimelineEvent({
-          runId: attempt.runId,
-          stepId: attempt.stepId,
-          attemptId: attempt.id,
-          eventType: "artifact_hints_missing",
-          reason: "artifact_validation",
-          detail: {
-            missingHints,
-            producedKeys: Array.from(registeredKeys),
-            totalDeclared: artifactHints.length,
-            totalProduced: registeredKeys.size
-          }
-        });
-      }
-    } catch (error) {
-      logger.debug("ai_orchestrator.artifact_extraction_failed", {
-        runId: args.attempt.runId,
-        stepId: args.attempt.stepId,
-        attemptId: args.attempt.id,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
-
-  const resolveAttemptOwnerId = (run: OrchestratorRunGraph["run"], attempt: OrchestratorRunGraph["attempts"][number]): string => {
-    const attemptMeta = isRecord(attempt.metadata) ? attempt.metadata : {};
-    const explicitOwner = typeof attemptMeta.ownerId === "string" ? attemptMeta.ownerId.trim() : "";
-    if (explicitOwner.length > 0) return explicitOwner;
-    const runMeta = isRecord(run.metadata) ? run.metadata : {};
-    const autopilot = isRecord(runMeta.autopilot) ? runMeta.autopilot : null;
-    const runOwner = autopilot && typeof autopilot.ownerId === "string" ? autopilot.ownerId.trim() : "";
-    if (runOwner.length > 0) return runOwner;
-    return "orchestrator-autopilot";
-  };
 
   const resolveStepTimeoutMs = (args: {
     runId: string;
@@ -3173,115 +1869,12 @@ Check all worker statuses and continue managing the mission from here. Read work
   // Deterministic timeout/retry/priority/stagnation functions removed — the
   // coordinator AI handles these decisions through its persistent conversation.
 
-  const stepTitleForMessage = (step: OrchestratorRunGraph["steps"][number]): string => {
-    const raw = String(step.title ?? "").trim();
-    if (raw.length > 0) return raw;
-    return step.stepKey || step.id.slice(0, 8);
-  };
 
-  const isRetryQueuedForStep = (step: OrchestratorRunGraph["steps"][number] | undefined): boolean => {
-    if (!step) return false;
-    return step.status === "pending" || step.status === "ready" || step.status === "running";
-  };
+  const getTrackedSessionState = (sessionId: string) => getTrackedSessionStateCtx(ctx, sessionId);
 
-  const getTrackedSessionState = (sessionId: string): {
-    laneId: string | null;
-    status: string;
-    endedAt: string | null;
-    exitCode: number | null;
-    lastOutputAt: string | null;
-    lastOutputPreview: string | null;
-    transcriptPath: string | null;
-  } | null => {
-    const row = db.get<{
-      lane_id: string | null;
-      status: string | null;
-      ended_at: string | null;
-      exit_code: number | null;
-      last_output_at: string | null;
-      last_output_preview: string | null;
-      transcript_path: string | null;
-    }>(
-      `
-        select lane_id, status, ended_at, exit_code, last_output_at, last_output_preview, transcript_path
-        from terminal_sessions
-        where id = ?
-        limit 1
-      `,
-      [sessionId]
-    );
-    if (!row) return null;
-    return {
-      laneId: row.lane_id ?? null,
-      status: String(row.status ?? "").trim().toLowerCase(),
-      endedAt: typeof row.ended_at === "string" ? row.ended_at : null,
-      exitCode: Number.isFinite(Number(row.exit_code)) ? Number(row.exit_code) : null,
-      lastOutputAt: typeof row.last_output_at === "string" ? row.last_output_at : null,
-      lastOutputPreview: typeof row.last_output_preview === "string" ? row.last_output_preview : null,
-      transcriptPath: typeof row.transcript_path === "string" ? row.transcript_path : null
-    };
-  };
+  const pruneSessionRuntimeSignals = () => pruneSessionRuntimeSignalsCtx(ctx);
 
-  const pruneSessionRuntimeSignals = () => {
-    const now = Date.now();
-    for (const [sessionId, signal] of sessionRuntimeSignals.entries()) {
-      const atMs = Date.parse(signal.at);
-      if (!Number.isFinite(atMs) || now - atMs > SESSION_SIGNAL_RETENTION_MS) {
-        sessionRuntimeSignals.delete(sessionId);
-      }
-    }
-  };
-
-  const listRunningAttemptsForSession = (sessionId: string): Array<{
-    attemptId: string;
-    runId: string;
-    stepId: string;
-    executorKind: OrchestratorExecutorKind;
-    attemptMetadataJson: string | null;
-    runMetadataJson: string | null;
-  }> => {
-    const rows = db.all<{
-      attempt_id: string;
-      run_id: string;
-      step_id: string;
-      executor_kind: string | null;
-      attempt_metadata_json: string | null;
-      run_metadata_json: string | null;
-    }>(
-      `
-        select
-          a.id as attempt_id,
-          a.run_id as run_id,
-          a.step_id as step_id,
-          a.executor_kind as executor_kind,
-          a.metadata_json as attempt_metadata_json,
-          r.metadata_json as run_metadata_json
-        from orchestrator_attempts a
-        join orchestrator_runs r on r.id = a.run_id
-        where a.status = 'running'
-          and a.executor_session_id = ?
-        order by a.created_at asc
-      `,
-      [sessionId]
-    );
-    return rows
-      .map((row) => {
-        const executorKindRaw = String(row.executor_kind ?? "").trim();
-        const executorKind: OrchestratorExecutorKind =
-          executorKindRaw === "claude" || executorKindRaw === "codex" || executorKindRaw === "shell" || executorKindRaw === "manual"
-            ? executorKindRaw
-            : "manual";
-        return {
-          attemptId: row.attempt_id,
-          runId: row.run_id,
-          stepId: row.step_id,
-          executorKind,
-          attemptMetadataJson: row.attempt_metadata_json ?? null,
-          runMetadataJson: row.run_metadata_json ?? null
-        };
-      })
-      .filter((row) => row.attemptId.length > 0 && row.runId.length > 0 && row.stepId.length > 0);
-  };
+  const listRunningAttemptsForSession = (sessionId: string) => listRunningAttemptsForSessionCtx(ctx, sessionId);
 
   const processSessionRuntimeSignal = async (signal: SessionRuntimeSignal): Promise<void> => {
     const sessionId = signal.sessionId.trim();
@@ -3491,6 +2084,136 @@ Check all worker statuses and continue managing the mission from here. Read work
       syncedRunIds.add(attempt.runId);
       void syncMissionFromRun(attempt.runId, "runtime_signal_session_end");
     }
+  };
+
+  const cleanupCoordinatorCheckpointFile = (runId: string, reason: string): void => {
+    if (!projectRoot) return;
+    void deleteCoordinatorCheckpoint(projectRoot, runId).catch((error) => {
+      logger.debug("ai_orchestrator.coordinator_checkpoint_cleanup_failed", {
+        runId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const emitMilestoneReadinessToCoordinator = (args: { runId: string; reason: string }): void => {
+    let graph: OrchestratorRunGraph | null = null;
+    try {
+      graph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
+    } catch {
+      return;
+    }
+    if (!graph) return;
+
+    const completedDependencyStatuses = new Set<OrchestratorStepStatus>([
+      "succeeded",
+      "skipped",
+      "superseded",
+      "canceled",
+    ]);
+
+    const readyMilestoneSignatureKeys = new Set<string>();
+    const readyMilestones = graph.steps.filter((step) => {
+      if (step.status !== "ready") return false;
+      const stepMeta = isRecord(step.metadata) ? step.metadata : {};
+      return asBool(stepMeta.isMilestone, false);
+    });
+
+    for (const step of readyMilestones) {
+      const stepMeta = isRecord(step.metadata) ? step.metadata : {};
+      const contract = isRecord(stepMeta.validationContract) ? stepMeta.validationContract : null;
+      const validationCriteriaRaw =
+        typeof contract?.criteria === "string"
+          ? contract.criteria
+          : typeof stepMeta.validationCriteria === "string"
+            ? stepMeta.validationCriteria
+            : typeof stepMeta.acceptanceCriteria === "string"
+              ? stepMeta.acceptanceCriteria
+              : "";
+      const validationCriteria =
+        validationCriteriaRaw.trim().length > 0
+          ? validationCriteriaRaw.trim()
+          : "No validation criteria documented in step metadata.";
+      const dependencySteps = step.dependencyStepIds
+        .map((dependencyStepId) => graph?.steps.find((candidate) => candidate.id === dependencyStepId))
+        .filter((candidate): candidate is OrchestratorStep => Boolean(candidate));
+      const dependenciesCompleted = dependencySteps.filter((dependencyStep) =>
+        completedDependencyStatuses.has(dependencyStep.status)
+      ).length;
+      const dependencyTotal = dependencySteps.length;
+      const signature = [
+        step.updatedAt,
+        dependenciesCompleted,
+        dependencyTotal,
+        validationCriteria,
+      ].join("::");
+      const milestoneKey = `${args.runId}::${step.id}`;
+      readyMilestoneSignatureKeys.add(milestoneKey);
+      if (milestoneReadyNotificationSignatures.get(milestoneKey) === signature) {
+        continue;
+      }
+      milestoneReadyNotificationSignatures.set(milestoneKey, signature);
+
+      const message = [
+        `MILESTONE READY (GATED): "${stepTitleForMessage(step)}" (${step.stepKey})`,
+        `Dependencies completed: ${dependenciesCompleted}/${dependencyTotal}`,
+        `Validation criteria: ${validationCriteria}`,
+        "Action required: spawn validator worker, then call report_validation.",
+        "Downstream work stays gated until validation is reported.",
+      ].join("\n");
+
+      try {
+        orchestratorService.appendRuntimeEvent({
+          runId: args.runId,
+          stepId: step.id,
+          eventType: "progress",
+          eventKey: `milestone_ready:${step.id}:${dependenciesCompleted}:${dependencyTotal}`,
+          payload: {
+            source: args.reason,
+            milestoneReady: true,
+            stepKey: step.stepKey,
+            stepTitle: stepTitleForMessage(step),
+            dependenciesCompleted,
+            dependencyTotal,
+            validationCriteria,
+            requiredAction: "spawn_validator_and_report_validation",
+            downstreamGated: true,
+          },
+        });
+      } catch {
+        // Non-fatal telemetry path.
+      }
+
+      const coordAgent = coordinatorAgents.get(args.runId);
+      if (coordAgent?.isAlive) {
+        coordAgent.injectEvent(
+          {
+            type: "orchestrator-step-updated",
+            runId: args.runId,
+            stepId: step.id,
+            at: nowIso(),
+            reason: "milestone_ready_validation_required",
+          },
+          message
+        );
+      }
+    }
+
+    for (const key of milestoneReadyNotificationSignatures.keys()) {
+      if (!key.startsWith(`${args.runId}::`)) continue;
+      if (!readyMilestoneSignatureKeys.has(key)) {
+        milestoneReadyNotificationSignatures.delete(key);
+      }
+    }
+  };
+
+  const startReadyAutopilotAttemptsWithMilestoneReadiness = async (args: {
+    runId: string;
+    reason: string;
+  }): Promise<number> => {
+    emitMilestoneReadinessToCoordinator({ runId: args.runId, reason: args.reason });
+    return orchestratorService.startReadyAutopilotAttempts({ runId: args.runId, reason: args.reason });
   };
 
   const runHealthSweep = async (reason: string): Promise<{ sweeps: number; staleRecovered: number }> => {
@@ -3802,7 +2525,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const autopilot = isRecord(runMeta.autopilot) ? runMeta.autopilot : null;
         const autopilotEnabled = autopilot?.enabled === true;
         if (autopilotEnabled) {
-          await orchestratorService.startReadyAutopilotAttempts({
+          await startReadyAutopilotAttemptsWithMilestoneReadiness({
             runId: run.id,
             reason: staleRecovered > 0 ? "health_sweep_recovered" : "health_sweep_tick"
           });
@@ -3830,605 +2553,22 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   // Deterministic retry decision removed — coordinator AI handles retry decisions
 
-  const buildWorkerDigestFromAttempt = (args: {
-    graph: OrchestratorRunGraph;
-    attempt: OrchestratorRunGraph["attempts"][number];
-  }): OrchestratorWorkerDigest => {
-    const step = args.graph.steps.find((entry) => entry.id === args.attempt.stepId);
-    const envelope = args.attempt.resultEnvelope;
-    const outputs = envelope?.outputs ?? null;
-    const filesChangedRaw = outputs?.filesChanged ?? outputs?.files_changed ?? [];
-    const filesChanged = Array.isArray(filesChangedRaw)
-      ? filesChangedRaw.map((entry) => String(entry ?? "").trim()).filter(Boolean)
-      : [];
-    const testsRun = {
-      passed: Math.max(0, Math.floor(Number(outputs?.testsPassed ?? outputs?.tests_passed) || 0)),
-      failed: Math.max(0, Math.floor(Number(outputs?.testsFailed ?? outputs?.tests_failed) || 0)),
-      skipped: Math.max(0, Math.floor(Number(outputs?.testsSkipped ?? outputs?.tests_skipped) || 0)),
-      summary: typeof outputs?.testsSummary === "string"
-        ? outputs.testsSummary
-        : typeof outputs?.tests_summary === "string"
-          ? outputs.tests_summary
-          : null
-    };
-    const tokensInput = Number(outputs?.inputTokens ?? outputs?.input_tokens ?? outputs?.tokensInput ?? outputs?.tokens_input);
-    const tokensOutput = Number(outputs?.outputTokens ?? outputs?.output_tokens ?? outputs?.tokensOutput ?? outputs?.tokens_output);
-    const tokensTotal = Number(outputs?.totalTokens ?? outputs?.total_tokens ?? outputs?.tokensTotal ?? outputs?.tokens_total);
-    const tokens =
-      Number.isFinite(tokensInput) || Number.isFinite(tokensOutput) || Number.isFinite(tokensTotal)
-        ? {
-            input: Number.isFinite(tokensInput) ? Math.max(0, Math.floor(tokensInput)) : undefined,
-            output: Number.isFinite(tokensOutput) ? Math.max(0, Math.floor(tokensOutput)) : undefined,
-            total: Number.isFinite(tokensTotal) ? Math.max(0, Math.floor(tokensTotal)) : undefined
-          }
-        : null;
-    const costUsdRaw = Number(outputs?.costUsd ?? outputs?.cost_usd ?? outputs?.usdCost ?? outputs?.usd_cost);
-    const costUsd = Number.isFinite(costUsdRaw) ? costUsdRaw : null;
-    const status =
-      args.attempt.status === "running"
-      || args.attempt.status === "succeeded"
-      || args.attempt.status === "failed"
-      || args.attempt.status === "blocked"
-      || args.attempt.status === "queued"
-        ? args.attempt.status
-        : "queued";
-    const summary =
-      typeof envelope?.summary === "string" && envelope.summary.trim().length
-        ? envelope.summary.trim()
-        : args.attempt.status === "running"
-          ? `Worker started on ${step ? stepTitleForMessage(step) : args.attempt.stepId}.`
-          : args.attempt.errorMessage ?? `Step ${step?.stepKey ?? args.attempt.stepId} finished with status ${args.attempt.status}.`;
-    const warnings = Array.isArray(envelope?.warnings)
-      ? envelope.warnings.map((entry) => String(entry ?? "").trim()).filter(Boolean)
-      : [];
-    return {
-      id: randomUUID(),
-      missionId: args.graph.run.missionId,
-      runId: args.attempt.runId,
-      stepId: args.attempt.stepId,
-      stepKey: step?.stepKey ?? null,
-      attemptId: args.attempt.id,
-      laneId: step?.laneId ?? null,
-      sessionId: args.attempt.executorSessionId ?? null,
-      status,
-      summary,
-      filesChanged,
-      testsRun,
-      warnings,
-      tokens,
-      costUsd,
-      suggestedNextActions:
-        args.attempt.status === "failed"
-          ? ["Investigate failure", "Review logs", "Retry with guidance"]
-          : args.attempt.status === "running"
-            ? ["Monitor progress"]
-            : [],
-      createdAt: nowIso()
-    };
-  };
+  const buildWorkerDigestFromAttempt = (args: Parameters<typeof buildWorkerDigestFromAttemptCtx>[0]) =>
+    buildWorkerDigestFromAttemptCtx(args);
 
-  const updateWorkerStateFromEvent = (event: OrchestratorRuntimeEvent) => {
-    if (event.type !== "orchestrator-attempt-updated" || !event.attemptId || !event.runId) return;
-
-    try {
-      const graph = orchestratorService.getRunGraph({ runId: event.runId, timelineLimit: 0 });
-      const attempt = graph.attempts.find((a) => a.id === event.attemptId);
-      if (!attempt) return;
-
-      const stepForAttempt = graph.steps.find((s) => s.id === attempt.stepId);
-      const stepTitle = stepForAttempt?.title ?? stepForAttempt?.stepKey ?? attempt.stepId.slice(0, 8);
-      const stepKey = stepForAttempt?.stepKey ?? null;
-
-      if (attempt.status === "running") {
-        const existing = workerStates.get(attempt.id);
-        const shouldAnnounceStart = !existing || existing.state !== "working";
-        upsertWorkerState(attempt.id, {
-          stepId: attempt.stepId,
-          runId: attempt.runId,
-          sessionId: attempt.executorSessionId,
-          executorKind: attempt.executorKind,
-          state: "working"
-        });
-        if (shouldAnnounceStart) {
-          emitOrchestratorMessage(
-            graph.run.missionId,
-            `Worker started on step "${stepTitle}" using ${attempt.executorKind}.`,
-            stepKey
-          );
-          emitWorkerDigest(buildWorkerDigestFromAttempt({ graph, attempt }));
-
-          try {
-            ensureThreadForTarget({
-              missionId: graph.run.missionId,
-              target: {
-                kind: "worker",
-                runId: attempt.runId,
-                stepId: attempt.stepId,
-                stepKey: stepKey,
-                attemptId: attempt.id,
-                sessionId: attempt.executorSessionId ?? null,
-                laneId: stepForAttempt?.laneId ?? null,
-              },
-              fallbackTitle: `Worker: ${stepTitle}`,
-            });
-          } catch (_threadErr) {
-            /* best-effort */
-          }
-        }
-        recordMissionMetricSample({
-          missionId: graph.run.missionId,
-          runId: attempt.runId,
-          attemptId: attempt.id,
-          metric: "implementation",
-          value: 1,
-          unit: "attempt",
-          metadata: {
-            status: attempt.status,
-            executorKind: attempt.executorKind
-          }
-        });
-      } else if (attempt.status === "succeeded") {
-        attemptRuntimeTrackers.delete(attempt.id);
-        deletePersistedAttemptRuntimeState(attempt.id);
-        const outcomeTags = extractOutcomeTags(attempt);
-        const digest = emitWorkerDigest(buildWorkerDigestFromAttempt({ graph, attempt }));
-        upsertWorkerState(attempt.id, {
-          stepId: attempt.stepId,
-          runId: attempt.runId,
-          sessionId: attempt.executorSessionId,
-          executorKind: attempt.executorKind,
-          state: "completed",
-          outcomeTags,
-          completedAt: attempt.completedAt ?? nowIso()
-        });
-        const resultSummary = attempt.resultEnvelope?.summary
-          ? ` — ${attempt.resultEnvelope.summary.slice(0, 120)}`
-          : "";
-        emitOrchestratorMessage(
-          graph.run.missionId,
-          `Step "${stepTitle}" completed${resultSummary}`,
-          stepKey
-        );
-        if (digest.tokens?.total != null) {
-          recordMissionMetricSample({
-            missionId: graph.run.missionId,
-            runId: attempt.runId,
-            attemptId: attempt.id,
-            metric: "tokens",
-            value: digest.tokens.total,
-            unit: "tokens"
-          });
-        }
-        if (digest.costUsd != null) {
-          recordMissionMetricSample({
-            missionId: graph.run.missionId,
-            runId: attempt.runId,
-            attemptId: attempt.id,
-            metric: "cost",
-            value: digest.costUsd,
-            unit: "usd"
-          });
-        }
-
-        // Extract and register artifacts from the worker result envelope.
-        extractAndRegisterArtifacts({ graph, attempt });
-
-        // Evaluation loop: evaluate step based on active runtime profile.
-        const step = graph.steps.find((s) => s.id === attempt.stepId);
-        if (step && aiIntegrationService) {
-          const runtimeProfile = runRuntimeProfiles.get(attempt.runId) ?? resolveActiveRuntimeProfile(graph.run.missionId);
-          const isFinalStep = graph.steps.every(
-            (s) => s.id === step.id || s.status === "succeeded" || s.status === "failed" || s.status === "skipped"
-          );
-          const stepMeta = isRecord(step.metadata) ? step.metadata : {};
-          const completionCriteria = typeof stepMeta.completionCriteria === "string" ? stepMeta.completionCriteria : "";
-          const hasCriteria = completionCriteria.length > 0 && completionCriteria !== "step_done";
-
-          const coordForEval = coordinatorAgents.get(attempt.runId);
-          if (!coordForEval?.isAlive && hasCriteria && (runtimeProfile.evaluation.evaluateEveryStep || isFinalStep)) {
-            evaluateWorkerPlan({
-              attemptId: attempt.id,
-              workerPlan: {
-                stepKey: step.stepKey,
-                status: step.status,
-                outcomeTags,
-                completionCriteria,
-                resultSummary: attempt.resultEnvelope?.summary ?? null
-              },
-              provider: attempt.executorKind === "codex" ? "codex" : "claude"
-            }).then((evalResult) => {
-              emitOrchestratorMessage(
-                graph.run.missionId,
-                evalResult.approved
-                  ? `Step "${stepTitleForMessage(step)}" passed evaluation. ${evalResult.feedback}`
-                  : `Step "${stepTitleForMessage(step)}" failed evaluation: ${evalResult.feedback}.`,
-                step.stepKey
-              );
-              if (!evalResult.approved) {
-                logger.info("ai_orchestrator.step_evaluation_rejected", {
-                  runId: attempt.runId,
-                  stepId: step.id,
-                  feedback: evalResult.feedback
-                });
-              }
-            }).catch((error) => {
-              logger.debug("ai_orchestrator.step_evaluation_failed", {
-                runId: attempt.runId,
-                stepId: step.id,
-                error: error instanceof Error ? error.message : String(error)
-              });
-            });
-          }
-        }
-
-        // Propagate structured handoff context to downstream steps
-        propagateHandoffContext({
-          runId: attempt.runId,
-          completedStepId: attempt.stepId,
-          digest
-        });
-
-        // Transition handling is AI-driven via runtime attempt_completed events.
-      } else if (attempt.status === "failed") {
-        attemptRuntimeTrackers.delete(attempt.id);
-        deletePersistedAttemptRuntimeState(attempt.id);
-        const outcomeTags = extractOutcomeTags(attempt);
-        const digest = emitWorkerDigest(buildWorkerDigestFromAttempt({ graph, attempt }));
-        upsertWorkerState(attempt.id, {
-          stepId: attempt.stepId,
-          runId: attempt.runId,
-          sessionId: attempt.executorSessionId,
-          executorKind: attempt.executorKind,
-          state: "failed",
-          outcomeTags,
-          completedAt: attempt.completedAt ?? nowIso()
-        });
-
-        // Check for retry exhaustion → create real intervention then trigger AI
-        const step = graph.steps.find((s) => s.id === attempt.stepId);
-        const retryQueued = isRetryQueuedForStep(step);
-        const retriesLeft = step ? Math.max(0, step.retryLimit - step.retryCount) : 0;
-        emitOrchestratorMessage(
-          graph.run.missionId,
-          `Step "${stepTitle}" failed: ${attempt.errorMessage ?? "unknown error"}. ${
-            retryQueued
-              ? `Retry scheduled${retriesLeft > 0 ? ` (${retriesLeft} retries left).` : "."}`
-              : "No retries remaining."
-          }`,
-          stepKey
-        );
-        recordMissionMetricSample({
-          missionId: graph.run.missionId,
-          runId: attempt.runId,
-          attemptId: attempt.id,
-          metric: "retries",
-          value: step?.retryCount ?? 0,
-          unit: "count",
-          metadata: {
-            retryLimit: step?.retryLimit ?? null
-          }
-        });
-        if (digest.tokens?.total != null) {
-          recordMissionMetricSample({
-            missionId: graph.run.missionId,
-            runId: attempt.runId,
-            attemptId: attempt.id,
-            metric: "tokens",
-            value: digest.tokens.total,
-            unit: "tokens"
-          });
-        }
-        if (digest.costUsd != null) {
-          recordMissionMetricSample({
-            missionId: graph.run.missionId,
-            runId: attempt.runId,
-            attemptId: attempt.id,
-            metric: "cost",
-            value: digest.costUsd,
-            unit: "usd"
-          });
-        }
-        if (step && step.status === "failed" && step.retryCount >= step.retryLimit) {
-          try {
-            // Emit retry_exhausted event
-            recordRuntimeEvent({
-              runId: attempt.runId,
-              stepId: step.id,
-              attemptId: attempt.id,
-              sessionId: attempt.executorSessionId,
-              eventType: "retry_exhausted",
-              eventKey: `retry_exhausted:${step.id}`,
-              payload: {
-                retryCount: step.retryCount,
-                retryLimit: step.retryLimit,
-                lastError: attempt.errorMessage ?? "unknown"
-              }
-            });
-            const intervention = missionService.addIntervention({
-              missionId: graph.run.missionId,
-              interventionType: "failed_step",
-              title: `Step "${stepTitleForMessage(step)}" failed after ${step.retryCount} retries`,
-              body: `Step ${step.stepKey} (${stepTitleForMessage(step)}) exhausted all ${step.retryLimit} retries. Last error: ${attempt.errorMessage ?? "unknown"}`,
-              requestedAction: "Review and decide whether to retry, skip, or add a workaround."
-            });
-            recordRuntimeEvent({
-              runId: attempt.runId,
-              stepId: step.id,
-              attemptId: attempt.id,
-              sessionId: attempt.executorSessionId,
-              eventType: "intervention_opened",
-              eventKey: `intervention_opened:${intervention.id}`,
-              payload: {
-                interventionId: intervention.id,
-                interventionType: intervention.interventionType,
-                reason: "retry_exhausted"
-              }
-            });
-
-            const coordForDiag = coordinatorAgents.get(attempt.runId);
-            if (!coordForDiag?.isAlive && aiIntegrationService && projectRoot) {
-              // AI failure diagnosis that DECIDES and ACTS, not just describes (one-shot fallback when no coordinator)
-              const diagConfig = resolveCallTypeConfig(graph.run.missionId, "coordinator");
-              void (async () => {
-                try {
-                  const fullGraph = orchestratorService.getRunGraph({ runId: attempt.runId, timelineLimit: 5 });
-                  const succeededContext = fullGraph.steps
-                    .filter((s) => s.status === "succeeded")
-                    .slice(0, 5)
-                    .map((s) => {
-                      const lastAttempt = fullGraph.attempts
-                        .filter((a) => a.stepId === s.id && a.status === "succeeded")
-                        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-                      return `  - ${s.stepKey}: ${lastAttempt?.resultEnvelope?.summary?.slice(0, 150) ?? "completed"}`;
-                    });
-                  const blockedByThis = fullGraph.steps.filter((s) =>
-                    s.dependencyStepIds.includes(step.id) && s.status === "blocked"
-                  );
-
-                  const diagPrompt = [
-                    PM_SYSTEM_PREAMBLE,
-                    "Your current role: FAILURE DIAGNOSTICIAN AND DECISION MAKER.",
-                    "A step has exhausted all retries. You must DECIDE and ACT, not just describe the problem.",
-                    "",
-                    `Failed step: "${stepTitleForMessage(step)}" (key: ${step.stepKey})`,
-                    `Retries: ${step.retryCount}/${step.retryLimit}`,
-                    `Last error: ${attempt.errorMessage ?? "unknown"}`,
-                    `Step instructions: ${(isRecord(step.metadata) && typeof step.metadata.instructions === "string") ? step.metadata.instructions.slice(0, 500) : "N/A"}`,
-                    succeededContext.length > 0 ? `\nCompleted steps for context:\n${succeededContext.join("\n")}` : "",
-                    blockedByThis.length > 0 ? `\nSteps BLOCKED by this failure: ${blockedByThis.map((s) => `"${s.title}"`).join(", ")}` : "",
-                    "",
-                    "Choose ONE action:",
-                    "- skip: Non-critical step. Provide downstreamGuidance for blocked steps.",
-                    "- workaround: Add a new step achieving the same goal differently. Provide workaroundStep details.",
-                    "- retry: Provide revisedInstructions addressing the root cause.",
-                    "- escalate: ONLY if you truly need human input. Explain exactly what's needed.",
-                    "",
-                    "BIAS TOWARD ACTION. 'workaround' or 'skip' is almost always better than 'escalate'."
-                  ].join("\n");
-
-                  const diagSchema = {
-                    type: "object",
-                    properties: {
-                      rootCause: { type: "string" },
-                      category: { type: "string", enum: ["code", "environment", "design", "dependency", "unknown"] },
-                      recommendation: { type: "string", enum: ["retry", "skip", "workaround", "escalate"] },
-                      details: { type: "string" },
-                      revisedInstructions: { type: "string" },
-                      workaroundStep: {
-                        type: "object",
-                        properties: {
-                          title: { type: "string" },
-                          instructions: { type: "string" },
-                          executorKind: { type: "string", enum: ["claude", "codex"] }
-                        }
-                      },
-                      downstreamGuidance: { type: "string" }
-                    },
-                    required: ["rootCause", "category", "recommendation", "details"]
-                  };
-
-                  const diagResult = await aiIntegrationService.executeTask({
-                    feature: "orchestrator",
-                    taskType: "review",
-                    prompt: diagPrompt,
-                    cwd: projectRoot,
-                    provider: diagConfig.provider,
-                    reasoningEffort: diagConfig.reasoningEffort,
-                    jsonSchema: diagSchema,
-                    oneShot: true,
-                    timeoutMs: 45_000
-                  });
-
-                  const diagParsed = isRecord(diagResult.structuredOutput) ? diagResult.structuredOutput : null;
-                  const recommendation = String(diagParsed?.recommendation ?? "escalate");
-                  const rootCause = String(diagParsed?.rootCause ?? diagResult.text?.slice(0, 500) ?? "Unknown");
-
-                  logger.info("ai_orchestrator.failure_diagnosis_completed", {
-                    runId: attempt.runId,
-                    stepId: step.id,
-                    recommendation,
-                    rootCause: rootCause.slice(0, 200)
-                  });
-                  emitOrchestratorMessage(
-                    graph.run.missionId,
-                    `[FAILURE DIAGNOSIS] "${stepTitleForMessage(step)}": ${rootCause.slice(0, 300)} → Action: ${recommendation}`,
-                    step.stepKey
-                  );
-
-                  // ACT on the diagnosis
-                  if (recommendation === "skip") {
-                    try {
-                      orchestratorService.skipStep({
-                        runId: attempt.runId,
-                        stepId: step.id,
-                        reason: `AI diagnosis: ${rootCause.slice(0, 200)}`
-                      });
-                      if (typeof diagParsed?.downstreamGuidance === "string" && blockedByThis.length > 0) {
-                        for (const blocked of blockedByThis) {
-                          steerMission({
-                            missionId: graph.run.missionId,
-                            directive: `Previous step "${stepTitleForMessage(step)}" was skipped. Guidance: ${diagParsed.downstreamGuidance}`,
-                            priority: "instruction",
-                            targetStepKey: blocked.stepKey
-                          });
-                        }
-                      }
-                      emitOrchestratorMessage(graph.run.missionId, `AI auto-skipped failed step "${stepTitleForMessage(step)}"`, step.stepKey);
-                      void orchestratorService.startReadyAutopilotAttempts({ runId: attempt.runId, reason: "ai_diagnosis_skip" }).catch(() => {});
-                    } catch (skipErr) {
-                      logger.debug("ai_orchestrator.diagnosis_skip_failed", { error: skipErr instanceof Error ? skipErr.message : String(skipErr) });
-                    }
-                  } else if (recommendation === "workaround" && isRecord(diagParsed?.workaroundStep)) {
-                    try {
-                      const ws = diagParsed.workaroundStep;
-                      const workaroundKey = `workaround-${step.stepKey}-${Date.now()}`;
-                      orchestratorService.addSteps({
-                        runId: attempt.runId,
-                        steps: [{
-                          stepKey: workaroundKey,
-                          title: typeof ws.title === "string" ? ws.title : `Workaround for ${stepTitleForMessage(step)}`,
-                          stepIndex: step.stepIndex + 1,
-                          dependencyStepKeys: [],
-                          executorKind: (typeof ws.executorKind === "string" && ["claude", "codex"].includes(ws.executorKind) ? ws.executorKind : "claude") as OrchestratorExecutorKind,
-                          retryLimit: 2,
-                          metadata: {
-                            instructions: typeof ws.instructions === "string" ? ws.instructions : "",
-                            aiGenerated: true,
-                            generationReason: `workaround for failed ${step.stepKey}: ${rootCause.slice(0, 200)}`
-                          }
-                        }]
-                      });
-                      // Remap blocked steps to depend on workaround instead
-                      for (const blocked of blockedByThis) {
-                        try {
-                          const currentDeps = blocked.dependencyStepIds
-                            .map((depId) => fullGraph.steps.find((d) => d.id === depId)?.stepKey)
-                            .filter((k): k is string => !!k);
-                          const newDeps = currentDeps.map((k) => k === step.stepKey ? workaroundKey : k);
-                          orchestratorService.updateStepDependencies({
-                            runId: attempt.runId,
-                            stepId: blocked.id,
-                            dependencyStepKeys: newDeps
-                          });
-                        } catch {
-                          // Best-effort dependency remap
-                        }
-                      }
-                      emitOrchestratorMessage(graph.run.missionId, `AI added workaround for "${stepTitleForMessage(step)}"`, workaroundKey);
-                      void orchestratorService.startReadyAutopilotAttempts({ runId: attempt.runId, reason: "ai_diagnosis_workaround" }).catch(() => {});
-                    } catch (workaroundErr) {
-                      logger.debug("ai_orchestrator.diagnosis_workaround_failed", { error: workaroundErr instanceof Error ? workaroundErr.message : String(workaroundErr) });
-                    }
-                  }
-                  // retry and escalate fall through to intervention handling below
-                } catch (diagError) {
-                  logger.debug("ai_orchestrator.failure_diagnosis_failed", {
-                    runId: attempt.runId,
-                    stepId: step.id,
-                    error: diagError instanceof Error ? diagError.message : String(diagError)
-                  });
-                }
-              })();
-
-              // Also attempt auto-resolution if configured
-              const runtimeProfile = runRuntimeProfiles.get(attempt.runId) ?? resolveActiveRuntimeProfile(graph.run.missionId);
-              if (runtimeProfile.evaluation.autoResolveInterventions) {
-                handleInterventionWithAI({
-                  missionId: graph.run.missionId,
-                  interventionId: intervention.id,
-                  provider: attempt.executorKind === "codex" ? "codex" : "claude"
-                }).catch((error) => {
-                  logger.debug("ai_orchestrator.auto_intervention_failed", {
-                    runId: event.runId,
-                    stepId: step.id,
-                    error: error instanceof Error ? error.message : String(error)
-                  });
-                });
-              }
-            }
-          } catch (interventionError) {
-            logger.debug("ai_orchestrator.create_intervention_failed", {
-              runId: event.runId,
-              stepId: step.id,
-              error: interventionError instanceof Error ? interventionError.message : String(interventionError)
-            });
-          }
-        }
-      }
-    } catch (error) {
-      logger.debug("ai_orchestrator.worker_state_update_failed", {
-        attemptId: event.attemptId,
-        runId: event.runId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
-
-  const summarizeRunForChat = (missionId: string): string => {
-    const runs = orchestratorService.listRuns({ missionId });
-    if (!runs.length) return "No run has started yet.";
-    const byCreatedDesc = [...runs].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-    const activeRun = byCreatedDesc.find((entry) => entry.status === "active" || entry.status === "bootstrapping" || entry.status === "queued" || entry.status === "paused");
-    const targetRun = activeRun ?? byCreatedDesc[0];
-    if (!targetRun) return "No run has started yet.";
-    try {
-      const graph = orchestratorService.getRunGraph({ runId: targetRun.id, timelineLimit: 0 });
-      const total = graph.steps.length;
-      const running = graph.steps.filter((step) => step.status === "running").length;
-      const done = graph.steps.filter((step) =>
-        step.status === "succeeded" || step.status === "failed" || step.status === "skipped" || step.status === "canceled"
-      ).length;
-      const failed = graph.steps.filter((step) => step.status === "failed").length;
-      const blocked = graph.steps.filter((step) => step.status === "blocked").length;
-      const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
-      const autopilot = isRecord(runMeta.autopilot) ? runMeta.autopilot : null;
-      const parallelCap =
-        autopilot && Number.isFinite(Number(autopilot.parallelismCap))
-          ? Math.max(1, Math.floor(Number(autopilot.parallelismCap)))
-          : null;
-      const runningSteps = graph.steps
-        .filter((step) => step.status === "running")
-        .slice(0, 3)
-        .map((step) => `${step.title || step.stepKey}${step.laneId ? ` @${step.laneId}` : ""}`);
-      const readySteps = graph.steps
-        .filter((step) => step.status === "ready")
-        .slice(0, 3)
-        .map((step) => `${step.title || step.stepKey}${step.laneId ? ` @${step.laneId}` : ""}`);
-      return [
-        `Run ${targetRun.id.slice(0, 8)} is ${targetRun.status}. Progress ${done}/${total}. Running ${running}. Failed ${failed}. Blocked ${blocked}.`,
-        parallelCap ? `Parallelism cap: ${parallelCap}.` : null,
-        runningSteps.length ? `Active steps: ${runningSteps.join("; ")}.` : null,
-        readySteps.length ? `Ready queue: ${readySteps.join("; ")}.` : null
-      ]
-        .filter((line): line is string => Boolean(line))
-        .join(" ");
-    } catch {
-      return `Latest run ${targetRun.id.slice(0, 8)} is ${targetRun.status}.`;
-    }
-  };
-
-  const formatRecentChatContext = (
-    messages: OrchestratorChatMessage[],
-    limit = MAX_CHAT_CONTEXT_MESSAGES
-  ): string => {
-    const recent = messages.slice(-limit);
-    if (!recent.length) return "";
-    const lines = recent.map((entry) => {
-      const role = entry.role === "user" ? "User" : entry.role === "worker" ? "Worker" : "Orchestrator";
-      const compact = clipTextForContext(
-        entry.content.replace(/\s+/g, " ").trim(),
-        MAX_CHAT_LINE_CHARS
-      );
-      return `- ${role}: ${compact}`;
+  const updateWorkerStateFromEvent = (event: OrchestratorRuntimeEvent) =>
+    updateWorkerStateFromEventCtx(ctx, event, {
+      recordRuntimeEvent,
+      evaluateWorkerPlan,
+      propagateHandoffContext,
+      steerMission,
+      handleInterventionWithAI,
+      appendChatMessage,
     });
-    const rendered = ["Recent mission chat:", ...lines, ""].join("\n");
-    return clipTextForContext(rendered, MAX_CHAT_CONTEXT_CHARS);
-  };
 
-  const buildRecentChatContext = (missionId: string, limit = MAX_CHAT_CONTEXT_MESSAGES): string => {
-    const messages = chatMessages.get(missionId) ?? loadChatMessagesFromMetadata(missionId);
-    return formatRecentChatContext(messages, limit);
-  };
+  const summarizeRunForChat = (missionId: string): string => summarizeRunForChatCtx(ctx, missionId);
+
+  const buildRecentChatContext = (missionId: string, limit = MAX_CHAT_CONTEXT_MESSAGES): string => buildRecentChatContextCtx(ctx, missionId, limit);
 
   const resolveChatProvider = (missionId: string): "claude" | "codex" | null => {
     const existingSession = activeChatSessions.get(missionId) ?? loadChatSessionStateFromMetadata(missionId);
@@ -4480,187 +2620,26 @@ Check all worker statuses and continue managing the mission from here. Read work
   // Spawns and manages coordinator + teammates for a run.
 
   /** Register a team member in the persistent DB table */
-  const registerTeamMember = (member: OrchestratorTeamMember): void => {
-    db.run(
-      `insert into orchestrator_team_members(
-        id, run_id, mission_id, provider, model, role, session_id, status,
-        claimed_task_ids_json, metadata_json, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        member.id, member.runId, member.missionId, member.provider, member.model,
-        member.role, member.sessionId, member.status,
-        JSON.stringify(member.claimedTaskIds), member.metadata ? JSON.stringify(member.metadata) : null,
-        member.createdAt, member.updatedAt
-      ]
-    );
-  };
+  const registerTeamMember = (member: OrchestratorTeamMember): void =>
+    registerTeamMemberCtx(ctx, member);
 
-  /** Update a team member's status/session in the DB */
   const updateTeamMemberStatus = (memberId: string, updates: {
     status?: OrchestratorTeamMember["status"];
     sessionId?: string | null;
     claimedTaskIds?: string[];
-  }): void => {
-    const now = nowIso();
-    if (updates.status) {
-      db.run(
-        `update orchestrator_team_members set status = ?, updated_at = ? where id = ?`,
-        [updates.status, now, memberId]
-      );
-    }
-    if (updates.sessionId !== undefined) {
-      db.run(
-        `update orchestrator_team_members set session_id = ?, updated_at = ? where id = ?`,
-        [updates.sessionId, now, memberId]
-      );
-    }
-    if (updates.claimedTaskIds) {
-      db.run(
-        `update orchestrator_team_members set claimed_task_ids_json = ?, updated_at = ? where id = ?`,
-        [JSON.stringify(updates.claimedTaskIds), now, memberId]
-      );
-    }
-  };
+  }): void => updateTeamMemberStatusCtx(ctx, memberId, updates);
 
-  /** Get team members for a run */
-  const getTeamMembersForRun = (runId: string): OrchestratorTeamMember[] => {
-    const rows = db.all<{
-      id: string; run_id: string; mission_id: string; provider: string; model: string;
-      role: string; session_id: string | null; status: string;
-      claimed_task_ids_json: string; metadata_json: string | null;
-      created_at: string; updated_at: string;
-    }>(
-      `select * from orchestrator_team_members where run_id = ? order by created_at asc`,
-      [runId]
-    );
-    return rows.map((row) => ({
-      id: row.id,
-      runId: row.run_id,
-      missionId: row.mission_id,
-      provider: row.provider,
-      model: row.model,
-      role: row.role as OrchestratorTeamMember["role"],
-      sessionId: row.session_id,
-      status: row.status as OrchestratorTeamMember["status"],
-      claimedTaskIds: parseJsonArray(row.claimed_task_ids_json) as string[],
-      metadata: parseJsonRecord(row.metadata_json),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
-  };
+  const getTeamMembersForRun = (runId: string): OrchestratorTeamMember[] =>
+    getTeamMembersForRunCtx(ctx, runId);
 
-  /** Initialize team runtime state in the DB */
-  const initTeamRuntimeState = (runId: string, coordinatorSessionId: string | null): void => {
-    const now = nowIso();
-    db.run(
-      `insert into orchestrator_run_state(
-        run_id, phase, completion_requested, completion_validated,
-        last_validation_error, coordinator_session_id, teammate_ids_json,
-        created_at, updated_at
-      ) values (?, 'bootstrapping', 0, 0, null, ?, '[]', ?, ?)
-      on conflict(run_id) do update set
-        phase = 'bootstrapping',
-        completion_requested = 0,
-        completion_validated = 0,
-        coordinator_session_id = excluded.coordinator_session_id,
-        updated_at = excluded.updated_at`,
-      [runId, coordinatorSessionId, now, now]
-    );
-    teamRuntimeStates.set(runId, {
-      runId,
-      phase: "bootstrapping",
-      completionRequested: false,
-      completionValidated: false,
-      lastValidationError: null,
-      coordinatorSessionId: coordinatorSessionId,
-      teammateIds: [],
-      createdAt: now,
-      updatedAt: now,
-    });
-  };
+  const initTeamRuntimeState = (runId: string, coordinatorSessionId: string | null): void =>
+    initTeamRuntimeStateCtx(ctx, runId, coordinatorSessionId);
 
-  /** Update team runtime phase in the DB */
-  const updateTeamRuntimePhase = (runId: string, phase: OrchestratorTeamRuntimeState["phase"], extra?: {
-    coordinatorSessionId?: string | null;
-    teammateIds?: string[];
-    completionRequested?: boolean;
-    completionValidated?: boolean;
-    lastValidationError?: string | null;
-  }): void => {
-    const now = nowIso();
-    const state = teamRuntimeStates.get(runId);
-    if (state) {
-      state.phase = phase;
-      state.updatedAt = now;
-      if (extra?.coordinatorSessionId !== undefined) state.coordinatorSessionId = extra.coordinatorSessionId;
-      if (extra?.teammateIds) state.teammateIds = extra.teammateIds;
-      if (extra?.completionRequested !== undefined) state.completionRequested = extra.completionRequested;
-      if (extra?.completionValidated !== undefined) state.completionValidated = extra.completionValidated;
-      if (extra?.lastValidationError !== undefined) state.lastValidationError = extra.lastValidationError;
-    }
-    db.run(
-      `update orchestrator_run_state set phase = ?, updated_at = ? where run_id = ?`,
-      [phase, now, runId]
-    );
-    if (extra?.coordinatorSessionId !== undefined) {
-      db.run(
-        `update orchestrator_run_state set coordinator_session_id = ? where run_id = ?`,
-        [extra.coordinatorSessionId, runId]
-      );
-    }
-    if (extra?.teammateIds) {
-      db.run(
-        `update orchestrator_run_state set teammate_ids_json = ? where run_id = ?`,
-        [JSON.stringify(extra.teammateIds), runId]
-      );
-    }
-    if (extra?.completionRequested !== undefined) {
-      db.run(
-        `update orchestrator_run_state set completion_requested = ? where run_id = ?`,
-        [extra.completionRequested ? 1 : 0, runId]
-      );
-    }
-    if (extra?.completionValidated !== undefined) {
-      db.run(
-        `update orchestrator_run_state set completion_validated = ? where run_id = ?`,
-        [extra.completionValidated ? 1 : 0, runId]
-      );
-    }
-    if (extra?.lastValidationError !== undefined) {
-      db.run(
-        `update orchestrator_run_state set last_validation_error = ? where run_id = ?`,
-        [extra.lastValidationError, runId]
-      );
-    }
-  };
+  const updateTeamRuntimePhase = (runId: string, phase: OrchestratorTeamRuntimeState["phase"], extra?: Parameters<typeof updateTeamRuntimePhaseCtx>[3]): void =>
+    updateTeamRuntimePhaseCtx(ctx, runId, phase, extra);
 
-  /** Get the team runtime state for a run */
-  const getTeamRuntimeStateForRun = (runId: string): OrchestratorTeamRuntimeState | null => {
-    const cached = teamRuntimeStates.get(runId);
-    if (cached) return cached;
-    const row = db.get<{
-      run_id: string; phase: string; completion_requested: number; completion_validated: number;
-      last_validation_error: string | null; coordinator_session_id: string | null;
-      teammate_ids_json: string; created_at: string; updated_at: string;
-    }>(
-      `select * from orchestrator_run_state where run_id = ? limit 1`,
-      [runId]
-    );
-    if (!row) return null;
-    const runtimeState: OrchestratorTeamRuntimeState = {
-      runId: row.run_id,
-      phase: row.phase as OrchestratorTeamRuntimeState["phase"],
-      completionRequested: row.completion_requested === 1,
-      completionValidated: row.completion_validated === 1,
-      lastValidationError: row.last_validation_error,
-      coordinatorSessionId: row.coordinator_session_id,
-      teammateIds: parseJsonArray(row.teammate_ids_json) as string[],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-    teamRuntimeStates.set(runId, runtimeState);
-    return runtimeState;
-  };
+  const getTeamRuntimeStateForRun = (runId: string): OrchestratorTeamRuntimeState | null =>
+    getTeamRuntimeStateForRunCtx(ctx, runId);
 
   /**
    * Spawn the team runtime for a run: coordinator agent + N teammates.
@@ -4851,6 +2830,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     // End coordinator
     endCoordinatorAgentV2(runId);
+    cleanupCoordinatorCheckpointFile(runId, "finalize_run");
 
     const buildRecoveryHandoffPayload = () => {
       const doneSteps = graph.steps
@@ -4944,44 +2924,120 @@ Check all worker statuses and continue managing the mission from here. Read work
    * Checks for runs in "active" or "bootstrapping" status with coordinator sessions.
    */
   const resumeActiveTeamRuntimes = (): void => {
-    try {
-      const activeRuns = db.all<{ id: string; mission_id: string; status: string; metadata_json: string | null }>(
-        `select id, mission_id, status, metadata_json from orchestrator_runs where status in ('active', 'bootstrapping', 'queued') order by created_at desc limit 10`
-      );
-      for (const run of activeRuns) {
-        const runtimeState = getTeamRuntimeStateForRun(run.id);
-        if (!runtimeState || runtimeState.phase === "done" || runtimeState.phase === "failed") continue;
+    void (async () => {
+      try {
+        const activeRuns = db.all<{ id: string; mission_id: string; status: string; metadata_json: string | null }>(
+          `select id, mission_id, status, metadata_json from orchestrator_runs where status in ('active', 'bootstrapping', 'queued') order by created_at desc limit 10`
+        );
+        for (const run of activeRuns) {
+          const runtimeState = getTeamRuntimeStateForRun(run.id);
+          if (!runtimeState || runtimeState.phase === "done" || runtimeState.phase === "failed") continue;
 
-        // Restore coordinator agent if possible
-        const mission = missionService.get(run.mission_id);
-        if (!mission) continue;
+          const mission = missionService.get(run.mission_id);
+          if (!mission) continue;
 
-        const coordinatorModelConfig = resolveOrchestratorModelConfig(run.mission_id, "coordinator");
-        const missionGoal = mission.prompt || mission.title;
-        const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(run.mission_id, { missionId: run.mission_id });
-        const agent = startCoordinatorAgentV2(run.mission_id, run.id, missionGoal, coordinatorModelConfig, {
-          userRules,
-          projectContext: projectCtx,
-          availableProviders,
-          phases,
-        });
+          const preResumeGraph = (() => {
+            try {
+              return orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 0 });
+            } catch {
+              return null;
+            }
+          })();
+          const orphanedRunningAttempts = preResumeGraph?.attempts.filter((attempt) => attempt.status === "running") ?? [];
+          try {
+            orchestratorService.resumeRun({ runId: run.id });
+          } catch (error) {
+            logger.debug("ai_orchestrator.team_runtime_resume_run_failed", {
+              runId: run.id,
+              missionId: run.mission_id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
 
-        if (agent) {
-          agent.injectMessage(
-            `[RESUME] Mission resumed after app restart. Check the current state of all workers and tasks, then continue managing the mission.`
-          );
-          logger.info("ai_orchestrator.team_runtime_resumed", {
-            runId: run.id,
-            missionId: run.mission_id,
-            phase: runtimeState.phase,
+          const [stateDoc, checkpoint]: [MissionStateDocument | null, Awaited<ReturnType<typeof readCoordinatorCheckpoint>>] = projectRoot
+            ? await Promise.all([
+                readMissionStateDocument({ projectRoot, runId: run.id }),
+                readCoordinatorCheckpoint(projectRoot, run.id),
+              ])
+            : [null, null];
+
+          const coordinatorModelConfig = resolveOrchestratorModelConfig(run.mission_id, "coordinator");
+          const missionGoal = mission.prompt || mission.title;
+          const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(run.mission_id, { missionId: run.mission_id });
+          const agent = startCoordinatorAgentV2(run.mission_id, run.id, missionGoal, coordinatorModelConfig, {
+            userRules,
+            projectContext: projectCtx,
+            availableProviders,
+            phases,
+            skipInitialActivationMessage: true,
           });
+
+          if (agent) {
+            const truncate = (value: string, max: number): string =>
+              value.length > max ? `${value.slice(0, max)}\n[truncated]` : value;
+            const serializedStateDoc = stateDoc
+              ? truncate(JSON.stringify(stateDoc, null, 2), 20_000)
+              : '{"note":"Mission state document unavailable."}';
+            const checkpointSummary = checkpoint
+              ? [
+                  `savedAt=${checkpoint.savedAt}`,
+                  `turnCount=${checkpoint.turnCount}`,
+                  `compactionCount=${checkpoint.compactionCount}`,
+                  `lastEventTimestamp=${checkpoint.lastEventTimestamp ?? "unknown"}`,
+                  "",
+                  truncate(checkpoint.conversationSummary || "No summary saved.", 8_000),
+                ].join("\n")
+              : "No checkpoint file found for this run.";
+            const recoveredAttemptsSummary = orphanedRunningAttempts.length
+              ? orphanedRunningAttempts
+                  .slice(0, 12)
+                  .map((attempt) => {
+                    const step = preResumeGraph?.steps.find((candidate) => candidate.id === attempt.stepId);
+                    const stepLabel = step ? `${step.stepKey} (${stepTitleForMessage(step)})` : attempt.stepId;
+                    return `- ${stepLabel} / attempt ${attempt.attemptNumber} (${attempt.id})`;
+                  })
+                  .join("\n")
+              : "- none";
+            agent.injectMessage(
+              [
+                "[RESUME RECOVERY]",
+                "App restart detected. Any orphaned running attempts were failed with errorClass 'resume_recovered' because worker sessions were lost.",
+                `Recovered attempts: ${orphanedRunningAttempts.length}`,
+                recoveredAttemptsSummary,
+                "",
+                "Authoritative mission state document:",
+                "```json",
+                serializedStateDoc,
+                "```",
+                "",
+                "Coordinator checkpoint summary:",
+                checkpointSummary,
+                "",
+                "Recovery instructions:",
+                "1. Call read_mission_status immediately to refresh current DAG truth.",
+                "2. Treat the mission state document above as the authoritative structured context.",
+                "3. Review steps affected by resume_recovered and decide retry/skip/workaround.",
+                "4. For milestone-ready gates, spawn validator workers and call report_validation before marking complete.",
+                "5. Continue execution from the current DAG state; do not redo completed work.",
+              ].join("\n")
+            );
+            emitMilestoneReadinessToCoordinator({ runId: run.id, reason: "resume_active_team_runtimes" });
+            logger.info("ai_orchestrator.team_runtime_resumed", {
+              runId: run.id,
+              missionId: run.mission_id,
+              phase: runtimeState.phase,
+              recoveredOrphanedAttempts: orphanedRunningAttempts.length,
+              hasMissionStateDoc: Boolean(stateDoc),
+              hasCheckpoint: Boolean(checkpoint),
+            });
+          }
         }
+      } catch (error) {
+        logger.debug("ai_orchestrator.team_runtime_resume_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-    } catch (error) {
-      logger.debug("ai_orchestrator.team_runtime_resume_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    })();
   };
 
   // Communication routing: user messages to coordinator thread get injected
@@ -5169,7 +3225,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
 
         // Always start any newly-ready steps after evaluation
-        void orchestratorService.startReadyAutopilotAttempts({ runId, reason: `coordinator_eval:${reason}` }).catch(() => {});
+        void startReadyAutopilotAttemptsWithMilestoneReadiness({ runId, reason: `coordinator_eval:${reason}` }).catch(() => {});
 
         logger.debug("ai_orchestrator.coordinator_evaluation_triggered", { runId, missionId, reason });
       } catch (error) {
@@ -5411,6 +3467,12 @@ Check all worker statuses and continue managing the mission from here. Read work
 
       const teamRuntimeCfgRaw = resolveMissionTeamRuntime(args.missionId);
       const teamRuntimeCfg = teamRuntimeCfgRaw ? normalizeTeamRuntimeConfig(args.missionId, teamRuntimeCfgRaw) : null;
+      const phaseConfig = missionService.getPhaseConfiguration(args.missionId);
+      const missionRow = db.get<{ project_id: string }>(
+        `select project_id from missions where id = ? limit 1`,
+        [args.missionId]
+      );
+      const missionProjectId = missionRow?.project_id ? String(missionRow.project_id).trim() : "";
       const planning = await planMissionOnce({
         missionId: args.missionId,
         title: mission.title,
@@ -5419,7 +3481,15 @@ Check all worker statuses and continue managing the mission from here. Read work
         plannerEngine,
         model: args.model,
         projectRoot,
+        allowPlanningQuestions: (() => {
+          const missionMetadata = getMissionMetadata(args.missionId);
+          const launch = isRecord(missionMetadata.launch) ? missionMetadata.launch : null;
+          return launch?.allowPlanningQuestions === true;
+        })(),
+        phaseCards: phaseConfig?.selectedPhases,
         aiIntegrationService: planningIntegration,
+        memoryService: missionProjectId.length > 0 ? plannerMemoryService : undefined,
+        memoryProjectId: missionProjectId.length > 0 ? missionProjectId : undefined,
         logger,
         policy: args.policy,
         teamRuntime: teamRuntimeCfg ?? undefined
@@ -5435,14 +3505,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         validationErrors: planning.run.validationErrors,
         policy: args.policy
       });
-
-      // Get project_id from missions table for DB operations
-      const missionRow = db.get<{ project_id: string }>(
-        `select project_id from missions where id = ? limit 1`,
-        [args.missionId]
-      );
-      if (!missionRow) return;
-      const missionProjectId = missionRow.project_id;
+      if (!missionProjectId.length) return;
 
       // Replace existing mission steps with AI-planned steps
       db.run(`delete from mission_steps where mission_id = ?`, [args.missionId]);
@@ -5483,6 +3546,8 @@ Check all worker statuses and continue managing the mission from here. Read work
         ...existingMetadata,
         plannerPlan: {
           schemaVersion: planning.plan.schemaVersion,
+          clarifyingQuestions: planning.plan.clarifyingQuestions ?? [],
+          clarifyingAnswers: planning.plan.clarifyingAnswers ?? [],
           missionSummary: planning.plan.missionSummary,
           assumptions: planning.plan.assumptions,
           risks: planning.plan.risks,
@@ -5964,9 +4029,9 @@ Check all worker statuses and continue managing the mission from here. Read work
       // no_change — just skip
     }
 
-    // After applying adjustments, immediately start any newly-ready steps
+      // After applying adjustments, immediately start any newly-ready steps
     if (adjustmentsApplied > 0) {
-      void orchestratorService.startReadyAutopilotAttempts({
+      void startReadyAutopilotAttemptsWithMilestoneReadiness({
         runId: adjustArgs.runId,
         reason: `ai_plan_adjustment:${adjustmentsApplied}_changes`
       }).catch(() => {});
@@ -5982,32 +4047,8 @@ Check all worker statuses and continue managing the mission from here. Read work
   // Fan-out run state snapshot: gathers current run state for the meta-reasoner.
   // ---------------------------------------------------------------------------
 
-  const buildRunStateSnapshot = (runId: string): MetaReasonerRunState => {
-    const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-    const activeAgentCount = graph.attempts.filter((a) => a.status === "running").length;
-    const runMeta = graph.run.metadata ?? {};
-    const autopilot = typeof runMeta.autopilot === "object" && runMeta.autopilot && !Array.isArray(runMeta.autopilot)
-      ? (runMeta.autopilot as Record<string, unknown>)
-      : {};
-    const parallelismCap = Math.max(1, Math.min(32, Number(autopilot.parallelismCap ?? 4)));
-
-    // Available lanes: lanes from steps that are not currently running
-    const runningLaneIds = new Set(
-      graph.steps.filter((s) => s.status === "running" && s.laneId).map((s) => s.laneId!)
-    );
-    const allLaneIds = [...new Set(graph.steps.map((s) => s.laneId).filter((id): id is string => id != null))];
-    const availableLanes = allLaneIds.filter((id) => !runningLaneIds.has(id));
-
-    // File ownership from active claims
-    const fileOwnershipMap: Record<string, string> = {};
-    for (const claim of graph.claims) {
-      if (claim.state === "active" && claim.scopeKind === "file") {
-        fileOwnershipMap[claim.scopeValue] = claim.ownerId;
-      }
-    }
-
-    return { activeAgentCount, parallelismCap, availableLanes, fileOwnershipMap };
-  };
+  // Delegate to runtimeEventRouter module via ctx
+  const buildRunStateSnapshot = (runId: string) => buildRunStateSnapshotCtx(ctx, runId);
 
   // ---------------------------------------------------------------------------
   // Cross-step handoff propagation: automatically enrich downstream steps
@@ -6408,123 +4449,27 @@ Check all worker statuses and continue managing the mission from here. Read work
     });
   };
 
-  const resolveMissionParallelismCap = (missionId: string): number | null => {
-    const row = db.get<{ metadata_json: string | null }>(
-      `
-        select metadata_json
-        from missions
-        where id = ?
-        limit 1
-      `,
-      [missionId]
-    );
-    if (!row?.metadata_json) return null;
-    try {
-      const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-      const plannerPlan = isRecord(metadata.plannerPlan) ? (metadata.plannerPlan as Record<string, unknown>) : null;
-      const missionSummary = plannerPlan && isRecord(plannerPlan.missionSummary)
-        ? (plannerPlan.missionSummary as Record<string, unknown>)
-        : null;
-      const cap = Number(missionSummary?.parallelismCap ?? NaN);
-      return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : null;
-    } catch {
-      return null;
-    }
-  };
+  // Delegated to missionLifecycle.ts
+  const resolveMissionParallelismCap = (missionId: string) => resolveMissionParallelismCapCtx(ctx, missionId);
+  const resolveMissionLaneStrategyParallelismCap = (missionId: string) => resolveMissionLaneStrategyParallelismCapCtx(ctx, missionId);
 
-  const resolveMissionLaneStrategyParallelismCap = (missionId: string): number | null => {
-    const metadata = getMissionMetadata(missionId);
-    const parallelLanes = isRecord(metadata.parallelLanes) ? metadata.parallelLanes : null;
-    const cap = Number(parallelLanes?.maxParallelLanes ?? Number.NaN);
-    return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : null;
-  };
+  // ── Model Config Resolution (delegated to modelConfigResolver) ──
+  const resolveMissionLaunchPlannerModel = (missionId: string) =>
+    resolveMissionLaunchPlannerModelCtx(ctx, missionId);
+  const resolveMissionDecisionTimeoutCapMs = (missionId: string) =>
+    resolveMissionDecisionTimeoutCapMsCtx(ctx, missionId);
+  const resolveAiDecisionLikeTimeoutMs = (missionId: string) =>
+    resolveAiDecisionLikeTimeoutMsCtx(ctx, missionId);
+  const resolveOrchestratorModelConfig = (missionId: string, callType: OrchestratorCallType) =>
+    resolveOrchestratorModelConfigCtx(ctx, missionId, callType);
+  const resolveOrchestratorModel = (missionId: string) =>
+    resolveOrchestratorModelCtx(ctx, missionId);
+  const resolveMissionModelConfig = (missionId: string) =>
+    resolveMissionModelConfigCtx(ctx, missionId);
 
-  const resolveMissionLaunchPlannerModel = (missionId: string): "opus" | "sonnet" | "haiku" | null => {
-    const row = db.get<{ metadata_json: string | null }>(
-      `
-        select metadata_json
-        from missions
-        where id = ?
-        limit 1
-      `,
-      [missionId]
-    );
-    if (!row?.metadata_json) return null;
-    try {
-      const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-      const launch = isRecord(metadata.launch) ? (metadata.launch as Record<string, unknown>) : null;
-      const raw = typeof launch?.orchestratorModel === "string" ? launch.orchestratorModel.trim().toLowerCase() : "";
-      if (raw === "opus" || raw === "sonnet" || raw === "haiku") return raw;
-      return null;
-    } catch {
-      return null;
-    }
-  };
-
-  const resolveMissionDecisionTimeoutCapMs = (missionId: string): number => {
-    const metadata = getMissionMetadata(missionId);
-    const modelConfig = isRecord(metadata.modelConfig) ? metadata.modelConfig : null;
-    const rawHours = Number(modelConfig?.decisionTimeoutCapHours ?? Number.NaN);
-    const normalizedHours = Number.isFinite(rawHours) ? Math.floor(rawHours) : 24;
-    return DECISION_TIMEOUT_CAP_MS_BY_HOURS[normalizedHours] ?? DECISION_TIMEOUT_CAP_MS_BY_HOURS[24];
-  };
-
-  const resolveAiDecisionLikeTimeoutMs = (missionId: string): number | null => {
-    void missionId;
-    return null;
-  };
-
-  /** Resolve a per-call-type ModelConfig from mission metadata, with fallback to legacy model */
-  const resolveOrchestratorModelConfig = (missionId: string, callType: OrchestratorCallType): ModelConfig => {
-    // Try to load full MissionModelConfig from mission metadata
-    const metadata = getMissionMetadata(missionId);
-    const missionModelConfig = metadata?.modelConfig as MissionModelConfig | undefined;
-
-    if (missionModelConfig) {
-      return resolveCallTypeModel(
-        callType,
-        missionModelConfig.intelligenceConfig,
-        missionModelConfig.orchestratorModel
-      );
-    }
-
-    // Fallback: use legacy orchestratorModel from launch metadata
-    const legacyModel = resolveMissionLaunchPlannerModel(missionId);
-    return legacyToModelConfig(legacyModel);
-  };
-
-  /** Resolve the orchestrator model for AI decision calls — defaults to "sonnet" (backward compat wrapper) */
-  const resolveOrchestratorModel = (missionId: string): string => {
-    const config = resolveOrchestratorModelConfig(missionId, "coordinator");
-    return modelConfigToServiceModel(config);
-  };
-
-  const resolveMissionModelConfig = (missionId: string): MissionModelConfig | null => {
-    const metadata = getMissionMetadata(missionId);
-    const modelConfig = metadata?.modelConfig;
-    return isRecord(modelConfig) ? (modelConfig as MissionModelConfig) : null;
-  };
-
-  const transitionMissionStatus = (missionId: string, next: MissionStatus, args?: { outcomeSummary?: string | null; lastError?: string | null }) => {
-    const mission = missionService.get(missionId);
-    if (!mission) return;
-    if (mission.status === next && args?.outcomeSummary == null && args?.lastError == null) return;
-    try {
-      missionService.update({
-        missionId,
-        status: next,
-        ...(args?.outcomeSummary !== undefined ? { outcomeSummary: args.outcomeSummary } : {}),
-        ...(args?.lastError !== undefined ? { lastError: args.lastError } : {})
-      });
-    } catch (error) {
-      logger.debug("ai_orchestrator.mission_status_transition_skipped", {
-        missionId,
-        from: mission.status,
-        to: next,
-        reason: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
+  // Delegated to missionLifecycle.ts
+  const transitionMissionStatus = (missionId: string, next: MissionStatus, args?: { outcomeSummary?: string | null; lastError?: string | null }) =>
+    transitionMissionStatusCtx(ctx, missionId, next, args);
 
   const pauseRunWithIntervention = (args: {
     runId: string;
@@ -6633,189 +4578,18 @@ Check all worker statuses and continue managing the mission from here. Read work
     return interventionId;
   };
 
-  const isAllowedStepCompletionMissionStatus = (value: string): value is MissionStatus =>
-    value === "in_progress" ||
-    value === "intervention_required" ||
-    value === "completed" ||
-    value === "partially_completed" ||
-    value === "failed" ||
-    value === "canceled";
+  // isAllowedStepCompletionMissionStatus, validateTransitionDecisionSafety,
+  // deriveTransitionMissionStatus, summarizeCurrentPlanForReplan, AiTransitionDirectives,
+  // AiTransitionDecision, MissionReplanAnalysis — imported from missionLifecycle
 
-  const validateTransitionDecisionSafety = (graph: OrchestratorRunGraph, missionStatus: MissionStatus): { ok: boolean; reason: string } => {
-    const runStatus = graph.run.status;
-    const allTerminal = graph.steps.every((step) =>
-      step.status === "succeeded" || step.status === "failed" || step.status === "skipped" || step.status === "canceled"
-    );
-    const hasFailures = graph.steps.some((step) => step.status === "failed" || step.status === "blocked");
+  // Delegated to missionLifecycle.ts
+  const resolveMissionObjectiveForReplan = (missionId: string, mission: MissionDetail | null) =>
+    resolveMissionObjectiveForReplanCtx(ctx, missionId, mission);
 
-    if (runStatus === "succeeded") {
-      return missionStatus === "completed" || missionStatus === "partially_completed"
-        ? { ok: true, reason: "terminal_success" }
-        : { ok: false, reason: `Run is succeeded; mission status must be completed or partially_completed.` };
-    }
-    if (runStatus === "succeeded_with_risk") {
-      return missionStatus === "partially_completed" || missionStatus === "completed"
-        ? { ok: true, reason: "terminal_success_with_risk" }
-        : { ok: false, reason: "Run is succeeded_with_risk; mission status must be partially_completed." };
-    }
-    if (runStatus === "failed") {
-      return missionStatus === "failed" || missionStatus === "intervention_required"
-        ? { ok: true, reason: "terminal_failure" }
-        : { ok: false, reason: "Run is failed; mission status must be failed or intervention_required." };
-    }
-    if (runStatus === "canceled") {
-      return missionStatus === "canceled"
-        ? { ok: true, reason: "terminal_canceled" }
-        : { ok: false, reason: "Run is canceled; mission status must be canceled." };
-    }
-    if (runStatus === "paused") {
-      return missionStatus === "intervention_required"
-        ? { ok: true, reason: "paused_requires_intervention" }
-        : { ok: false, reason: "Run is paused; mission status must be intervention_required." };
-    }
-
-    if (missionStatus === "completed" || missionStatus === "partially_completed") {
-      return allTerminal && !hasFailures
-        ? { ok: true, reason: "all_steps_terminal_success" }
-        : missionStatus === "partially_completed" && allTerminal
-          ? { ok: true, reason: "all_steps_terminal_partial" }
-          : { ok: false, reason: "Mission cannot be completed while run is still active or contains failures." };
-    }
-    if (missionStatus === "failed") {
-      return allTerminal && hasFailures
-        ? { ok: true, reason: "all_steps_terminal_failure" }
-        : { ok: false, reason: "Mission cannot be failed while run is active without terminal failures." };
-    }
-    if (missionStatus === "canceled") {
-      return { ok: false, reason: "Mission cannot be canceled from active run status without explicit cancel." };
-    }
-
-    return { ok: true, reason: "active_run_status_ok" };
-  };
-
-  type AiTransitionDirectives = {
-    parallelismCap: number | null;
-    disableHeuristicParallelism: boolean;
-    retryBackoffMs: number | null;
-    timeoutBudgetMs: number | null;
-    stagnationThresholdMs: number | null;
-    stepPriorities: Array<{ stepKey: string; priority: number; reason: string | null; laneHint: string | null }>;
-  };
-
-  type AiTransitionDecision = {
-    actionType: "continue" | "retry" | "pause" | "replan" | "abort";
-    missionStatus: MissionStatus;
-    pauseRun: boolean;
-    rationale: string;
-    interventionTitle: string | null;
-    interventionBody: string | null;
-    directives: AiTransitionDirectives;
-  };
-
-  const deriveTransitionMissionStatus = (args: {
-    graph: OrchestratorRunGraph;
-    mission: MissionDetail;
-    actionType: "continue" | "retry" | "pause" | "replan" | "abort";
-    nextStatus: string | null;
-  }): MissionStatus => {
-    const requested = typeof args.nextStatus === "string" ? args.nextStatus.trim() : "";
-    if (requested && isAllowedStepCompletionMissionStatus(requested)) return requested;
-    if (args.actionType === "pause" || args.actionType === "replan") return "intervention_required";
-    if (args.actionType === "abort") return "failed";
-    if (args.actionType === "retry") return "in_progress";
-    return deriveMissionStatusFromRun(args.graph, args.mission);
-  };
-
-  type MissionReplanAnalysis = {
-    shouldReplan: boolean;
-    summary: string;
-    planDelta: string[];
-    confidence: number | null;
-    error: string | null;
-  };
-
-  const summarizeCurrentPlanForReplan = (graph: OrchestratorRunGraph): string => {
-    const preview = graph.steps
-      .slice(0, 12)
-      .map((step) => `${step.stepKey}:${step.status}`)
-      .join(", ");
-    const summary = `Run status=${graph.run.status}; stepCount=${graph.steps.length}; preview=[${preview}]`;
-    return summary.slice(0, 4_000);
-  };
-
-  const resolveMissionObjectiveForReplan = (missionId: string, mission: MissionDetail | null): string => {
-    const metadata = getMissionMetadata(missionId);
-    const plannerPlan = isRecord(metadata.plannerPlan) ? metadata.plannerPlan : null;
-    const missionSummary = plannerPlan && isRecord(plannerPlan.missionSummary)
-      ? plannerPlan.missionSummary
-      : null;
-    const objective = typeof missionSummary?.objective === "string" ? missionSummary.objective.trim() : "";
-    if (objective.length > 0) return objective;
-    const prompt = typeof mission?.prompt === "string" ? mission.prompt.trim() : "";
-    if (prompt.length > 0) return prompt;
-    const title = typeof mission?.title === "string" ? mission.title.trim() : "";
-    return title.length > 0 ? title : "Mission objective unavailable.";
-  };
-
-  const requestMissionReplanAnalysis = async (args: {
-    missionId: string;
-    runId: string;
-    stepId?: string | null;
-    stepKey?: string | null;
-    reason: string;
-    failureDigest: string;
-    graph: OrchestratorRunGraph;
-  }): Promise<MissionReplanAnalysis> => {
-    const mission = missionService.get(args.missionId);
-    const failureDigest = args.failureDigest.slice(0, 4_000);
-    const missionObjective = resolveMissionObjectiveForReplan(args.missionId, mission);
-    const currentPlanSummary = summarizeCurrentPlanForReplan(args.graph);
-
-    // Replan analysis is now handled by the coordinator agent via injectEvent().
-    // This path provides a deterministic fallback that always triggers replan.
-    const analysis: MissionReplanAnalysis = {
-      shouldReplan: true,
-      summary: args.reason,
-      planDelta: [],
-      confidence: null,
-      error: null
-    };
-
-    updateRunMetadata(args.runId, (metadata) => {
-      const aiDecisions = isRecord(metadata.aiDecisions) ? { ...metadata.aiDecisions } : {};
-      aiDecisions.lastReplanRequest = {
-        requestedAt: nowIso(),
-        missionId: args.missionId,
-        stepId: args.stepId ?? null,
-        stepKey: args.stepKey ?? null,
-        reason: args.reason,
-        failureDigest,
-        shouldReplan: analysis.shouldReplan,
-        summary: analysis.summary,
-        planDelta: analysis.planDelta,
-        confidence: analysis.confidence,
-        error: analysis.error
-      };
-      metadata.aiDecisions = aiDecisions;
-    });
-
-    return analysis;
-  };
-
-  const formatReplanInterventionBody = (args: {
-    reason: string;
-    analysis: MissionReplanAnalysis;
-  }): string => {
-    const lines = [
-      args.reason,
-      `Replan summary: ${args.analysis.summary}`,
-      args.analysis.planDelta.length > 0
-        ? `Proposed plan deltas:\n- ${args.analysis.planDelta.join("\n- ")}`
-        : null,
-      args.analysis.error ? `Replan analysis warning: ${args.analysis.error}` : null
-    ];
-    return lines.filter((line): line is string => typeof line === "string" && line.trim().length > 0).join("\n\n");
-  };
+  // Delegated to missionLifecycle.ts
+  const requestMissionReplanAnalysis = (args: Parameters<typeof requestMissionReplanAnalysisCtx>[1]) =>
+    requestMissionReplanAnalysisCtx(ctx, args);
+  // formatReplanInterventionBody — pure function, imported directly from missionLifecycle
 
   // Deterministic step priority and transition functions removed —
   // the coordinator AI handles step transitions through its persistent conversation.
@@ -6887,100 +4661,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
-  const applyAIDecisionDirectives = (args: {
-    runId: string;
-    graph: OrchestratorRunGraph;
-    completedStepId: string;
-    decision: AiTransitionDecision;
-  }) => {
-    const directives = args.decision.directives;
-    const disableHeuristicParallelism = directives.disableHeuristicParallelism || directives.parallelismCap != null;
-    if (
-      directives.parallelismCap == null &&
-      directives.retryBackoffMs == null &&
-      directives.timeoutBudgetMs == null &&
-      directives.stagnationThresholdMs == null &&
-      directives.stepPriorities.length === 0 &&
-      !disableHeuristicParallelism
-    ) {
-      return;
-    }
-
-    updateRunMetadata(args.runId, (metadata) => {
-      const aiDecisionMeta = isRecord(metadata.aiDecisions) ? { ...metadata.aiDecisions } : {};
-      if (directives.parallelismCap != null) {
-        aiDecisionMeta.parallelismCap = directives.parallelismCap;
-      }
-      if (directives.stagnationThresholdMs != null) {
-        aiDecisionMeta.stagnationThresholdMs = directives.stagnationThresholdMs;
-      }
-      if (disableHeuristicParallelism) {
-        aiDecisionMeta.disableHeuristicParallelism = true;
-      }
-      aiDecisionMeta.lastDecisionAt = nowIso();
-      aiDecisionMeta.source = "ai_decision_service";
-      metadata.aiDecisions = aiDecisionMeta;
-
-      if (directives.parallelismCap != null) {
-        const autopilot = isRecord(metadata.autopilot) ? { ...metadata.autopilot } : null;
-        if (autopilot) {
-          autopilot.parallelismCap = directives.parallelismCap;
-          metadata.autopilot = autopilot;
-        }
-      }
-    });
-
-    if (directives.stepPriorities.length > 0) {
-      for (const entry of directives.stepPriorities) {
-        const step = args.graph.steps.find((candidate) => candidate.stepKey === entry.stepKey);
-        if (!step) continue;
-        const meta = isRecord(step.metadata) ? { ...step.metadata } : {};
-        meta.priority = entry.priority;
-        meta.aiPriority = entry.priority;
-        if (entry.reason) {
-          meta.aiPriorityReason = entry.reason;
-        }
-        if (entry.laneHint) {
-          meta.aiPriorityLaneHint = entry.laneHint;
-        } else if ("aiPriorityLaneHint" in meta) {
-          delete meta.aiPriorityLaneHint;
-        }
-        db.run(
-          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
-          [JSON.stringify(meta), nowIso(), step.id, args.runId]
-        );
-      }
-    }
-
-    if (directives.retryBackoffMs != null) {
-      const completedStep = args.graph.steps.find((step) => step.id === args.completedStepId);
-      if (completedStep) {
-        const meta = isRecord(completedStep.metadata) ? { ...completedStep.metadata } : {};
-        meta.aiRetryBackoffMs = directives.retryBackoffMs;
-        if (completedStep.status === "pending" || completedStep.status === "ready") {
-          meta.lastRetryBackoffMs = directives.retryBackoffMs;
-          meta.nextRetryAt = new Date(Date.now() + directives.retryBackoffMs).toISOString();
-        }
-        db.run(
-          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
-          [JSON.stringify(meta), nowIso(), completedStep.id, args.runId]
-        );
-      }
-    }
-
-    if (directives.timeoutBudgetMs != null) {
-      const completedStep = args.graph.steps.find((step) => step.id === args.completedStepId);
-      if (completedStep) {
-        const meta = isRecord(completedStep.metadata) ? { ...completedStep.metadata } : {};
-        meta.aiTimeoutMs = directives.timeoutBudgetMs;
-        meta.ai_timeout_ms = directives.timeoutBudgetMs;
-        db.run(
-          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
-          [JSON.stringify(meta), nowIso(), completedStep.id, args.runId]
-        );
-      }
-    }
-  };
+  const applyAIDecisionDirectives = (args: Parameters<typeof applyAIDecisionDirectivesCtx>[1]) =>
+    applyAIDecisionDirectivesCtx(ctx, args);
 
   const syncMissionStepsFromRun = (graph: OrchestratorRunGraph) => {
     const mission = missionService.get(graph.run.missionId);
@@ -7036,13 +4718,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
-  const TERMINAL_PHASE_STEP_STATUSES = new Set<OrchestratorStepStatus>([
-    "succeeded",
-    "failed",
-    "skipped",
-    "superseded",
-    "canceled"
-  ]);
+  // TERMINAL_PHASE_STEP_STATUSES — imported from missionLifecycle
 
   const syncMissionPhaseFromRun = (graph: OrchestratorRunGraph, reason: string) => {
     if (!graph.run.missionId) return;
@@ -7146,6 +4822,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       null,
       { phaseFrom: prevPhaseKey, phaseTo: nextPhaseKey }
     );
+
+    updateMissionStateDoc(graph.run.id, {
+      updateProgress: {
+        currentPhase: nextPhaseName,
+      },
+    }, { graph });
 
     try {
       missionService.logEvent({
@@ -7797,6 +5479,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         graph.run.status === "failed" ||
         graph.run.status === "canceled";
       if (runCompleted) {
+        cleanupCoordinatorCheckpointFile(runId, "terminal_status_sync");
         // Emit the "done" runtime bus event for run completion
         recordRuntimeEvent({
           runId,
@@ -7974,88 +5657,6 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     await syncMissionFromRun(args.runId, "ai_transition_decision_applied", {
       nextMissionStatus: decision.pauseRun ? "intervention_required" : decision.missionStatus
-    });
-  };
-
-  type ParallelMissionStepDescriptor = {
-    id: string;
-    index: number;
-    title: string;
-    kind: string;
-    laneId: string | null;
-    stepType: string;
-    stepKey: string;
-    dependencyStepKeys: string[];
-  };
-
-  const parseNumericDependencyIndices = (metadata: Record<string, unknown>): number[] => {
-    if (!Array.isArray(metadata.dependencyIndices)) return [];
-    return metadata.dependencyIndices
-      .map((value) => Number(value))
-      .filter((value) => Number.isFinite(value))
-      .map((value) => Math.floor(value));
-  };
-
-  const toStepKey = (step: MissionStep, position: number): string => {
-    const metadata = isRecord(step.metadata) ? step.metadata : {};
-    const explicit = typeof metadata.stepKey === "string" ? metadata.stepKey.trim() : "";
-    if (explicit.length > 0) return explicit;
-    return `mission_step_${step.index}_${position}`;
-  };
-
-  const slugify = (value: string): string =>
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 28) || "lane";
-
-  const isParallelCandidateStepType = (stepType: string): boolean => {
-    const normalized = stepType.trim().toLowerCase();
-    if (normalized === "analysis" || normalized === "summary" || normalized === "review") return false;
-    if (normalized === "integration" || normalized === "merge") return false;
-    return true;
-  };
-
-  const buildParallelDescriptors = (steps: MissionStep[]): ParallelMissionStepDescriptor[] => {
-    const ordered = [...steps].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
-    const keyed = ordered.map((step, position) => ({
-      step,
-      position,
-      metadata: isRecord(step.metadata) ? step.metadata : {},
-      stepKey: toStepKey(step, position)
-    }));
-    const stepKeysByIndex = new Map<number, string[]>();
-    for (const entry of keyed) {
-      const bucket = stepKeysByIndex.get(entry.step.index) ?? [];
-      bucket.push(entry.stepKey);
-      stepKeysByIndex.set(entry.step.index, bucket);
-    }
-
-    return keyed.map((entry) => {
-      const metadata = entry.metadata;
-      const explicitDeps = Array.isArray(metadata.dependencyStepKeys)
-        ? metadata.dependencyStepKeys
-            .map((value) => String(value ?? "").trim())
-            .filter(Boolean)
-        : [];
-      const indexedDeps = parseNumericDependencyIndices(metadata).flatMap((depIdx) => stepKeysByIndex.get(depIdx) ?? []);
-      const depSet = new Set([...explicitDeps, ...indexedDeps].filter((dep) => dep !== entry.stepKey));
-      const stepType =
-        typeof metadata.stepType === "string" && metadata.stepType.trim().length
-          ? metadata.stepType.trim()
-          : entry.step.kind;
-      return {
-        id: entry.step.id,
-        index: entry.step.index,
-        title: entry.step.title,
-        kind: entry.step.kind,
-        laneId: entry.step.laneId,
-        stepType,
-        stepKey: entry.stepKey,
-        dependencyStepKeys: [...depSet]
-      };
     });
   };
 
@@ -8345,25 +5946,6 @@ Check all worker statuses and continue managing the mission from here. Read work
   };
 
   // ── Team Synthesis Helpers ──────────────────────────────────
-  const deriveScopeFromStepCount = (stepCount: number): TeamComplexityAssessment["estimatedScope"] => {
-    if (stepCount <= 3) return "small";
-    if (stepCount <= 8) return "medium";
-    if (stepCount <= 20) return "large";
-    return "very_large";
-  };
-
-  const inferRoleFromStepMetadata = (metadata: Record<string, unknown>, kind: string): OrchestratorWorkerRole => {
-    const stepType = typeof metadata.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
-    const taskType = typeof metadata.taskType === "string" ? metadata.taskType.trim().toLowerCase() : "";
-    const combined = `${stepType} ${taskType} ${kind}`.toLowerCase();
-    if (combined.includes("test_review") || combined.includes("testreview")) return "test_review";
-    if (combined.includes("review") || combined.includes("code_review")) return "code_review";
-    if (combined.includes("test") || combined.includes("validation")) return "testing";
-    if (combined.includes("plan")) return "planning";
-    if (combined.includes("integration") || combined.includes("merge")) return "integration";
-    if (combined.includes("merge")) return "merge";
-    return "implementation";
-  };
 
   const synthesizeTeamManifest = (opts: {
     missionId: string;
@@ -8480,147 +6062,11 @@ Check all worker statuses and continue managing the mission from here. Read work
   };
 
   // ── Project Docs Discovery ──────────────────────────────────
-  const discoverProjectDocs = (): { found: boolean; paths: string[]; contents: Record<string, string> } => {
-    if (!projectRoot) return { found: false, paths: [], contents: {} };
-    const candidatePaths = [
-      "docs/PRD.md",
-      "docs/prd.md",
-      "PRD.md",
-      "docs/architecture.md",
-      "docs/ARCHITECTURE.md",
-      "docs/architecture/README.md",
-      "docs/final-plan.md",
-      "docs/design.md",
-      "ARCHITECTURE.md"
-    ];
-    const foundPaths: string[] = [];
-    const contents: Record<string, string> = {};
-    for (const candidate of candidatePaths) {
-      const fullPath = `${projectRoot}/${candidate}`;
-      try {
-        if (fs.existsSync(fullPath)) {
-          const content = fs.readFileSync(fullPath, "utf-8");
-          if (content.trim().length > 0) {
-            foundPaths.push(candidate);
-            // Cap at 8KB per doc to avoid bloating context
-            contents[candidate] = content.slice(0, 8_192);
-          }
-        }
-      } catch {
-        // ignore read errors
-      }
-    }
-    if (foundPaths.length > 0) {
-      logger.debug("ai_orchestrator.project_docs_discovered", {
-        count: foundPaths.length,
-        paths: foundPaths
-      });
-    }
-    return { found: foundPaths.length > 0, paths: foundPaths, contents };
-  };
+  const discoverProjectDocs = () => discoverProjectDocsCtx(ctx);
 
-  // ── Helper: Build step inputs from mission_steps table ──────────
-  const buildStepInputsFromMissionSteps = (buildArgs: {
-    missionId: string;
-    plannerStepKey: string;
-    defaultExecutorKind?: OrchestratorExecutorKind;
-    defaultRetryLimit?: number;
-  }): StartOrchestratorRunStepInput[] => {
-    const missionSteps = db.all<{
-      id: string;
-      step_index: number;
-      title: string;
-      detail: string | null;
-      kind: string;
-      lane_id: string | null;
-      metadata_json: string | null;
-    }>(
-      `select id, step_index, title, detail, kind, lane_id, metadata_json
-       from mission_steps
-       where mission_id = ?
-       order by step_index asc, created_at asc`,
-      [buildArgs.missionId]
-    );
-
-    if (!missionSteps.length) return [];
-
-    const fallbackExecutor = buildArgs.defaultExecutorKind ?? "unified";
-    const fallbackRetryLimit = buildArgs.defaultRetryLimit ?? 2;
-
-    const descriptors = missionSteps.map((row, index) => {
-      let metadata: Record<string, unknown> = {};
-      try { metadata = JSON.parse(row.metadata_json || "{}"); } catch { /* empty */ }
-      const stepIndex = Number.isFinite(Number(row.step_index)) ? Number(row.step_index) : index;
-      const explicitKey = typeof metadata.stepKey === "string" ? (metadata.stepKey as string).trim() : "";
-      const stepKey = explicitKey.length ? explicitKey : `mission_step_${stepIndex}_${index}`;
-      return { row, index, metadata, stepIndex, stepKey };
-    });
-
-    return descriptors.map((desc) => {
-      const { row, metadata } = desc;
-
-      // Resolve dependencies from metadata or default to sequential
-      let dependencyStepKeys: string[] = [];
-      const hasExplicitDeps =
-        Array.isArray(metadata.dependencyStepKeys) || Array.isArray(metadata.dependencyIndices);
-      if (Array.isArray(metadata.dependencyStepKeys)) {
-        dependencyStepKeys = (metadata.dependencyStepKeys as unknown[])
-          .map((e) => String(e ?? "").trim())
-          .filter((e) => e.length > 0 && e !== desc.stepKey);
-      }
-      if (!dependencyStepKeys.length && Array.isArray(metadata.dependencyIndices)) {
-        const indices = (metadata.dependencyIndices as unknown[])
-          .map((v) => Number(v))
-          .filter((v) => Number.isFinite(v) && v >= 0);
-        const stepKeysByIndex = new Map<number, string>();
-        for (const d of descriptors) stepKeysByIndex.set(d.stepIndex, d.stepKey);
-        dependencyStepKeys = indices
-          .map((i) => stepKeysByIndex.get(i))
-          .filter((k): k is string => k != null && k !== desc.stepKey);
-      }
-      if (!dependencyStepKeys.length && !hasExplicitDeps && desc.index > 0) {
-        dependencyStepKeys = [descriptors[desc.index - 1]!.stepKey];
-      }
-
-      // Root steps (no other deps) depend on the planner step
-      if (dependencyStepKeys.length === 0) {
-        dependencyStepKeys = [buildArgs.plannerStepKey];
-      }
-
-      const executorKind: OrchestratorExecutorKind =
-        typeof metadata.executorKind === "string"
-          ? (metadata.executorKind as OrchestratorExecutorKind)
-          : fallbackExecutor;
-
-      const retryLimitRaw = Number(metadata.retryLimit);
-      const retryLimit = Number.isFinite(retryLimitRaw)
-        ? Math.max(0, Math.floor(retryLimitRaw))
-        : Math.max(0, Math.floor(fallbackRetryLimit));
-
-      const instructions =
-        typeof metadata.instructions === "string" && metadata.instructions.trim().length
-          ? metadata.instructions.trim()
-          : typeof row.detail === "string" && row.detail.trim().length
-            ? row.detail.trim()
-            : "";
-
-      return {
-        missionStepId: row.id,
-        stepKey: desc.stepKey,
-        title: row.title,
-        stepIndex: desc.stepIndex + 1, // offset: planner is step 0
-        laneId: row.lane_id,
-        dependencyStepKeys,
-        retryLimit,
-        executorKind,
-        metadata: {
-          ...metadata,
-          instructions,
-          stepType: String(metadata.stepType ?? row.kind ?? "manual"),
-        }
-      } as StartOrchestratorRunStepInput;
-    });
-  };
+  // ── Helper: Build step inputs from mission_steps table (delegated to missionLifecycle) ──
+  const buildStepInputsFromMissionSteps = (buildArgs: Parameters<typeof buildStepInputsFromMissionStepsCtx>[1]) =>
+    buildStepInputsFromMissionStepsCtx(ctx, buildArgs);
 
   // ── Post-planning continuation: add steps, start coordinator + autopilot ──
   const continueMissionExecution = async (ctx: {
@@ -8811,7 +6257,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     // ── Start autopilot ──
     setTimeout(() => {
-      void orchestratorService.startReadyAutopilotAttempts({
+      void startReadyAutopilotAttemptsWithMilestoneReadiness({
         runId,
         reason: "post_planner_ramp_up",
       }).catch(() => {});
@@ -8843,7 +6289,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             missionId,
             `Execution watchdog: ${stalledCount} of ${runningAttempts.length} running step${runningAttempts.length === 1 ? "" : "s"} ha${stalledCount === 1 ? "s" : "ve"} not produced output after 20s.`
           );
-          void orchestratorService.startReadyAutopilotAttempts({
+          void startReadyAutopilotAttemptsWithMilestoneReadiness({
             runId,
             reason: "execution_watchdog"
           }).catch(() => {});
@@ -8890,6 +6336,15 @@ Check all worker statuses and continue managing the mission from here. Read work
         );
 
         const steps = orchestratorService.listSteps(activeRun.id);
+        const existingGraph = getRunGraphSafe(activeRun.id);
+        updateMissionStateDoc(
+          activeRun.id,
+          {
+            ...(existingGraph ? { updateProgress: buildMissionStateProgressFromGraph(existingGraph) } : {}),
+            pendingInterventions: pendingInterventionsForMission(missionId),
+          },
+          { graph: existingGraph }
+        );
         return {
           blockedByPlanReview: false,
           started: { run: activeRun, steps },
@@ -8934,6 +6389,16 @@ Check all worker statuses and continue managing the mission from here. Read work
       availableProviders,
       phases,
     });
+
+    const initialGraph = getRunGraphSafe(started.run.id);
+    updateMissionStateDoc(
+      started.run.id,
+      {
+        ...(initialGraph ? { updateProgress: buildMissionStateProgressFromGraph(initialGraph) } : {}),
+        pendingInterventions: pendingInterventionsForMission(missionId),
+      },
+      { graph: initialGraph }
+    );
 
     void syncMissionFromRun(started.run.id, "mission_run_started");
 
@@ -9553,7 +7018,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
     if (resolvedInterventions.length > 0) {
       for (const runId of resumedRunIds) {
-        void orchestratorService.startReadyAutopilotAttempts({
+        void startReadyAutopilotAttemptsWithMilestoneReadiness({
           runId,
           reason: "question_answered_resume"
         }).catch(() => {});
@@ -9698,660 +7163,47 @@ Check all worker statuses and continue managing the mission from here. Read work
     };
   };
 
-  const createContextCheckpoint = (args: {
-    missionId: string;
-    runId?: string | null;
-    trigger: OrchestratorContextCheckpoint["trigger"];
-    summary: string;
-    source: OrchestratorContextCheckpoint["source"];
-  }): OrchestratorContextCheckpoint | null => {
-    const missionIdentity = getMissionIdentity(args.missionId);
-    if (!missionIdentity) return null;
-    const checkpoint: OrchestratorContextCheckpoint = {
-      id: randomUUID(),
-      missionId: args.missionId,
-      runId: args.runId ?? null,
-      trigger: args.trigger,
-      summary: args.summary,
-      source: {
-        digestCount: Math.max(0, Math.floor(Number(args.source.digestCount) || 0)),
-        chatMessageCount: Math.max(0, Math.floor(Number(args.source.chatMessageCount) || 0)),
-        compressedMessageCount: Math.max(0, Math.floor(Number(args.source.compressedMessageCount) || 0))
-      },
-      createdAt: nowIso()
-    };
-    db.run(
-      `
-        insert into orchestrator_context_checkpoints(
-          id,
-          project_id,
-          mission_id,
-          run_id,
-          trigger,
-          summary,
-          source_json,
-          created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        checkpoint.id,
-        missionIdentity.projectId,
-        checkpoint.missionId,
-        checkpoint.runId,
-        checkpoint.trigger,
-        checkpoint.summary,
-        JSON.stringify(checkpoint.source),
-        checkpoint.createdAt
-      ]
-    );
-    return checkpoint;
+  const createContextCheckpoint = (args: Parameters<typeof createContextCheckpointCtx>[1]) =>
+    createContextCheckpointCtx(ctx, args);
+
+  const recordLaneDecision = (args: Parameters<typeof recordLaneDecisionCtx>[1]) =>
+    recordLaneDecisionCtx(ctx, args);
+
+  const recordMissionMetricSample = (args: Parameters<typeof recordMissionMetricSampleCtx>[1]) =>
+    recordMissionMetricSampleCtx(ctx, args);
+
+  // normalizeDeliveryError, isBusyDeliveryError, isNoActiveTurnError, computeWorkerRetryBackoffMs
+  // are imported directly from chatMessageService (pure functions, no ctx needed)
+
+  const workerDeliveryDeps: WorkerDeliveryDeps = {
+    appendChatMessage,
+    recordRuntimeEvent
   };
 
-  const recordLaneDecision = (args: {
-    missionId: string;
-    runId?: string | null;
-    stepId?: string | null;
-    stepKey?: string | null;
-    laneId?: string | null;
-    decisionType: OrchestratorLaneDecision["decisionType"];
-    validatorOutcome: OrchestratorLaneDecision["validatorOutcome"];
-    ruleHits?: string[];
-    rationale: string;
-    metadata?: Record<string, unknown> | null;
-  }): OrchestratorLaneDecision | null => {
-    const missionIdentity = getMissionIdentity(args.missionId);
-    if (!missionIdentity) return null;
-    const decision: OrchestratorLaneDecision = {
-      id: randomUUID(),
-      missionId: args.missionId,
-      runId: args.runId ?? null,
-      stepId: args.stepId ?? null,
-      stepKey: args.stepKey ?? null,
-      laneId: args.laneId ?? null,
-      decisionType: args.decisionType,
-      validatorOutcome: args.validatorOutcome,
-      ruleHits: Array.isArray(args.ruleHits) ? args.ruleHits.slice(0, 64) : [],
-      rationale: args.rationale,
-      metadata: args.metadata ?? null,
-      createdAt: nowIso()
-    };
-    db.run(
-      `
-        insert into orchestrator_lane_decisions(
-          id,
-          project_id,
-          mission_id,
-          run_id,
-          step_id,
-          step_key,
-          lane_id,
-          decision_type,
-          validator_outcome,
-          rule_hits_json,
-          rationale,
-          metadata_json,
-          created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        decision.id,
-        missionIdentity.projectId,
-        decision.missionId,
-        decision.runId,
-        decision.stepId,
-        decision.stepKey,
-        decision.laneId,
-        decision.decisionType,
-        decision.validatorOutcome,
-        JSON.stringify(decision.ruleHits),
-        decision.rationale,
-        decision.metadata ? JSON.stringify(decision.metadata) : null,
-        decision.createdAt
-      ]
-    );
-    return decision;
-  };
+  const readWorkerDeliveryMetadata = (message: OrchestratorChatMessage) =>
+    readWorkerDeliveryMetadataCtx(ctx, message);
 
-  const recordMissionMetricSample = (args: {
-    missionId: string;
-    runId?: string | null;
-    attemptId?: string | null;
-    metric: MissionMetricToggle | string;
-    value: number;
-    unit?: string | null;
-    metadata?: Record<string, unknown> | null;
-  }): MissionMetricSample | null => {
-    const missionIdentity = getMissionIdentity(args.missionId);
-    if (!missionIdentity) return null;
-    const numericValue = Number(args.value);
-    if (!Number.isFinite(numericValue)) return null;
-    const sample: MissionMetricSample = {
-      id: randomUUID(),
-      missionId: args.missionId,
-      runId: args.runId ?? null,
-      attemptId: args.attemptId ?? null,
-      metric: args.metric,
-      value: numericValue,
-      unit: args.unit ?? null,
-      metadata: args.metadata ?? null,
-      createdAt: nowIso()
-    };
-    db.run(
-      `
-        insert into orchestrator_metrics_samples(
-          id,
-          project_id,
-          mission_id,
-          run_id,
-          attempt_id,
-          metric,
-          value,
-          unit,
-          metadata_json,
-          created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        sample.id,
-        missionIdentity.projectId,
-        sample.missionId,
-        sample.runId,
-        sample.attemptId,
-        sample.metric,
-        sample.value,
-        sample.unit,
-        sample.metadata ? JSON.stringify(sample.metadata) : null,
-        sample.createdAt
-      ]
-    );
-    emitThreadEvent({
-      type: "metrics_updated",
-      missionId: sample.missionId,
-      runId: sample.runId ?? null,
-      reason: "metric_sample",
-      metadata: {
-        metric: sample.metric,
-        sampleId: sample.id
-      }
-    });
-    return sample;
-  };
+  const selectAttemptDeliveryContext = (whereClause: string, params: Array<string | null>) =>
+    selectAttemptDeliveryContextCtx(ctx, whereClause, params);
 
-  const normalizeDeliveryError = (error: unknown): string => {
-    if (error instanceof Error && error.message.trim().length > 0) return error.message.trim();
-    return String(error ?? "Unknown delivery failure");
-  };
+  const resolveWorkerDeliveryContext = (message: OrchestratorChatMessage): WorkerDeliveryContext | null =>
+    resolveWorkerDeliveryContextCtx(ctx, message);
 
-  const isBusyDeliveryError = (errorMessage: string): boolean => {
-    const normalized = errorMessage.toLowerCase();
-    return normalized.includes("turn is already active")
-      || normalized.includes("already active")
-      || normalized.includes("busy");
-  };
-
-  const isNoActiveTurnError = (errorMessage: string): boolean => {
-    return /\bno active turn\b/i.test(errorMessage);
-  };
-
-  const computeWorkerRetryBackoffMs = (retryCount: number): number => {
-    const exponent = Math.max(0, retryCount - 1);
-    return Math.min(
-      WORKER_MESSAGE_RETRY_BACKOFF_MAX_MS,
-      WORKER_MESSAGE_RETRY_BACKOFF_BASE_MS * (2 ** exponent)
-    );
-  };
-
-  const readWorkerDeliveryMetadata = (message: OrchestratorChatMessage): {
-    metadata: Record<string, unknown>;
-    workerDelivery: Record<string, unknown>;
-    retries: number;
-    maxRetries: number;
-    nextRetryAtMs: number | null;
-    interventionId: string | null;
-    agentSessionId: string | null;
-    inFlightAttemptId: string | null;
-    inFlightAtMs: number | null;
-    inFlightSessionId: string | null;
-  } => {
-    const metadata = isRecord(message.metadata) ? { ...message.metadata } : {};
-    const workerDelivery = isRecord(metadata.workerDelivery) ? { ...(metadata.workerDelivery as Record<string, unknown>) } : {};
-    const retries = Number.isFinite(Number(workerDelivery.retries))
-      ? Math.max(0, Math.floor(Number(workerDelivery.retries)))
-      : 0;
-    const maxRetries = Number.isFinite(Number(workerDelivery.maxRetries))
-      ? Math.max(1, Math.floor(Number(workerDelivery.maxRetries)))
-      : WORKER_MESSAGE_RETRY_BUDGET;
-    const nextRetryAtRaw = typeof workerDelivery.nextRetryAt === "string" ? workerDelivery.nextRetryAt : "";
-    const parsedNextRetryAt = nextRetryAtRaw ? Date.parse(nextRetryAtRaw) : Number.NaN;
-    const interventionId = typeof workerDelivery.interventionId === "string" && workerDelivery.interventionId.trim().length > 0
-      ? workerDelivery.interventionId.trim()
-      : null;
-    const agentSessionId = typeof workerDelivery.agentSessionId === "string" && workerDelivery.agentSessionId.trim().length > 0
-      ? workerDelivery.agentSessionId.trim()
-      : null;
-    const inFlightAttemptId = typeof workerDelivery.inFlightAttemptId === "string" && workerDelivery.inFlightAttemptId.trim().length > 0
-      ? workerDelivery.inFlightAttemptId.trim()
-      : null;
-    const inFlightAtRaw = typeof workerDelivery.inFlightAt === "string" ? workerDelivery.inFlightAt : "";
-    const parsedInFlightAt = inFlightAtRaw ? Date.parse(inFlightAtRaw) : Number.NaN;
-    const inFlightSessionId = typeof workerDelivery.inFlightSessionId === "string" && workerDelivery.inFlightSessionId.trim().length > 0
-      ? workerDelivery.inFlightSessionId.trim()
-      : null;
-    return {
-      metadata,
-      workerDelivery,
-      retries,
-      maxRetries,
-      nextRetryAtMs: Number.isFinite(parsedNextRetryAt) ? parsedNextRetryAt : null,
-      interventionId,
-      agentSessionId,
-      inFlightAttemptId,
-      inFlightAtMs: Number.isFinite(parsedInFlightAt) ? parsedInFlightAt : null,
-      inFlightSessionId
-    };
-  };
-
-  const selectAttemptDeliveryContext = (whereClause: string, params: Array<string | null>): {
-    attempt_id: string;
-    run_id: string;
-    step_id: string;
-    step_key: string | null;
-    lane_id: string | null;
-    session_id: string | null;
-    session_status: string | null;
-    session_tool_type: string | null;
-    executor_kind: string | null;
-  } | null => {
-    return db.get<{
-      attempt_id: string;
-      run_id: string;
-      step_id: string;
-      step_key: string | null;
-      lane_id: string | null;
-      session_id: string | null;
-      session_status: string | null;
-      session_tool_type: string | null;
-      executor_kind: string | null;
-    }>(
-      `
-        select
-          a.id as attempt_id,
-          a.run_id as run_id,
-          a.step_id as step_id,
-          s.step_key as step_key,
-          s.lane_id as lane_id,
-          a.executor_session_id as session_id,
-          ts.status as session_status,
-          ts.tool_type as session_tool_type,
-          a.executor_kind as executor_kind
-        from orchestrator_attempts a
-        left join orchestrator_steps s on s.id = a.step_id
-        left join terminal_sessions ts on ts.id = a.executor_session_id
-        where ${whereClause}
-        order by
-          case a.status
-            when 'running' then 0
-            when 'queued' then 1
-            when 'blocked' then 2
-            else 3
-          end,
-          a.attempt_number desc,
-          a.created_at desc
-        limit 1
-      `,
-      params
-    );
-  };
-
-  const resolveWorkerDeliveryContext = (message: OrchestratorChatMessage): WorkerDeliveryContext | null => {
-    const thread = message.threadId ? getThreadById(message.missionId, message.threadId) : null;
-    const baseTarget = message.target?.kind === "worker"
-      ? message.target
-      : thread?.threadType === "worker"
-        ? {
-            kind: "worker" as const,
-            runId: thread.runId ?? null,
-            stepId: thread.stepId ?? null,
-            stepKey: thread.stepKey ?? null,
-            attemptId: thread.attemptId ?? null,
-            sessionId: thread.sessionId ?? null,
-            laneId: thread.laneId ?? null
-          }
-        : null;
-    if (!baseTarget) return null;
-
-    const attemptCandidates = [
-      toOptionalString(baseTarget.attemptId),
-      toOptionalString(message.attemptId),
-      toOptionalString(thread?.attemptId)
-    ].filter((value): value is string => !!value);
-    let attemptContext: ReturnType<typeof selectAttemptDeliveryContext> = null;
-    for (const attemptId of attemptCandidates) {
-      attemptContext = selectAttemptDeliveryContext(`a.id = ?`, [attemptId]);
-      if (attemptContext) break;
-    }
-
-    const sessionCandidates = [
-      toOptionalString(baseTarget.sessionId),
-      toOptionalString(message.sourceSessionId),
-      toOptionalString(thread?.sessionId)
-    ].filter((value): value is string => !!value);
-    if (!attemptContext) {
-      for (const sessionId of sessionCandidates) {
-        attemptContext = selectAttemptDeliveryContext(`a.executor_session_id = ?`, [sessionId]);
-        if (attemptContext) break;
-      }
-    }
-    if (!attemptContext) {
-      const runId = toOptionalString(baseTarget.runId) ?? toOptionalString(thread?.runId) ?? toOptionalString(message.runId);
-      const stepId = toOptionalString(baseTarget.stepId) ?? toOptionalString(thread?.stepId);
-      if (runId && stepId) {
-        attemptContext = selectAttemptDeliveryContext(`a.run_id = ? and a.step_id = ?`, [runId, stepId]);
-      }
-      if (!attemptContext && runId) {
-        const stepKey = toOptionalString(baseTarget.stepKey) ?? toOptionalString(thread?.stepKey) ?? toOptionalString(message.stepKey);
-        if (stepKey) {
-          attemptContext = selectAttemptDeliveryContext(`a.run_id = ? and s.step_key = ?`, [runId, stepKey]);
-        }
-      }
-    }
-    if (!attemptContext) {
-      const laneId = toOptionalString(baseTarget.laneId) ?? toOptionalString(thread?.laneId) ?? toOptionalString(message.laneId);
-      if (laneId) {
-        attemptContext = selectAttemptDeliveryContext(`s.lane_id = ? and a.executor_session_id is not null`, [laneId]);
-      }
-    }
-
-    const runId =
-      toOptionalString(baseTarget.runId)
-      ?? toOptionalString(thread?.runId)
-      ?? toOptionalString(message.runId)
-      ?? toOptionalString(attemptContext?.run_id)
-      ?? null;
-    const stepId =
-      toOptionalString(baseTarget.stepId)
-      ?? toOptionalString(thread?.stepId)
-      ?? toOptionalString(attemptContext?.step_id)
-      ?? null;
-    const stepKey =
-      toOptionalString(baseTarget.stepKey)
-      ?? toOptionalString(thread?.stepKey)
-      ?? toOptionalString(message.stepKey)
-      ?? toOptionalString(attemptContext?.step_key)
-      ?? null;
-    const attemptId =
-      toOptionalString(baseTarget.attemptId)
-      ?? toOptionalString(message.attemptId)
-      ?? toOptionalString(thread?.attemptId)
-      ?? toOptionalString(attemptContext?.attempt_id)
-      ?? null;
-    const laneId =
-      toOptionalString(baseTarget.laneId)
-      ?? toOptionalString(thread?.laneId)
-      ?? toOptionalString(message.laneId)
-      ?? toOptionalString(attemptContext?.lane_id)
-      ?? null;
-    const sessionId =
-      toOptionalString(baseTarget.sessionId)
-      ?? toOptionalString(message.sourceSessionId)
-      ?? toOptionalString(thread?.sessionId)
-      ?? toOptionalString(attemptContext?.session_id)
-      ?? null;
-    const sessionStatusFromDb = toOptionalString(attemptContext?.session_status)?.toLowerCase() ?? null;
-    const trackedSessionStatus = sessionId
-      ? toOptionalString(getTrackedSessionState(sessionId)?.status)?.toLowerCase() ?? null
-      : null;
-    const sessionStatus = sessionStatusFromDb ?? trackedSessionStatus;
-    const sessionToolType = toOptionalString(attemptContext?.session_tool_type) ?? null;
-    const executorKindRaw = toOptionalString(attemptContext?.executor_kind);
-    const executorKind: OrchestratorExecutorKind | null =
-      executorKindRaw === "claude" || executorKindRaw === "codex" || executorKindRaw === "shell" || executorKindRaw === "manual"
-        ? executorKindRaw
-        : null;
-    const resolvedTarget: Extract<OrchestratorChatTarget, { kind: "worker" }> = {
-      kind: "worker",
-      runId,
-      stepId,
-      stepKey,
-      attemptId,
-      sessionId,
-      laneId
-    };
-    return {
-      missionId: message.missionId,
-      threadId: message.threadId ?? missionThreadId(message.missionId),
-      target: resolvedTarget,
-      runId,
-      stepId,
-      stepKey,
-      attemptId,
-      laneId,
-      sessionId,
-      sessionStatus,
-      sessionToolType,
-      executorKind
-    };
-  };
-
-  const persistThreadWorkerLinks = (context: WorkerDeliveryContext) => {
-    db.run(
-      `
-        update orchestrator_chat_threads
-        set
-          run_id = coalesce(?, run_id),
-          step_id = coalesce(?, step_id),
-          step_key = coalesce(?, step_key),
-          attempt_id = coalesce(?, attempt_id),
-          session_id = coalesce(?, session_id),
-          lane_id = coalesce(?, lane_id),
-          updated_at = ?
-        where mission_id = ?
-          and id = ?
-      `,
-      [
-        context.runId,
-        context.stepId,
-        context.stepKey,
-        context.attemptId,
-        context.sessionId,
-        context.laneId,
-        nowIso(),
-        context.missionId,
-        context.threadId
-      ]
-    );
-  };
+  const persistThreadWorkerLinks = (context: WorkerDeliveryContext) =>
+    persistThreadWorkerLinksCtx(ctx, context);
 
   const upsertWorkerDeliveryIntervention = (args: {
     message: OrchestratorChatMessage;
     context: WorkerDeliveryContext | null;
     retries: number;
     error: string;
-  }): string | null => {
-    const cooldownKey = args.message.id;
-    const nowMs = Date.now();
-    const lastMs = workerDeliveryInterventionCooldowns.get(cooldownKey) ?? 0;
-    if (nowMs - lastMs < WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS) {
-      return null;
-    }
-    const mission = missionService.get(args.message.missionId);
-    if (!mission) return null;
-    if (mission.status === "queued") {
-      try {
-        missionService.update({
-          missionId: args.message.missionId,
-          status: "in_progress"
-        });
-      } catch (error) {
-        logger.debug("ai_orchestrator.worker_delivery_promote_mission_failed", {
-          missionId: args.message.missionId,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-    const existing = mission.interventions.find((entry) => {
-      if (entry.status !== "open") return false;
-      if (!isRecord(entry.metadata)) return false;
-      return entry.metadata.sourceMessageId === args.message.id;
-    });
-    if (existing) {
-      workerDeliveryInterventionCooldowns.set(cooldownKey, nowMs);
-      return existing.id;
-    }
+  }): string | null => upsertWorkerDeliveryInterventionCtx(ctx, args, workerDeliveryDeps);
 
-    const workerLabel =
-      toOptionalString(args.context?.stepKey)
-      ?? toOptionalString(args.context?.attemptId)
-      ?? toOptionalString(args.context?.sessionId)
-      ?? "worker";
-    const intervention = missionService.addIntervention({
-      missionId: args.message.missionId,
-      interventionType: "manual_input",
-      title: `Worker delivery blocked: ${workerLabel}`,
-      body: `Could not deliver operator guidance to ${workerLabel} after ${args.retries} retries. Latest error: ${args.error}`,
-      requestedAction: "Open the worker thread and resend guidance once the worker session is available.",
-      laneId: args.context?.laneId ?? args.message.laneId ?? null,
-      pauseMission: false,
-      metadata: {
-        sourceMessageId: args.message.id,
-        threadId: args.message.threadId ?? null,
-        attemptId: args.context?.attemptId ?? args.message.attemptId ?? null,
-        sessionId: args.context?.sessionId ?? args.message.sourceSessionId ?? null,
-        runId: args.context?.runId ?? args.message.runId ?? null,
-        workerDeliveryFailure: true
-      }
-    });
-    workerDeliveryInterventionCooldowns.set(cooldownKey, nowMs);
-    if (args.context?.runId) {
-      recordRuntimeEvent({
-        runId: args.context.runId,
-        stepId: args.context.stepId,
-        attemptId: args.context.attemptId,
-        sessionId: args.context.sessionId,
-        eventType: "intervention_opened",
-        eventKey: `worker_delivery_intervention:${intervention.id}`,
-        payload: {
-          interventionId: intervention.id,
-          sourceMessageId: args.message.id,
-          retries: args.retries,
-          error: args.error
-        }
-      });
-    }
-    emitOrchestratorMessage(
-      args.message.missionId,
-      `Worker guidance could not be delivered after ${args.retries} retries. I opened intervention "${intervention.title}" so you can recover it deterministically.`,
-      args.context?.stepKey ?? args.message.stepKey ?? null,
-      {
-        sourceMessageId: args.message.id,
-        interventionId: intervention.id,
-        retries: args.retries
-      }
-    );
-    return intervention.id;
-  };
+  const updateWorkerDeliveryState = (args: Parameters<typeof updateWorkerDeliveryStateCtx>[1]): OrchestratorChatMessage =>
+    updateWorkerDeliveryStateCtx(ctx, args);
 
-  const updateWorkerDeliveryState = (args: {
-    message: OrchestratorChatMessage;
-    context: WorkerDeliveryContext | null;
-    state: OrchestratorChatDeliveryState;
-    retries: number;
-    maxRetries: number;
-    error: string | null;
-    method: "send" | "steer" | "queued" | "failed";
-    nextRetryAt: string | null;
-    interventionId?: string | null;
-    deliverySessionId?: string | null;
-  }): OrchestratorChatMessage => {
-    const updated = updateChatMessage(args.message.id, (current) => {
-      const deliveryMeta = readWorkerDeliveryMetadata(current);
-      const metadata = deliveryMeta.metadata;
-      metadata.workerDelivery = {
-        ...(deliveryMeta.workerDelivery ?? {}),
-        retries: args.retries,
-        maxRetries: args.maxRetries,
-        lastAttemptAt: nowIso(),
-        lastMethod: args.method,
-        lastError: args.error,
-        nextRetryAt: args.nextRetryAt,
-        deliveredAt: args.state === "delivered" ? nowIso() : null,
-        interventionId: args.interventionId ?? deliveryMeta.interventionId ?? null,
-        agentSessionId: args.deliverySessionId ?? deliveryMeta.agentSessionId ?? null,
-        inFlightAttemptId: null,
-        inFlightAt: null,
-        inFlightSessionId: null
-      };
-      const contextTarget = args.context?.target ?? (current.target?.kind === "worker" ? current.target : null);
-      const target =
-        contextTarget && contextTarget.kind === "worker"
-          ? {
-              ...contextTarget,
-              sessionId: args.deliverySessionId ?? contextTarget.sessionId ?? null
-            }
-          : contextTarget;
-      return {
-        ...current,
-        target,
-        deliveryState: args.state,
-        sourceSessionId: args.deliverySessionId ?? args.context?.sessionId ?? current.sourceSessionId ?? null,
-        attemptId: args.context?.attemptId ?? current.attemptId ?? null,
-        laneId: args.context?.laneId ?? current.laneId ?? null,
-        runId: args.context?.runId ?? current.runId ?? null,
-        stepKey: args.context?.stepKey ?? current.stepKey ?? null,
-        metadata
-      };
-    });
-    return updated ?? args.message;
-  };
-
-  const markWorkerDeliveryInFlight = (args: {
-    message: OrchestratorChatMessage;
-    context: WorkerDeliveryContext | null;
-    retries: number;
-    maxRetries: number;
-    deliverySessionId: string;
-  }): OrchestratorChatMessage => {
-    const inFlightAttemptId = `${args.message.id}:attempt:${args.retries + 1}`;
-    const updated = updateChatMessage(args.message.id, (current) => {
-      const deliveryMeta = readWorkerDeliveryMetadata(current);
-      const metadata = deliveryMeta.metadata;
-      metadata.workerDelivery = {
-        ...(deliveryMeta.workerDelivery ?? {}),
-        retries: args.retries,
-        maxRetries: args.maxRetries,
-        lastAttemptAt: nowIso(),
-        lastMethod: "attempt",
-        lastError: null,
-        nextRetryAt: null,
-        deliveredAt: null,
-        interventionId: deliveryMeta.interventionId ?? null,
-        agentSessionId: args.deliverySessionId,
-        inFlightAttemptId,
-        inFlightAt: nowIso(),
-        inFlightSessionId: args.deliverySessionId
-      };
-      const contextTarget = args.context?.target ?? (current.target?.kind === "worker" ? current.target : null);
-      const target =
-        contextTarget && contextTarget.kind === "worker"
-          ? {
-              ...contextTarget,
-              sessionId: args.deliverySessionId
-            }
-          : contextTarget;
-      return {
-        ...current,
-        target,
-        deliveryState: "queued",
-        sourceSessionId: args.deliverySessionId,
-        attemptId: args.context?.attemptId ?? current.attemptId ?? null,
-        laneId: args.context?.laneId ?? current.laneId ?? null,
-        runId: args.context?.runId ?? current.runId ?? null,
-        stepKey: args.context?.stepKey ?? current.stepKey ?? null,
-        metadata
-      };
-    });
-    return updated ?? args.message;
-  };
+  const markWorkerDeliveryInFlight = (args: Parameters<typeof markWorkerDeliveryInFlightCtx>[1]): OrchestratorChatMessage =>
+    markWorkerDeliveryInFlightCtx(ctx, args);
 
   const failWorkerDeliveryStaleInFlight = (args: {
     message: OrchestratorChatMessage;
@@ -10359,1853 +7211,123 @@ Check all worker statuses and continue managing the mission from here. Read work
     retries: number;
     maxRetries: number;
     ageMs: number;
-  }): OrchestratorChatMessage => {
-    const ageSeconds = Math.max(1, Math.floor(args.ageMs / 1_000));
-    const error = `Delivery attempt remained in-flight for ${ageSeconds}s without confirmation; marking failed to avoid duplicate worker injection.`;
-    const interventionId = upsertWorkerDeliveryIntervention({
-      message: args.message,
-      context: args.context,
-      retries: Math.max(args.retries, args.maxRetries),
-      error
-    });
-    const failed = updateWorkerDeliveryState({
-      message: args.message,
-      context: args.context,
-      state: "failed",
-      retries: Math.max(args.retries, args.maxRetries),
-      maxRetries: args.maxRetries,
-      error,
-      method: "failed",
-      nextRetryAt: null,
-      interventionId
-    });
-    emitThreadEvent({
-      type: "worker_replay",
-      missionId: failed.missionId,
-      threadId: failed.threadId ?? missionThreadId(failed.missionId),
-      messageId: failed.id,
-      runId: failed.runId ?? null,
-      reason: "stale_inflight_failed"
-    });
-    return failed;
-  };
+  }): OrchestratorChatMessage => failWorkerDeliveryStaleInFlightCtx(ctx, args, workerDeliveryDeps);
 
-  const resolveWorkerDeliverySession = async (args: {
-    message: OrchestratorChatMessage;
-    context: WorkerDeliveryContext | null;
-    deliveryMeta: ReturnType<typeof readWorkerDeliveryMetadata>;
-  }): Promise<WorkerDeliverySessionResolution> => {
-    const providerHint =
-      parseWorkerProviderHint(args.context?.executorKind)
-      ?? parseWorkerProviderHint(args.context?.sessionToolType)
-      ?? parseWorkerProviderHint(args.message.target?.kind === "worker" ? args.message.target.sessionId : null)
-      ?? parseWorkerProviderHint(args.message.sourceSessionId)
-      ?? null;
-    if (!agentChatService) {
-      return {
-        sessionId: null,
-        source: "mapped",
-        providerHint,
-        summary: null,
-        error: "Agent chat service unavailable."
-      };
-    }
-    const laneId = toOptionalString(args.context?.laneId) ?? toOptionalString(args.message.laneId);
-    const sessions = await agentChatService.listSessions(laneId ?? undefined);
-    const byId = new Map<string, AgentChatSessionSummaryEntry>();
-    for (const summary of sessions) {
-      const sessionId = toOptionalString(summary.sessionId);
-      if (!sessionId) continue;
-      byId.set(sessionId, summary);
-    }
+  const resolveWorkerDeliverySession = (args: Parameters<typeof resolveWorkerDeliverySessionCtx>[1]) =>
+    resolveWorkerDeliverySessionCtx(ctx, args);
 
-    const stickySessionId = toOptionalString(args.deliveryMeta.agentSessionId);
-    if (stickySessionId) {
-      const sticky = byId.get(stickySessionId);
-      if (sticky) {
-        return {
-          sessionId: sticky.sessionId,
-          source: "sticky",
-          providerHint: parseWorkerProviderHint(sticky.provider) ?? providerHint,
-          summary: sticky,
-          error: null
-        };
-      }
-    }
+  const sendWorkerMessageToSession = (sessionId: string, text: string) =>
+    sendWorkerMessageToSessionCtx(ctx, sessionId, text);
 
-    const directCandidates = [
-      toOptionalString(args.context?.sessionId),
-      toOptionalString(args.message.sourceSessionId)
-    ].filter((value): value is string => !!value);
-    for (const candidate of directCandidates) {
-      const summary = byId.get(candidate);
-      if (!summary) continue;
-      return {
-        sessionId: summary.sessionId,
-        source: "mapped",
-        providerHint: parseWorkerProviderHint(summary.provider) ?? providerHint,
-        summary,
-        error: null
-      };
-    }
+  const deliverWorkerMessage = (message: OrchestratorChatMessage, options?: { ignoreBackoff?: boolean }) =>
+    deliverWorkerMessageCtx(ctx, message, workerDeliveryDeps, options);
 
-    if (!laneId) {
-      return {
-        sessionId: null,
-        source: "lane_fallback",
-        providerHint,
-        summary: null,
-        error: "No lane is mapped for this worker thread, so fallback delivery cannot choose a safe chat session."
-      };
-    }
-
-    const providerScoped = providerHint
-      ? sessions.filter((entry) => entry.provider === providerHint)
-      : sessions;
-    const activeProviderScoped = providerScoped.filter((entry) => entry.status !== "ended");
-    if (activeProviderScoped.length === 1) {
-      return {
-        sessionId: activeProviderScoped[0].sessionId,
-        source: "lane_fallback",
-        providerHint,
-        summary: activeProviderScoped[0],
-        error: null
-      };
-    }
-    if (activeProviderScoped.length > 1) {
-      return {
-        sessionId: null,
-        source: "lane_fallback",
-        providerHint,
-        summary: null,
-        error: "Multiple active worker chat sessions are available for this lane; specify a worker session target to avoid misdelivery."
-      };
-    }
-    if (providerScoped.length === 1) {
-      return {
-        sessionId: providerScoped[0].sessionId,
-        source: "lane_fallback",
-        providerHint,
-        summary: providerScoped[0],
-        error: null
-      };
-    }
-    if (providerScoped.length > 1) {
-      return {
-        sessionId: null,
-        source: "lane_fallback",
-        providerHint,
-        summary: null,
-        error: "Multiple worker chat sessions were found, but none are active. Resume a specific session or target one directly."
-      };
-    }
-
-    return {
-      sessionId: null,
-      source: "lane_fallback",
-      providerHint,
-      summary: null,
-      error: "No worker agent-chat session is currently mapped to this thread."
-    };
-  };
-
-  const sendWorkerMessageToSession = async (sessionId: string, text: string): Promise<"send" | "steer"> => {
-    if (!agentChatService) {
-      throw new Error("Agent chat service unavailable.");
-    }
-    try {
-      await agentChatService.sendMessage({
-        sessionId,
-        text
-      });
-      return "send";
-    } catch (error) {
-      const sendError = normalizeDeliveryError(error);
-      if (!isBusyDeliveryError(sendError)) {
-        throw error;
-      }
-      try {
-        await agentChatService.steer({
-          sessionId,
-          text
-        });
-        return "steer";
-      } catch (steerError) {
-        const steerText = normalizeDeliveryError(steerError);
-        if (isNoActiveTurnError(steerText)) {
-          await agentChatService.sendMessage({
-            sessionId,
-            text
-          });
-          return "send";
-        }
-        throw steerError;
-      }
-    }
-  };
-
-  const deliverWorkerMessage = async (
-    message: OrchestratorChatMessage,
-    options?: { ignoreBackoff?: boolean }
-  ): Promise<OrchestratorChatMessage> => {
-    if (disposed) return message;
-    const contextBase = resolveWorkerDeliveryContext(message);
-    if (contextBase) {
-      persistThreadWorkerLinks(contextBase);
-    }
-    const deliveryMeta = readWorkerDeliveryMetadata(message);
-    if (!options?.ignoreBackoff && deliveryMeta.nextRetryAtMs != null && Date.now() < deliveryMeta.nextRetryAtMs) {
-      return message;
-    }
-    if (deliveryMeta.inFlightAttemptId && deliveryMeta.inFlightAtMs != null) {
-      const inFlightAgeMs = Date.now() - deliveryMeta.inFlightAtMs;
-      if (inFlightAgeMs < WORKER_MESSAGE_INFLIGHT_LEASE_MS) {
-        return message;
-      }
-      if (inFlightAgeMs >= WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS) {
-        return failWorkerDeliveryStaleInFlight({
-          message,
-          context: contextBase,
-          retries: Math.max(deliveryMeta.retries + 1, deliveryMeta.maxRetries),
-          maxRetries: deliveryMeta.maxRetries,
-          ageMs: inFlightAgeMs
-        });
-      }
-    }
-
-    if (!agentChatService) {
-      return updateWorkerDeliveryState({
-        message,
-        context: contextBase,
-        state: "queued",
-        retries: deliveryMeta.retries,
-        maxRetries: deliveryMeta.maxRetries,
-        error: "Agent chat service is unavailable.",
-        method: "queued",
-        nextRetryAt: null
-      });
-    }
-
-    let context: WorkerDeliveryContext | null = contextBase;
-    let workingMessage = message;
-    try {
-      const sessionResolution = await resolveWorkerDeliverySession({
-        message,
-        context: contextBase,
-        deliveryMeta
-      });
-      const resolvedSessionId = toOptionalString(sessionResolution.sessionId);
-      context =
-        contextBase && resolvedSessionId
-          ? {
-              ...contextBase,
-              sessionId: resolvedSessionId,
-              target: {
-                ...contextBase.target,
-                sessionId: resolvedSessionId
-              }
-            }
-          : contextBase;
-
-      if (contextBase && resolvedSessionId && contextBase.sessionId !== resolvedSessionId && context) {
-        persistThreadWorkerLinks(context);
-      }
-      if (resolvedSessionId && sessionResolution.summary?.status === "ended") {
-        try {
-          await agentChatService.resumeSession({ sessionId: resolvedSessionId });
-        } catch {
-          // Best-effort resume path; final delivery attempt below determines state.
-        }
-      }
-
-      const sessionId = resolvedSessionId;
-      if (!sessionId) {
-        throw new Error(sessionResolution.error ?? "No worker session is currently mapped to this thread.");
-      }
-      workingMessage = markWorkerDeliveryInFlight({
-        message,
-        context,
-        retries: deliveryMeta.retries,
-        maxRetries: deliveryMeta.maxRetries,
-        deliverySessionId: sessionId
-      });
-      const deliveryMethod = await sendWorkerMessageToSession(sessionId, message.content);
-      const delivered = updateWorkerDeliveryState({
-        message: workingMessage,
-        context,
-        state: "delivered",
-        retries: deliveryMeta.retries,
-        maxRetries: deliveryMeta.maxRetries,
-        error: null,
-        method: deliveryMethod,
-        nextRetryAt: null,
-        deliverySessionId: sessionId
-      });
-      if (message.deliveryState === "queued" && delivered.deliveryState === "delivered") {
-        const workerLabel =
-          toOptionalString(context?.stepKey)
-          ?? toOptionalString(context?.attemptId)
-          ?? toOptionalString(context?.sessionId)
-          ?? "worker";
-        emitOrchestratorMessage(
-          delivered.missionId,
-          `Delivered queued worker guidance to ${workerLabel}.`,
-          context?.stepKey ?? delivered.stepKey ?? null,
-          {
-            sourceMessageId: delivered.id,
-            threadId: delivered.threadId ?? null,
-            deliveryMethod
-          }
-        );
-      }
-      return delivered;
-    } catch (error) {
-      const failure = normalizeDeliveryError(error);
-      const nextRetries = deliveryMeta.retries + 1;
-      const exhausted = nextRetries >= deliveryMeta.maxRetries;
-      if (exhausted) {
-        const interventionId = upsertWorkerDeliveryIntervention({
-          message: workingMessage,
-          context,
-          retries: nextRetries,
-          error: failure
-        });
-        return updateWorkerDeliveryState({
-          message: workingMessage,
-          context,
-          state: "failed",
-          retries: nextRetries,
-          maxRetries: deliveryMeta.maxRetries,
-          error: failure,
-          method: "failed",
-          nextRetryAt: null,
-          interventionId
-        });
-      }
-      const nextRetryAt = new Date(Date.now() + computeWorkerRetryBackoffMs(nextRetries)).toISOString();
-      return updateWorkerDeliveryState({
-        message: workingMessage,
-        context,
-        state: "queued",
-        retries: nextRetries,
-        maxRetries: deliveryMeta.maxRetries,
-        error: failure,
-        method: "queued",
-        nextRetryAt
-      });
-    }
-  };
-
-  const replayQueuedWorkerMessages = async (args: {
+  const replayQueuedWorkerMessages = (args: {
     reason: string;
     missionId?: string | null;
     threadId?: string | null;
     sessionId?: string | null;
-  }): Promise<{ delivered: number; failed: number; queued: number }> => {
-    if (disposed) return { delivered: 0, failed: 0, queued: 0 };
-    const rows = db.all<{
-      id: string;
-      mission_id: string;
-      role: string;
-      content: string;
-      timestamp: string;
-      step_key: string | null;
-      thread_id: string | null;
-      thread_type: string | null;
-      target_json: string | null;
-      visibility: string | null;
-      delivery_state: string | null;
-      source_session_id: string | null;
-      attempt_id: string | null;
-      lane_id: string | null;
-      run_id: string | null;
-      metadata_json: string | null;
-      created_at: string;
-    }>(
-      `
-        select
-          m.id as id,
-          m.mission_id as mission_id,
-          m.role as role,
-          m.content as content,
-          m.timestamp as timestamp,
-          m.step_key as step_key,
-          m.thread_id as thread_id,
-          t.thread_type as thread_type,
-          m.target_json as target_json,
-          m.visibility as visibility,
-          m.delivery_state as delivery_state,
-          m.source_session_id as source_session_id,
-          m.attempt_id as attempt_id,
-          m.lane_id as lane_id,
-          m.run_id as run_id,
-          m.metadata_json as metadata_json,
-          m.created_at as created_at
-        from orchestrator_chat_messages m
-        left join orchestrator_chat_threads t on t.id = m.thread_id
-        where m.role = 'user'
-          and m.delivery_state = 'queued'
-          and (? is null or m.mission_id = ?)
-          and (? is null or m.thread_id = ?)
-        order by m.timestamp asc, m.created_at asc, m.id asc
-      `,
-      [
-        args.missionId ?? null,
-        args.missionId ?? null,
-        args.threadId ?? null,
-        args.threadId ?? null
-      ]
-    );
+  }) => replayQueuedWorkerMessagesCtx(ctx, args, workerDeliveryDeps);
 
-    const grouped = new Map<string, OrchestratorChatMessage[]>();
-    for (const row of rows) {
-      const parsed = parseChatMessageRow(row);
-      if (!parsed) continue;
-      const isWorkerThread = row.thread_type === "worker";
-      if (parsed.target?.kind !== "worker" && !isWorkerThread) continue;
-      const key = parsed.threadId ?? missionThreadId(parsed.missionId);
-      const bucket = grouped.get(key) ?? [];
-      bucket.push(parsed);
-      grouped.set(key, bucket);
-    }
-
-    let delivered = 0;
-    let failed = 0;
-    let queued = 0;
-
-    const threadEntries = Array.from(grouped.entries());
-    const maxParallelThreads = 8;
-    for (let batchIndex = 0; batchIndex < threadEntries.length; batchIndex += maxParallelThreads) {
-      const batch = threadEntries.slice(batchIndex, batchIndex + maxParallelThreads);
-      await Promise.all(
-        batch.map(async ([threadId, messages]) => {
-          const ignoreBackoff = args.reason.startsWith("runtime_signal") || args.reason.startsWith("agent_chat");
-          const previous = workerDeliveryThreadQueues.get(threadId) ?? Promise.resolve();
-          const next = previous
-            .catch(() => undefined)
-            .then(async () => {
-              if (disposed) return;
-              for (const candidate of messages) {
-                if (disposed) return;
-                const fresh = getChatMessageById(candidate.id);
-                if (!fresh || fresh.deliveryState !== "queued") continue;
-                const context = resolveWorkerDeliveryContext(fresh);
-                if (args.sessionId) {
-                  const signalSessionId = args.sessionId.trim();
-                  if (signalSessionId.length > 0) {
-                    const mapped = toOptionalString(context?.sessionId) ?? toOptionalString(fresh.sourceSessionId);
-                    if (!mapped || mapped !== signalSessionId) continue;
-                  }
-                }
-                const updated = await deliverWorkerMessage(fresh, {
-                  ignoreBackoff
-                });
-                if (updated.deliveryState === "delivered") {
-                  delivered += 1;
-                  continue;
-                }
-                if (updated.deliveryState === "failed") {
-                  failed += 1;
-                  continue;
-                }
-                queued += 1;
-                break;
-              }
-            })
-            .catch((error) => {
-              logger.debug("ai_orchestrator.worker_delivery_replay_failed", {
-                reason: args.reason,
-                threadId,
-                error: error instanceof Error ? error.message : String(error)
-              });
-            })
-            .finally(() => {
-              if (workerDeliveryThreadQueues.get(threadId) === next) {
-                workerDeliveryThreadQueues.delete(threadId);
-              }
-            });
-          workerDeliveryThreadQueues.set(threadId, next);
-          await next;
-        })
-      );
-    }
-
-    if ((delivered > 0 || failed > 0 || queued > 0) && args.missionId) {
-      emitThreadEvent({
-        type: "worker_replay",
-        missionId: args.missionId,
-        threadId: args.threadId ?? null,
-        runId: null,
-        reason: args.reason,
-        metadata: {
-          delivered,
-          failed,
-          queued,
-          sessionId: args.sessionId ?? null
-        }
-      });
-    }
-
-    return { delivered, failed, queued };
-  };
-
-  const routeMessageToCoordinator = (message: OrchestratorChatMessage) => {
-    const chatArgs: SendOrchestratorChatArgs = {
-      missionId: message.missionId,
-      content: message.content,
-      threadId: message.threadId ?? missionThreadId(message.missionId),
-      target: {
-        kind: "coordinator",
-        runId: message.runId ?? null
-      },
-      visibilityMode: message.visibility ?? DEFAULT_CHAT_VISIBILITY,
-      metadata: message.metadata ?? null
-    };
-    const recentChatContext = formatRecentChatContext(chatMessages.get(message.missionId) ?? [message]);
-    const statusIntent = /\b(status|progress|stuck|heartbeat|worker|lane)\b/i.test(message.content);
-    if (statusIntent) {
-      void (async () => {
-        if (disposed) return;
-        try {
-          const sweep = await runHealthSweep("chat_status");
-          if (disposed) return;
-          const summary = summarizeRunForChat(message.missionId);
-          const recoveryNote =
-            sweep.staleRecovered > 0
-              ? ` Recovered ${sweep.staleRecovered} stale attempt${sweep.staleRecovered === 1 ? "" : "s"} during health sweep.`
-              : "";
-          emitOrchestratorMessage(message.missionId, `${summary}${recoveryNote}`.trim());
-        } catch {
-          if (disposed) return;
-          emitOrchestratorMessage(message.missionId, summarizeRunForChat(message.missionId));
-        }
-      })();
-    }
-
-    try {
-      steerMission({
-        missionId: message.missionId,
-        directive: message.content,
-        priority: "instruction",
-        targetStepKey: message.target?.kind === "worker" ? message.target.stepKey ?? null : null
-      });
-    } catch {
-      // Ignore missing mission / invalid status transitions and preserve chat UX.
-    }
-
-    if (aiIntegrationService && projectRoot) {
-      enqueueChatResponse(chatArgs, recentChatContext);
-    } else if (!statusIntent) {
-      emitOrchestratorMessage(
-        message.missionId,
-        "Directive received. I will apply it at the next planning/evaluation decision point."
-      );
-    }
-  };
-
-  const maybeEmitWorkerQueuedNotice = (message: OrchestratorChatMessage, workerLabel: string, stepKey: string | null): void => {
-    if (message.deliveryState !== "queued") return;
-    void (async () => {
-      if (disposed) return;
-      let canResolveImmediately = false;
-      if (agentChatService) {
-        try {
-          const latest = getChatMessageById(message.id) ?? message;
-          if (latest.deliveryState !== "queued") return;
-          const context = resolveWorkerDeliveryContext(latest);
-          const deliveryMeta = readWorkerDeliveryMetadata(latest);
-          const sessionResolution = await resolveWorkerDeliverySession({
-            message: latest,
-            context,
-            deliveryMeta
-          });
-          canResolveImmediately = !!toOptionalString(sessionResolution.sessionId);
-        } catch (error) {
-          logger.debug("ai_orchestrator.worker_delivery_queue_probe_failed", {
-            missionId: message.missionId,
-            messageId: message.id,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-
-      const fresh = getChatMessageById(message.id);
-      if (!fresh || fresh.deliveryState !== "queued") return;
-      if (canResolveImmediately) return;
-
-      emitOrchestratorMessage(
-        fresh.missionId,
-        `Worker message queued for ${workerLabel}; delivery will resume once the worker session is available.`,
-        stepKey ?? fresh.stepKey ?? null
-      );
-    })();
-  };
-
-  const routeMessageToWorker = (message: OrchestratorChatMessage) => {
-    const target = message.target && message.target.kind === "worker" ? message.target : null;
-    const workerLabel =
-      toOptionalString(target?.stepKey)
-      ?? toOptionalString(target?.stepId)
-      ?? toOptionalString(target?.attemptId)
-      ?? toOptionalString(target?.sessionId)
-      ?? "worker";
-    const coordinatorDigest =
-      message.visibility === "full"
-        ? `User sent worker guidance to ${workerLabel}: ${clipTextForContext(message.content, 300)}`
-        : `User sent worker guidance to ${workerLabel}.`;
-    emitOrchestratorMessage(
-      message.missionId,
-      coordinatorDigest,
-      target?.stepKey ?? null,
-      {
-        threadId: message.threadId ?? null,
-        sourceMessageId: message.id,
-        visibility: message.visibility ?? DEFAULT_WORKER_CHAT_VISIBILITY,
-        deliveryState: message.deliveryState ?? "queued",
-        target
-      }
-    );
-    if (message.deliveryState === "queued") {
-      maybeEmitWorkerQueuedNotice(message, workerLabel, target?.stepKey ?? null);
-    } else if (message.deliveryState === "failed") {
-      emitOrchestratorMessage(
-        message.missionId,
-        `Worker message to ${workerLabel} failed delivery and needs intervention.`,
-        target?.stepKey ?? null
-      );
-    }
-  };
-
-  const listChatThreads = (threadArgs: ListOrchestratorChatThreadsArgs): OrchestratorChatThread[] => {
-    ensureMissionThread(threadArgs.missionId);
-    const rows = db.all<{
-      id: string;
-      mission_id: string;
-      thread_type: string;
-      title: string;
-      run_id: string | null;
-      step_id: string | null;
-      step_key: string | null;
-      attempt_id: string | null;
-      session_id: string | null;
-      lane_id: string | null;
-      status: string;
-      unread_count: number | null;
-      metadata_json: string | null;
-      created_at: string;
-      updated_at: string;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          thread_type,
-          title,
-          run_id,
-          step_id,
-          step_key,
-          attempt_id,
-          session_id,
-          lane_id,
-          status,
-          unread_count,
-          metadata_json,
-          created_at,
-          updated_at
-        from orchestrator_chat_threads
-        where mission_id = ?
-          and (? = 1 or status != 'closed')
-        order by updated_at desc, created_at desc
-      `,
-      [threadArgs.missionId, threadArgs.includeClosed === true ? 1 : 0]
-    );
-    return rows.map((row) => parseThreadRow(row));
-  };
-
-  const getThreadMessages = (threadArgs: GetOrchestratorThreadMessagesArgs): OrchestratorChatMessage[] => {
-    const thread = ensureThreadForTarget({
-      missionId: threadArgs.missionId,
-      threadId: threadArgs.threadId
-    });
-    if (!threadArgs.before) {
-      db.run(
-        `
-          update orchestrator_chat_threads
-          set unread_count = 0
-          where mission_id = ?
-            and id = ?
-        `,
-        [threadArgs.missionId, thread.id]
-      );
-      if (thread.unreadCount > 0) {
-        emitThreadEvent({
-          type: "thread_updated",
-          missionId: threadArgs.missionId,
-          threadId: thread.id,
-          runId: thread.runId ?? null,
-          reason: "thread_read"
-        });
-      }
-    }
-    const messages = loadChatMessagesFromDb({
-      missionId: threadArgs.missionId,
-      threadId: thread.id,
-      limit: threadArgs.limit ?? MAX_PERSISTED_CHAT_MESSAGES,
-      before: threadArgs.before ?? null
-    });
-    if (messages.length > 0) return messages;
-    if (thread.threadType === "coordinator") {
-      return (chatMessages.get(threadArgs.missionId) ?? loadChatMessagesFromMetadata(threadArgs.missionId))
-        .filter((entry) => (entry.threadId ?? missionThreadId(threadArgs.missionId)) === thread.id)
-        .slice(-clampLimit(threadArgs.limit, MAX_PERSISTED_CHAT_MESSAGES, 500));
-    }
-    return [];
-  };
-
-  const sendWorkersBroadcastMessage = (threadArgs: SendOrchestratorThreadMessageArgs, target: Extract<OrchestratorChatTarget, { kind: "workers" }>): OrchestratorChatMessage => {
-    const missionThread = ensureMissionThread(threadArgs.missionId);
-    const metadata = isRecord(threadArgs.metadata) ? threadArgs.metadata : null;
-    const broadcastMessage = appendChatMessage({
-      id: randomUUID(),
-      missionId: threadArgs.missionId,
-      role: "user",
-      content: threadArgs.content,
-      timestamp: nowIso(),
-      threadId: missionThread.id,
-      target,
-      visibility: normalizeChatVisibility(threadArgs.visibilityMode, DEFAULT_CHAT_VISIBILITY),
-      deliveryState: "delivered",
-      sourceSessionId: null,
-      attemptId: null,
-      laneId: target.laneId ?? null,
-      runId: target.runId ?? null,
-      stepKey: null,
-      metadata
+  const routeMessageToCoordinator = (message: OrchestratorChatMessage) =>
+    routeMessageToCoordinatorCtx(ctx, message, {
+      ...workerDeliveryDeps,
+      steerMission,
+      enqueueChatResponse,
+      runHealthSweep
     });
 
-    const candidates = listChatThreads({
-      missionId: threadArgs.missionId,
-      includeClosed: target.includeClosed === true
-    })
-      .filter((thread) => thread.threadType === "worker")
-      .filter((thread) => !target.runId || thread.runId === target.runId)
-      .filter((thread) => !target.laneId || thread.laneId === target.laneId)
-      .sort((a, b) => {
-        const left = Date.parse(a.createdAt);
-        const right = Date.parse(b.createdAt);
-        if (left !== right) return left - right;
-        return a.id.localeCompare(b.id);
-      });
+  const maybeEmitWorkerQueuedNotice = (message: OrchestratorChatMessage, workerLabel: string, stepKey: string | null): void =>
+    maybeEmitWorkerQueuedNoticeCtx(ctx, message, workerLabel, stepKey, workerDeliveryDeps);
 
-    if (!candidates.length) {
-      emitOrchestratorMessage(
-        threadArgs.missionId,
-        "Worker broadcast queued no deliveries because no matching worker threads are currently available.",
-        null,
-        {
-          sourceMessageId: broadcastMessage.id,
-          target
-        }
-      );
-      return broadcastMessage;
-    }
+  const routeMessageToWorker = (message: OrchestratorChatMessage) =>
+    routeMessageToWorkerCtx(ctx, message, workerDeliveryDeps);
 
-    for (let index = 0; index < candidates.length; index += 1) {
-      const thread = candidates[index]!;
-      const workerTarget: OrchestratorChatTarget = {
-        kind: "worker",
-        runId: thread.runId ?? target.runId ?? null,
-        stepId: thread.stepId ?? null,
-        stepKey: thread.stepKey ?? null,
-        attemptId: thread.attemptId ?? null,
-        sessionId: thread.sessionId ?? null,
-        laneId: thread.laneId ?? target.laneId ?? null
-      };
-      const nextMetadata: Record<string, unknown> = {
-        ...(metadata ?? {}),
-        workerBroadcast: {
-          sourceMessageId: broadcastMessage.id,
-          fanoutIndex: index + 1,
-          fanoutTotal: candidates.length
-        }
-      };
-      sendThreadMessage({
-        missionId: threadArgs.missionId,
-        threadId: thread.id,
-        content: threadArgs.content,
-        target: workerTarget,
-        visibilityMode: normalizeChatVisibility(threadArgs.visibilityMode, DEFAULT_WORKER_CHAT_VISIBILITY),
-        metadata: nextMetadata
-      });
-    }
+  const listChatThreads = (threadArgs: ListOrchestratorChatThreadsArgs) =>
+    listChatThreadsCtx(ctx, threadArgs);
 
-    emitOrchestratorMessage(
-      threadArgs.missionId,
-      `Broadcast worker guidance to ${candidates.length} worker thread${candidates.length === 1 ? "" : "s"}.`,
-      null,
-      {
-        sourceMessageId: broadcastMessage.id,
-        target,
-        deliveredThreads: candidates.map((thread) => thread.id)
-      }
-    );
-    return broadcastMessage;
+  const getThreadMessages = (threadArgs: GetOrchestratorThreadMessagesArgs) =>
+    getThreadMessagesCtx(ctx, threadArgs);
+
+  const getChat = (chatArgs: GetOrchestratorChatArgs) =>
+    getChatCtx(ctx, chatArgs);
+
+  const sendAgentMessage = (args: import("../../../shared/types").SendAgentMessageArgs) =>
+    sendAgentMessageCtx(ctx, args);
+
+  const parseMentions = (content: string) => parseMentionsCtx(content);
+
+  const deliverMessageToAgent = (args: Parameters<typeof deliverMessageToAgentCtx>[1]) =>
+    deliverMessageToAgentCtx(ctx, args, { sendWorkerMessageToSession });
+
+  const routeMessage = (message: OrchestratorChatMessage, mentions: string[]) =>
+    routeMessageCtx(ctx, message, mentions, { deliverMessageToAgent });
+
+  const getGlobalChat = (args: import("../../../shared/types").GetGlobalChatArgs) =>
+    getGlobalChatCtx(ctx, args);
+
+  const getActiveAgents = (args: import("../../../shared/types").GetActiveAgentsArgs) =>
+    getActiveAgentsCtx(ctx, args);
+
+  const sendAgentMessageWithMentions = (agentMsgArgs: import("../../../shared/types").SendAgentMessageArgs) =>
+    sendAgentMessageWithMentionsCtx(ctx, agentMsgArgs, { deliverMessageToAgent });
+
+  const parseWorkerDigestRow = parseWorkerDigestRowCtx;
+
+  const emitWorkerDigest = (digest: OrchestratorWorkerDigest): OrchestratorWorkerDigest =>
+    emitWorkerDigestCtx(ctx, digest);
+
+  const listWorkerDigests = (digestArgs: ListOrchestratorWorkerDigestsArgs) => listWorkerDigestsCtx(ctx, digestArgs);
+  const getWorkerDigest = (digestArgs: GetOrchestratorWorkerDigestArgs) => getWorkerDigestCtx(ctx, digestArgs);
+  const getContextCheckpoint = (checkpointArgs: GetOrchestratorContextCheckpointArgs) => getContextCheckpointCtx(ctx, checkpointArgs);
+  const listLaneDecisions = (laneArgs: ListOrchestratorLaneDecisionsArgs) => listLaneDecisionsCtx(ctx, laneArgs);
+
+  const chatRoutingDeps: ChatRoutingDeps = {
+    routeMessageToWorker,
+    routeMessageToCoordinator,
+    replayQueuedWorkerMessages,
+    sendWorkerMessageToSession,
+    createContextCheckpoint,
+    listWorkerDigests,
   };
 
-  const sendThreadMessage = (threadArgs: SendOrchestratorThreadMessageArgs): OrchestratorChatMessage => {
-    const target = sanitizeChatTarget(threadArgs.target);
-    if (target?.kind === "workers") {
-      return sendWorkersBroadcastMessage(threadArgs, target);
-    }
-    const thread = ensureThreadForTarget({
-      missionId: threadArgs.missionId,
-      threadId: threadArgs.threadId ?? null,
-      target
-    });
-    const visibilityFallback = target?.kind === "worker" ? DEFAULT_WORKER_CHAT_VISIBILITY : DEFAULT_CHAT_VISIBILITY;
-    const visibility = normalizeChatVisibility(threadArgs.visibilityMode, visibilityFallback);
-    const deliveryState: OrchestratorChatDeliveryState =
-      target?.kind === "worker" ? "queued" : DEFAULT_CHAT_DELIVERY;
-    const msg = appendChatMessage({
-      id: randomUUID(),
-      missionId: threadArgs.missionId,
-      role: "user",
-      content: threadArgs.content,
-      timestamp: nowIso(),
-      threadId: thread.id,
-      target: target ?? (thread.threadType === "coordinator" ? { kind: "coordinator", runId: thread.runId ?? null } : null),
-      visibility,
-      deliveryState,
-      sourceSessionId: target?.kind === "worker" ? target.sessionId ?? null : null,
-      attemptId: target?.kind === "worker" ? target.attemptId ?? null : null,
-      laneId: target?.kind === "worker" ? target.laneId ?? null : null,
-      runId: target?.runId ?? thread.runId ?? null,
-      stepKey: target?.kind === "worker" ? target.stepKey ?? null : null,
-      metadata: threadArgs.metadata ?? null
-    });
-    if ((chatMessages.get(threadArgs.missionId)?.length ?? 0) >= CONTEXT_CHECKPOINT_CHAT_THRESHOLD) {
-      const total = chatMessages.get(threadArgs.missionId)?.length ?? 0;
-      if (total % CONTEXT_CHECKPOINT_CHAT_THRESHOLD === 0) {
-        createContextCheckpoint({
-          missionId: threadArgs.missionId,
-          runId: msg.runId ?? null,
-          trigger: "step_threshold",
-          summary: `Compressed mission chat context at ${total} messages.`,
-          source: {
-            digestCount: listWorkerDigests({ missionId: threadArgs.missionId, limit: 1_000 }).length,
-            chatMessageCount: total,
-            compressedMessageCount: Math.floor(total / 2)
-          }
-        });
-      }
-    }
-    if (msg.target?.kind === "worker") {
-      routeMessageToWorker(msg);
-      void replayQueuedWorkerMessages({
-        reason: "send_thread_message",
-        missionId: threadArgs.missionId,
-        threadId: msg.threadId ?? null,
-        sessionId: msg.target.sessionId ?? null
-      }).catch((error) => {
-        logger.debug("ai_orchestrator.worker_delivery_replay_enqueue_failed", {
-          missionId: threadArgs.missionId,
-          threadId: msg.threadId ?? null,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      });
-    } else {
-      routeMessageToCoordinator(msg);
-    }
-    return msg;
-  };
+  const sendWorkersBroadcastMessage = (threadArgs: SendOrchestratorThreadMessageArgs, target: Extract<OrchestratorChatTarget, { kind: "workers" }>) =>
+    sendWorkersBroadcastMessageCtx(ctx, threadArgs, target, chatRoutingDeps);
 
-  const sendChat = (chatArgs: SendOrchestratorChatArgs): OrchestratorChatMessage => {
-    return sendThreadMessage({
-      missionId: chatArgs.missionId,
-      content: chatArgs.content,
-      threadId: chatArgs.threadId ?? missionThreadId(chatArgs.missionId),
-      target: chatArgs.target ?? { kind: "coordinator", runId: null },
-      visibilityMode: chatArgs.visibilityMode ?? DEFAULT_CHAT_VISIBILITY,
-      metadata: chatArgs.metadata ?? null
-    });
-  };
+  const sendThreadMessage = (threadArgs: SendOrchestratorThreadMessageArgs) =>
+    sendThreadMessageCtx(ctx, threadArgs, chatRoutingDeps);
 
-  const getChat = (chatArgs: GetOrchestratorChatArgs): OrchestratorChatMessage[] => {
-    return getThreadMessages({
-      missionId: chatArgs.missionId,
-      threadId: missionThreadId(chatArgs.missionId),
-      limit: MAX_PERSISTED_CHAT_MESSAGES
-    });
-  };
+  const sendChat = (chatArgs: SendOrchestratorChatArgs) =>
+    sendChatCtx(ctx, chatArgs, chatRoutingDeps);
 
-  const sendAgentMessage = (args: import("../../../shared/types").SendAgentMessageArgs): OrchestratorChatMessage => {
-    const { missionId, fromAttemptId, toAttemptId, content, metadata } = args;
-
-    // Find or create a thread for the source agent
-    const sourceThread = ensureThreadForTarget({
-      missionId,
-      threadId: null,
-      target: { kind: "worker", attemptId: fromAttemptId } as OrchestratorChatTarget
-    });
-
-    // Record message in source agent's thread
-    const agentMsg = appendChatMessage({
-      id: randomUUID(),
-      missionId,
-      role: "agent",
-      content,
-      timestamp: nowIso(),
-      threadId: sourceThread.id,
-      target: { kind: "agent", sourceAttemptId: fromAttemptId, targetAttemptId: toAttemptId },
-      visibility: "full" as OrchestratorChatVisibilityMode,
-      deliveryState: "delivered" as OrchestratorChatDeliveryState,
-      sourceSessionId: null,
-      attemptId: fromAttemptId,
-      laneId: null,
-      runId: sourceThread.runId ?? null,
-      stepKey: null,
-      metadata: metadata ?? null
-    });
-
-    // Also deliver to target agent's thread
-    const targetThread = ensureThreadForTarget({
-      missionId,
-      threadId: null,
-      target: { kind: "worker", attemptId: toAttemptId } as OrchestratorChatTarget
-    });
-
-    appendChatMessage({
-      id: randomUUID(),
-      missionId,
-      role: "agent",
-      content,
-      timestamp: nowIso(),
-      threadId: targetThread.id,
-      target: { kind: "agent", sourceAttemptId: fromAttemptId, targetAttemptId: toAttemptId },
-      visibility: "full" as OrchestratorChatVisibilityMode,
-      deliveryState: "delivered" as OrchestratorChatDeliveryState,
-      sourceSessionId: null,
-      attemptId: fromAttemptId,
-      laneId: null,
-      runId: targetThread.runId ?? null,
-      stepKey: null,
-      metadata: { ...(metadata ?? {}), interAgentDelivery: true }
-    });
-
-    // Emit thread event so UI updates
-    emitThreadEvent({
-      type: "message_appended",
-      missionId,
-      threadId: sourceThread.id,
-      messageId: agentMsg.id,
-      reason: "agent_message"
-    });
-    emitThreadEvent({
-      type: "message_appended",
-      missionId,
-      threadId: targetThread.id,
-      messageId: agentMsg.id,
-      reason: "agent_message_delivery"
-    });
-
-    return agentMsg;
-  };
-
-  // ── Inter-agent messaging: @mention parsing ──
-  const parseMentions = (content: string): { mentions: string[]; cleanContent: string } => {
-    const mentionRegex = /@([\w-]+)/g;
-    const mentions: string[] = [];
-    let match;
-    while ((match = mentionRegex.exec(content)) !== null) {
-      mentions.push(match[1]);
-    }
-    return { mentions, cleanContent: content };
-  };
-
-  // ── Inter-agent messaging: route message to mentioned agents ──
-  const routeMessage = (message: OrchestratorChatMessage, mentions: string[]): void => {
-    if (!message.missionId) return;
-    const missionId = message.missionId;
-
-    // Resolve active run to find agents
-    const runs = orchestratorService.listRuns({ missionId });
-    const activeRun = runs.find(
-      (r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused"
-    );
-    if (!activeRun) return;
-
-    const isBroadcast = mentions.includes("all");
-
-    if (isBroadcast) {
-      // Deliver to all active workers
-      for (const [, ws] of workerStates.entries()) {
-        if (ws.runId !== activeRun.id || ws.state !== "working" || !ws.sessionId) continue;
-        void deliverMessageToAgent({
-          missionId,
-          targetAttemptId: ws.attemptId,
-          content: message.content,
-          priority: "normal"
-        });
-      }
-      return;
-    }
-
-    // Deliver to each specifically mentioned agent (by step key)
-    const graph = orchestratorService.getRunGraph({ runId: activeRun.id, timelineLimit: 0 });
-    for (const mention of mentions) {
-      if (mention === "orchestrator") {
-        // Messages to orchestrator are already in the chat system
-        continue;
-      }
-      const targetStep = graph.steps.find((s) => s.stepKey === mention);
-      if (!targetStep) continue;
-      const targetWorker = [...workerStates.entries()].find(
-        ([, ws]) => ws.stepId === targetStep.id && ws.runId === activeRun.id && ws.state === "working"
-      );
-      if (targetWorker) {
-        void deliverMessageToAgent({
-          missionId,
-          targetAttemptId: targetWorker[1].attemptId,
-          content: message.content,
-          priority: "normal"
-        });
-      }
-    }
-  };
-
-  // ── Inter-agent messaging: deliver message to a running agent ──
-  const deliverMessageToAgent = async (args: {
-    missionId: string;
-    targetAttemptId: string;
-    content: string;
-    priority?: "normal" | "urgent";
-    fromAttemptId?: string | null;
-  }): Promise<{ delivered: boolean; method: string }> => {
-    const ws = workerStates.get(args.targetAttemptId);
-    if (!ws) {
-      return { delivered: false, method: "not_found" };
-    }
-
-    const priority = args.priority ?? "normal";
-    const prefix = args.fromAttemptId ? `[Message from ${args.fromAttemptId}] ` : "[Team message] ";
-    const formattedContent = `${prefix}${args.content}`;
-
-    // For agents with an active session (both CLI-wrapped and SDK), use the existing delivery mechanism
-    if (ws.sessionId && agentChatService) {
-      try {
-        if (priority === "urgent") {
-          // Use steer for urgent messages — injects immediately even if agent is busy
-          try {
-            await agentChatService.steer({ sessionId: ws.sessionId, text: formattedContent });
-            return { delivered: true, method: "steer" };
-          } catch {
-            // Fall through to sendMessage
-          }
-        }
-        const method = await sendWorkerMessageToSession(ws.sessionId, formattedContent);
-        return { delivered: true, method };
-      } catch (error) {
-        logger.debug("ai_orchestrator.deliver_message_to_agent_failed", {
-          missionId: args.missionId,
-          targetAttemptId: args.targetAttemptId,
-          sessionId: ws.sessionId,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-
-    // For SDK agents without an active session, queue the message
-    const { enqueuePendingMessage } = require("../ai/unifiedExecutor") as typeof import("../ai/unifiedExecutor");
-    const sessionKey = ws.sessionId ?? `pending-${args.targetAttemptId}`;
-    enqueuePendingMessage(sessionKey, {
-      id: randomUUID(),
-      content: formattedContent,
-      fromAttemptId: args.fromAttemptId ?? null,
-      priority,
-      receivedAt: nowIso()
-    });
-    return { delivered: true, method: "queued" };
-  };
-
-  // ── Global chat: all messages for a mission across all threads ──
-  const getGlobalChat = (args: import("../../../shared/types").GetGlobalChatArgs): OrchestratorChatMessage[] => {
-    const limit = Math.min(Math.max(args.limit ?? 200, 1), 1000);
-    return loadChatMessagesFromDb({
-      missionId: args.missionId,
-      threadId: null, // null = all threads
-      limit,
-      before: args.since ? null : null // since is used as a floor, not a ceiling
-    }).filter((msg) => {
-      if (!args.since) return true;
-      return Date.parse(msg.timestamp) >= Date.parse(args.since);
-    });
-  };
-
-  // ── Active agents: list for @mention autocomplete ──
-  const getActiveAgents = (args: import("../../../shared/types").GetActiveAgentsArgs): import("../../../shared/types").ActiveAgentInfo[] => {
-    const result: import("../../../shared/types").ActiveAgentInfo[] = [];
-    // Find active run for the mission
-    const runs = orchestratorService.listRuns({ missionId: args.missionId });
-    const activeRun = runs.find(
-      (r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused"
-    );
-    if (!activeRun) return result;
-
-    let graph: OrchestratorRunGraph | null = null;
-    try {
-      graph = orchestratorService.getRunGraph({ runId: activeRun.id, timelineLimit: 0 });
-    } catch {
-      return result;
-    }
-
-    for (const [, ws] of workerStates.entries()) {
-      if (ws.runId !== activeRun.id) continue;
-      if (ws.state !== "working" && ws.state !== "waiting_input" && ws.state !== "idle") continue;
-      const step = graph.steps.find((s) => s.id === ws.stepId);
-      result.push({
-        attemptId: ws.attemptId,
-        stepId: ws.stepId,
-        stepKey: step?.stepKey ?? null,
-        runId: ws.runId,
-        sessionId: ws.sessionId,
-        state: ws.state,
-        executorKind: ws.executorKind
-      });
-    }
-    return result;
-  };
-
-  // ── Wire @mention parsing into sendAgentMessage flow ──
-  const sendAgentMessageWithMentions = (agentMsgArgs: import("../../../shared/types").SendAgentMessageArgs): OrchestratorChatMessage => {
-    const msg = sendAgentMessage(agentMsgArgs);
-    const { mentions } = parseMentions(agentMsgArgs.content);
-    if (mentions.length > 0) {
-      routeMessage(msg, mentions);
-    }
-    return msg;
-  };
-
-  const parseWorkerDigestRow = (row: {
-    id: string;
-    mission_id: string;
-    run_id: string;
-    step_id: string;
-    step_key: string | null;
-    attempt_id: string;
-    lane_id: string | null;
-    session_id: string | null;
-    status: string;
-    summary: string;
-    files_changed_json: string | null;
-    tests_run_json: string | null;
-    warnings_json: string | null;
-    tokens_json: string | null;
-    cost_usd: number | null;
-    suggested_next_actions_json: string | null;
-    created_at: string;
-  }): OrchestratorWorkerDigest => {
-    const filesChanged = parseJsonArray(row.files_changed_json).map((value) => String(value ?? "")).filter(Boolean);
-    const warnings = parseJsonArray(row.warnings_json).map((value) => String(value ?? "")).filter(Boolean);
-    const suggestions = parseJsonArray(row.suggested_next_actions_json).map((value) => String(value ?? "")).filter(Boolean);
-    const testsParsed = parseJsonRecord(row.tests_run_json);
-    const testsRun = {
-      passed: Math.max(0, Math.floor(Number(testsParsed?.passed) || 0)),
-      failed: Math.max(0, Math.floor(Number(testsParsed?.failed) || 0)),
-      skipped: Math.max(0, Math.floor(Number(testsParsed?.skipped) || 0)),
-      summary: typeof testsParsed?.summary === "string" ? testsParsed.summary : null
-    };
-    const tokensParsed = parseJsonRecord(row.tokens_json);
-    const tokens = tokensParsed
-      ? {
-          input: Number.isFinite(Number(tokensParsed.input)) ? Number(tokensParsed.input) : undefined,
-          output: Number.isFinite(Number(tokensParsed.output)) ? Number(tokensParsed.output) : undefined,
-          total: Number.isFinite(Number(tokensParsed.total)) ? Number(tokensParsed.total) : undefined
-        }
-      : null;
-    const status =
-      row.status === "succeeded" || row.status === "failed" || row.status === "blocked" || row.status === "running" || row.status === "queued"
-        ? row.status
-        : "queued";
-    return {
-      id: row.id,
-      missionId: row.mission_id,
-      runId: row.run_id,
-      stepId: row.step_id,
-      stepKey: row.step_key ?? null,
-      attemptId: row.attempt_id,
-      laneId: row.lane_id ?? null,
-      sessionId: row.session_id ?? null,
-      status,
-      summary: row.summary,
-      filesChanged,
-      testsRun,
-      warnings,
-      tokens,
-      costUsd: Number.isFinite(Number(row.cost_usd)) ? Number(row.cost_usd) : null,
-      suggestedNextActions: suggestions,
-      createdAt: row.created_at
-    };
-  };
-
-  const emitWorkerDigest = (digest: OrchestratorWorkerDigest): OrchestratorWorkerDigest => {
-    const missionIdentity = getMissionIdentity(digest.missionId);
-    if (!missionIdentity) return digest;
-    db.run(
-      `
-        insert into orchestrator_worker_digests(
-          id,
-          project_id,
-          mission_id,
-          run_id,
-          step_id,
-          step_key,
-          attempt_id,
-          lane_id,
-          session_id,
-          status,
-          summary,
-          files_changed_json,
-          tests_run_json,
-          warnings_json,
-          tokens_json,
-          cost_usd,
-          suggested_next_actions_json,
-          created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        digest.id,
-        missionIdentity.projectId,
-        digest.missionId,
-        digest.runId,
-        digest.stepId,
-        digest.stepKey,
-        digest.attemptId,
-        digest.laneId,
-        digest.sessionId,
-        digest.status,
-        digest.summary,
-        JSON.stringify(digest.filesChanged ?? []),
-        JSON.stringify(digest.testsRun ?? { passed: 0, failed: 0, skipped: 0 }),
-        JSON.stringify(digest.warnings ?? []),
-        digest.tokens ? JSON.stringify(digest.tokens) : null,
-        digest.costUsd ?? null,
-        JSON.stringify(digest.suggestedNextActions ?? []),
-        digest.createdAt
-      ]
-    );
-    emitThreadEvent({
-      type: "worker_digest_updated",
-      missionId: digest.missionId,
-      runId: digest.runId,
-      threadId: null,
-      reason: "worker_digest",
-      metadata: {
-        digestId: digest.id,
-        attemptId: digest.attemptId,
-        stepId: digest.stepId
-      }
-    });
-    return digest;
-  };
-
-  const listWorkerDigests = (digestArgs: ListOrchestratorWorkerDigestsArgs): OrchestratorWorkerDigest[] => {
-    const limit = clampLimit(digestArgs.limit, 100, 500);
-    const rows = db.all<{
-      id: string;
-      mission_id: string;
-      run_id: string;
-      step_id: string;
-      step_key: string | null;
-      attempt_id: string;
-      lane_id: string | null;
-      session_id: string | null;
-      status: string;
-      summary: string;
-      files_changed_json: string | null;
-      tests_run_json: string | null;
-      warnings_json: string | null;
-      tokens_json: string | null;
-      cost_usd: number | null;
-      suggested_next_actions_json: string | null;
-      created_at: string;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          run_id,
-          step_id,
-          step_key,
-          attempt_id,
-          lane_id,
-          session_id,
-          status,
-          summary,
-          files_changed_json,
-          tests_run_json,
-          warnings_json,
-          tokens_json,
-          cost_usd,
-          suggested_next_actions_json,
-          created_at
-        from orchestrator_worker_digests
-        where mission_id = ?
-          and (? is null or run_id = ?)
-          and (? is null or step_id = ?)
-          and (? is null or attempt_id = ?)
-          and (? is null or lane_id = ?)
-        order by created_at desc
-        limit ?
-      `,
-      [
-        digestArgs.missionId,
-        digestArgs.runId ?? null,
-        digestArgs.runId ?? null,
-        digestArgs.stepId ?? null,
-        digestArgs.stepId ?? null,
-        digestArgs.attemptId ?? null,
-        digestArgs.attemptId ?? null,
-        digestArgs.laneId ?? null,
-        digestArgs.laneId ?? null,
-        limit
-      ]
-    );
-    return rows.map((row) => parseWorkerDigestRow(row));
-  };
-
-  const getWorkerDigest = (digestArgs: GetOrchestratorWorkerDigestArgs): OrchestratorWorkerDigest | null => {
-    const row = db.get<{
-      id: string;
-      mission_id: string;
-      run_id: string;
-      step_id: string;
-      step_key: string | null;
-      attempt_id: string;
-      lane_id: string | null;
-      session_id: string | null;
-      status: string;
-      summary: string;
-      files_changed_json: string | null;
-      tests_run_json: string | null;
-      warnings_json: string | null;
-      tokens_json: string | null;
-      cost_usd: number | null;
-      suggested_next_actions_json: string | null;
-      created_at: string;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          run_id,
-          step_id,
-          step_key,
-          attempt_id,
-          lane_id,
-          session_id,
-          status,
-          summary,
-          files_changed_json,
-          tests_run_json,
-          warnings_json,
-          tokens_json,
-          cost_usd,
-          suggested_next_actions_json,
-          created_at
-        from orchestrator_worker_digests
-        where mission_id = ?
-          and id = ?
-        limit 1
-      `,
-      [digestArgs.missionId, digestArgs.digestId]
-    );
-    return row ? parseWorkerDigestRow(row) : null;
-  };
-
-  const getContextCheckpoint = (checkpointArgs: GetOrchestratorContextCheckpointArgs): OrchestratorContextCheckpoint | null => {
-    const row = db.get<{
-      id: string;
-      mission_id: string;
-      run_id: string | null;
-      trigger: string;
-      summary: string;
-      source_json: string | null;
-      created_at: string;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          run_id,
-          trigger,
-          summary,
-          source_json,
-          created_at
-        from orchestrator_context_checkpoints
-        where mission_id = ?
-          and (? is null or id = ?)
-        order by created_at desc
-        limit 1
-      `,
-      [checkpointArgs.missionId, checkpointArgs.checkpointId ?? null, checkpointArgs.checkpointId ?? null]
-    );
-    if (!row) return null;
-    const trigger =
-      row.trigger === "step_threshold"
-      || row.trigger === "pressure_soft"
-      || row.trigger === "pressure_hard"
-      || row.trigger === "status_request"
-      || row.trigger === "manual"
-        ? row.trigger
-        : "manual";
-    const source = parseJsonRecord(row.source_json);
-    return {
-      id: row.id,
-      missionId: row.mission_id,
-      runId: row.run_id ?? null,
-      trigger,
-      summary: row.summary,
-      source: {
-        digestCount: Math.max(0, Math.floor(Number(source?.digestCount) || 0)),
-        chatMessageCount: Math.max(0, Math.floor(Number(source?.chatMessageCount) || 0)),
-        compressedMessageCount: Math.max(0, Math.floor(Number(source?.compressedMessageCount) || 0))
-      },
-      createdAt: row.created_at
-    };
-  };
-
-  const listLaneDecisions = (laneArgs: ListOrchestratorLaneDecisionsArgs): OrchestratorLaneDecision[] => {
-    const limit = clampLimit(laneArgs.limit, 100, 500);
-    const rows = db.all<{
-      id: string;
-      mission_id: string;
-      run_id: string | null;
-      step_id: string | null;
-      step_key: string | null;
-      lane_id: string | null;
-      decision_type: string;
-      validator_outcome: string;
-      rule_hits_json: string | null;
-      rationale: string;
-      metadata_json: string | null;
-      created_at: string;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          run_id,
-          step_id,
-          step_key,
-          lane_id,
-          decision_type,
-          validator_outcome,
-          rule_hits_json,
-          rationale,
-          metadata_json,
-          created_at
-        from orchestrator_lane_decisions
-        where mission_id = ?
-          and (? is null or run_id = ?)
-          and (? is null or step_id = ?)
-        order by created_at desc
-        limit ?
-      `,
-      [
-        laneArgs.missionId,
-        laneArgs.runId ?? null,
-        laneArgs.runId ?? null,
-        laneArgs.stepId ?? null,
-        laneArgs.stepId ?? null,
-        limit
-      ]
-    );
-    return rows.map((row) => {
-      const decisionType =
-        row.decision_type === "proposal" || row.decision_type === "validated" || row.decision_type === "override" || row.decision_type === "replan"
-          ? row.decision_type
-          : "proposal";
-      const validatorOutcome =
-        row.validator_outcome === "pass" || row.validator_outcome === "fail" || row.validator_outcome === "warn"
-          ? row.validator_outcome
-          : "warn";
-      return {
-        id: row.id,
-        missionId: row.mission_id,
-        runId: row.run_id ?? null,
-        stepId: row.step_id ?? null,
-        stepKey: row.step_key ?? null,
-        laneId: row.lane_id ?? null,
-        decisionType,
-        validatorOutcome,
-        ruleHits: parseJsonArray(row.rule_hits_json).map((entry) => String(entry ?? "")).filter(Boolean),
-        rationale: row.rationale,
-        metadata: parseJsonRecord(row.metadata_json),
-        createdAt: row.created_at
-      };
-    });
-  };
-
-  const setMissionMetricsConfig = (configArgs: SetMissionMetricsConfigArgs): MissionMetricsConfig => {
-    const missionIdentity = getMissionIdentity(configArgs.missionId);
-    if (!missionIdentity) throw new Error(`Mission not found: ${configArgs.missionId}`);
-    const deduped: MissionMetricToggle[] = [];
-    const seen = new Set<string>();
-    for (const toggle of configArgs.toggles ?? []) {
-      const normalized = String(toggle ?? "").trim();
-      if (!normalized.length || seen.has(normalized)) continue;
-      if (!KNOWN_METRIC_TOGGLES.has(normalized as MissionMetricToggle)) continue;
-      seen.add(normalized);
-      deduped.push(normalized as MissionMetricToggle);
-    }
-    const toggles = deduped.length > 0 ? deduped : [...DEFAULT_METRIC_TOGGLES];
-    const config: MissionMetricsConfig = {
-      missionId: configArgs.missionId,
-      toggles,
-      updatedAt: nowIso()
-    };
-    db.run(
-      `
-        insert into mission_metrics_config(
-          mission_id,
-          project_id,
-          toggles_json,
-          updated_at
-        ) values (?, ?, ?, ?)
-        on conflict(mission_id) do update set
-          toggles_json = excluded.toggles_json,
-          updated_at = excluded.updated_at
-      `,
-      [config.missionId, missionIdentity.projectId, JSON.stringify(config.toggles), config.updatedAt]
-    );
-    emitThreadEvent({
-      type: "metrics_updated",
-      missionId: config.missionId,
-      runId: null,
-      reason: "metrics_config",
-      metadata: {
-        toggles: config.toggles
-      }
-    });
-    return config;
-  };
+  const setMissionMetricsConfig = (configArgs: SetMissionMetricsConfigArgs): MissionMetricsConfig =>
+    setMissionMetricsConfigCtx(ctx, configArgs);
 
   const getMissionMetrics = (metricArgs: GetMissionMetricsArgs): {
     config: MissionMetricsConfig | null;
     samples: MissionMetricSample[];
-  } => {
-    const configRow = db.get<{ toggles_json: string | null; updated_at: string | null }>(
-      `
-        select toggles_json, updated_at
-        from mission_metrics_config
-        where mission_id = ?
-        limit 1
-      `,
-      [metricArgs.missionId]
-    );
-    const config: MissionMetricsConfig | null = configRow
-      ? {
-          missionId: metricArgs.missionId,
-          toggles: parseJsonArray(configRow.toggles_json)
-            .map((entry) => String(entry ?? ""))
-            .filter((entry): entry is MissionMetricToggle => KNOWN_METRIC_TOGGLES.has(entry as MissionMetricToggle)),
-          updatedAt: configRow.updated_at ?? nowIso()
-        }
-      : null;
-    const limit = clampLimit(metricArgs.limit, 200, 1_000);
-    const sampleRows = db.all<{
-      id: string;
-      mission_id: string;
-      run_id: string | null;
-      attempt_id: string | null;
-      metric: string;
-      value: number;
-      unit: string | null;
-      metadata_json: string | null;
-      created_at: string;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          run_id,
-          attempt_id,
-          metric,
-          value,
-          unit,
-          metadata_json,
-          created_at
-        from orchestrator_metrics_samples
-        where mission_id = ?
-          and (? is null or run_id = ?)
-        order by created_at desc
-        limit ?
-      `,
-      [metricArgs.missionId, metricArgs.runId ?? null, metricArgs.runId ?? null, limit]
-    );
-    const samples: MissionMetricSample[] = sampleRows.map((row) => ({
-      id: row.id,
-      missionId: row.mission_id,
-      runId: row.run_id ?? null,
-      attemptId: row.attempt_id ?? null,
-      metric: row.metric,
-      value: Number(row.value ?? 0),
-      unit: row.unit ?? null,
-      metadata: parseJsonRecord(row.metadata_json),
-      createdAt: row.created_at
-    }));
-    return {
-      config,
-      samples
-    };
+  } => getMissionMetricsCtx(ctx, metricArgs);
+
+  const reconciliationDeps: ReconciliationDeps = {
+    resolveWorkerDeliveryContext,
+    persistThreadWorkerLinks,
+    replayQueuedWorkerMessages,
   };
 
-  const backfillLegacyThreadMessages = (missionId: string): number => {
-    const missionIdentity = getMissionIdentity(missionId);
-    if (!missionIdentity) return 0;
-    const legacy = loadChatMessagesFromMetadata(missionId);
-    if (!legacy.length) return 0;
-    const existingIds = new Set(
-      db.all<{ id: string }>(
-        `
-          select id
-          from orchestrator_chat_messages
-          where mission_id = ?
-        `,
-        [missionId]
-      ).map((entry) => String(entry.id))
-    );
-    let inserted = 0;
-    for (const message of legacy) {
-      if (existingIds.has(message.id)) continue;
-      const thread = ensureThreadForTarget({
-        missionId,
-        threadId: message.threadId ?? null,
-        target: message.target ?? null
-      });
-      db.run(
-        `
-          insert into orchestrator_chat_messages(
-            id,
-            project_id,
-            mission_id,
-            thread_id,
-            role,
-            content,
-            timestamp,
-            step_key,
-            target_json,
-            visibility,
-            delivery_state,
-            source_session_id,
-            attempt_id,
-            lane_id,
-            run_id,
-            metadata_json,
-            created_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          message.id,
-          missionIdentity.projectId,
-          missionId,
-          thread.id,
-          message.role,
-          message.content,
-          message.timestamp,
-          message.stepKey ?? null,
-          message.target ? JSON.stringify(message.target) : null,
-          normalizeChatVisibility(message.visibility),
-          normalizeChatDeliveryState(message.deliveryState),
-          message.sourceSessionId ?? null,
-          message.attemptId ?? null,
-          message.laneId ?? null,
-          message.runId ?? null,
-          message.metadata ? JSON.stringify(message.metadata) : null,
-          message.timestamp
-        ]
-      );
-      existingIds.add(message.id);
-      inserted += 1;
-    }
-    return inserted;
-  };
+  const backfillLegacyThreadMessages = (missionId: string) =>
+    backfillLegacyThreadMessagesCtx(ctx, missionId);
 
-  const reconcileMissingThreadRows = (missionId: string): number => {
-    const orphans = db.all<{
-      thread_id: string;
-      target_json: string | null;
-    }>(
-      `
-        select distinct
-          m.thread_id as thread_id,
-          m.target_json as target_json
-        from orchestrator_chat_messages m
-        left join orchestrator_chat_threads t on t.id = m.thread_id
-        where m.mission_id = ?
-          and t.id is null
-      `,
-      [missionId]
-    );
-    let repaired = 0;
-    for (const orphan of orphans) {
-      const threadId = toOptionalString(orphan.thread_id);
-      if (!threadId) continue;
-      ensureThreadForTarget({
-        missionId,
-        threadId,
-        target: parseChatTarget(parseJsonRecord(orphan.target_json))
-      });
-      repaired += 1;
-    }
-    return repaired;
-  };
+  const reconcileMissingThreadRows = (missionId: string) =>
+    reconcileMissingThreadRowsCtx(ctx, missionId);
 
-  const reconcileWorkerThreadLinks = (missionId: string): number => {
-    const rows = db.all<{
-      id: string;
-      run_id: string | null;
-      step_id: string | null;
-      step_key: string | null;
-      attempt_id: string | null;
-      session_id: string | null;
-      lane_id: string | null;
-    }>(
-      `
-        select
-          id,
-          run_id,
-          step_id,
-          step_key,
-          attempt_id,
-          session_id,
-          lane_id
-        from orchestrator_chat_threads
-        where mission_id = ?
-          and thread_type = 'worker'
-      `,
-      [missionId]
-    );
-    let repaired = 0;
-    for (const row of rows) {
-      const latestMessage = loadChatMessagesFromDb({
-        missionId,
-        threadId: row.id,
-        limit: 1
-      })[0] ?? null;
-      const synthetic: OrchestratorChatMessage = latestMessage ?? {
-        id: `reconcile:${row.id}`,
-        missionId,
-        role: "orchestrator",
-        content: "Thread link reconciliation",
-        timestamp: nowIso(),
-        threadId: row.id,
-        target: {
-          kind: "worker",
-          runId: row.run_id ?? null,
-          stepId: row.step_id ?? null,
-          stepKey: row.step_key ?? null,
-          attemptId: row.attempt_id ?? null,
-          sessionId: row.session_id ?? null,
-          laneId: row.lane_id ?? null
-        },
-        visibility: "metadata_only",
-        deliveryState: "queued",
-        sourceSessionId: row.session_id ?? null,
-        attemptId: row.attempt_id ?? null,
-        laneId: row.lane_id ?? null,
-        runId: row.run_id ?? null,
-        stepKey: row.step_key ?? null,
-        metadata: null
-      };
-      const context = resolveWorkerDeliveryContext(synthetic);
-      if (!context) continue;
-      persistThreadWorkerLinks(context);
-      repaired += 1;
-    }
-    return repaired;
-  };
+  const reconcileWorkerThreadLinks = (missionId: string) =>
+    reconcileWorkerThreadLinksCtx(ctx, missionId, reconciliationDeps);
 
-  const reconcileUnreadSanity = (missionId: string): number => {
-    const threads = db.all<{ id: string; unread_count: number | null }>(
-      `
-        select id, unread_count
-        from orchestrator_chat_threads
-        where mission_id = ?
-      `,
-      [missionId]
-    );
-    let updated = 0;
-    for (const thread of threads) {
-      const totalNonUser = db.get<{ count: number }>(
-        `
-          select count(1) as count
-          from orchestrator_chat_messages
-          where thread_id = ?
-            and role != 'user'
-        `,
-        [thread.id]
-      );
-      const total = Math.max(0, Math.floor(Number(totalNonUser?.count) || 0));
-      const current = Number.isFinite(Number(thread.unread_count))
-        ? Math.floor(Number(thread.unread_count))
-        : total;
-      const normalized = Math.min(total, Math.max(0, current));
-      if (normalized === current) continue;
-      db.run(
-        `
-          update orchestrator_chat_threads
-          set unread_count = ?
-          where mission_id = ?
-            and id = ?
-        `,
-        [normalized, missionId, thread.id]
-      );
-      updated += 1;
-    }
-    return updated;
-  };
+  const reconcileUnreadSanity = (missionId: string) =>
+    reconcileUnreadSanityCtx(ctx, missionId);
 
-  const reconcileThreadedMessagingState = async (): Promise<void> => {
-    if (disposed) return;
-    const missions = db.all<{ id: string }>(
-      `
-        select id
-        from missions
-        order by created_at asc
-      `
-    );
-    let legacyBackfilled = 0;
-    let missingThreadsRepaired = 0;
-    let linksRepaired = 0;
-    let unreadNormalized = 0;
-
-    for (const mission of missions) {
-      if (disposed) return;
-      const missionId = toOptionalString(mission.id);
-      if (!missionId) continue;
-      ensureMissionThread(missionId);
-      legacyBackfilled += backfillLegacyThreadMessages(missionId);
-      missingThreadsRepaired += reconcileMissingThreadRows(missionId);
-      linksRepaired += reconcileWorkerThreadLinks(missionId);
-      unreadNormalized += reconcileUnreadSanity(missionId);
-    }
-
-    if (legacyBackfilled > 0 || missingThreadsRepaired > 0 || linksRepaired > 0 || unreadNormalized > 0) {
-      logger.info("ai_orchestrator.chat_reconciliation_complete", {
-        missions: missions.length,
-        legacyBackfilled,
-        missingThreadsRepaired,
-        linksRepaired,
-        unreadNormalized
-      });
-    }
-
-    await replayQueuedWorkerMessages({
-      reason: "startup"
-    });
-  };
+  const reconcileThreadedMessagingState = () =>
+    reconcileThreadedMessagingStateCtx(ctx, reconciliationDeps);
 
   const startHealthSweepLoop = () => {
     if (disposed || healthSweepTimer) return;
@@ -12546,6 +7668,25 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
+  const getMissionStateDocument = async (
+    stateArgs: GetMissionStateDocumentArgs
+  ): Promise<MissionStateDocument | null> => {
+    const runId = String(stateArgs.runId ?? "").trim();
+    if (!runId.length || !projectRoot) return null;
+    try {
+      return await readMissionStateDocument({
+        projectRoot,
+        runId,
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.mission_state_read_failed", {
+        runId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
   // Quality gate evaluation and recovery loop coordination removed —
   // these are the coordinator AI's responsibility. It evaluates quality
   // through its persistent conversation and decides recovery actions.
@@ -12561,162 +7702,12 @@ Check all worker statuses and continue managing the mission from here. Read work
     return { triggered: false, exhausted: false, iteration: 0 };
   };
 
-  // ── Aggregated Usage Stats ──────────────────────────────────
-  const USAGE_TOKEN_COST: Record<string, { input: number; output: number }> = {
-    "claude-opus": { input: 5 / 1_000_000, output: 25 / 1_000_000 },
-    "claude-sonnet": { input: 3 / 1_000_000, output: 15 / 1_000_000 },
-    "claude-haiku": { input: 0.8 / 1_000_000, output: 4 / 1_000_000 },
-    "codex": { input: 2 / 1_000_000, output: 8 / 1_000_000 },
-    "codex-mini": { input: 0.3 / 1_000_000, output: 1.2 / 1_000_000 },
-    "default": { input: 3 / 1_000_000, output: 15 / 1_000_000 }
-  };
-  function estimateTokenCost(model: string, inputTokens: number, outputTokens: number): number {
-    const lower = (model ?? "").toLowerCase();
-    let rate = USAGE_TOKEN_COST["default"];
-    if (lower.includes("opus")) rate = USAGE_TOKEN_COST["claude-opus"];
-    else if (lower.includes("sonnet")) rate = USAGE_TOKEN_COST["claude-sonnet"];
-    else if (lower.includes("haiku")) rate = USAGE_TOKEN_COST["claude-haiku"];
-    else if (lower.includes("codex") && lower.includes("mini")) rate = USAGE_TOKEN_COST["codex-mini"];
-    else if (lower.includes("codex") || lower.includes("gpt") || lower.includes("o3") || lower.includes("o4")) rate = USAGE_TOKEN_COST["codex"];
-    return inputTokens * rate.input + outputTokens * rate.output;
-  }
-  const getAggregatedUsage = (usageArgs: GetAggregatedUsageArgs): AggregatedUsageStats => {
-    const since = usageArgs.since ?? null;
-    const usageLimit = usageArgs.limit ?? 100;
-    const missionFilter = usageArgs.missionId ?? null;
-    // When filtering by mission, scope ai_usage_log queries to sessions linked to that mission
-    const missionSessionClause = missionFilter
-      ? ` and session_id in (
-          select oa.executor_session_id from orchestrator_attempts oa
-          join orchestrator_runs orr on orr.id = oa.run_id
-          where orr.mission_id = ? and oa.executor_session_id is not null
-        )`
-      : "";
-    const modelRows = db.all(`
-      select provider, model, count(*) as sessions,
-        coalesce(sum(input_tokens), 0) as input_tokens,
-        coalesce(sum(output_tokens), 0) as output_tokens,
-        coalesce(sum(duration_ms), 0) as duration_ms
-      from ai_usage_log
-      where (? is null or timestamp >= ?)${missionSessionClause}
-      group by provider, model order by sessions desc
-    `, missionFilter ? [since, since, missionFilter] : [since, since]) as Array<{
-      provider: string; model: string; sessions: number;
-      input_tokens: number; output_tokens: number; duration_ms: number;
-    }>;
-    const byModel: UsageModelBreakdown[] = modelRows.map((r) => {
-      const inp = Number(r.input_tokens) || 0;
-      const out = Number(r.output_tokens) || 0;
-      return {
-        provider: r.provider ?? "unknown", model: r.model ?? "unknown",
-        sessions: Number(r.sessions) || 0, inputTokens: inp, outputTokens: out,
-        durationMs: Number(r.duration_ms) || 0,
-        costEstimateUsd: estimateTokenCost(r.model ?? "", inp, out)
-      };
-    });
-    const recentRows = db.all(`
-      select id, feature, provider, model,
-        coalesce(input_tokens, 0) as input_tokens, coalesce(output_tokens, 0) as output_tokens,
-        coalesce(duration_ms, 0) as duration_ms, success, timestamp
-      from ai_usage_log where (? is null or timestamp >= ?)${missionSessionClause}
-      order by timestamp desc limit ?
-    `, missionFilter ? [since, since, missionFilter, usageLimit] : [since, since, usageLimit]) as Array<{
-      id: string; feature: string; provider: string; model: string;
-      input_tokens: number; output_tokens: number; duration_ms: number;
-      success: number; timestamp: string;
-    }>;
-    const recentSessions: UsageRecentSession[] = recentRows.map((r) => ({
-      id: r.id, feature: r.feature ?? "", provider: r.provider ?? "unknown",
-      model: r.model ?? "unknown", inputTokens: Number(r.input_tokens) || 0,
-      outputTokens: Number(r.output_tokens) || 0, durationMs: Number(r.duration_ms) || 0,
-      success: r.success === 1 || (r.success as unknown) === true, timestamp: r.timestamp
-    }));
-    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
-    const activeRows = db.all(`
-      select id, feature, provider, model, timestamp from ai_usage_log
-      where timestamp >= ? and (success is null or success = 0)${missionSessionClause}
-      order by timestamp desc limit 20
-    `, missionFilter ? [fiveMinAgo, missionFilter] : [fiveMinAgo]) as Array<{
-      id: string; feature: string; provider: string; model: string; timestamp: string;
-    }>;
-    const activeSessions: UsageActiveSession[] = activeRows.map((r) => ({
-      id: r.id, feature: r.feature ?? "", provider: r.provider ?? "unknown",
-      model: r.model ?? "unknown", startedAt: r.timestamp,
-      elapsedMs: Date.now() - new Date(r.timestamp).getTime()
-    }));
-    const missionRows = db.all(`
-      select oms.mission_id,
-        coalesce(sum(case when oms.metric = 'tokens' then oms.value else 0 end), 0) as total_tokens,
-        coalesce(sum(case when oms.metric = 'cost' then oms.value else 0 end), 0) as cost_estimate_usd,
-        m.title as mission_title
-      from orchestrator_metrics_samples oms
-      left join missions m on m.id = oms.mission_id
-      where (? is null or oms.mission_id = ?) and (? is null or oms.created_at >= ?)
-      group by oms.mission_id order by total_tokens desc limit 50
-    `, [missionFilter, missionFilter, since, since]) as Array<{
-      mission_id: string; total_tokens: number; cost_estimate_usd: number; mission_title: string | null;
-    }>;
-    const missionBreakdown: UsageMissionBreakdown[] = missionRows.map((r) => ({
-      missionId: r.mission_id, missionTitle: r.mission_title ?? r.mission_id.slice(0, 8),
-      totalTokens: Number(r.total_tokens) || 0, costEstimateUsd: Number(r.cost_estimate_usd) || 0
-    }));
-    const totalSessions = byModel.reduce((a, x) => a + x.sessions, 0);
-    const totalInputTokens = byModel.reduce((a, x) => a + x.inputTokens, 0);
-    const totalOutputTokens = byModel.reduce((a, x) => a + x.outputTokens, 0);
-    const totalDurationMs = byModel.reduce((a, x) => a + x.durationMs, 0);
-    const totalCostEstimateUsd = byModel.reduce((a, x) => a + x.costEstimateUsd, 0);
-    return {
-      summary: { totalSessions, activeSessions: activeSessions.length, totalInputTokens, totalOutputTokens, totalDurationMs, totalCostEstimateUsd },
-      byModel, recentSessions, activeSessions, missionBreakdown
-    };
-  };
+  // ── Aggregated Usage Stats (delegated to metricsAndUsage) ──
+  const getAggregatedUsage = (usageArgs: GetAggregatedUsageArgs): AggregatedUsageStats =>
+    getAggregatedUsageCtx(ctx, usageArgs);
 
-  // ── Token Consumption Propagation ──────────────────────────────
-  const propagateAttemptTokenUsage = (runId: string, attemptId: string): void => {
-    try {
-      // Get tokens from the attempt's AI sessions
-      const attempt = db.get<{ session_id: string | null }>(
-        "select session_id from orchestrator_attempts where id = ? limit 1",
-        [attemptId]
-      );
-      if (!attempt?.session_id) return;
-
-      const usage = db.get<{ total_input: number; total_output: number }>(
-        `select coalesce(sum(input_tokens), 0) as total_input, coalesce(sum(output_tokens), 0) as total_output
-         from ai_usage_log where session_id = ?`,
-        [attempt.session_id]
-      );
-      if (!usage) return;
-
-      const attemptTokens = (usage.total_input ?? 0) + (usage.total_output ?? 0);
-      if (attemptTokens <= 0) return;
-
-      // Update run metadata
-      const run = db.get<{ metadata_json: string | null }>(
-        "select metadata_json from orchestrator_runs where id = ? limit 1",
-        [runId]
-      );
-      const currentMeta = run?.metadata_json ? JSON.parse(run.metadata_json) : {};
-      const currentTokens = typeof currentMeta.tokensConsumed === "number" ? currentMeta.tokensConsumed : 0;
-      currentMeta.tokensConsumed = currentTokens + attemptTokens;
-
-      db.run(
-        "update orchestrator_runs set metadata_json = ? where id = ?",
-        [JSON.stringify(currentMeta), runId]
-      );
-
-      logger.debug("ai_orchestrator.tokens_propagated", {
-        runId, attemptId,
-        attemptTokens,
-        totalTokens: currentMeta.tokensConsumed
-      });
-    } catch (error) {
-      logger.debug("ai_orchestrator.token_propagation_failed", {
-        runId, attemptId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
+  const propagateAttemptTokenUsage = (runId: string, attemptId: string): void =>
+    propagateAttemptTokenUsageCtx(ctx, runId, attemptId);
 
   hydratePersistedAttemptRuntimeState();
   hydrateRuntimeSignalsFromEventBus();
@@ -13068,6 +8059,24 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
       }
 
+      if (isStepCompletionEvent && event.stepId) {
+        try {
+          const stepOutcomeGraph = getEventGraph();
+          const stepOutcome = buildMissionStateStepOutcomeFromGraph(stepOutcomeGraph, event.stepId);
+          if (stepOutcome) {
+            updateMissionStateDoc(runId, {
+              addStepOutcome: stepOutcome,
+            }, { graph: stepOutcomeGraph });
+          }
+        } catch (error) {
+          logger.debug("ai_orchestrator.mission_state_step_outcome_update_failed", {
+            runId,
+            stepId: event.stepId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       // ── Sync mission status (lightweight persistence, not decisions) ──
       if (!isStepCompletionEvent && !isAttemptCompletionShadowEvent) {
         void syncMissionFromRun(runId, event.reason);
@@ -13193,6 +8202,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     getMissionMetrics,
     setMissionMetricsConfig,
     getExecutionPlanPreview,
+    getMissionStateDocument,
     getAggregatedUsage,
     handleQualityGateFailure,
     getTeamManifest: (tmArgs: { runId: string }): TeamManifest | null => {
@@ -13204,9 +8214,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     runHealthSweep: (reason = "manual") => runHealthSweep(reason),
     dispose: () => {
       disposed = true;
+      disposedRef.current = true;
       if (healthSweepTimer) {
         clearInterval(healthSweepTimer);
         healthSweepTimer = null;
+        healthSweepTimerRef.current = null;
       }
       // Cancel pending event-driven coordinator evaluations
       for (const [rid, evalTimer] of pendingCoordinatorEvals.entries()) {

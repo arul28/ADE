@@ -1,10 +1,12 @@
-import React from "react";
-import type { RunCompletionEvaluation, OrchestratorRunStatus } from "../../../shared/types";
+import React, { useEffect, useMemo, useState } from "react";
+import type { MissionStateDocument, RunCompletionEvaluation, OrchestratorRunStatus } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 
 type CompletionBannerProps = {
   status: OrchestratorRunStatus;
   evaluation?: RunCompletionEvaluation | null;
+  runId?: string | null;
   className?: string;
 };
 
@@ -14,29 +16,95 @@ const BANNER_STYLES: Partial<Record<OrchestratorRunStatus, {
   label: string;
 }>> = {
   succeeded: {
-    containerStyle: { background: "#22C55E18", border: "1px solid #22C55E30" },
-    textColor: "#22C55E",
+    containerStyle: { background: `${COLORS.success}18`, border: `1px solid ${COLORS.success}30` },
+    textColor: COLORS.success,
     label: "MISSION COMPLETED SUCCESSFULLY"
   },
   succeeded_with_risk: {
-    containerStyle: { background: "#F59E0B18", border: "1px solid #F59E0B30" },
-    textColor: "#F59E0B",
+    containerStyle: { background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30` },
+    textColor: COLORS.warning,
     label: "MISSION COMPLETED WITH RISK"
   },
   failed: {
-    containerStyle: { background: "#EF444418", border: "1px solid #EF444430" },
-    textColor: "#EF4444",
+    containerStyle: { background: `${COLORS.danger}18`, border: `1px solid ${COLORS.danger}30` },
+    textColor: COLORS.danger,
     label: "MISSION FAILED"
   },
   paused: {
-    containerStyle: { background: "#F59E0B18", border: "1px solid #F59E0B30" },
-    textColor: "#F59E0B",
+    containerStyle: { background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30` },
+    textColor: COLORS.warning,
     label: "MISSION PAUSED"
   }
 };
 
-export function CompletionBanner({ status, evaluation, className }: CompletionBannerProps) {
+const STRUCTURED_SUMMARY_STATUSES = new Set<OrchestratorRunStatus>([
+  "succeeded",
+  "succeeded_with_risk",
+  "failed",
+]);
+
+function summarizeMissionState(stateDoc: MissionStateDocument | null) {
+  if (!stateDoc) return null;
+  const outcomes = stateDoc.stepOutcomes;
+  const succeeded = outcomes.filter((entry) => entry.status === "succeeded").length;
+  const failed = outcomes.filter((entry) => entry.status === "failed").length;
+  const skipped = outcomes.filter((entry) => entry.status === "skipped").length;
+  const inProgress = outcomes.filter((entry) => entry.status === "in_progress").length;
+  const tests = outcomes.reduce(
+    (acc, entry) => {
+      if (!entry.testsRun) return acc;
+      acc.passed += entry.testsRun.passed;
+      acc.failed += entry.testsRun.failed;
+      acc.skipped += entry.testsRun.skipped;
+      return acc;
+    },
+    { passed: 0, failed: 0, skipped: 0 }
+  );
+  const openIssues = stateDoc.activeIssues.filter((entry) => entry.status === "open").length;
+  const mitigatedIssues = stateDoc.activeIssues.filter((entry) => entry.status === "mitigated").length;
+  const resolvedIssues = stateDoc.activeIssues.filter((entry) => entry.status === "resolved").length;
+
+  return {
+    totalOutcomes: outcomes.length,
+    succeeded,
+    failed,
+    skipped,
+    inProgress,
+    tests,
+    filesChanged: stateDoc.modifiedFiles.length,
+    openIssues,
+    mitigatedIssues,
+    resolvedIssues,
+  };
+}
+
+export function CompletionBanner({ status, evaluation, runId, className }: CompletionBannerProps) {
   const style = BANNER_STYLES[status];
+  const [stateDoc, setStateDoc] = useState<MissionStateDocument | null>(null);
+  const shouldShowStructuredSummary = STRUCTURED_SUMMARY_STATUSES.has(status);
+  const summary = useMemo(() => summarizeMissionState(stateDoc), [stateDoc]);
+
+  useEffect(() => {
+    if (!runId || !shouldShowStructuredSummary) {
+      setStateDoc(null);
+      return;
+    }
+    let cancelled = false;
+    const loadState = async () => {
+      try {
+        const next = await window.ade.orchestrator.getMissionStateDocument({ runId });
+        if (cancelled) return;
+        setStateDoc(next);
+      } catch {
+        // Banner still shows without the structured summary
+      }
+    };
+    void loadState();
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, shouldShowStructuredSummary]);
+
   if (!style) return null;
 
   const blockingDiagnostics = evaluation?.diagnostics?.filter((d) => d.blocking) ?? [];
@@ -50,7 +118,7 @@ export function CompletionBanner({ status, evaluation, className }: CompletionBa
       <div
         style={{
           color: style.textColor,
-          fontFamily: "JetBrains Mono, monospace",
+          fontFamily: MONO_FONT,
           fontSize: 11,
           fontWeight: 700,
           textTransform: "uppercase",
@@ -60,15 +128,28 @@ export function CompletionBanner({ status, evaluation, className }: CompletionBa
         {style.label}
       </div>
 
+      {summary && shouldShowStructuredSummary && (
+        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px]" style={{ fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
+          <div>Steps: {summary.totalOutcomes} total</div>
+          <div>Files changed: {summary.filesChanged}</div>
+          <div>Succeeded: {summary.succeeded}</div>
+          <div>Failed: {summary.failed}</div>
+          <div>Skipped: {summary.skipped}</div>
+          <div>In progress: {summary.inProgress}</div>
+          <div>Tests: {summary.tests.passed} pass / {summary.tests.failed} fail / {summary.tests.skipped} skip</div>
+          <div>Issues: {summary.openIssues} open / {summary.mitigatedIssues} mitigated / {summary.resolvedIssues} resolved</div>
+        </div>
+      )}
+
       {riskFactors.length > 0 && (
         <div className="mt-1 space-y-0.5">
           {riskFactors.map((factor, i) => (
             <div
               key={i}
               style={{
-                color: "#F59E0B",
+                color: COLORS.warning,
                 fontSize: 10,
-                fontFamily: "JetBrains Mono, monospace"
+                fontFamily: MONO_FONT
               }}
             >
               {"\u26A0"} {factor.replace(/_/g, " ")}
@@ -83,9 +164,9 @@ export function CompletionBanner({ status, evaluation, className }: CompletionBa
             <div
               key={i}
               style={{
-                color: "#EF4444",
+                color: COLORS.danger,
                 fontSize: 10,
-                fontFamily: "JetBrains Mono, monospace"
+                fontFamily: MONO_FONT
               }}
             >
               {"\u2717"} {d.message}

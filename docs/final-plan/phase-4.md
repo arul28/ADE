@@ -232,6 +232,17 @@ Night Shift becomes a mode within the existing Automations tab, not a separate a
 
 A comprehensive upgrade to ADE's memory system, introducing tiered storage, vector search, composite scoring, pre-compaction flushing, memory consolidation, episodic memory, procedural memory, and portable `.ade/` directory storage. These capabilities serve both mission workers and the CTO agent.
 
+##### Carry-Over Scope: Candidate Memory Triage Automation
+
+To absorb the remaining near-term memory gap into Phase 4 (instead of shipping a separate pre-Phase-4 patch), W3 explicitly includes candidate-memory lifecycle automation:
+
+- Add a candidate sweep path that runs at safe checkpoints (app startup, run finalization, and optional periodic timer):
+  - promote `candidate` entries with `confidence >= auto_promote_threshold`,
+  - archive stale `candidate` entries older than `max_candidate_age_hours`.
+- Keep manual user controls unchanged (review/promote/archive from the existing candidate panel).
+- Align runtime config typing/validation with documented memory policy keys so behavior is deterministic.
+- Scope intent: this is a cleanup/quality guardrail for the existing memory lifecycle, not a semantic-search upgrade.
+
 ##### Three-Tier Memory
 
 ```
@@ -265,6 +276,16 @@ Tier 3: Cold Memory (archival, searched rarely)
 - Cache embeddings to avoid recomputation — embeddings are stored in `.ade/embeddings.db` (gitignored, regenerated on new machine in ~30s background job on first startup).
 - Budget tiers control how many memories are injected into agent context: **Lite (3 entries)** for quick tasks, **Standard (8 entries)** for normal agent work, **Deep (20 entries)** for mission planning and complex reasoning.
 
+##### Mem0 Sidecar Decision (Deferred)
+
+- `Mem0` remains a candidate integration as an optional semantic sidecar layer on top of ADE memory.
+- Phase 4 does **not** depend on Mem0 shipping; the baseline remains native/local memory retrieval (`sqlite-vec` hybrid search) with durable memory lifecycle in ADE.
+- Revisit Mem0 after Phase 4 memory baseline + CTO rollout stabilizes, and evaluate:
+  - sidecar reliability and fallback behavior,
+  - provider flexibility (fully local vs API-backed embeddings/extraction),
+  - operational complexity vs incremental retrieval quality gains.
+- If adopted later, Mem0 should be opt-in and non-breaking: semantic path first, then fallback to existing ADE retrieval when unavailable.
+
 ##### Composite Scoring for Retrieval
 
 ```typescript
@@ -290,6 +311,16 @@ Memories are ranked by this composite score during retrieval. The weights ensure
 - Uses the agent's own intelligence to decide what matters — the agent reviews its current context and calls memory tools to save anything it deems important.
 - Flush counter prevents double-flushing: each compaction event is assigned a monotonic ID, and the flush is skipped if the current ID has already been flushed.
 - Integrates with existing `compactionEngine.ts` via a pre-compaction hook.
+
+##### Memory Write Policy (Phase 4 + CTO-aligned)
+
+- Memory writes should be policy-driven rather than "save everything":
+  - **Always write**: durable architectural decisions, stable project conventions, high-signal gotchas, repeatable procedures.
+  - **Candidate first**: uncertain/temporary observations, plan assumptions, risks pending validation.
+  - **Do not write**: transient tool noise, one-off logs, stale intermediate reasoning.
+- Candidate memories are promoted via confidence + review flow; low-value/aged entries are archived.
+- Pre-compaction flush captures critical facts before context eviction, with the agent deciding what is worth preserving.
+- This policy applies to mission workers and is the same foundation the CTO uses when Phase 4 W1/W3 land together.
 
 ##### Memory Consolidation
 
@@ -434,6 +465,17 @@ A context pack type that automatically accumulates project-specific knowledge fr
 - **Export/import**: Learning packs can be exported to/from CLAUDE.md or agents.md format for interoperability with standard agent config files.
 - **Storage**: New `learning_entries` SQLite table with full-text search for efficient retrieval.
 - **Privacy**: Learning packs are local-only (never transmitted). They travel with the project directory.
+
+##### Carry-Over Scope: Skill Library (Recipes + Extraction + `.claude/skills/`)
+
+To absorb the remaining skill-library gap into Phase 4, W4 includes a staged bridge from learning signals to reusable skills:
+
+- **Phase 4 baseline (viewer/discovery)**: ship read-only visibility for agent commands/skills files (aligned with PROJ-039 goals).
+- **Recipe candidate extraction**: derive candidate "how-to" recipes from repeated successful missions/interventions (stored as reviewable learning entries first, not auto-published as skills).
+- **User-approved materialization**: confirmed recipe candidates can be exported to `.claude/skills/<name>/SKILL.md`.
+- **Separation of concerns**:
+  - Memory entries capture "what is true" (facts/decisions/preferences),
+  - Skill recipes capture "how to do it" (repeatable workflows).
 
 #### W5: External MCP Consumption
 

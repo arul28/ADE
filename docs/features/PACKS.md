@@ -390,9 +390,15 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 
 ### Services
 
+The pack service was decomposed from a 5,728-line monolith into focused modules (45% reduction):
+
 | Service | Status | Responsibility |
 |---------|--------|----------------|
-| `packService` | **Exists, implemented** | Generates deterministic pack content (diff stats, file lists). Reads/writes pack markdown files to `.ade/packs/`. Manages pack index in SQLite. Provides bounded exports via `getLaneExport`, `getProjectExport`, `getConflictExport`. |
+| `packService` | **Exists, implemented** | Core pack orchestration (3,176 lines). Coordinates pack generation, manages pack index in SQLite, provides bounded exports via `getLaneExport`, `getProjectExport`, `getConflictExport`. After decomposition, delegates to specialized builders for each pack type. |
+| `packUtils` | **Exists, implemented** | Shared pack utilities (554 lines). Common helper functions used across all pack builders — formatting, content assembly, marker manipulation, and diff stat computation. Extracted to eliminate duplication across the builder modules. |
+| `projectPackBuilder` | **Exists, implemented** | Project context pack builder (995 lines). Generates deterministic project pack content by aggregating data from all lanes — repo structure, technology stack, active lanes, aggregate stats, and cross-lane activity summaries. |
+| `missionPackBuilder` | **Exists, implemented** | Mission context pack builder (1,049 lines). Generates mission-level context artifacts for orchestrator handoff/resume — mission metadata, step status progression, artifacts/interventions counts, linked orchestrator runs, and structured step handoffs. |
+| `conflictPackBuilder` | **Exists, implemented** | Conflict context pack builder (329 lines). Generates conflict packs for lane-vs-base and lane-vs-peer overlap context — merge-tree output, file overlaps, and conflict risk analysis. |
 | `packExports` | **Exists, implemented** | Token-budgeted export engine. Builds Lite/Standard/Deep exports for lanes, projects, and conflicts. Enforces token budgets (~4 chars/token heuristic), extracts marker-based sections, and includes conflict risk summaries. See `docs/architecture/CONTEXT_CONTRACT.md`. |
 | `packSections` | **Exists, implemented** | Stable marker-based section manipulation. Functions: `extractBetweenMarkers`, `replaceBetweenMarkers`, `upsertSectionByHeading`. Enables non-truncating narrative updates and backward-compatible legacy pack upgrades. |
 | `lanePackTemplate` | **Exists, implemented** | Renders deterministic lane pack markdown from raw data. Produces structured markdown with machine-readable header, all marker-bounded sections (intent, task spec, todos, narrative), sessions table with session highlights (summarySource, summaryConfidence, omission tags), validation, errors, key files, and audit footer. |
@@ -403,6 +409,8 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 | `sessionService` | Exists | Provides session delta data (commands, exit codes, failure lines) for pack generation. |
 | `gitService` | Exists | Provides git diff stats, commit history, and file change information for deterministic sections. |
 | `operationService` | Exists | Records pack refresh operations in the history timeline. |
+
+All pack service modules live in `apps/desktop/src/main/services/packs/`.
 
 ### IPC Channels
 
@@ -439,7 +447,9 @@ Pack events are also broadcast over:
 
 ### Pack Generation Pipeline
 
-The pack generation process for a lane pack:
+The pack generation process delegates to specialized builder modules based on pack type. `packService` orchestrates the overall flow, while `packUtils` provides shared helper functions used by all builders.
+
+**Lane pack generation** (via `lanePackTemplate` and `packUtils`):
 
 ```
 refreshLanePack(laneId):
@@ -466,6 +476,42 @@ refreshLanePack(laneId):
   8. Update packs_index in SQLite + create an immutable pack version snapshot
   9. Record pack events (refresh/version/checkpoint)
   10. Return PackSummary
+```
+
+**Project pack generation** (via `projectPackBuilder`):
+
+```
+refreshProjectPack():
+  1. Aggregate data from all active lane packs
+  2. Build project-level overview (repo structure, technology stack, active lanes)
+  3. Compute aggregate stats across lanes
+  4. Generate cross-lane activity summaries
+  5. Write to `.ade/packs/project_pack.md`
+  6. Update packs_index + create version snapshot
+```
+
+**Mission pack generation** (via `missionPackBuilder`):
+
+```
+refreshMissionPack(missionId):
+  1. Load mission metadata and prompt
+  2. Collect step status progression
+  3. Count artifacts and interventions
+  4. Link orchestrator runs
+  5. Include recent structured step handoffs
+  6. Write to `.ade/packs/missions/<missionId>/mission_pack.md`
+  7. Update packs_index + create version snapshot
+```
+
+**Conflict pack generation** (via `conflictPackBuilder`):
+
+```
+refreshConflictPack(laneId, peerLaneId):
+  1. Compute merge-tree output for lane vs base/peer
+  2. Identify file overlaps
+  3. Analyze conflict risk
+  4. Write to `.ade/packs/conflicts/v2/<laneId>__<peerKey>.md`
+  5. Update packs_index + create version snapshot
 ```
 
 ### Deterministic Content Generation

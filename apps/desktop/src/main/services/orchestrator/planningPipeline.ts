@@ -47,7 +47,7 @@ import type {
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_INTEGRATION_PR_POLICY
-} from "../../../shared/types";
+} from "./orchestratorConstants";
 import { buildExecutionPlanPreview } from "./executionPolicy";
 
 // ── Planner Stream Functions ─────────────────────────────────────

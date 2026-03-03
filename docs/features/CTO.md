@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-27
+> Last updated: 2026-03-02
 >
 > **Status: Planned** — Phase 4 establishes infrastructure and basic interface. Detailed implementation is deferred.
 
@@ -82,13 +82,13 @@ The CTO is modeled after a real-world Chief Technical Officer — someone who:
 
 ### Mission Creation & Management
 
-The CTO can create and manage missions on behalf of the user:
+The CTO can create and manage missions on behalf of the user, leveraging the decomposed orchestrator modules for efficient delegation:
 
-- **Create missions from conversation**: "We need to refactor the auth module to use JWT refresh tokens" triggers mission creation with an AI-generated phased plan.
+- **Create missions from conversation**: "We need to refactor the auth module to use JWT refresh tokens" triggers mission creation with an AI-generated phased plan. The `missionLifecycle` module handles run management and hook dispatch.
 - **Estimate complexity**: Before creating a mission, the CTO assesses task complexity based on project knowledge — file count, architectural impact, dependency chains, and past experience with similar tasks.
 - **Select execution strategy**: Based on complexity and user preferences, the CTO decides whether to launch a full multi-step mission, a single-step task agent, or handle the request inline.
-- **Monitor active missions**: The CTO tracks all running missions and can relay status, surface interventions, and provide progress summaries.
-- **Steer missions**: When a mission encounters problems or the user changes requirements, the CTO can steer the mission with updated instructions.
+- **Monitor active missions**: The CTO tracks all running missions via `workerTracking` (worker state and events) and can relay status, surface interventions, and provide progress summaries.
+- **Steer missions**: When a mission encounters problems or the user changes requirements, the CTO can steer the mission with updated instructions. Messages are delivered through the `workerDeliveryService` and `chatMessageService`.
 
 ### Lane Management
 
@@ -478,6 +478,14 @@ The CTO feature is **Planned**. Phase 4 of the ADE roadmap establishes the found
 - **Agent runtime**: Unified agent definition, runtime, and memory model.
 - **MCP tool surface**: Full tool coverage for external agent integration.
 - **Identity persistence**: `.ade/` directory structure and versioned identity files.
+- **Decomposed orchestrator**: The AI orchestrator has been decomposed into focused modules that the CTO can leverage directly:
+  - `chatMessageService` (1,849 lines) for chat/messaging infrastructure
+  - `workerDeliveryService` (1,329 lines) for inter-agent message delivery
+  - `workerTracking` (1,087 lines) for worker state management
+  - `missionLifecycle` (1,045 lines) for mission run management
+  - `recoveryService` for failure recovery and health monitoring
+  - `modelConfigResolver` for model config with TTL caching
+  - `orchestratorContext` for runtime state management (22+ Map objects)
 
 Detailed CTO implementation is deferred to a later phase. The following areas require design work before implementation begins:
 

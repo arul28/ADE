@@ -520,7 +520,7 @@ At startup, the AI integration service also initializes the models.dev integrati
 4. **Enrich**: Calls `updateModelPricing()` to merge live pricing into the `MODEL_PRICING` Proxy object, and `enrichModelRegistry()` to update context windows and capabilities in the registry.
 5. **Refresh**: Repeats every 6 hours (non-blocking).
 
-The model registry (`modelRegistry.ts`) contains 40+ models across 8 provider families (Anthropic, OpenAI, Google, DeepSeek, Mistral, xAI, OpenRouter, local providers such as Ollama/LM Studio/vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). The `UnifiedModelSelector` groups models by auth type and only shows models that are currently configured/detected -- a "Configure more..." link navigates to Settings.
+The model registry (`modelRegistry.ts`) contains 40+ models across 8 provider families (Anthropic, OpenAI, Google, DeepSeek, Mistral, xAI, OpenRouter, local providers such as Ollama/LM Studio/vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). Each `ModelDescriptor` now includes pricing fields directly, with a `getModelPricing()` accessor for cost lookups. Provider-to-CLI resolution uses a flat `FAMILY_TO_CLI` lookup map instead of nested ternaries. Model profiles (`modelProfiles.ts`) are derived from `MODEL_REGISTRY` rather than maintained as parallel lists, ensuring profiles stay in sync with the registry automatically. The `UnifiedModelSelector` groups models by auth type and only shows models that are currently configured/detected -- a "Configure more..." link navigates to Settings.
 
 #### Provider Options (Reasoning Tier Passthrough)
 
@@ -710,6 +710,24 @@ Additional MCP tools available when the compute environment supports GUI interac
 ### AI Orchestrator
 
 The AI Orchestrator is the intelligent coordination layer that plans and executes multi-step missions. It uses a **leader/worker agent team architecture** inspired by Claude Code's agent teams model: one leader session (the orchestrator itself) coordinates multiple worker agents, each operating in its own context window and lane worktree. The orchestrator runs on top of the deterministic orchestrator service state machine, issuing commands through it rather than replacing it.
+
+#### Module Decomposition
+
+The AI orchestrator codebase (`aiOrchestratorService.ts`) has been decomposed from a 13.2K-line monolith into a 7.7K-line core plus eight domain-specific modules. All modules share state through an `OrchestratorContext` object (defined in `orchestratorContext.ts`) that holds 22+ mutable `Map` objects. Extracted functions follow the pattern `fooCtx(ctx: OrchestratorContext, ...args)`, with thin wrappers in the main file: `const foo = (...args) => fooCtx(ctx, ...args)`. Cross-module dependencies are passed via typed deps objects rather than direct imports.
+
+| Module | Lines | Responsibility |
+|--------|-------|----------------|
+| `aiOrchestratorService.ts` | ~7,700 | Core orchestration: autopilot tick loop, coordinator session management, step dispatch, event handling |
+| `orchestratorContext.ts` | ~1,330 | `OrchestratorContext` type definition holding all mutable state Maps |
+| `chatMessageService.ts` | ~1,850 | All chat/messaging: thread CRUD, message send/get, @mention parsing, agent message routing, global chat, reconciliation |
+| `workerDeliveryService.ts` | ~1,330 | Inter-agent message delivery: worker delivery context resolution, PTY write / SDK injection, queued message replay, worker-to-coordinator routing |
+| `workerTracking.ts` | ~1,090 | Worker state management + `updateWorkerStateFromEvent` (457-line event handler mapping orchestrator events to worker state transitions) |
+| `missionLifecycle.ts` | ~1,050 | Mission run management, hook dispatch (`dispatchOrchestratorHook`, `maybeDispatchTeammateIdleHook`) |
+| `recoveryService.ts` | ~410 | Failure recovery, health sweep, hydration on startup |
+| `modelConfigResolver.ts` | ~180 | Model config resolution with 30s TTL cache: `resolveCallTypeConfig`, `resolveOrchestratorModelConfig`, `resolveMissionLaunchPlannerModel` |
+| `orchestratorConstants.ts` | ~115 | Runtime constants: `LEGACY_STEP_TO_TASK_STATUS`, `DEFAULT_ROLE_ISOLATION_RULES`, etc. |
+
+The deterministic orchestrator service (`orchestratorService.ts`, ~8.3K lines) has also been decomposed, with `orchestratorQueries.ts` (~760 lines) extracting DB row types, normalizers, and parse helpers, and `stepPolicyResolver.ts` (~340 lines) extracting step policy resolution and file claim helpers. Both modules are shared between `orchestratorService.ts` and `aiOrchestratorService.ts`.
 
 #### Design Principles (Informed by Claude Code Agent Teams)
 
@@ -1030,11 +1048,15 @@ Agent sessions are now durable across interruptions and application restarts.
 
 ### Inter-Agent Messaging
 
-A structured messaging system enables communication between the orchestrator, agents, and the user during mission execution.
+A structured messaging system enables communication between the orchestrator, agents, and the user during mission execution. The messaging subsystem is decomposed into two extracted modules:
 
-**Message Delivery** (`deliverMessageToAgent()` in `aiOrchestratorService.ts`):
+- **`chatMessageService.ts`** (~1,850 lines): All chat and thread operations -- `appendChatMessage`, `listChatThreads`, `getThreadMessages`, `sendThreadMessage`, `sendChat`, `getChat`, `sendAgentMessage`, `parseMentions`, `routeMessage`, `deliverMessageToAgent`, `getGlobalChat`, `getActiveAgents`, and reconciliation functions.
+- **`workerDeliveryService.ts`** (~1,330 lines): Low-level message delivery to worker agents -- `resolveWorkerDeliveryContext`, `deliverWorkerMessage`, `replayQueuedWorkerMessages`, `routeMessageToWorker`, `routeMessageToCoordinator`.
+
+**Message Delivery** (`deliverMessageToAgent()` in `chatMessageService.ts`, with delivery mechanics in `workerDeliveryService.ts`):
 - Delivers messages to both PTY-based agents (via terminal write) and SDK-based agents (via conversation injection).
 - Messages can originate from the orchestrator, other agents, or the user.
+- Worker delivery context is resolved per-agent to determine the appropriate delivery mechanism.
 
 **@Mention Routing**:
 - `parseMentions()` extracts @-mentions from message text, identifying target agents by name or role.
@@ -1042,7 +1064,7 @@ A structured messaging system enables communication between the orchestrator, ag
 
 **Team Message Tool** (`teamMessageTool.ts`): An MCP tool available to agents that allows them to send messages to other agents or the orchestrator. This enables agent-initiated communication (e.g., "I found a dependency issue that affects @testing-agent's work").
 
-**New IPC Endpoints**:
+**IPC Endpoints**:
 - `getGlobalChat`: Retrieves the global mission chat channel messages.
 - `deliverMessage`: Sends a message from the UI to a specific agent or channel.
 - `getActiveAgents`: Lists currently active agents in a mission run with their status.
@@ -1289,12 +1311,13 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 ### Phase 3 Implementation Status
 
 **Shipped (~90%)**:
-- AI orchestrator service with mission lifecycle management
+- AI orchestrator service with mission lifecycle management, decomposed into modular architecture (core + 8 extracted modules)
+- Orchestrator service decomposed (`orchestratorQueries.ts`, `stepPolicyResolver.ts` extracted)
 - Fail-hard planner (300s timeout, `MissionPlanningError`, no coordinator-strategy deterministic fallback)
 - PR strategies (integration/per-lane/queue/manual) replacing merge phase
 - Team synthesis and recovery loops
 - Execution plan preview with approval gates
-- Inter-agent messaging (sendAgentMessage IPC, deliverMessageToAgent, parseMentions, routeMessage)
+- Inter-agent messaging decomposed into `chatMessageService.ts` and `workerDeliveryService.ts`
 - Slack-style chat system (MissionChatV2, MentionInput, sidebar + main area layout)
 - Model selection per-mission with per-model thinking budgets
 - Activity feed with category dropdown and run narrative
@@ -1308,6 +1331,7 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 - Memory architecture (scoped namespaces, candidate/promoted/archived lifecycle, auto-promotion, context budget panel)
 - Mission phase engine + profiles (Task 3): phase storage, profile CRUD/import/export, mission overrides, phase transition telemetry
 - Mission UI overhaul (Task 4): Plan/Work tabs, missions home dashboard, phase-aware details and launch/settings profile management
+- Model registry unified: pricing fields in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `modelProfiles.ts` derived from registry
 - Model registry expansion (40+ models across 8 provider families, auth-type classification, runtime enrichment via `enrichModelRegistry()`)
 - Dynamic pricing via models.dev integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded)
 - Provider options simplification (`providerOptions.ts`: pure tier-string passthrough, no invented token budgets)
@@ -1317,6 +1341,9 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 - Middleware layer (`middleware.ts`: logging, retry, cost guard, reasoning extraction)
 - GPT-5.3 Codex Spark model support
 - Orchestrator call types simplified from 6 to 2 (coordinator, chat_response)
+- Type system modularized: `src/shared/types/` with 17 domain modules replacing monolithic `types.ts`; 16 dead types deleted
+- Pack service decomposed: `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` extracted
+- Shared utilities consolidated: backend `utils.ts` (60+ duplicate removals), renderer `format.ts`/`shell.ts`/`sessions.ts`, shared React hooks
 
 **Remaining (~10%)**:
 - Next execution focus: Task 5 (pre-flight/intervention/HITL) and Task 6 (budget/usage), then Tasks 7-8.
@@ -1778,9 +1805,13 @@ This lifecycle mirrors the PTY session lifecycle exactly, ensuring that chat ses
 
 - **AI integration service**: `apps/desktop/src/main/services/ai/aiIntegrationService.ts` -- provider detection, task routing, executor dispatch via `AgentExecutor`, streaming response handling.
 - **Mission planning service**: `apps/desktop/src/main/services/missions/missionPlanningService.ts` -- builds planner prompts, dispatches to `ClaudeExecutor` or `CodexExecutor` for AI planning, normalizes plan output.
-- **Orchestrator service**: `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` -- run/step/attempt state machine, claim management, context snapshots, gate reports.
+- **Orchestrator service**: `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- run/step/attempt state machine, claim management, context snapshots, gate reports.
+- **AI orchestrator service**: `apps/desktop/src/main/services/orchestrator/aiOrchestratorService.ts` (~7.7K lines) + 8 extracted modules (`chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`, `orchestratorConstants.ts`) -- AI coordination layer: autopilot, worker management, messaging, recovery.
 - **Agent chat service**: `apps/desktop/src/main/services/chat/agentChatService.ts` -- manages chat session lifecycle, spawns Codex app-server processes and Claude multi-turn sessions, maps provider events to ChatEvent streams, integrates with session tracking.
+- **Pack service**: `apps/desktop/src/main/services/packs/packService.ts` (~3.2K lines) + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` -- pack materialization and assembly decomposed into domain-specific builders.
 - **Bounded context exports**: `apps/desktop/src/main/services/packs/packExports.ts` -- builds Lite/Standard/Deep exports used as AI context inputs.
+- **Model system**: `apps/desktop/src/shared/modelRegistry.ts` (pricing-aware descriptors, `FAMILY_TO_CLI` map) + `modelProfiles.ts` (derived from registry).
+- **Shared types**: `apps/desktop/src/shared/types/` -- 17 domain-scoped type modules (core, lanes, conflicts, prs, git, files, sessions, chat, missions, orchestrator, config, automations, packs, budget, models, usage) with barrel `index.ts`.
 - **Configuration**: Provider settings read from `projectConfigService.ts` (merged shared + local config).
 - **IPC channels**: `ade.ai.*` for AI streaming, `ade.missions.*` for mission lifecycle, `ade.orchestrator.*` for run management.
 
@@ -1808,10 +1839,12 @@ The mission service (`missionService.ts`) provides the user-facing lifecycle for
 
 ### Pack Service
 
-The pack service provides the context backbone for all AI operations:
+The pack service provides the context backbone for all AI operations. It has been decomposed from a 5.7K-line monolith into a 3.2K-line core (`packService.ts`) plus four extracted modules: `projectPackBuilder.ts` (~1K lines) for project pack assembly, `missionPackBuilder.ts` (~1K lines) for mission pack assembly, `conflictPackBuilder.ts` (~330 lines) for conflict pack assembly, and `packUtils.ts` (~550 lines) for shared pack utilities.
 
 - **Lane packs**: Deterministic snapshots of lane state (files changed, commits, diffs, test results) that serve as primary AI context.
-- **Project packs**: Cross-lane summaries that give AI agents a view of the full workspace.
+- **Project packs**: Cross-lane summaries that give AI agents a view of the full workspace. Assembly logic in `projectPackBuilder.ts`.
+- **Mission packs**: Mission-scoped context bundles assembled by `missionPackBuilder.ts`.
+- **Conflict packs**: Conflict-focused context for resolution proposals, assembled by `conflictPackBuilder.ts`.
 - **Token-budgeted exports**: Lite/Standard/Deep export tiers that bound context size for different AI task types.
 - **Pack events**: Every AI-generated artifact (narrative, proposal, PR description) is recorded as a pack event for audit and versioning.
 
@@ -1864,7 +1897,7 @@ interface LearningEntry {
 | Mission planning via Claude CLI | Complete | `missionPlanningService.ts` -- spawns `claude -p` with JSON schema |
 | Mission planning via Codex CLI | Complete | `missionPlanningService.ts` -- spawns `codex exec` with output schema |
 | Coordinator-strategy deterministic fallback (runtime) | Removed | Coordinator owns strategy; unavailable coordinator pauses/escalates instead of deterministic replacement |
-| Orchestrator state machine | Complete | `orchestratorService.ts` -- runs, steps, attempts, claims, gates, timeline |
+| Orchestrator state machine | Complete | `orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- runs, steps, attempts, claims, gates, timeline |
 | Executor adapter interface | Complete | `OrchestratorExecutorAdapter` type for pluggable step execution |
 | Context snapshot system | Complete | Profile-based export assembly (deterministic, narrative-opt-in) |
 | Bounded pack exports | Complete | Lite/Standard/Deep export tiers in `packExports.ts` |
@@ -1880,16 +1913,19 @@ interface LearningEntry {
 | Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
-| AI orchestrator (Claude + MCP) | In Progress | Tasks 1-6 shipped; remaining Phase 3 scope is Tasks 7-8 (reflection + integration soak) |
+| AI orchestrator (Claude + MCP) | In Progress | Tasks 1-6 shipped; codebase decomposed (core ~7.7K + 8 modules). Remaining Phase 3 scope is Tasks 7-8 (reflection + integration soak) |
 | Mission phase engine + profiles (Task 3) | Complete | `phase_cards`/`phase_profiles`/`mission_phase_overrides`, profile CRUD/import/export, phase transition telemetry |
 | Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
 | Pre-flight + intervention/HITL (Task 5) | Complete | Launch-gate checklist, granular worker-level interventions, coordinator `ask_user`/`request_user_input` escalation wiring |
 | Budget + usage tracking (Task 6) | Complete | Mission budget service, subscription/API-key accounting, coordinator `get_budget_status`, details-tab budget telemetry |
-| Model registry (40+ models, runtime enrichment) | Complete | `modelRegistry.ts` -- 8 provider families, auth-type classification, `enrichModelRegistry()` for models.dev data |
+| Model registry (40+ models, runtime enrichment) | Complete | `modelRegistry.ts` -- 8 provider families, auth-type classification, pricing in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `enrichModelRegistry()` for models.dev data. `modelProfiles.ts` derived from registry. |
 | Dynamic pricing (models.dev) | Complete | `modelsDevService.ts` -- fetch/cache/fallback, 6h refresh, Proxy-based `MODEL_PRICING` |
 | Provider options (tier passthrough) | Complete | `providerOptions.ts` -- pure tier-string passthrough per provider family, no arbitrary token budgets |
 | Middleware layer | Complete | `middleware.ts` -- logging, retry, cost guard, reasoning extraction |
 | Universal tools (API-key/local) | Complete | `universalTools.ts` -- permission modes (plan/edit/full-auto), approval hooks |
+| Type system modularization | Complete | `src/shared/types/` -- 17 domain modules replacing monolithic `types.ts`; 16 dead types deleted; runtime constants moved to `orchestratorConstants.ts` |
+| Pack service decomposition | Complete | `packService.ts` (~3.2K) + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` -- 45% reduction from 5.7K monolith |
+| Shared utilities consolidation | Complete | Backend `utils.ts` (60+ duplicates removed), renderer `format.ts`/`shell.ts`/`sessions.ts`, shared React hooks (`useClickOutside`, `useThreadEventRefresh`) |
 | Agent-first runtime migration | In Progress | Non-interactive AI call paths are being normalized through runtime creation and policy enforcement |
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
@@ -1906,7 +1942,7 @@ interface LearningEntry {
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped; remaining Phase 3 work is reflection protocol + integration soak coverage. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`. Phase 4 focuses on agent-first runtime unification: all non-interactive AI surfaces execute through standardized agent runtimes with consistent memory policy, context assembly, and audit lineage.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped; remaining Phase 3 work is reflection protocol + integration soak coverage. A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`. Phase 4 focuses on agent-first runtime unification: all non-interactive AI surfaces execute through standardized agent runtimes with consistent memory policy, context assembly, and audit lineage.
 
 ---
 

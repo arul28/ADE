@@ -5,7 +5,7 @@ import type {
   OrchestratorClaimScope,
   StartOrchestratorRunStepPolicy
 } from "../../../shared/types";
-import { SLASH_COMMAND_TRANSLATIONS } from "../../../shared/types";
+import { SLASH_COMMAND_TRANSLATIONS } from "../orchestrator/orchestratorConstants";
 import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
 
 type RawPlanStep = {

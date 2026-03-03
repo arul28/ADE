@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-03-02
 
 ---
 
@@ -293,8 +293,8 @@ Filtered-out nodes are dimmed or hidden based on the filter mode.
 | Library | Purpose | Version |
 |---------|---------|---------|
 | `@xyflow/react` | Node/edge canvas with pan, zoom, minimap, controls | Latest stable |
-| Custom React components | Node renderers for Primary, Worktree, Attached types | N/A |
-| Custom React components | Edge renderers for Topology, Stack, Risk types | N/A |
+| Custom React components | Node renderers (`graphNodes/LaneNode.tsx`, `ProposalNode.tsx`) for Primary, Worktree, Attached types | N/A |
+| Custom React components | Edge renderers (`graphEdges/RiskEdge.tsx`) for risk overlays; built-in renderers for topology and stack | N/A |
 
 React Flow provides the core canvas infrastructure including viewport management,
 node dragging, edge routing, minimap, and controls panel. Custom node and edge
@@ -319,6 +319,27 @@ components handle ADE-specific rendering and interaction.
 
 ### Component Architecture
 
+The graph feature has been decomposed from a single monolithic page component into focused modules. `WorkspaceGraphPage.tsx` (~4,139 lines) remains the top-level orchestrator, but types, layout algorithms, helper utilities, custom nodes, custom edges, and dialog panels are each extracted into dedicated files under `src/renderer/components/graph/`.
+
+**Module breakdown:**
+
+| Module | Path | Lines | Responsibility |
+|--------|------|-------|----------------|
+| `graphTypes.ts` | `graph/graphTypes.ts` | ~135 | Shared TypeScript types for nodes, edges, view modes, layout snapshots |
+| `graphHelpers.ts` | `graph/graphHelpers.ts` | ~194 | Pure-function graph utilities (edge derivation, node filtering, batch operations) |
+| `graphLayout.ts` | `graph/graphLayout.ts` | ~177 | Auto-layout algorithms for each view mode (stack, risk, activity, all) |
+| `LaneNode.tsx` | `graph/graphNodes/LaneNode.tsx` | ~137 | Unified custom React Flow node component (adapts by lane type + view mode) |
+| `ProposalNode.tsx` | `graph/graphNodes/ProposalNode.tsx` | ~53 | Node component for AI-generated proposal overlays |
+| `RiskEdge.tsx` | `graph/graphEdges/RiskEdge.tsx` | ~87 | Custom edge renderer for risk overlays (dashed, colored by severity) |
+| `PrDialog.tsx` | `graph/graphDialogs/PrDialog.tsx` | ~280 | PR creation/linking dialog launched from canvas context menu |
+| `ConflictPanel.tsx` | `graph/graphDialogs/ConflictPanel.tsx` | ~314 | Inline conflict detail panel (shown on risk edge click) |
+| `IntegrationDialog.tsx` | `graph/graphDialogs/IntegrationDialog.tsx` | ~114 | Integration lane creation dialog |
+| `TextPromptModal.tsx` | `graph/graphDialogs/TextPromptModal.tsx` | ~61 | Generic text-input modal (used for rename, reparent confirmation, etc.) |
+
+Design tokens for lane styling (colors, borders, status indicators) are consolidated in `src/renderer/components/lanes/laneDesignTokens.ts` and shared between the graph nodes and the Lanes tab.
+
+**Component tree:**
+
 ```
 WorkspaceGraphPage (route: /graph)
   +-- View mode toolbar (Stack | Risk | Activity | All)
@@ -326,16 +347,26 @@ WorkspaceGraphPage (route: /graph)
   +-- Batch toolbar (visible when multi-select active)
   +-- ReactFlowProvider
        +-- ReactFlow (canvas)
-       |    +-- LaneNode (unified custom node, adapts by lane type + view mode)
-       |    +-- Custom edge renderers (topology, stack, risk with PR overlays)
+       |    +-- LaneNode (graphNodes/LaneNode.tsx)
+       |    +-- ProposalNode (graphNodes/ProposalNode.tsx)
+       |    +-- RiskEdge (graphEdges/RiskEdge.tsx)
+       |    +-- Built-in edge renderers (topology, stack)
        +-- MiniMap
        +-- Controls (zoom buttons, fit-to-view)
-  +-- ConflictPanel (inline overlay, shown on risk edge click)
+  +-- ConflictPanel (graphDialogs/ConflictPanel.tsx)
+  +-- PrDialog (graphDialogs/PrDialog.tsx)
+  +-- IntegrationDialog (graphDialogs/IntegrationDialog.tsx)
+  +-- TextPromptModal (graphDialogs/TextPromptModal.tsx)
   +-- ReparentDialog (shown on drag-to-reparent)
-  +-- IntegrationDialog (shown for integration lane creation)
   +-- NodeContextMenu (shown on right-click)
   +-- BatchProgressPanel (shown during batch operations)
 ```
+
+Graph components also use shared hooks and utilities extracted during the frontend decomposition:
+
+- `src/renderer/hooks/useClickOutside.ts` -- Click-outside detection for dialogs and panels (replaces 4 inline implementations)
+- `src/renderer/hooks/useThreadEventRefresh.ts` -- Shared hook for refreshing on thread events
+- `src/renderer/lib/format.ts` -- Formatting utilities (`relativeWhen`, `formatDurationMs`, etc.) used in node badges and tooltips
 
 ### Data Flow
 

@@ -70,7 +70,7 @@ import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_CONTEXT_VIEW_POLICIES,
   DEFAULT_ROLE_ISOLATION_RULES
-} from "../../../shared/types";
+} from "./orchestratorConstants";
 import { evaluateRunCompletion, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import { createUnifiedOrchestratorAdapter, cleanupMcpConfigFile } from "./unifiedOrchestratorAdapter";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
@@ -81,167 +81,42 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
-import { asRecord, nowIso, parseJsonRecord, parseJsonArray, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { shellEscapeArg } from "./baseOrchestratorAdapter";
+import {
+  type RunRow, type StepRow, type AttemptRow, type ClaimRow,
+  type ContextSnapshotRow, type HandoffRow, type TimelineRow,
+  type RuntimeEventRow, type GateReportRow, type ArtifactRow,
+  CONTEXT_PROFILES, DEFAULT_CONTEXT_PROFILE_ID,
+  TERMINAL_RUN_STATUSES, RETRYABLE_ERROR_CLASSES,
+  MAX_TIMELINE_LIMIT, GATE_THRESHOLDS,
+  normalizeIsoTimestamp, normalizeRunStatus, normalizeStepStatus,
+  normalizeAttemptStatus, normalizeExecutorKind, normalizeErrorClass,
+  normalizeJoinPolicy, normalizeClaimScope, normalizeClaimState,
+  normalizeRuntimeEventType, normalizeProfileId, normalizeTerminalSessionStatus,
+  parseArray, isExecutionPolicyRecord,
+  asBool, asIntInRange, asNumberInRange, asPositiveNumberOrNull,
+  toRun, toStep, toAttempt, toClaim, toContextSnapshot, toHandoff,
+  toArtifact, toTimelineEvent, toRuntimeEvent, toGateReport,
+  normalizeEnvelope,
+  type StepGraphValidationStep,
+  normalizeDependencyStepKeys, validateStepGraphIntegrity,
+  branchNameFromRef, clipText,
+} from "./orchestratorQueries";
+import {
+  type StepPolicy, type ResolvedOrchestratorRuntimeConfig,
+  DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG,
+  resolveStepPolicy, resolveContextPolicy,
+  parseAutopilotConfig, parseStepPolicyFromMetadata,
+  parseStepAIPriority, readyStepOrderComparator,
+  normalizeRepoRelativePath, normalizeFileClaimScopeValue,
+  doesFileClaimMatchPath, doFileClaimsOverlap,
+  readDocPaths,
+} from "./stepPolicyResolver";
 
-type RunRow = {
-  id: string;
-  mission_id: string;
-  project_id: string;
-  status: string;
-  context_profile: string;
-  scheduler_state: string;
-  runtime_cursor_json: string | null;
-  last_error: string | null;
-  metadata_json: string | null;
-  created_at: string;
-  updated_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-};
-
-type StepRow = {
-  id: string;
-  run_id: string;
-  mission_step_id: string | null;
-  step_key: string;
-  step_index: number;
-  title: string;
-  lane_id: string | null;
-  status: string;
-  join_policy: string;
-  quorum_count: number | null;
-  dependency_step_ids_json: string;
-  retry_limit: number;
-  retry_count: number;
-  last_attempt_id: string | null;
-  policy_json: string | null;
-  metadata_json: string | null;
-  created_at: string;
-  updated_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-};
-
-type AttemptRow = {
-  id: string;
-  run_id: string;
-  step_id: string;
-  attempt_number: number;
-  status: string;
-  executor_kind: string;
-  executor_session_id: string | null;
-  tracked_session_enforced: number;
-  context_profile: string;
-  context_snapshot_id: string | null;
-  error_class: string;
-  error_message: string | null;
-  retry_backoff_ms: number;
-  result_envelope_json: string | null;
-  metadata_json: string | null;
-  created_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-};
-
-type ClaimRow = {
-  id: string;
-  run_id: string;
-  step_id: string | null;
-  attempt_id: string | null;
-  owner_id: string;
-  scope_kind: string;
-  scope_value: string;
-  state: string;
-  acquired_at: string;
-  heartbeat_at: string;
-  expires_at: string;
-  released_at: string | null;
-  policy_json: string | null;
-  metadata_json: string | null;
-};
-
-type ContextSnapshotRow = {
-  id: string;
-  run_id: string;
-  step_id: string | null;
-  attempt_id: string | null;
-  snapshot_type: string;
-  context_profile: string;
-  cursor_json: string;
-  created_at: string;
-};
-
-type HandoffRow = {
-  id: string;
-  mission_id: string;
-  mission_step_id: string | null;
-  run_id: string | null;
-  step_id: string | null;
-  attempt_id: string | null;
-  handoff_type: string;
-  producer: string;
-  payload_json: string;
-  created_at: string;
-};
-
-type TimelineRow = {
-  id: string;
-  run_id: string;
-  step_id: string | null;
-  attempt_id: string | null;
-  claim_id: string | null;
-  event_type: string;
-  reason: string;
-  detail_json: string | null;
-  created_at: string;
-};
-
-type RuntimeEventRow = {
-  id: string;
-  run_id: string;
-  step_id: string | null;
-  attempt_id: string | null;
-  session_id: string | null;
-  event_type: string;
-  event_key: string;
-  occurred_at: string;
-  payload_json: string | null;
-  created_at: string;
-};
-
-type GateReportRow = {
-  id: string;
-  generated_at: string;
-  report_json: string;
-};
-
-type ArtifactRow = {
-  id: string;
-  project_id: string;
-  mission_id: string;
-  run_id: string;
-  step_id: string;
-  attempt_id: string;
-  artifact_key: string;
-  kind: string;
-  value: string;
-  metadata_json: string;
-  declared: number;
-  created_at: string;
-};
-
-type StepPolicy = {
-  includeNarrative?: boolean;
-  includeFullDocs?: boolean;
-  docsMaxBytes?: number;
-  claimScopes?: Array<{
-    scopeKind: OrchestratorClaimScope;
-    scopeValue: string;
-    ttlMs?: number;
-  }>;
-};
+// Row types, StepPolicy, and other extracted types are imported from
+// ./orchestratorQueries and ./stepPolicyResolver
 
 type CreateSnapshotResult = {
   snapshotId: string;
@@ -252,23 +127,7 @@ type CreateSnapshotResult = {
   fullDocs: Array<{ path: string; content: string; truncated: boolean }>;
 };
 
-type ResolvedOrchestratorRuntimeConfig = {
-  teammatePlanMode: "off" | "auto" | "required";
-  requirePlanReview: boolean;
-  maxParallelWorkers: number;
-  defaultMergePolicy: "sequential" | "batch-at-end" | "per-step";
-  defaultConflictHandoff: "auto-resolve" | "ask-user" | "orchestrator-decides";
-  workerHeartbeatIntervalMs: number;
-  workerHeartbeatTimeoutMs: number;
-  workerIdleTimeoutMs: number;
-  stepTimeoutDefaultMs: number;
-  maxRetriesPerStep: number;
-  contextPressureThreshold: number;
-  progressiveLoading: boolean;
-  maxTotalTokenBudget: number | null;
-  maxPerStepTokenBudget: number | null;
-  fileReservationGuardMode: "off" | "warn" | "block";
-};
+// ResolvedOrchestratorRuntimeConfig is imported from ./stepPolicyResolver
 
 export type OrchestratorEvent = {
   type:
@@ -345,853 +204,22 @@ export type OrchestratorExecutorAdapter = {
   start: (args: OrchestratorExecutorStartArgs) => Promise<OrchestratorExecutorStartResult>;
 };
 
-const DEFAULT_CONTEXT_PROFILE_ID: OrchestratorContextProfileId = "orchestrator_deterministic_v1";
+// Constants (CONTEXT_PROFILES, TERMINAL_RUN_STATUSES, etc.) and
+// DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG are imported from
+// ./orchestratorQueries and ./stepPolicyResolver
 
-const CONTEXT_PROFILES: Record<OrchestratorContextProfileId, OrchestratorContextPolicyProfile> = {
-  orchestrator_deterministic_v1: {
-    id: "orchestrator_deterministic_v1",
-    includeNarrative: false,
-    docsMode: "digest_refs",
-    laneExportLevel: "standard",
-    projectExportLevel: "lite",
-    maxDocBytes: 120_000
-  },
-  orchestrator_narrative_opt_in_v1: {
-    id: "orchestrator_narrative_opt_in_v1",
-    includeNarrative: true,
-    docsMode: "digest_refs",
-    laneExportLevel: "deep",
-    projectExportLevel: "standard",
-    maxDocBytes: 200_000
-  }
-};
+// Normalizer functions are imported from ./orchestratorQueries
 
-const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "succeeded_with_risk", "failed", "canceled"]);
-const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
-  "transient",
-  "executor_failure",
-  "claim_conflict",
-  "resume_recovered"
-]);
-const MAX_TIMELINE_LIMIT = 1_000;
-const GATE_THRESHOLDS = {
-  maxTrackedPipelineLatencyMs: 300_000,
-  minContextCompletenessRate: 0.98,
-  minFreshnessByTypeRate: 0.9,
-  maxBlockedInsufficientContextRate: 0.05,
-  freshnessMaxAgeByPackTypeMs: {
-    project: 24 * 60 * 60 * 1_000,
-    lane: 6 * 60 * 60 * 1_000,
-    feature: 48 * 60 * 60 * 1_000,
-    conflict: 2 * 60 * 60 * 1_000,
-    plan: 72 * 60 * 60 * 1_000,
-    mission: 24 * 60 * 60 * 1_000
-  } as Record<string, number>
-} as const;
+// StepGraphValidationStep, normalizeDependencyStepKeys, validateStepGraphIntegrity
+// are imported from ./orchestratorQueries
 
-const DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG: ResolvedOrchestratorRuntimeConfig = {
-  teammatePlanMode: "auto",
-  requirePlanReview: false,
-  maxParallelWorkers: 4,
-  defaultMergePolicy: "sequential",
-  defaultConflictHandoff: "auto-resolve",
-  workerHeartbeatIntervalMs: 30_000,
-  workerHeartbeatTimeoutMs: 90_000,
-  workerIdleTimeoutMs: 300_000,
-  stepTimeoutDefaultMs: 300_000,
-  maxRetriesPerStep: 2,
-  contextPressureThreshold: 0.8,
-  progressiveLoading: true,
-  maxTotalTokenBudget: null,
-  maxPerStepTokenBudget: null,
-  fileReservationGuardMode: "warn"
-};
-
-function normalizeIsoTimestamp(value: unknown, fallbackIso: string): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw.length) return fallbackIso;
-  const ms = Date.parse(raw);
-  if (!Number.isFinite(ms)) return fallbackIso;
-  return new Date(ms).toISOString();
-}
-
-function branchNameFromRef(ref: string): string {
-  const trimmed = ref.trim();
-  if (!trimmed.length) return "";
-  return trimmed.startsWith("refs/heads/") ? trimmed.slice("refs/heads/".length) : trimmed;
-}
-
-function parseArray(raw: string | null): string[] {
-  return parseJsonArray(raw)
-    .map((entry) => String(entry ?? "").trim())
-    .filter(Boolean);
-}
-
-function isExecutionPolicyRecord(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const rec = value as Record<string, unknown>;
-  return "planning" in rec && "implementation" in rec && "completion" in rec;
-}
-
-function asBool(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function asIntInRange(value: unknown, fallback: number, min: number, max: number): number {
-  const raw = Number(value);
-  if (!Number.isFinite(raw)) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(raw)));
-}
-
-function asNumberInRange(value: unknown, fallback: number, min: number, max: number): number {
-  const raw = Number(value);
-  if (!Number.isFinite(raw)) return fallback;
-  return Math.max(min, Math.min(max, raw));
-}
-
-function asPositiveNumberOrNull(value: unknown): number | null {
-  const raw = Number(value);
-  if (!Number.isFinite(raw) || raw <= 0) return null;
-  return raw;
-}
-
-function normalizeRunStatus(value: string): OrchestratorRunStatus {
-  if (
-    value === "queued" ||
-    value === "bootstrapping" ||
-    value === "active" ||
-    value === "paused" ||
-    value === "completing" ||
-    value === "succeeded" ||
-    value === "succeeded_with_risk" ||
-    value === "failed" ||
-    value === "canceled"
-  ) {
-    return value;
-  }
-  return "queued";
-}
-
-function normalizeStepStatus(value: string): OrchestratorStepStatus {
-  if (
-    value === "pending" ||
-    value === "ready" ||
-    value === "running" ||
-    value === "succeeded" ||
-    value === "failed" ||
-    value === "blocked" ||
-    value === "skipped" ||
-    value === "superseded" ||
-    value === "canceled"
-  ) {
-    return value;
-  }
-  return "pending";
-}
-
-function normalizeAttemptStatus(value: string): OrchestratorAttemptStatus {
-  if (
-    value === "queued" ||
-    value === "running" ||
-    value === "succeeded" ||
-    value === "failed" ||
-    value === "blocked" ||
-    value === "canceled"
-  ) {
-    return value;
-  }
-  return "queued";
-}
-
-function normalizeExecutorKind(value: string): OrchestratorExecutorKind {
-  if (value === "unified" || value === "claude" || value === "codex" || value === "shell" || value === "manual") return value;
-  return "manual";
-}
-
-function normalizeErrorClass(value: string): OrchestratorErrorClass {
-  if (
-    value === "none" ||
-    value === "transient" ||
-    value === "deterministic" ||
-    value === "policy" ||
-    value === "claim_conflict" ||
-    value === "executor_failure" ||
-    value === "canceled" ||
-    value === "resume_recovered"
-  ) {
-    return value;
-  }
-  return "none";
-}
-
-function normalizeJoinPolicy(value: string): OrchestratorJoinPolicy {
-  if (value === "all_success" || value === "any_success" || value === "quorum" || value === "advisory") return value;
-  return "all_success";
-}
-
-function normalizeClaimScope(value: string): OrchestratorClaimScope {
-  if (value === "lane" || value === "file" || value === "env" || value === "task") return value;
-  return "lane";
-}
-
-function normalizeClaimState(value: string): OrchestratorClaimState {
-  if (value === "active" || value === "released" || value === "expired") return value;
-  return "active";
-}
-
-function normalizeRuntimeEventType(value: string): OrchestratorRuntimeEventType {
-  if (
-    value === "progress" ||
-    value === "heartbeat" ||
-    value === "question" ||
-    value === "blocked" ||
-    value === "done" ||
-    value === "retry_scheduled" ||
-    value === "retry_exhausted" ||
-    value === "claim_conflict" ||
-    value === "session_ended" ||
-    value === "intervention_opened" ||
-    value === "intervention_resolved" ||
-    value === "coordinator_steering" ||
-    value === "coordinator_broadcast" ||
-    value === "coordinator_skip" ||
-    value === "coordinator_add_step" ||
-    value === "coordinator_pause" ||
-    value === "coordinator_parallelize" ||
-    value === "coordinator_consolidate" ||
-    value === "coordinator_shutdown" ||
-    value === "step_dependencies_updated" ||
-    value === "step_metadata_updated" ||
-    value === "fan_out_dispatched" ||
-    value === "fan_out_complete" ||
-    value === "worker_status_report" ||
-    value === "worker_result_report" ||
-    value === "worker_message" ||
-    value === "plan_revised" ||
-    value === "lane_transfer" ||
-    value === "validation_report" ||
-    value === "tool_profiles_updated"
-  ) {
-    return value;
-  }
-  return "progress";
-}
-
-function normalizeProfileId(value: string | null | undefined): OrchestratorContextProfileId {
-  if (value === "orchestrator_narrative_opt_in_v1") return value;
-  return DEFAULT_CONTEXT_PROFILE_ID;
-}
-
-function normalizeTerminalSessionStatus(value: unknown): "running" | "completed" | "failed" | "disposed" | "unknown" {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (normalized === "running" || normalized === "completed" || normalized === "failed" || normalized === "disposed") {
-    return normalized;
-  }
-  return "unknown";
-}
-
-type StepGraphValidationStep = {
-  stepKey: string;
-  dependencyStepKeys: string[];
-  joinPolicy: OrchestratorJoinPolicy;
-  quorumCount: number | null;
-};
-
-function normalizeDependencyStepKeys(dependencyStepKeys: string[] | undefined): string[] {
-  if (!Array.isArray(dependencyStepKeys)) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of dependencyStepKeys) {
-    const key = String(raw ?? "").trim();
-    if (!key.length) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(key);
-  }
-  return out;
-}
-
-function validateStepGraphIntegrity(args: {
-  context: "startRun" | "addSteps" | "updateStepDependencies" | "consolidateSteps";
-  steps: StepGraphValidationStep[];
-}): void {
-  const byKey = new Map<string, StepGraphValidationStep>();
-  for (const step of args.steps) {
-    const stepKey = step.stepKey.trim();
-    if (!stepKey.length) {
-      throw new Error(`Encountered empty stepKey while validating ${args.context} graph.`);
-    }
-    if (byKey.has(stepKey)) {
-      throw new Error(`Duplicate stepKey in ${args.context} graph: ${stepKey}`);
-    }
-    byKey.set(stepKey, {
-      ...step,
-      stepKey,
-      dependencyStepKeys: normalizeDependencyStepKeys(step.dependencyStepKeys)
-    });
-  }
-
-  for (const step of byKey.values()) {
-    for (const dependencyKey of step.dependencyStepKeys) {
-      if (!byKey.has(dependencyKey)) {
-        throw new Error(`Unknown dependency stepKey '${dependencyKey}' referenced by step '${step.stepKey}'.`);
-      }
-      if (dependencyKey === step.stepKey) {
-        throw new Error(`Step '${step.stepKey}' cannot depend on itself.`);
-      }
-    }
-
-    if (step.joinPolicy === "any_success" && step.dependencyStepKeys.length === 0) {
-      throw new Error(`Step '${step.stepKey}' uses joinPolicy=any_success without dependencies.`);
-    }
-    if (step.joinPolicy === "quorum") {
-      if (step.dependencyStepKeys.length === 0) {
-        throw new Error(`Step '${step.stepKey}' uses joinPolicy=quorum without dependencies.`);
-      }
-      if (step.quorumCount != null) {
-        const quorum = Number(step.quorumCount);
-        if (!Number.isFinite(quorum) || quorum <= 0 || Math.floor(quorum) > step.dependencyStepKeys.length) {
-          throw new Error(
-            `Step '${step.stepKey}' has quorumCount=${String(step.quorumCount)} outside valid range 1..${step.dependencyStepKeys.length}.`
-          );
-        }
-      }
-    }
-  }
-
-  const indegree = new Map<string, number>();
-  const adjacency = new Map<string, string[]>();
-  for (const step of byKey.values()) {
-    indegree.set(step.stepKey, 0);
-    adjacency.set(step.stepKey, []);
-  }
-  for (const step of byKey.values()) {
-    for (const dependencyKey of step.dependencyStepKeys) {
-      adjacency.get(dependencyKey)?.push(step.stepKey);
-      indegree.set(step.stepKey, (indegree.get(step.stepKey) ?? 0) + 1);
-    }
-  }
-
-  const queue = [...indegree.entries()]
-    .filter(([, degree]) => degree === 0)
-    .map(([stepKey]) => stepKey);
-  let visited = 0;
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    visited += 1;
-    for (const dependentKey of adjacency.get(current) ?? []) {
-      const nextDegree = (indegree.get(dependentKey) ?? 0) - 1;
-      indegree.set(dependentKey, nextDegree);
-      if (nextDegree === 0) {
-        queue.push(dependentKey);
-      }
-    }
-  }
-
-  if (visited !== byKey.size) {
-    throw new Error(`Dependency cycle detected in ${args.context} step graph.`);
-  }
-}
-
-function toRun(row: RunRow): OrchestratorRun {
-  return {
-    id: row.id,
-    missionId: row.mission_id,
-    projectId: row.project_id,
-    status: normalizeRunStatus(row.status),
-    contextProfile: normalizeProfileId(row.context_profile),
-    schedulerState: row.scheduler_state,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    lastError: row.last_error,
-    metadata: parseJsonRecord(row.metadata_json)
-  };
-}
-
-function toStep(row: StepRow): OrchestratorStep {
-  return {
-    id: row.id,
-    runId: row.run_id,
-    missionStepId: row.mission_step_id,
-    stepKey: row.step_key,
-    stepIndex: Number(row.step_index ?? 0),
-    title: row.title,
-    laneId: row.lane_id,
-    status: normalizeStepStatus(row.status),
-    joinPolicy: normalizeJoinPolicy(row.join_policy),
-    quorumCount: row.quorum_count != null ? Number(row.quorum_count) : null,
-    dependencyStepIds: parseArray(row.dependency_step_ids_json),
-    retryLimit: Number(row.retry_limit ?? 0),
-    retryCount: Number(row.retry_count ?? 0),
-    lastAttemptId: row.last_attempt_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    metadata: parseJsonRecord(row.metadata_json)
-  };
-}
-
-function toAttempt(row: AttemptRow): OrchestratorAttempt {
-  return {
-    id: row.id,
-    runId: row.run_id,
-    stepId: row.step_id,
-    attemptNumber: Number(row.attempt_number ?? 1),
-    status: normalizeAttemptStatus(row.status),
-    executorKind: normalizeExecutorKind(row.executor_kind),
-    executorSessionId: row.executor_session_id,
-    trackedSessionEnforced: row.tracked_session_enforced === 1,
-    contextProfile: normalizeProfileId(row.context_profile),
-    contextSnapshotId: row.context_snapshot_id,
-    errorClass: normalizeErrorClass(row.error_class),
-    errorMessage: row.error_message,
-    retryBackoffMs: Number(row.retry_backoff_ms ?? 0),
-    createdAt: row.created_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    resultEnvelope: row.result_envelope_json
-      ? ((() => {
-          try {
-            return JSON.parse(row.result_envelope_json) as OrchestratorAttemptResultEnvelope;
-          } catch {
-            return null;
-          }
-        })())
-      : null,
-    metadata: parseJsonRecord(row.metadata_json)
-  };
-}
-
-function toClaim(row: ClaimRow): OrchestratorClaim {
-  return {
-    id: row.id,
-    runId: row.run_id,
-    stepId: row.step_id,
-    attemptId: row.attempt_id,
-    ownerId: row.owner_id,
-    scopeKind: normalizeClaimScope(row.scope_kind),
-    scopeValue: row.scope_value,
-    state: normalizeClaimState(row.state),
-    acquiredAt: row.acquired_at,
-    heartbeatAt: row.heartbeat_at,
-    expiresAt: row.expires_at,
-    releasedAt: row.released_at,
-    policy: parseJsonRecord(row.policy_json),
-    metadata: parseJsonRecord(row.metadata_json)
-  };
-}
-
-function toContextSnapshot(row: ContextSnapshotRow): OrchestratorContextSnapshot {
-  const cursor = (() => {
-    try {
-      return JSON.parse(row.cursor_json) as OrchestratorContextSnapshotCursor;
-    } catch {
-      return {
-        lanePackKey: null,
-        lanePackVersionId: null,
-        lanePackVersionNumber: null,
-        projectPackKey: "project",
-        projectPackVersionId: null,
-        projectPackVersionNumber: null,
-        packDeltaSince: null,
-        docs: []
-      } satisfies OrchestratorContextSnapshotCursor;
-    }
-  })();
-  return {
-    id: row.id,
-    runId: row.run_id,
-    stepId: row.step_id,
-    attemptId: row.attempt_id,
-    snapshotType: row.snapshot_type === "step" ? "step" : row.snapshot_type === "attempt" ? "attempt" : "run",
-    contextProfile: normalizeProfileId(row.context_profile),
-    cursor,
-    createdAt: row.created_at
-  };
-}
-
-function toHandoff(row: HandoffRow): MissionStepHandoff {
-  return {
-    id: row.id,
-    missionId: row.mission_id,
-    missionStepId: row.mission_step_id,
-    runId: row.run_id,
-    stepId: row.step_id,
-    attemptId: row.attempt_id,
-    handoffType: row.handoff_type,
-    producer: row.producer,
-    payload: parseJsonRecord(row.payload_json) ?? {},
-    createdAt: row.created_at
-  };
-}
-
-function toArtifact(row: ArtifactRow): OrchestratorArtifact {
-  const kind = row.kind as OrchestratorArtifactKind;
-  const validKinds: OrchestratorArtifactKind[] = ["file", "branch", "pr", "test_report", "checkpoint", "custom"];
-  return {
-    id: row.id,
-    missionId: row.mission_id,
-    runId: row.run_id,
-    stepId: row.step_id,
-    attemptId: row.attempt_id,
-    artifactKey: row.artifact_key,
-    kind: validKinds.includes(kind) ? kind : "custom",
-    value: row.value,
-    metadata: parseJsonRecord(row.metadata_json) ?? {},
-    declared: row.declared === 1,
-    createdAt: row.created_at
-  };
-}
-
-function toTimelineEvent(row: TimelineRow): OrchestratorTimelineEvent {
-  return {
-    id: row.id,
-    runId: row.run_id,
-    stepId: row.step_id,
-    attemptId: row.attempt_id,
-    claimId: row.claim_id,
-    eventType: row.event_type,
-    reason: row.reason,
-    detail: parseJsonRecord(row.detail_json),
-    createdAt: row.created_at
-  };
-}
-
-function toRuntimeEvent(row: RuntimeEventRow): OrchestratorRuntimeBusEvent {
-  const payload = parseJsonRecord(row.payload_json);
-  const threadId = typeof payload?.threadId === "string" ? payload.threadId.trim() : "";
-  const messageId = typeof payload?.messageId === "string" ? payload.messageId.trim() : "";
-  const replyToRaw = typeof payload?.replyTo === "string" ? payload.replyTo.trim() : "";
-  const questionLink =
-    threadId.length > 0 && messageId.length > 0
-      ? {
-          threadId,
-          messageId,
-          replyTo: replyToRaw.length > 0 ? replyToRaw : null
-        }
-      : null;
-  return {
-    id: row.id,
-    runId: row.run_id,
-    stepId: row.step_id,
-    attemptId: row.attempt_id,
-    sessionId: row.session_id,
-    eventType: normalizeRuntimeEventType(row.event_type),
-    eventKey: row.event_key,
-    occurredAt: row.occurred_at,
-    payload,
-    questionLink,
-    createdAt: row.created_at
-  };
-}
-
-function toGateReport(row: GateReportRow): OrchestratorGateReport | null {
-  try {
-    const parsed = JSON.parse(row.report_json) as OrchestratorGateReport;
-    if (!parsed || typeof parsed !== "object") return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeEnvelope(
-  envelope: Partial<OrchestratorAttemptResultEnvelope> & { summary: string; success: boolean }
-): OrchestratorAttemptResultEnvelope {
-  const warnings = Array.isArray(envelope.warnings) ? envelope.warnings.map((entry) => String(entry)) : [];
-  const outputs =
-    envelope.outputs && typeof envelope.outputs === "object" && !Array.isArray(envelope.outputs)
-      ? (envelope.outputs as Record<string, unknown>)
-      : null;
-  return {
-    schema: "ade.orchestratorAttempt.v1",
-    success: envelope.success,
-    summary: String(envelope.summary ?? "").trim() || (envelope.success ? "Step completed." : "Step failed."),
-    outputs,
-    warnings,
-    sessionId: typeof envelope.sessionId === "string" ? envelope.sessionId : null,
-    trackedSession: envelope.trackedSession !== false
-  };
-}
+// Row-to-domain mappers, normalizeEnvelope, sha256, clipText,
+// file claim helpers, readDocPaths, resolveStepPolicy, resolveContextPolicy,
+// parseAutopilotConfig, parseStepPolicyFromMetadata, parseStepAIPriority,
+// readyStepOrderComparator are imported from ./orchestratorQueries and ./stepPolicyResolver
 
 function sha256(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
-}
-
-function clipText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  return `${value.slice(0, Math.max(0, maxChars - 14))}\n...<truncated>`;
-}
-
-function normalizeRepoRelativePath(projectRoot: string, rawPath: string): string | null {
-  let value = String(rawPath ?? "").trim();
-  if (!value.length) return null;
-  if (path.isAbsolute(value)) {
-    value = path.relative(projectRoot, value);
-  }
-  value = value.replace(/\\/g, "/");
-  value = path.posix.normalize(value);
-  while (value.startsWith("./")) value = value.slice(2);
-  if (!value.length || value === ".") return null;
-  if (value.startsWith("../")) return null;
-  return value;
-}
-
-function extractFileClaimPattern(scopeValue: string): string {
-  let value = String(scopeValue ?? "").trim();
-  if (value.startsWith("pattern:")) value = value.slice("pattern:".length);
-  if (value.startsWith("glob:")) value = value.slice("glob:".length);
-  return value.trim();
-}
-
-function normalizeFileClaimScopeValue(projectRoot: string, scopeValue: string): string | null {
-  let pattern = extractFileClaimPattern(scopeValue);
-  if (!pattern.length) return null;
-  pattern = pattern.replace(/\\/g, "/");
-  if (pattern.startsWith("/")) {
-    pattern = pattern.slice(1);
-  }
-  if (pattern.endsWith("/")) {
-    pattern = `${pattern}**`;
-  }
-  const normalized = normalizeRepoRelativePath(projectRoot, pattern);
-  if (!normalized) return null;
-  return `glob:${normalized}`;
-}
-
-function staticGlobPrefix(globPattern: string): string {
-  const wildcardIndex = globPattern.search(/[*?[\]]/);
-  if (wildcardIndex < 0) return globPattern;
-  return globPattern.slice(0, wildcardIndex);
-}
-
-function globToRegExp(globPattern: string): RegExp {
-  const escaped = globPattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, "__ADE_GLOB_STAR__")
-    .replace(/\?/g, "__ADE_GLOB_Q__")
-    .replace(/__ADE_GLOB_STAR____ADE_GLOB_STAR__/g, ".*")
-    .replace(/__ADE_GLOB_STAR__/g, "[^/]*")
-    .replace(/__ADE_GLOB_Q__/g, "[^/]");
-  return new RegExp(`^${escaped}$`);
-}
-
-function doesFileClaimMatchPath(scopeValue: string, repoPath: string): boolean {
-  const pattern = extractFileClaimPattern(scopeValue);
-  if (!pattern.length) return false;
-  try {
-    return globToRegExp(pattern).test(repoPath);
-  } catch {
-    return false;
-  }
-}
-
-function doFileClaimsOverlap(leftScopeValue: string, rightScopeValue: string): boolean {
-  const left = extractFileClaimPattern(leftScopeValue);
-  const right = extractFileClaimPattern(rightScopeValue);
-  if (!left.length || !right.length) return false;
-  if (left === right) return true;
-
-  const leftWildcard = /[*?[\]]/.test(left);
-  const rightWildcard = /[*?[\]]/.test(right);
-  if (!leftWildcard && !rightWildcard) return left === right;
-  if (!leftWildcard) return doesFileClaimMatchPath(rightScopeValue, left);
-  if (!rightWildcard) return doesFileClaimMatchPath(leftScopeValue, right);
-
-  const leftPrefix = staticGlobPrefix(left);
-  const rightPrefix = staticGlobPrefix(right);
-  if (leftPrefix.length > 0 && rightPrefix.length > 0) {
-    if (leftPrefix.startsWith(rightPrefix) || rightPrefix.startsWith(leftPrefix)) return true;
-    const leftRoot = leftPrefix.split("/")[0] ?? "";
-    const rightRoot = rightPrefix.split("/")[0] ?? "";
-    if (leftRoot.length > 0 && leftRoot === rightRoot) return true;
-    return false;
-  }
-
-  return true;
-}
-
-const docPathsCache = new Map<string, { paths: string[]; expiresAt: number }>();
-const DOC_PATHS_CACHE_TTL_MS = 60_000;
-
-function readDocPaths(projectRoot: string): string[] {
-  const cached = docPathsCache.get(projectRoot);
-  if (cached && Date.now() < cached.expiresAt) return cached.paths;
-
-  const out: string[] = [];
-  const canonical = path.join(projectRoot, "docs", "PRD.md");
-  if (fs.existsSync(canonical)) out.push(canonical);
-
-  const architectureRoot = path.join(projectRoot, "docs", "architecture");
-  const walk = (root: string) => {
-    if (!fs.existsSync(root)) return;
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
-      const abs = path.join(root, entry.name);
-      if (entry.isDirectory()) {
-        walk(abs);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (!entry.name.toLowerCase().endsWith(".md")) continue;
-      out.push(abs);
-    }
-  };
-  walk(architectureRoot);
-  const paths = out.sort((a, b) => a.localeCompare(b));
-  docPathsCache.set(projectRoot, { paths, expiresAt: Date.now() + DOC_PATHS_CACHE_TTL_MS });
-  return paths;
-}
-
-function resolveStepPolicy(step: OrchestratorStep): StepPolicy {
-  const metadata = step.metadata ?? {};
-  const rawPolicy = metadata.policy;
-  if (!rawPolicy || typeof rawPolicy !== "object" || Array.isArray(rawPolicy)) return {};
-  const record = rawPolicy as Record<string, unknown>;
-  const claimScopes = Array.isArray(record.claimScopes)
-    ? record.claimScopes
-        .map((entry) => {
-          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-          const obj = entry as Record<string, unknown>;
-          const scopeKind = normalizeClaimScope(String(obj.scopeKind ?? "lane"));
-          const scopeValue = String(obj.scopeValue ?? "").trim();
-          if (!scopeValue) return null;
-          const ttlRaw = Number(obj.ttlMs ?? NaN);
-          const normalized: { scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number } = {
-            scopeKind,
-            scopeValue
-          };
-          if (Number.isFinite(ttlRaw) && ttlRaw > 0) {
-            normalized.ttlMs = Math.floor(ttlRaw);
-          }
-          return normalized;
-        })
-        .filter((entry): entry is { scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number } => entry != null)
-    : undefined;
-  return {
-    includeNarrative: record.includeNarrative === true,
-    includeFullDocs: record.includeFullDocs === true,
-    docsMaxBytes: Number.isFinite(Number(record.docsMaxBytes)) ? Number(record.docsMaxBytes) : undefined,
-    claimScopes
-  };
-}
-
-function resolveContextPolicy(args: {
-  runProfileId: OrchestratorContextProfileId;
-  stepPolicy: StepPolicy;
-}): OrchestratorContextPolicyProfile {
-  const base = CONTEXT_PROFILES[args.runProfileId] ?? CONTEXT_PROFILES[DEFAULT_CONTEXT_PROFILE_ID];
-  const includeNarrative = args.stepPolicy.includeNarrative === true ? true : base.includeNarrative;
-  return {
-    ...base,
-    includeNarrative,
-    laneExportLevel: includeNarrative ? "deep" : base.laneExportLevel,
-    docsMode: args.stepPolicy.includeFullDocs ? "full_docs" : base.docsMode,
-    maxDocBytes:
-      typeof args.stepPolicy.docsMaxBytes === "number" && Number.isFinite(args.stepPolicy.docsMaxBytes) && args.stepPolicy.docsMaxBytes > 0
-        ? Math.floor(args.stepPolicy.docsMaxBytes)
-        : base.maxDocBytes
-  };
-}
-
-type AutopilotConfig = {
-  enabled: boolean;
-  executorKind: OrchestratorExecutorKind;
-  ownerId: string;
-  parallelismCap: number;
-};
-
-function parseAutopilotConfig(metadata: Record<string, unknown> | null | undefined): AutopilotConfig {
-  const fallback: AutopilotConfig = {
-    enabled: false,
-    executorKind: "manual",
-    ownerId: "orchestrator-autopilot",
-    parallelismCap: DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers
-  };
-  if (!metadata) return fallback;
-  const raw = metadata.autopilot;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback;
-  const record = raw as Record<string, unknown>;
-  const executorKind = normalizeExecutorKind(String(record.executorKind ?? "manual"));
-  const enabled = record.enabled === true && executorKind !== "manual";
-  const ownerId = String(record.ownerId ?? "").trim() || "orchestrator-autopilot";
-  const parallelismCap = asIntInRange(
-    record.parallelismCap,
-    DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers,
-    1,
-    32
-  );
-  return {
-    enabled,
-    executorKind,
-    ownerId,
-    parallelismCap
-  };
-}
-
-function parseStepPolicyFromMetadata(metadata: Record<string, unknown>): StartOrchestratorRunStepInput["policy"] | undefined {
-  const raw = metadata.policy;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  const record = raw as Record<string, unknown>;
-  const includeNarrative = record.includeNarrative === true;
-  const includeFullDocs = record.includeFullDocs === true;
-  const docsMaxBytes = Number(record.docsMaxBytes);
-  const claimScopes = Array.isArray(record.claimScopes)
-    ? record.claimScopes
-        .map((entry) => {
-          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-          const scope = entry as Record<string, unknown>;
-          const scopeValue = String(scope.scopeValue ?? "").trim();
-          if (!scopeValue.length) return null;
-          const ttlMs = Number(scope.ttlMs);
-          const normalized: { scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number } = {
-            scopeKind: normalizeClaimScope(String(scope.scopeKind ?? "lane")),
-            scopeValue
-          };
-          if (Number.isFinite(ttlMs) && ttlMs > 0) {
-            normalized.ttlMs = Math.floor(ttlMs);
-          }
-          return normalized;
-        })
-        .filter(
-          (entry): entry is { scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number } => entry != null
-        )
-    : undefined;
-
-  return {
-    includeNarrative,
-    includeFullDocs,
-    docsMaxBytes: Number.isFinite(docsMaxBytes) && docsMaxBytes > 0 ? Math.floor(docsMaxBytes) : undefined,
-    claimScopes
-  };
-}
-
-function parseStepAIPriority(step: OrchestratorStep): number | null {
-  const numeric = Number(step.metadata?.aiPriority ?? Number.NaN);
-  return Number.isFinite(numeric) ? numeric : null;
-}
-
-function readyStepOrderComparator(a: OrchestratorStep, b: OrchestratorStep) {
-  const aiPriorityA = parseStepAIPriority(a);
-  const aiPriorityB = parseStepAIPriority(b);
-  if (aiPriorityA != null || aiPriorityB != null) {
-    if (aiPriorityA == null) return 1;
-    if (aiPriorityB == null) return -1;
-    const aiPriorityDiff = aiPriorityB - aiPriorityA;
-    if (aiPriorityDiff !== 0) return aiPriorityDiff;
-  }
-  const createdOrderDiff = a.createdAt.localeCompare(b.createdAt);
-  if (createdOrderDiff !== 0) return createdOrderDiff;
-  return a.id.localeCompare(b.id);
 }
 
 export function createOrchestratorService({
@@ -4574,7 +3602,7 @@ export function createOrchestratorService({
         const run = toRun(runRow);
         if (TERMINAL_RUN_STATUSES.has(run.status)) return 0;
 
-        const autopilot = parseAutopilotConfig(run.metadata);
+        const autopilot = parseAutopilotConfig(run.metadata, DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers);
         if (!autopilot.enabled) return 0;
         const parallelismCap = Math.max(1, Math.min(32, autopilot.parallelismCap));
         const computeEffectiveParallelismCap = (): {
@@ -4635,6 +3663,27 @@ export function createOrchestratorService({
             const fresh = getStepRow(step.id);
             if (!fresh) continue;
             if (toStep(fresh).status !== "ready") continue;
+            const stepMetadata = asRecord(step.metadata);
+            if (asBool(stepMetadata?.isMilestone, false)) {
+              const contract = asRecord(stepMetadata?.validationContract);
+              const validationCriteria =
+                typeof contract?.criteria === "string"
+                  ? contract.criteria.trim()
+                  : typeof stepMetadata?.validationCriteria === "string"
+                    ? stepMetadata.validationCriteria.trim()
+                    : "";
+              appendTimelineEvent({
+                runId,
+                stepId: step.id,
+                eventType: "autopilot_step_skipped",
+                reason: "milestone_requires_validation_gate",
+                detail: {
+                  stepKey: step.stepKey,
+                  validationCriteria: validationCriteria || null
+                }
+              });
+              continue;
+            }
             const explicitStepExecutor =
               typeof step.metadata?.executorKind === "string"
                 ? normalizeExecutorKind(String(step.metadata.executorKind))
@@ -6868,11 +5917,11 @@ export function createOrchestratorService({
               and project_id = ?
           `,
           [
-            "Attempt was running during restart; recovered into deterministic retry path.",
+            "Attempt was orphaned by app restart; worker session was lost. Recovered into deterministic retry path.",
             JSON.stringify({
               schema: "ade.orchestratorAttempt.v1",
               success: false,
-              summary: "Recovered after process restart.",
+              summary: "Recovered after app restart; worker session lost.",
               outputs: null,
               warnings: ["resume_recovered"],
               sessionId: attemptRow.executor_session_id,
@@ -6916,7 +5965,7 @@ export function createOrchestratorService({
           producer: "orchestrator",
           payload: {
             errorClass: "resume_recovered",
-            message: "Attempt converted to deterministic recovery path.",
+            message: "Attempt orphaned by app restart and converted to deterministic recovery path.",
             contextProfile: normalizeProfileId(attemptRow.context_profile)
           }
         });
@@ -6934,7 +5983,7 @@ export function createOrchestratorService({
       }
 
       const resumed = this.tick({ runId: run.id });
-      const autopilot = parseAutopilotConfig(resumed.metadata);
+      const autopilot = parseAutopilotConfig(resumed.metadata, DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers);
       if (autopilot.enabled) {
         void this
           .startReadyAutopilotAttempts({

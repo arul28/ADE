@@ -10,15 +10,18 @@
 
 1. [Overview](#overview)
 2. [Design Decisions](#design-decisions)
-3. [Technical Details](#technical-details)
+3. [TypeScript Types Architecture](#typescript-types-architecture)
+   - [Domain Module Layout](#domain-module-layout)
+   - [Model System](#model-system)
+4. [Technical Details](#technical-details)
    - [SQLite Database](#sqlite-database)
    - [Database Schema](#database-schema)
    - [Database API](#database-api)
    - [Migration System](#migration-system)
    - [Filesystem Artifacts](#filesystem-artifacts)
    - [Global State](#global-state)
-4. [Integration Points](#integration-points)
-5. [Implementation Status](#implementation-status)
+5. [Integration Points](#integration-points)
+6. [Implementation Status](#implementation-status)
 
 ---
 
@@ -66,6 +69,57 @@ All timestamp columns store ISO 8601 strings (`new Date().toISOString()`). This 
 ### JSON Columns for Flexible Data
 
 Several tables use `*_json` TEXT columns to store structured data that varies by record type (e.g., `metadata_json` in operations, `touched_files_json` in session_deltas). This avoids schema proliferation while keeping the core columns strongly typed.
+
+---
+
+## TypeScript Types Architecture
+
+All shared TypeScript types consumed by both the main process and the renderer live under `apps/desktop/src/shared/types/`. This directory replaced the former monolithic `src/shared/types.ts` file (which had grown to ~5,700 lines) with a set of focused domain modules. A barrel `index.ts` re-exports every module, so existing imports from `../shared/types` continue to work without changes.
+
+### Domain Module Layout
+
+```
+src/shared/types/
+├── index.ts          # Barrel re-export (`export * from "./core"`, etc.)
+├── core.ts           # AppInfo, ProjectInfo, utility/foundation types
+├── models.ts         # ModelProvider, ModelConfig, ThinkingLevel, OrchestratorCallType, intelligence config
+├── git.ts            # Git status, diff, stash, log, branch types
+├── lanes.ts          # Lane, LaneOverlay, lane filter/creation types
+├── conflicts.ts      # Conflict predictions, proposals, resolution, risk matrix types
+├── prs.ts            # Pull request, PrStrategy, PrDepth, review/check status types
+├── files.ts          # Workspace file tree, file status, diff stat types
+├── sessions.ts       # Terminal session, session delta, agent chat session types
+├── chat.ts           # Agent chat messages, envelopes, tool types
+├── missions.ts       # Mission status, steps, events, interventions, artifacts
+├── orchestrator.ts   # Run graph, worker state, DAG, recovery, coordinator, team runtime
+├── config.ts         # AdeConfig, ConfigSnapshot, TrustState, lane overlay policies
+├── automations.ts    # Automation rules, triggers, action types
+├── packs.ts          # Pack headers, exports, delta digests, conflict lineage
+├── budget.ts         # Mission budget, phase caps, cost tracking
+└── usage.ts          # Token usage, cost breakdown, model utilization
+```
+
+Each module owns a single domain and imports from sibling modules only when necessary (for example, `missions.ts` imports `ModelConfig` from `./models` and `PrStrategy` from `./prs`). Cross-module imports are kept minimal to avoid circular dependencies.
+
+During the split, 16 dead or unused types were identified and deleted rather than migrated. The barrel re-export in `index.ts` ensures full backward compatibility: every consumer that previously imported from `../shared/types` or `../../shared/types` works unchanged.
+
+### Model System
+
+The model system is built on two coordinated files:
+
+- **`src/shared/modelRegistry.ts`** — The single source of truth for all AI models. Defines the `MODEL_REGISTRY` constant (an array of `ModelDescriptor` objects) covering every supported model across Anthropic, OpenAI, Google, Mistral, DeepSeek, xAI, Meta, and local providers (Ollama, LM Studio, vLLM, Groq, Together). Each descriptor includes:
+  - Identity: `id`, `shortId`, `displayName`, `family`, `sdkProvider`, `sdkModelId`
+  - Capabilities: `tools`, `vision`, `reasoning`, `streaming`, plus optional `reasoningTiers`
+  - Sizing: `contextWindow`, `maxOutputTokens`
+  - Pricing: `inputPricePer1M`, `outputPricePer1M`, `costTier` (low/medium/high/very_high)
+  - Auth: `authTypes` (cli-subscription, api-key, oauth, openrouter, local)
+  - Runtime: `isCliWrapped`, `cliCommand`, `color`
+
+  The module also exports helper functions: `getModelById()`, `getModelPricing()`, `updateModelPricingInRegistry()`.
+
+- **`src/shared/modelProfiles.ts`** — Derives the missions UI model catalog and intelligence profiles from `MODEL_REGISTRY` rather than maintaining parallel lists. Maps registry descriptors to `ModelEntry` objects (used by the mission model selector) and defines per-call-type intelligence defaults (`OrchestratorIntelligenceConfig`) and mission model profiles (`MissionModelProfile`).
+
+This two-file structure ensures that adding a new model requires only a single entry in `MODEL_REGISTRY`. Pricing, display names, cost tiers, and intelligence defaults all flow from that one record.
 
 ---
 
@@ -1042,6 +1096,8 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 
 ### Completed
 
+- TypeScript types directory (`src/shared/types/`) with 16 domain modules + barrel re-export (replaced ~5,700-line monolith)
+- Unified model registry (`src/shared/modelRegistry.ts`) as single source of truth for all AI models, with pricing fields and derived profiles
 - SQLite database initialization with sql.js WASM
 - Complete schema with 40 tables and 80+ indexes
 - Debounced flush strategy (125ms after last write)

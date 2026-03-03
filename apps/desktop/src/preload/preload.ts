@@ -277,6 +277,7 @@ import type {
   CleanupOrchestratorTeamResourcesResult,
   CompleteOrchestratorAttemptArgs,
   HeartbeatOrchestratorClaimsArgs,
+  PauseOrchestratorRunArgs,
   ResumeOrchestratorRunArgs,
   StartOrchestratorAttemptArgs,
   StartOrchestratorRunArgs,
@@ -320,6 +321,8 @@ import type {
   GetMissionMetricsArgs,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
+  GetMissionStateDocumentArgs,
+  MissionStateDocument,
   GetAggregatedUsageArgs,
   AggregatedUsageStats,
   GetMissionBudgetStatusArgs,
@@ -484,6 +487,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorCompleteAttempt, args),
     tickRun: async (args: TickOrchestratorRunArgs): Promise<OrchestratorRun> =>
       ipcRenderer.invoke(IPC.orchestratorTickRun, args),
+    pauseRun: async (args: PauseOrchestratorRunArgs): Promise<OrchestratorRun> =>
+      ipcRenderer.invoke(IPC.orchestratorPauseRun, args),
     resumeRun: async (args: ResumeOrchestratorRunArgs): Promise<OrchestratorRun> =>
       ipcRenderer.invoke(IPC.orchestratorResumeRun, args),
     cancelRun: async (args: CancelOrchestratorRunArgs): Promise<OrchestratorRun> =>
@@ -535,6 +540,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorSetMissionMetricsConfig, args),
     getExecutionPlanPreview: async (args: { runId: string }): Promise<ExecutionPlanPreview | null> =>
       ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
+    getMissionStateDocument: async (args: GetMissionStateDocumentArgs): Promise<MissionStateDocument | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetMissionStateDocument, args),
+    getCheckpointStatus: async (
+      args: { runId: string }
+    ): Promise<{ savedAt: string; turnCount: number; compactionCount: number } | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetCheckpointStatus, args),
     getMissionBudgetStatus: async (args: GetMissionBudgetStatusArgs): Promise<MissionBudgetSnapshot> =>
       ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetStatus, args),
     sendAgentMessage: async (args: SendAgentMessageArgs): Promise<OrchestratorChatMessage> =>

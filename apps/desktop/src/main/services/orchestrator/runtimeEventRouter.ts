@@ -218,9 +218,10 @@ export function buildRunStateSnapshot(ctx: OrchestratorContext, runId: string): 
  * Prune stale session runtime signals.
  */
 export function pruneSessionRuntimeSignals(ctx: OrchestratorContext): void {
-  const cutoff = Date.now() - SESSION_SIGNAL_RETENTION_MS;
-  for (const [sessionId, signal] of ctx.sessionRuntimeSignals) {
-    if (Date.parse(signal.at) < cutoff) {
+  const now = Date.now();
+  for (const [sessionId, signal] of ctx.sessionRuntimeSignals.entries()) {
+    const atMs = Date.parse(signal.at);
+    if (!Number.isFinite(atMs) || now - atMs > SESSION_SIGNAL_RETENTION_MS) {
       ctx.sessionRuntimeSignals.delete(sessionId);
     }
   }

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-02
 
 This document describes the renderer architecture in `apps/desktop/src/renderer`, including routing, theme system, state model, layout patterns, and IPC integration constraints.
 
@@ -17,6 +17,10 @@ This document describes the renderer architecture in `apps/desktop/src/renderer`
 - [State Management](#state-management)
 - [Layout Patterns](#layout-patterns)
 - [Component Organization](#component-organization)
+  - [Feature Directories](#feature-directories)
+  - [MissionsPage Decomposition](#missionspage-decomposition)
+  - [WorkspaceGraphPage Decomposition](#workspacegraphpage-decomposition)
+  - [Shared Frontend Utilities](#shared-frontend-utilities)
 - [IPC Integration](#ipc-integration)
 - [Implementation Status](#implementation-status)
 
@@ -147,24 +151,81 @@ Layout state persistence is backed by IPC calls into local SQLite (`layout`, `ti
 
 ## Component Organization
 
-Renderer components are feature-grouped under `apps/desktop/src/renderer/components`:
+Renderer components are feature-grouped under `apps/desktop/src/renderer/components`. Large page components have been decomposed into focused sub-modules to keep individual files manageable (typically under 2,500 lines).
+
+### Feature Directories
 
 - `app/`: shell, top-level routes, settings, startup
 - `project/`: Play tab and run/test/process controls
-- `lanes/`: lane list/detail/inspector and stack workflows
+- `lanes/`: lane list/detail/inspector, stack workflows, design tokens (`laneDesignTokens.ts`)
 - `files/`: workspace browser/editor
 - `terminals/`: global terminal/session surfaces
 - `conflicts/`: risk, merge simulation, resolution workflows
-- `context/` + `packs/`: context generation and pack visualization
-- `graph/`: topology canvas
-- `prs/`: PR operations and status surfaces
+- `context/`: context generation (`ContextPage.tsx`), `contextShared.ts` (~15 consolidated functions), doc generation
+- `packs/`: pack visualization
+- `graph/`: topology canvas (decomposed, see below)
+- `prs/`: PR operations, status surfaces, shared utilities (`prs/shared/prHelpers.ts`, `prs/shared/tilingConstants.ts`)
 - `history/`: operations timeline surfaces
 - `agents/`: agent cards, builder wizard, findings, morning briefing, run history
-- `missions/`: mission intake, status board, Slack-style chat (MissionChatV2), interventions, artifacts, outcomes, Details tab, run narrative
+- `missions/`: mission orchestration UI (decomposed, see below)
 - `onboarding/`: first-run setup flows
 - `settings/`: settings subsections (keybindings, terminal profiles, agents, data management)
-- `shared/`: shared interactive components (MentionInput)
+- `shared/`: shared interactive components (`MentionInput`)
 - `ui/`: shared presentation primitives
+
+### MissionsPage Decomposition
+
+`MissionsPage.tsx` was decomposed from ~5,600 lines to ~2,200 lines (60% reduction). The extracted modules live alongside it in `missions/`:
+
+| Module | Lines | Responsibility |
+|--------|-------|----------------|
+| `missionHelpers.ts` | ~520 | Shared mission utility functions (formatting, status logic, color mapping) |
+| `CreateMissionDialog.tsx` | ~1,500 | Full mission creation wizard with model selection, budget, PR strategy |
+| `MissionSettingsDialog.tsx` | ~590 | Runtime settings adjustment for active missions |
+| `PlanTab.tsx` | ~190 | Plan DAG visualization tab |
+| `WorkTab.tsx` | ~210 | Worker activity and lane assignment tab |
+| `StepDetailPanel.tsx` | ~270 | Sidebar panel for step inspection and attempt history |
+| `ActivityNarrativeHeader.tsx` | ~150 | Run narrative header for the Activity tab |
+| `MissionsHomeDashboard.tsx` | ~100 | Mission list/dashboard landing page |
+
+Other mission-scoped components that remain as standalone files: `MissionChatV2.tsx` (Slack-style chat), `AgentChannels.tsx`, `OrchestratorDAG.tsx`, `ModelSelector.tsx`, `ModelProfileSelector.tsx`, `SmartBudgetPanel.tsx`, `PolicyEditor.tsx`, `UsageDashboard.tsx`, `AgentPresencePanel.tsx`, `MissionComposer.tsx`, `MissionControlPage.tsx`, `PhaseProgressBar.tsx`.
+
+### WorkspaceGraphPage Decomposition
+
+`WorkspaceGraphPage.tsx` was decomposed from ~4,800 lines to ~4,100 lines (14% reduction). Extracted modules are organized into sub-directories:
+
+```
+graph/
+├── WorkspaceGraphPage.tsx      # Main graph page (React Flow canvas)
+├── graphTypes.ts               # Shared type definitions for graph state
+├── graphHelpers.ts             # Graph data transformation utilities
+├── graphLayout.ts              # Layout algorithm (node positioning, edge routing)
+├── graphNodes/
+│   ├── LaneNode.tsx            # Custom React Flow node for lanes
+│   └── ProposalNode.tsx        # Custom React Flow node for conflict proposals
+├── graphEdges/
+│   └── RiskEdge.tsx            # Custom React Flow edge for conflict risk
+└── graphDialogs/
+    ├── PrDialog.tsx            # PR creation/detail dialog
+    ├── ConflictPanel.tsx        # Conflict resolution panel
+    ├── IntegrationDialog.tsx    # Lane integration dialog
+    └── TextPromptModal.tsx      # Generic text prompt modal
+```
+
+### Shared Frontend Utilities
+
+Common logic that was previously duplicated across pages has been consolidated into shared modules:
+
+**`src/renderer/lib/`** — Pure utility functions:
+- `format.ts` — Formatting helpers: `relativeWhen`, `formatDate`, `formatTime`, `formatDurationMs`, `formatTokens`, `formatCost`, `statusTone`
+- `shell.ts` — Shell utilities: `quoteShellArg`, `parseCommandLine`
+- `sessions.ts` — Session-related utilities
+
+**`src/renderer/hooks/`** — Shared React hooks:
+- `useClickOutside.ts` — Click-outside detection (replaced 4 independent implementations)
+- `useThreadEventRefresh.ts` — Debounced thread event refresh (replaced 3 independent implementations)
+
+**Design tokens** are consolidated in `lanes/laneDesignTokens.ts` and imported by components across missions, lanes, terminals, PRs, settings, and other feature areas
 
 ---
 
@@ -201,33 +262,6 @@ The complete live channel inventory is defined in `apps/desktop/src/shared/ipc.t
 
 ---
 
-## Recent Component Changes (Orchestrator Evolution)
-
-### New Components
-
-- **`MissionChatV2.tsx`** (`missions/`): Replaces the old inline MissionChat with a full Slack-style chat system. Features a sidebar with channel list (Global, Orchestrator, per-agent channels) and a main message area. Supports real-time message updates and agent-to-agent message rendering.
-
-- **`MentionInput.tsx`** (`shared/`): A shared @mention autocomplete input component used by MissionChatV2. Provides agent/channel mention suggestions as the user types, with keyboard navigation and selection.
-
-- **Context Budget Panel** (`context/` in UsageDashboard): Displays token breakdown bars (per-model utilization) and candidate memory lists. Part of the scoped memory UI — shows memory candidates awaiting promotion and current context budget consumption.
-
-### Removed Components
-
-- **`ExecutionPlanPreview`**: Deleted entirely. The execution plan preview functionality was removed as part of the UI cleanup.
-
-### Tab Renames
-
-- **"Usage" tab** renamed to **"Details"** in the mission detail view.
-- **"Channels" tab** renamed to **"Chat"** in the mission detail view.
-
-### UI Bug Fixes
-
-- Removed duplicate completion percentage bar (kept PhaseProgressBar only).
-- Fixed spinning white rectangle in DAG visualization (replaced CSS animation with SVG `animateTransform`).
-- Activity tab now uses a category dropdown filter instead of 12+ individual filter buttons.
-
----
-
 ## Implementation Status
 
 Renderer architecture is fully operational for the current desktop scope:
@@ -237,5 +271,9 @@ Renderer architecture is fully operational for the current desktop scope:
 - High-density pane layouts are implemented across lanes/terminals/conflicts/graph.
 - Key feature pages (Play, Lanes, Files, Terminals, Conflicts, Context, Graph, PRs, History, Agents, Missions, Settings) are implemented.
 - IPC integration is broad and type-aligned with the preload contract.
+- MissionsPage decomposed into 8 focused modules (60% size reduction).
+- WorkspaceGraphPage decomposed into sub-directories for nodes, edges, dialogs, and shared helpers (14% size reduction).
+- Shared utility layer established: `renderer/lib/` (format, shell, sessions), `renderer/hooks/` (useClickOutside, useThreadEventRefresh), `context/contextShared.ts`, `prs/shared/`, `lanes/laneDesignTokens.ts`.
+- Mission detail tabs: Chat (Slack-style MissionChatV2), Activity (category dropdown filter), Plan, Work, Details.
 
 Future UI surfaces for Machines are planned in `docs/final-plan.md`.

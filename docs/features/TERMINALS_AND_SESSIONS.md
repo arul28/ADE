@@ -425,6 +425,12 @@ Steps 4-6 (delta computation, pack refresh trigger, AI summary) are identical fo
 | `sessionSummary.ts` | Deterministic session summary generator. Detects likely commands from transcript prompts, parses test output (Jest, Vitest, pytest), identifies failure hints. Produces one-line summaries like `Ran npm test (PASS, 31 tests, 1.2s)`. |
 | `jobEngine` | Receives session-end notifications and enqueues appropriate jobs (pack refresh, checkpoint creation). Manages job scheduling and execution. |
 
+**Shared renderer utilities**: Session-related UI logic draws on shared libraries extracted during the frontend decomposition:
+
+- `src/renderer/lib/sessions.ts` -- Session display utilities (status formatting, duration display)
+- `src/renderer/lib/format.ts` -- Time formatting (`relativeWhen`, `formatDate`, `formatTime`, `formatDurationMs`), token/cost formatting, and `statusTone` mapping
+- `src/renderer/lib/shell.ts` -- Shell-related utilities for terminal rendering
+
 ### IPC Channels
 
 **PTY management**:

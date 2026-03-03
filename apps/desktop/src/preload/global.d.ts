@@ -256,6 +256,7 @@ import type {
   CleanupOrchestratorTeamResourcesResult,
   CompleteOrchestratorAttemptArgs,
   HeartbeatOrchestratorClaimsArgs,
+  PauseOrchestratorRunArgs,
   ResumeOrchestratorRunArgs,
   StartOrchestratorAttemptArgs,
   StartOrchestratorRunArgs,
@@ -301,6 +302,8 @@ import type {
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
+  GetMissionStateDocumentArgs,
+  MissionStateDocument,
   GetMissionBudgetStatusArgs,
   MissionBudgetSnapshot,
   SendAgentMessageArgs,
@@ -418,6 +421,7 @@ declare global {
         startAttempt: (args: StartOrchestratorAttemptArgs) => Promise<OrchestratorAttempt>;
         completeAttempt: (args: CompleteOrchestratorAttemptArgs) => Promise<OrchestratorAttempt>;
         tickRun: (args: TickOrchestratorRunArgs) => Promise<OrchestratorRun>;
+        pauseRun: (args: PauseOrchestratorRunArgs) => Promise<OrchestratorRun>;
         resumeRun: (args: ResumeOrchestratorRunArgs) => Promise<OrchestratorRun>;
         cancelRun: (args: CancelOrchestratorRunArgs) => Promise<OrchestratorRun>;
         cleanupTeamResources: (args: CleanupOrchestratorTeamResourcesArgs) => Promise<CleanupOrchestratorTeamResourcesResult>;
@@ -443,6 +447,8 @@ declare global {
         getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }>;
         setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
         getExecutionPlanPreview: (args: { runId: string }) => Promise<ExecutionPlanPreview | null>;
+        getMissionStateDocument: (args: GetMissionStateDocumentArgs) => Promise<MissionStateDocument | null>;
+        getCheckpointStatus: (args: { runId: string }) => Promise<{ savedAt: string; turnCount: number; compactionCount: number } | null>;
         getMissionBudgetStatus: (args: GetMissionBudgetStatusArgs) => Promise<MissionBudgetSnapshot>;
         sendAgentMessage: (args: SendAgentMessageArgs) => Promise<OrchestratorChatMessage>;
         getGlobalChat: (args: GetGlobalChatArgs) => Promise<OrchestratorChatMessage[]>;

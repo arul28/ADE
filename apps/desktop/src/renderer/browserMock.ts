@@ -574,6 +574,8 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       getMissionMetrics: resolvedArg({ config: null, samples: [] }),
       setMissionMetricsConfig: resolvedArg({}),
       getExecutionPlanPreview: resolvedArg(null),
+      getMissionStateDocument: resolvedArg(null),
+      getCheckpointStatus: resolvedArg(null),
       sendAgentMessage: resolvedArg({}),
       getGlobalChat: resolvedArg([]),
       getActiveAgents: resolvedArg([]),

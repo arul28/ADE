@@ -55,7 +55,9 @@ import type {
   OrchestratorArtifactKind,
   ModelConfig,
   MissionModelConfig,
-  RecoveryLoopIteration
+  RecoveryLoopIteration,
+  OrchestratorTeamRuntimeState,
+  DagMutationEvent,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -112,7 +114,9 @@ export type {
   OrchestratorArtifactKind,
   ModelConfig,
   MissionModelConfig,
-  RecoveryLoopIteration
+  RecoveryLoopIteration,
+  OrchestratorTeamRuntimeState,
+  DagMutationEvent,
 };
 
 // ── Internal Types ──────────────────────────────────────────────────
@@ -323,13 +327,14 @@ export type PendingIntegrationContext = {
 };
 
 export type ParallelMissionStepDescriptor = {
+  id: string;
   index: number;
-  stepKey: string;
-  stepType: string;
   title: string;
-  dependencyIndices: number[];
+  kind: string;
   laneId: string | null;
-  parallelGroup: string | null;
+  stepType: string;
+  stepKey: string;
+  dependencyStepKeys: string[];
 };
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -430,8 +435,10 @@ export type OrchestratorContext = {
   projectConfigService: ReturnType<typeof createProjectConfigService> | null | undefined;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService> | null | undefined;
   prService: ReturnType<typeof createPrService> | null | undefined;
+  missionBudgetService: import("./missionBudgetService").MissionBudgetService | null | undefined;
   projectRoot: string | undefined;
   onThreadEvent: ((event: OrchestratorThreadEvent) => void) | undefined;
+  onDagMutation: ((event: DagMutationEvent) => void) | undefined;
   hookCommandRunner: OrchestratorHookCommandRunner;
 
   // Mutable state maps
@@ -459,6 +466,12 @@ export type OrchestratorContext = {
   pendingIntegrations: Map<string, PendingIntegrationContext>;
   coordinatorThinkingLoops: Map<string, NodeJS.Timeout>;
   pendingCoordinatorEvals: Map<string, NodeJS.Timeout>;
+
+  // Coordinator and team runtime state
+  coordinatorAgents: Map<string, import("./coordinatorAgent").CoordinatorAgent>;
+  coordinatorRecoveryAttempts: Map<string, number>;
+  teamRuntimeStates: Map<string, OrchestratorTeamRuntimeState>;
+  callTypeConfigCache: Map<string, { config: ResolvedCallTypeConfig; expiresAt: number }>;
 
   // Scalar mutable state (wrapped for mutation through context)
   disposed: { current: boolean };

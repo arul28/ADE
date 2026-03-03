@@ -467,7 +467,55 @@ Other pack types have similar tiered budgets, but lane exports are the primary o
 
 ---
 
-## 2026-02-26 Addendum — Scoped Memory and Runtime Context Assembly
+## Orchestrator Runtime Context Pattern
+
+The orchestrator's internal runtime state is managed through `OrchestratorContext`, a single typed object defined in `src/main/services/orchestrator/orchestratorContext.ts`. All orchestrator modules accept `ctx: OrchestratorContext` as their first parameter, giving them access to service dependencies and shared mutable state without relying on module-level singletons or closures.
+
+### OrchestratorContext Structure
+
+The context object contains three categories of members:
+
+**Service dependencies** (injected at mission start):
+- `db`, `logger`, `projectRoot`
+- `missionService`, `orchestratorService`, `laneService`, `prService`
+- `agentChatService`, `aiIntegrationService`, `projectConfigService`
+- `missionBudgetService`
+- Event callbacks: `onThreadEvent`, `onDagMutation`
+- `hookCommandRunner` for executing orchestrator hook commands
+
+**Mutable state maps** (22+ Map/Set objects tracking live mission state):
+- `workerStates` — per-worker lifecycle and assignment state
+- `chatMessages`, `activeChatSessions`, `chatTurnQueues` — chat routing state
+- `plannerSessionByMissionId`, `plannerSessionBySessionId` — planner agent sessions
+- `runRuntimeProfiles` — resolved model config per mission run
+- `activeSteeringDirectives` — user steering directives per mission
+- `attemptRuntimeTrackers`, `sessionRuntimeSignals` — attempt-level runtime tracking
+- `runTeamManifests`, `runRecoveryLoopStates` — team runtime and recovery state
+- `coordinatorSessions`, `coordinatorAgents` — coordinator agent lifecycle
+- `pendingIntegrations`, `teamRuntimeStates` — integration and team state
+- `syncLocks`, `aiTimeoutBudgetStepLocks`, `aiRetryDecisionLocks` — concurrency guards
+
+**Scalar mutable state** (wrapped in `{ current: T }` for mutation through the context):
+- `disposed` — whether the orchestrator has been torn down
+- `healthSweepTimer` — periodic health check interval
+
+### Cross-Module Dependency Injection
+
+Extracted orchestrator modules that need access to functions from other modules (rather than just `ctx`) declare typed dependency objects:
+
+- `ChatRoutingDeps` (in `chatMessageService.ts`) — message routing, worker delivery, checkpoint creation
+- `WorkerDeliveryDeps` (in `workerDeliveryService.ts`) — message appending, event recording
+- `ReconciliationDeps` (in `chatMessageService.ts`) — worker delivery context resolution, thread linking
+
+These deps types are narrow interfaces that list only the specific functions required, keeping modules testable in isolation while avoiding circular imports.
+
+### Type Provenance
+
+All types referenced by `OrchestratorContext` are imported from the shared types directory (`src/shared/types/`). The `orchestratorContext.ts` file re-exports commonly-used types for convenience, so downstream modules can import from either location. Orchestrator-specific types like `OrchestratorRunGraph`, `OrchestratorWorkerState`, `OrchestratorChatMessage`, and `TeamManifest` are defined in `src/shared/types/orchestrator.ts`. Mission types live in `src/shared/types/missions.ts`, and model configuration types in `src/shared/types/models.ts`.
+
+---
+
+## Scoped Memory and Runtime Context Assembly
 
 ### Scoped Memory Namespaces
 

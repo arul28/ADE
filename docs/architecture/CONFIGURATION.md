@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-02
 
 The ADE configuration system manages project-level and workspace-level settings through a layered YAML-based approach. It supports shared team configuration, personal local overrides, and a trust model that prevents unauthorized command execution.
 
@@ -198,7 +198,7 @@ ai:
       model: "haiku"
 ```
 
-The `ai` section belongs in `local.yaml` only, since it reflects the individual developer's installed CLI tools and preferences. ADE auto-detects available CLI tools (Claude Code, Codex) and populates provider information automatically. The `taskRouting` section allows per-task-type configuration of which provider and model to use.
+The `ai` section belongs in `local.yaml` only, since it reflects the individual developer's installed CLI tools and preferences. ADE auto-detects available CLI tools (Claude Code, Codex) and populates provider information automatically. The `taskRouting` section allows per-task-type configuration of which provider and model to use. Model identifiers reference entries in the unified model registry (`src/shared/modelRegistry.ts`), which serves as the single source of truth for all supported models, their capabilities, and pricing (see DATA_MODEL.md for details).
 
 ### Orchestrator Evolution Configuration
 
@@ -253,7 +253,7 @@ ai:
       model: "haiku"                     # Model for narrative generation
 ```
 
-These settings are all optional. ADE provides sensible defaults for all values.
+These settings are all optional. ADE provides sensible defaults for all values. Model identifiers used in these sections (e.g., `"sonnet"`, `"haiku"`) are resolved against the model registry. The `ModelConfig` and `OrchestratorIntelligenceConfig` types that back these settings live in `src/shared/types/models.ts`.
 
 ### Trust Model
 
@@ -321,7 +321,7 @@ When trust is not established, the UI displays a trust confirmation dialog showi
 
 ### Config Service API
 
-The configuration system is exposed through `projectConfigService.ts`, which provides a unified interface for reading, validating, and writing configuration.
+The configuration system is exposed through `projectConfigService.ts`, which provides a unified interface for reading, validating, and writing configuration. Configuration-related types (`AdeConfig`, `ConfigSnapshot`, `TrustState`, `ValidationResult`) are defined in `src/shared/types/config.ts`.
 
 #### `get(): ConfigSnapshot`
 

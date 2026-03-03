@@ -7,7 +7,7 @@ Base build order:
 1. Phase 1 (Agent SDK Integration + AgentExecutor Interface) — **Complete**
 1.5. Phase 1.5 (Agent Chat Integration) — **Complete**
 2. Phase 2 (MCP Server) — **Complete**
-3. Phase 3 (AI Orchestrator + Missions Overhaul) — **In Progress** (Project Hivemind shipped; 8 remaining tasks define finish criteria — see `phase-3.md`)
+3. Phase 3 (AI Orchestrator + Missions Overhaul) — **In Progress** (Waves 1-4 shipped including Project Hivemind and codebase refactoring; Tasks 7-8 remaining — see `phase-3.md`)
 4. Phase 4 (CTO + Ecosystem)
 5. Phase 5 (Play Runtime Isolation)
 5.5. Phase 5.5 (Compute Backend Abstraction)
@@ -237,7 +237,7 @@ Protocols evaluated during research for inter-agent and agent-to-human communica
 **Temporal / Inngest patterns**: Durable execution frameworks that provide crash-recoverable, resumable workflows. Key properties: automatic retries with configurable backoff, state persistence across process restarts, workflow versioning, and step-level idempotency.
 
 ADE's orchestrator achieves similar properties through:
-- **Deterministic state machine** (`orchestratorService.ts`): Tracks runs, steps, attempts, and claims with durable SQLite records.
+- **Deterministic state machine** (`orchestratorService.ts` + extracted modules `orchestratorQueries.ts`, `stepPolicyResolver.ts`, `orchestratorConstants.ts`): Tracks runs, steps, attempts, and claims with durable SQLite records.
 - **Transcript persistence** (`attempt_transcripts` table): Full conversation history stored per attempt, enabling `resumeUnified()` after crashes.
 - **Compaction summaries**: When context is compacted, the summary is stored as a resumable checkpoint.
 - **Step-level retry**: Each step has configurable `maxRetries` with the orchestrator managing retry state.

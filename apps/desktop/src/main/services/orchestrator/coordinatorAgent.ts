@@ -6,7 +6,7 @@
 
 import { streamText, stepCountIs } from "ai";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
-import { createCoordinatorToolSet } from "./coordinatorTools";
+import { createCoordinatorToolSet, type CoordinatorSendWorkerMessageFn } from "./coordinatorTools";
 import {
   formatRuntimeEvent,
 } from "./coordinatorEventFormatter";
@@ -16,6 +16,7 @@ import {
   type CompactionMonitor,
   type TranscriptEntry,
 } from "../ai/compactionEngine";
+import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
 import { resolveModel } from "../ai/providerResolver";
 import { detectAllAuth } from "../ai/authDetector";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -101,6 +102,8 @@ export type CoordinatorAgentDeps = {
   onHardCapTriggered?: (detail: string) => void;
   /** Called when budget pressure transitions to warning or critical. Emits a soft warning chat message. */
   onBudgetWarning?: (pressure: "warning" | "critical", detail: string) => void;
+  /** Runtime worker delivery bridge used by coordinator messaging tools. */
+  sendWorkerMessageToSession?: CoordinatorSendWorkerMessageFn;
 };
 
 type QueuedEvent = {
@@ -118,6 +121,14 @@ const MAX_TOOL_STEPS_PER_TURN = 25;
 const COMPACTION_THRESHOLD_RATIO = 0.50;
 const MAX_CONVERSATION_HISTORY = 200;
 const MAX_EVENT_RETRY_COUNT = 2;
+const CHECKPOINT_TURN_INTERVAL = 5;
+const CHECKPOINT_SUMMARY_MAX_CHARS = 8_000;
+const CHECKPOINT_DAG_MUTATION_TOOLS = new Set([
+  "spawn_worker",
+  "revise_plan",
+  "mark_step_complete",
+  "complete_mission",
+]);
 
 // ---------------------------------------------------------------------------
 // Worker Identity Prompt Builder
@@ -188,6 +199,8 @@ export class CoordinatorAgent {
   private compactionMonitor: CompactionMonitor | null = null;
   private cachedSdkModel: Awaited<ReturnType<typeof resolveModel>> | null = null;
   private cachedModelAt = 0;
+  private compactionCount = 0;
+  private lastEventTimestampMs: number | null = null;
 
   constructor(deps: CoordinatorAgentDeps) {
     this.deps = deps;
@@ -204,7 +217,9 @@ export class CoordinatorAgent {
       onRunFinalize: deps.onRunFinalize,
       onHardCapTriggered: deps.onHardCapTriggered,
       onBudgetWarning: deps.onBudgetWarning,
+      sendWorkerMessageToSession: deps.sendWorkerMessageToSession,
     });
+    this.wrapDagMutationToolsWithCheckpoint();
     this.systemPrompt = this.buildSystemPrompt();
 
     // Initialize compaction monitor if enabled
@@ -230,9 +245,11 @@ export class CoordinatorAgent {
     formattedMessage?: string,
   ): void {
     if (this.dead) return;
+    const receivedAt = Date.now();
     const message =
       formattedMessage ?? formatRuntimeEvent(event).summary;
-    this.eventQueue.push({ message, receivedAt: Date.now() });
+    this.lastEventTimestampMs = receivedAt;
+    this.eventQueue.push({ message, receivedAt });
     this.scheduleBatch();
   }
 
@@ -241,7 +258,9 @@ export class CoordinatorAgent {
    */
   injectMessage(message: string): void {
     if (this.dead) return;
-    this.eventQueue.push({ message, receivedAt: Date.now() });
+    const receivedAt = Date.now();
+    this.lastEventTimestampMs = receivedAt;
+    this.eventQueue.push({ message, receivedAt });
     this.scheduleBatch();
   }
 
@@ -306,6 +325,9 @@ export class CoordinatorAgent {
       // Call the AI with tools
       await this.runTurn();
       this.turnCount++;
+      if (this.turnCount % CHECKPOINT_TURN_INTERVAL === 0) {
+        this.saveCheckpoint("turn_interval");
+      }
 
       // Check if compaction is needed
       if (this.compactionMonitor?.shouldCompact()) {
@@ -335,6 +357,65 @@ export class CoordinatorAgent {
   }
 
   // ─── AI Turn Execution ───────────────────────────────────────────
+
+  private wrapDagMutationToolsWithCheckpoint(): void {
+    for (const toolName of CHECKPOINT_DAG_MUTATION_TOOLS) {
+      const tool = this.tools[toolName] as any;
+      if (!tool || typeof tool.execute !== "function") continue;
+      const originalExecute = tool.execute.bind(tool);
+      tool.execute = async (...args: any[]) => {
+        this.saveCheckpoint(`before_tool:${toolName}`);
+        return originalExecute(...args);
+      };
+    }
+  }
+
+  private summarizeForCheckpoint(): string {
+    const recentHistory = this.conversationHistory.slice(-10);
+    const lines: string[] = [];
+    for (const message of recentHistory) {
+      const role = String(message.role ?? "unknown").trim() || "unknown";
+      const rawContent =
+        typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+      const normalized = rawContent.replace(/\s+/g, " ").trim();
+      if (!normalized.length) continue;
+      lines.push(`${role}: ${normalized.slice(0, 500)}`);
+    }
+    if (this.eventQueue.length > 0) {
+      lines.push(`pending_events: ${this.eventQueue.length}`);
+    }
+    const summary = lines.join("\n").trim();
+    if (!summary.length) {
+      return "No conversation history yet.";
+    }
+    return summary.length > CHECKPOINT_SUMMARY_MAX_CHARS
+      ? `${summary.slice(0, CHECKPOINT_SUMMARY_MAX_CHARS)}\n[checkpoint summary truncated]`
+      : summary;
+  }
+
+  private saveCheckpoint(trigger: string): void {
+    const lastEventTimestamp =
+      Number.isFinite(this.lastEventTimestampMs) && this.lastEventTimestampMs != null
+        ? new Date(this.lastEventTimestampMs).toISOString()
+        : null;
+    const checkpoint = {
+      version: 1,
+      runId: this.deps.runId,
+      missionId: this.deps.missionId,
+      conversationSummary: this.summarizeForCheckpoint(),
+      lastEventTimestamp,
+      turnCount: this.turnCount,
+      compactionCount: this.compactionCount,
+      savedAt: new Date().toISOString(),
+    };
+    void writeCoordinatorCheckpoint(this.deps.projectRoot, this.deps.runId, checkpoint).catch((error) => {
+      this.deps.logger.debug("coordinator_agent.checkpoint_write_failed", {
+        runId: this.deps.runId,
+        trigger,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 
   private async runTurn(): Promise<void> {
     const sdkModel = await this.resolveModel();
@@ -409,13 +490,48 @@ export class CoordinatorAgent {
         modelId: this.deps.modelId,
       });
 
-      // Replace conversation history with compacted summary — preserve original mission goal
+      const stateDoc = await readMissionStateDocument({
+        projectRoot: this.deps.projectRoot,
+        runId: this.deps.runId,
+      });
+
+      const serializedState =
+        stateDoc
+          ? JSON.stringify(stateDoc, null, 2)
+          : JSON.stringify(
+              {
+                schemaVersion: 1,
+                runId: this.deps.runId,
+                note: "Mission state document is not available yet."
+              },
+              null,
+              2
+            );
+
       this.conversationHistory = [
         {
           role: "user",
-          content: `[CONTEXT COMPACTION]\nOriginal mission: ${this.deps.missionGoal}\n\nPrevious conversation summary:\n${result.summary}\n\nContinue managing the mission. Ensure all remaining work aligns with the original mission goal above.`,
+          content: [
+            `[CONTEXT COMPACTION]`,
+            `Original mission: ${this.deps.missionGoal}`,
+            ``,
+            `Previous conversation summary:`,
+            result.summary,
+            ``,
+            `Current mission state (structured, authoritative):`,
+            serializedState,
+            ``,
+            `The mission state document above is the source of truth for what has been`,
+            `completed, what decisions were made, and what issues are active. Use it to`,
+            `orient yourself after this context compaction.`,
+            ``,
+            `Continue managing the mission.`
+          ].join("\n"),
         },
       ];
+
+      this.compactionCount += 1;
+      this.saveCheckpoint("compaction");
 
       this.deps.logger.info("coordinator_agent.compaction_complete", {
         runId: this.deps.runId,
@@ -487,12 +603,29 @@ export class CoordinatorAgent {
           if (p.description) parts.push(`   Description: ${p.description}`);
           if (p.instructions) parts.push(`   Instructions: ${p.instructions}`);
           if (p.validationGate.tier !== "none") parts.push(`   Validation: ${p.validationGate.tier.replace("-", " ")} ${p.validationGate.required ? "(required)" : "(optional)"}`);
+          if (p.askQuestions.enabled) {
+            const modeLabel =
+              p.askQuestions.mode === "always"
+                ? "always"
+                : p.askQuestions.mode === "auto_if_uncertain"
+                  ? "auto if uncertain"
+                  : "never";
+            parts.push(
+              `   Clarification: enabled (${modeLabel}, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions)`
+            );
+          } else {
+            parts.push("   Clarification: disabled (never)");
+          }
           if (p.orderingConstraints.mustBeFirst) parts.push(`   Ordering: must be first`);
           if (p.orderingConstraints.mustBeLast) parts.push(`   Ordering: must be last`);
           if (p.orderingConstraints.canLoop) parts.push(`   Loop: can repeat${p.orderingConstraints.loopTarget ? ` (back to ${p.orderingConstraints.loopTarget})` : ""}`);
           return parts.join("\n");
         });
-      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\n${phaseLines.join("\n")}`;
+      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nClarification rules per phase govern when you may use the ask_user tool:
+- "auto_if_uncertain": Before starting phase work, ask only when ambiguity or risk could cause significant rework.
+- "always": Ask at least one clarifying question before starting that phase.
+- "never": Do not ask questions in that phase; proceed with reasonable assumptions.
+- Respect each phase max question limit. Avoid obvious or low-value questions.\n${phaseLines.join("\n")}`;
     }
 
     // Build available workers section
@@ -602,6 +735,8 @@ This is where you earn your keep. When a worker completes:
 
 When a worker is running:
 - If events suggest it's drifting, use send_message to course-correct in real time
+- Always check send_message/message_worker/broadcast response fields (delivered, method, reason) before assuming a worker saw your guidance
+- method: "steer" with delivered: false means the message is queued and will only be seen after the worker's current turn completes
 - If it's stuck or going in circles, stop_worker and spawn a replacement with better context
 - Use read_mission_status to get the full DAG picture before making decisions
 
@@ -622,6 +757,11 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - If two workers are producing conflicting changes, stop one and clarify ownership
 - Be willing to abandon sunk work — a bad approach at 80% is worse than a good approach at 0%
 - When using revise_plan, always provide explicit dependencyPatches — the runtime will NOT auto-rewire dependencies
+
+### 6.5 Persist Mission Memory
+- Use update_mission_state after significant coordinator decisions so rationale survives context compaction
+- Use read_mission_state before major plan changes or mission completion to refresh durable facts
+- Keep mission-state summaries concise: short outcomes, short decisions, actionable issue descriptions
 
 ### 7. Finalize When Done
 - Call list_tasks and read_mission_status to verify everything is complete
@@ -677,6 +817,8 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Need different approach | mark_step_failed, then spawn_worker |
 | Non-critical and failing | skip_step |
 | Restructure the plan | revise_plan (with dependencyPatches) |
+| Persist durable memory | update_mission_state |
+| Reload durable memory | read_mission_state |
 | Check budget pressure | get_budget_status |
 | Need human input | request_user_input |
 | Mission complete | complete_mission |
@@ -690,6 +832,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - NEVER retry the same approach more than twice. If it failed twice, try something different.
 - ALWAYS check budget before spawning multiple workers.
 - ALWAYS validate milestone outputs before starting the next milestone.
+- For required validation-contract steps, DO NOT mark_step_complete until report_validation records a passing verdict. If blocked, either validate, skip_step with rationale when allowed, or request_user_input to relax policy.
 - Workers are disposable and start cold. Your persistent context is the mission's continuity — use it.
 - The mission goal above is your north star. Before calling complete_mission, verify ALL aspects are addressed.`;
   }

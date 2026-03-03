@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-03-02
 
 ---
 
@@ -236,11 +236,16 @@ Workflow for stacked lanes with chained PRs:
 | `githubService` | Exists | GitHub API integration — PR CRUD, checks, reviews, merge operations. Uses GitHub REST API directly; in hosted mode routes requests via the cloud GitHub App proxy. |
 | `prService` | Exists | PR lifecycle management — creation/linking, status tracking, stack chain logic, land flow orchestration. Supports hosted, BYOK, and guest/CLI modes for description drafting. |
 | `prPollingService` | Exists | Periodic polling of GitHub for PR status updates. Emits `prs-updated` events and `pr-notification` events (checks failing, review requested, changes requested, merge ready). Configurable interval with jitter and exponential backoff on failures; respects GitHub rate limit reset headers. |
-| `packService` | Exists | Provides lane pack content for auto-drafting PR descriptions. |
+| `packService` | Exists | Provides lane pack content for auto-drafting PR descriptions. Internally delegates to `projectPackBuilder` and `missionPackBuilder` for structured pack generation. |
 | `laneService` | Exists | Lane-PR association, parent-child relationships for stacking. |
 | `operationService` | Exists | Records PR land operations in the history timeline. |
 | `aiIntegrationService` | Exists (optional) | Generates AI-drafted PR title and body locally via AgentExecutor (Claude or Codex CLI). |
 | `byokLlmService` | Exists (optional) | In BYOK mode, generates AI-drafted PR description body using the user's own LLM key. |
+
+**Shared frontend utilities**: PR-related UI components share constants and helpers extracted into `src/renderer/components/prs/shared/`:
+
+- `tilingConstants.ts` -- Layout constants for the PR tiling views
+- `prHelpers.ts` -- Common PR helpers including `normalizeBranchName()`
 
 ### Authentication
 

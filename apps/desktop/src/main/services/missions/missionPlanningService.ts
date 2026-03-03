@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type {
+  PhaseCard,
   MissionExecutionPolicy,
   MissionPlannerAttempt,
   MissionPlannerEngine,
@@ -16,6 +17,8 @@ import type {
   PlannerMissionComplexity,
   PlannerMissionDomain,
   PlannerMissionStrategy,
+  PlannerClarifyingAnswer,
+  PlannerClarifyingQuestion,
   PlannerPlan,
   PlannerStepPlan,
   PlannerTaskType,
@@ -24,6 +27,7 @@ import type {
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import type { createMemoryService } from "../memory/memoryService";
 import { isRecord } from "../shared/utils";
 
 type MissionPlanningLogger = {
@@ -75,8 +79,13 @@ export type MissionPlanningRequest = {
   timeoutMs?: number;
   model?: string;
   allowPlanningQuestions?: boolean;
+  phaseCards?: PhaseCard[];
   contextBundle?: MissionPlanningContextBundle;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
+  memoryProjectId?: string | null;
+  runId?: string | null;
+  sourceRunId?: string | null;
   logger?: MissionPlanningLogger;
   policy?: MissionExecutionPolicy;
   teamRuntime?: TeamRuntimeConfig;
@@ -110,14 +119,109 @@ type PlannerRuntimeError = {
   rawResponse?: string | null;
 };
 
-const TASK_TYPES: PlannerTaskType[] = ["analysis", "code", "integration", "test", "review", "merge", "deploy", "docs"];
+type PlannerProjectKnowledgeEntry = {
+  category: string;
+  content: string;
+};
+
+const TASK_TYPES: PlannerTaskType[] = ["analysis", "code", "integration", "test", "review", "merge", "deploy", "docs", "milestone"];
 const CONTEXT_PROFILES: PlannerContextProfileRequirement[] = ["deterministic", "deterministic_plus_narrative"];
 const CLAIM_LANES: PlannerClaimLane[] = ["analysis", "backend", "frontend", "integration", "conflict"];
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_PLANNER_VALIDATION_RETRIES = 2;
+const DEFAULT_PLANNER_MAX_QUESTIONS = 5;
 const GENERIC_STEP_NAME_RE = /^(?:step|task|phase)\s*[-_#]?\s*\d+$/i;
 const GENERIC_STEP_DESCRIPTION_RE =
   /^(?:execute|do|perform)\s+(?:mission|this|the)\s+(?:work|step|task)(?:\s+for\s+this\s+step)?\.?$/i;
+
+type PlannerClarificationPolicy = {
+  enabled: boolean;
+  mode: "always" | "auto_if_uncertain" | "never";
+  maxQuestions: number;
+};
+
+function clampQuestionCount(value: unknown, fallback = DEFAULT_PLANNER_MAX_QUESTIONS): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(1, Math.min(10, Math.floor(numeric)));
+}
+
+function normalizePlannerQuestion(question: unknown): PlannerClarifyingQuestion | null {
+  const record = isRecord(question) ? question : null;
+  if (!record) return null;
+  const text = String(record.question ?? "").trim();
+  if (!text.length) return null;
+  const context = String(record.context ?? "").trim();
+  const defaultAssumption = String(record.defaultAssumption ?? "").trim();
+  const impact = String(record.impact ?? "").trim();
+  return {
+    question: text,
+    ...(context.length ? { context: context.slice(0, 800) } : {}),
+    ...(defaultAssumption.length ? { defaultAssumption: defaultAssumption.slice(0, 800) } : {}),
+    ...(impact.length ? { impact: impact.slice(0, 800) } : {})
+  };
+}
+
+function normalizePlannerAnswer(answer: unknown): PlannerClarifyingAnswer | null {
+  const record = isRecord(answer) ? answer : null;
+  if (!record) return null;
+  const question = String(record.question ?? "").trim();
+  const value = String(record.answer ?? "").trim();
+  if (!question.length || !value.length) return null;
+  const questionIndex = Number(record.questionIndex);
+  const source = record.source === "default_assumption" ? "default_assumption" : "user";
+  const answeredAtRaw = String(record.answeredAt ?? "").trim();
+  const answeredAt = answeredAtRaw.length > 0 ? answeredAtRaw : new Date().toISOString();
+  const context = String(record.context ?? "").trim();
+  const defaultAssumption = String(record.defaultAssumption ?? "").trim();
+  const impact = String(record.impact ?? "").trim();
+  return {
+    questionIndex: Number.isFinite(questionIndex) ? Math.max(0, Math.floor(questionIndex)) : 0,
+    question,
+    answer: value,
+    source,
+    answeredAt,
+    ...(context.length ? { context: context.slice(0, 800) } : {}),
+    ...(defaultAssumption.length ? { defaultAssumption: defaultAssumption.slice(0, 800) } : {}),
+    ...(impact.length ? { impact: impact.slice(0, 800) } : {})
+  };
+}
+
+function resolvePlannerClarificationPolicy(args: {
+  allowPlanningQuestions: boolean;
+  phaseCards?: PhaseCard[];
+}): PlannerClarificationPolicy {
+  const planningPhase =
+    args.phaseCards?.find((phase) => phase.phaseKey === "planning")
+    ?? args.phaseCards?.find((phase) => phase.name.trim().toLowerCase() === "planning")
+    ?? null;
+  const phaseAsk = planningPhase?.askQuestions;
+  const phaseEnabled = phaseAsk?.enabled === true;
+  const enabled = args.allowPlanningQuestions || phaseEnabled;
+  const phaseMode = phaseAsk?.mode === "always" || phaseAsk?.mode === "auto_if_uncertain" || phaseAsk?.mode === "never"
+    ? phaseAsk.mode
+    : "auto_if_uncertain";
+  const mode = enabled
+    ? (phaseEnabled
+        ? phaseMode
+        : phaseMode === "never"
+          ? "auto_if_uncertain"
+          : phaseMode)
+    : "never";
+  const maxQuestions = clampQuestionCount(phaseEnabled ? phaseAsk?.maxQuestions : undefined);
+  if (!enabled) {
+    return {
+      enabled: false,
+      mode: "never",
+      maxQuestions
+    };
+  }
+  return {
+    enabled: true,
+    mode,
+    maxQuestions
+  };
+}
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
@@ -171,6 +275,12 @@ function isGenericStepDescription(value: string): boolean {
 function normalizeText(input: unknown, fallback: string): string {
   const text = String(input ?? "").trim();
   return text.length > 0 ? text : fallback;
+}
+
+function normalizePlannerMemoryContent(input: unknown, maxChars = 800): string {
+  const text = String(input ?? "").replace(/\s+/g, " ").trim();
+  if (!text.length) return "";
+  return text.length > maxChars ? `${text.slice(0, Math.max(1, maxChars - 3)).trimEnd()}...` : text;
 }
 
 function toEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -300,6 +410,21 @@ function plannerSchemaJson(): Record<string, unknown> {
     additionalProperties: false,
     properties: {
       schemaVersion: { const: "1.0" },
+      clarifyingQuestions: {
+        type: "array",
+        maxItems: 10,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            question: { type: "string" },
+            context: { type: "string" },
+            defaultAssumption: { type: "string" },
+            impact: { type: "string" }
+          },
+          required: ["question"]
+        }
+      },
       missionSummary: {
         type: "object",
         additionalProperties: false,
@@ -357,8 +482,9 @@ function buildPlannerPrompt(args: {
   prompt: string;
   title: string;
   laneId: string | null;
-  allowPlanningQuestions: boolean;
+  clarificationPolicy: PlannerClarificationPolicy;
   contextBundle?: MissionPlanningContextBundle;
+  projectKnowledge?: PlannerProjectKnowledgeEntry[];
   policy?: MissionExecutionPolicy;
   planOutputPath: string;
   teamRuntime?: TeamRuntimeConfig;
@@ -385,6 +511,16 @@ function buildPlannerPrompt(args: {
     }
   }
   const docsSection = docsBlocks.length > 0 ? docsBlocks.join("\n\n") : "- none";
+  const knowledgeEntries = (args.projectKnowledge ?? [])
+    .map((entry) => ({
+      category: String(entry.category ?? "fact").trim() || "fact",
+      content: normalizePlannerMemoryContent(entry.content)
+    }))
+    .filter((entry) => entry.content.length > 0)
+    .slice(0, 8);
+  const knowledgeSection = knowledgeEntries.length
+    ? knowledgeEntries.map((entry) => `- [${entry.category}] ${entry.content}`).join("\n")
+    : "- none";
   const constraints = [
     "AI is only for initial planning. Runtime transitions are deterministic.",
     `IMPORTANT: Write your final plan as a JSON file. Use your file writing tool to create the file at the path provided in the PLAN_OUTPUT_PATH variable below. The file must contain ONLY valid JSON — no markdown, no comments, no explanations. After writing the file, respond with exactly: PLAN_WRITTEN`,
@@ -395,9 +531,9 @@ function buildPlannerPrompt(args: {
     "Dependencies must reflect true execution order. Independent workstreams should not depend on each other.",
     "Prefer minimal safe parallelism unless units are independent.",
     "Recommend a parallelismCap (1-32) based on how many workstreams can truly run independently. Include a brief parallelismRationale in missionSummary explaining your reasoning.",
-    args.allowPlanningQuestions
-      ? "Clarifying questions are allowed only in planning output assumptions/risks; runtime must not request extra input unless blocked."
-      : "Do not ask follow-up questions. Fill assumptions conservatively and continue."
+    args.clarificationPolicy.enabled
+      ? `Clarifying questions are enabled for planning (${args.clarificationPolicy.mode}, max ${args.clarificationPolicy.maxQuestions}).`
+      : "Clarifying questions are disabled for planning. Fill assumptions conservatively and continue."
   ];
 
   const lines = [
@@ -421,11 +557,42 @@ function buildPlannerPrompt(args: {
     "- HANDOFF DESIGN: Each step should produce a clear handoff summary for downstream consumers.",
     "- VERIFY EARLY: Place validation close to implementation, not batched at the end.",
     "- RIGHT-SIZE STEPS: One step = one agent, one session. If a step says 'implement X, Y, and Z' and they're independent, split them.",
+    `- Use only supported taskType values: ${TASK_TYPES.join(", ")}.`,
+    "- MILESTONE CHECKPOINTS: Insert a taskType \"milestone\" checkpoint every 3-5 implementation steps.",
+    "- MILESTONE SYNC BARRIER: Milestone steps are synchronization barriers; dependent streams wait until the milestone succeeds before fan-in/fan-out continues.",
+    "- MILESTONE VALIDATION: Milestone outputContract.completionCriteria must be explicit and verifiable (examples: \"all_acceptance_criteria_met_and_no_open_blockers\", \"integration_smoke_checks_green_and_contracts_verified\").",
+    "",
+    "Clarifying question policy:",
+    args.clarificationPolicy.enabled
+      ? `- You MAY include a top-level \"clarifyingQuestions\" array with up to ${args.clarificationPolicy.maxQuestions} entries.`
+      : "- Do not include a top-level \"clarifyingQuestions\" array.",
+    args.clarificationPolicy.enabled
+      ? args.clarificationPolicy.mode === "always"
+        ? "- Mode is \"always\": include at least one high-value clarifying question before execution planning."
+        : args.clarificationPolicy.mode === "auto_if_uncertain"
+          ? "- Mode is \"auto_if_uncertain\": include clarifying questions only when ambiguity could cause meaningful rework."
+          : "- Mode is \"never\": do not include clarifying questions."
+      : "- If information is missing, add assumptions and risks instead of questions.",
+    args.clarificationPolicy.enabled
+      ? "- For each clarifying question include: question, context, defaultAssumption, impact."
+      : "- Keep the output focused on deterministic execution steps.",
+    args.clarificationPolicy.enabled
+      ? "- Avoid obvious questions. Ask only what materially changes implementation or validation."
+      : "- Runtime should proceed without operator input unless blocked by policy.",
+    "",
+    "Clarifying question output shape (optional):",
+    args.clarificationPolicy.enabled
+      ? `- \"clarifyingQuestions\": [{ \"question\": string, \"context\": string, \"defaultAssumption\": string, \"impact\": string }] (max ${args.clarificationPolicy.maxQuestions})`
+      : "- (disabled)",
     "",
     "IMPORTANT: All relevant project documentation is provided inline below. Do NOT attempt to read or open any files yourself — all context you need for planning is already included in this prompt.",
     "",
     "Project documentation (inline):",
     docsSection,
+    "",
+    "Project knowledge (memory budget, standard):",
+    knowledgeSection,
+    "- Consider this knowledge when decomposing work, ordering dependencies, and defining validation checkpoints.",
     "",
     "Additional context bundle (JSON):",
     stableStringify(args.contextBundle ?? {}),
@@ -467,7 +634,7 @@ function buildPlannerPrompt(args: {
     );
     if (p.testing.mode === "none") {
       lines.push(
-        "HARD CONSTRAINT — TESTING DISABLED: The user has explicitly disabled testing. You MUST NOT generate any test, validation, or verification steps. Do not include steps of type \"test\", \"validation\", \"test_review\", or any step whose purpose is running tests. This is a non-negotiable requirement.",
+        "HARD CONSTRAINT — TESTING DISABLED: The user has explicitly disabled testing. You MUST NOT generate any test, validation, or verification steps. Do not include steps of type \"test\", \"validation\", \"test_review\", \"milestone\", or any step whose purpose is running tests/validation gates. This is a non-negotiable requirement.",
         ""
       );
     }
@@ -556,6 +723,18 @@ export function validateAndCanonicalizePlannerPlan(raw: unknown): {
 } {
   const source = isRecord(raw) ? raw : {};
   const missionSummarySource = isRecord(source.missionSummary) ? source.missionSummary : {};
+  const clarifyingQuestions = Array.isArray(source.clarifyingQuestions)
+    ? source.clarifyingQuestions
+        .map((entry) => normalizePlannerQuestion(entry))
+        .filter((entry): entry is PlannerClarifyingQuestion => entry != null)
+        .slice(0, 10)
+    : [];
+  const clarifyingAnswers = Array.isArray(source.clarifyingAnswers)
+    ? source.clarifyingAnswers
+        .map((entry) => normalizePlannerAnswer(entry))
+        .filter((entry): entry is PlannerClarifyingAnswer => entry != null)
+        .slice(0, 20)
+    : [];
   const stepsRaw = Array.isArray(source.steps) ? source.steps : [];
   const normalizedSteps = stepsRaw.map((step, index) => normalizePlannerStep(step, index));
 
@@ -647,6 +826,8 @@ export function validateAndCanonicalizePlannerPlan(raw: unknown): {
 
   const plan: PlannerPlan = {
     schemaVersion: "1.0",
+    ...(clarifyingQuestions.length > 0 ? { clarifyingQuestions } : {}),
+    ...(clarifyingAnswers.length > 0 ? { clarifyingAnswers } : {}),
     missionSummary: {
       title: normalizeText(missionSummarySource.title, "Mission"),
       objective: normalizeText(missionSummarySource.objective, "Deliver mission objective with deterministic execution."),
@@ -783,6 +964,8 @@ export function buildDeterministicPlannerPlan(args: {
   const strategy = mapLegacyStrategy(legacy.strategy);
   return {
     schemaVersion: "1.0",
+    clarifyingQuestions: [],
+    clarifyingAnswers: [],
     missionSummary: {
       title: args.title,
       objective: args.prompt.trim(),
@@ -881,7 +1064,7 @@ function inferRoleClass(step: PlannerStepPlan): string {
   if (step.taskType === "analysis") return "planning";
   if (step.taskType === "code" || step.taskType === "deploy") return "implementation";
   if (step.taskType === "test") return "testing";
-  if (step.taskType === "review") return "review";
+  if (step.taskType === "review" || step.taskType === "milestone") return "review";
   if (step.taskType === "integration") return "integration";
   if (step.taskType === "merge") return "merge";
   return "handoff";
@@ -944,6 +1127,8 @@ export function plannerPlanToMissionSteps(args: {
         executorKind = phaseModelToExecutorKind(args.policy.implementation.model);
       } else if (taskType === "test") {
         executorKind = phaseModelToExecutorKind(args.policy.testing.model);
+      } else if (taskType === "milestone") {
+        executorKind = phaseModelToExecutorKind(args.policy.validation.model);
       } else if (taskType === "review") {
         executorKind =
           reviewTarget === "tests"
@@ -976,6 +1161,8 @@ export function plannerPlanToMissionSteps(args: {
         reasoningEffort = args.policy.implementation.reasoningEffort;
       } else if (taskType === "test") {
         reasoningEffort = args.policy.testing.reasoningEffort;
+      } else if (taskType === "milestone") {
+        reasoningEffort = args.policy.validation.reasoningEffort;
       } else if (taskType === "review") {
         reasoningEffort =
           reviewTarget === "tests"
@@ -1011,14 +1198,20 @@ export function plannerPlanToMissionSteps(args: {
       },
       policy: {
         includeNarrative: requiresNarrative,
-        includeFullDocs: step.taskType === "analysis" || step.taskType === "integration" || step.taskType === "review",
+        includeFullDocs:
+          step.taskType === "analysis"
+          || step.taskType === "integration"
+          || step.taskType === "review"
+          || step.taskType === "milestone",
         docsMaxBytes: requiresNarrative ? 220_000 : 120_000,
         claimScopes: toClaimScopes(step)
       },
       roleClass,
       requiresDedicatedWorker: roleClass === "review" || roleClass === "testing" || roleClass === "integration",
       ...(reviewTarget ? { reviewTarget } : {}),
-      planStep: step
+      planStep: step,
+      ...(args.plan.clarifyingQuestions?.length ? { plannerClarifyingQuestions: args.plan.clarifyingQuestions } : {}),
+      ...(args.plan.clarifyingAnswers?.length ? { plannerClarifyingAnswers: args.plan.clarifyingAnswers } : {})
     };
 
     if (reasoningEffort) {
@@ -1034,9 +1227,9 @@ export function plannerPlanToMissionSteps(args: {
           ? "analysis"
           : step.taskType === "test"
             ? "validation"
-            : step.taskType === "integration" || step.taskType === "merge"
+          : step.taskType === "integration" || step.taskType === "merge"
               ? "integration"
-              : step.taskType === "review" || step.taskType === "docs"
+              : step.taskType === "review" || step.taskType === "docs" || step.taskType === "milestone"
                 ? "summary"
                 : "implementation",
       metadata
@@ -1047,19 +1240,46 @@ export function plannerPlanToMissionSteps(args: {
 export async function planMissionOnce(args: MissionPlanningRequest): Promise<MissionPlanningResult> {
   const startedAt = Date.now();
   const plannerRunId = randomUUID();
+  const memoryProjectId = String(args.memoryProjectId ?? "").trim();
+  const sourceRunId = String(args.sourceRunId ?? args.runId ?? "").trim() || plannerRunId;
   const missionId = args.missionId ?? randomUUID();
   const timeoutMs = Math.max(5_000, Math.min(600_000, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS)));
   const requestedEngine: MissionPlannerEngine = args.plannerEngine ?? "auto";
   const order = plannerEngineOrder(requestedEngine, args.aiIntegrationService);
   const plannerAttempts: MissionPlannerAttempt[] = [];
   const planOutputPath = getPlanOutputPath(missionId);
+  const clarificationPolicy = resolvePlannerClarificationPolicy({
+    allowPlanningQuestions: args.allowPlanningQuestions === true,
+    phaseCards: args.phaseCards
+  });
+  const projectKnowledge: PlannerProjectKnowledgeEntry[] = (() => {
+    if (!args.memoryService || !memoryProjectId.length) return [];
+    try {
+      const memories = args.memoryService.getMemoryBudget(memoryProjectId, "standard");
+      return memories
+        .map((memory) => ({
+          category: String(memory.category ?? "fact").trim() || "fact",
+          content: normalizePlannerMemoryContent(memory.content)
+        }))
+        .filter((entry) => entry.content.length > 0)
+        .slice(0, 8);
+    } catch (error) {
+      args.logger?.warn?.("missions.planner.memory_read_failed", {
+        plannerRunId,
+        projectId: memoryProjectId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return [];
+    }
+  })();
 
   const prompt = buildPlannerPrompt({
     prompt: args.prompt,
     title: args.title,
     laneId: args.laneId,
-    allowPlanningQuestions: args.allowPlanningQuestions === true,
+    clarificationPolicy,
     contextBundle: args.contextBundle,
+    projectKnowledge,
     policy: args.policy,
     planOutputPath,
     teamRuntime: args.teamRuntime
@@ -1336,6 +1556,13 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         }
       }
 
+      if (clarificationPolicy.enabled) {
+        const boundedQuestions = (plan.clarifyingQuestions ?? []).slice(0, clarificationPolicy.maxQuestions);
+        plan.clarifyingQuestions = boundedQuestions;
+      } else {
+        delete plan.clarifyingQuestions;
+      }
+
       const normalized = stableStringify(plan);
       const normalizedPlanHash = sha256(normalized);
       const planHash = sha256(rawJson);
@@ -1371,8 +1598,45 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
       // Strip test-type steps when testing is disabled
       if (args.policy?.testing?.mode === "none" && plan.steps) {
         plan.steps = plan.steps.filter(
-          (s) => !["test", "validation", "test_review"].includes(s.taskType ?? "")
+          (s) => !["test", "validation", "test_review", "milestone"].includes(s.taskType ?? "")
         );
+      }
+
+      if (args.memoryService && memoryProjectId.length) {
+        const assumptionCandidates = (plan.assumptions ?? [])
+          .map((entry) => normalizePlannerMemoryContent(entry, 400))
+          .filter((entry) => entry.length > 0)
+          .filter((entry, idx, arr) => arr.indexOf(entry) === idx);
+        const riskCandidates = assumptionCandidates.length > 0
+          ? (plan.risks ?? [])
+              .map((entry) => normalizePlannerMemoryContent(`Risk to monitor: ${entry}`, 400))
+              .filter((entry) => entry.length > 0)
+              .filter((entry, idx, arr) => arr.indexOf(entry) === idx)
+          : [];
+        const memoryCandidates = [...assumptionCandidates, ...riskCandidates]
+          .slice(0, 5);
+        if (memoryCandidates.length > 0) {
+          try {
+            for (const content of memoryCandidates) {
+              args.memoryService.addCandidateMemory({
+                projectId: memoryProjectId,
+                scope: "project",
+                category: "decision",
+                content,
+                importance: "low",
+                confidence: 0.5,
+                sourceRunId
+              });
+            }
+          } catch (error) {
+            args.logger?.warn?.("missions.planner.memory_writeback_failed", {
+              plannerRunId,
+              projectId: memoryProjectId,
+              sourceRunId,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
       }
 
       args.logger?.info?.("missions.planner.success", {

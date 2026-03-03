@@ -42,6 +42,12 @@ export type ModelDescriptor = {
   cliCommand?: string;
   isCliWrapped: boolean;
   deprecated?: boolean;
+  /** Price per million input tokens (USD). Used for cost estimation. */
+  inputPricePer1M?: number;
+  /** Price per million output tokens (USD). Used for cost estimation. */
+  outputPricePer1M?: number;
+  /** Curated cost tier for UI display (missions model selector) */
+  costTier?: "low" | "medium" | "high" | "very_high";
 };
 
 // ---------------------------------------------------------------------------
@@ -70,6 +76,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "opus",
     cliCommand: "claude",
     isCliWrapped: true,
+    inputPricePer1M: 5,
+    outputPricePer1M: 25,
+    costTier: "very_high",
   },
   {
     id: "anthropic/claude-sonnet-4-6",
@@ -86,6 +95,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "sonnet",
     cliCommand: "claude",
     isCliWrapped: true,
+    inputPricePer1M: 3,
+    outputPricePer1M: 15,
+    costTier: "medium",
   },
   {
     id: "anthropic/claude-haiku-4-5",
@@ -101,6 +113,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "haiku",
     cliCommand: "claude",
     isCliWrapped: true,
+    inputPricePer1M: 0.8,
+    outputPricePer1M: 4,
+    costTier: "low",
   },
 
   // ---- Anthropic (API key direct) ----
@@ -118,6 +133,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/anthropic",
     sdkModelId: "claude-opus-4-6",
     isCliWrapped: false,
+    inputPricePer1M: 5,
+    outputPricePer1M: 25,
+    costTier: "very_high",
   },
   {
     id: "anthropic/claude-sonnet-4-6-api",
@@ -133,6 +151,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/anthropic",
     sdkModelId: "claude-sonnet-4-6",
     isCliWrapped: false,
+    inputPricePer1M: 3,
+    outputPricePer1M: 15,
+    costTier: "medium",
   },
   {
     id: "anthropic/claude-haiku-4-5-api",
@@ -147,6 +168,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/anthropic",
     sdkModelId: "claude-haiku-4-5-20251001",
     isCliWrapped: false,
+    inputPricePer1M: 0.8,
+    outputPricePer1M: 4,
+    costTier: "low",
   },
 
   // ---- OpenAI (CLI-wrapped via codex) ----
@@ -167,6 +191,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "gpt-5.3-codex",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 8,
+    costTier: "high",
   },
   {
     id: "openai/gpt-5.3-codex-spark",
@@ -183,6 +210,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "gpt-5.3-codex-spark",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 1,
+    outputPricePer1M: 4,
+    costTier: "medium",
   },
   {
     id: "openai/gpt-5.2-codex",
@@ -199,6 +229,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "gpt-5.2-codex",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 1.5,
+    outputPricePer1M: 6,
+    costTier: "medium",
   },
   {
     id: "openai/gpt-5.1-codex-max",
@@ -215,6 +248,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "gpt-5.1-codex-max",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 3,
+    outputPricePer1M: 12,
+    costTier: "high",
   },
   {
     id: "openai/codex-mini-latest",
@@ -230,6 +266,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "codex-mini-latest",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 0.3,
+    outputPricePer1M: 1.2,
+    costTier: "low",
   },
   {
     id: "openai/o4-mini",
@@ -246,6 +285,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "o4-mini",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 1.1,
+    outputPricePer1M: 4.4,
+    costTier: "low",
   },
   {
     id: "openai/o3",
@@ -262,6 +304,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "o3",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 8,
+    costTier: "medium",
   },
 
   // ---- OpenAI (API key direct) ----
@@ -278,6 +323,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/openai",
     sdkModelId: "gpt-4.1",
     isCliWrapped: false,
+    inputPricePer1M: 2,
+    outputPricePer1M: 8,
   },
   {
     id: "openai/gpt-4.1-mini",
@@ -292,6 +339,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/openai",
     sdkModelId: "gpt-4.1-mini",
     isCliWrapped: false,
+    inputPricePer1M: 0.4,
+    outputPricePer1M: 1.6,
   },
   {
     id: "openai/o4-mini-api",
@@ -307,6 +356,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/openai",
     sdkModelId: "o4-mini",
     isCliWrapped: false,
+    inputPricePer1M: 1.1,
+    outputPricePer1M: 4.4,
   },
 
   // ---- Google (Gemini 3.x — current) ----
@@ -324,6 +375,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/google",
     sdkModelId: "gemini-3.1-pro-preview",
     isCliWrapped: false,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 5,
   },
   {
     id: "google/gemini-3-flash",
@@ -339,6 +392,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/google",
     sdkModelId: "gemini-3-flash-preview",
     isCliWrapped: false,
+    inputPricePer1M: 0.15,
+    outputPricePer1M: 0.6,
   },
 
   // ---- Google (Gemini 2.x — deprecated, kept for backward compat) ----
@@ -356,6 +411,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "gemini-2.5-pro",
     isCliWrapped: false,
     deprecated: true,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 5,
   },
   {
     id: "google/gemini-2.5-flash",
@@ -371,6 +428,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkModelId: "gemini-2.5-flash",
     isCliWrapped: false,
     deprecated: true,
+    inputPricePer1M: 0.15,
+    outputPricePer1M: 0.6,
   },
 
   // ---- DeepSeek ----
@@ -387,6 +446,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/deepseek",
     sdkModelId: "deepseek-reasoner",
     isCliWrapped: false,
+    inputPricePer1M: 0.55,
+    outputPricePer1M: 2.19,
   },
   {
     id: "deepseek/deepseek-chat",
@@ -401,6 +462,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/deepseek",
     sdkModelId: "deepseek-chat",
     isCliWrapped: false,
+    inputPricePer1M: 0.27,
+    outputPricePer1M: 1.10,
   },
 
   // ---- Mistral ----
@@ -417,6 +480,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/mistral",
     sdkModelId: "codestral-latest",
     isCliWrapped: false,
+    inputPricePer1M: 0.3,
+    outputPricePer1M: 0.9,
   },
 
   // ---- xAI ----
@@ -433,6 +498,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     sdkProvider: "@ai-sdk/xai",
     sdkModelId: "grok-3",
     isCliWrapped: false,
+    inputPricePer1M: 3,
+    outputPricePer1M: 15,
   },
 
   // ---- OpenRouter ----
@@ -553,14 +620,14 @@ export function getAvailableModels(
   const hasAuth = (matcher: (auth: { type: AuthType; cli?: string; provider?: string }) => boolean): boolean =>
     detectedAuth.some((auth) => matcher(auth));
 
+  const FAMILY_TO_CLI: Partial<Record<ProviderFamily, string>> = {
+    openai: "codex",
+    anthropic: "claude",
+    google: "gemini",
+  };
+
   const hasMappedCli = (family: ProviderFamily): boolean => {
-    const requiredCli = family === "openai"
-      ? "codex"
-      : family === "anthropic"
-        ? "claude"
-        : family === "google"
-          ? "gemini"
-          : null;
+    const requiredCli = FAMILY_TO_CLI[family] ?? null;
     if (!requiredCli) return hasAuth((auth) => auth.type === "cli-subscription");
     return hasAuth(
       (auth) => auth.type === "cli-subscription" && (!auth.cli || auth.cli === requiredCli)
@@ -655,6 +722,46 @@ export function enrichModelRegistry(enrichments: Map<string, ModelEnrichment>): 
     updated++;
   }
   return updated;
+}
+
+// ---------------------------------------------------------------------------
+// Pricing helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Get pricing for a model by its sdkModelId (e.g. "claude-sonnet-4-6").
+ * Returns per-million-token pricing. Checks dynamic overrides first,
+ * then falls back to the static pricing in MODEL_REGISTRY.
+ */
+export function getModelPricing(sdkModelId: string): { input: number; output: number } | undefined {
+  // Check dynamic overrides first
+  if (_dynamicPricingOverrides[sdkModelId]) {
+    return _dynamicPricingOverrides[sdkModelId];
+  }
+  // Fall back to registry data
+  const model = MODEL_REGISTRY.find((m) => m.sdkModelId === sdkModelId);
+  if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
+    return { input: model.inputPricePer1M, output: model.outputPricePer1M };
+  }
+  return undefined;
+}
+
+/** Dynamic pricing overrides — merged from models.dev at runtime */
+const _dynamicPricingOverrides: Record<string, { input: number; output: number }> = {};
+
+/**
+ * Merge dynamic pricing updates (e.g. from models.dev) into the pricing system.
+ * Returns the number of entries updated.
+ */
+export function updateModelPricingInRegistry(updates: Record<string, { input: number; output: number }>): number {
+  let count = 0;
+  for (const [modelId, pricing] of Object.entries(updates)) {
+    if (pricing.input >= 0 && pricing.output >= 0) {
+      _dynamicPricingOverrides[modelId] = pricing;
+      count++;
+    }
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------
