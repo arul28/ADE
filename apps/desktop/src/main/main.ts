@@ -129,8 +129,8 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     // Hide the native title bar but keep macOS traffic lights.
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 12, y: 12 },
-    // Match renderer theme to avoid a dark flash on load.
-    backgroundColor: "#fbf8ee",
+    // Match renderer dark theme to avoid a flash on load.
+    backgroundColor: "#0F0D14",
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
@@ -144,6 +144,38 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   }
 
   win.setMenuBarVisibility(false);
+
+  const toErrorMessage = (error: unknown): string =>
+    error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+
+  // Set CSP dynamically so it works with both http:// (dev) and file:// (production).
+  const isDevMode = !!process.env.VITE_DEV_SERVER_URL;
+  const cspSources = isDevMode
+    ? "'self' http://localhost:* http://127.0.0.1:*"
+    : "'self' file: app:";
+  const cspWsSources = isDevMode ? " ws://localhost:* ws://127.0.0.1:*" : "";
+  const cspPolicy = [
+    `default-src ${cspSources}`,
+    `base-uri 'self'`,
+    `form-action 'self'`,
+    `object-src 'none'`,
+    `frame-src 'none'`,
+    `script-src ${cspSources} 'unsafe-inline'`,
+    `style-src ${cspSources} 'unsafe-inline'`,
+    `img-src ${cspSources} data: blob:`,
+    `font-src ${cspSources} data:`,
+    `connect-src ${cspSources}${cspWsSources} https:`,
+    `worker-src 'self' blob:`,
+  ].join("; ");
+
+  win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [cspPolicy],
+      },
+    });
+  });
 
   win.on("unresponsive", () => {
     logger?.warn("window.unresponsive", {
@@ -166,6 +198,57 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
       exitCode: details.exitCode,
       url: win.webContents.getURL()
     });
+  });
+
+  win.webContents.on("preload-error", (_event, preloadPath, error) => {
+    logger?.error("window.preload_error", {
+      windowId: win.id,
+      preloadPath,
+      err: toErrorMessage(error)
+    });
+  });
+
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    logger?.error("window.did_fail_load", {
+      windowId: win.id,
+      errorCode,
+      errorDescription,
+      validatedURL,
+      isMainFrame
+    });
+  });
+
+  win.webContents.on("did-finish-load", () => {
+    logger?.info("window.did_finish_load", {
+      windowId: win.id,
+      url: win.webContents.getURL()
+    });
+  });
+
+  win.webContents.on("dom-ready", () => {
+    logger?.info("window.dom_ready", {
+      windowId: win.id,
+      url: win.webContents.getURL()
+    });
+  });
+
+  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    const payload = {
+      windowId: win.id,
+      level,
+      message,
+      line,
+      sourceId
+    };
+    if (level >= 2) {
+      logger?.error("window.console", payload);
+      return;
+    }
+    if (level === 1) {
+      logger?.warn("window.console", payload);
+      return;
+    }
+    logger?.info("window.console", payload);
   });
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -214,7 +297,29 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     });
   }
 
-  await win.loadURL(getRendererUrl());
+  const rendererUrl = getRendererUrl();
+  logger?.info("window.loading_url", {
+    windowId: win.id,
+    url: rendererUrl
+  });
+
+  try {
+    await win.loadURL(rendererUrl);
+  } catch (error) {
+    logger?.error("window.load_url_failed", {
+      windowId: win.id,
+      url: rendererUrl,
+      err: toErrorMessage(error)
+    });
+    const fallbackHtml = encodeURIComponent(
+      `<html><body style="margin:0;background:#0f0d14;color:#f8f8f2;font-family:monospace;padding:24px;">` +
+      `<h2 style="margin:0 0 12px;">ADE failed to load renderer</h2>` +
+      `<p style="margin:0 0 8px;">URL: ${rendererUrl.replace(/</g, "&lt;")}</p>` +
+      `<p style="margin:0;">Error: ${toErrorMessage(error).replace(/</g, "&lt;")}</p>` +
+      `</body></html>`
+    );
+    await win.loadURL(`data:text/html;charset=UTF-8,${fallbackHtml}`);
+  }
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.webContents.openDevTools({ mode: "detach" });
@@ -226,16 +331,63 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
 app.whenReady().then(async () => {
   const globalStatePath = path.join(app.getPath("userData"), "ade-state.json");
   const saved = readGlobalState(globalStatePath);
+  const fallbackProjectRoot = path.resolve(app.getPath("userData"), "ade-project");
+  const normalizeProjectPath = (value: string) => path.resolve(value);
+  const isLikelyRepoRoot = (value: string) => {
+    const resolved = normalizeProjectPath(value);
+    return (
+      resolved.length > 0 &&
+      resolved !== fallbackProjectRoot &&
+      fs.existsSync(resolved) &&
+      fs.existsSync(path.join(resolved, ".git"))
+    );
+  };
+
+  const cleanedRecentProjects = (saved.recentProjects ?? []).reduce(
+    (acc, entry) => {
+      const rootPath = typeof entry?.rootPath === "string" ? normalizeProjectPath(entry.rootPath) : "";
+      if (!isLikelyRepoRoot(rootPath)) return acc;
+      if (acc.some((item) => item.rootPath === rootPath)) return acc;
+      const displayName = typeof entry?.displayName === "string" && entry.displayName.trim().length > 0
+        ? entry.displayName
+        : path.basename(rootPath);
+      const lastOpenedAt = typeof entry?.lastOpenedAt === "string" && entry.lastOpenedAt.trim().length > 0
+        ? entry.lastOpenedAt
+        : new Date().toISOString();
+      acc.push({ rootPath, displayName, lastOpenedAt });
+      return acc;
+    },
+    [] as Array<{ rootPath: string; displayName: string; lastOpenedAt: string }>
+  );
+  const hadRecentProjectsChanges =
+    cleanedRecentProjects.length !== (saved.recentProjects ?? []).length;
+  const cleanedLastProjectRoot = saved.lastProjectRoot
+    ? normalizeProjectPath(saved.lastProjectRoot)
+    : "";
+  const validLastProjectRoot =
+    isLikelyRepoRoot(cleanedLastProjectRoot) && cleanedRecentProjects.some((project) => project.rootPath === cleanedLastProjectRoot)
+      ? cleanedLastProjectRoot
+      : "";
+  const hadLastProjectRootChanges = saved.lastProjectRoot !== validLastProjectRoot;
+  const normalizedState = {
+    ...saved,
+    lastProjectRoot: validLastProjectRoot || undefined,
+    recentProjects: cleanedRecentProjects
+  };
+
+  if (hadRecentProjectsChanges || hadLastProjectRootChanges) {
+    writeGlobalState(globalStatePath, normalizedState);
+  }
 
   const envRoot = process.env.ADE_PROJECT_ROOT;
-  const initialCandidate =
-    envRoot && envRoot.trim().length
-      ? path.resolve(envRoot)
-      : saved.lastProjectRoot && fs.existsSync(saved.lastProjectRoot)
-        ? saved.lastProjectRoot
-        : process.env.VITE_DEV_SERVER_URL
-          ? path.resolve(process.cwd(), "..", "..")
-          : path.resolve(app.getPath("userData"), "ade-project");
+  const devFallbackProject = process.env.VITE_DEV_SERVER_URL
+    ? path.resolve(process.cwd(), "..", "..")
+    : fallbackProjectRoot;
+
+  const startupUserSelected = Boolean(envRoot && envRoot.trim().length);
+  const initialCandidate = envRoot && envRoot.trim().length
+    ? normalizeProjectPath(envRoot)
+    : devFallbackProject;
 
   const broadcast = (channel: string, payload: unknown) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -258,11 +410,17 @@ app.whenReady().then(async () => {
   const initContextForProjectRoot = async ({
     projectRoot,
     baseRef,
-    ensureExclude
+    ensureExclude,
+    recordLastProject = true,
+    recordRecent = true,
+    userSelectedProject = false
   }: {
     projectRoot: string;
     baseRef: string;
     ensureExclude: boolean;
+    recordLastProject?: boolean;
+    recordRecent?: boolean;
+    userSelectedProject?: boolean;
   }): Promise<AppContext> => {
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
@@ -770,7 +928,10 @@ app.whenReady().then(async () => {
 
     startHeadWatcher();
 
-    const state = upsertRecentProject(readGlobalState(globalStatePath), project);
+    const state = upsertRecentProject(readGlobalState(globalStatePath), project, {
+      recordLastProject,
+      recordRecent
+    });
     writeGlobalState(globalStatePath, state);
 
     // Keep project pack initialized even before first terminal session.
@@ -846,6 +1007,7 @@ app.whenReady().then(async () => {
       project,
       projectId,
       adeDir: adePaths.adeDir,
+      hasUserSelectedProject: userSelectedProject,
       disposeHeadWatcher,
       keybindingsService,
       terminalProfilesService,
@@ -886,6 +1048,59 @@ app.whenReady().then(async () => {
   };
 
   let closeContextPromise: Promise<void> | null = null;
+  const createDormantProjectContext = (projectRoot = ""): AppContext => {
+    const rootIsDefined = typeof projectRoot === "string" && projectRoot.trim().length > 0;
+    const normalizedRoot = rootIsDefined ? path.resolve(projectRoot) : "";
+    const project = {
+      rootPath: normalizedRoot,
+      displayName: normalizedRoot ? path.basename(normalizedRoot) : "",
+      baseRef: "main"
+    };
+    const logger = createFileLogger(path.join(app.getPath("userData"), "ade-idle.jsonl"));
+    return ({
+      db: null,
+      logger,
+      project,
+      hasUserSelectedProject: false,
+      projectId: "",
+      adeDir: "",
+      disposeHeadWatcher: () => {},
+      keybindingsService: null as ReturnType<typeof createKeybindingsService>,
+      terminalProfilesService: null as ReturnType<typeof createTerminalProfilesService>,
+      agentToolsService: null as ReturnType<typeof createAgentToolsService>,
+      onboardingService: null as ReturnType<typeof createOnboardingService>,
+      ciService: null as ReturnType<typeof createCiService>,
+      laneService: null as ReturnType<typeof createLaneService>,
+      restackSuggestionService: null,
+      autoRebaseService: null,
+      sessionService: null as ReturnType<typeof createSessionService>,
+      ptyService: null as ReturnType<typeof createPtyService>,
+      diffService: null as ReturnType<typeof createDiffService>,
+      fileService: null as ReturnType<typeof createFileService>,
+      operationService: null as ReturnType<typeof createOperationService>,
+      gitService: null as ReturnType<typeof createGitOperationsService>,
+      conflictService: null as ReturnType<typeof createConflictService>,
+      aiIntegrationService: null as ReturnType<typeof createAiIntegrationService>,
+      agentChatService: null as ReturnType<typeof createAgentChatService>,
+      githubService: null as ReturnType<typeof createGithubService>,
+      prService: null as ReturnType<typeof createPrService>,
+      prPollingService: null as ReturnType<typeof createPrPollingService>,
+      queueLandingService: null as ReturnType<typeof createQueueLandingService>,
+      jobEngine: null as ReturnType<typeof createJobEngine>,
+      automationService: null as ReturnType<typeof createAutomationService>,
+      automationPlannerService: null as ReturnType<typeof createAutomationPlannerService>,
+      missionService: null as ReturnType<typeof createMissionService>,
+      missionPreflightService: null as ReturnType<typeof createMissionPreflightService>,
+      orchestratorService: null as ReturnType<typeof createOrchestratorService>,
+      missionBudgetService: null as ReturnType<typeof createMissionBudgetService>,
+      aiOrchestratorService: null as ReturnType<typeof createAiOrchestratorService>,
+      packService: null as ReturnType<typeof createPackService>,
+      projectConfigService: null as ReturnType<typeof createProjectConfigService>,
+      processService: null as ReturnType<typeof createProcessService>,
+      testService: null as ReturnType<typeof createTestService>,
+      memoryService: null
+    } as unknown as AppContext);
+  };
 
   const closeContext = async () => {
     if (closeContextPromise) {
@@ -970,17 +1185,45 @@ app.whenReady().then(async () => {
     const repoRoot = await resolveRepoRoot(selectedPath); // require a real git repo for onboarding.
     const baseRef = await detectDefaultBaseRef(repoRoot);
     await closeContext();
-    ctxRef = await initContextForProjectRoot({ projectRoot: repoRoot, baseRef, ensureExclude: true });
+    ctxRef = await initContextForProjectRoot({
+      projectRoot: repoRoot,
+      baseRef,
+      ensureExclude: true,
+      recordLastProject: true,
+      userSelectedProject: true
+    });
     return ctxRef.project;
   };
 
-  // Initial project: prefer last opened repo; if missing/non-git, start in a minimal local state until onboarding.
-  try {
-    const repoRoot = await resolveRepoRoot(initialCandidate);
-    const baseRef = await detectDefaultBaseRef(repoRoot);
-    ctxRef = await initContextForProjectRoot({ projectRoot: repoRoot, baseRef, ensureExclude: true });
-  } catch {
-    ctxRef = await initContextForProjectRoot({ projectRoot: initialCandidate, baseRef: "main", ensureExclude: false });
+  const closeCurrentProject = async () => {
+    if (!ctxRef.hasUserSelectedProject) {
+      ctxRef = createDormantProjectContext(ctxRef.project?.rootPath);
+      return;
+    }
+    const previousRoot = ctxRef.project?.rootPath;
+    await closeContext();
+    ctxRef = createDormantProjectContext(previousRoot);
+  };
+
+  // Initial project context: only load a user-specified project automatically (e.g. ADE_PROJECT_ROOT).
+  // Otherwise, start in a no-project state until the user selects one.
+  if (startupUserSelected) {
+    try {
+      const repoRoot = await resolveRepoRoot(initialCandidate);
+      const baseRef = await detectDefaultBaseRef(repoRoot);
+      ctxRef = await initContextForProjectRoot({
+        projectRoot: repoRoot,
+        baseRef,
+        ensureExclude: true,
+        recordLastProject: true,
+        recordRecent: true,
+        userSelectedProject: true
+      });
+    } catch {
+      ctxRef = createDormantProjectContext();
+    }
+  } else {
+    ctxRef = createDormantProjectContext();
   }
 
   process.on("uncaughtException", (err) => {
@@ -1005,6 +1248,7 @@ app.whenReady().then(async () => {
   registerIpc({
     getCtx: () => ctxRef,
     switchProjectFromDialog,
+    closeCurrentProject,
     globalStatePath
   });
 

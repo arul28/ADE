@@ -23,7 +23,6 @@ export function useWorkSessions() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const lanes = useAppStore((s) => s.lanes);
-  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const selectLane = useAppStore((s) => s.selectLane);
 
@@ -302,7 +301,7 @@ export function useWorkSessions() {
   /* ---- Launch new sessions ---- */
 
   const handleLaunchPty = useCallback(
-    async (laneId: string, profile: "claude" | "codex" | "shell") => {
+    async (laneId: string, profile: "claude" | "codex" | "shell", tracked = true) => {
       const toolTypeMap = { claude: "claude" as const, codex: "codex" as const, shell: "shell" as const };
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
       const commandMap = { claude: "claude", codex: "codex", shell: "" };
@@ -311,7 +310,7 @@ export function useWorkSessions() {
         cols: 100,
         rows: 30,
         title: titleMap[profile],
-        tracked: true,
+        tracked,
         toolType: toolTypeMap[profile],
         startupCommand: commandMap[profile] || undefined,
       });

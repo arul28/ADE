@@ -21,8 +21,8 @@ import type {
   MissionStatus,
 } from "../../../shared/types";
 import { MentionInput, type MentionParticipant } from "../shared/MentionInput";
-import { relativeWhen } from "../../lib/format";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { useMissionPolling } from "./useMissionPolling";
 
 // ── Design tokens (aliases for backward compat) ──
 const MONO = MONO_FONT;
@@ -33,7 +33,6 @@ const BG_INPUT = COLORS.recessedBg;
 const BG_PAGE = COLORS.pageBg;
 const ACCENT = COLORS.accent;
 const BORDER = "#2a2535";
-const BORDER_SUBTLE = COLORS.border;
 const TEXT_PRIMARY = COLORS.textPrimary;
 const TEXT_SECONDARY = COLORS.textSecondary;
 const TEXT_MUTED = COLORS.textMuted;
@@ -152,18 +151,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
   const threadRefreshTimerRef = useRef<number | null>(null);
   const messageRefreshTimerRef = useRef<number | null>(null);
   const channelsRef = useRef<Channel[]>([]);
-  const visibleRef = useRef(true);
 
   useEffect(() => {
     selectedChannelIdRef.current = selectedChannelId;
   }, [selectedChannelId]);
-
-  // Track visibility to pause polling when backgrounded
-  useEffect(() => {
-    const onVisChange = () => { visibleRef.current = document.visibilityState === "visible"; };
-    document.addEventListener("visibilitychange", onVisChange);
-    return () => document.removeEventListener("visibilitychange", onVisChange);
-  }, []);
 
   // ── Build channel list from threads ──
   const channels = useMemo<Channel[]>(() => {
@@ -352,21 +343,21 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     }
   }, [missionId, runId]);
 
-  // ── Initial load + polling ──
+  // ── Initial load ──
   useEffect(() => {
     void refreshThreads();
     void refreshGlobalMessages();
     void refreshWorkers();
-
-    const interval = setInterval(() => {
-      if (!visibleRef.current) return; // skip poll when backgrounded
-      void refreshThreads();
-      void refreshGlobalMessages();
-      void refreshWorkers();
-    }, 10_000);
-
-    return () => clearInterval(interval);
   }, [refreshThreads, refreshGlobalMessages, refreshWorkers]);
+
+  // ── Polling via shared coordinator (replaces per-component setInterval) ──
+  const pollAll = useCallback(() => {
+    void refreshThreads();
+    void refreshGlobalMessages();
+    void refreshWorkers();
+  }, [refreshThreads, refreshGlobalMessages, refreshWorkers]);
+
+  useMissionPolling(pollAll, 10_000);
 
   // ── Load messages when channel changes ──
   useEffect(() => {
@@ -571,6 +562,8 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
         if (selectedChannel?.threadId) {
           await refreshThreadMessages(selectedChannel.threadId);
         }
+      } catch (err) {
+        console.error("[MissionChatV2] handleSend failed:", err);
       } finally {
         setSending(false);
       }

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatCircle, ArrowsClockwise, Plus } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,

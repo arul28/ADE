@@ -24,7 +24,6 @@ import type {
   DagMutationEvent,
   MissionBudgetSnapshot,
   OrchestratorRuntimeEvent,
-  OrchestratorRunGraph,
   PhaseCard,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -471,11 +470,13 @@ export class CoordinatorAgent {
 
   private async compactHistory(): Promise<void> {
     try {
+      const now = Date.now();
+      const count = this.conversationHistory.length;
       const entries: TranscriptEntry[] = this.conversationHistory.map(
-        (m) => ({
+        (m, i) => ({
           role: m.role as "user" | "assistant",
           content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-          timestamp: new Date().toISOString(),
+          timestamp: new Date(now - (count - 1 - i) * 1000).toISOString(),
         }),
       );
 

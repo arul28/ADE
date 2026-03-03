@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChatCircle, Terminal } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { LaneTerminalsPanel } from "./LaneTerminalsPanel";

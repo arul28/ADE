@@ -89,7 +89,6 @@ export function createMissionPreflightService(args: {
   missionBudgetService: MissionBudgetService;
 }) {
   const {
-    logger,
     projectRoot,
     missionService,
     laneService,
@@ -302,7 +301,7 @@ export function createMissionPreflightService(args: {
           details: ["Create at least one lane before launching an autonomous mission."],
           fixHint: "Create or import a lane from the Lanes tab and rerun pre-flight.",
         });
-      } else if (availableLanes.length <= expectedWorkers) {
+      } else if (availableLanes.length < expectedWorkers) {
         worktreeItem = toChecklistItem({
           id: "worktrees",
           severity: "warning",

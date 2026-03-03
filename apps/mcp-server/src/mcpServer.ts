@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { runGit } from "../../desktop/src/main/services/git/git";
-import type { ContextExportLevel, MergeMethod, MissionInterventionStatus } from "../../desktop/src/shared/types";
+import type { ContextExportLevel, MergeMethod } from "../../desktop/src/shared/types";
 import type { AdeMcpRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 
@@ -687,7 +687,8 @@ const MUTATION_TOOLS = new Set([
   "create_integration",
   "rebase_lane",
   "land_queue_next",
-  "memory_add"
+  "memory_add",
+  "spawn_agent"
 ]);
 
 const ORCHESTRATION_TOOLS = new Set([

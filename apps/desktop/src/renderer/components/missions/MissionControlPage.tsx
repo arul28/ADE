@@ -1,10 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type {
   OrchestratorChatMessage,
   OrchestratorChatThread,
-  OrchestratorRunGraph,
-  OrchestratorStep,
-  OrchestratorAttempt
+  OrchestratorRunGraph
 } from "../../../shared/types";
 import { AgentPresencePanel } from "./AgentPresencePanel";
 import { ActivityFeed } from "./ActivityFeed";
@@ -43,7 +41,6 @@ function formatElapsed(startIso: string): string {
 export function MissionControlPage({
   missionId,
   missionTitle,
-  runId,
   graph,
   threads,
   onSendMessage,

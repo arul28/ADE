@@ -10,11 +10,9 @@ import {
   getModelById,
   getAvailableModels,
   resolveModelAlias,
-  type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { detectAllAuth, detectCliAuthStatuses, getCachedCliAuthStatuses, verifyProviderApiKey, type DetectedAuth, type CliAuthStatus } from "./authDetector";
-import { resolveModel } from "./providerResolver";
-import { executeUnified, resumeUnified, type UnifiedExecutorOpts, type UnifiedResumeOpts } from "./unifiedExecutor";
+import { detectAllAuth, getCachedCliAuthStatuses, verifyProviderApiKey, type DetectedAuth, type CliAuthStatus } from "./authDetector";
+import { executeUnified, resumeUnified } from "./unifiedExecutor";
 import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
 import { enrichModelRegistry } from "../../../shared/modelRegistry";
@@ -596,7 +594,8 @@ export function createAiIntegrationService(args: {
   };
 
   const executeViaUnifiedPath = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
-    const modelId = args.model!;
+    const modelId = args.model;
+    if (!modelId) throw new Error("model is required for unified execution path");
     const start = Date.now();
     let text = "";
     let structuredOutput: unknown = null;

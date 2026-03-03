@@ -151,12 +151,6 @@ function collapseEventsIncremental(
 
 /* ── Status indicators ── */
 
-function StatusDot({ status }: { status: "running" | "completed" | "failed" }) {
-  if (status === "completed") return <span className="inline-block h-1.5 w-1.5 bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]" />;
-  if (status === "failed") return <span className="inline-block h-1.5 w-1.5 bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.4)]" />;
-  return <span className="inline-block h-1.5 w-1.5 animate-pulse bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.4)]" />;
-}
-
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" }) {
   if (status === "completed") return <CheckCircle size={13} weight="bold" className="text-emerald-400" />;
   if (status === "failed") return <XCircle size={13} weight="bold" className="text-red-400" />;
@@ -803,6 +797,43 @@ const EventRow = React.memo(function EventRow({
   );
 });
 
+/**
+ * MeasuredEventRow wraps EventRow and reports its rendered height back to the
+ * virtualizer so subsequent frames use real measured sizes instead of estimates.
+ */
+const MeasuredEventRow = React.memo(function MeasuredEventRow({
+  index,
+  onMeasure,
+  ...rest
+}: EventRowProps & { index: number; onMeasure: (index: number, height: number) => void }) {
+  const rowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    // Report the actual rendered height (including margin from space-y-3 = 12px gap).
+    const height = el.offsetHeight;
+    if (height > 0) onMeasure(index, height);
+  });
+
+  return (
+    <div ref={rowRef}>
+      <EventRow {...rest} />
+    </div>
+  );
+});
+
+/* ── Virtualization constants ── */
+
+/** Estimated height per message row (px) used before real measurement. */
+const ESTIMATED_ROW_HEIGHT = 80;
+/** Gap between rows from `space-y-3` (Tailwind 0.75rem = 12px). */
+const ROW_GAP = 12;
+/** Number of extra rows to render above/below the visible viewport. */
+const OVERSCAN = 10;
+/** Minimum number of rows before virtualization kicks in. */
+const VIRTUALIZATION_THRESHOLD = 60;
+
 export function AgentChatMessageList({
   events,
   showStreamingIndicator = false,
@@ -822,6 +853,12 @@ export function AgentChatMessageList({
   const [stickToBottom, setStickToBottom] = useState(true);
   const stickToBottomRef = useRef(true);
   const onApprovalRef = useRef(onApproval);
+
+  // Virtualization scroll tracking
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
+  // Map of row index → measured height (filled in lazily as rows render)
+  const measuredHeights = useRef<Map<number, number>>(new Map());
 
   useEffect(() => {
     onApprovalRef.current = onApproval;
@@ -874,19 +911,159 @@ export function AgentChatMessageList({
     el.scrollTop = el.scrollHeight;
   }, [rows, stickToBottom]);
 
+  // Observe the scroll container's size so we know the viewport height.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (typeof ResizeObserver === "undefined") {
+      // Fallback for test environments / old browsers
+      setContainerHeight(el.clientHeight);
+      return;
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerHeight(entry.contentRect.height);
+      }
+    });
+    ro.observe(el);
+    setContainerHeight(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  /** Returns the best-known height for a given row index. */
+  const rowHeight = useCallback((index: number) => {
+    return measuredHeights.current.get(index) ?? ESTIMATED_ROW_HEIGHT;
+  }, []);
+
+  /** Callback from MeasuredEventRow when it measures its real DOM height. */
+  const handleMeasure = useCallback((index: number, height: number) => {
+    const prev = measuredHeights.current.get(index);
+    if (prev !== height) {
+      measuredHeights.current.set(index, height);
+    }
+  }, []);
+
+  const shouldVirtualize = rows.length >= VIRTUALIZATION_THRESHOLD;
+
+  // Compute the visible window of rows when virtualization is active.
+  const { startIndex, endIndex, totalHeight, offsetTop } = useMemo(() => {
+    if (!shouldVirtualize) {
+      return { startIndex: 0, endIndex: rows.length, totalHeight: 0, offsetTop: 0 };
+    }
+
+    // Build cumulative offset array for each row's top position.
+    let cumulative = 0;
+    const offsets: number[] = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      offsets[i] = cumulative;
+      cumulative += rowHeight(i) + ROW_GAP;
+    }
+    const totalH = cumulative - (rows.length > 0 ? ROW_GAP : 0); // last row has no trailing gap
+
+    // Determine visible range from scrollTop / containerHeight.
+    const viewTop = scrollTop;
+    const viewBottom = scrollTop + containerHeight;
+
+    // Binary search for the first row visible.
+    let lo = 0;
+    let hi = rows.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const rowBottom = offsets[mid]! + rowHeight(mid);
+      if (rowBottom < viewTop) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    const firstVisible = lo;
+
+    // Walk forward to find the last visible row.
+    let lastVisible = firstVisible;
+    while (lastVisible < rows.length - 1 && offsets[lastVisible + 1]! < viewBottom) {
+      lastVisible++;
+    }
+
+    // Apply overscan
+    const start = Math.max(0, firstVisible - OVERSCAN);
+    const end = Math.min(rows.length, lastVisible + 1 + OVERSCAN);
+
+    return {
+      startIndex: start,
+      endIndex: end,
+      totalHeight: totalH,
+      offsetTop: offsets[start] ?? 0,
+    };
+  }, [shouldVirtualize, rows.length, scrollTop, containerHeight, rowHeight]);
+
+  const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const target = event.currentTarget;
+    const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+    const nextStick = distanceFromBottom < 72;
+    if (nextStick !== stickToBottomRef.current) {
+      stickToBottomRef.current = nextStick;
+      setStickToBottom(nextStick);
+    }
+    if (shouldVirtualize) {
+      setScrollTop(target.scrollTop);
+    }
+  }, [shouldVirtualize]);
+
+  /** Renders a single row with turn-divider logic. Used by both paths. */
+  const renderRow = useCallback((envelope: RenderEnvelope, index: number, virtualized: boolean) => {
+    const currentTurn = "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
+    const previous = rows[index - 1];
+    const previousTurn = previous && "turnId" in previous.event ? previous.event.turnId ?? null : null;
+    const showTurnDivider = currentTurn && currentTurn !== previousTurn;
+    const turnDividerLabel = showTurnDivider
+      ? `Turn ${String(turnNumberMap.get(currentTurn!) ?? 0).padStart(2, "0")} · ${formatTime(envelope.timestamp)}`
+      : null;
+    const turnModelLabel = currentTurn ? (turnModelLabelMap.get(currentTurn) ?? null) : null;
+
+    if (virtualized) {
+      return (
+        <MeasuredEventRow
+          key={envelope.key}
+          index={index}
+          onMeasure={handleMeasure}
+          envelope={envelope}
+          showTurnDivider={Boolean(showTurnDivider)}
+          turnDividerLabel={turnDividerLabel}
+          turnModelLabel={turnModelLabel}
+          onApproval={handleApproval}
+        />
+      );
+    }
+
+    return (
+      <EventRow
+        key={envelope.key}
+        envelope={envelope}
+        showTurnDivider={Boolean(showTurnDivider)}
+        turnDividerLabel={turnDividerLabel}
+        turnModelLabel={turnModelLabel}
+        onApproval={handleApproval}
+      />
+    );
+  }, [rows, turnNumberMap, turnModelLabelMap, handleApproval, handleMeasure]);
+
+  // Compute the bottom spacer height for virtualized mode.
+  const bottomSpacerHeight = useMemo(() => {
+    if (!shouldVirtualize) return 0;
+    let h = 0;
+    for (let i = endIndex; i < rows.length; i++) {
+      h += rowHeight(i) + ROW_GAP;
+    }
+    // Remove trailing gap
+    if (rows.length > endIndex) h -= ROW_GAP;
+    return Math.max(0, h);
+  }, [shouldVirtualize, endIndex, rows.length, rowHeight]);
+
   return (
     <div
       ref={scrollRef}
       className={cn("h-full overflow-auto p-4", className)}
-      onScroll={(event) => {
-        const target = event.currentTarget;
-        const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
-        const nextStick = distanceFromBottom < 72;
-        if (nextStick !== stickToBottomRef.current) {
-          stickToBottomRef.current = nextStick;
-          setStickToBottom(nextStick);
-        }
-      }}
+      onScroll={handleScroll}
     >
       {rows.length === 0 ? (
         <div className="flex h-full flex-col items-center justify-center gap-4">
@@ -896,28 +1073,38 @@ export function AgentChatMessageList({
           </div>
           <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/20">Start a conversation</span>
         </div>
+      ) : shouldVirtualize ? (
+        /* ── Virtualized path: only render rows in / near the viewport ── */
+        <div style={{ height: totalHeight, position: "relative" }}>
+          {/* Top spacer pushes rendered rows to their correct scroll position */}
+          <div style={{ height: offsetTop }} aria-hidden />
+          <div className="space-y-3">
+            {rows.slice(startIndex, endIndex).map((envelope, i) =>
+              renderRow(envelope, startIndex + i, true)
+            )}
+          </div>
+          {/* Bottom spacer fills remaining scroll area */}
+          <div style={{ height: bottomSpacerHeight }} aria-hidden />
+
+          {showStreamingIndicator ? (
+            latestActivity ? (
+              <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
+            ) : (
+              <div className="flex items-center gap-3 border-l-2 border-l-accent/30 bg-gradient-to-r from-accent/[0.04] to-transparent px-4 py-2.5 font-mono text-[11px] text-fg/60">
+                <div className="flex items-center gap-1">
+                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:0ms]" />
+                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:150ms]" />
+                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:300ms]" />
+                </div>
+                <span className="font-medium">Streaming...</span>
+              </div>
+            )
+          ) : null}
+        </div>
       ) : (
+        /* ── Non-virtualized path: render all rows (small conversation) ── */
         <div className="space-y-3">
-          {rows.map((envelope, index) => {
-            const currentTurn = "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
-            const previous = rows[index - 1];
-            const previousTurn = previous && "turnId" in previous.event ? previous.event.turnId ?? null : null;
-            const showTurnDivider = currentTurn && currentTurn !== previousTurn;
-            const turnDividerLabel = showTurnDivider
-              ? `Turn ${String(turnNumberMap.get(currentTurn!) ?? 0).padStart(2, "0")} · ${formatTime(envelope.timestamp)}`
-              : null;
-            const turnModelLabel = currentTurn ? (turnModelLabelMap.get(currentTurn) ?? null) : null;
-            return (
-              <EventRow
-                key={envelope.key}
-                envelope={envelope}
-                showTurnDivider={Boolean(showTurnDivider)}
-                turnDividerLabel={turnDividerLabel}
-                turnModelLabel={turnModelLabel}
-                onApproval={handleApproval}
-              />
-            );
-          })}
+          {rows.map((envelope, index) => renderRow(envelope, index, false))}
 
           {showStreamingIndicator ? (
             latestActivity ? (

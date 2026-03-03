@@ -20,6 +20,17 @@ export default defineConfig({
   },
   build: {
     outDir: "../../dist/renderer",
-    emptyOutDir: true
+    emptyOutDir: true,
+    cssMinify: "lightningcss",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, "/");
+          if (!normalized.includes("/node_modules/")) return undefined;
+          if (normalized.includes("/node_modules/monaco-editor/")) return "vendor-monaco";
+          return undefined;
+        }
+      }
+    }
   }
 });

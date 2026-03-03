@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
@@ -24,7 +24,45 @@ type AiBannerState = {
   createdAt: string;
 };
 
+const EMPTY_TERMINAL_ATTENTION = {
+  runningCount: 0,
+  activeCount: 0,
+  needsAttentionCount: 0,
+  indicator: "none" as const,
+  byLaneId: {}
+};
+
 const ONBOARDING_DISMISSED_KEY = "ade:onboarding:dismissed:v1";
+const ZOOM_LEVEL_KEY = "ade:zoom-level";
+const MIN_ZOOM_LEVEL = 70;
+const MAX_ZOOM_LEVEL = 150;
+const ZOOM_OFFSET = 10;
+const LEGACY_DEFAULT_ZOOM = 110;
+const DEFAULT_ZOOM = 100;
+
+function normalizeZoomLevel(raw: number): number {
+  if (!Number.isFinite(raw)) return DEFAULT_ZOOM;
+  if (raw === LEGACY_DEFAULT_ZOOM) return DEFAULT_ZOOM;
+  return Math.min(MAX_ZOOM_LEVEL, Math.max(MIN_ZOOM_LEVEL, Math.trunc(raw)));
+}
+
+function getStoredZoomLevel(): number {
+  try {
+    const raw = parseInt(localStorage.getItem(ZOOM_LEVEL_KEY) || `${DEFAULT_ZOOM}`, 10);
+    const normalized = normalizeZoomLevel(raw);
+    const rawValue = Number.isFinite(raw) ? raw : DEFAULT_ZOOM;
+    if (rawValue !== normalized) {
+      localStorage.setItem(ZOOM_LEVEL_KEY, String(normalized));
+    }
+    return normalized;
+  } catch {
+    return DEFAULT_ZOOM;
+  }
+}
+
+function mapDisplayZoomToLevel(displayZoom: number): number {
+  return Math.log((Math.trunc(displayZoom) + ZOOM_OFFSET) / 100) / Math.log(1.2);
+}
 
 function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
@@ -33,7 +71,6 @@ function shortId(id: string): string {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const navigate = useNavigate();
   const location = useLocation();
   const setProject = useAppStore((s) => s.setProject);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
@@ -44,6 +81,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
+  const setShowWelcome = useAppStore((s) => s.setShowWelcome);
+  const showWelcome = useAppStore((s) => s.showWelcome);
+  const openRepo = useAppStore((s) => s.openRepo);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const closeProject = useAppStore((s) => s.closeProject);
   const selectLane = useAppStore((s) => s.selectLane);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -68,20 +110,51 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   });
 
   useEffect(() => {
-    window.ade.app
-      .getProject()
-      .then(setProject)
-      .then(() => Promise.all([refreshLanes(), refreshProviderMode(), refreshKeybindings().catch(() => { })]))
-      .then(async () => {
+    let cancelled = false;
+    const initializeProjectState = async () => {
+      try {
+        const nextProject = await window.ade.app.getProject();
+        if (cancelled) return;
         const status = await window.ade.onboarding.getStatus().catch(() => null);
+        if (cancelled) return;
+
+        const hasStoredProject = Boolean(nextProject);
+        if (nextProject) {
+          setProject(nextProject);
+          setShowWelcome(false);
+        } else {
+          setProject(null);
+          setShowWelcome(true);
+        }
+
+        if (hasStoredProject) {
+          await Promise.all([
+            refreshLanes(),
+            refreshProviderMode(),
+            refreshKeybindings().catch(() => { })
+          ]);
+        }
         setOnboardingIncomplete(Boolean(status && !status.completedAt));
-      })
-      .catch(() => {
-        // Leave project unset; UI will show placeholders.
-      });
-  }, [setProject, refreshLanes, refreshProviderMode, refreshKeybindings, navigate]);
+      } catch {
+        if (cancelled) return;
+        setProject(null);
+        setProjectMissing(false);
+        setShowWelcome(true);
+      }
+    };
+
+    void initializeProjectState();
+    return () => {
+      cancelled = true;
+    };
+  }, [setProject, refreshLanes, refreshProviderMode, refreshKeybindings, setShowWelcome]);
 
   useEffect(() => {
+    if (!project?.rootPath || showWelcome) {
+      setTerminalAttention(EMPTY_TERMINAL_ATTENTION);
+      return;
+    }
+
     let refreshTimer: number | null = null;
     let refreshInFlight = false;
     let refreshQueued = false;
@@ -142,7 +215,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [project?.rootPath, setTerminalAttention]);
+  }, [project?.rootPath, showWelcome, setTerminalAttention]);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,9 +243,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // Listen for projectMissing broadcast from main process.
   useEffect(() => {
-    const unsub = window.ade.project.onMissing(() => setProjectMissing(true));
+    const unsub = window.ade.project.onMissing((payload) => {
+      const missingPath = typeof payload?.rootPath === "string" ? payload.rootPath.trim() : "";
+      if (missingPath && missingPath === project?.rootPath) {
+        setProjectMissing(true);
+      }
+    });
     return unsub;
-  }, []);
+  }, [project?.rootPath]);
 
   // Reset projectMissing when the project changes (e.g. after relocate).
   useEffect(() => {
@@ -181,6 +259,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    if (!project?.rootPath) {
+      setContextStatus(null);
+      return;
+    }
     void window.ade.context
       .getStatus()
       .then((next) => {
@@ -194,7 +276,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [location.pathname]);
+  }, [project?.rootPath, location.pathname]);
 
   useEffect(() => {
     setAiFailure(null);
@@ -252,14 +334,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Initialize zoom from localStorage on mount (uses Electron webFrame)
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("ade:zoom-level");
-      if (saved) {
-        const pct = parseInt(saved, 10);
-        if (pct >= 70 && pct <= 150) {
-          const zoomLevel = Math.log(pct / 100) / Math.log(1.2);
-          window.ade.zoom.setLevel(zoomLevel);
-        }
-      }
+      const clamped = getStoredZoomLevel();
+      const zoomLevel = mapDisplayZoomToLevel(clamped);
+      window.ade.zoom.setLevel(zoomLevel);
     } catch {
       // ignore
     }
@@ -338,7 +415,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         />
       </div>
 
-      {projectMissing ? (
+      {projectMissing && project?.rootPath ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-red-500/8 px-3 py-1.5 text-[11px] font-mono text-red-800">
           <span className="font-semibold">Project directory not found</span> — it may have been moved or deleted.
           <span className="ml-2 inline-flex items-center gap-2">
@@ -347,9 +424,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               variant="outline"
               className="h-6 px-2 text-[11px]"
               onClick={() => {
-                window.ade.project
-                  .openRepo()
-                  .then(() => setProjectMissing(false))
+                void openRepo()
+                  .then((nextProject) => {
+                    if (nextProject) setProjectMissing(false);
+                  })
                   .catch(() => { });
               }}
             >
@@ -365,12 +443,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 window.ade.project
                   .forgetRecent(rootPath)
                   .then(async (remaining) => {
-                    setProjectMissing(false);
-                    // Switch to the next available project, or open a new one.
                     const next = remaining.find((rp) => rp.exists);
                     if (next) {
-                      await window.ade.project.switchToPath(next.rootPath);
+                      await switchProjectToPath(next.rootPath);
+                    } else {
+                      await closeProject();
                     }
+                    setProjectMissing(false);
                   })
                   .catch(() => { });
               }}
@@ -389,13 +468,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {providerMode === "guest" ? (
+      {project?.rootPath && !showWelcome && providerMode === "guest" ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          Running in Guest Mode - AI details disabled. <Link to="/settings" className="underline">Set up provider</Link>
+          Running in Guest Mode - AI details disabled. <Link to="/settings?tab=github" className="underline">Set up provider</Link>
         </div>
       ) : null}
 
-      {contextStatus?.docs?.some((doc) => !doc.exists) ? (
+      {project?.rootPath && !showWelcome && contextStatus?.docs?.some((doc) => !doc.exists) ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           Missing ADE context docs:
           {contextStatus.docs.filter((doc) => !doc.exists).map((doc) => ` ${doc.label}`).join(", ")}.
@@ -432,14 +511,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               {contextGenerateBusy === "claude" ? "Generating…" : "Generate (Claude)"}
             </Button>
-            <Link to="/settings" className="underline">Open Settings</Link>
+            <Link to="/settings?tab=context" className="underline">Open Settings</Link>
           </span>
         </div>
       ) : null}
 
       {providerMode === "subscription" && aiMockProvider ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          LLM provider is "mock" — AI will return placeholder content. <Link to="/settings" className="underline">Open Settings</Link>
+          LLM provider is "mock" — AI will return placeholder content. <Link to="/settings?tab=providers" className="underline">Open Settings</Link>
         </div>
       ) : null}
 
@@ -501,49 +580,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {onboardingIncomplete && !onboardingDismissed && location.pathname !== "/onboarding" ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-card/50 px-3 py-1.5 text-[11px] font-mono text-fg">
           <span className="font-semibold">Onboarding is incomplete.</span>{" "}
-          You can keep working and set it up later, or run the wizard to detect defaults, lanes, and initial packs.
-          <span className="ml-2 inline-flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              onClick={() => navigate("/onboarding")}
-              title="Open onboarding wizard"
-            >
-              Open wizard
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              disabled={onboardingBusy}
-              onClick={() => {
-                setOnboardingBusy(true);
-                void window.ade.onboarding
-                  .complete()
-                  .then(() => setOnboardingIncomplete(false))
-                  .finally(() => setOnboardingBusy(false));
-              }}
-              title="Skip onboarding for now"
-            >
-              {onboardingBusy ? "Skipping…" : "Skip for now"}
-            </Button>
-            <button
-              type="button"
-              className="text-muted-fg hover:text-fg"
-              onClick={() => {
-                setOnboardingDismissed(true);
-                try {
-                  window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "1");
-                } catch {
-                  // ignore
-                }
-              }}
-              title="Dismiss"
-            >
-              ×
-            </button>
-          </span>
+          Set it up in{" "}
+          <Link to="/settings?tab=context" className="underline">Settings &gt; Context &amp; Docs</Link>.
+          <button
+            type="button"
+            className="ml-2 text-muted-fg hover:text-fg"
+            onClick={() => {
+              setOnboardingDismissed(true);
+              try {
+                window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "1");
+              } catch {
+                // ignore
+              }
+            }}
+            title="Dismiss"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 

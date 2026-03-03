@@ -97,7 +97,9 @@ function resolveDependencyOrder(processIds: string[], byId: Map<string, ProcessD
   const visit = (id: string) => {
     if (!set.has(id)) return;
     if (visited.has(id)) return;
-    if (stack.has(id)) return;
+    if (stack.has(id)) {
+      throw new Error(`Circular dependency detected: process "${id}" is part of a dependency cycle`);
+    }
 
     stack.add(id);
     const proc = byId.get(id);
@@ -411,7 +413,7 @@ export function createProcessService({
     for (const proc of config.processes) {
       ensureEntry(laneId, proc.id, proc);
     }
-    for (const [k, entry] of entries) {
+    for (const [, entry] of entries) {
       if (entry.laneId !== laneId) continue;
       if (!config.processes.some((proc) => proc.id === entry.runtime.processId)) {
         entry.definition = null;

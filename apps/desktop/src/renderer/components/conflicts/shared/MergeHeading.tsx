@@ -1,4 +1,3 @@
-import React from "react";
 import { GitMerge } from "@phosphor-icons/react";
 import type { LaneSummary } from "../../../../shared/types";
 import { LaneDropdown } from "./LaneDropdown";

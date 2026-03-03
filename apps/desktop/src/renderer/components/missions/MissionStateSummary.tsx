@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { MissionStateDocument } from "../../../shared/types";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
+import { useMissionPollingImmediate } from "./useMissionPolling";
 
 type MissionStateSummaryProps = {
   runId: string | null;
@@ -62,10 +63,16 @@ export function MissionStateSummary({ runId }: MissionStateSummaryProps) {
     }
   }, [runId]);
 
+  // Initial load
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
+  // ── Polling via shared coordinator (replaces per-component setInterval) ──
+  const pollRefresh = useCallback(() => { void refresh(); }, [refresh]);
+  const { fireNow } = useMissionPollingImmediate(pollRefresh, 10_000, !!runId);
+
+  // ── Event-driven immediate refresh (debounced) ──
   useEffect(() => {
     if (!runId) return;
     const scheduleRefresh = (delayMs = 250) => {
@@ -74,13 +81,9 @@ export function MissionStateSummary({ runId }: MissionStateSummaryProps) {
       }
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
-        void refresh();
+        fireNow();
       }, delayMs);
     };
-
-    const intervalId = window.setInterval(() => {
-      void refresh();
-    }, 10_000);
 
     const unsubRuntime = window.ade.orchestrator.onEvent((event) => {
       if (event.runId !== runId) return;
@@ -93,7 +96,6 @@ export function MissionStateSummary({ runId }: MissionStateSummaryProps) {
     });
 
     return () => {
-      window.clearInterval(intervalId);
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
@@ -101,7 +103,7 @@ export function MissionStateSummary({ runId }: MissionStateSummaryProps) {
       unsubRuntime();
       unsubThread();
     };
-  }, [refresh, runId]);
+  }, [runId, fireNow]);
 
   const progress = stateDoc?.progress ?? null;
   const completed = progress?.completedSteps ?? 0;

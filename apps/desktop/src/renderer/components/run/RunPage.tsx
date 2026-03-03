@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Play, Stop, Plus, MagnifyingGlass } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Play, Stop, Plus, MagnifyingGlass, X, FolderOpen, Folder, Rocket } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { RunSidebar } from "./RunSidebar";
 import { CommandCard } from "./CommandCard";
 import { ProcessMonitor } from "./ProcessMonitor";
-import { AddCommandDialog } from "./AddCommandDialog";
+import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
 import { AiScanPanel, type AiScanSuggestion } from "./AiScanPanel";
 import type {
   ProcessDefinition,
@@ -21,11 +21,130 @@ function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+function WelcomeScreen() {
+  const openRepo = useAppStore((s) => s.openRepo);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const [recentProjects, setRecentProjects] = useState<Array<{ rootPath: string; displayName: string; exists: boolean }>>([]);
+
+  useEffect(() => {
+    window.ade.project.listRecent().then(setRecentProjects).catch(() => {});
+  }, []);
+
+  const realProjects = recentProjects.filter((rp) => rp.exists && !rp.rootPath.includes("ade-project"));
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        height: "100%",
+        background: COLORS.pageBg,
+        gap: 32,
+        padding: 48,
+      }}
+    >
+      <div style={{ textAlign: "center", maxWidth: 480 }}>
+        <div style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 64,
+          height: 64,
+          background: `${COLORS.accent}18`,
+          border: `1px solid ${COLORS.accent}30`,
+          marginBottom: 24,
+        }}>
+          <Rocket size={32} weight="duotone" style={{ color: COLORS.accent }} />
+        </div>
+        <h1 style={{
+          fontFamily: SANS_FONT,
+          fontSize: 24,
+          fontWeight: 700,
+          color: COLORS.textPrimary,
+          margin: "0 0 8px",
+        }}>
+          Welcome to ADE
+        </h1>
+        <p style={{
+          fontFamily: MONO_FONT,
+          fontSize: 12,
+          color: COLORS.textMuted,
+          margin: 0,
+          lineHeight: 1.6,
+        }}>
+          Open a project folder to get started. ADE will detect your stack,
+          set up lanes, and provide AI-powered context for your development workflow.
+        </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => void openRepo()}
+        style={{
+          ...primaryButton({ height: 44, padding: "0 28px", fontSize: 13 }),
+          gap: 10,
+        }}
+      >
+        <FolderOpen size={18} weight="regular" />
+        OPEN PROJECT
+      </button>
+
+      {realProjects.length > 0 && (
+        <div style={{ width: "100%", maxWidth: 400 }}>
+          <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>RECENT PROJECTS</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {realProjects.map((rp) => (
+              <button
+                key={rp.rootPath}
+                type="button"
+                onClick={() => void switchProjectToPath(rp.rootPath)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px 14px",
+                  background: COLORS.cardBg,
+                  border: `1px solid ${COLORS.border}`,
+                  color: COLORS.textPrimary,
+                  fontFamily: MONO_FONT,
+                  fontSize: 12,
+                  cursor: "pointer",
+                  textAlign: "left",
+                  transition: "border-color 150ms ease, background 150ms ease",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = COLORS.accent + "60";
+                  e.currentTarget.style.background = COLORS.hoverBg;
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = COLORS.border;
+                  e.currentTarget.style.background = COLORS.cardBg;
+                }}
+              >
+                <Folder size={14} weight="regular" style={{ color: COLORS.accent, flexShrink: 0 }} />
+                <div style={{ overflow: "hidden" }}>
+                  <div style={{ fontWeight: 600 }}>{rp.displayName}</div>
+                  <div style={{ fontSize: 10, color: COLORS.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {rp.rootPath}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RunPage() {
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const runLaneId = useAppStore((s) => s.runLaneId);
   const selectRunLane = useAppStore((s) => s.selectRunLane);
+  const showWelcome = useAppStore((s) => s.showWelcome);
 
   const [config, setConfig] = useState<ProjectConfigSnapshot | null>(null);
   const [definitions, setDefinitions] = useState<ProcessDefinition[]>([]);
@@ -34,9 +153,10 @@ export function RunPage() {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [scanPanelOpen, setScanPanelOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [editingProcess, setEditingProcess] = useState<{ id: string; values: AddCommandInitialValues } | null>(null);
+  const [moveToStackProcessId, setMoveToStackProcessId] = useState<string | null>(null);
 
   const effectiveLaneId = runLaneId ?? selectedLaneId ?? lanes[0]?.id ?? null;
-  const effectiveLaneName = lanes.find((l) => l.id === effectiveLaneId)?.name ?? null;
 
   // Sync runLaneId from selectedLaneId
   useEffect(() => {
@@ -47,6 +167,13 @@ export function RunPage() {
 
   // Load config, definitions, runtime
   const refreshAll = useCallback(async () => {
+    if (showWelcome) {
+      setConfig(null);
+      setDefinitions([]);
+      setRuntime([]);
+      return;
+    }
+
     setLoading(true);
     try {
       const [nextConfig, nextDefs] = await Promise.all([
@@ -64,11 +191,12 @@ export function RunPage() {
     } finally {
       setLoading(false);
     }
-  }, [effectiveLaneId]);
+  }, [effectiveLaneId, showWelcome]);
 
   useEffect(() => {
+    if (showWelcome) return;
     void refreshAll();
-  }, [refreshAll]);
+  }, [refreshAll, showWelcome]);
 
   // Subscribe to process events
   useEffect(() => {
@@ -115,23 +243,27 @@ export function RunPage() {
   // Actions
   const handleRun = useCallback(
     async (processId: string) => {
-      if (!effectiveLaneId) return;
-      const def = definitions.find((d) => d.id === processId);
-      if (!def) return;
-      // Start the managed process
-      await window.ade.processes.start({ laneId: effectiveLaneId, processId });
-      // Also open a terminal in the Work tab for visibility
       try {
-        await window.ade.pty.create({
-          laneId: effectiveLaneId,
-          cols: 120,
-          rows: 30,
-          title: def.name,
-          tracked: true,
-          startupCommand: def.command.join(" "),
-        });
-      } catch {
-        // Terminal creation is best-effort
+        if (!effectiveLaneId) return;
+        const def = definitions.find((d) => d.id === processId);
+        if (!def) return;
+        // Start the managed process
+        await window.ade.processes.start({ laneId: effectiveLaneId, processId });
+        // Also open a terminal in the Work tab for visibility
+        try {
+          await window.ade.pty.create({
+            laneId: effectiveLaneId,
+            cols: 120,
+            rows: 30,
+            title: def.name,
+            tracked: true,
+            startupCommand: def.command.join(" "),
+          });
+        } catch {
+          // Terminal creation is best-effort
+        }
+      } catch (err) {
+        console.error("[RunPage] handleRun failed:", err);
       }
     },
     [effectiveLaneId, definitions]
@@ -139,16 +271,24 @@ export function RunPage() {
 
   const handleStop = useCallback(
     async (processId: string) => {
-      if (!effectiveLaneId) return;
-      await window.ade.processes.stop({ laneId: effectiveLaneId, processId });
+      try {
+        if (!effectiveLaneId) return;
+        await window.ade.processes.stop({ laneId: effectiveLaneId, processId });
+      } catch (err) {
+        console.error("[RunPage] handleStop failed:", err);
+      }
     },
     [effectiveLaneId]
   );
 
   const handleKill = useCallback(
     async (processId: string) => {
-      if (!effectiveLaneId) return;
-      await window.ade.processes.kill({ laneId: effectiveLaneId, processId });
+      try {
+        if (!effectiveLaneId) return;
+        await window.ade.processes.kill({ laneId: effectiveLaneId, processId });
+      } catch (err) {
+        console.error("[RunPage] handleKill failed:", err);
+      }
     },
     [effectiveLaneId]
   );
@@ -214,6 +354,60 @@ export function RunPage() {
       }
       shared.stackButtons = stackButtons;
 
+      await window.ade.projectConfig.save({ shared, local: config.local });
+      await refreshAll();
+    },
+    [config, refreshAll]
+  );
+
+  const updateProcessInConfig = useCallback(
+    async (
+      processId: string,
+      cmd: {
+        name: string;
+        command: string;
+        stackId: string | null;
+        newStackName: string | null;
+        cwd: string;
+      }
+    ) => {
+      if (!config) return;
+      const shared = { ...config.shared };
+
+      // Update the process definition
+      shared.processes = (shared.processes ?? []).map((p) =>
+        p.id === processId
+          ? {
+              ...p,
+              name: cmd.name,
+              command: cmd.command.split(/\s+/),
+              cwd: cmd.cwd === "." ? undefined : cmd.cwd,
+            }
+          : p
+      );
+
+      // Update stack assignment: remove from all stacks first, then add to target
+      let stackButtons = (shared.stackButtons ?? []).map((s) => ({
+        ...s,
+        processIds: (s.processIds ?? []).filter((id) => id !== processId),
+      }));
+
+      let targetStackId = cmd.stackId;
+
+      if (cmd.newStackName) {
+        stackButtons = [
+          ...stackButtons,
+          { id: generateId(), name: cmd.newStackName, processIds: [processId] },
+        ];
+      } else if (targetStackId) {
+        stackButtons = stackButtons.map((s) =>
+          s.id === targetStackId
+            ? { ...s, processIds: [...(s.processIds ?? []), processId] }
+            : s
+        );
+      }
+
+      shared.stackButtons = stackButtons;
       await window.ade.projectConfig.save({ shared, local: config.local });
       await refreshAll();
     },
@@ -299,13 +493,60 @@ export function RunPage() {
     [handleAddFromScan]
   );
 
-  const handleEditProcess = useCallback((_processId: string) => {
-    // TODO: open edit dialog (reuse AddCommandDialog in edit mode)
+  const handleEditProcess = useCallback(
+    (processId: string) => {
+      const def = definitions.find((d) => d.id === processId);
+      if (!def) return;
+      // Find which stack this process belongs to
+      const currentStack = stacks.find((s) => s.processIds.includes(processId));
+      setEditingProcess({
+        id: processId,
+        values: {
+          name: def.name,
+          command: def.command.join(" "),
+          stackId: currentStack?.id ?? null,
+          cwd: def.cwd || ".",
+        },
+      });
+    },
+    [definitions, stacks]
+  );
+
+  const handleMoveToStack = useCallback((processId: string) => {
+    setMoveToStackProcessId(processId);
   }, []);
 
-  const handleMoveToStack = useCallback((_processId: string) => {
-    // TODO: show stack picker
-  }, []);
+  const handleMoveProcessToStack = useCallback(
+    async (processId: string, targetStackId: string | null) => {
+      if (!config) return;
+      const shared = { ...config.shared };
+
+      // Remove from all stacks, then add to target
+      let stackButtons = (shared.stackButtons ?? []).map((s) => ({
+        ...s,
+        processIds: (s.processIds ?? []).filter((id) => id !== processId),
+      }));
+
+      if (targetStackId) {
+        stackButtons = stackButtons.map((s) =>
+          s.id === targetStackId
+            ? { ...s, processIds: [...(s.processIds ?? []), processId] }
+            : s
+        );
+      }
+
+      shared.stackButtons = stackButtons;
+      await window.ade.projectConfig.save({ shared, local: config.local });
+      setMoveToStackProcessId(null);
+      await refreshAll();
+    },
+    [config, refreshAll]
+  );
+
+  // Show welcome screen when no project is currently selected or user has closed all projects.
+  if (showWelcome) {
+    return <WelcomeScreen />;
+  }
 
   return (
     <div
@@ -577,12 +818,239 @@ export function RunPage() {
         onSubmit={saveProcessToConfig}
       />
 
+      {/* ── Edit Process Dialog (reuses AddCommandDialog) ── */}
+      <AddCommandDialog
+        stacks={stacks}
+        open={editingProcess !== null}
+        onClose={() => setEditingProcess(null)}
+        onSubmit={(cmd) => {
+          if (editingProcess) {
+            void updateProcessInConfig(editingProcess.id, cmd);
+            setEditingProcess(null);
+          }
+        }}
+        initialValues={editingProcess?.values ?? null}
+        title="Edit Command"
+        submitLabel="Save"
+      />
+
       <AiScanPanel
         open={scanPanelOpen}
         onClose={() => setScanPanelOpen(false)}
         onAddCommand={handleAddFromScan}
         onAddAll={handleAddAllFromScan}
       />
+
+      {/* ── Move to Stack Dialog ── */}
+      {moveToStackProcessId !== null && (
+        <MoveToStackDialog
+          processId={moveToStackProcessId}
+          processName={processNames[moveToStackProcessId] ?? moveToStackProcessId}
+          stacks={stacks}
+          currentStackId={stacks.find((s) => s.processIds.includes(moveToStackProcessId))?.id ?? null}
+          onMove={handleMoveProcessToStack}
+          onClose={() => setMoveToStackProcessId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Move-to-Stack Dialog
+// ---------------------------------------------------------------------------
+
+type MoveToStackDialogProps = {
+  processId: string;
+  processName: string;
+  stacks: StackButtonDefinition[];
+  currentStackId: string | null;
+  onMove: (processId: string, stackId: string | null) => void;
+  onClose: () => void;
+};
+
+function MoveToStackDialog({
+  processId,
+  processName,
+  stacks,
+  currentStackId,
+  onMove,
+  onClose,
+}: MoveToStackDialogProps) {
+  const [selected, setSelected] = useState<string>(currentStackId ?? "__none__");
+
+  const canSubmit = selected !== (currentStackId ?? "__none__");
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 200,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(0,0,0,0.6)",
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        style={{
+          background: COLORS.cardBg,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 0,
+          width: 360,
+          maxWidth: "90vw",
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "14px 16px",
+            borderBottom: `1px solid ${COLORS.border}`,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 12,
+              fontWeight: 700,
+              color: COLORS.textPrimary,
+              textTransform: "uppercase",
+              letterSpacing: "1px",
+            }}
+          >
+            Move to Stack
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: COLORS.textMuted,
+              cursor: "pointer",
+              padding: 2,
+              display: "flex",
+            }}
+          >
+            <X size={16} weight="bold" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              color: COLORS.textMuted,
+            }}
+          >
+            Move <strong style={{ color: COLORS.textPrimary }}>{processName}</strong> to:
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {/* No stack option */}
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 10px",
+                cursor: "pointer",
+                background: selected === "__none__" ? COLORS.hoverBg : "transparent",
+                border: `1px solid ${selected === "__none__" ? COLORS.accent : COLORS.border}`,
+                borderRadius: 0,
+              }}
+            >
+              <input
+                type="radio"
+                name="stack"
+                value="__none__"
+                checked={selected === "__none__"}
+                onChange={(e) => setSelected(e.target.value)}
+                style={{ margin: 0 }}
+              />
+              <span
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 11,
+                  color: COLORS.textSecondary,
+                  fontStyle: "italic",
+                }}
+              >
+                No stack
+              </span>
+            </label>
+
+            {stacks.map((stack) => (
+              <label
+                key={stack.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                  background: selected === stack.id ? COLORS.hoverBg : "transparent",
+                  border: `1px solid ${selected === stack.id ? COLORS.accent : COLORS.border}`,
+                  borderRadius: 0,
+                }}
+              >
+                <input
+                  type="radio"
+                  name="stack"
+                  value={stack.id}
+                  checked={selected === stack.id}
+                  onChange={(e) => setSelected(e.target.value)}
+                  style={{ margin: 0 }}
+                />
+                <span
+                  style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 11,
+                    color: COLORS.textPrimary,
+                    fontWeight: 600,
+                  }}
+                >
+                  {stack.name}
+                </span>
+                <span
+                  style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 10,
+                    color: COLORS.textDim,
+                    marginLeft: "auto",
+                  }}
+                >
+                  {stack.processIds.length} cmd{stack.processIds.length !== 1 ? "s" : ""}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 4 }}>
+            <button type="button" onClick={onClose} style={outlineButton()}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => onMove(processId, selected === "__none__" ? null : selected)}
+              style={primaryButton({ opacity: canSubmit ? 1 : 0.4, cursor: canSubmit ? "pointer" : "default" })}
+            >
+              Move
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

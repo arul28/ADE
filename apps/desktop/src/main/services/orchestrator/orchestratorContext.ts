@@ -6,7 +6,7 @@
  * aiOrchestratorService.ts to enable modular decomposition.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import type { GetModelCapabilitiesResult } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -208,7 +208,7 @@ export type MissionRuntimeProfile = {
 };
 
 export type SessionRuntimeSignal = {
-  laneId: string;
+  laneId: string | null;
   sessionId: string;
   runtimeState: TerminalRuntimeState;
   lastOutputPreview: string | null;

@@ -365,7 +365,9 @@ export function FilesPage() {
 
   useEffect(() => {
     if (currentProjectRootRef.current === projectRootPath) return;
+    const oldProject = currentProjectRootRef.current;
     currentProjectRootRef.current = projectRootPath;
+    filesPageSessionByProject.delete(oldProject);
     const session = filesPageSessionByProject.get(projectRootPath);
     setWorkspaceId(session?.workspaceId ?? "");
     setAllowPrimaryEdit(session?.allowPrimaryEdit ?? false);
@@ -375,6 +377,12 @@ export function FilesPage() {
     setMode(session?.mode ?? "edit");
     setSearchQuery(session?.searchQuery ?? "");
     setEditorTheme(session?.editorTheme ?? readStoredEditorTheme());
+  }, [projectRootPath]);
+
+  useEffect(() => {
+    return () => {
+      filesPageSessionByProject.delete(projectRootPath);
+    };
   }, [projectRootPath]);
 
   const hasUnsavedTabs = useMemo(
@@ -1604,7 +1612,7 @@ export function FilesPage() {
           }}
           onClick={() => {
             if (!laneIdForDiff) return;
-            navigate(`/terminals?laneId=${encodeURIComponent(laneIdForDiff)}`);
+            navigate(`/work?laneId=${encodeURIComponent(laneIdForDiff)}`);
           }}
           disabled={!laneIdForDiff}
           title={laneIdForDiff ? "Open this lane in the dedicated Terminals tab" : "Select a lane workspace to open terminals"}

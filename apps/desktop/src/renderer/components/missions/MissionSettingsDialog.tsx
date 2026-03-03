@@ -2,12 +2,12 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   GearSix,
   X,
-  Plus,
   Warning,
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type { PhaseProfile } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
+import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import {
   type MissionSettingsDraft,
   type PlannerProvider,
@@ -38,12 +38,14 @@ function PhaseProfileCard({
   const [editDescription, setEditDescription] = useState(profile.description);
   const [editPhases, setEditPhases] = useState<import("../../../shared/types").PhaseCard[]>(profile.phases);
   const [dirty, setDirty] = useState(false);
+  const deleteConfirm = useConfirmDialog();
 
   const settingsInputStyle: React.CSSProperties = { height: 28, width: "100%", background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, padding: "0 8px", fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0, outline: "none" };
   const settingsLabelStyle: React.CSSProperties = { fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
 
   return (
     <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+      <ConfirmDialog state={deleteConfirm.state} onClose={deleteConfirm.close} />
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-semibold" style={{ color: COLORS.textPrimary }}>
@@ -115,7 +117,13 @@ function PhaseProfileCard({
             style={dangerButton()}
             disabled={phaseBusy}
             onClick={async () => {
-              if (!window.confirm(`Delete phase profile "${profile.name}"?`)) return;
+              const ok = await deleteConfirm.confirmAsync({
+                title: "Delete Phase Profile",
+                message: `Delete phase profile "${profile.name}"?`,
+                confirmLabel: "DELETE",
+                danger: true,
+              });
+              if (!ok) return;
               setPhaseBusy(true);
               try {
                 await window.ade.missions.deletePhaseProfile({ profileId: profile.id });
@@ -326,6 +334,8 @@ export function MissionSettingsDialog({
   const [phaseBusy, setPhaseBusy] = useState(false);
   const [phaseNotice, setPhaseNotice] = useState<string | null>(null);
   const [phaseError, setPhaseError] = useState<string | null>(null);
+  const createPrompt = usePromptDialog();
+  const importPrompt = usePromptDialog();
 
   const refreshPhaseProfiles = useCallback(async () => {
     try {
@@ -350,6 +360,8 @@ export function MissionSettingsDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+      <PromptDialog state={createPrompt.state} onClose={createPrompt.close} />
+      <PromptDialog state={importPrompt.state} onClose={importPrompt.close} />
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
@@ -530,7 +542,12 @@ export function MissionSettingsDialog({
                   style={outlineButton()}
                   disabled={phaseBusy}
                   onClick={async () => {
-                    const name = window.prompt("New phase profile name", "Custom Profile");
+                    const name = await createPrompt.promptAsync({
+                      title: "Create Phase Profile",
+                      message: "Enter a name for the new phase profile.",
+                      defaultValue: "Custom Profile",
+                      confirmLabel: "CREATE",
+                    });
                     if (!name || !name.trim()) return;
                     const fallback = phaseProfiles.find((profile) => profile.isDefault) ?? phaseProfiles[0] ?? null;
                     const phases = fallback?.phases ?? [];
@@ -559,7 +576,12 @@ export function MissionSettingsDialog({
                   style={outlineButton()}
                   disabled={phaseBusy}
                   onClick={async () => {
-                    const filePath = window.prompt("Import profile JSON path");
+                    const filePath = await importPrompt.promptAsync({
+                      title: "Import Phase Profile",
+                      message: "Enter the path to the phase profile JSON file.",
+                      placeholder: "/path/to/profile.json",
+                      confirmLabel: "IMPORT",
+                    });
                     if (!filePath || !filePath.trim()) return;
                     setPhaseBusy(true);
                     try {

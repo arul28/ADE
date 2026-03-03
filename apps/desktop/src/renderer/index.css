@@ -48,9 +48,9 @@
   --font-sans: "Space Grotesk", "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
 
-  --shadow-card: 0 1px 4px -1px rgba(0, 0, 0, 0.5);
-  --shadow-card-hover: 0 4px 12px -2px rgba(0, 0, 0, 0.6);
-  --shadow-float: 0 8px 32px -8px rgba(0, 0, 0, 0.7);
+  --shadow-card: 0 1px 6px -1px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.3);
+  --shadow-card-hover: 0 4px 16px -2px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(45, 40, 64, 0.5);
+  --shadow-float: 0 8px 32px -8px rgba(0, 0, 0, 0.8);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -59,34 +59,34 @@
 
 :root,
 [data-theme="dark"] {
-  --color-bg: #0F0D14;
+  --color-bg: #09080C;
   --color-fg: #FAFAFA;
-  --color-surface: #13101A;
-  --color-card: #13101A;
+  --color-surface: #14111D;
+  --color-card: #181423;
   --color-card-fg: #FAFAFA;
-  --color-card-rgb: 19, 16, 26;
-  --color-secondary: #1E1B26;
+  --color-card-rgb: 24, 20, 35;
+  --color-secondary: #231F30;
   --color-secondary-fg: #A1A1AA;
-  --color-muted: #1A1720;
-  --color-muted-fg: #71717A;
-  --color-border: #1E1B26;
+  --color-muted: #1C1828;
+  --color-muted-fg: #8B8B9A;
+  --color-border: #2D2840;
   --color-accent: #A78BFA;
-  --color-accent-fg: #0F0D14;
-  --color-accent-muted: rgba(167, 139, 250, 0.18);
-  --color-surface-raised: #1A1720;
-  --color-surface-recessed: #0C0A10;
-  --color-surface-overlay: #1A1720;
-  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.5);
-  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.4);
-  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.6);
-  --color-separator: #1E1B26;
+  --color-accent-fg: #09080C;
+  --color-accent-muted: rgba(167, 139, 250, 0.20);
+  --color-surface-raised: #1E1A2C;
+  --color-surface-recessed: #0B0A0F;
+  --color-surface-overlay: #1E1A2C;
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.5);
+  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.7);
+  --color-separator: #2D2840;
   --color-separator-active: #A78BFA;
-  --border-separator: #27272A;
-  --gradient-surface: linear-gradient(180deg, #13101A 0%, #0F0D14 100%);
-  --gradient-panel: linear-gradient(180deg, #1A1720 0%, #13101A 100%);
+  --border-separator: #352F4A;
+  --gradient-surface: linear-gradient(180deg, #14111D 0%, #09080C 100%);
+  --gradient-panel: linear-gradient(180deg, #1E1A2C 0%, #14111D 100%);
   --color-glow: rgba(167, 139, 250, 0.25);
-  --pane-bg: rgba(19, 16, 26, 0.92);
-  --pane-border: rgba(30, 27, 38, 0.5);
+  --pane-bg: rgba(24, 20, 35, 0.94);
+  --pane-border: rgba(45, 40, 64, 0.6);
   --color-success: #22c55e;
   --color-warning: #f59e0b;
   --color-error: #ef4444;
@@ -106,8 +106,8 @@
 
   --shell-sidebar-collapsed-width: 52px;
   --shell-sidebar-expanded-width: 168px;
-  --shell-sidebar-bg: linear-gradient(180deg, rgba(19, 16, 26, 0.95) 0%, rgba(15, 13, 20, 0.98) 100%);
-  --shell-sidebar-border: color-mix(in srgb, var(--color-border) 55%, transparent);
+  --shell-sidebar-bg: linear-gradient(180deg, rgba(24, 20, 35, 0.96) 0%, rgba(11, 10, 15, 0.98) 100%);
+  --shell-sidebar-border: color-mix(in srgb, var(--color-border) 70%, transparent);
   --shell-sidebar-item-height: 36px;
   --shell-sidebar-item-fg: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg) 16%);
   --shell-sidebar-item-hover-fg: var(--color-fg);
@@ -655,7 +655,7 @@ h6 {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   border-radius: var(--pane-radius);
-  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12);
+  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.2);
   box-shadow: var(--shadow-card);
   overflow: hidden;
   display: flex;
@@ -720,7 +720,7 @@ h6 {
 /* Minimized pane header - accent left edge */
 .ade-floating-pane-header-minimized {
   border-left: 2px solid var(--color-accent);
-  background: linear-gradient(90deg, rgba(167, 139, 250, 0.08) 0%, transparent 40%);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 40%);
   border-bottom: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.08);
   min-height: 28px;
 }
@@ -946,10 +946,10 @@ h6 {
    ═══════════════════════════════════════════════════════════ */
 
 .ade-pane {
-  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.7);
+  background: rgba(var(--color-card-rgb, 24, 20, 35), 0.8);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
+  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.15);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
   transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
@@ -963,102 +963,6 @@ h6 {
   box-shadow: var(--shadow-card-hover), 0 0 0 1px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1), 0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12);
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Glassmorphism Surfaces
-   ═══════════════════════════════════════════════════════════ */
-
-/* Glassmorphism surfaces */
-.ade-glass {
-  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.65);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border: 1px solid #1E1B26;
-  box-shadow: none;
-}
-
-[data-theme="light"] .ade-glass {
-  background: rgba(255, 255, 255, 0.75);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
-}
-
-/* Glow effect for active/selected items */
-.ade-glow-active {
-  box-shadow: 0 0 12px 2px rgba(var(--tab-tint-rgb, 167, 139, 250), 0.15),
-              0 0 4px 1px rgba(var(--tab-tint-rgb, 167, 139, 250), 0.1);
-}
-
-/* Soft shadow for floating cards (replaces hard borders) */
-.ade-soft-shadow {
-  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.3),
-              0 4px 16px -4px rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
-}
-
-[data-theme="light"] .ade-soft-shadow {
-  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.08),
-              0 4px 16px -4px rgba(0, 0, 0, 0.06);
-}
-
-/* Group separator - replaces hard border-b lines */
-.ade-separator {
-  border-bottom: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
-}
-
-/* Section card - replaces border-b separated sections */
-.ade-section-card {
-  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.6);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
-  padding: 12px;
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Interactive Card — Hover Lift
-   ═══════════════════════════════════════════════════════════ */
-
-.ade-card-interactive {
-  transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
-}
-.ade-card-interactive:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-card-hover);
-  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.2);
-}
-.ade-card-interactive:active {
-  transform: translateY(0);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Outline Button Tint
-   ═══════════════════════════════════════════════════════════ */
-
-.ade-btn-outline:hover {
-  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.3);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Input Fields
-   ═══════════════════════════════════════════════════════════ */
-
-.ade-input {
-  background: var(--color-surface-recessed);
-  border: 1px solid var(--color-border);
-  border-radius: 0px;
-  padding: 6px 10px;
-  font-size: 13px;
-  color: var(--color-fg);
-  transition: border-color 150ms, box-shadow 150ms;
-}
-.ade-input:focus {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px var(--color-accent-muted);
-  outline: none;
-}
-
 /* Global input focus ring (ensures all inputs get consistent treatment) */
 input:not([type="checkbox"]):not([type="radio"]):not(.xterm-helper-textarea):focus,
 textarea:focus,
@@ -1067,42 +971,6 @@ select:focus {
   box-shadow: 0 0 0 2px var(--color-accent-muted);
   outline: none;
   transition: border-color 150ms, box-shadow 150ms;
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Toggle Switch (Spring Feel)
-   ═══════════════════════════════════════════════════════════ */
-
-.ade-toggle {
-  appearance: none;
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
-  background: var(--color-muted);
-  position: relative;
-  cursor: pointer;
-  transition: background-color 200ms ease;
-}
-
-.ade-toggle::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.ade-toggle:checked {
-  background: var(--color-accent);
-}
-
-.ade-toggle:checked::after {
-  transform: translateX(16px);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1181,41 +1049,6 @@ select:focus {
 [data-radix-select-content] [role="option"]:nth-child(8) { animation-delay: 140ms; }
 
 /* ═══════════════════════════════════════════════════════════
-   Chips & Badges
-   ═══════════════════════════════════════════════════════════ */
-
-.ade-chip {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  padding: 2px 8px;
-  border-radius: 0px;
-  background: var(--color-muted);
-  color: var(--color-muted-fg);
-  border: 1px solid transparent;
-}
-.ade-chip-success {
-  background: rgba(34, 197, 94, 0.12);
-  color: #22c55e;
-  border-color: rgba(34, 197, 94, 0.2);
-}
-.ade-chip-warning {
-  background: rgba(245, 158, 11, 0.12);
-  color: #f59e0b;
-  border-color: rgba(245, 158, 11, 0.2);
-}
-.ade-chip-error {
-  background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
-  border-color: rgba(239, 68, 68, 0.2);
-}
-.ade-chip-info {
-  background: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
-  border-color: rgba(59, 130, 246, 0.2);
-}
-
-/* ═══════════════════════════════════════════════════════════
    Button Micro-interactions
    ═══════════════════════════════════════════════════════════ */
 
@@ -1224,23 +1057,6 @@ button, [role="button"] {
 }
 button:active, [role="button"]:active {
   transform: scale(0.97) translateY(0.5px);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Opaque Dropdown Utility
-   ═══════════════════════════════════════════════════════════ */
-
-.ade-dropdown-opaque {
-  background-color: var(--color-bg);
-}
-
-.ade-dropdown-opaque::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-color: var(--color-bg);
-  border-radius: inherit;
-  z-index: -1;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1309,45 +1125,6 @@ button:active, [role="button"]:active {
 
 .ade-risk-cell-decrease {
   animation: ade-risk-pulse-in 320ms ease-out;
-}
-
-/* ── Risk Matrix Heat-map Gradient ── */
-
-.ade-risk-matrix-heatmap {
-  background:
-    linear-gradient(
-      135deg,
-      rgba(239, 68, 68, 0.08) 0%,
-      rgba(245, 158, 11, 0.06) 35%,
-      rgba(16, 185, 129, 0.08) 100%
-    );
-}
-
-/* ── Conflict Summary Resolution Progress Tinting ── */
-
-.ade-resolution-none {
-  border-left: 3px solid rgba(239, 68, 68, 0.6);
-  background: linear-gradient(90deg, rgba(239, 68, 68, 0.08), transparent 60%);
-}
-
-.ade-resolution-low {
-  border-left: 3px solid rgba(245, 158, 11, 0.6);
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.06), transparent 60%);
-}
-
-.ade-resolution-mid {
-  border-left: 3px solid rgba(234, 179, 8, 0.6);
-  background: linear-gradient(90deg, rgba(234, 179, 8, 0.05), transparent 60%);
-}
-
-.ade-resolution-high {
-  border-left: 3px solid rgba(16, 185, 129, 0.5);
-  background: linear-gradient(90deg, rgba(16, 185, 129, 0.06), transparent 60%);
-}
-
-.ade-resolution-complete {
-  border-left: 3px solid rgba(16, 185, 129, 0.7);
-  background: linear-gradient(90deg, rgba(16, 185, 129, 0.1), transparent 60%);
 }
 
 @keyframes ade-conflict-badge-worse {
@@ -1521,10 +1298,6 @@ button:active, [role="button"]:active {
   }
 }
 
-.ade-status-pulse {
-  animation: ade-status-pulse 2s ease-in-out infinite;
-}
-
 /* ═══════════════════════════════════════════════════════════
    Global Keyframes
    ═══════════════════════════════════════════════════════════ */
@@ -1661,14 +1434,6 @@ button:active, [role="button"]:active {
   .ade-tab-bg::after {
     animation: none !important;
   }
-  .ade-card-interactive {
-    transition: none !important;
-  }
-  .ade-card-interactive:hover {
-    transform: none !important;
-  }
-  .ade-status-pulse,
-  .ade-status-breathe,
   .ade-glow-pulse,
   .ade-glow-pulse-blue,
   .ade-glow-pulse-red,
@@ -1680,10 +1445,6 @@ button:active, [role="button"]:active {
   [data-radix-dropdown-menu-content] [role="menuitem"],
   [data-radix-select-content] [role="option"] {
     animation: none !important;
-  }
-  /* Toggle switch — remove spring overshoot */
-  .ade-toggle::after {
-    transition: transform 200ms ease !important;
   }
 }
 
@@ -1839,23 +1600,6 @@ button:active, [role="button"]:active {
       rgba(239, 68, 68, 0.03) 30px);
   animation: ade-breathe 6s ease-in-out infinite;
   opacity: 0.5;
-}
-
-/* 6. Context — Neural Network / Connected Nodes */
-.ade-tab-bg-context::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(circle at 20% 30%, rgba(167, 139, 250, 0.08) 0%, transparent 3%),
-    radial-gradient(circle at 60% 20%, rgba(167, 139, 250, 0.06) 0%, transparent 2.5%),
-    radial-gradient(circle at 80% 60%, rgba(167, 139, 250, 0.07) 0%, transparent 3%),
-    radial-gradient(circle at 35% 70%, rgba(167, 139, 250, 0.05) 0%, transparent 2%),
-    radial-gradient(circle at 70% 80%, rgba(167, 139, 250, 0.06) 0%, transparent 2.5%),
-    radial-gradient(circle at 10% 80%, rgba(167, 139, 250, 0.05) 0%, transparent 2%),
-    radial-gradient(circle at 90% 25%, rgba(167, 139, 250, 0.07) 0%, transparent 3%),
-    radial-gradient(circle at 50% 50%, rgba(167, 139, 250, 0.04) 0%, transparent 2%);
-  animation: ade-breathe 8s ease-in-out infinite;
 }
 
 /* 7. Graph — Constellation / Star-field (indigo #6366f1) */

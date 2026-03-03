@@ -7,23 +7,10 @@
  * Extracted from aiOrchestratorService.ts — pure refactor, no behavior changes.
  */
 
-import type {
-  OrchestratorContext,
-  MissionRuntimeProfile,
-} from "./orchestratorContext";
 import {
-  isRecord,
   GATE_PHASE_STEP_TYPES,
   QUALITY_GATE_MAX_OUTPUT_CHARS,
 } from "./orchestratorContext";
-import type {
-  OrchestratorRunGraph,
-  RecoveryLoopPolicy,
-  RecoveryLoopIteration,
-} from "../../../shared/types";
-import {
-  DEFAULT_RECOVERY_LOOP_POLICY,
-} from "./orchestratorConstants";
 
 /**
  * Check whether a step type should trigger quality gate evaluation.

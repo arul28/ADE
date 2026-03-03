@@ -122,7 +122,7 @@ export function SessionListPane({
   filtered,
   runningFiltered,
   endedFiltered,
-  loading,
+  loading: _loading,
   filterLaneId,
   setFilterLaneId,
   filterStatus,
@@ -153,7 +153,7 @@ export function SessionListPane({
   onSelectSession: (id: string) => void;
   onResume: (session: TerminalSessionSummary) => void;
   resumingSessionId: string | null;
-  onLaunchPty: (laneId: string, profile: "claude" | "codex" | "shell") => void;
+  onLaunchPty: (laneId: string, profile: "claude" | "codex" | "shell", tracked?: boolean) => void;
   onLaunchChat: (laneId: string) => void;
   onInfoClick: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Pulse as Activity,
   WarningCircle as AlertCircle,
@@ -39,7 +39,7 @@ import { CiImportPanel } from "./CiImportPanel";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
 import { formatDate, formatDurationMs } from "../../lib/format";
-import { quoteShellArg, commandArrayToLine, parseCommandLine } from "../../lib/shell";
+import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 
 const DEFAULT_PROCESS_COMMAND = '["npm", "run", "dev"]';
 const DEFAULT_PROCESS_COMMAND_LINE = "npm run dev";
@@ -68,19 +68,6 @@ function formatUptime(runtime: ProcessRuntime, nowMs: number): string {
   }
 
   return formatDurationMs(runtime.uptimeMs);
-}
-
-function statusTone(status: ProcessRuntimeStatus): string {
-  if (status === "running") return "text-emerald-400 border-emerald-900";
-  if (status === "starting" || status === "stopping") return "text-amber-400 border-amber-900";
-  if (status === "degraded" || status === "crashed") return "text-red-400 border-red-900";
-  return "text-muted-fg border-border";
-}
-
-function readinessTone(readiness: ProcessRuntime["readiness"]): string {
-  if (readiness === "ready") return "text-emerald-400 border-emerald-900";
-  if (readiness === "not_ready") return "text-red-400 border-red-900";
-  return "text-muted-fg border-border";
 }
 
 function stackTone(status: StackAggregateStatus): string {

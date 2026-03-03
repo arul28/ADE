@@ -25,7 +25,7 @@ import type {
   OrchestratorStepStatus,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
-import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { COLORS } from "../lanes/laneDesignTokens";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
 

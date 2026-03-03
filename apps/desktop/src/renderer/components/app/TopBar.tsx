@@ -3,22 +3,47 @@ import { Folder, FolderOpen, Plus, Minus, MagnifyingGlass, Trash, X } from "@pho
 
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import type { RecentProjectSummary } from "../../../shared/types";
+import type { ProcessRuntime, RecentProjectSummary } from "../../../shared/types";
 
 const ZOOM_KEY = "ade:zoom-level";
+const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
+const MIN_ZOOM_LEVEL = 70;
+const MAX_ZOOM_LEVEL = 150;
+const ZOOM_OFFSET = 10;
+const DEFAULT_ZOOM = 100;
+const LEGACY_DEFAULT_ZOOM = 110;
 
 /** Convert between display percentage (70–150) and Electron zoom level.
  *  Electron zoom level is log-based: level 0 = 100%, each ±1 ≈ ±20%.
- *  Formula: factor = 1.2^level, so level = log(factor) / log(1.2). */
+ *  Formula: factor = 1.2^level, so level = log(factor) / log(1.2).
+ *  We add a +10% offset so the displayed "100%" actually renders at 110%. */
+function normalizeZoomLevel(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_ZOOM;
+  if (value === LEGACY_DEFAULT_ZOOM) return DEFAULT_ZOOM;
+  return Math.min(MAX_ZOOM_LEVEL, Math.max(MIN_ZOOM_LEVEL, Math.round(value)));
+}
+
 function pctToZoomLevel(pct: number): number {
-  return Math.log(pct / 100) / Math.log(1.2);
+  return Math.log((pct + ZOOM_OFFSET) / 100) / Math.log(1.2);
 }
 
 function getStoredZoom(): number {
+  const migrateFromLegacyDefault = (value: number): number => {
+    if (value === LEGACY_DEFAULT_ZOOM) {
+      try {
+        localStorage.setItem(ZOOM_KEY, "100");
+      } catch {
+        // ignore
+      }
+      return DEFAULT_ZOOM;
+    }
+    return normalizeZoomLevel(value);
+  };
   try {
-    return parseInt(localStorage.getItem(ZOOM_KEY) || "100", 10);
+    const stored = parseInt(localStorage.getItem(ZOOM_KEY) || `${DEFAULT_ZOOM}`, 10);
+    return migrateFromLegacyDefault(Number.isFinite(stored) ? stored : DEFAULT_ZOOM);
   } catch {
-    return 100;
+    return DEFAULT_ZOOM;
   }
 }
 
@@ -32,6 +57,7 @@ export function TopBar({
   commandPaletteOpen: boolean;
 }) {
   const project = useAppStore((s) => s.project);
+  const closeProject = useAppStore((s) => s.closeProject);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
@@ -40,7 +66,7 @@ export function TopBar({
   const [zoom, setZoom] = useState(getStoredZoom);
 
   const applyZoom = useCallback((pct: number) => {
-    const clamped = Math.max(70, Math.min(150, pct));
+    const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
     window.ade.zoom.setLevel(pctToZoomLevel(clamped));
     localStorage.setItem(ZOOM_KEY, String(clamped));
     setZoom(clamped);
@@ -73,6 +99,57 @@ export function TopBar({
     return unsub;
   }, [fetchRecent]);
 
+  const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {
+    if (project?.rootPath !== projectRootPath) return true;
+
+    try {
+      const [lanes, runningSessions, agentChats, activeMissions] = await Promise.all([
+        window.ade.lanes.list({ includeArchived: false }),
+        window.ade.sessions.list({ status: "running" }),
+        window.ade.agentChat.list(),
+        window.ade.missions.list({ status: "active" })
+      ]);
+
+      const laneRuntimes = await Promise.all(
+        lanes.map((lane) => window.ade.processes.listRuntime(lane.id).catch(() => [] as ProcessRuntime[]))
+      );
+
+      const activeProcesses = laneRuntimes
+        .flat()
+        .filter((runtime) => RUNNING_LANE_PROCESS_STATES.includes(runtime.status));
+      const activeSessionCount = runningSessions.filter((session) => session.status === "running").length;
+      const activeChatCount = agentChats.filter((chat) => chat.status === "active").length;
+
+      const warnings: string[] = [];
+      if (activeProcesses.length > 0) {
+        warnings.push(`${activeProcesses.length} running lane process${activeProcesses.length === 1 ? "" : "es"}`);
+      }
+      if (activeSessionCount > 0) {
+        warnings.push(`${activeSessionCount} running terminal session${activeSessionCount === 1 ? "" : "s"}`);
+      }
+      if (activeChatCount > 0) {
+        warnings.push(`${activeChatCount} active chat${activeChatCount === 1 ? "" : "s"}`);
+      }
+      if (activeMissions.length > 0) {
+        warnings.push(`${activeMissions.length} active mission${activeMissions.length === 1 ? "" : "s"}`);
+      }
+
+      if (warnings.length === 0) return true;
+
+      const message = [
+        "You are about to close this project.",
+        "The following active work items will be terminated:",
+        ...warnings.map((line) => `- ${line}`),
+        "",
+        "Do you want to continue?"
+      ].join("\n");
+
+      return window.confirm(message);
+    } catch {
+      return true;
+    }
+  }, [project?.rootPath]);
+
   const handleOpenNew = useCallback(() => {
     openRepo().catch(() => { });
   }, [openRepo]);
@@ -83,28 +160,35 @@ export function TopBar({
   }, [project?.rootPath, switchProjectToPath]);
 
   const handleRemoveTab = useCallback((rootPath: string) => {
-    if (project?.rootPath === rootPath) return;
-    window.ade.project
-      .forgetRecent(rootPath)
-      .then((rows) => setRecentProjects(rows))
-      .catch(() => { });
-  }, [project?.rootPath]);
+    void (async () => {
+      const shouldClose = await checkForActiveWorkloads(rootPath);
+      if (!shouldClose) return;
+
+      const rows = await window.ade.project.forgetRecent(rootPath).catch(() => null);
+      if (!rows) return;
+
+      setRecentProjects(rows);
+      // If we just removed the active project, switch to the next available or show welcome.
+      if (project?.rootPath === rootPath) {
+        const next = rows.find((r) => r.exists && r.rootPath !== rootPath);
+        if (next) {
+          switchProjectToPath(next.rootPath).catch(() => { });
+        } else {
+          closeProject().catch(() => { });
+        }
+      }
+    })().catch(() => { });
+  }, [checkForActiveWorkloads, project?.rootPath, closeProject, switchProjectToPath]);
 
   const handleRelocate = useCallback((oldPath: string) => {
     setRelocatingPath(oldPath);
-    window.ade.project
-      .openRepo()
-      .then((newProject) => {
-        // After relocating, remove the stale entry and refresh
-        window.ade.project
-          .forgetRecent(oldPath)
-          .then((rows) => setRecentProjects(rows))
-          .catch(() => { });
-        switchProjectToPath(newProject.rootPath).catch(() => { });
-      })
-      .catch(() => { })
-      .finally(() => setRelocatingPath(null));
-  }, [switchProjectToPath]);
+    void (async () => {
+      const newProject = await openRepo().catch(() => null);
+      if (!newProject) return;
+      const nextRows = await window.ade.project.forgetRecent(oldPath).catch(() => null);
+      if (nextRows) setRecentProjects(nextRows);
+    })().catch(() => { }).finally(() => setRelocatingPath(null));
+  }, [openRepo]);
 
   return (
     <header
@@ -142,11 +226,10 @@ export function TopBar({
           </button>
         ) : (
           <>
-            {recentProjects.map((rp) => {
+              {recentProjects.map((rp) => {
               const isCurrent = project?.rootPath === rp.rootPath;
               const isMissing = !rp.exists;
               const isRelocating = relocatingPath === rp.rootPath;
-              const canClose = !isCurrent;
               const projectTabState = isRelocating ? "open" : isMissing ? "missing" : isCurrent ? "active" : undefined;
               return (
                 <div
@@ -237,7 +320,7 @@ export function TopBar({
                         <Trash size={12} weight="regular" />
                       </button>
                     </span>
-                  ) : canClose ? (
+                  ) : (
                     <button
                       type="button"
                       className={cn(
@@ -249,11 +332,11 @@ export function TopBar({
                         e.stopPropagation();
                         handleRemoveTab(rp.rootPath);
                       }}
-                      title="Remove from tabs"
+                      title="Remove project"
                     >
                       <X size={12} weight="regular" />
                     </button>
-                  ) : null}
+                  )}
                 </div>
               );
             })}

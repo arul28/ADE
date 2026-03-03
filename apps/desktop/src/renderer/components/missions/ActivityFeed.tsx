@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import { CaretDown } from "@phosphor-icons/react";
 import type { OrchestratorChatMessage } from "../../../shared/types";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
@@ -9,7 +9,7 @@ type ActivityFeedProps = {
   selectedAgent: string | null;
 };
 
-export function ActivityFeed({ messages, agentColors, selectedAgent }: ActivityFeedProps) {
+export function ActivityFeed({ messages, agentColors, selectedAgent: _selectedAgent }: ActivityFeedProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const isAtBottomRef = useRef(true);
@@ -120,8 +120,8 @@ function FeedEntry({ msg, agentColors }: { msg: OrchestratorChatMessage; agentCo
   if (isInterAgent) {
     const srcKey = msg.stepKey ?? "agent";
     const dstKey = msg.target && "targetAttemptId" in msg.target
-      ? "agent"
-      : "agent";
+      ? (msg.target as any).stepKey ?? "agent"
+      : "orchestrator";
     return (
       <div className="flex items-start gap-2 py-0.5">
         <span

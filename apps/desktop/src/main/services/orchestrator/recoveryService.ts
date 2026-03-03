@@ -10,33 +10,17 @@
 import type {
   OrchestratorContext,
   AttemptRuntimeTracker,
-  SessionRuntimeSignal,
-  MissionRuntimeProfile,
 } from "./orchestratorContext";
 import {
   nowIso,
-  isRecord,
-  classifyFailureTier,
   digestSignalText,
   parseTerminalRuntimeState,
-  HEALTH_SWEEP_ACTIVE_RUN_SCAN_LIMIT,
-  STALE_ATTEMPT_GRACE_MS,
-  ACTIVE_ATTEMPT_STATUSES,
   ATTEMPT_RUNTIME_PERSIST_INTERVAL_MS,
 } from "./orchestratorContext";
 import type {
-  OrchestratorRunGraph,
   OrchestratorExecutorKind,
   TerminalRuntimeState,
-  RecoveryDiagnosis,
-  RecoveryDiagnosisTier,
-  RecoveryLoopPolicy,
-  RecoveryLoopIteration,
-  RecoveryLoopState,
 } from "../../../shared/types";
-import {
-  DEFAULT_RECOVERY_LOOP_POLICY,
-} from "./orchestratorConstants";
 
 // ── Attempt Runtime Tracker Helpers ──────────────────────────────
 
@@ -265,7 +249,7 @@ export function hydratePersistedAttemptRuntimeState(
       }
     }
     ctx.sessionRuntimeSignals.set(sessionId, {
-      laneId: "",
+      laneId: null,
       sessionId,
       runtimeState,
       lastOutputPreview:

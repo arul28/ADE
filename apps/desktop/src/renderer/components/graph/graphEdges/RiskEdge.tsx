@@ -1,4 +1,3 @@
-import React from "react";
 import { Edge, EdgeProps, Position, getBezierPath } from "@xyflow/react";
 import { riskStrokeColor, prOverlayColor, prCiDotColor } from "../graphHelpers";
 import type { GraphEdgeData } from "../graphTypes";

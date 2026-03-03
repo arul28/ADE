@@ -151,7 +151,7 @@ export function ResolverTerminalModal({
 
   // Done state
   const [doneStatus, setDoneStatus] = React.useState<DoneStatus | null>(null);
-  const [exitCode, setExitCode] = React.useState<number | null>(null);
+  const [, setExitCode] = React.useState<number | null>(null);
   const [modifiedFiles, setModifiedFiles] = React.useState<string[]>([]);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const [postActionBusy, setPostActionBusy] = React.useState(false);

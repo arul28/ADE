@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import { useMemo } from "react";
 import { Panel, Group } from "react-resizable-panels";
 import { X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";

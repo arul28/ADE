@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Plus, Trash, X } from "@phosphor-icons/react";
 import type { TerminalLaunchProfile, TerminalProfilesSnapshot } from "../../../shared/types";

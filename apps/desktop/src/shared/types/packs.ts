@@ -8,7 +8,6 @@ import type { ConflictStatusValue, ConflictRiskLevel } from "./conflicts";
 import type { GitConflictState } from "./git";
 import type { MissionStatus } from "./missions";
 import type { MissionStepHandoff } from "./missions";
-import type { OrchestratorStepStatus } from "./orchestrator";
 
 export type PackType = "project" | "lane" | "feature" | "conflict" | "plan" | "mission";
 

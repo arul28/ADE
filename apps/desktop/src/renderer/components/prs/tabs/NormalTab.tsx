@@ -1,29 +1,23 @@
 import React from "react";
-import { ArrowRight, Eye, Sparkle, Trash, GitBranch, GitMerge, Clock, CalendarBlank, Plus, Minus, CheckCircle, XCircle, Circle, Warning, GithubLogo } from "@phosphor-icons/react";
+import { ArrowRight, Eye, Sparkle, Trash, GitBranch, GitMerge, Plus, Minus, CheckCircle, XCircle, Circle, GithubLogo } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
-  DeletePrResult,
   LandResult,
   MergeMethod,
   PrCheck,
-  PrComment,
   PrMergeContext,
   PrReview,
-  PrStatus,
   PrSummary,
   PrWithConflicts,
   LaneSummary,
 } from "../../../../shared/types";
-import { Button } from "../../ui/Button";
-import { Chip } from "../../ui/Chip";
 import { EmptyState } from "../../ui/EmptyState";
-import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
-import { COLORS, MONO_FONT, LABEL_STYLE as SHARED_LABEL_STYLE, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, LABEL_STYLE as SHARED_LABEL_STYLE, inlineBadge } from "../../lanes/laneDesignTokens";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { normalizeBranchName } from "../shared/prHelpers";
 
@@ -107,7 +101,7 @@ type NormalTabProps = {
   onRefresh: () => Promise<void>;
 };
 
-export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh }: NormalTabProps) {
+export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh }: NormalTabProps) {
   const navigate = useNavigate();
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
@@ -507,7 +501,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
                 }}
               >
                 <Eye size={14} weight="regular" />
-                VIEW DIFF
+                VIEW ON GITHUB
               </button>
 
               {/* Open in GitHub */}
@@ -696,15 +690,17 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
             )}
           </div>
 
-          <ResolverTerminalModal
-            open={resolverOpen}
-            onOpenChange={setResolverOpen}
-            sourceLaneId={selectedPr.laneId}
-            targetLaneId={resolverTargetLaneId}
-            cwdLaneId={resolverTargetLaneId}
-            scenario="single-merge"
-            onCompleted={() => void onRefresh()}
-          />
+          {resolverOpen && resolverTargetLaneId && (
+            <ResolverTerminalModal
+              open={resolverOpen}
+              onOpenChange={setResolverOpen}
+              sourceLaneId={selectedPr.laneId}
+              targetLaneId={resolverTargetLaneId}
+              cwdLaneId={resolverTargetLaneId}
+              scenario="single-merge"
+              onCompleted={() => void onRefresh()}
+            />
+          )}
         </div>
       ) : (
         <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", background: "#0F0D14" }}>

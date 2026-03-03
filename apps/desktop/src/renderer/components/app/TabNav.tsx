@@ -28,7 +28,7 @@ const mainItems = [
   { to: "/graph", label: "Graph", icon: Graph },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
   { to: "/history", label: "History", icon: ClockCounterClockwise },
-  { to: "/automations", label: "Agents", icon: Robot },
+  { to: "/automations", label: "Automations", icon: Robot },
   { to: "/missions", label: "Missions", icon: Strategy },
 ] as const;
 
@@ -36,8 +36,10 @@ const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as co
 
 export function TabNav() {
   const project = useAppStore((s) => s.project);
+  const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const location = useLocation();
+  const hasActiveProject = Boolean(project?.rootPath);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -56,6 +58,29 @@ export function TabNav() {
     it: { to: string; label: string; icon: React.ElementType },
   ) => {
     const isActive = location.pathname === it.to;
+    const isActiveAllowed = (!showWelcome && hasActiveProject) || it.to === "/project";
+
+    if (!isActiveAllowed) {
+      return (
+        <div
+          key={it.to}
+          className={cn(
+            "ade-shell-sidebar-item group relative flex w-full cursor-not-allowed items-center transition-colors duration-100 opacity-40",
+          )}
+        >
+          <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
+            <span className="relative inline-flex items-center">
+              <it.icon
+                size={18}
+                weight="regular"
+                className={cn("ade-shell-sidebar-icon shrink-0 transition-colors duration-150")}
+              />
+            </span>
+          </span>
+          <span className="ade-tab-label whitespace-nowrap">{it.label}</span>
+        </div>
+      );
+    }
 
     return (
       <NavLink

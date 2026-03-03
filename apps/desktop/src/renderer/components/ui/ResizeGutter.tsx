@@ -1,4 +1,3 @@
-import React from "react";
 import { Separator } from "react-resizable-panels";
 import { cn } from "./cn";
 

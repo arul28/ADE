@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { ArrowSquareOut, GridFour, List, GearSix, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
@@ -188,14 +188,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
       });
   }, [focusSession, focusedSessionId, refresh, refreshLanes]);
 
-  if (!laneId) {
-    return (
-      <div className="flex h-full min-h-0 items-center justify-center p-3">
-        <EmptyState title="No lane selected" description="Select a lane to view its sessions." />
-      </div>
-    );
-  }
-
   const runningSessions = useMemo(
     () => sessions.filter((s) => s.status === "running" && Boolean(s.ptyId)),
     [sessions]
@@ -204,8 +196,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     if (viewMode !== "tabs") return sessions;
     return runningSessions.length ? runningSessions : sessions;
   }, [sessions, viewMode, runningSessions]);
-
-  const current = tabSessions.find((s) => s.id === focusedSessionId) ?? tabSessions[0] ?? null;
 
   const profileColorMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -238,6 +228,16 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     }, 5_000);
     return () => clearInterval(id);
   }, [laneId, refresh]);
+
+  if (!laneId) {
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center p-3">
+        <EmptyState title="No lane selected" description="Select a lane to view its sessions." />
+      </div>
+    );
+  }
+
+  const current = tabSessions.find((s) => s.id === focusedSessionId) ?? tabSessions[0] ?? null;
 
   const launchFromProfile = useCallback(
     (profile: TerminalLaunchProfile) => {

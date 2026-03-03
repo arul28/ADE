@@ -9,44 +9,19 @@
 
 import type {
   OrchestratorContext,
-  MissionRuntimeProfile,
   PlannerAgentSessionState,
   PlannerTurnCompletion,
   PlannerTurnCompletionStatus,
   Deferred,
   OrchestratorChatMessage,
-  OrchestratorChatThread,
-  ResolvedOrchestratorConfig,
 } from "./orchestratorContext";
 import {
-  nowIso,
-  isRecord,
   createDeferred,
-  plannerThreadId,
-  PLANNER_THREAD_TITLE,
-  PLANNER_THREAD_STEP_KEY,
   PLANNER_STREAM_FLUSH_CHARS,
   PLANNER_STREAM_FLUSH_INTERVAL_MS,
   PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS,
   MAX_PLANNER_RAW_OUTPUT_CHARS,
-  toOptionalString,
 } from "./orchestratorContext";
-import type {
-  MissionDetail,
-  OrchestratorRunGraph,
-  ExecutionPlanPreview,
-  ExecutionPlanPhase,
-  ExecutionPlanStepPreview,
-  OrchestratorWorkerRole,
-  RecoveryLoopPolicy,
-  IntegrationPrPolicy,
-  TeamManifest,
-  ModelConfig,
-} from "../../../shared/types";
-import {
-  DEFAULT_RECOVERY_LOOP_POLICY,
-  DEFAULT_INTEGRATION_PR_POLICY
-} from "./orchestratorConstants";
 
 // ── Planner Stream Functions ─────────────────────────────────────
 

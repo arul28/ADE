@@ -28,7 +28,6 @@ import type {
   LandStackEnhancedArgs,
   LaneSummary,
   LinkPrToLaneArgs,
-  MergeMethod,
   PrCheck,
   PrComment,
   PrChecksStatus,
@@ -490,7 +489,6 @@ export function createPrService({
   conflictService?: ReturnType<typeof createConflictService>;
   openExternal: (url: string) => Promise<void>;
 }) {
-  let agentChatService: ReturnType<typeof createAgentChatService> | undefined;
   const getRow = (prId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
       `
@@ -759,7 +757,6 @@ export function createPrService({
 
     const pr = await fetchPr(repo, Number(row.github_pr_number));
     const headSha = asString(pr?.head?.sha);
-    const baseSha = asString(pr?.base?.sha);
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
 
     const [combinedStatus, checkRuns, reviews] = await Promise.all([
@@ -2794,8 +2791,8 @@ export function createPrService({
       return markResolutionWorkerActive(proposalId, laneId, workerStepId);
     },
 
-    setAgentChatService(svc: ReturnType<typeof createAgentChatService>): void {
-      agentChatService = svc;
+    setAgentChatService(_svc: ReturnType<typeof createAgentChatService>): void {
+      // Reserved for future PR<->chat linking.
     }
   };
 }

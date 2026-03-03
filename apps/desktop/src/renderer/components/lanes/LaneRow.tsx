@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Warning, Archive, ArrowSquareOut, ArrowDown, GitBranch, GitMerge, Stack, PencilSimple, Terminal, Trash } from "@phosphor-icons/react";
 import type { ConflictChip, ConflictStatus, LaneSummary } from "../../../shared/types";
@@ -524,7 +524,7 @@ export function LaneRow({
         </div>
         <div className="flex flex-col rounded-md bg-card/30 p-1.5">
           <span className="opacity-50">Last Active</span>
-          <span className="text-fg">{isPrimaryLane ? "Pinned" : "Just now"}</span>
+          <span className="text-fg">{isPrimaryLane ? "Pinned" : "--"}</span>
         </div>
       </div>
     </div>

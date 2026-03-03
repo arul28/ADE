@@ -52,7 +52,6 @@ import type {
   RebaseNeed,
   RebaseLaneArgs,
   RebaseResult,
-  RebaseEventPayload,
   IntegrationProposalStep
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -630,19 +629,6 @@ export function createConflictService({
     const rel = path.relative(projectRoot, absPath).replace(/\\/g, "/");
     if (!rel || rel.startsWith("..")) return absPath.replace(/\\/g, "/");
     return rel;
-  };
-
-  const readLanePackBody = (laneId: string): string | null => {
-    const filePath = lanePackPath(laneId);
-    if (!fs.existsSync(filePath)) return null;
-    try {
-      const raw = fs.readFileSync(filePath, "utf8");
-      const trimmed = raw.trim();
-      if (!trimmed) return null;
-      return trimmed.length > 12_000 ? `${trimmed.slice(0, 12_000)}\n\n…(truncated)…\n` : trimmed;
-    } catch {
-      return null;
-    }
   };
 
   const safeReadText = (absPath: string, maxBytes: number): string => {
@@ -3534,9 +3520,6 @@ export function createConflictService({
     const sourceLaneId = args.sourceLaneId.trim();
     const targetLaneId = args.targetLaneId.trim();
     if (!sourceLaneId || !targetLaneId) throw new Error("sourceLaneId and targetLaneId are required");
-
-    const sourcePack = packService?.getLanePack(sourceLaneId);
-    const targetPack = packService?.getLanePack(targetLaneId);
 
     const overlaps = await listOverlaps({ laneId: sourceLaneId });
     const targetOverlap = overlaps.find((entry) => entry.peerId === targetLaneId);

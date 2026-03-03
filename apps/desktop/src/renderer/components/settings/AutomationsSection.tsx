@@ -102,7 +102,7 @@ export function AutomationsSection() {
         <div className="min-w-0">
           <div className="text-sm font-semibold">Automations</div>
           <div className="mt-0.5 text-xs text-muted-fg">
-            Trigger-action workflows. Manage rules in the <Link to="/agents" className="underline">Agents</Link> tab.
+            Trigger-action workflows. Manage rules in the <Link to="/automations" className="underline">Automations</Link> tab.
           </div>
         </div>
         <Button size="sm" variant="outline" disabled={loading} onClick={() => void refresh()}>

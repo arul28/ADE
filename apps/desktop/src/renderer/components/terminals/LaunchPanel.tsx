@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CaretDown as ChevronDown,
   ChatCircleDots as MessageSquarePlus,
@@ -29,7 +29,7 @@ export function LaunchPanel({
   onLaunchChat,
 }: {
   lanes: { id: string; name: string }[];
-  onLaunchPty: (laneId: string, profile: "claude" | "codex" | "shell") => void;
+  onLaunchPty: (laneId: string, profile: "claude" | "codex" | "shell", tracked?: boolean) => void;
   onLaunchChat: (laneId: string) => void;
 }) {
   const [laneId, setLaneId] = useState<string>(lanes[0]?.id ?? "");
@@ -162,7 +162,7 @@ export function LaunchPanel({
           <button
             type="button"
             disabled={!laneId}
-            onClick={() => onLaunchPty(laneId, "claude")}
+            onClick={() => onLaunchPty(laneId, "claude", launchTracked)}
             style={{
               ...inlineBadge('#F97316'),
               cursor: 'pointer',
@@ -178,7 +178,7 @@ export function LaunchPanel({
           <button
             type="button"
             disabled={!laneId}
-            onClick={() => onLaunchPty(laneId, "codex")}
+            onClick={() => onLaunchPty(laneId, "codex", launchTracked)}
             style={{
               ...inlineBadge('#3B82F6'),
               cursor: 'pointer',
@@ -194,7 +194,7 @@ export function LaunchPanel({
           <button
             type="button"
             disabled={!laneId}
-            onClick={() => onLaunchPty(laneId, "shell")}
+            onClick={() => onLaunchPty(laneId, "shell", launchTracked)}
             style={{
               ...inlineBadge('#22C55E'),
               cursor: 'pointer',

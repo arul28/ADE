@@ -52,7 +52,6 @@ import { createAgentChatService } from "./agentChatService";
 import type {
   AgentChatEventEnvelope,
   AgentChatProvider,
-  AgentChatSession,
   TerminalSessionStatus,
   TerminalToolType
 } from "../../../shared/types";
@@ -283,7 +282,7 @@ function makeFullStream(parts: any[]): AsyncIterable<any> {
   };
 }
 
-function createFixture(provider: AgentChatProvider): CreatedFixture {
+function createFixture(_provider: AgentChatProvider): CreatedFixture {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-agent-chat-tests-"));
   const adeDir = path.join(projectRoot, ".ade");
   const transcriptsDir = path.join(adeDir, "transcripts");
@@ -1105,7 +1104,7 @@ describe("agentChatService", () => {
 
       // Second message on the same runtime — activeTurnId should be cleared
       await fixture.service.sendMessage({ sessionId: session.id, text: "second" });
-      await waitForEvent(fixture.emitted, (entry) => {
+      await waitForEvent(fixture.emitted, (_entry) => {
         // Wait for the second done
         const dones = fixture.emitted.filter((e) => e.event.type === "done");
         return dones.length >= 2;
@@ -1142,7 +1141,7 @@ describe("agentChatService", () => {
     it("maps Claude reasoning effort to maxThinkingTokens in streamText call", async () => {
       const fixture = createFixture("claude");
 
-      streamTextMock.mockImplementationOnce((input: any) => {
+      streamTextMock.mockImplementationOnce((_input: any) => {
         return {
           fullStream: makeFullStream([
             { type: "text-delta", text: "thinking" },

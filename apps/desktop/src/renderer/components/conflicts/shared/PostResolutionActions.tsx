@@ -1,4 +1,3 @@
-import React from "react";
 import { CheckCircle, XCircle, Warning, FileText } from "@phosphor-icons/react";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";

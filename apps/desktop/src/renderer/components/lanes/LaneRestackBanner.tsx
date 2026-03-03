@@ -1,7 +1,6 @@
-import React from "react";
 import { Stack } from "@phosphor-icons/react";
 import type { AutoRebaseLaneStatus, LaneSummary, RestackSuggestion } from "../../../shared/types";
-import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 
 export function LaneRestackBanner({
   visibleRestackSuggestions,

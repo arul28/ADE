@@ -2,7 +2,6 @@ import React from "react";
 import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle } from "@phosphor-icons/react";
 import type { LaneSummary, RebaseNeed } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
-import { Chip } from "../../ui/Chip";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";

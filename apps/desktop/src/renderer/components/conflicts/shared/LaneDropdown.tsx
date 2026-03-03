@@ -1,4 +1,3 @@
-import React from "react";
 import { cn } from "../../ui/cn";
 import type { LaneSummary } from "../../../../shared/types";
 

@@ -7,3 +7,5 @@ infra/.pulumi/
 /infra/.home
 /.npm-cache
 /apps/mcp-server/node_modules
+/apps/desktop/release-stable
+/apps/desktop/.cache

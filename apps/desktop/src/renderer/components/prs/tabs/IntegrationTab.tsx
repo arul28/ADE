@@ -248,7 +248,7 @@ type IntegrationTabProps = {
   onRefresh: () => Promise<void>;
 };
 
-export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh }: IntegrationTabProps) {
+export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _mergeMethod, selectedPrId, onSelectPr, onRefresh }: IntegrationTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
   const { rebaseNeeds, autoRebaseStatuses, setActiveTab } = usePrs();
 

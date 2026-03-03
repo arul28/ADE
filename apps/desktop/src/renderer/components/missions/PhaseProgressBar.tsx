@@ -1,4 +1,3 @@
-import React from "react";
 import type { OrchestratorStep } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
@@ -41,8 +40,6 @@ function stepTypeToPhase(stepType: string, taskType?: string): ExecutionPhase {
   if (primary === "merge" || secondary === "merge") return "merge";
   return "other";
 }
-
-const TERMINAL = new Set(["succeeded", "failed", "skipped", "superseded", "canceled"]);
 
 export function PhaseProgressBar({ steps, className }: PhaseProgressBarProps) {
   const phaseGroups = new Map<ExecutionPhase, { total: number; completed: number; failed: number }>();

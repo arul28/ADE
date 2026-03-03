@@ -20,13 +20,15 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const project = useAppStore((s) => s.project);
   const selectLane = useAppStore((s) => s.selectLane);
   const [q, setQ] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
   const listRef = useRef<HTMLUListElement>(null);
+  const hasActiveProject = Boolean(project?.rootPath);
 
-  const commands: Command[] = useMemo(
-    () => [
+  const commands: Command[] = useMemo(() => {
+    const next: Command[] = [
       { id: "go-project", title: "Go to Run", shortcut: "G 1", group: "Navigation", run: () => navigate("/project") },
       { id: "go-lanes", title: "Go to Lanes", shortcut: "G L", group: "Navigation", run: () => navigate("/lanes") },
       { id: "go-files", title: "Go to Files", shortcut: "G F", group: "Navigation", run: () => navigate("/files") },
@@ -35,12 +37,12 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       { id: "go-prs", title: "Go to PRs", shortcut: "G R", group: "Navigation", run: () => navigate("/prs") },
       { id: "go-history", title: "Go to History", shortcut: "G H", group: "Navigation", run: () => navigate("/history") },
       { id: "go-missions", title: "Go to Missions", shortcut: "G M", group: "Navigation", run: () => navigate("/missions") },
-      { id: "go-agents", title: "Go to Agents", hint: "Automation and agent workflows", group: "Navigation", run: () => navigate("/agents") },
+      { id: "go-automations", title: "Go to Automations", hint: "Automation rules and agent workflows", group: "Navigation", run: () => navigate("/automations") },
       { id: "go-settings", title: "Go to Settings", shortcut: "G S", group: "Navigation", run: () => navigate("/settings") },
-      { id: "go-settings-general", title: "Go to General Settings", hint: "Provider, model, theme", group: "Settings", run: () => navigate("/settings") },
-      { id: "go-settings-github", title: "Go to GitHub Settings", hint: "Token, repos, PRs", group: "Settings", run: () => navigate("/settings") },
-      { id: "go-settings-context", title: "Go to Context & Docs", hint: "Context files, docs generation", group: "Settings", run: () => navigate("/settings") },
-      { id: "go-settings-usage", title: "Go to Usage", hint: "Token usage, cost breakdown", group: "Settings", run: () => navigate("/settings") },
+      { id: "go-settings-general", title: "Go to General Settings", hint: "Provider, model, theme", group: "Settings", run: () => navigate("/settings?tab=general") },
+      { id: "go-settings-github", title: "Go to GitHub Settings", hint: "Token, repos, PRs", group: "Settings", run: () => navigate("/settings?tab=github") },
+      { id: "go-settings-context", title: "Go to Context & Docs", hint: "Context files, docs generation", group: "Settings", run: () => navigate("/settings?tab=context") },
+      { id: "go-settings-usage", title: "Go to Usage", hint: "Token usage, cost breakdown", group: "Settings", run: () => navigate("/settings?tab=usage") },
       {
         id: "action-create-lane",
         title: "Create Lane",
@@ -74,10 +76,10 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       },
       {
         id: "action-automations",
-        title: "Go to Agents",
+        title: "Go to Automations",
         hint: "CI/CD and automation rules",
         group: "Actions",
-        run: () => navigate("/agents")
+        run: () => navigate("/automations")
       },
       {
         id: "lane-next",
@@ -129,14 +131,16 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
         hint: "Expect \"pong\"",
         group: "Debug",
         run: async () => {
-          const pong = await window.ade.app.ping();
-          // eslint-disable-next-line no-console
-          console.log("ade.app.ping ->", pong);
+          await window.ade.app.ping();
         }
       }
-    ],
-    [lanes, navigate, selectLane, selectedLaneId]
-  );
+    ];
+
+    if (!hasActiveProject) {
+      return next.filter((command) => command.id === "go-project" || command.id === "ping");
+    }
+    return next;
+  }, [hasActiveProject, lanes, navigate, selectLane, selectedLaneId]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();

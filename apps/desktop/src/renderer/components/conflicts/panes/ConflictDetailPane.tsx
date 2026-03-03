@@ -7,13 +7,8 @@ import { MergeHeading } from "../shared/MergeHeading";
 import { ConflictSummary } from "../ConflictSummary";
 import { MergeSimulationPanel } from "../MergeSimulationPanel";
 import { RiskMatrix } from "../RiskMatrix";
-import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
-import type { ConflictStatus, RiskMatrixEntry } from "../../../../shared/types";
-
-function pairKey(a: string, b: string): string {
-  return a < b ? `${a}::${b}` : `${b}::${a}`;
-}
+import type { ConflictStatus } from "../../../../shared/types";
 
 export function ConflictDetailPane() {
   const lanes = useAppStore((s) => s.lanes);
@@ -25,7 +20,6 @@ export function ConflictDetailPane() {
     overlaps,
     viewMode,
     gitConflict,
-    gitConflictBusy,
     loading,
     progress,
     error,
@@ -38,12 +32,6 @@ export function ConflictDetailPane() {
   const statusByLane = React.useMemo(() => {
     const map = new Map<string, ConflictStatus>();
     for (const s of batch?.lanes ?? []) map.set(s.laneId, s);
-    return map;
-  }, [batch]);
-
-  const matrixByPair = React.useMemo(() => {
-    const map = new Map<string, RiskMatrixEntry>();
-    for (const entry of batch?.matrix ?? []) map.set(pairKey(entry.laneAId, entry.laneBId), entry);
     return map;
   }, [batch]);
 

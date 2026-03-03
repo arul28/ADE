@@ -3,7 +3,7 @@ import type {
   OrchestratorExecutorStartArgs,
   OrchestratorExecutorStartResult
 } from "./orchestratorService";
-import type { OrchestratorWorkerRole, OrchestratorContextView, OrchestratorStep, OrchestratorExecutorKind, TerminalToolType, TeamRuntimeConfig } from "../../../shared/types";
+import type { OrchestratorWorkerRole, OrchestratorStep, OrchestratorExecutorKind, TerminalToolType, TeamRuntimeConfig } from "../../../shared/types";
 import type { createMemoryService } from "../memory/memoryService";
 import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "./orchestratorConstants";
 
@@ -113,7 +113,7 @@ export interface BaseAdapterConfig {
  */
 export function buildFullPrompt(
   args: OrchestratorExecutorStartArgs,
-  executorKind?: OrchestratorExecutorKind,
+  _executorKind?: OrchestratorExecutorKind,
   opts?: { memoryService?: ReturnType<typeof createMemoryService>; projectId?: string }
 ): {
   prompt: string;

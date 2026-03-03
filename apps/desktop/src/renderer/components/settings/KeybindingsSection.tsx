@@ -5,11 +5,6 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 
-type DraftRow = {
-  id: string;
-  binding: string;
-};
-
 function effectiveBinding(def: KeybindingDefinition, overrides: Map<string, string>): string {
   return overrides.get(def.id) ?? def.defaultBinding;
 }

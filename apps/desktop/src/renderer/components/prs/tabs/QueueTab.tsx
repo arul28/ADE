@@ -1,5 +1,5 @@
 import React from "react";
-import { CaretRight, Pause, Play, SkipForward, ArrowsDownUp, Trash, GithubLogo, CheckCircle, XCircle, Circle } from "@phosphor-icons/react";
+import { ArrowsDownUp, Trash, GithubLogo, CheckCircle, XCircle, Circle } from "@phosphor-icons/react";
 import type {
   LandResult,
   LaneSummary,
@@ -7,13 +7,9 @@ import type {
   PrMergeContext,
   PrSummary,
   PrWithConflicts,
-  QueueEntryState,
   QueueLandingState,
 } from "../../../../shared/types";
-import { Button } from "../../ui/Button";
-import { Chip } from "../../ui/Chip";
 import { EmptyState } from "../../ui/EmptyState";
-import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { usePrs } from "../state/PrsContext";
@@ -26,19 +22,6 @@ type QueueGroup = {
   members: Array<{ prId: string; laneId: string; laneName: string; position: number; pr: PrWithConflicts | null }>;
   landingState: QueueLandingState | null;
 };
-
-function entryStateChip(state: QueueEntryState): { label: string; className: string; pulse?: boolean } {
-  switch (state) {
-    case "landed": return { label: "landed", className: "text-emerald-300 border-emerald-500/30 bg-emerald-500/10" };
-    case "landing": return { label: "landing", className: "text-blue-300 border-blue-500/30 bg-blue-500/10", pulse: true };
-    case "rebasing": return { label: "rebasing", className: "text-amber-300 border-amber-500/30 bg-amber-500/10", pulse: true };
-    case "resolving": return { label: "resolving", className: "text-violet-300 border-violet-500/30 bg-violet-500/10", pulse: true };
-    case "failed": return { label: "failed", className: "text-red-300 border-red-500/30 bg-red-500/10" };
-    case "paused": return { label: "paused", className: "text-amber-300 border-amber-500/30 bg-amber-500/10" };
-    case "skipped": return { label: "skipped", className: "text-neutral-300 border-neutral-500/30 bg-neutral-500/10" };
-    default: return { label: "pending", className: "text-neutral-300 border-neutral-500/30 bg-neutral-500/10" };
-  }
-}
 
 /* ---------- Status badge for queue group list items ---------- */
 function GroupStatusBadge({ members }: { members: QueueGroup["members"] }) {
@@ -103,7 +86,6 @@ type QueueTabProps = {
 
 export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedGroupId, onSelectGroup, onRefresh }: QueueTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
-  const prById = React.useMemo(() => new Map(prs.map((p) => [p.id, p])), [prs]);
   const { rebaseNeeds, autoRebaseStatuses, setActiveTab } = usePrs();
 
   const [landBusy, setLandBusy] = React.useState(false);
@@ -208,8 +190,6 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
               {queueGroups.map((group) => {
                 const isSelected = group.groupId === selectedGroupId;
-                const openCount = group.members.filter((m) => m.pr?.state === "open" || m.pr?.state === "draft").length;
-                const landedCount = group.members.filter((m) => m.pr?.state === "merged").length;
                 return (
                   <button
                     key={group.groupId}

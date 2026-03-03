@@ -8,7 +8,6 @@
  * Extracted from aiOrchestratorService.ts — pure refactor, no behavior changes.
  */
 
-import { randomUUID } from "node:crypto";
 import type {
   OrchestratorContext,
   WorkerDeliveryContext,
@@ -19,13 +18,8 @@ import {
   nowIso,
   isRecord,
   toOptionalString,
-  sanitizeChatTarget,
-  normalizeChatVisibility,
-  normalizeChatDeliveryState,
   clipTextForContext,
   missionThreadId,
-  parseJsonRecord,
-  parseChatTarget,
   parseWorkerProviderHint,
   WORKER_MESSAGE_RETRY_BUDGET,
   WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS,
@@ -37,14 +31,12 @@ import {
 import {
   emitThreadEvent,
   getThreadById,
-  ensureThreadForTarget,
   updateChatMessage,
   getChatMessageById,
   parseChatMessageRow,
   emitOrchestratorMessage,
   formatRecentChatContext,
   summarizeRunForChat,
-  ensureMissionThread,
 } from "./chatMessageService";
 import type { ChatMessageRow } from "./chatMessageService";
 import {
@@ -60,7 +52,6 @@ import type {
   OrchestratorChatMessage,
   OrchestratorChatTarget,
   OrchestratorChatDeliveryState,
-  OrchestratorChatVisibilityMode,
   OrchestratorExecutorKind,
   SendOrchestratorChatArgs,
 } from "../../../shared/types";

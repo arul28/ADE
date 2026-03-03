@@ -8,7 +8,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
-import { parseDiffNameOnly, uniqueSorted } from "../shared/utils";
+import { uniqueSorted } from "../shared/utils";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type {
   Checkpoint,
@@ -66,9 +66,8 @@ import { stripAnsi } from "../../utils/ansiStrip";
 import { inferTestOutcomeFromText } from "./transcriptInsights";
 import { renderLanePackMarkdown } from "./lanePackTemplate";
 import { computeSectionChanges, upsertSectionByHeading } from "./packSections";
-import type { SectionLocator } from "./packSections";
 import { buildConflictExport, buildLaneExport, buildProjectExport } from "./packExports";
-import type { PackGraphEnvelopeV1, PackRelation } from "../../../shared/contextContract";
+import type { PackRelation } from "../../../shared/contextContract";
 
 // ── Extracted builder modules ────────────────────────────────────────────────
 import {
@@ -84,14 +83,10 @@ import {
   parsePorcelainPaths,
   parseChatTranscriptDelta,
   extractSection,
-  extractSectionByHeading,
   statusFromCode,
   humanToolLabel,
-  normalizeConflictStatus,
   normalizeRiskLevel,
-  isRecord,
   asString,
-  parseRecord,
   computeMergeReadiness,
   buildGraphEnvelope,
   importanceRank,
@@ -110,7 +105,6 @@ import {
   prepareContextDocGeneration as prepareContextDocGenerationImpl,
   installGeneratedDocs as installGeneratedDocsImpl,
   resolveContextDocPath as resolveContextDocPathImpl,
-  buildProjectBootstrap as buildProjectBootstrapImpl,
   buildProjectPackBody as buildProjectPackBodyImpl
 } from "./projectPackBuilder";
 import {
@@ -126,7 +120,6 @@ import {
   deriveConflictStateForLane as deriveConflictStateForLaneImpl,
   computeLaneLineage as computeLaneLineageImpl,
   buildLaneConflictRiskSummaryLines as buildLaneConflictRiskSummaryLinesImpl,
-  readLanePackExcerpt as readLanePackExcerptImpl,
   buildConflictPackBody as buildConflictPackBodyImpl
 } from "./conflictPackBuilder";
 
@@ -168,7 +161,6 @@ export function createPackService({
   onEvent?: (event: PackEvent) => void;
 }) {
   const projectPackPath = path.join(packsDir, "project_pack.md");
-  const projectBootstrapPath = path.join(packsDir, "_bootstrap", "project_bootstrap.md");
 
   const getLanePackPath = (laneId: string) => path.join(packsDir, "lanes", laneId, "lane_pack.md");
   const getFeaturePackPath = (featureKey: string) => path.join(packsDir, "features", safeSegment(featureKey), "feature_pack.md");
@@ -226,7 +218,6 @@ export function createPackService({
   const deriveConflictStateForLane = (laneId: string) => deriveConflictStateForLaneImpl(conflictPackBuilderDeps, laneId);
   const computeLaneLineage = (args: { laneId: string; lanesById: Map<string, LaneSummary> }) => computeLaneLineageImpl(args);
   const buildLaneConflictRiskSummaryLines = (laneId: string) => buildLaneConflictRiskSummaryLinesImpl(conflictPackBuilderDeps, laneId);
-  const readLanePackExcerpt = (laneId: string) => readLanePackExcerptImpl(conflictPackBuilderDeps, laneId);
 
   const readContextDocMeta = () => readContextDocMetaImpl(projectRoot);
   const readContextStatus = () => readContextStatusImpl({ db, projectId, projectRoot, packsDir });
@@ -236,7 +227,6 @@ export function createPackService({
   const installGeneratedDocs = (args: ContextInstallGeneratedDocsArgs) => installGeneratedDocsImpl(projectPackBuilderDeps, args);
   const resolveContextDocPath = (docId: ContextDocStatus["id"]) => resolveContextDocPathImpl(projectRoot, docId);
 
-  const buildProjectBootstrap = (args: { lanes: LaneSummary[] }) => buildProjectBootstrapImpl(projectPackBuilderDeps, args);
   const buildProjectPackBody = (args: { reason: string; deterministicUpdatedAt: string; sourceLaneId?: string }) =>
     buildProjectPackBodyImpl(projectPackBuilderDeps, args);
 

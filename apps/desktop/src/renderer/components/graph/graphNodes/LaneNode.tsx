@@ -1,4 +1,3 @@
-import React from "react";
 import { Handle, Node, NodeProps, Position } from "@xyflow/react";
 import { GitBranch, Stack } from "@phosphor-icons/react";
 import { Chip } from "../../ui/Chip";

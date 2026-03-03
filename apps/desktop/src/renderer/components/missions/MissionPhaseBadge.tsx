@@ -1,4 +1,3 @@
-import React from "react";
 import type { PhaseCard } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
@@ -6,16 +5,6 @@ type MissionPhaseBadgeProps = {
   phases?: PhaseCard[] | null;
   profileName?: string | null;
   className?: string;
-};
-
-const PHASE_KEY_LETTERS: Record<string, string> = {
-  planning: "P",
-  implementation: "I",
-  testing: "T",
-  validation: "V",
-  code_review: "R",
-  test_review: "R",
-  review: "R",
 };
 
 function PhaseIcon({ active, label, tooltip }: { active: boolean; label: string; tooltip?: string }) {

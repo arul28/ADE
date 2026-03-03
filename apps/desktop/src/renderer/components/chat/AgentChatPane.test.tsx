@@ -1,6 +1,5 @@
 /* @vitest-environment jsdom */
 
-import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentChatPane } from "./AgentChatPane";

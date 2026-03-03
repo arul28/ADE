@@ -1,4 +1,3 @@
-import React from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { isChatToolType } from "../../lib/sessions";
 

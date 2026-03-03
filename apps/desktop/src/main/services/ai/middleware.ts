@@ -39,7 +39,7 @@ export const loggingMiddleware: LanguageModelMiddleware = {
     const start = Date.now();
     const result = await doGenerate();
     const elapsed = Date.now() - start;
-    console.log(
+    console.info(
       `[ai] generate model=${(params as any).modelId ?? "unknown"} ` +
         `input=${getInputTokens(result.usage)} output=${getOutputTokens(result.usage)} ` +
         `elapsed=${elapsed}ms`,
@@ -61,7 +61,7 @@ export const loggingMiddleware: LanguageModelMiddleware = {
       },
       flush() {
         const elapsed = Date.now() - start;
-        console.log(
+        console.info(
           `[ai] stream model=${(params as any).modelId ?? "unknown"} ` +
             `input=${lastInputTokens} output=${lastOutputTokens} ` +
             `elapsed=${elapsed}ms`,

@@ -17,17 +17,13 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import type {
   OrchestratorContext,
-  MissionRunStartArgs,
-  MissionRunStartResult,
   MissionRuntimeProfile,
   ParallelMissionStepDescriptor,
-  OrchestratorChatMessage,
   OrchestratorHookEvent,
 } from "./orchestratorContext";
 import {
   nowIso,
   isRecord,
-  buildOutcomeSummary,
   deriveMissionStatusFromRun,
   mapOrchestratorStepStatus,
   parseJsonRecord,
@@ -41,9 +37,7 @@ import type {
   MissionDetail,
   MissionStatus,
   MissionStep,
-  TeamManifest,
   TeamComplexityAssessment,
-  TeamWorkerAssignment,
   OrchestratorWorkerRole,
   OrchestratorStepStatus,
   OrchestratorExecutorKind,
@@ -53,7 +47,6 @@ import type {
   MissionExecutionPolicy,
   MissionLevelSettings,
   PhaseCard,
-  MissionPhaseConfiguration,
 } from "../../../shared/types";
 import { resolveExecutionPolicy, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import { updateRunMetadata, getMissionMetadata, getMissionIdForRun } from "./chatMessageService";
@@ -461,7 +454,7 @@ export function syncMissionStepsFromRun(ctx: OrchestratorContext, graph: Orchest
       return msMeta.orchestratorStepId === step.id || msMeta.stepKey === step.stepKey;
     });
     if (missionStep) {
-      const apply = (status: MissionStatus) => {
+      const apply = () => {
         try {
           ctx.missionService.updateStep({
             missionId,
@@ -472,7 +465,7 @@ export function syncMissionStepsFromRun(ctx: OrchestratorContext, graph: Orchest
           // ignore step update failures
         }
       };
-      apply(mapOrchestratorStepStatus(step.status) as any);
+      apply();
     }
   }
 }
@@ -862,8 +855,8 @@ export async function requestMissionReplanAnalysis(
 ): Promise<MissionReplanAnalysis> {
   const mission = ctx.missionService.get(args.missionId);
   const failureDigest = args.failureDigest.slice(0, 4_000);
-  const missionObjective = resolveMissionObjectiveForReplan(ctx, args.missionId, mission);
-  const currentPlanSummary = summarizeCurrentPlanForReplan(args.graph);
+  resolveMissionObjectiveForReplan(ctx, args.missionId, mission);
+  summarizeCurrentPlanForReplan(args.graph);
 
   // Replan analysis is now handled by the coordinator agent via injectEvent().
   // This path provides a deterministic fallback that always triggers replan.

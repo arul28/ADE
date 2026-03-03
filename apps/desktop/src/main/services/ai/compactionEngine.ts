@@ -5,11 +5,9 @@
 import { randomUUID } from "node:crypto";
 import { streamText } from "ai";
 import {
-  getModelById,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import type { AdeDb } from "../state/kvDb";
-import type { AgentEvent } from "./agentExecutor";
 import { resolveModel } from "./providerResolver";
 import { detectAllAuth } from "./authDetector";
 
@@ -77,9 +75,12 @@ export function appendTranscriptEntry(
   );
 
   if (existing) {
-    const messages: TranscriptEntry[] = JSON.parse(
-      String(existing.messages_json ?? "[]"),
-    );
+    let messages: TranscriptEntry[];
+    try {
+      messages = JSON.parse(String(existing.messages_json ?? "[]"));
+    } catch {
+      messages = [];
+    }
     messages.push(opts.entry);
     const newTokenCount =
       Number(existing.token_count ?? 0) + (opts.entry.tokenEstimate ?? 0);

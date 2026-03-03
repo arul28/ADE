@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { PackViewer } from "../packs/PackViewer";
 import { LanePrPanel } from "../prs/LanePrPanel";
 import { LaneConflictsPanel } from "./LaneConflictsPanel";

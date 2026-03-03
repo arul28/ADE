@@ -1,11 +1,10 @@
-import React, { useMemo } from "react";
+import { useMemo } from "react";
 import { GridFour, List, Monitor, X } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { TilingLayout } from "../lanes/TilingLayout";
 import { AgentChatPane } from "../chat/AgentChatPane";
-import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { isChatToolType } from "../../lib/sessions";
 
@@ -229,19 +228,17 @@ export function WorkViewArea({
           <AgentChatPane laneId={activeSession.laneId} lockSessionId={activeSession.id} />
         ) : runningSessions.length > 0 ? (
           <div className="relative h-full w-full">
-            {runningSessions.map((session) =>
-              session.ptyId ? (
-                <TerminalView
-                  key={session.id}
-                  ptyId={session.ptyId}
-                  sessionId={session.id}
-                  className={cn(
-                    "absolute inset-0 h-full w-full transition-opacity duration-150",
-                    activeSession?.id === session.id ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
-                  )}
-                />
-              ) : null,
-            )}
+            {/* Only mount the active session's TerminalView. Inactive runtimes
+                are parked off-screen by the runtime cache in TerminalView.tsx
+                and rehydrated automatically when re-mounted — no output is lost. */}
+            {activeSession?.ptyId ? (
+              <TerminalView
+                key={activeSession.id}
+                ptyId={activeSession.ptyId}
+                sessionId={activeSession.id}
+                className="absolute inset-0 h-full w-full"
+              />
+            ) : null}
             {activeSession?.status === "running" && activeSession.ptyId ? null : (
               <div className="absolute inset-0 flex items-center justify-center" style={{ background: "rgba(15,13,20,0.6)", backdropFilter: "blur(2px)" }}>
                 <div

@@ -1,4 +1,3 @@
-import React from "react";
 import { Copy } from "@phosphor-icons/react";
 
 type GitCommandPreviewProps = {

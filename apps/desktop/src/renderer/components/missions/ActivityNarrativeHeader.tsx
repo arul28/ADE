@@ -1,4 +1,3 @@
-import React from "react";
 import {
   CheckCircle,
   Lightning,
@@ -56,8 +55,8 @@ export function ActivityNarrativeHeader({
     ? `${activeAgentCount} agent${activeAgentCount !== 1 ? "s" : ""} active (${activeExecutorKinds.join(", ")})`
     : "No agents currently active";
 
-  const timeline = runGraph.timeline;
-  const latestMeaningful = timeline.find(
+  const timeline = runGraph.timeline ?? [];
+  const latestMeaningful = [...timeline].reverse().find(
     (ev) => !NOISY_EVENT_TYPES.has(ev.eventType)
   );
   const lastActionLine = latestMeaningful

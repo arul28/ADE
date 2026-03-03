@@ -1,4 +1,3 @@
-import React from "react";
 import { Folder } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";

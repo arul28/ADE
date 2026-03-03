@@ -5,13 +5,12 @@ import type {
   PackVersionSummary,
   PackEvent
 } from "../../../shared/types";
-import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { GenerateDocsModal } from "../context/GenerateDocsModal";
 import { useAppStore } from "../../state/appStore";
-import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton } from "../lanes/laneDesignTokens";
-import { ArrowsClockwise, CaretRight, FileText, FolderSimple, Crosshair, GitMerge, ClipboardText, Rocket, Clock, BookOpenText, Lightning } from "@phosphor-icons/react";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { ArrowsClockwise, FileText, FolderSimple, Crosshair, GitMerge, ClipboardText, Rocket, Clock, BookOpenText, Lightning, CheckCircle, Warning } from "@phosphor-icons/react";
 import { relativeTime, shortId, parsePackBody, type PackSection } from "../context/contextShared";
 
 // --- Keyframes for pulsing glow ---
@@ -860,6 +859,111 @@ function GenerateDocsButton({
   );
 }
 
+// --- Onboarding Status Section ---
+
+function OnboardingStatusSection() {
+  const [status, setStatus] = React.useState<{ completedAt?: string | null } | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [running, setRunning] = React.useState(false);
+
+  React.useEffect(() => {
+    window.ade.onboarding.getStatus().then((s) => setStatus(s)).catch(() => {});
+  }, []);
+
+  const isComplete = !!status?.completedAt;
+
+  const handleRunOnboarding = async () => {
+    if (isComplete) return; // Only run once
+    setRunning(true);
+    try {
+      // Navigate to onboarding page
+      window.location.hash = "#/onboarding";
+    } catch {
+      // ignore
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleMarkComplete = async () => {
+    setBusy(true);
+    try {
+      await window.ade.onboarding.complete();
+      setStatus({ completedAt: new Date().toISOString() });
+    } catch {
+      // ignore
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{
+      background: COLORS.cardBg,
+      border: `1px solid ${isComplete ? COLORS.success + "40" : COLORS.warning + "40"}`,
+      borderLeft: `3px solid ${isComplete ? COLORS.success : COLORS.warning}`,
+      padding: "14px 16px",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 16,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {isComplete ? (
+          <CheckCircle size={20} weight="fill" style={{ color: COLORS.success, flexShrink: 0 }} />
+        ) : (
+          <Warning size={20} weight="fill" style={{ color: COLORS.warning, flexShrink: 0 }} />
+        )}
+        <div>
+          <div style={{
+            fontSize: 12,
+            fontWeight: 700,
+            fontFamily: MONO_FONT,
+            color: COLORS.textPrimary,
+            textTransform: "uppercase",
+            letterSpacing: "0.5px",
+          }}>
+            ONBOARDING {isComplete ? "COMPLETE" : "INCOMPLETE"}
+          </div>
+          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2 }}>
+            {isComplete
+              ? `Completed ${status?.completedAt ? new Date(status.completedAt).toLocaleDateString() : ""}`
+              : "Run the setup wizard to detect defaults, configure AI, and import branches."
+            }
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+        {!isComplete && (
+          <>
+            <button
+              type="button"
+              onClick={handleRunOnboarding}
+              disabled={running}
+              style={{
+                ...primaryButton({ height: 30, padding: "0 14px", fontSize: 11 }),
+              }}
+            >
+              RUN WIZARD
+            </button>
+            <button
+              type="button"
+              onClick={handleMarkComplete}
+              disabled={busy}
+              style={{
+                ...outlineButton({ height: 30, padding: "0 14px", fontSize: 11 }),
+                opacity: busy ? 0.5 : 1,
+              }}
+            >
+              {busy ? "SKIPPING..." : "SKIP"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // --- Context Section ---
 
 export function ContextSection() {
@@ -880,6 +984,9 @@ export function ContextSection() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Onboarding Status */}
+      <OnboardingStatusSection />
+
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>

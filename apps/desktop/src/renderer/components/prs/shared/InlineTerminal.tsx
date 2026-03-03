@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CaretUp, CaretDown } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import type { PtyDataEvent } from "../../../../shared/types";

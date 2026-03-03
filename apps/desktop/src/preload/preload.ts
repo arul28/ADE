@@ -329,7 +329,6 @@ import type {
   MissionBudgetSnapshot,
   SendAgentMessageArgs,
   GetGlobalChatArgs,
-  DeliverMessageArgs,
   GetActiveAgentsArgs,
   ActiveAgentInfo
 } from "../shared/types";
@@ -338,7 +337,7 @@ contextBridge.exposeInMainWorld("ade", {
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
-    getProject: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.appGetProject),
+    getProject: async (): Promise<ProjectInfo | null> => ipcRenderer.invoke(IPC.appGetProject),
     openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url }),
     revealPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appRevealPath, { path }),
     writeClipboardText: async (text: string): Promise<void> => ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
@@ -349,12 +348,13 @@ contextBridge.exposeInMainWorld("ade", {
     }): Promise<void> => ipcRenderer.invoke(IPC.appOpenPathInEditor, args)
   },
   project: {
-    openRepo: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectOpenRepo),
+    openRepo: async (): Promise<ProjectInfo | null> => ipcRenderer.invoke(IPC.projectOpenRepo),
     openAdeFolder: async (): Promise<void> => ipcRenderer.invoke(IPC.projectOpenAdeFolder),
     clearLocalData: async (args: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> =>
       ipcRenderer.invoke(IPC.projectClearLocalData, args),
     exportConfig: async (): Promise<ExportConfigBundleResult> => ipcRenderer.invoke(IPC.projectExportConfig),
     listRecent: async (): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectListRecent),
+    closeCurrent: async (): Promise<void> => ipcRenderer.invoke(IPC.projectCloseCurrent),
     switchToPath: async (rootPath: string): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
     onMissing: (cb: (data: { rootPath: string }) => void) => {

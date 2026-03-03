@@ -1,5 +1,5 @@
 import React from "react";
-import { Warning, XCircle, ArrowsDownUp } from "@phosphor-icons/react";
+import { Warning, XCircle } from "@phosphor-icons/react";
 import type { RebaseNeed, AutoRebaseLaneStatus } from "../../../shared/types";
 
 type PrRebaseBannerProps = {

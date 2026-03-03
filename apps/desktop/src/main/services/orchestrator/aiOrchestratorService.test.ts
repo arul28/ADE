@@ -4465,10 +4465,10 @@ describe("aiOrchestratorService", () => {
       // Manually add prService to the ai orchestrator by recreating it with prService
       const logMessages: string[] = [];
       const captureLogger = {
-        debug: (msg: string, ...rest: any[]) => logMessages.push(`debug: ${msg}`),
-        info: (msg: string, ...rest: any[]) => logMessages.push(`info: ${msg}`),
-        warn: (msg: string, ...rest: any[]) => logMessages.push(`warn: ${msg}`),
-        error: (msg: string, ...rest: any[]) => logMessages.push(`error: ${msg}`)
+        debug: (msg: string) => logMessages.push(`debug: ${msg}`),
+        info: (msg: string) => logMessages.push(`info: ${msg}`),
+        warn: (msg: string) => logMessages.push(`warn: ${msg}`),
+        error: (msg: string) => logMessages.push(`error: ${msg}`)
       } as any;
 	      const aiOrchestratorWithPr = createAiOrchestratorService({
 	        db: fixture.db,
@@ -4566,12 +4566,8 @@ describe("aiOrchestratorService", () => {
       expect(["succeeded", "succeeded_with_risk"]).toContain(finalGraph.run.status);
 
       // Verify steps have different lane IDs
-      const stepsWithLanes = finalGraph.steps.map((s) => ({ title: s.title, laneId: s.laneId }));
       const uniqueLaneIds = new Set(finalGraph.steps.map((s) => s.laneId).filter(Boolean));
       expect(uniqueLaneIds.size).toBeGreaterThan(1);
-
-      // Verify mission status
-      const missionBeforeSync = fixture.missionService.get(mission.id);
 
       // Directly call syncMissionFromRun and await it
       await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed");
@@ -4923,7 +4919,7 @@ describe("aiOrchestratorService", () => {
       fs.utimesSync(transcriptPath, pastTime, pastTime);
 
       // Run the health sweep — the stale attempt should be recovered
-      const sweep = await fixture.aiOrchestratorService.runHealthSweep("watchdog_test");
+      await fixture.aiOrchestratorService.runHealthSweep("watchdog_test");
 
       // Check the attempt state regardless of sweep count — the health sweep
       // may recover via timeout detection OR via session state reconciliation.

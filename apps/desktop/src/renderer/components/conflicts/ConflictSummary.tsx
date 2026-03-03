@@ -1,13 +1,5 @@
-import React from "react";
 import type { ConflictOverlap, ConflictStatus, LaneSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
-
-function riskClass(risk: ConflictOverlap["riskLevel"]): string {
-  if (risk === "high") return "text-red-300";
-  if (risk === "medium") return "text-amber-300";
-  if (risk === "low") return "text-emerald-300";
-  return "text-muted-fg";
-}
 
 function riskGlow(risk: ConflictOverlap["riskLevel"]): string {
   if (risk === "high") return "shadow-[0_0_10px_-3px_rgba(239,68,68,0.2)] border-red-500/15";

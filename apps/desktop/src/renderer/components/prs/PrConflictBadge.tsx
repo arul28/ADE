@@ -1,4 +1,3 @@
-import React from "react";
 import { Warning as AlertTriangle, CheckCircle as CheckCircle2 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 

@@ -9,8 +9,6 @@ import path from "node:path";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import type { createLaneService } from "../lanes/laneService";
 import type {
-  ConflictRiskLevel,
-  ConflictStatusValue,
   GitConflictState,
   LaneSummary,
   LaneLineageV1,
@@ -21,8 +19,6 @@ import {
   asString,
   isRecord,
   normalizeConflictStatus,
-  normalizeRiskLevel,
-  readFileIfExists,
   type ConflictPredictionPackFile
 } from "./packUtils";
 

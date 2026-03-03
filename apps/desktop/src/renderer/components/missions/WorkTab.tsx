@@ -1,20 +1,14 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { OrchestratorRunGraph } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { isRecord } from "./missionHelpers";
+import { useMissionPolling } from "./useMissionPolling";
 
 export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null }) {
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
   const [transcriptTail, setTranscriptTail] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const transcriptRef = useRef<HTMLPreElement>(null);
-  const visibleRef = useRef(true);
-
-  useEffect(() => {
-    const onVisChange = () => { visibleRef.current = document.visibilityState === "visible"; };
-    document.addEventListener("visibilitychange", onVisChange);
-    return () => document.removeEventListener("visibilitychange", onVisChange);
-  }, []);
 
   const activeAttempts = useMemo(() => {
     if (!runGraph) return [];
@@ -41,30 +35,33 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
     [runGraph, selectedAttempt]
   );
 
+  const sessionId = selectedAttempt?.executorSessionId ?? null;
+
+  // Initial transcript load
   useEffect(() => {
-    if (!selectedAttempt?.executorSessionId) return;
+    if (!sessionId) return;
     let cancelled = false;
-    const readTail = async () => {
+    (async () => {
       try {
-        const tail = await window.ade.sessions.readTranscriptTail({
-          sessionId: selectedAttempt.executorSessionId!,
-          maxBytes: 16_000
-        });
+        const tail = await window.ade.sessions.readTranscriptTail({ sessionId, maxBytes: 16_000 });
         if (!cancelled) setTranscriptTail(tail);
       } catch {
         if (!cancelled) setTranscriptTail("(unable to read worker transcript)");
       }
-    };
-    void readTail();
-    const timer = window.setInterval(() => {
-      if (!visibleRef.current) return;
-      void readTail();
-    }, 2_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [selectedAttempt?.executorSessionId]);
+    })();
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
+  // Polling via shared coordinator (replaces per-component setInterval)
+  const pollTranscript = useCallback(() => {
+    if (!sessionId) return;
+    window.ade.sessions.readTranscriptTail({ sessionId, maxBytes: 16_000 }).then(
+      (tail) => setTranscriptTail(tail),
+      () => setTranscriptTail("(unable to read worker transcript)")
+    );
+  }, [sessionId]);
+
+  useMissionPolling(pollTranscript, 2_000, !!sessionId);
 
   useEffect(() => {
     if (!autoScroll || !transcriptRef.current) return;

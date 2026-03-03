@@ -1,4 +1,3 @@
-import React from "react";
 import { Plus } from "@phosphor-icons/react";
 import type { MissionDashboardSnapshot } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
@@ -84,7 +83,7 @@ export function MissionsHomeDashboard({
           </div>
           <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
             <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Success</div>
-            <div className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>{Math.round(snapshot.weekly.successRate * 100)}%</div>
+            <div className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>{Math.round((snapshot.weekly.successRate ?? 0) * 100)}%</div>
           </div>
           <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
             <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Avg Duration</div>
@@ -92,7 +91,7 @@ export function MissionsHomeDashboard({
           </div>
           <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
             <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Est. Cost</div>
-            <div className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>${snapshot.weekly.totalCostUsd.toFixed(2)}</div>
+            <div className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>${(snapshot.weekly.totalCostUsd ?? 0).toFixed(2)}</div>
           </div>
         </div>
       </div>

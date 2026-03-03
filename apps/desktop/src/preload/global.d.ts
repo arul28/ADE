@@ -320,7 +320,7 @@ declare global {
       app: {
         ping: () => Promise<"pong">;
         getInfo: () => Promise<AppInfo>;
-        getProject: () => Promise<ProjectInfo>;
+        getProject: () => Promise<ProjectInfo | null>;
         openExternal: (url: string) => Promise<void>;
         revealPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
@@ -331,11 +331,12 @@ declare global {
         }) => Promise<void>;
       };
       project: {
-        openRepo: () => Promise<ProjectInfo>;
+        openRepo: () => Promise<ProjectInfo | null>;
         openAdeFolder: () => Promise<void>;
         clearLocalData: (args?: ClearLocalAdeDataArgs) => Promise<ClearLocalAdeDataResult>;
         exportConfig: () => Promise<ExportConfigBundleResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
+        closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
         forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;

@@ -21,9 +21,9 @@ export function createJobEngine({
   logger,
   packService,
   conflictService,
-  aiIntegrationService,
-  laneService,
-  projectConfigService,
+  aiIntegrationService: _aiIntegrationService,
+  laneService: _laneService,
+  projectConfigService: _projectConfigService,
 }: {
   logger: Logger;
   packService: ReturnType<typeof createPackService>;

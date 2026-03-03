@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { At, Image, Pause, Play, Square, X, Hash, ShieldCheck, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { At, Image, Pause, Square, X, Hash, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
   AgentChatFileRef,
@@ -127,7 +127,6 @@ export function AgentChatComposer({
 
   const attachedPaths = useMemo(() => new Set(attachments.map((attachment) => attachment.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
-  const reasoningTiers = selectedModel?.reasoningTiers ?? [];
 
   const filteredSlashCommands = useMemo(() => {
     if (!slashQuery.length) return SLASH_COMMANDS;
@@ -577,6 +576,7 @@ export function AgentChatComposer({
 
               /* Trigger slash picker */
               if (event.key === "/" && draft.length === 0 && !commandModified && !event.altKey) {
+                event.preventDefault();
                 window.setTimeout(() => {
                   setSlashPickerOpen(true);
                   setSlashQuery("");

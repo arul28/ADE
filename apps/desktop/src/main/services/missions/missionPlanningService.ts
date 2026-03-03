@@ -526,7 +526,7 @@ function buildPlannerPrompt(args: {
     ? knowledgeEntries.map((entry) => `- [${entry.category}] ${entry.content}`).join("\n")
     : "- none";
   const constraints = [
-    "AI is only for initial planning. Runtime transitions are deterministic.",
+    "AI owns mission strategy (planning, delegation, validation, replanning). Runtime enforces safety, budgets, and state integrity.",
     `IMPORTANT: Write your final plan as a JSON file. Use your file writing tool to create the file at the path provided in the PLAN_OUTPUT_PATH variable below. The file must contain ONLY valid JSON — no markdown, no comments, no explanations. After writing the file, respond with exactly: PLAN_WRITTEN`,
     `PLAN_OUTPUT_PATH: ${args.planOutputPath}`,
     "Use stable deterministic step IDs suitable for resume/replay.",
@@ -674,7 +674,7 @@ function normalizePlannerStep(step: unknown, index: number): PlannerStepPlan {
         .filter((entry, idx, arr) => arr.indexOf(entry) === idx);
       return values.length > 0 ? values : ["deterministic"];
     })(),
-    dependencies: toStringArray(record.dependencies).map((entry) => normalizeStepId(entry, index)),
+    dependencies: toStringArray(record.dependencies).filter(Boolean),
     joinPolicy: (() => {
       if (record.joinPolicy == null) return undefined;
       return toEnum(record.joinPolicy, ["all_success", "any_success", "quorum"] as const, "all_success");
@@ -1603,13 +1603,13 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         validationErrors: [],
         attempts: plannerAttempts
       };
-      // Strip test-type steps when testing is disabled (check phases first, fall back to policy)
-      const testingDisabled = args.phases
-        ? !args.phases.some((p) => p.phaseKey.toLowerCase() === "testing" || p.phaseKey.toLowerCase() === "test")
-        : args.policy?.testing?.mode === "none";
+      // Strip only explicit test tasks when testing is disabled via policy.
+      // Do not infer this from phase-card presence: validation/milestone strategy
+      // remains coordinator-owned in AI-first mode.
+      const testingDisabled = args.policy?.testing?.mode === "none";
       if (testingDisabled && plan.steps) {
         plan.steps = plan.steps.filter(
-          (s) => !["test", "validation", "test_review", "milestone"].includes(s.taskType ?? "")
+          (s) => !["test", "test_review"].includes(s.taskType ?? "")
         );
       }
 

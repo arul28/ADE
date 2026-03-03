@@ -6,7 +6,7 @@ import { useConflictsState, useConflictsDispatch } from "../state/ConflictsConte
 import { LaneDropdown } from "../shared/LaneDropdown";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
-import type { ConflictStatus, LaneSummary, MultiMergeMode } from "../../../../shared/types";
+import type { ConflictStatus } from "../../../../shared/types";
 
 function pairKey(a: string, b: string): string {
   return a < b ? `${a}::${b}` : `${b}::${a}`;
@@ -23,11 +23,8 @@ export function MultiMergePreviewPane() {
     multiMergeSourceLaneIds,
     multiMergeIntegrationName,
     mergePlan,
-    mergePlanBusy,
     mergePlanError,
-    integrationBusy,
     integrationError,
-    integrationLaneId,
   } = useConflictsState();
 
   const [execBusy, setExecBusy] = React.useState(false);

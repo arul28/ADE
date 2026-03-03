@@ -1,4 +1,4 @@
-import React, { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import type { GitHubStatus } from "../../../shared/types";
 import { GithubLogo, CheckCircle, Warning, XCircle, ArrowsClockwise, ShieldCheck, LinkBreak, Key } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";

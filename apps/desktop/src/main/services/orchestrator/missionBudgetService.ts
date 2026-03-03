@@ -18,7 +18,6 @@ import type {
   MissionWorkerBudgetSnapshot,
   ModelProvider,
   PhaseCard,
-  ProviderBudgetLimits,
 } from "../../../shared/types";
 import { BUILT_IN_PHASE_KEYS } from "../missions/phaseEngine";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
@@ -80,7 +79,7 @@ type LaunchBudgetEstimate = {
 
 function toNonNegativeInt(value: unknown): number | null {
   const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
   return Math.max(0, Math.floor(numeric));
 }
 
@@ -308,7 +307,7 @@ function readClaudeJsonlWindow(args: {
             : typeof parsed.model === "string"
               ? parsed.model
               : "claude-sonnet-4-6";
-          const entryCost = estimateTokenCost(model, inTokens + cacheWrite, outTokens + cacheRead);
+          const entryCost = estimateTokenCost(model, inTokens, outTokens);
           costUsd += entryCost;
           samples += 1;
 
@@ -358,16 +357,6 @@ function readClaudeJsonlWindow(args: {
     oldestEntryMs,
     oldestByProvider,
   };
-}
-
-function parseSelectedOrchestratorModel(launch: CreateMissionArgs): string {
-  const explicit = typeof launch.modelConfig?.orchestratorModel?.modelId === "string"
-    ? launch.modelConfig.orchestratorModel.modelId.trim()
-    : "";
-  if (explicit.length > 0) return explicit;
-  const legacy = typeof launch.orchestratorModel === "string" ? launch.orchestratorModel.trim() : "";
-  if (legacy.length > 0) return legacy;
-  return "anthropic/claude-sonnet-4-6";
 }
 
 function computePressure(scope: MissionBudgetScopeSnapshot): MissionBudgetPressure {

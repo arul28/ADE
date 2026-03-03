@@ -3,6 +3,13 @@ import { X } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import type { StackButtonDefinition } from "../../../shared/types";
 
+export type AddCommandInitialValues = {
+  name: string;
+  command: string;
+  stackId: string | null;
+  cwd: string;
+};
+
 export type AddCommandDialogProps = {
   stacks: StackButtonDefinition[];
   open: boolean;
@@ -14,9 +21,23 @@ export type AddCommandDialogProps = {
     newStackName: string | null;
     cwd: string;
   }) => void;
+  /** When provided, the dialog operates in "edit" mode with pre-filled values. */
+  initialValues?: AddCommandInitialValues | null;
+  /** Dialog title override. Defaults to "Add Command". */
+  title?: string;
+  /** Submit button label override. Defaults to "Add". */
+  submitLabel?: string;
 };
 
-export function AddCommandDialog({ stacks, open, onClose, onSubmit }: AddCommandDialogProps) {
+export function AddCommandDialog({
+  stacks,
+  open,
+  onClose,
+  onSubmit,
+  initialValues,
+  title,
+  submitLabel,
+}: AddCommandDialogProps) {
   const [name, setName] = React.useState("");
   const [command, setCommand] = React.useState("");
   const [stackId, setStackId] = React.useState<string>("__none__");
@@ -24,16 +45,26 @@ export function AddCommandDialog({ stacks, open, onClose, onSubmit }: AddCommand
   const [cwd, setCwd] = React.useState(".");
   const nameRef = React.useRef<HTMLInputElement>(null);
 
+  const dialogTitle = title ?? "Add Command";
+  const dialogSubmitLabel = submitLabel ?? "Add";
+
   React.useEffect(() => {
     if (open) {
-      setName("");
-      setCommand("");
-      setStackId("__none__");
+      if (initialValues) {
+        setName(initialValues.name);
+        setCommand(initialValues.command);
+        setStackId(initialValues.stackId ?? "__none__");
+        setCwd(initialValues.cwd || ".");
+      } else {
+        setName("");
+        setCommand("");
+        setStackId("__none__");
+        setCwd(".");
+      }
       setNewStackName("");
-      setCwd(".");
       setTimeout(() => nameRef.current?.focus(), 50);
     }
-  }, [open]);
+  }, [open, initialValues]);
 
   if (!open) return null;
 
@@ -115,7 +146,7 @@ export function AddCommandDialog({ stacks, open, onClose, onSubmit }: AddCommand
               letterSpacing: "1px",
             }}
           >
-            Add Command
+            {dialogTitle}
           </span>
           <button
             type="button"
@@ -209,7 +240,7 @@ export function AddCommandDialog({ stacks, open, onClose, onSubmit }: AddCommand
               disabled={!canSubmit}
               style={primaryButton({ opacity: canSubmit ? 1 : 0.4, cursor: canSubmit ? "pointer" : "default" })}
             >
-              Add
+              {dialogSubmitLabel}
             </button>
           </div>
         </form>

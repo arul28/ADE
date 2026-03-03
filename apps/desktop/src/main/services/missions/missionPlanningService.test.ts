@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { planMissionOnce, plannerPlanToMissionSteps, validateAndCanonicalizePlannerPlan, MissionPlanningError } from "./missionPlanningService";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
-import type { MissionExecutionPolicy } from "../../../shared/types";
+import type { MissionExecutionPolicy, PhaseCard } from "../../../shared/types";
 
 describe("missionPlanningService planner contract", () => {
   it("accepts valid plans and canonicalizes step order", () => {
@@ -510,6 +510,198 @@ describe("missionPlanningService planner contract", () => {
       })
     );
   });
+
+  it("does not strip test or milestone tasks when testing phase card is absent", async () => {
+    const aiIntegrationService = {
+      getAvailability: () => ({ claude: true, codex: false }),
+      getMode: () => "ready",
+      planMission: vi.fn().mockResolvedValue({
+        text: "",
+        structuredOutput: {
+          schemaVersion: "1.0",
+          missionSummary: {
+            title: "Phase-driven planning",
+            objective: "Allow planner-selected validation strategy",
+            domain: "mixed",
+            complexity: "medium",
+            strategy: "parallel-lite",
+            parallelismCap: 2
+          },
+          assumptions: [],
+          risks: [],
+          steps: [
+            {
+              stepId: "code",
+              name: "Implement",
+              description: "Implement feature changes.",
+              taskType: "code",
+              executorHint: "either",
+              preferredScope: "lane",
+              requiresContextProfiles: ["deterministic"],
+              dependencies: [],
+              artifactHints: [],
+              claimPolicy: { lanes: ["backend"] },
+              maxAttempts: 2,
+              retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+              outputContract: { expectedSignals: ["code_done"], completionCriteria: "code_done" }
+            },
+            {
+              stepId: "milestone",
+              name: "Milestone gate",
+              description: "Checkpoint major workstream readiness.",
+              taskType: "milestone",
+              executorHint: "either",
+              preferredScope: "lane",
+              requiresContextProfiles: ["deterministic"],
+              dependencies: ["code"],
+              artifactHints: [],
+              claimPolicy: { lanes: ["integration"] },
+              maxAttempts: 2,
+              retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+              outputContract: { expectedSignals: ["milestone_ok"], completionCriteria: "milestone_ok" }
+            },
+            {
+              stepId: "test",
+              name: "Run tests",
+              description: "Execute targeted validation.",
+              taskType: "test",
+              executorHint: "either",
+              preferredScope: "lane",
+              requiresContextProfiles: ["deterministic"],
+              dependencies: ["milestone"],
+              artifactHints: [],
+              claimPolicy: { lanes: ["backend"] },
+              maxAttempts: 2,
+              retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+              outputContract: { expectedSignals: ["tests_pass"], completionCriteria: "tests_pass" }
+            }
+          ],
+          handoffPolicy: {
+            externalConflictDefault: "intervention"
+          }
+        }
+      })
+    };
+
+    const phases = [
+      { id: "planning", phaseKey: "planning", name: "Planning" },
+      { id: "development", phaseKey: "development", name: "Development" },
+      { id: "validation", phaseKey: "validation", name: "Validation" }
+    ] as unknown as PhaseCard[];
+
+    const { plan } = await planMissionOnce({
+      title: "Phase-aware mission",
+      prompt: "Plan and run validation without a dedicated testing phase card.",
+      laneId: null,
+      plannerEngine: "auto",
+      projectRoot: "/Users/arul/ADE/apps/desktop",
+      phases,
+      aiIntegrationService: aiIntegrationService as never
+    });
+
+    const taskTypes = plan.steps.map((step) => step.taskType);
+    expect(taskTypes).toContain("test");
+    expect(taskTypes).toContain("milestone");
+  });
+
+  it("testing.mode=none strips only explicit test tasks", async () => {
+    const aiIntegrationService = {
+      getAvailability: () => ({ claude: true, codex: false }),
+      getMode: () => "ready",
+      planMission: vi.fn().mockResolvedValue({
+        text: "",
+        structuredOutput: {
+          schemaVersion: "1.0",
+          missionSummary: {
+            title: "No testing policy",
+            objective: "Ensure non-test checkpoints remain",
+            domain: "mixed",
+            complexity: "medium",
+            strategy: "parallel-lite",
+            parallelismCap: 2
+          },
+          assumptions: [],
+          risks: [],
+          steps: [
+            {
+              stepId: "code",
+              name: "Implement",
+              description: "Implement feature changes.",
+              taskType: "code",
+              executorHint: "either",
+              preferredScope: "lane",
+              requiresContextProfiles: ["deterministic"],
+              dependencies: [],
+              artifactHints: [],
+              claimPolicy: { lanes: ["backend"] },
+              maxAttempts: 2,
+              retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+              outputContract: { expectedSignals: ["code_done"], completionCriteria: "code_done" }
+            },
+            {
+              stepId: "milestone",
+              name: "Milestone gate",
+              description: "Checkpoint major workstream readiness.",
+              taskType: "milestone",
+              executorHint: "either",
+              preferredScope: "lane",
+              requiresContextProfiles: ["deterministic"],
+              dependencies: ["code"],
+              artifactHints: [],
+              claimPolicy: { lanes: ["integration"] },
+              maxAttempts: 2,
+              retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+              outputContract: { expectedSignals: ["milestone_ok"], completionCriteria: "milestone_ok" }
+            },
+            {
+              stepId: "test",
+              name: "Run tests",
+              description: "Execute targeted validation.",
+              taskType: "test",
+              executorHint: "either",
+              preferredScope: "lane",
+              requiresContextProfiles: ["deterministic"],
+              dependencies: ["milestone"],
+              artifactHints: [],
+              claimPolicy: { lanes: ["backend"] },
+              maxAttempts: 2,
+              retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+              outputContract: { expectedSignals: ["tests_pass"], completionCriteria: "tests_pass" }
+            }
+          ],
+          handoffPolicy: {
+            externalConflictDefault: "intervention"
+          }
+        }
+      })
+    };
+    const policy: MissionExecutionPolicy = {
+      planning: { mode: "auto", model: "codex" },
+      implementation: { model: "codex" },
+      testing: { mode: "none", model: "codex" },
+      validation: { mode: "optional" },
+      codeReview: { mode: "off" },
+      testReview: { mode: "off" },
+      prReview: { mode: "off" },
+      merge: { mode: "off" },
+      completion: { allowCompletionWithRisk: true }
+    };
+
+    const { plan } = await planMissionOnce({
+      title: "No-test mission",
+      prompt: "Ship with checkpoints but no test task execution.",
+      laneId: null,
+      plannerEngine: "auto",
+      projectRoot: "/Users/arul/ADE/apps/desktop",
+      policy,
+      aiIntegrationService: aiIntegrationService as never
+    });
+
+    const taskTypes = plan.steps.map((step) => step.taskType);
+    expect(taskTypes).not.toContain("test");
+    expect(taskTypes).toContain("milestone");
+    expect(taskTypes).toContain("code");
+  });
 });
 
 describe("policy-driven planner DAG", () => {
@@ -609,7 +801,6 @@ describe("policy-driven planner DAG", () => {
       policy: BASE_POLICY
     });
     // Integration step is included when there are parallel branches
-    const integrationStep = plan.steps.find((s) => s.kind === "integration");
     // May or may not be present depending on whether planner detects parallel branches
     expect(plan.steps.length).toBeGreaterThan(0);
   });

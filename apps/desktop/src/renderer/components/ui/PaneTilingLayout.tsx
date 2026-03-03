@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, type PanelImperativeHandle } from "react-resizable-panels";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { ResizeGutter } from "./ResizeGutter";
@@ -13,7 +13,6 @@ import {
   isValidTree,
   type PaneLeaf,
   type PaneSplit,
-  type PaneLayoutEntry,
   type DropEdge
 } from "./paneTreeOps";
 
@@ -312,12 +311,6 @@ export function PaneTilingLayout({
     setDropTargetId(null);
   }, []);
 
-  /* ---- Reset to default layout ---- */
-  const resetLayout = useCallback(() => {
-    setLiveTree(tree);
-    window.ade.tilingTree.set(layoutId, tree).catch(() => {});
-  }, [tree, layoutId]);
-
   /* ---- Recursive renderer ---- */
 
   const renderNode = (
@@ -393,7 +386,7 @@ export function PaneTilingLayout({
           const minSize = isSplitNode || isMinimizedLeaf ? "0.5%" : `${child.minSize ?? 5}%`;
 
           return (
-            <React.Fragment key={childKey}>
+            <Fragment key={childKey}>
               <Panel
                 id={childKey}
                 defaultSize={defaultSize != null ? `${defaultSize}%` : undefined}
@@ -417,7 +410,7 @@ export function PaneTilingLayout({
                   thin
                 />
               ) : null}
-            </React.Fragment>
+            </Fragment>
           );
         })}
       </Group>

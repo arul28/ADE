@@ -22,7 +22,6 @@ import type {
   OrchestratorExecutorKind,
   OrchestratorGateReport,
   OrchestratorJoinPolicy,
-  OrchestratorMemoryHierarchy,
   OrchestratorRun,
   OrchestratorRunStatus,
   OrchestratorRuntimeBusEvent,

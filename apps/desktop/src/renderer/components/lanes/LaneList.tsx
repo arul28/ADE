@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useAppStore } from "../../state/appStore";
 import { LaneRow } from "./LaneRow";
 import { PaneHeader } from "../ui/PaneHeader";

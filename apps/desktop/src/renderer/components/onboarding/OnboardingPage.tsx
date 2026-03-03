@@ -15,7 +15,7 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { formatDate } from "../../lib/format";
-import { quoteShellArg, commandArrayToLine, parseCommandLine } from "../../lib/shell";
+import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 
 type StepId =
   | "welcome"

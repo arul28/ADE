@@ -1,5 +1,4 @@
 import type { ConflictsState, ConflictsAction } from "./types";
-import { initialConflictsState } from "./types";
 
 export function conflictsReducer(state: ConflictsState, action: ConflictsAction): ConflictsState {
   switch (action.type) {

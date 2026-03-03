@@ -1,4 +1,3 @@
-import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../ui/Button";
 import type { LaneSummary } from "../../../shared/types";
@@ -65,9 +64,9 @@ export function ManageLaneDialog({
                   Archive lane from ADE
                 </Button>
               </div>
-              <div className="rounded shadow-card bg-red-50 p-3">
-                <div className="mb-2 text-xs font-semibold text-red-900">Delete</div>
-                <div className="mb-2 text-xs text-red-800">This removes the lane worktree from disk.</div>
+              <div className="rounded shadow-card bg-red-500/10 p-3">
+                <div className="mb-2 text-xs font-semibold text-red-300">Delete</div>
+                <div className="mb-2 text-xs text-red-400">This removes the lane worktree from disk.</div>
                 <div className="mb-2 grid gap-2 md:grid-cols-3">
                   <label className="inline-flex items-center gap-2 rounded bg-card/60 shadow-card px-2 py-1 text-xs">
                     <input type="radio" name="lane-delete-mode" checked={deleteMode === "worktree"} onChange={() => setDeleteMode("worktree")} />
@@ -94,11 +93,11 @@ export function ManageLaneDialog({
                 </label>
                 <div className="mb-2">
                   <label className="mb-1 block text-xs text-muted-fg">
-                    Type <span className="font-semibold text-red-900">{deletePhrase}</span> to confirm
+                    Type <span className="font-semibold text-red-300">{deletePhrase}</span> to confirm
                   </label>
                   <input value={deleteConfirmText} onChange={(event) => setDeleteConfirmText(event.target.value)} className="h-8 w-full rounded bg-card/60 shadow-card px-2 text-xs outline-none" />
                 </div>
-                {laneActionError ? <div className="mb-2 rounded bg-red-100 shadow-card px-2 py-1 text-xs text-red-900">{laneActionError}</div> : null}
+                {laneActionError ? <div className="mb-2 rounded bg-red-500/10 shadow-card px-2 py-1 text-xs text-red-300">{laneActionError}</div> : null}
                 <Button size="sm" variant="primary" disabled={laneActionBusy || deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()} onClick={onDelete}>
                   {laneActionBusy ? "Working..." : "Delete lane"}
                 </Button>

@@ -8,7 +8,6 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type {
-  LaneSummary,
   TestRunStatus
 } from "../../../shared/types";
 import {
@@ -29,7 +28,6 @@ import {
   isRecord,
   parseRecord,
   readFileIfExists,
-  safeJsonParseArray,
   statusFromCode,
   type ConflictPredictionPackFile
 } from "./packUtils";

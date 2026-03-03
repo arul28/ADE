@@ -2,8 +2,7 @@
 // Mission types
 // ---------------------------------------------------------------------------
 
-import type { ModelConfig } from "./models";
-import type { MissionModelConfig } from "./models";
+import type { ModelConfig, MissionModelConfig } from "./models";
 import type { PrStrategy } from "./prs";
 import type { OrchestratorExecutorKind, TeamRuntimeConfig, RecoveryLoopPolicy, IntegrationPrPolicy } from "./orchestrator";
 import type { AiClaudePermissionMode, AiCodexApprovalMode, AiCodexSandboxPermissions, AiApiPermissionMode } from "./config";

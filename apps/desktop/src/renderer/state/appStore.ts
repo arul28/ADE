@@ -49,6 +49,8 @@ function persistTheme(theme: ThemeId) {
 
 type AppState = {
   project: ProjectInfo | null;
+  /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
+  showWelcome: boolean;
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   runLaneId: string | null;
@@ -60,7 +62,8 @@ type AppState = {
   keybindings: KeybindingsSnapshot | null;
   terminalAttention: TerminalAttentionSnapshot;
 
-  setProject: (project: ProjectInfo) => void;
+  setProject: (project: ProjectInfo | null) => void;
+  setShowWelcome: (show: boolean) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
@@ -73,14 +76,16 @@ type AppState = {
 
   refreshProject: () => Promise<void>;
   refreshLanes: () => Promise<void>;
-  openRepo: () => Promise<void>;
+  openRepo: () => Promise<ProjectInfo | null>;
   switchProjectToPath: (rootPath: string) => Promise<void>;
+  closeProject: () => Promise<void>;
 };
 
 export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,
+  showWelcome: true,
   lanes: [],
   selectedLaneId: null,
   runLaneId: null,
@@ -93,6 +98,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
 
   setProject: (project) => set({ project }),
+  setShowWelcome: (showWelcome) => set({ showWelcome }),
   setLanes: (lanes) => set({ lanes }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
   setLaneInspectorTab: (laneId, tab) =>
@@ -143,8 +149,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openRepo: async () => {
     const project = await window.ade.project.openRepo();
+    if (!project) return null;
     set({
       project,
+      showWelcome: false,
       lanes: [],
       selectedLaneId: null,
       runLaneId: null,
@@ -157,12 +165,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().refreshLanes();
     await get().refreshProviderMode().catch(() => { });
     await get().refreshKeybindings().catch(() => { });
+    return project;
   },
 
   switchProjectToPath: async (rootPath: string) => {
     const project = await window.ade.project.switchToPath(rootPath);
     set({
       project,
+      showWelcome: false,
       lanes: [],
       selectedLaneId: null,
       runLaneId: null,
@@ -174,5 +184,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().refreshLanes();
     await get().refreshProviderMode().catch(() => { });
     await get().refreshKeybindings().catch(() => { });
+  },
+
+  closeProject: async () => {
+    await window.ade.project.closeCurrent();
+    set({
+      project: null,
+      showWelcome: true,
+      lanes: [],
+      selectedLaneId: null,
+      runLaneId: null,
+      focusedSessionId: null,
+      laneInspectorTabs: {},
+      keybindings: null,
+      terminalAttention: EMPTY_TERMINAL_ATTENTION
+    });
   }
 }));

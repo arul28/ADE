@@ -6,8 +6,8 @@ import type {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
-import { relativeWhen } from "../../lib/format";
 import { useThreadEventRefresh } from "../../hooks/useThreadEventRefresh";
+import { useMissionPolling } from "./useMissionPolling";
 
 type AgentChannelsProps = {
   missionId: string;
@@ -29,14 +29,6 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const visibleRef = useRef(true);
-
-  // Track visibility to pause polling when backgrounded
-  useEffect(() => {
-    const onVisChange = () => { visibleRef.current = document.visibilityState === "visible"; };
-    document.addEventListener("visibilitychange", onVisChange);
-    return () => document.removeEventListener("visibilitychange", onVisChange);
-  }, []);
 
   // Auto-select first thread (coordinator) if nothing selected
   useEffect(() => {
@@ -93,16 +85,19 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
     }
   }, [missionId]);
 
+  // Initial load when thread changes
   useEffect(() => {
     void refreshMessages(selectedThreadId);
-    // Only poll for active threads — closed/completed threads won't receive new messages.
-    if (selectedThread && selectedThread.status !== "active") return;
-    const interval = setInterval(() => {
-      if (!visibleRef.current) return;
-      void refreshMessages(selectedThreadId);
-    }, 6_000);
-    return () => clearInterval(interval);
-  }, [refreshMessages, selectedThreadId, selectedThread]);
+  }, [refreshMessages, selectedThreadId]);
+
+  // Polling via shared coordinator (replaces per-component setInterval).
+  // Only poll for active threads — closed/completed threads won't receive new messages.
+  const isActiveThread = !selectedThread || selectedThread.status === "active";
+  const pollMessages = useCallback(() => {
+    void refreshMessages(selectedThreadId);
+  }, [refreshMessages, selectedThreadId]);
+
+  useMissionPolling(pollMessages, 6_000, isActiveThread && !!selectedThreadId);
 
   // Listen for thread events
   const handleThreadRefresh = useCallback(() => {

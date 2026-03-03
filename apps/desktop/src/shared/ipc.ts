@@ -11,6 +11,7 @@ export const IPC = {
   projectClearLocalData: "ade.project.clearLocalData",
   projectExportConfig: "ade.project.exportConfig",
   projectListRecent: "ade.project.listRecent",
+  projectCloseCurrent: "ade.project.closeCurrent",
   projectSwitchToPath: "ade.project.switchToPath",
   projectForgetRecent: "ade.project.forgetRecent",
   projectMissing: "ade.project.missing",

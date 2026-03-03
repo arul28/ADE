@@ -1,7 +1,6 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import type { PackSummary } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";

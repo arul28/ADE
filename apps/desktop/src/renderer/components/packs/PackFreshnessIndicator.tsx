@@ -1,4 +1,3 @@
-import React from "react";
 import { Chip } from "../ui/Chip";
 
 function relativeTime(ts: string | null): string {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Pulse as Activity,
@@ -31,13 +31,6 @@ function parseMetadata(raw: string | null): Record<string, unknown> | null {
 }
 
 const statusTone = (status: OperationRecord["status"]) => statusToneOperation(status);
-
-function statusBorderColor(status: OperationRecord["status"]): string {
-  if (status === "succeeded") return "border-l-emerald-500/70";
-  if (status === "failed") return "border-l-red-500/70";
-  if (status === "running") return "border-l-amber-500/70";
-  return "border-l-border";
-}
 
 function statusDotGlow(status: OperationRecord["status"]): string {
   if (status === "succeeded") return "shadow-[0_0_6px_rgba(16,185,129,0.3)]";
@@ -362,14 +355,17 @@ export function HistoryPage() {
     refresh().catch(() => {});
   }, [laneFilter, kindFilter]);
 
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
   useEffect(() => {
     const timer = setInterval(() => {
-      if (rows.some((row) => row.status === "running")) {
+      if (rowsRef.current.some((row) => row.status === "running")) {
         refresh().catch(() => {});
       }
     }, 2500);
     return () => clearInterval(timer);
-  }, [rows]);
+  }, []);
 
   const filtered = useMemo(() => {
     return rows.filter((row) => {

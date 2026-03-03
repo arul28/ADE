@@ -4,10 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "main": "electron.cjs",
+  "author": "",
+  "license": "MIT",
   "scripts": {
     "predev": "node ./scripts/clear-vite-cache.cjs",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
     "build": "tsup && vite build",
+    "dist:mac": "npm run build && electron-builder --mac",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:orchestrator-smoke": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts --reporter=verbose",
@@ -78,6 +81,7 @@
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
     "electron": "^40.2.1",
+    "electron-builder": "^26.8.1",
     "electron-rebuild": "^3.2.9",
     "jsdom": "^22.1.0",
     "postcss": "^8.5.6",
@@ -87,5 +91,25 @@
     "vite": "^4.5.3",
     "vitest": "^0.34.6",
     "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.ade.desktop",
+    "productName": "ADE",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron.cjs",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools"
+    }
   }
 }

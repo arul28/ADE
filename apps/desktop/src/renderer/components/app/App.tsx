@@ -1,21 +1,44 @@
 import React from "react";
-import { BrowserRouter, HashRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  HashRouter,
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate
+} from "react-router-dom";
 
 // Use BrowserRouter when running in a regular browser (for Figma capture compatibility).
 // The browser mock sets __isBrowserMock when window.ade is stubbed.
 const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
-import { LanesPage } from "../lanes/LanesPage";
-import { FilesPage } from "../files/FilesPage";
-import { TerminalsPage } from "../terminals/TerminalsPage";
 import { ConflictsPage } from "../conflicts/ConflictsPage";
-import { PRsPage } from "../prs/PRsPage";
-import { HistoryPage } from "../history/HistoryPage";
-import { AutomationsPage } from "../automations/AutomationsPage";
-import { SettingsPage } from "./SettingsPage";
 import { OnboardingPage } from "../onboarding/OnboardingPage";
 
+const LanesPage = React.lazy(() =>
+  import("../lanes/LanesPage").then((m) => ({ default: m.LanesPage }))
+);
+const FilesPage = React.lazy(() =>
+  import("../files/FilesPage").then((m) => ({ default: m.FilesPage }))
+);
+const TerminalsPage = React.lazy(() =>
+  import("../terminals/TerminalsPage").then((m) => ({ default: m.TerminalsPage }))
+);
+const PRsPage = React.lazy(() =>
+  import("../prs/PRsPage").then((m) => ({ default: m.PRsPage }))
+);
+const HistoryPage = React.lazy(() =>
+  import("../history/HistoryPage").then((m) => ({ default: m.HistoryPage }))
+);
+const AutomationsPage = React.lazy(() =>
+  import("../automations/AutomationsPage").then((m) => ({ default: m.AutomationsPage }))
+);
+const SettingsPage = React.lazy(() =>
+  import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
+);
 const WorkspaceGraphPage = React.lazy(() =>
   import("../graph/WorkspaceGraphPage").then((m) => ({ default: m.WorkspaceGraphPage }))
 );
@@ -86,6 +109,19 @@ function PageErrorBoundary({ children }: { children: React.ReactNode }) {
   );
 }
 
+function RequireProject({ children }: { children: React.ReactElement }): React.ReactElement {
+  const showWelcome = useAppStore((s) => s.showWelcome);
+  const project = useAppStore((s) => s.project);
+  const location = useLocation();
+
+  const hasActiveProject = Boolean(project?.rootPath);
+  if ((!hasActiveProject || showWelcome) && location.pathname !== "/project" && location.pathname !== "/onboarding") {
+    return <Navigate to="/project" replace />;
+  }
+
+  return children;
+}
+
 const LazyFallback = (
   <div className="flex h-full w-full items-center justify-center">
     <div className="text-xs text-muted-fg/60">Loading...</div>
@@ -93,16 +129,23 @@ const LazyFallback = (
 );
 
 function guarded(element: React.ReactElement): React.ReactElement {
-  return <PageErrorBoundary>{element}</PageErrorBoundary>;
+  return (
+    <RequireProject>
+      <PageErrorBoundary>{element}</PageErrorBoundary>
+    </RequireProject>
+  );
 }
 
 function guardedLazy(element: React.ReactElement): React.ReactElement {
   return (
-    <PageErrorBoundary>
-      <React.Suspense fallback={LazyFallback}>{element}</React.Suspense>
-    </PageErrorBoundary>
+    <RequireProject>
+      <PageErrorBoundary>
+        <React.Suspense fallback={LazyFallback}>{element}</React.Suspense>
+      </PageErrorBoundary>
+    </RequireProject>
   );
 }
+
 function ShellLayout() {
   return (
     <AppShell>
@@ -129,19 +172,17 @@ export function App() {
             <Route path="/" element={<Navigate to="/project" replace />} />
             <Route path="/project" element={guarded(<RunPage />)} />
             <Route path="/onboarding" element={guarded(<OnboardingPage />)} />
-            <Route path="/lanes" element={guarded(<LanesPage />)} />
-            <Route path="/files" element={guarded(<FilesPage />)} />
-            <Route path="/terminals" element={<Navigate to="/work" replace />} />
-            <Route path="/work" element={guarded(<TerminalsPage />)} />
+            <Route path="/lanes" element={guardedLazy(<LanesPage />)} />
+            <Route path="/files" element={guardedLazy(<FilesPage />)} />
+            <Route path="/work" element={guardedLazy(<TerminalsPage />)} />
             <Route path="/conflicts" element={guarded(<ConflictsPage />)} />
-            <Route path="/context" element={<Navigate to="/settings" replace />} />
             <Route path="/graph" element={guardedLazy(<WorkspaceGraphPage />)} />
-            <Route path="/prs" element={guarded(<PRsPage />)} />
-            <Route path="/history" element={guarded(<HistoryPage />)} />
-            <Route path="/automations" element={guarded(<AutomationsPage />)} />
-            <Route path="/agents" element={<Navigate to="/automations" replace />} />
+            <Route path="/prs" element={guardedLazy(<PRsPage />)} />
+            <Route path="/history" element={guardedLazy(<HistoryPage />)} />
+            <Route path="/automations" element={guardedLazy(<AutomationsPage />)} />
             <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
-            <Route path="/settings" element={guarded(<SettingsPage />)} />
+            <Route path="/settings" element={guardedLazy(<SettingsPage />)} />
+            <Route path="*" element={<Navigate to="/project" replace />} />
           </Route>
         </Routes>
       </div>

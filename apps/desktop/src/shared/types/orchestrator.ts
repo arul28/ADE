@@ -4,13 +4,11 @@
 
 import type { ModelId } from "./core";
 import type { ModelConfig } from "./models";
-import type { ConflictRiskLevel } from "./conflicts";
 import type { PrDepth } from "./prs";
 import type { MissionDetail, MissionStepHandoff } from "./missions";
 import type {
   OrchestratorContextProfileId,
   PackDeltaDigestV1,
-  PackConflictStateV1,
 } from "./packs";
 
 // ---------------------------------------------------------------------------
@@ -24,22 +22,6 @@ export type OrchestratorMetadata = Record<string, unknown>;
 // ---------------------------------------------------------------------------
 // Fan-out types — used by the meta-reasoner and orchestrator fan-out logic
 // ---------------------------------------------------------------------------
-
-/** Fan-out configuration stored in step metadata. */
-export type FanOutConfig = {
-  enabled: boolean;
-  maxChildren: number;
-  dispatchStrategy?: "auto" | "external_only" | "internal_only";
-  groupByFileOwnership?: boolean;
-};
-
-/** Fan-out tracking fields stored in step metadata. */
-export type FanOutTracking = {
-  fanOutParent?: string;
-  fanOutChildren?: string[];
-  fanOutStrategy?: string;
-  fanOutComplete?: boolean;
-};
 
 /** Decision returned by the meta-reasoner for fan-out dispatch. */
 export type FanOutDecision = {
@@ -115,8 +97,7 @@ export type OrchestratorAttemptStatus =
 export type OrchestratorJoinPolicy = "all_success" | "any_success" | "quorum" | "advisory";
 
 // Built-in executor kinds. Third-party adapters can register any string.
-export type BuiltInExecutorKind = "unified" | "claude" | "codex" | "shell" | "manual";
-export type OrchestratorExecutorKind = BuiltInExecutorKind | (string & {});
+export type OrchestratorExecutorKind = "unified" | "claude" | "codex" | "shell" | "manual" | (string & {});
 
 export type OrchestratorErrorClass =
   | "none"
@@ -996,10 +977,22 @@ export type TeamManifest = {
   synthesizedAt: string;
   rationale: string;
   complexity: TeamComplexityAssessment;
-  workers: TeamWorkerAssignment[];
+  workers: Array<{
+    workerId: string;
+    role: OrchestratorWorkerRole;
+    assignedStepKeys: string[];
+    laneId: string | null;
+    executorKind: OrchestratorExecutorKind;
+    model?: string;
+  }>;
   parallelismCap: number;
   parallelLanes: string[][];
-  decisionLog: TeamDecisionEntry[];
+  decisionLog: Array<{
+    timestamp: string;
+    decision: string;
+    reason: string;
+    source: "policy" | "complexity" | "prompt" | "dag_shape" | "override";
+  }>;
 };
 
 export type TeamComplexityAssessment = {
@@ -1009,22 +1002,6 @@ export type TeamComplexityAssessment = {
   requiresIntegration: boolean;
   fileZoneCount: number;
   thoroughnessRequested: boolean;
-};
-
-export type TeamWorkerAssignment = {
-  workerId: string;
-  role: OrchestratorWorkerRole;
-  assignedStepKeys: string[];
-  laneId: string | null;
-  executorKind: OrchestratorExecutorKind;
-  model?: string;
-};
-
-export type TeamDecisionEntry = {
-  timestamp: string;
-  decision: string;
-  reason: string;
-  source: "policy" | "complexity" | "prompt" | "dag_shape" | "override";
 };
 
 export type RecoveryLoopPolicy = {

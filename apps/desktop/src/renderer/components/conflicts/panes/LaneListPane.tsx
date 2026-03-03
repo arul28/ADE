@@ -2,11 +2,11 @@ import React from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import { useAppStore } from "../../../state/appStore";
 import { useConflictsState, useConflictsDispatch } from "../state/ConflictsContext";
-import { fetchBatchAssessment, fetchPrsWithConflicts } from "../state/conflictsActions";
+import { fetchPrsWithConflicts } from "../state/conflictsActions";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
-import type { ConflictStatus, LaneSummary, PrWithConflicts } from "../../../../shared/types";
-import type { LaneStatusFilter, LaneListView } from "../state/types";
+import type { ConflictStatus } from "../../../../shared/types";
+import type { LaneStatusFilter } from "../state/types";
 
 function statusRank(value: ConflictStatus["status"]): number {
   if (value === "conflict-active") return 5;
@@ -109,28 +109,34 @@ export function LaneListPane() {
         <>
           {/* Filter chips */}
           <div className="mb-3 flex flex-wrap gap-1.5">
-            {([
-              { key: "conflict" as const, color: "red", label: `${counts.conflict} conflict` },
-              { key: "at-risk" as const, color: "amber", label: `${counts["at-risk"]} at-risk` },
-              { key: "clean" as const, color: "emerald", label: `${counts.clean} clean` },
-              { key: "unknown" as const, color: "muted", label: `${counts.unknown} unknown` },
-            ] as const).map(({ key, color, label }) => (
-              <Chip
-                key={key}
-                role="button"
-                onClick={() => toggleFilter(key)}
-                className={cn(
-                  "cursor-pointer px-3 py-1 transition-all",
-                  statusFilter === key
-                    ? `bg-${color}-500/25 text-${color}-200 ring-1 ring-inset ring-${color}-500/50 shadow-sm`
-                    : key === "unknown"
-                      ? "text-muted-fg hover:bg-muted/40 hover:text-fg/80"
-                      : `text-${color}-300/80 hover:bg-${color}-500/10 hover:text-${color}-200`
-                )}
-              >
-                {label}
-              </Chip>
-            ))}
+            {(() => {
+              const colorClasses: Record<string, { active: string; inactive: string }> = {
+                red: { active: "bg-red-500/25 text-red-200 ring-1 ring-inset ring-red-500/50 shadow-sm", inactive: "text-red-300/80 hover:bg-red-500/10 hover:text-red-200" },
+                amber: { active: "bg-amber-500/25 text-amber-200 ring-1 ring-inset ring-amber-500/50 shadow-sm", inactive: "text-amber-300/80 hover:bg-amber-500/10 hover:text-amber-200" },
+                emerald: { active: "bg-emerald-500/25 text-emerald-200 ring-1 ring-inset ring-emerald-500/50 shadow-sm", inactive: "text-emerald-300/80 hover:bg-emerald-500/10 hover:text-emerald-200" },
+                muted: { active: "bg-muted/40 text-fg ring-1 ring-inset ring-muted/50 shadow-sm", inactive: "text-muted-fg hover:bg-muted/40 hover:text-fg/80" },
+              };
+              return ([
+                { key: "conflict" as const, color: "red", label: `${counts.conflict} conflict` },
+                { key: "at-risk" as const, color: "amber", label: `${counts["at-risk"]} at-risk` },
+                { key: "clean" as const, color: "emerald", label: `${counts.clean} clean` },
+                { key: "unknown" as const, color: "muted", label: `${counts.unknown} unknown` },
+              ] as const).map(({ key, color, label }) => (
+                <Chip
+                  key={key}
+                  role="button"
+                  onClick={() => toggleFilter(key)}
+                  className={cn(
+                    "cursor-pointer px-3 py-1 transition-all",
+                    statusFilter === key
+                      ? colorClasses[color].active
+                      : colorClasses[color].inactive
+                  )}
+                >
+                  {label}
+                </Chip>
+              ));
+            })()}
           </div>
 
           {/* Lane list */}

@@ -1,4 +1,3 @@
-import React from "react";
 import { Handle, Node, NodeProps, Position } from "@xyflow/react";
 import { GitMerge } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";

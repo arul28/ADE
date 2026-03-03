@@ -141,7 +141,7 @@ describe("AgentChatComposer", () => {
   });
 
   it("opens slash picker when / is typed at start of empty draft", async () => {
-    const { onDraftChange } = renderComposer({ draft: "" });
+    renderComposer({ draft: "" });
 
     const textarea = screen.getByPlaceholderText("Message the agent...") as HTMLTextAreaElement;
     fireEvent.keyDown(textarea, { key: "/" });

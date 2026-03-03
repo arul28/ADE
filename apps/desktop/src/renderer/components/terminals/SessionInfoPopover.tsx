@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import {
   Clipboard,
   FileText,
@@ -13,7 +13,6 @@ import { sanitizeTerminalInlineText } from "../../lib/terminalAttention";
 import { getTerminalRuntimeHealth } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
-import { cn } from "../ui/cn";
 import { isChatToolType } from "../../lib/sessions";
 
 function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {

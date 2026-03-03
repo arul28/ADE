@@ -1,7 +1,6 @@
 import React from "react";
 import { ArrowsDownUp, GitMerge, GitPullRequest, ListNumbers, Plus, ArrowsClockwise } from "@phosphor-icons/react";
 import type { MergeMethod, PrMergeContext, PrWithConflicts } from "../../../shared/types";
-import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
 import { PrsProvider, usePrs } from "./state/PrsContext";
@@ -20,7 +19,7 @@ const TAB_DEFS: Array<{ id: PrTab; num: string; label: string; icon: React.Eleme
   { id: "rebase", num: "04", label: "REBASE", icon: ArrowsDownUp },
 ];
 
-function classifyPr(pr: PrWithConflicts, ctx: PrMergeContext | null): "normal" | "queue" | "integration" {
+function classifyPr(_pr: PrWithConflicts, ctx: PrMergeContext | null): "normal" | "queue" | "integration" {
   if (ctx?.groupType === "integration") return "integration";
   if (ctx?.groupType === "queue") return "queue";
   return "normal";

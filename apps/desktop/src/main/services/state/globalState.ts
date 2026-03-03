@@ -31,13 +31,26 @@ export function writeGlobalState(filePath: string, state: GlobalState): void {
   }
 }
 
-export function upsertRecentProject(state: GlobalState, proj: { rootPath: string; displayName: string }): GlobalState {
+type UpsertRecentProjectOptions = {
+  recordLastProject?: boolean;
+  recordRecent?: boolean;
+};
+
+export function upsertRecentProject(
+  state: GlobalState,
+  proj: { rootPath: string; displayName: string },
+  options: UpsertRecentProjectOptions = {}
+): GlobalState {
   const next: GlobalState = { ...state };
   const now = new Date().toISOString();
-  next.lastProjectRoot = proj.rootPath;
+  if (options.recordLastProject ?? true) {
+    next.lastProjectRoot = proj.rootPath;
+  }
+  if (options.recordRecent === false) {
+    return next;
+  }
   const prev = next.recentProjects ?? [];
   const filtered = prev.filter((p) => p.rootPath !== proj.rootPath);
   next.recentProjects = [{ rootPath: proj.rootPath, displayName: proj.displayName, lastOpenedAt: now }, ...filtered].slice(0, 12);
   return next;
 }
-

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { SessionDeltaSummary, TerminalSessionDetail } from "../../../shared/types";
 import { Chip } from "../ui/Chip";
 

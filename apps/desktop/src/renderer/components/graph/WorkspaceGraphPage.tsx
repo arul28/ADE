@@ -88,10 +88,7 @@ import {
 import { GraphLaneNode } from "./graphNodes/LaneNode";
 import { GraphProposalNode } from "./graphNodes/ProposalNode";
 import { RiskEdge } from "./graphEdges/RiskEdge";
-import { TextPromptModal } from "./graphDialogs/TextPromptModal";
-import { PrDialog } from "./graphDialogs/PrDialog";
-import { ConflictPanel } from "./graphDialogs/ConflictPanel";
-import { IntegrationDialog } from "./graphDialogs/IntegrationDialog";
+import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 
 const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
 const edgeTypes = { custom: RiskEdge };
@@ -101,10 +98,11 @@ function GraphInner() {
   const reactFlow = useReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>();
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
+  const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrSummary[]>([]);
-  const [loadingPrs, setLoadingPrs] = React.useState(true);
+  const [, setLoadingPrs] = React.useState(true);
   const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [autoRebaseByLaneId, setAutoRebaseByLaneId] = React.useState<Record<string, AutoRebaseLaneStatus | null>>({});
   const syncRefreshInFlightRef = React.useRef(false);
@@ -114,6 +112,7 @@ function GraphInner() {
   const activityRefreshInFlightRef = React.useRef(false);
   const activityRefreshQueuedRef = React.useRef(false);
   const activityRefreshTimerRef = React.useRef<number | null>(null);
+  const graphConfirm = useConfirmDialog();
 
   const refreshEnvironmentMappings = React.useCallback(async () => {
     try {
@@ -679,7 +678,7 @@ function GraphInner() {
       .listProposals()
       .then((proposals) => setIntegrationProposals(proposals))
       .catch((err) => console.warn("[Graph] Failed to load integration proposals:", err));
-  }, [lanes]);
+  }, [lanesKey]);
 
   React.useEffect(() => {
     if (!project?.rootPath) return;
@@ -712,6 +711,7 @@ function GraphInner() {
     if (!targetLane) return;
     setFocusLaneId(focusParam);
     // Center on the focused node
+    let glowTimer: number | undefined;
     const timer = window.setTimeout(() => {
       const targetNode = nodes.find((node) => node.id === focusParam);
       if (targetNode) {
@@ -724,10 +724,12 @@ function GraphInner() {
         return next;
       }, { replace: true });
       // Clear glow after 4 seconds
-      const glowTimer = window.setTimeout(() => setFocusLaneId(null), 4000);
-      return () => window.clearTimeout(glowTimer);
+      glowTimer = window.setTimeout(() => setFocusLaneId(null), 4000);
     }, 300);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (glowTimer !== undefined) window.clearTimeout(glowTimer);
+    };
   }, [searchParams, loadedGraphState, lanes, nodes, reactFlow, setSearchParams]);
 
   // E3b: Handle ?focusProposal= query param
@@ -1273,7 +1275,6 @@ function GraphInner() {
       if (!source || !target) return null;
 
       const sourceDescendants = collectDescendants(lanes, source.id);
-      const targetDescendants = collectDescendants(lanes, target.id);
       if (sourceDescendants.has(target.id)) {
         return {
           sourceLaneId: source.id,
@@ -1709,7 +1710,11 @@ function GraphInner() {
       const confirmPublish = Boolean(args?.confirmPublish);
       if (!sync.hasUpstream) {
         if (confirmPublish) {
-          const ok = window.confirm(`Publish lane '${lane.name}' to origin/${lane.branchRef}?`);
+          const ok = await graphConfirm.confirmAsync({
+            title: "Publish Lane",
+            message: `Publish lane '${lane.name}' to origin/${lane.branchRef}?`,
+            confirmLabel: "PUBLISH",
+          });
           if (!ok) return { status: "skipped", message: "publish skipped" };
         }
         await window.ade.git.push({ laneId });
@@ -1718,9 +1723,12 @@ function GraphInner() {
 
       if (sync.diverged && sync.ahead > 0) {
         if (confirmPublish) {
-          const ok = window.confirm(
-            `Lane '${lane.name}' diverged from remote (${sync.ahead} local ahead, ${sync.behind} remote ahead). Force push with lease now?`
-          );
+          const ok = await graphConfirm.confirmAsync({
+            title: "Force Push",
+            message: `Lane '${lane.name}' diverged from remote (${sync.ahead} local ahead, ${sync.behind} remote ahead). Force push with lease now?`,
+            confirmLabel: "FORCE PUSH",
+            danger: true,
+          });
           if (!ok) return { status: "skipped", message: "force push skipped" };
         }
         await window.ade.git.push({ laneId, forceWithLease: true });
@@ -1729,7 +1737,11 @@ function GraphInner() {
 
       if (sync.ahead > 0) {
         if (confirmPublish) {
-          const ok = window.confirm(`Push ${sync.ahead} commit${sync.ahead === 1 ? "" : "s"} for lane '${lane.name}' now?`);
+          const ok = await graphConfirm.confirmAsync({
+            title: "Push Commits",
+            message: `Push ${sync.ahead} commit${sync.ahead === 1 ? "" : "s"} for lane '${lane.name}' now?`,
+            confirmLabel: "PUSH",
+          });
           if (!ok) return { status: "skipped", message: "push skipped" };
         }
         await window.ade.git.push({ laneId });
@@ -1742,7 +1754,7 @@ function GraphInner() {
 
       return { status: "done", message: "restacked and already synced" };
     },
-    [laneById]
+    [laneById, graphConfirm]
   );
 
   const runBatchOperation = React.useCallback(
@@ -2266,6 +2278,7 @@ function GraphInner() {
 
   return (
     <div className="relative h-full w-full">
+      <ConfirmDialog state={graphConfirm.state} onClose={graphConfirm.close} />
       <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
 
       <div className="absolute left-0 right-0 top-0 z-20 bg-bg border-b border-border/10 px-3 py-1.5">
@@ -2347,9 +2360,15 @@ function GraphInner() {
             variant="outline"
             className="h-7 px-2 text-[11px]"
             disabled={graphState.activePreset === DEFAULT_PRESET}
-            onClick={() => {
+            onClick={async () => {
               if (graphState.activePreset === DEFAULT_PRESET) return;
-              if (!window.confirm("Delete layout preset?")) return;
+              const ok = await graphConfirm.confirmAsync({
+                title: "Delete Preset",
+                message: "Delete layout preset?",
+                confirmLabel: "DELETE",
+                danger: true,
+              });
+              if (!ok) return;
               setGraphState((prev) => {
                 const ensured = ensureGraphState(prev);
                 const filtered = ensured.presets.filter((entry) => entry.name !== ensured.activePreset);

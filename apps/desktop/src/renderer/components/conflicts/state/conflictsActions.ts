@@ -1,7 +1,6 @@
 import type { Dispatch } from "react";
 import type { ConflictsAction } from "./types";
 import type {
-  ExternalConflictResolverProvider,
   PrepareResolverSessionArgs,
 } from "../../../../shared/types";
 

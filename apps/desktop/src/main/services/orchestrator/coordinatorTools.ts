@@ -12,7 +12,6 @@ import path from "node:path";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
   MissionBudgetSnapshot,
-  MissionBudgetProviderSnapshot,
   MissionBudgetHardCapStatus,
   MissionStateDecision,
   MissionStateDocumentPatch,
@@ -1485,7 +1484,7 @@ export function createCoordinatorToolSet(deps: {
           if (filesChanged.length === 0) {
             try {
               const digestRow = db.get<{ files_changed_json: string | null }>(
-                `select files_changed_json from worker_digests where attempt_id = ? limit 1`,
+                `select files_changed_json from orchestrator_worker_digests where attempt_id = ? limit 1`,
                 [latest.id],
               );
               if (digestRow?.files_changed_json) {

@@ -5,7 +5,6 @@ import { useConflictsState, useConflictsDispatch } from "../state/ConflictsConte
 import {
   fetchResolverTargetSuggestion,
   continueGitOperation,
-  prepareAndSendProposal,
   fetchProposals,
 } from "../state/conflictsActions";
 import { GitCommandPreview } from "../shared/GitCommandPreview";
@@ -51,11 +50,8 @@ export function ConflictResolutionPane() {
     resolverWorktreeChoice,
     resolverTargetSuggestion,
     resolverTargetSuggestionLoading,
-    resolverCwdLaneId,
     proposalPeerLaneId,
     proposals,
-    proposalBusy,
-    proposalError,
   } = useConflictsState();
 
   const selectedLane = React.useMemo(() => lanes.find((l) => l.id === selectedLaneId) ?? null, [lanes, selectedLaneId]);
@@ -329,7 +325,7 @@ export function ConflictResolutionPane() {
       </div>
 
       {/* 2. Active git conflict — continue/abort */}
-      {gitConflict?.inProgress && gitConflict.kind && (
+      {gitConflict?.inProgress && gitConflict.kind && selectedLaneId && (
         <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-2">
           <div className="text-xs font-semibold text-red-600">
             Active {gitConflict.kind} — {gitConflict.conflictedFiles.length} conflicted files
@@ -339,7 +335,7 @@ export function ConflictResolutionPane() {
               size="sm"
               variant="primary"
               disabled={continueBusy}
-              onClick={() => void continueGitOperation(dispatch, selectedLaneId!, gitConflict.kind!)}
+              onClick={() => void continueGitOperation(dispatch, selectedLaneId, gitConflict.kind!)}
             >
               {continueBusy ? "Continuing..." : `Continue ${gitConflict.kind}`}
             </Button>
@@ -354,7 +350,7 @@ export function ConflictResolutionPane() {
           {continueError && (
             <div className="text-xs text-red-600">{continueError}</div>
           )}
-          <AbortDialog laneId={selectedLaneId!} kind={gitConflict.kind!} />
+          <AbortDialog laneId={selectedLaneId} kind={gitConflict.kind!} />
         </div>
       )}
 

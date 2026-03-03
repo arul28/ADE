@@ -1,4 +1,3 @@
-import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../../ui/Button";
 import { useConflictsState, useConflictsDispatch } from "../state/ConflictsContext";

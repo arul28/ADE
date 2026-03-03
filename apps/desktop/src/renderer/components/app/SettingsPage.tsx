@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, Sparkle, SquaresFour, Plus, X } from "@phosphor-icons/react";
-import { cn } from "../ui/cn";
 import { GeneralSection } from "../settings/GeneralSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
@@ -11,6 +11,7 @@ import { AutomationsSection } from "../settings/AutomationsSection";
 import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
 import { KeybindingsSection } from "../settings/KeybindingsSection";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
+import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
 
 const SECTIONS = [
@@ -275,6 +276,9 @@ function PhaseProfilesSection() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const deleteConfirm = useConfirmDialog();
+  const createPrompt = usePromptDialog();
+  const importPrompt = usePromptDialog();
 
   const refresh = useCallback(async () => {
     try {
@@ -308,7 +312,13 @@ function PhaseProfilesSection() {
         setNotice(exported.savedPath ? `Exported: ${exported.savedPath}` : "Profile exported.");
       } else if (action === "delete") {
         const profile = profiles.find((p) => p.id === profileId);
-        if (!window.confirm(`Delete phase profile "${profile?.name ?? profileId}"?`)) {
+        const ok = await deleteConfirm.confirmAsync({
+          title: "Delete Phase Profile",
+          message: `Delete phase profile "${profile?.name ?? profileId}"?`,
+          confirmLabel: "DELETE",
+          danger: true,
+        });
+        if (!ok) {
           setBusy(false);
           return;
         }
@@ -344,6 +354,9 @@ function PhaseProfilesSection() {
 
   return (
     <div style={{ maxWidth: 720 }}>
+      <ConfirmDialog state={deleteConfirm.state} onClose={deleteConfirm.close} />
+      <PromptDialog state={createPrompt.state} onClose={createPrompt.close} />
+      <PromptDialog state={importPrompt.state} onClose={importPrompt.close} />
       <div style={SECTION_LABEL}>PHASE PROFILES</div>
 
       <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 12 }}>
@@ -355,7 +368,12 @@ function PhaseProfilesSection() {
           style={outlineButton()}
           disabled={busy}
           onClick={async () => {
-            const name = window.prompt("New phase profile name", "Custom Profile");
+            const name = await createPrompt.promptAsync({
+              title: "Create Phase Profile",
+              message: "Enter a name for the new phase profile.",
+              defaultValue: "Custom Profile",
+              confirmLabel: "CREATE",
+            });
             if (!name || !name.trim()) return;
             const fallback = profiles.find((p) => p.isDefault) ?? profiles[0] ?? null;
             const phases = fallback?.phases ?? [];
@@ -380,7 +398,12 @@ function PhaseProfilesSection() {
           style={outlineButton()}
           disabled={busy}
           onClick={async () => {
-            const filePath = window.prompt("Import profile JSON path");
+            const filePath = await importPrompt.promptAsync({
+              title: "Import Phase Profile",
+              message: "Enter the path to the phase profile JSON file.",
+              placeholder: "/path/to/profile.json",
+              confirmLabel: "IMPORT",
+            });
             if (!filePath || !filePath.trim()) return;
             setBusy(true);
             try {
@@ -430,8 +453,18 @@ function PhaseProfilesSection() {
 /* ──────────────── Main Settings Page ──────────────── */
 
 export function SettingsPage() {
-  const [section, setSection] = useState<SectionId>("general");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab") as SectionId | null;
+  const validTab = tabParam && SECTIONS.some((s) => s.id === tabParam) ? tabParam : null;
+  const [section, setSection] = useState<SectionId>(validTab ?? "general");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+
+  // Sync from URL when ?tab= changes
+  useEffect(() => {
+    if (validTab && validTab !== section) {
+      setSection(validTab);
+    }
+  }, [validTab]);
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>

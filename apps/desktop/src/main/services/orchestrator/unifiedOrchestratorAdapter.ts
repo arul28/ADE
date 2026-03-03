@@ -309,7 +309,7 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
       return `printf '%s\\n' ${shellEscapeArg(failureMessage)} >&2; exit 64`;
     },
 
-    buildAcceptedMetadata: ({ model, step, permissionConfig, filePatterns, steeringDirectiveCount, promptLength, reasoningEffort, startupCommandPreview }) => {
+    buildAcceptedMetadata: ({ model, filePatterns, steeringDirectiveCount, promptLength, reasoningEffort, startupCommandPreview }) => {
       const descriptor = getModelById(model);
       return {
         adapterKind: "unified",

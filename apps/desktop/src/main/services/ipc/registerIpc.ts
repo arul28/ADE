@@ -96,7 +96,6 @@ import type {
   LandQueueNextArgs,
   PrCheck,
   PrComment,
-  PrConflictAnalysis,
   PrHealth,
   PrMergeContext,
   PrReview,
@@ -259,8 +258,6 @@ import type {
   ListOrchestratorRunsArgs,
   ListOrchestratorTimelineArgs,
   OrchestratorAttempt,
-  OrchestratorClaim,
-  OrchestratorContextSnapshot,
   OrchestratorExecutorKind,
   OrchestratorGateReport,
   OrchestratorRun,
@@ -358,13 +355,13 @@ import type { createOrchestratorService } from "../orchestrator/orchestratorServ
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
-import { redactSecrets } from "../../utils/redaction";
 import { getErrorMessage, isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
 export type AppContext = {
   db: AdeDb;
   logger: Logger;
   project: ProjectInfo;
+  hasUserSelectedProject: boolean;
   projectId: string;
   adeDir: string;
   disposeHeadWatcher: () => void;
@@ -855,10 +852,12 @@ function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapsho
 export function registerIpc({
   getCtx,
   switchProjectFromDialog,
+  closeCurrentProject,
   globalStatePath
 }: {
   getCtx: () => AppContext;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  closeCurrentProject: () => Promise<void>;
   globalStatePath: string;
 }) {
   const watcherCleanupBoundSenders = new Set<number>();
@@ -891,7 +890,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
-  ipcMain.handle(IPC.appGetProject, async () => getCtx().project);
+  ipcMain.handle(IPC.appGetProject, async () => {
+    const ctx = getCtx();
+    return ctx.hasUserSelectedProject ? ctx.project : null;
+  });
 
   ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
     const urlRaw = typeof arg?.url === "string" ? arg.url.trim() : "";
@@ -1018,7 +1020,7 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.projectOpenRepo, async (event): Promise<ProjectInfo> => {
+  ipcMain.handle(IPC.projectOpenRepo, async (event): Promise<ProjectInfo | null> => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const options: Electron.OpenDialogOptions = {
       title: "Open repository",
@@ -1026,7 +1028,7 @@ export function registerIpc({
     };
     const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
     if (result.canceled || result.filePaths.length === 0) {
-      return getCtx().project;
+      return null;
     }
     const selected = result.filePaths[0]!;
     return await switchProjectFromDialog(selected);
@@ -1149,6 +1151,10 @@ export function registerIpc({
     }));
   });
 
+  ipcMain.handle(IPC.projectCloseCurrent, async (): Promise<void> => {
+    await closeCurrentProject();
+  });
+
   ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath: string }): Promise<RecentProjectSummary[]> => {
     const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
     if (!rootPath) {
@@ -1178,7 +1184,8 @@ export function registerIpc({
   ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
     const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
     if (!rootPath) return getCtx().project;
-    if (rootPath === getCtx().project.rootPath) return getCtx().project;
+    const ctx = getCtx();
+    if (ctx.hasUserSelectedProject && rootPath === ctx.project.rootPath) return ctx.project;
     return await switchProjectFromDialog(rootPath);
   });
 

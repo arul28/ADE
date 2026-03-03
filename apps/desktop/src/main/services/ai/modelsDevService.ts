@@ -227,12 +227,12 @@ export async function initialize(): Promise<Map<string, ModelsDevModelData>> {
   try {
     modelDataMap = await fetchFromApi();
     await persistToCache(modelDataMap);
-    console.log(`[models.dev] Fetched metadata for ${modelDataMap.size} models`);
+    console.info(`[models.dev] Fetched metadata for ${modelDataMap.size} models`);
   } catch (err) {
     console.warn(`[models.dev] API fetch failed, loading from cache: ${err instanceof Error ? err.message : err}`);
     modelDataMap = await loadFromCache();
     if (modelDataMap.size > 0) {
-      console.log(`[models.dev] Loaded ${modelDataMap.size} models from cache`);
+      console.info(`[models.dev] Loaded ${modelDataMap.size} models from cache`);
     } else {
       console.warn("[models.dev] No cached data available, using hardcoded fallbacks");
     }
@@ -245,7 +245,7 @@ export async function initialize(): Promise<Map<string, ModelsDevModelData>> {
         const fresh = await fetchFromApi();
         modelDataMap = fresh;
         await persistToCache(fresh);
-        console.log(`[models.dev] Refreshed metadata for ${fresh.size} models`);
+        console.info(`[models.dev] Refreshed metadata for ${fresh.size} models`);
       } catch (err) {
         console.warn(`[models.dev] Background refresh failed: ${err instanceof Error ? err.message : err}`);
       }

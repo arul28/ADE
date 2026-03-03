@@ -186,7 +186,7 @@ export function CreatePrModal({
   const lanes = useAppStore((s) => s.lanes);
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
-  const [step, setStep] = React.useState<WizardStep>("select-type");
+  const [, setStep] = React.useState<WizardStep>("select-type");
   const [mode, setMode] = React.useState<CreateMode>("normal");
 
   // Internal numeric step for stepper (1=BRANCH, 2=DETAILS, 3=REVIEW)

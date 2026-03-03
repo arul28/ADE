@@ -9,7 +9,6 @@ import type {
   OrchestratorRun,
   OrchestratorRunStatus,
   OrchestratorStep,
-  OrchestratorStepStatus,
   OrchestratorAttempt,
   OrchestratorClaim,
   OrchestratorTeamRuntimeState,
@@ -340,11 +339,11 @@ export function evaluateRunCompletion(
  * yet complete.
  */
 export function validateRunCompletion(
-  run: OrchestratorRun,
+  _run: OrchestratorRun,
   steps: OrchestratorStep[],
   attempts: OrchestratorAttempt[],
   claims: OrchestratorClaim[],
-  runState: OrchestratorTeamRuntimeState | null,
+  _runState: OrchestratorTeamRuntimeState | null,
   interventions?: Array<{ status: string }>
 ): RunCompletionValidation {
   const blockers: RunCompletionBlocker[] = [];
@@ -572,6 +571,7 @@ export function contextViewForRole(role: OrchestratorWorkerRole): OrchestratorCo
     default: {
       // Exhaustiveness guard — should never reach here
       const _exhaustive: never = role;
+      void _exhaustive;
       return "implementation";
     }
   }

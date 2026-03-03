@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
@@ -38,7 +38,6 @@ import type {
   ConflictStatus,
   DeleteLaneArgs,
   GitCommitSummary,
-  LaneSummary,
   RestackSuggestion,
   AutoRebaseLaneStatus
 } from "../../../shared/types";
@@ -1202,7 +1201,7 @@ export function LanesPage() {
           {visibleLaneIds.map((laneId, index) => {
             const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
             return (
-              <React.Fragment key={laneId}>
+              <Fragment key={laneId}>
                 <Panel id={`lane-column:${laneId}`} minSize="18%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
                   <PaneTilingLayout
                     layoutId={`lanes:tiling:v3:${laneId}`}
@@ -1212,7 +1211,7 @@ export function LanesPage() {
                   />
                 </Panel>
                 {index < visibleLaneIds.length - 1 ? <ResizeGutter orientation="vertical" laneDivider /> : null}
-              </React.Fragment>
+              </Fragment>
             );
           })}
         </Group>

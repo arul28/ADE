@@ -4,13 +4,10 @@ import type {
   ConflictOverlap,
   ConflictProposal,
   ConflictProposalPreview,
-  ConflictStatus,
   GitConflictState,
-  LaneSummary,
   MultiMergeMode,
   PrWithConflicts,
   RestackSuggestion,
-  RiskMatrixEntry,
   SuggestResolverTargetResult
 } from "../../../../shared/types";
 
