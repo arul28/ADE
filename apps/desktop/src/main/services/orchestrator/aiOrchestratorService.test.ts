@@ -4146,6 +4146,11 @@ describe("aiOrchestratorService", () => {
         prStrategy: { kind: "integration" },
         integrationPr: { enabled: true, draft: true, autoResolveConflicts: false }
       };
+      existingMeta.missionLevelSettings = {
+        allowCompletionWithRisk: true,
+        prStrategy: { kind: "integration" },
+        integrationPr: { enabled: true, createIntegrationLane: false, prDepth: "shallow", draft: true }
+      };
       fixture.db.run(
         `update missions set metadata_json = ? where id = ?`,
         [JSON.stringify(existingMeta), mission.id]

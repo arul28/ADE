@@ -18,7 +18,6 @@ import {
 } from "./orchestratorContext";
 import type {
   OrchestratorRunGraph,
-  MissionExecutionPolicy,
   RecoveryLoopPolicy,
   RecoveryLoopIteration,
 } from "../../../shared/types";

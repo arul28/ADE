@@ -88,6 +88,8 @@ export type MissionPlanningRequest = {
   sourceRunId?: string | null;
   logger?: MissionPlanningLogger;
   policy?: MissionExecutionPolicy;
+  phases?: PhaseCard[];
+  settings?: import("../../../shared/types").MissionLevelSettings;
   teamRuntime?: TeamRuntimeConfig;
 };
 
@@ -486,6 +488,8 @@ function buildPlannerPrompt(args: {
   contextBundle?: MissionPlanningContextBundle;
   projectKnowledge?: PlannerProjectKnowledgeEntry[];
   policy?: MissionExecutionPolicy;
+  phases?: PhaseCard[];
+  settings?: import("../../../shared/types").MissionLevelSettings;
   planOutputPath: string;
   teamRuntime?: TeamRuntimeConfig;
 }): string {
@@ -899,6 +903,8 @@ export function buildDeterministicPlannerPlan(args: {
   prompt: string;
   laneId: string | null;
   policy?: MissionExecutionPolicy;
+  phases?: PhaseCard[];
+  settings?: import("../../../shared/types").MissionLevelSettings;
 }): PlannerPlan {
   const legacy = buildDeterministicMissionPlan({
     prompt: args.prompt,
@@ -1105,6 +1111,8 @@ export function plannerPlanToMissionSteps(args: {
   reasonCode: MissionPlannerReasonCode | null;
   validationErrors: string[];
   policy?: MissionExecutionPolicy;
+  phases?: PhaseCard[];
+  settings?: import("../../../shared/types").MissionLevelSettings;
 }): MissionPlanStepDraft[] {
   const indexByStepId = new Map<string, number>();
   args.plan.steps.forEach((step, index) => indexByStepId.set(step.stepId, index));
@@ -1595,8 +1603,11 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         validationErrors: [],
         attempts: plannerAttempts
       };
-      // Strip test-type steps when testing is disabled
-      if (args.policy?.testing?.mode === "none" && plan.steps) {
+      // Strip test-type steps when testing is disabled (check phases first, fall back to policy)
+      const testingDisabled = args.phases
+        ? !args.phases.some((p) => p.phaseKey.toLowerCase() === "testing" || p.phaseKey.toLowerCase() === "test")
+        : args.policy?.testing?.mode === "none";
+      if (testingDisabled && plan.steps) {
         plan.steps = plan.steps.filter(
           (s) => !["test", "validation", "test_review", "milestone"].includes(s.taskType ?? "")
         );

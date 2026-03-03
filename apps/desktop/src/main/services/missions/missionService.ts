@@ -49,7 +49,6 @@ import type {
   UpdateMissionArgs,
   UpdateMissionStepArgs
 } from "../../../shared/types";
-import { DEFAULT_EXECUTION_POLICY } from "../orchestrator/executionPolicy";
 import type { AdeDb } from "../state/kvDb";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import type { MissionPlanStepDraft } from "./missionPlanningService";
@@ -563,20 +562,6 @@ function truncateForMetadata(value: string | null, maxChars = 120_000): string |
   return `${value.slice(0, maxChars)}\n...<truncated>`;
 }
 
-function mergeWithDefaults(partial: Partial<MissionExecutionPolicy>): MissionExecutionPolicy {
-  const base = DEFAULT_EXECUTION_POLICY;
-  return {
-    planning: { ...base.planning, ...partial.planning },
-    implementation: { ...base.implementation, ...partial.implementation },
-    testing: { ...base.testing, ...partial.testing },
-    validation: { ...base.validation, ...partial.validation },
-    codeReview: { ...base.codeReview, ...partial.codeReview },
-    testReview: { ...base.testReview, ...partial.testReview },
-    prReview: { ...(base.prReview ?? { mode: "off" as const }), ...partial.prReview },
-    merge: { ...base.merge, ...partial.merge },
-    completion: { ...base.completion, ...partial.completion }
-  };
-}
 
 
 function toPlannerAttempt(value: unknown): MissionPlannerAttempt | null {
@@ -2360,13 +2345,19 @@ export function createMissionService({
         }
         return Object.keys(out).length > 0 ? out : null;
       })();
-      // Resolve execution policy from args
+      // Resolve execution policy from args (backward compat — still stored for old metadata readers)
       const executionPolicyArg = args.executionPolicy && typeof args.executionPolicy === "object"
         ? (args.executionPolicy as Partial<MissionExecutionPolicy>)
         : null;
-      const resolvedExecutionPolicy: MissionExecutionPolicy | null = executionPolicyArg
-        ? mergeWithDefaults(executionPolicyArg)
-        : null;
+
+      // Build mission-level settings from new args fields
+      const missionLevelSettings: import("../../../shared/types").MissionLevelSettings = {
+        allowCompletionWithRisk: args.allowCompletionWithRisk !== false,
+        ...(args.recoveryLoop ? { recoveryLoop: args.recoveryLoop } : {}),
+        ...(executionPolicyArg?.prStrategy ? { prStrategy: executionPolicyArg.prStrategy } : {}),
+        ...(executionPolicyArg?.integrationPr ? { integrationPr: executionPolicyArg.integrationPr } : {}),
+        ...(executionPolicyArg?.teamRuntime ? { teamRuntime: executionPolicyArg.teamRuntime } : {}),
+      };
 
       ensurePhaseStorageSeeded();
       const requestedProfileId = coerceNullableString(args.phaseProfileId);
@@ -2447,7 +2438,8 @@ export function createMissionService({
           phaseProfileId: selectedProfile?.id ?? null,
           hasPhaseOverride: hasExplicitOverride
         },
-        ...(resolvedExecutionPolicy ? { executionPolicy: resolvedExecutionPolicy } : {}),
+        ...(executionPolicyArg ? { executionPolicy: executionPolicyArg } : {}),
+        missionLevelSettings,
         phaseConfiguration: {
           profileId: selectedProfile?.id ?? null,
           phaseKeys: selectedPhases.map((phase) => phase.phaseKey),

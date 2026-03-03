@@ -28,7 +28,6 @@ import {
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
   MissionDetail,
-  MissionExecutionPolicy,
   MissionSummary,
   OrchestratorAttempt,
   OrchestratorChatMessage,
@@ -51,10 +50,9 @@ import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
-import { PRESET_STANDARD } from "./PolicyEditor";
+import { MissionPhaseBadge } from "./MissionPhaseBadge";
 import { CompletionBanner } from "./CompletionBanner";
 import { PhaseProgressBar } from "./PhaseProgressBar";
-import { MissionPolicyBadge } from "./MissionPolicyBadge";
 import { UsageDashboard } from "./UsageDashboard";
 import { MissionChatV2 } from "./MissionChatV2";
 import { MissionControlPage } from "./MissionControlPage";
@@ -78,7 +76,6 @@ import {
   isRecord,
   readBool,
   readString,
-  mergeExecutionPolicyWithDefaults,
   toPlannerProvider,
   toTeammatePlanMode,
   toClaudePermissionMode,
@@ -1162,18 +1159,12 @@ export default function MissionsPage() {
     const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
     const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
     const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
-    const effectivePolicySource = effectiveOrchestrator.defaultExecutionPolicy;
-    const localPolicySource = localOrchestrator.defaultExecutionPolicy;
-    const effectiveDefaultExecutionPolicy = mergeExecutionPolicyWithDefaults(effectivePolicySource, PRESET_STANDARD);
-    const localDefaultExecutionPolicy = mergeExecutionPolicyWithDefaults(localPolicySource, effectiveDefaultExecutionPolicy);
-
     const orchLocal = localOrchestrator as Record<string, unknown>;
     const orchEffective = effectiveOrchestrator as Record<string, unknown>;
     const effectivePrStrategy = (orchLocal.defaultPrStrategy ?? orchEffective.defaultPrStrategy ?? { kind: "integration", targetBranch: "main", draft: true }) as PrStrategy;
 
     setMissionSettingsSnapshot(snapshot);
     setMissionSettingsDraft({
-      defaultExecutionPolicy: localDefaultExecutionPolicy,
       defaultPrStrategy: effectivePrStrategy,
       defaultPlannerProvider: toPlannerProvider(
         readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto")
@@ -1229,7 +1220,6 @@ export default function MissionsPage() {
 
       const nextOrchestrator: Record<string, unknown> = {
         ...localOrchestrator,
-        defaultExecutionPolicy: missionSettingsDraft.defaultExecutionPolicy,
         defaultPrStrategy: missionSettingsDraft.defaultPrStrategy,
         defaultPlannerProvider: normalizedPlannerProvider,
         teammatePlanMode: toTeammatePlanMode(missionSettingsDraft.teammatePlanMode),
@@ -1515,7 +1505,8 @@ export default function MissionsPage() {
         laneId: resolvedLaneId || undefined,
         priority: draft.priority,
         allowPlanningQuestions: draft.allowPlanningQuestions,
-        executionPolicy: { ...draft.executionPolicy, prStrategy: draft.prStrategy },
+        allowCompletionWithRisk: draft.allowCompletionWithRisk,
+        teamRuntime: draft.teamRuntime,
         modelConfig: {
           ...draft.modelConfig,
           decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
@@ -1524,7 +1515,6 @@ export default function MissionsPage() {
         phaseOverride: draft.phaseOverride,
         autostart: true,
         launchMode: "autopilot",
-        autopilotExecutor: draft.executionPolicy.implementation?.model ?? "openai/gpt-5.3-codex"
       });
       setSelectedMissionId(created.id);
       await refreshMissionList({ preserveSelection: true, silent: true });
@@ -1975,8 +1965,9 @@ export default function MissionsPage() {
                       );
                     })()}
                     {runGraph?.run?.metadata && (
-                      <MissionPolicyBadge
-                        policy={(runGraph.run.metadata as Record<string, unknown>).executionPolicy as MissionExecutionPolicy | undefined}
+                      <MissionPhaseBadge
+                        phases={(runGraph.run.metadata as Record<string, unknown>).phaseOverride as import("../../../shared/types").PhaseCard[] | undefined}
+                        profileName={(runGraph.run.metadata as Record<string, unknown>).phaseProfileName as string | undefined}
                       />
                     )}
                   </div>
@@ -2315,7 +2306,6 @@ export default function MissionsPage() {
             onLaunch={handleLaunchMission}
             busy={createBusy}
             lanes={mappedLanes}
-            defaultExecutionPolicy={missionSettingsDraft.defaultExecutionPolicy}
           />
         )}
       </AnimatePresence>

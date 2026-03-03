@@ -90,7 +90,7 @@ import {
   SLASH_COMMAND_TRANSLATIONS,
 } from "./orchestratorConstants";
 import { modelConfigToServiceModel, thinkingLevelToReasoningEffort, legacyToModelConfig } from "../../../shared/modelProfiles";
-import { DEFAULT_EXECUTION_POLICY, buildExecutionPlanPreview } from "./executionPolicy";
+import { DEFAULT_EXECUTION_POLICY, buildExecutionPlanPreview, buildExecutionPlanPreviewFromPhases } from "./executionPolicy";
 import { getModelById, getAvailableModels, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { detectAllAuth } from "../ai/authDetector";
 import type { Logger } from "../logging/logger";
@@ -281,6 +281,7 @@ import {
   discoverProjectDocs as discoverProjectDocsCtx,
   buildStepInputsFromMissionSteps as buildStepInputsFromMissionStepsCtx,
   resolveActivePolicy as resolveActivePolicyCtx,
+  resolveActivePhaseSettings as resolveActivePhaseSettingsCtx,
   resolveActiveRuntimeProfile as resolveActiveRuntimeProfileCtx,
   resolveMissionParallelismCap as resolveMissionParallelismCapCtx,
   resolveMissionLaneStrategyParallelismCap as resolveMissionLaneStrategyParallelismCapCtx,
@@ -1476,6 +1477,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   // Delegated to missionLifecycle.ts
   const resolveActivePolicy = (missionId: string) => resolveActivePolicyCtx(ctx, missionId);
+  const resolveActivePhaseSettings = (missionId: string) => resolveActivePhaseSettingsCtx(ctx, missionId);
   const resolveActiveRuntimeProfile = (missionId: string) => resolveActiveRuntimeProfileCtx(ctx, missionId);
 
   const getSteeringContext = (missionId: string): string => {
@@ -5034,14 +5036,13 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (skipNormalPrCreation) {
           // Already handled via post-resolution path
         } else try {
-          const runPolicy = resolveActivePolicy(mission.id);
-          const integrationPrPolicy = runPolicy.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
+          const { settings: runPhaseSettings } = resolveActivePhaseSettings(mission.id);
+          const integrationPrPolicy = runPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
           const teamManifest = runTeamManifests.get(runId);
           const graphLaneCount = new Set(graph.steps.map((s) => s.laneId).filter(Boolean)).size;
           const usedMultipleLanes = (teamManifest && teamManifest.parallelLanes.length > 1) || graphLaneCount > 1;
           const prStrategy: PrStrategy =
-            runPolicy.prStrategy
-            ?? DEFAULT_EXECUTION_POLICY.prStrategy
+            runPhaseSettings.prStrategy
             ?? { kind: "manual" };
 
           if (prStrategy.kind === "manual") {
@@ -6159,10 +6160,13 @@ Check all worker statuses and continue managing the mission from here. Read work
       const existingMeta = existingRunRow?.metadata_json
         ? JSON.parse(existingRunRow.metadata_json) as Record<string, unknown>
         : {};
+      // Store missionLevelSettings alongside legacy executionPolicy for backward compat
+      const { settings: runMissionLevelSettings } = resolveActivePhaseSettings(missionId);
       const updatedMeta = {
         ...existingMeta,
         plannerParallelismCap: parallelismCap,
         executionPolicy: policy,
+        missionLevelSettings: runMissionLevelSettings,
         ...(projectDocsContext.found ? { projectDocsIncluded: true, projectDocPaths: projectDocsContext.paths } : {}),
         teamManifestSummary: {
           workerCount: teamManifest.workers.length,
@@ -6423,31 +6427,20 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (typeof launch.customInstructions === "string") userRules.customInstructions = launch.customInstructions;
     if (args.defaultExecutorKind) userRules.providerPreference = args.defaultExecutorKind;
 
-    // Resolve and pass execution policy so the coordinator knows what phases
-    // are enabled and what constraints to follow
-    const policy = resolveActivePolicy(missionId);
-    const executionPolicy: import("./coordinatorAgent").CoordinatorExecutionPolicy = {};
-    if (policy.planning?.mode) executionPolicy.planningMode = policy.planning.mode;
-    if (policy.testing?.mode) executionPolicy.testingMode = policy.testing.mode;
-    if (policy.validation?.mode) executionPolicy.validationMode = policy.validation.mode;
-    if (policy.codeReview?.mode) executionPolicy.codeReviewMode = policy.codeReview.mode;
-    if (policy.testReview?.mode) executionPolicy.testReviewMode = policy.testReview.mode;
-    if (policy.prStrategy?.kind) executionPolicy.prStrategy = policy.prStrategy.kind;
-    if (policy.implementation?.model) executionPolicy.workerModel = policy.implementation.model;
+    // Read phase-based settings and pass budget/recovery/PR/model fields directly into userRules
+    const { settings: phaseSettings } = resolveActivePhaseSettings(missionId);
     const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
-    if (coordinatorModelConfig) executionPolicy.coordinatorModel = modelConfigToServiceModel(coordinatorModelConfig);
-    if (policy.recoveryLoop) {
-      executionPolicy.recoveryEnabled = policy.recoveryLoop.enabled;
-      executionPolicy.recoveryMaxIterations = policy.recoveryLoop.maxIterations;
+    if (coordinatorModelConfig) userRules.coordinatorModel = modelConfigToServiceModel(coordinatorModelConfig);
+    if (phaseSettings.recoveryLoop) {
+      userRules.recoveryEnabled = phaseSettings.recoveryLoop.enabled;
+      userRules.recoveryMaxIterations = phaseSettings.recoveryLoop.maxIterations;
     }
+    if (phaseSettings.prStrategy?.kind) userRules.prStrategy = phaseSettings.prStrategy.kind;
     // Pass budget limits if configured
     const budgetConfig = isRecord(launch.budgetConfig) ? launch.budgetConfig : null;
     if (budgetConfig) {
-      if (typeof budgetConfig.maxCostUsd === "number") executionPolicy.budgetLimitUsd = budgetConfig.maxCostUsd;
-      if (typeof budgetConfig.maxTokens === "number") executionPolicy.budgetLimitTokens = budgetConfig.maxTokens;
-    }
-    if (Object.keys(executionPolicy).length > 0) {
-      userRules.executionPolicy = executionPolicy;
+      if (typeof budgetConfig.maxCostUsd === "number") userRules.budgetLimitUsd = budgetConfig.maxCostUsd;
+      if (typeof budgetConfig.maxTokens === "number") userRules.budgetLimitTokens = budgetConfig.maxTokens;
     }
 
     // Discover project docs
@@ -7562,9 +7555,10 @@ Check all worker statuses and continue managing the mission from here. Read work
 
       const teamManifest = runTeamManifests.get(runId);
       const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
-      const policy = isRecord(runMeta.executionPolicy) ? (runMeta.executionPolicy as MissionExecutionPolicy) : resolveActivePolicy(graph.run.missionId);
-      const recoveryPolicy: RecoveryLoopPolicy = policy.recoveryLoop ?? DEFAULT_RECOVERY_LOOP_POLICY;
-      const integrationPrPlan: IntegrationPrPolicy = policy.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
+      // Prefer phase-based settings; fall back to legacy policy
+      const { settings: previewPhaseSettings } = resolveActivePhaseSettings(graph.run.missionId);
+      const recoveryPolicy: RecoveryLoopPolicy = previewPhaseSettings.recoveryLoop ?? DEFAULT_RECOVERY_LOOP_POLICY;
+      const integrationPrPlan: IntegrationPrPolicy = previewPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
 
       // Group steps into phases by stepType
       const phaseMap = new Map<string, typeof graph.steps>();
@@ -8179,7 +8173,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     handleInterventionWithAI,
     steerMission,
     getModelCapabilities: () => getModelCapabilities(),
-    resolveActivePolicy,
     getTeamMembers: (tmArgs: { runId: string }) => getTeamMembersForRun(tmArgs.runId),
     getTeamRuntimeState: (trArgs: { runId: string }) => getTeamRuntimeStateForRun(trArgs.runId),
     finalizeRun,

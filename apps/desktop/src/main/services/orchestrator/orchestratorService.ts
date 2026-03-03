@@ -60,6 +60,8 @@ import type {
   RoleIsolationValidation,
   TeamManifest,
   IntegrationPrPolicy,
+  MissionLevelSettings,
+  PhaseCard,
   TerminalToolType,
   OrchestratorArtifact,
   OrchestratorArtifactKind,
@@ -71,7 +73,7 @@ import {
   DEFAULT_CONTEXT_VIEW_POLICIES,
   DEFAULT_ROLE_ISOLATION_RULES
 } from "./orchestratorConstants";
-import { evaluateRunCompletion, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
+import { evaluateRunCompletion, evaluateRunCompletionFromPhases, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import { createUnifiedOrchestratorAdapter, cleanupMcpConfigFile } from "./unifiedOrchestratorAdapter";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 import type { AdeDb, SqlValue } from "../state/kvDb";
@@ -1460,10 +1462,35 @@ export function createOrchestratorService({
     const steps = listStepRows(runId).map(toStep);
     const runRow = getRunRow(runId);
     const runMetadata = runRow ? parseJsonRecord(runRow.metadata_json) : null;
-    const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
-      ? (runMetadata.executionPolicy as MissionExecutionPolicy)
-      : DEFAULT_EXECUTION_POLICY;
-    const evaluation = evaluateRunCompletion(steps, executionPolicy);
+
+    // Prefer phase-based evaluation when phaseConfiguration + missionLevelSettings exist
+    const phaseConfig = runMetadata && typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration
+      ? (runMetadata.phaseConfiguration as Record<string, unknown>)
+      : null;
+    const rawPhases = phaseConfig && Array.isArray(phaseConfig.phases) ? phaseConfig.phases as PhaseCard[]
+      : phaseConfig && Array.isArray(phaseConfig.selectedPhases) ? phaseConfig.selectedPhases as PhaseCard[]
+      : null;
+    const missionLevelSettings = runMetadata && typeof runMetadata.missionLevelSettings === "object" && runMetadata.missionLevelSettings
+      ? (runMetadata.missionLevelSettings as MissionLevelSettings)
+      : null;
+
+    let evaluation;
+    if (rawPhases && rawPhases.length > 0 && missionLevelSettings) {
+      evaluation = evaluateRunCompletionFromPhases(steps, rawPhases, missionLevelSettings);
+    } else if (missionLevelSettings) {
+      // Backward compat shim: missionLevelSettings exists but no phases — convert to phases-like eval
+      // using old policy for phase mapping
+      const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
+        ? (runMetadata.executionPolicy as MissionExecutionPolicy)
+        : DEFAULT_EXECUTION_POLICY;
+      evaluation = evaluateRunCompletion(steps, executionPolicy);
+    } else {
+      // Legacy: no missionLevelSettings at all, pure old-style eval
+      const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
+        ? (runMetadata.executionPolicy as MissionExecutionPolicy)
+        : DEFAULT_EXECUTION_POLICY;
+      evaluation = evaluateRunCompletion(steps, executionPolicy);
+    }
 
     // When the evaluation signals completion readiness, persist diagnostics
     // into run metadata so they are available via getRunGraph and other consumers.
@@ -3259,10 +3286,23 @@ export function createOrchestratorService({
       const run = toRun(runRow);
       const steps = listStepRows(args.runId).map(toStep);
       const runMetadata = run.metadata ?? {};
-      const executionPolicy = isExecutionPolicyRecord(runMetadata.executionPolicy)
-        ? (runMetadata.executionPolicy as MissionExecutionPolicy)
-        : DEFAULT_EXECUTION_POLICY;
-      const completion = evaluateRunCompletion(steps, executionPolicy);
+      // Prefer phase-based evaluation
+      const phaseConfig = typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration
+        ? (runMetadata.phaseConfiguration as Record<string, unknown>) : null;
+      const graphPhases = phaseConfig && Array.isArray(phaseConfig.phases) ? phaseConfig.phases as PhaseCard[]
+        : phaseConfig && Array.isArray(phaseConfig.selectedPhases) ? phaseConfig.selectedPhases as PhaseCard[] : null;
+      const graphSettings = typeof runMetadata.missionLevelSettings === "object" && runMetadata.missionLevelSettings
+        ? (runMetadata.missionLevelSettings as MissionLevelSettings) : null;
+
+      let completion: RunCompletionEvaluation;
+      if (graphPhases && graphPhases.length > 0 && graphSettings) {
+        completion = evaluateRunCompletionFromPhases(steps, graphPhases, graphSettings);
+      } else {
+        const executionPolicy = isExecutionPolicyRecord(runMetadata.executionPolicy)
+          ? (runMetadata.executionPolicy as MissionExecutionPolicy)
+          : DEFAULT_EXECUTION_POLICY;
+        completion = evaluateRunCompletion(steps, executionPolicy);
+      }
       return {
         run,
         steps,
@@ -7972,15 +8012,25 @@ export function createOrchestratorService({
       }
 
       // Validation passed (or forced) — evaluate the final status from step outcomes
-      const evaluation = evaluateRunCompletion(
-        steps,
-        (() => {
-          const runMeta = parseJsonRecord(runRow.metadata_json);
-          return runMeta && isExecutionPolicyRecord(runMeta.executionPolicy)
-            ? (runMeta.executionPolicy as MissionExecutionPolicy)
-            : DEFAULT_EXECUTION_POLICY;
-        })()
-      );
+      const finalRunMeta = parseJsonRecord(runRow.metadata_json);
+      const finalPhaseConfig = finalRunMeta && typeof finalRunMeta.phaseConfiguration === "object" && finalRunMeta.phaseConfiguration
+        ? (finalRunMeta.phaseConfiguration as Record<string, unknown>) : null;
+      const finalPhases = finalPhaseConfig && Array.isArray(finalPhaseConfig.phases) ? finalPhaseConfig.phases as PhaseCard[]
+        : finalPhaseConfig && Array.isArray(finalPhaseConfig.selectedPhases) ? finalPhaseConfig.selectedPhases as PhaseCard[] : null;
+      const finalSettings = finalRunMeta && typeof finalRunMeta.missionLevelSettings === "object" && finalRunMeta.missionLevelSettings
+        ? (finalRunMeta.missionLevelSettings as MissionLevelSettings) : null;
+
+      let evaluation: RunCompletionEvaluation;
+      if (finalPhases && finalPhases.length > 0 && finalSettings) {
+        evaluation = evaluateRunCompletionFromPhases(steps, finalPhases, finalSettings);
+      } else {
+        evaluation = evaluateRunCompletion(
+          steps,
+          finalRunMeta && isExecutionPolicyRecord(finalRunMeta.executionPolicy)
+            ? (finalRunMeta.executionPolicy as MissionExecutionPolicy)
+            : DEFAULT_EXECUTION_POLICY
+        );
+      }
 
       // Determine final terminal status
       let finalStatus: OrchestratorRunStatus;

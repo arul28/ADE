@@ -10,7 +10,6 @@ import {
   Pulse,
 } from "@phosphor-icons/react";
 import type {
-  MissionExecutionPolicy,
   MissionPriority,
   MissionStatus,
   OrchestratorAttempt,
@@ -22,7 +21,6 @@ import type {
   OrchestratorStepStatus,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
-import { PRESET_STANDARD } from "./PolicyEditor";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
@@ -163,7 +161,6 @@ export const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; h
 ];
 
 export type MissionSettingsDraft = {
-  defaultExecutionPolicy: MissionExecutionPolicy;
   defaultPrStrategy: import("../../../shared/types").PrStrategy;
   defaultPlannerProvider: PlannerProvider;
   teammatePlanMode: TeammatePlanMode;
@@ -176,7 +173,6 @@ export type MissionSettingsDraft = {
 };
 
 export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
-  defaultExecutionPolicy: PRESET_STANDARD,
   defaultPrStrategy: { kind: "integration", targetBranch: "main", draft: true },
   defaultPlannerProvider: "auto",
   teammatePlanMode: "auto",
@@ -204,26 +200,6 @@ export function readString(primary: unknown, fallback: unknown, defaultValue: st
   if (typeof primary === "string" && primary.length > 0) return primary;
   if (typeof fallback === "string" && fallback.length > 0) return fallback;
   return defaultValue;
-}
-
-export function mergeExecutionPolicyWithDefaults(source: unknown, defaults: MissionExecutionPolicy = PRESET_STANDARD): MissionExecutionPolicy {
-  if (!isRecord(source)) return defaults;
-  const mergePhase = <T extends Record<string, unknown>>(key: keyof MissionExecutionPolicy, phaseDefaults: T): T => {
-    const candidate = source[key];
-    if (!isRecord(candidate)) return { ...phaseDefaults };
-    return { ...phaseDefaults, ...candidate } as T;
-  };
-  return {
-    planning: mergePhase("planning", defaults.planning),
-    implementation: mergePhase("implementation", defaults.implementation),
-    testing: mergePhase("testing", defaults.testing),
-    validation: mergePhase("validation", defaults.validation),
-    codeReview: mergePhase("codeReview", defaults.codeReview),
-    testReview: mergePhase("testReview", defaults.testReview),
-    prReview: mergePhase("prReview", defaults.prReview),
-    merge: mergePhase("merge", defaults.merge),
-    completion: mergePhase("completion", defaults.completion)
-  };
 }
 
 export function toPlannerProvider(value: string): PlannerProvider {

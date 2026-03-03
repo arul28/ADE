@@ -431,6 +431,9 @@ export type CreateMissionArgs = {
   launchMode?: "autopilot" | "manual";
   autopilotExecutor?: OrchestratorExecutorKind;
   executionPolicy?: Partial<MissionExecutionPolicy>;
+  /** Mission-level completion/recovery settings (replaces executionPolicy fields) */
+  allowCompletionWithRisk?: boolean;
+  recoveryLoop?: RecoveryLoopPolicy;
   orchestratorModel?: string;
   thinkingBudgets?: Record<string, number>;
   modelConfig?: MissionModelConfig;
@@ -621,6 +624,14 @@ export type PlanningPhaseMode = "off" | "auto" | "manual_review";
 export type TestingPhaseMode = "none" | "post_implementation" | "tdd";
 export type GatePhaseMode = "required" | "optional" | "off";
 export type PhaseModelChoice = string;
+
+export type MissionLevelSettings = {
+  allowCompletionWithRisk: boolean;
+  recoveryLoop?: RecoveryLoopPolicy;
+  integrationPr?: IntegrationPrPolicy;
+  prStrategy?: PrStrategy;
+  teamRuntime?: TeamRuntimeConfig;
+};
 
 export type MissionExecutionPolicy = {
   planning: { mode: PlanningPhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };

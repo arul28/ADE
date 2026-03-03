@@ -1,5 +1,7 @@
 import type {
   MissionExecutionPolicy,
+  MissionLevelSettings,
+  PhaseCard,
   CompletionDiagnostic,
   RunCompletionEvaluation,
   RunCompletionValidation,
@@ -749,6 +751,331 @@ export function buildExecutionPlanPreview(args: {
     generatedAt: now,
     strategy,
     phases,
+    teamSummary: {
+      workerCount: teamManifest.workers.length,
+      parallelLanes: teamManifest.parallelLanes.length,
+      roles
+    },
+    recoveryPolicy,
+    integrationPrPlan,
+    aligned: true,
+    driftNotes: []
+  };
+}
+
+// ─────────────────────────────────────────────────────
+// Phase-card-based evaluation (replaces policy-based)
+// ─────────────────────────────────────────────────────
+
+/** Maps a phaseKey from PhaseCard to an ExecutionPhase */
+function phaseKeyToExecutionPhase(phaseKey: string): ExecutionPhase | null {
+  const key = phaseKey.trim().toLowerCase();
+  if (key === "planning" || key === "analysis") return "planning";
+  if (key === "implementation" || key === "code") return "implementation";
+  if (key === "testing" || key === "test") return "testing";
+  if (key === "validation") return "validation";
+  if (key === "code_review" || key === "codereview" || key === "review") return "codeReview";
+  if (key === "test_review" || key === "testreview") return "testReview";
+  if (key === "integration") return "integration";
+  return null;
+}
+
+/**
+ * Evaluates run completion using PhaseCard[] + MissionLevelSettings.
+ * Phase present in array = enabled. validationGate.required = required.
+ */
+export function evaluateRunCompletionFromPhases(
+  steps: OrchestratorStep[],
+  phases: PhaseCard[],
+  settings: MissionLevelSettings
+): RunCompletionEvaluation {
+  const diagnostics: CompletionDiagnostic[] = [];
+  const riskFactors: string[] = [];
+
+  // Map steps to phases
+  const phaseSteps = new Map<ExecutionPhase, OrchestratorStep[]>();
+  for (const step of steps) {
+    const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
+    const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
+    const phase = stepTypeToPhase(stepType, taskType);
+    if (phase) {
+      const bucket = phaseSteps.get(phase) ?? [];
+      bucket.push(step);
+      phaseSteps.set(phase, bucket);
+    }
+  }
+
+  // Derive which phases are required from the phase cards
+  const enabledPhases = new Set<ExecutionPhase>();
+  const requiredPhases = new Set<ExecutionPhase>();
+
+  for (const card of phases) {
+    const ep = phaseKeyToExecutionPhase(card.phaseKey);
+    if (ep) {
+      enabledPhases.add(ep);
+      if (card.validationGate.required) {
+        requiredPhases.add(ep);
+      }
+    }
+  }
+
+  // Implementation is always required
+  enabledPhases.add("implementation");
+  requiredPhases.add("implementation");
+
+  // Integration is conditional on multi-lane
+  if (settings.integrationPr && hasMultipleLanes(steps)) {
+    enabledPhases.add("integration");
+  }
+
+  const allPhases: ExecutionPhase[] = [
+    "planning", "implementation", "testing", "validation",
+    "codeReview", "testReview", "integration"
+  ];
+
+  for (const phase of allPhases) {
+    const stepsInPhase = phaseSteps.get(phase) ?? [];
+    const required = requiredPhases.has(phase);
+    const enabled = enabledPhases.has(phase);
+
+    if (stepsInPhase.length === 0) {
+      if (required) {
+        diagnostics.push({
+          phase,
+          code: "phase_required_missing",
+          message: `Required phase "${phase}" has no steps`,
+          blocking: false
+        });
+        riskFactors.push(`${phase}_required_but_missing`);
+      } else if (!enabled) {
+        diagnostics.push({
+          phase,
+          code: "phase_skipped_by_policy",
+          message: `Phase "${phase}" not included in phase cards`,
+          blocking: false
+        });
+      }
+      continue;
+    }
+
+    const statuses = stepsInPhase.map((s) => s.status);
+    const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
+    const anyFailed = statuses.some((s) => s === "failed");
+    const allSucceededOrSkipped = statuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
+    const anyBlocked = statuses.some((s) => s === "blocked");
+    const anyInProgress = statuses.some((s) => s === "running" || s === "ready" || s === "pending");
+
+    if (allSucceededOrSkipped) {
+      diagnostics.push({
+        phase,
+        code: "phase_succeeded",
+        message: `Phase "${phase}" completed successfully`,
+        blocking: false
+      });
+    } else if (anyFailed && allTerminal) {
+      const blocking = required && !settings.allowCompletionWithRisk;
+      diagnostics.push({
+        phase,
+        code: "phase_failed",
+        message: `Phase "${phase}" has failed steps`,
+        blocking
+      });
+      if (!blocking && required) {
+        riskFactors.push(`${phase}_failed`);
+      }
+    } else if (anyBlocked || anyInProgress) {
+      diagnostics.push({
+        phase,
+        code: "phase_in_progress",
+        message: `Phase "${phase}" still in progress`,
+        blocking: true
+      });
+    }
+  }
+
+  // Check validation contracts
+  const validationCard = phases.find((c) => phaseKeyToExecutionPhase(c.phaseKey) === "validation");
+  const validationRequired = validationCard?.validationGate.required ?? false;
+
+  const requiredValidationMissingStepKeys = steps
+    .filter((step) => step.status === "succeeded")
+    .filter((step) => {
+      const meta = step.metadata ?? {};
+      const validationContract =
+        typeof meta.validationContract === "object" && meta.validationContract
+          ? (meta.validationContract as Record<string, unknown>)
+          : null;
+      if (validationContract?.required !== true) return false;
+      const lastValidationReport =
+        typeof meta.lastValidationReport === "object" && meta.lastValidationReport
+          ? (meta.lastValidationReport as Record<string, unknown>)
+          : null;
+      const lastVerdict = typeof lastValidationReport?.verdict === "string" ? lastValidationReport.verdict.toLowerCase() : "";
+      const validationState = typeof meta.validationState === "string" ? meta.validationState.toLowerCase() : "";
+      const validationPassedAt = typeof meta.validationPassedAt === "string" ? meta.validationPassedAt.trim() : "";
+      return !(lastVerdict === "pass" || validationState === "pass" || validationPassedAt.length > 0);
+    })
+    .map((step) => step.stepKey);
+
+  if (requiredValidationMissingStepKeys.length > 0) {
+    diagnostics.push({
+      phase: "validation",
+      code: "required_validation_missing",
+      message: "Succeeded steps are missing a passing required validation contract.",
+      blocking: validationRequired,
+      details: { stepKeys: requiredValidationMissingStepKeys }
+    });
+    riskFactors.push(`required_validation_missing: ${requiredValidationMissingStepKeys.join(", ")}`);
+  }
+
+  // Compute overall status
+  const hasBlockingDiagnostics = diagnostics.some((d) => d.blocking);
+  const anyPhaseFailed = diagnostics.some((d) => d.code === "phase_failed");
+  const anyPhaseInProgress = diagnostics.some((d) => d.code === "phase_in_progress");
+
+  const allStepStatuses = steps.map((s) => s.status);
+  const allStepsTerminal = allStepStatuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
+  const anyStepBlocked = allStepStatuses.some((s) => s === "blocked");
+  const anyStepRunning = allStepStatuses.some((s) => s === "running" || s === "ready" || s === "pending");
+
+  let status: OrchestratorRunStatus;
+  let completionReady: boolean;
+
+  if (anyPhaseInProgress || anyStepRunning) {
+    status = "active";
+    completionReady = false;
+  } else if (anyStepBlocked) {
+    status = "paused";
+    completionReady = false;
+  } else if (anyPhaseFailed && hasBlockingDiagnostics) {
+    status = "failed";
+    completionReady = true;
+  } else if (allStepsTerminal && !hasBlockingDiagnostics && riskFactors.length > 0) {
+    status = "succeeded_with_risk";
+    completionReady = true;
+  } else if (allStepsTerminal && !hasBlockingDiagnostics) {
+    const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
+    status = allSucceeded ? "succeeded" : "failed";
+    completionReady = true;
+  } else if (hasBlockingDiagnostics && !settings.allowCompletionWithRisk) {
+    status = "active";
+    completionReady = false;
+  } else {
+    status = "active";
+    completionReady = false;
+  }
+
+  return { status, diagnostics, riskFactors, completionReady };
+}
+
+/**
+ * Builds an ExecutionPlanPreview from phase cards instead of policy.
+ */
+export function buildExecutionPlanPreviewFromPhases(args: {
+  runId: string;
+  missionId: string;
+  steps: Array<{
+    stepKey: string;
+    title: string;
+    role: OrchestratorWorkerRole;
+    executorKind: string;
+    model: string;
+    laneId: string | null;
+    dependencies: string[];
+    phase: string;
+  }>;
+  phases: PhaseCard[];
+  settings: MissionLevelSettings;
+  teamManifest: TeamManifest;
+}): ExecutionPlanPreview {
+  const { runId, missionId, steps, phases, settings, teamManifest } = args;
+  const now = new Date().toISOString();
+
+  // Group steps by phase
+  const phaseMap = new Map<string, typeof steps>();
+  for (const step of steps) {
+    const bucket = phaseMap.get(step.phase) ?? [];
+    bucket.push(step);
+    phaseMap.set(step.phase, bucket);
+  }
+
+  // Determine recovery policy
+  const recoveryPolicy: RecoveryLoopPolicy =
+    settings.recoveryLoop ?? DEFAULT_RECOVERY_LOOP_POLICY;
+
+  // Build phase details from phase cards
+  const phaseDetails: ExecutionPlanPhase[] = [];
+  const cardsByPhaseKey = new Map<string, PhaseCard>();
+  for (const card of phases) {
+    const ep = phaseKeyToExecutionPhase(card.phaseKey);
+    if (ep) cardsByPhaseKey.set(ep, card);
+  }
+
+  const phaseOrder = [
+    "planning", "implementation", "testing", "validation",
+    "codeReview", "testReview", "integration"
+  ];
+
+  for (const phaseName of phaseOrder) {
+    const phaseSteps = phaseMap.get(phaseName);
+    if (!phaseSteps || phaseSteps.length === 0) continue;
+
+    const card = cardsByPhaseKey.get(phaseName);
+    const gatePolicy = card?.validationGate.required ? "required" : (card?.validationGate.tier ?? "none");
+
+    const recoveryPhases = new Set(["testing", "codeReview", "testReview", "validation"]);
+    const recoveryEnabled = recoveryPolicy.enabled && recoveryPhases.has(phaseName);
+
+    const model = phaseSteps[0]?.model ?? "codex";
+    const executorKind = phaseSteps[0]?.executorKind ?? "codex";
+
+    const stepPreviews: ExecutionPlanStepPreview[] = phaseSteps.map((step) => ({
+      stepKey: step.stepKey,
+      title: step.title,
+      role: step.role,
+      executorKind: step.executorKind as ExecutionPlanStepPreview["executorKind"],
+      model: step.model,
+      laneId: step.laneId,
+      dependencies: step.dependencies,
+      gateType: recoveryPhases.has(phaseName) ? phaseName : null,
+      recoveryOnFailure: recoveryEnabled
+    }));
+
+    phaseDetails.push({
+      phase: phaseName,
+      enabled: true,
+      stepCount: phaseSteps.length,
+      steps: stepPreviews,
+      model,
+      executorKind: executorKind as ExecutionPlanPhase["executorKind"],
+      gatePolicy,
+      recoveryEnabled
+    });
+  }
+
+  // Team summary
+  const roles = [...new Set(teamManifest.workers.map((w) => w.role))];
+
+  // Integration PR plan
+  const integrationPrPlan = settings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
+
+  // Strategy label
+  const laneCount = teamManifest.parallelLanes.flat().length;
+  let strategy: string;
+  if (laneCount > 1) {
+    strategy = `Parallel execution across ${laneCount} lanes with ${teamManifest.workers.length} workers.`;
+  } else if (teamManifest.workers.length > 1) {
+    strategy = `Sequential multi-worker execution with ${teamManifest.workers.length} workers.`;
+  } else {
+    strategy = "Single-worker sequential execution.";
+  }
+
+  return {
+    runId,
+    missionId,
+    generatedAt: now,
+    strategy,
+    phases: phaseDetails,
     teamSummary: {
       workerCount: teamManifest.workers.length,
       parallelLanes: teamManifest.parallelLanes.length,

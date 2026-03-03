@@ -13,6 +13,8 @@ import { getModelById } from "../../../shared/modelRegistry";
 import type {
   MissionDetail,
   MissionExecutionPolicy,
+  MissionLevelSettings,
+  PhaseCard,
   MissionStepStatus,
   MissionStatus,
   ModelCapabilityProfile,
@@ -170,6 +172,7 @@ export type ResolvedOrchestratorConfig = {
   requirePlanReview: boolean;
   defaultPlannerProvider: string | null;
   defaultExecutionPolicy: Partial<MissionExecutionPolicy> | null;
+  defaultMissionLevelSettings: MissionLevelSettings | null;
   hooks: ResolvedOrchestratorHooks;
 };
 
@@ -929,11 +932,15 @@ export function readConfig(projectConfigService: ReturnType<typeof createProject
   const defaultExecutionPolicy = isRecord(orchestrator.defaultExecutionPolicy)
     ? (orchestrator.defaultExecutionPolicy as Partial<MissionExecutionPolicy>)
     : null;
+  const defaultMissionLevelSettings = isRecord(orchestrator.defaultMissionLevelSettings)
+    ? (orchestrator.defaultMissionLevelSettings as MissionLevelSettings)
+    : null;
   const hooks = readOrchestratorHooksConfig(orchestrator);
   return {
     requirePlanReview,
     defaultPlannerProvider,
     defaultExecutionPolicy,
+    defaultMissionLevelSettings,
     hooks
   };
 }
@@ -1184,6 +1191,94 @@ export function deriveRuntimeProfileFromPolicy(
       interventionReasoningEffort: normalizeReasoningEffort(
         policy.planning.reasoningEffort,
         strictGates ? "high" : "medium"
+      )
+    },
+    context: {
+      contextProfile,
+      includeNarrative,
+      docsMode: includeNarrative ? "full_docs" : "digest_refs"
+    },
+    provenance: {
+      source: "policy"
+    }
+  };
+}
+
+// ── Phase-card-based Runtime Profile Derivation ──────────────────
+
+export function deriveRuntimeProfileFromPhases(
+  phases: PhaseCard[],
+  settings: MissionLevelSettings,
+  config: ResolvedOrchestratorConfig
+): MissionRuntimeProfile {
+  // Build a set of enabled phase keys
+  const phaseKeys = new Set(phases.map((p) => p.phaseKey.toLowerCase()));
+
+  const planningCard = phases.find((p) => p.phaseKey.toLowerCase() === "planning");
+  const testingEnabled = phaseKeys.has("testing") || phaseKeys.has("test");
+  const reviewEnabled = phaseKeys.has("code_review") || phaseKeys.has("codereview") || phaseKeys.has("review")
+    || phaseKeys.has("test_review") || phaseKeys.has("testreview");
+  const hasStrictGates = phases.some(
+    (p) => p.validationGate.required && p.validationGate.tier !== "none"
+  ) || !settings.allowCompletionWithRisk;
+  const hasTdd = phases.some(
+    (p) => (p.phaseKey.toLowerCase() === "testing" || p.phaseKey.toLowerCase() === "test")
+      && p.instructions.toLowerCase().includes("tdd")
+  );
+  const hasManualReview = planningCard?.askQuestions.mode === "always";
+
+  let maxParallelWorkers = 2;
+  if (testingEnabled) maxParallelWorkers += 1;
+  if (reviewEnabled) maxParallelWorkers += 1;
+  if (settings.teamRuntime?.enabled) maxParallelWorkers += 2;
+  if (hasTdd) maxParallelWorkers = Math.max(maxParallelWorkers, 4);
+  maxParallelWorkers = Math.max(1, Math.min(6, maxParallelWorkers));
+
+  let stepTimeoutMs = 300_000;
+  if (!testingEnabled && !reviewEnabled) {
+    stepTimeoutMs = 180_000;
+  }
+  if (hasStrictGates || hasManualReview) {
+    stepTimeoutMs = 600_000;
+  } else if (hasTdd) {
+    stepTimeoutMs = 480_000;
+  }
+
+  const includeNarrative = hasManualReview || hasStrictGates;
+  const contextProfile = includeNarrative ? "orchestrator_narrative_opt_in_v1" : "orchestrator_deterministic_v1";
+
+  // Derive reasoning effort from phase cards that have validation or review roles
+  const reviewPhases = phases.filter(
+    (p) => ["validation", "code_review", "codereview", "review", "test_review", "testreview"]
+      .includes(p.phaseKey.toLowerCase())
+  );
+  const planningPhases = phases.filter(
+    (p) => p.phaseKey.toLowerCase() === "planning" || p.phaseKey.toLowerCase() === "analysis"
+  );
+
+  return {
+    planning: {
+      useAiPlanner: phaseKeys.has("planning") || phaseKeys.has("analysis"),
+      requirePlanReview: hasManualReview,
+      preferProvider: planningCard?.model?.modelId ?? config.defaultPlannerProvider ?? null
+    },
+    execution: {
+      maxParallelWorkers,
+      defaultRetryLimit: hasStrictGates || testingEnabled ? 2 : 1,
+      stepTimeoutMs
+    },
+    evaluation: {
+      evaluateEveryStep: hasStrictGates || hasTdd,
+      autoAdjustPlan: (phaseKeys.has("planning") || phaseKeys.has("analysis")) || reviewEnabled,
+      autoResolveInterventions: testingEnabled || reviewEnabled,
+      interventionConfidenceThreshold: hasStrictGates ? 0.75 : 0.9,
+      evaluationReasoningEffort: normalizeReasoningEffort(
+        reviewPhases[0]?.model?.modelId,
+        hasStrictGates ? "high" : "medium"
+      ),
+      interventionReasoningEffort: normalizeReasoningEffort(
+        planningPhases[0]?.model?.modelId,
+        hasStrictGates ? "high" : "medium"
       )
     },
     context: {

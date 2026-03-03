@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type {
   MissionExecutionPolicy,
+  MissionLevelSettings,
+  PhaseCard,
   OrchestratorRun,
   OrchestratorStep,
   OrchestratorStepStatus,
@@ -16,6 +18,7 @@ import {
   DEFAULT_EXECUTION_POLICY,
   resolveExecutionPolicy,
   evaluateRunCompletion,
+  evaluateRunCompletionFromPhases,
   validateRunCompletion,
   stepTypeToPhase,
   phaseModelToExecutorKind,
@@ -238,6 +241,108 @@ describe("executionPolicy", () => {
       expect(result.status).toBe("active");
       expect(result.completionReady).toBe(false);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// evaluateRunCompletionFromPhases (phase-card-based)
+// ─────────────────────────────────────────────────────
+
+function makePhaseCard(overrides: Partial<Omit<PhaseCard, "phaseKey">> & { phaseKey: string }): PhaseCard {
+  return {
+    id: `card-${overrides.phaseKey}`,
+    name: overrides.phaseKey,
+    description: "",
+    instructions: "",
+    model: { provider: "codex", modelId: "gpt-5.3-codex" },
+    budget: {},
+    orderingConstraints: {},
+    askQuestions: { enabled: false, mode: "never" },
+    validationGate: { tier: "none", required: false },
+    isBuiltIn: true,
+    isCustom: false,
+    position: 0,
+    createdAt: "2026-02-20T00:00:00.000Z",
+    updatedAt: "2026-02-20T00:00:00.000Z",
+    ...overrides,
+    phaseKey: overrides.phaseKey
+  };
+}
+
+describe("evaluateRunCompletionFromPhases", () => {
+  const defaultSettings: MissionLevelSettings = {
+    allowCompletionWithRisk: true,
+    prStrategy: { kind: "manual" }
+  };
+
+  it("succeeds when all phase cards are satisfied", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "planning", validationGate: { tier: "none", required: false } }),
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
+      makePhaseCard({ phaseKey: "testing", validationGate: { tier: "self", required: false } })
+    ];
+    const steps = [
+      makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "analysis" } }),
+      makeStep({ id: "s2", status: "succeeded", metadata: { stepType: "code" } }),
+      makeStep({ id: "s3", status: "succeeded", metadata: { stepType: "test" } })
+    ];
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+    expect(result.status).toBe("succeeded");
+    expect(result.completionReady).toBe(true);
+  });
+
+  it("returns succeeded_with_risk when required phase missing but risk allowed", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
+      makePhaseCard({ phaseKey: "testing", validationGate: { tier: "self", required: true } })
+    ];
+    const steps = [
+      makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
+    ];
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+    expect(result.status).toBe("succeeded_with_risk");
+    expect(result.riskFactors).toContain("testing_required_but_missing");
+    expect(result.completionReady).toBe(true);
+  });
+
+  it("reports failed when required phase has failed steps and risk not allowed", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
+      makePhaseCard({ phaseKey: "testing", validationGate: { tier: "dedicated", required: true } })
+    ];
+    const settings: MissionLevelSettings = { ...defaultSettings, allowCompletionWithRisk: false };
+    const steps = [
+      makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } }),
+      makeStep({ id: "s2", status: "failed", metadata: { stepType: "test" } })
+    ];
+    const result = evaluateRunCompletionFromPhases(steps, phases, settings);
+    expect(result.status).toBe("failed");
+    expect(result.completionReady).toBe(true);
+  });
+
+  it("reports active when steps are still in progress", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } })
+    ];
+    const steps = [
+      makeStep({ id: "s1", status: "running", metadata: { stepType: "code" } })
+    ];
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+    expect(result.status).toBe("active");
+    expect(result.completionReady).toBe(false);
+  });
+
+  it("phases not in the card array are marked as skipped", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } })
+    ];
+    const steps = [
+      makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
+    ];
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+    // Testing phase not in cards, so it should be skipped not required
+    const testingDiag = result.diagnostics.find((d) => d.phase === "testing");
+    expect(testingDiag?.code).toBe("phase_skipped_by_policy");
   });
 });
 

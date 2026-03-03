@@ -33,6 +33,7 @@ import {
   parseJsonRecord,
   readConfig,
   deriveRuntimeProfileFromPolicy,
+  deriveRuntimeProfileFromPhases,
   clipHookLogText,
 } from "./orchestratorContext";
 import type {
@@ -50,6 +51,9 @@ import type {
   TerminalRuntimeState,
   StartOrchestratorRunStepInput,
   MissionExecutionPolicy,
+  MissionLevelSettings,
+  PhaseCard,
+  MissionPhaseConfiguration,
 } from "../../../shared/types";
 import { resolveExecutionPolicy, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import { updateRunMetadata, getMissionMetadata, getMissionIdForRun } from "./chatMessageService";
@@ -659,8 +663,70 @@ export function resolveActiveRuntimeProfile(
   missionId: string
 ): MissionRuntimeProfile {
   const config = readConfig(ctx.projectConfigService);
+
+  // Try phase-based derivation first
+  const { phases, settings } = resolveActivePhaseSettings(ctx, missionId);
+  if (phases.length > 0) {
+    return deriveRuntimeProfileFromPhases(phases, settings, config);
+  }
+
+  // Fall back to old policy-based derivation
   const policy = resolveActivePolicy(ctx, missionId);
   return deriveRuntimeProfileFromPolicy(policy, config);
+}
+
+// ── Phase-based Settings Resolution ──────────────────────────────
+
+const DEFAULT_MISSION_LEVEL_SETTINGS: MissionLevelSettings = {
+  allowCompletionWithRisk: true,
+  prStrategy: { kind: "manual" }
+};
+
+/**
+ * Resolves the active phase cards and mission-level settings for a mission.
+ * Reads from mission metadata with fallback chain.
+ */
+export function resolveActivePhaseSettings(
+  ctx: OrchestratorContext,
+  missionId: string
+): { phases: PhaseCard[]; settings: MissionLevelSettings } {
+  const metadata = getMissionMetadata(ctx, missionId);
+
+  // 1) Read phases from phaseConfiguration in metadata
+  let phases: PhaseCard[] = [];
+  if (isRecord(metadata.phaseConfiguration)) {
+    const config = metadata.phaseConfiguration as Record<string, unknown>;
+    if (Array.isArray(config.selectedPhases)) {
+      phases = config.selectedPhases as PhaseCard[];
+    } else if (Array.isArray(config.phases)) {
+      phases = config.phases as PhaseCard[];
+    }
+  }
+  // Fallback: check direct phaseOverride in metadata
+  if (phases.length === 0 && Array.isArray(metadata.phaseOverride)) {
+    phases = metadata.phaseOverride as PhaseCard[];
+  }
+
+  // 2) Read mission-level settings
+  let settings: MissionLevelSettings;
+  if (isRecord(metadata.missionLevelSettings)) {
+    settings = metadata.missionLevelSettings as MissionLevelSettings;
+  } else if (isRecord(metadata.executionPolicy)) {
+    // Backward compat: convert old executionPolicy to MissionLevelSettings
+    const oldPolicy = metadata.executionPolicy as Record<string, unknown>;
+    const completion = isRecord(oldPolicy.completion) ? (oldPolicy.completion as Record<string, unknown>) : {};
+    settings = {
+      allowCompletionWithRisk: completion.allowCompletionWithRisk !== false,
+      recoveryLoop: isRecord(oldPolicy.recoveryLoop) ? (oldPolicy.recoveryLoop as MissionLevelSettings["recoveryLoop"]) : undefined,
+      integrationPr: isRecord(oldPolicy.integrationPr) ? (oldPolicy.integrationPr as MissionLevelSettings["integrationPr"]) : undefined,
+      prStrategy: isRecord(oldPolicy.prStrategy) ? (oldPolicy.prStrategy as MissionLevelSettings["prStrategy"]) : undefined,
+      teamRuntime: isRecord(oldPolicy.teamRuntime) ? (oldPolicy.teamRuntime as MissionLevelSettings["teamRuntime"]) : undefined,
+    };
+  } else {
+    settings = { ...DEFAULT_MISSION_LEVEL_SETTINGS };
+  }
+
+  return { phases, settings };
 }
 
 // ── Mission Parallelism Resolution ──────────────────────────────

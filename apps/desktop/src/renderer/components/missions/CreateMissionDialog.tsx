@@ -10,26 +10,22 @@ import {
   Shield,
   CircleHalf,
   Hash,
-  CaretDown,
   CaretLeft,
   CheckCircle,
   Warning,
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type {
-  MissionExecutionPolicy,
   MissionModelConfig,
   MissionPreflightChecklistItem,
   MissionPreflightResult,
-  PlanningPhaseMode,
-  TestingPhaseMode,
-  GatePhaseMode,
   PhaseCard,
   PhaseProfile,
   PrStrategy,
   PrDepth,
   OrchestratorDecisionTimeoutCapHours,
   AggregatedUsageStats,
+  TeamRuntimeConfig,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { MODEL_REGISTRY } from "../../../shared/modelRegistry";
@@ -45,11 +41,12 @@ export type CreateDraft = {
   laneId: string;
   priority: import("../../../shared/types").MissionPriority;
   allowPlanningQuestions: boolean;
-  executionPolicy: MissionExecutionPolicy;
+  allowCompletionWithRisk: boolean;
   prStrategy: PrStrategy;
   modelConfig: MissionModelConfig;
   phaseProfileId: string | null;
   phaseOverride: PhaseCard[];
+  teamRuntime?: TeamRuntimeConfig;
 };
 
 const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
@@ -118,14 +115,12 @@ function CreateMissionDialogInner({
   onLaunch,
   busy,
   lanes,
-  defaultExecutionPolicy
 }: {
   open: boolean;
   onClose: () => void;
   onLaunch: (draft: CreateDraft) => void;
   busy: boolean;
   lanes: Array<{ id: string; name: string }>;
-  defaultExecutionPolicy: MissionExecutionPolicy;
 }) {
   const sortedLanes = useMemo(
     () => [...lanes].sort((a, b) => a.name.localeCompare(b.name)),
@@ -139,7 +134,6 @@ function CreateMissionDialogInner({
   const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({});
   const [disabledPhases, setDisabledPhases] = useState<Record<string, boolean>>({});
   const [availableModelIds, setAvailableModelIds] = useState<string[] | undefined>(undefined);
-  const [policyExpanded, setPolicyExpanded] = useState(false);
   const [aiDetectedAuth, setAiDetectedAuth] = useState<import("../../../shared/types").AiDetectedAuth[] | null>(null);
   const [currentUsage, setCurrentUsage] = useState<AggregatedUsageStats | null>(null);
   const [weeklyUsage, setWeeklyUsage] = useState<AggregatedUsageStats | null>(null);
@@ -153,7 +147,7 @@ function CreateMissionDialogInner({
     laneId: "",
     priority: "normal",
     allowPlanningQuestions: true,
-    executionPolicy: defaultExecutionPolicy,
+    allowCompletionWithRisk: true,
     prStrategy: { kind: "integration", targetBranch: "main", draft: true },
     modelConfig: { ...DEFAULT_MODEL_CONFIG },
     phaseProfileId: null,
@@ -167,7 +161,6 @@ function CreateMissionDialogInner({
     setPhaseError(null);
     setExpandedPhases({});
     setDisabledPhases({});
-    setPolicyExpanded(false);
     setLaunchStage("config");
     setPreflightRunning(false);
     setPreflightResult(null);
@@ -178,7 +171,7 @@ function CreateMissionDialogInner({
       laneId: "",
       priority: "normal",
       allowPlanningQuestions: true,
-      executionPolicy: defaultExecutionPolicy,
+      allowCompletionWithRisk: true,
       prStrategy: { kind: "integration", targetBranch: "main", draft: true },
       modelConfig: { ...DEFAULT_MODEL_CONFIG },
       phaseProfileId: null,
@@ -215,7 +208,7 @@ function CreateMissionDialogInner({
     return () => {
       cancelled = true;
     };
-  }, [open, defaultExecutionPolicy]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -268,13 +261,18 @@ function CreateMissionDialogInner({
     return () => { cancelled = true; cancelAnimationFrame(rafId); };
   }, [open]);
 
+  // Reset preflight when the user edits the draft (but NOT when launchStage
+  // itself transitions to "preflight" — that would immediately clear results).
+  const launchStageRef = React.useRef(launchStage);
+  launchStageRef.current = launchStage;
   useEffect(() => {
     if (!open) return;
-    if (launchStage !== "preflight") return;
+    if (launchStageRef.current !== "preflight") return;
     setLaunchStage("config");
     setPreflightResult(null);
     setPreflightError(null);
-  }, [draft, open, launchStage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, open]);
 
   const activePhases = useMemo(() => {
     return draft.phaseOverride
@@ -322,7 +320,8 @@ function CreateMissionDialogInner({
         laneId: draft.laneId.trim() || undefined,
         priority: draft.priority,
         allowPlanningQuestions: draft.allowPlanningQuestions,
-        executionPolicy: { ...draft.executionPolicy, prStrategy: draft.prStrategy },
+        allowCompletionWithRisk: draft.allowCompletionWithRisk,
+        teamRuntime: draft.teamRuntime,
         modelConfig: {
           ...draft.modelConfig,
           decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
@@ -673,18 +672,10 @@ function CreateMissionDialogInner({
                               key={opt.value}
                               type="button"
                               onClick={() => {
-                                if (opt.value === "open-and-comment") {
-                                  setDraft((p) => ({
-                                    ...p,
-                                    prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy,
-                                    executionPolicy: { ...p.executionPolicy, prReview: { ...p.executionPolicy.prReview, mode: "auto" as const } }
-                                  }));
-                                } else {
-                                  setDraft((p) => ({
-                                    ...p,
-                                    prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
-                                  }));
-                                }
+                                setDraft((p) => ({
+                                  ...p,
+                                  prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
+                                }));
                               }}
                               className="flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
                               style={{
@@ -1214,136 +1205,6 @@ function CreateMissionDialogInner({
                   billingContext={billingContext}
                 />
 
-                {/* f. Execution Policy */}
-                <div className="space-y-1">
-                  <button
-                    type="button"
-                    className="flex items-center gap-1 w-full text-left"
-                    onClick={() => setPolicyExpanded((v) => !v)}
-                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
-                  >
-                    <CaretDown
-                      size={10}
-                      weight="bold"
-                      style={{
-                        color: COLORS.textMuted,
-                        transform: policyExpanded ? "rotate(0deg)" : "rotate(-90deg)",
-                        transition: "transform 0.15s ease",
-                      }}
-                    />
-                    <span style={dlgLabelStyle}>
-                      <Shield size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-                      EXECUTION POLICY
-                    </span>
-                  </button>
-                  {policyExpanded && (
-                    <div
-                      className="space-y-2 p-2"
-                      style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}
-                    >
-                      <label className="flex items-center justify-between gap-2">
-                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>PLANNING</span>
-                        <select
-                          value={draft.executionPolicy.planning.mode}
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            executionPolicy: {
-                              ...p.executionPolicy,
-                              planning: { ...p.executionPolicy.planning, mode: e.target.value as PlanningPhaseMode }
-                            }
-                          }))}
-                          className="h-7 w-40 px-2 text-[11px] outline-none"
-                          style={dlgInputStyle}
-                        >
-                          <option value="auto">Auto</option>
-                          <option value="off">Off</option>
-                          <option value="manual_review">Manual Review</option>
-                        </select>
-                      </label>
-
-                      <label className="flex items-center justify-between gap-2">
-                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>TESTING</span>
-                        <select
-                          value={draft.executionPolicy.testing.mode}
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            executionPolicy: {
-                              ...p.executionPolicy,
-                              testing: { ...p.executionPolicy.testing, mode: e.target.value as TestingPhaseMode }
-                            }
-                          }))}
-                          className="h-7 w-40 px-2 text-[11px] outline-none"
-                          style={dlgInputStyle}
-                        >
-                          <option value="post_implementation">Post-Implementation</option>
-                          <option value="tdd">TDD</option>
-                          <option value="none">None</option>
-                        </select>
-                      </label>
-
-                      <label className="flex items-center justify-between gap-2">
-                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>VALIDATION</span>
-                        <select
-                          value={draft.executionPolicy.validation.mode}
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            executionPolicy: {
-                              ...p.executionPolicy,
-                              validation: { ...p.executionPolicy.validation, mode: e.target.value as GatePhaseMode }
-                            }
-                          }))}
-                          className="h-7 w-40 px-2 text-[11px] outline-none"
-                          style={dlgInputStyle}
-                        >
-                          <option value="optional">Optional</option>
-                          <option value="required">Required</option>
-                          <option value="off">Off</option>
-                        </select>
-                      </label>
-
-                      <label className="flex items-center justify-between gap-2">
-                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>CODE REVIEW</span>
-                        <select
-                          value={draft.executionPolicy.codeReview.mode}
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            executionPolicy: {
-                              ...p.executionPolicy,
-                              codeReview: { ...p.executionPolicy.codeReview, mode: e.target.value as GatePhaseMode }
-                            }
-                          }))}
-                          className="h-7 w-40 px-2 text-[11px] outline-none"
-                          style={dlgInputStyle}
-                        >
-                          <option value="off">Off</option>
-                          <option value="optional">Optional</option>
-                          <option value="required">Required</option>
-                        </select>
-                      </label>
-
-                      <label className="flex items-center justify-between gap-2">
-                        <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>TEST REVIEW</span>
-                        <select
-                          value={draft.executionPolicy.testReview.mode}
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            executionPolicy: {
-                              ...p.executionPolicy,
-                              testReview: { ...p.executionPolicy.testReview, mode: e.target.value as GatePhaseMode }
-                            }
-                          }))}
-                          className="h-7 w-40 px-2 text-[11px] outline-none"
-                          style={dlgInputStyle}
-                        >
-                          <option value="optional">Optional</option>
-                          <option value="required">Required</option>
-                          <option value="off">Off</option>
-                        </select>
-                      </label>
-                    </div>
-                  )}
-                </div>
-
                 <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                   <input
                     type="checkbox"
@@ -1356,14 +1217,8 @@ function CreateMissionDialogInner({
                 <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                   <input
                     type="checkbox"
-                    checked={draft.executionPolicy.completion?.allowCompletionWithRisk ?? false}
-                    onChange={(e) => setDraft((p) => ({
-                      ...p,
-                      executionPolicy: {
-                        ...p.executionPolicy,
-                        completion: { ...p.executionPolicy.completion, allowCompletionWithRisk: e.target.checked }
-                      }
-                    }))}
+                    checked={draft.allowCompletionWithRisk}
+                    onChange={(e) => setDraft((p) => ({ ...p, allowCompletionWithRisk: e.target.checked }))}
                   />
                   ALLOW COMPLETION WITH RISK
                 </label>
@@ -1372,22 +1227,19 @@ function CreateMissionDialogInner({
                   <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                     <input
                       type="checkbox"
-                      checked={draft.executionPolicy.teamRuntime?.enabled ?? false}
+                      checked={draft.teamRuntime?.enabled ?? false}
                       onChange={(e) => setDraft((p) => ({
                         ...p,
-                        executionPolicy: {
-                          ...p.executionPolicy,
-                          teamRuntime: {
-                            enabled: e.target.checked,
-                            targetProvider: p.executionPolicy.teamRuntime?.targetProvider ?? "auto",
-                            teammateCount: p.executionPolicy.teamRuntime?.teammateCount ?? 2,
-                          }
+                        teamRuntime: {
+                          enabled: e.target.checked,
+                          targetProvider: p.teamRuntime?.targetProvider ?? "auto",
+                          teammateCount: p.teamRuntime?.teammateCount ?? 2,
                         }
                       }))}
                     />
                     ENABLE TEAM RUNTIME
                   </label>
-                  {draft.executionPolicy.teamRuntime?.enabled && (
+                  {draft.teamRuntime?.enabled && (
                     <div className="flex items-center gap-3 pl-5">
                       <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                         <span>TEAMMATES</span>
@@ -1395,15 +1247,12 @@ function CreateMissionDialogInner({
                           type="number"
                           min={1}
                           max={8}
-                          value={draft.executionPolicy.teamRuntime?.teammateCount ?? 2}
+                          value={draft.teamRuntime?.teammateCount ?? 2}
                           onChange={(e) => setDraft((p) => ({
                             ...p,
-                            executionPolicy: {
-                              ...p.executionPolicy,
-                              teamRuntime: {
-                                ...p.executionPolicy.teamRuntime!,
-                                teammateCount: Math.max(1, Math.min(8, Number(e.target.value) || 2)),
-                              }
+                            teamRuntime: {
+                              ...p.teamRuntime!,
+                              teammateCount: Math.max(1, Math.min(8, Number(e.target.value) || 2)),
                             }
                           }))}
                           className="h-6 w-12 px-1 text-xs text-center outline-none"
@@ -1413,15 +1262,12 @@ function CreateMissionDialogInner({
                       <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                         <span>PROVIDER</span>
                         <select
-                          value={draft.executionPolicy.teamRuntime?.targetProvider ?? "auto"}
+                          value={draft.teamRuntime?.targetProvider ?? "auto"}
                           onChange={(e) => setDraft((p) => ({
                             ...p,
-                            executionPolicy: {
-                              ...p.executionPolicy,
-                              teamRuntime: {
-                                ...p.executionPolicy.teamRuntime!,
-                                targetProvider: e.target.value as "claude" | "codex" | "auto",
-                              }
+                            teamRuntime: {
+                              ...p.teamRuntime!,
+                              targetProvider: e.target.value as "claude" | "codex" | "auto",
                             }
                           }))}
                           className="h-6 px-1 text-xs outline-none"

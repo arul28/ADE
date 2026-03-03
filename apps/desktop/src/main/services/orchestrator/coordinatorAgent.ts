@@ -37,22 +37,6 @@ import type { createMissionService } from "../missions/missionService";
 // Types
 // ---------------------------------------------------------------------------
 
-/** Execution policy phases — user-configured settings the coordinator MUST respect. */
-export type CoordinatorExecutionPolicy = {
-  planningMode?: string;
-  testingMode?: string;
-  validationMode?: string;
-  codeReviewMode?: string;
-  testReviewMode?: string;
-  prStrategy?: string;
-  workerModel?: string;
-  coordinatorModel?: string;
-  budgetLimitUsd?: number;
-  budgetLimitTokens?: number;
-  recoveryEnabled?: boolean;
-  recoveryMaxIterations?: number;
-};
-
 /** User-configured rules that constrain the coordinator's behavior. */
 export type CoordinatorUserRules = {
   providerPreference?: string;
@@ -60,7 +44,12 @@ export type CoordinatorUserRules = {
   maxParallelWorkers?: number;
   laneStrategy?: string;
   customInstructions?: string;
-  executionPolicy?: CoordinatorExecutionPolicy;
+  coordinatorModel?: string;
+  prStrategy?: string;
+  budgetLimitUsd?: number;
+  budgetLimitTokens?: number;
+  recoveryEnabled?: boolean;
+  recoveryMaxIterations?: number;
 };
 
 /** Project context provided to the coordinator at startup. */
@@ -554,7 +543,7 @@ export class CoordinatorAgent {
     const ctx = this.deps.projectContext;
     const providers = this.deps.availableProviders;
 
-    // Build user rules section
+    // Build user rules section (includes budget/recovery/PR/model constraints)
     let rulesSection = "";
     if (rules) {
       const ruleLines: string[] = [];
@@ -563,30 +552,13 @@ export class CoordinatorAgent {
       if (rules.maxParallelWorkers != null) ruleLines.push(`- Maximum parallel workers: ${rules.maxParallelWorkers}`);
       if (rules.laneStrategy) ruleLines.push(`- Lane strategy: ${rules.laneStrategy}`);
       if (rules.customInstructions) ruleLines.push(`- Custom instructions: ${rules.customInstructions}`);
+      if (rules.coordinatorModel) ruleLines.push(`- Coordinator model: ${rules.coordinatorModel} (your model — user selected this, do not change)`);
+      if (rules.prStrategy) ruleLines.push(`- PR strategy: ${rules.prStrategy} (${rules.prStrategy === "manual" ? "user will create PRs manually" : rules.prStrategy === "per-lane" ? "create a PR per lane" : "create an integration PR"})`);
+      if (rules.budgetLimitUsd != null) ruleLines.push(`- Budget limit: $${rules.budgetLimitUsd.toFixed(2)} USD (HARD LIMIT — do not exceed)`);
+      if (rules.budgetLimitTokens != null) ruleLines.push(`- Token budget limit: ${rules.budgetLimitTokens.toLocaleString()} tokens (HARD LIMIT)`);
+      if (rules.recoveryEnabled != null) ruleLines.push(`- Recovery loops: ${rules.recoveryEnabled ? `enabled (max ${rules.recoveryMaxIterations ?? 3} iterations)` : "disabled — do not retry failed quality gates"}`);
       if (ruleLines.length > 0) {
-        rulesSection = `\n## Rules (from user configuration)\n${ruleLines.join("\n")}`;
-      }
-    }
-
-    // Build execution policy section — these are hard constraints from user settings
-    let policySection = "";
-    const ep = rules?.executionPolicy;
-    if (ep) {
-      const policyLines: string[] = [];
-      if (ep.planningMode) policyLines.push(`- Planning phase: ${ep.planningMode} (${ep.planningMode === "off" ? "SKIP planning — execute directly" : ep.planningMode === "auto" ? "run planning automatically" : "manual planning only"})`);
-      if (ep.testingMode) policyLines.push(`- Testing phase: ${ep.testingMode} (${ep.testingMode === "none" ? "SKIP tests — do not run or spawn test workers" : ep.testingMode === "post_implementation" ? "run tests after implementation" : ep.testingMode})`);
-      if (ep.validationMode) policyLines.push(`- Validation phase: ${ep.validationMode} (${ep.validationMode === "optional" ? "validate if convenient, skip if not" : ep.validationMode === "required" ? "MUST validate before completing" : "skip validation"})`);
-      if (ep.codeReviewMode) policyLines.push(`- Code review phase: ${ep.codeReviewMode} (${ep.codeReviewMode === "off" ? "SKIP code review" : ep.codeReviewMode === "required" ? "MUST run code review" : ep.codeReviewMode})`);
-      if (ep.testReviewMode) policyLines.push(`- Test review phase: ${ep.testReviewMode} (${ep.testReviewMode === "off" ? "SKIP test review" : ep.testReviewMode === "required" ? "MUST run test review" : ep.testReviewMode})`);
-      if (ep.prStrategy) policyLines.push(`- PR strategy: ${ep.prStrategy} (${ep.prStrategy === "manual" ? "user will create PRs manually" : ep.prStrategy === "per-lane" ? "create a PR per lane" : "create an integration PR"})`);
-      if (ep.coordinatorModel) policyLines.push(`- Coordinator model: ${ep.coordinatorModel} (your model — user selected this, do not change)`);
-      if (ep.workerModel) policyLines.push(`- Worker model: ${ep.workerModel} (use this model when spawning workers)`);
-      if (ep.budgetLimitUsd != null) policyLines.push(`- Budget limit: $${ep.budgetLimitUsd.toFixed(2)} USD (HARD LIMIT — do not exceed)`);
-      if (ep.budgetLimitTokens != null) policyLines.push(`- Token budget limit: ${ep.budgetLimitTokens.toLocaleString()} tokens (HARD LIMIT)`);
-      if (ep.recoveryEnabled != null) policyLines.push(`- Recovery loops: ${ep.recoveryEnabled ? `enabled (max ${ep.recoveryMaxIterations ?? 3} iterations)` : "disabled — do not retry failed quality gates"}`);
-
-      if (policyLines.length > 0) {
-        policySection = `\n## Execution Policy (user-configured — MUST follow)\nThese settings were chosen by the user. You operate WITHIN these boundaries. You decide HOW to execute within them, but you do NOT override them.\n${policyLines.join("\n")}`;
+        rulesSection = `\n## Rules (from user configuration — MUST follow)\nThese settings were chosen by the user. You operate WITHIN these boundaries.\n${ruleLines.join("\n")}`;
       }
     }
 
@@ -671,7 +643,6 @@ ${this.deps.missionGoal}
 Run ID: ${this.deps.runId}
 Mission ID: ${this.deps.missionId}
 ${rulesSection}
-${policySection}
 ${phasesSection}
 ${workersSection}
 ${projectSection}

@@ -32,7 +32,6 @@ import {
   toOptionalString,
 } from "./orchestratorContext";
 import type {
-  MissionExecutionPolicy,
   MissionDetail,
   OrchestratorRunGraph,
   ExecutionPlanPreview,
@@ -48,7 +47,6 @@ import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_INTEGRATION_PR_POLICY
 } from "./orchestratorConstants";
-import { buildExecutionPlanPreview } from "./executionPolicy";
 
 // ── Planner Stream Functions ─────────────────────────────────────
 
