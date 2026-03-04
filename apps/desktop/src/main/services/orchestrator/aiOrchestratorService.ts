@@ -2628,17 +2628,18 @@ Check all worker statuses and continue managing the mission from here. Read work
         const runningAttempt = graph.attempts
           .filter((attempt) => attempt.status === "running")
           .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-        if (runningAttempt?.executorKind === "claude" || runningAttempt?.executorKind === "codex") {
-          return runningAttempt.executorKind as "claude" | "codex";
-        }
-        if (runningAttempt?.executorKind === "unified") {
-          // For unified executor, resolve from the model metadata or default to claude
-          const attemptModel = typeof (runningAttempt as any).metadata?.model === "string" ? (runningAttempt as any).metadata.model : null;
+        if (runningAttempt) {
+          const rawMeta = isRecord((runningAttempt as any).metadata) ? ((runningAttempt as any).metadata as Record<string, unknown>) : null;
+          const attemptModel = typeof rawMeta?.model === "string"
+            ? rawMeta.model
+            : typeof rawMeta?.modelId === "string"
+              ? rawMeta.modelId
+              : null;
           if (attemptModel) {
             const desc = getModelById(attemptModel);
             if (desc?.family === "openai") return "codex";
+            if (desc?.family === "anthropic") return "claude";
           }
-          return "claude";
         }
       } catch {
         // ignore
@@ -3831,7 +3832,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       "- add_step: Add a new corrective step (set newStep with stepKey, title, instructions, dependencyStepKeys, executorKind)",
       "- parallelize_steps: Remove a dependency from a step to unblock it (set targetStepKey + removeDependencyKey)",
       "- consolidate_steps: Merge two pending/blocked steps into one (set targetStepKey=keep, removeStepKey=discard, mergedInstructions)",
-      "- reassign_executor: Change executor kind for a pending/blocked step (set targetStepKey + newExecutorKind: 'claude'|'codex')",
+      "- reassign_executor: Change executor kind for a pending/blocked step (set targetStepKey + newExecutorKind: 'unified'|'manual')",
       "- steer_worker: Send a message to a running worker with learnings from this completed step (set targetStepKey + steeringMessage)",
       "- no_change: Nothing to adjust",
       "",
@@ -3857,7 +3858,7 @@ Check all worker statuses and continue managing the mission from here. Read work
               removeStepKey: { type: "string" },
               mergedInstructions: { type: "string" },
               // For reassign_executor
-              newExecutorKind: { type: "string", enum: ["claude", "codex"] },
+              newExecutorKind: { type: "string", enum: ["unified", "manual"] },
               // For steer_worker: message to send to running worker
               steeringMessage: { type: "string" },
               // For add_step
@@ -3868,7 +3869,7 @@ Check all worker statuses and continue managing the mission from here. Read work
                   title: { type: "string" },
                   instructions: { type: "string" },
                   dependencyStepKeys: { type: "array", items: { type: "string" } },
-                  executorKind: { type: "string", enum: ["claude", "codex", "manual"] }
+                  executorKind: { type: "string", enum: ["unified", "manual"] }
                 }
               }
             },
@@ -3926,9 +3927,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         const title = typeof newStep.title === "string" ? newStep.title : "AI-suggested corrective step";
         const depKeys = Array.isArray(newStep.dependencyStepKeys) ? newStep.dependencyStepKeys.map(String) : [];
         const executorKind = typeof newStep.executorKind === "string" &&
-          ["claude", "codex", "manual"].includes(newStep.executorKind)
+          ["unified", "manual"].includes(newStep.executorKind)
           ? (newStep.executorKind as OrchestratorExecutorKind)
-          : ("manual" as OrchestratorExecutorKind);
+          : ("unified" as OrchestratorExecutorKind);
         try {
           orchestratorService.addSteps({
             runId: adjustArgs.runId,
@@ -6283,7 +6284,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             const executorKindRaw = typeof meta?.executorKind === "string" ? meta.executorKind : null;
             const executorKind: OrchestratorExecutorKind =
               existingWorker?.executorKind
-                ?? (executorKindRaw === "claude" || executorKindRaw === "codex" || executorKindRaw === "shell" || executorKindRaw === "manual"
+                ?? (executorKindRaw === "unified" || executorKindRaw === "shell" || executorKindRaw === "manual"
                   ? executorKindRaw
                   : "manual");
             upsertWorkerState(attemptId, {
@@ -6812,7 +6813,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           const role: OrchestratorWorkerRole = workerAssignment?.role ?? inferRoleFromStepMetadata(stepMeta, step.stepKey);
           const stepExecutorKind = typeof stepMeta.executorKind === "string"
             ? (stepMeta.executorKind as OrchestratorExecutorKind)
-            : workerAssignment?.executorKind ?? "claude";
+            : workerAssignment?.executorKind ?? "unified";
           return {
             stepKey: step.stepKey,
             title: step.title ?? step.stepKey,
@@ -6830,7 +6831,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const firstStepMeta = firstStep ? (isRecord(firstStep.metadata) ? firstStep.metadata : {}) : {};
         const firstStepExecutorKind = typeof firstStepMeta.executorKind === "string"
           ? (firstStepMeta.executorKind as OrchestratorExecutorKind)
-          : "claude";
+          : "unified";
         phases.push({
           phase: phaseName,
           enabled: true,

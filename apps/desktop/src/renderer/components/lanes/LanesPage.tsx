@@ -18,7 +18,7 @@ import { CreateLaneDialog } from "./CreateLaneDialog";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
-import { LaneRestackBanner } from "./LaneRestackBanner";
+import { LaneRebaseBanner } from "./LaneRebaseBanner";
 import {
   sortLanesForTabs,
   sortLanesForStackGraph,
@@ -33,15 +33,41 @@ import {
   type LanePaneDetailSelection,
   type LaneBranchOption
 } from "./laneUtils";
+import { sessionStatusBucket } from "../../lib/terminalAttention";
 import type {
   ConflictChip,
   ConflictStatus,
   DeleteLaneArgs,
   GitCommitSummary,
-  RestackSuggestion,
-  AutoRebaseLaneStatus
+  RebaseRun,
+  RebaseScope,
+  RebaseSuggestion,
+  AutoRebaseLaneStatus,
+  TerminalSessionSummary
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
+
+type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";
+
+type LaneRuntimeSummary = {
+  bucket: LaneRuntimeBucket;
+  runningCount: number;
+  awaitingInputCount: number;
+  endedCount: number;
+  sessionCount: number;
+};
+
+type RebaseScopePromptState = {
+  laneId: string;
+  laneName: string;
+  resolve: (scope: RebaseScope | null) => void;
+};
+
+type RebasePushReviewState = {
+  runId: string;
+  lanes: Array<{ laneId: string; laneName: string; selected: boolean }>;
+  resolve: (laneIds: string[] | null) => void;
+};
 
 /* ---- Component ---- */
 
@@ -56,11 +82,11 @@ export function LanesPage() {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
-  const terminalAttention = useAppStore((s) => s.terminalAttention);
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
   const [laneFilter, setLaneFilter] = useState("");
+  const [laneStatusFilter, setLaneStatusFilter] = useState<"all" | "running" | "awaiting-input" | "ended">("all");
   const [manageOpen, setManageOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createLaneName, setCreateLaneName] = useState("");
@@ -81,11 +107,13 @@ export function LanesPage() {
   const [conflictStatusByLane, setConflictStatusByLane] = useState<Record<string, ConflictStatus>>({});
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
-  const [restackSuggestions, setRestackSuggestions] = useState<RestackSuggestion[]>([]);
+  const [rebaseSuggestions, setRebaseSuggestions] = useState<RebaseSuggestion[]>([]);
   const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
-  const [restackBusyLaneId, setRestackBusyLaneId] = useState<string | null>(null);
-  const [restackSuggestionError, setRestackSuggestionError] = useState<string | null>(null);
+  const [rebaseBusyLaneId, setRebaseBusyLaneId] = useState<string | null>(null);
+  const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
+  const [rebaseScopePrompt, setRebaseScopePrompt] = useState<RebaseScopePromptState | null>(null);
+  const [rebasePushReview, setRebasePushReview] = useState<RebasePushReviewState | null>(null);
 
   const [primaryBranches, setPrimaryBranches] = useState<LaneBranchOption[]>([]);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
@@ -100,34 +128,113 @@ export function LanesPage() {
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
   const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
+  const [allSessions, setAllSessions] = useState<TerminalSessionSummary[]>([]);
 
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
-  const restackByLaneId = useMemo(
-    () => new Map(restackSuggestions.map((s) => [s.laneId, s] as const)),
-    [restackSuggestions]
+  const rebaseByLaneId = useMemo(
+    () => new Map(rebaseSuggestions.map((s) => [s.laneId, s] as const)),
+    [rebaseSuggestions]
   );
   const autoRebaseByLaneId = useMemo(
     () => new Map(autoRebaseStatuses.map((s) => [s.laneId, s] as const)),
     [autoRebaseStatuses]
   );
 
+  const laneRuntimeById = useMemo(() => {
+    const summaryByLane = new Map<string, LaneRuntimeSummary>();
+    for (const lane of sortedLanes) {
+      summaryByLane.set(lane.id, {
+        bucket: "none",
+        runningCount: 0,
+        awaitingInputCount: 0,
+        endedCount: 0,
+        sessionCount: 0,
+      });
+    }
+    for (const session of allSessions) {
+      const laneSummary = summaryByLane.get(session.laneId);
+      if (!laneSummary) continue;
+      laneSummary.sessionCount += 1;
+      const bucket = sessionStatusBucket({
+        status: session.status,
+        lastOutputPreview: session.lastOutputPreview,
+        runtimeState: session.runtimeState,
+      });
+      if (bucket === "running") laneSummary.runningCount += 1;
+      else if (bucket === "awaiting-input") laneSummary.awaitingInputCount += 1;
+      else laneSummary.endedCount += 1;
+    }
+    for (const laneSummary of summaryByLane.values()) {
+      if (laneSummary.runningCount > 0) laneSummary.bucket = "running";
+      else if (laneSummary.awaitingInputCount > 0) laneSummary.bucket = "awaiting-input";
+      else if (laneSummary.endedCount > 0) laneSummary.bucket = "ended";
+      else laneSummary.bucket = "none";
+    }
+    return summaryByLane;
+  }, [sortedLanes, allSessions]);
+
+  const laneFilterMatchedLanes = useMemo(
+    () => sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter)),
+    [sortedLanes, laneFilter, pinnedLaneIds],
+  );
+
+  const laneStatusCounts = useMemo(() => {
+    const counts = {
+      all: laneFilterMatchedLanes.length,
+      running: 0,
+      "awaiting-input": 0,
+      ended: 0,
+      none: 0,
+    };
+    for (const lane of laneFilterMatchedLanes) {
+      const bucket = laneRuntimeById.get(lane.id)?.bucket ?? "none";
+      if (bucket === "running") counts.running += 1;
+      else if (bucket === "awaiting-input") counts["awaiting-input"] += 1;
+      else if (bucket === "ended") counts.ended += 1;
+      else counts.none += 1;
+    }
+    return counts;
+  }, [laneFilterMatchedLanes, laneRuntimeById]);
+
+  const laneOrderById = useMemo(() => {
+    const map = new Map<string, number>();
+    sortedLanes.forEach((lane, index) => map.set(lane.id, index));
+    return map;
+  }, [sortedLanes]);
+
   const filteredLanes = useMemo(() => {
-    return sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter));
-  }, [sortedLanes, laneFilter, pinnedLaneIds]);
+    const bucketRank: Record<LaneRuntimeBucket, number> = {
+      running: 0,
+      "awaiting-input": 1,
+      ended: 2,
+      none: 3,
+    };
+    const base = [...laneFilterMatchedLanes];
+    if (laneStatusFilter !== "all") {
+      return base.filter((lane) => (laneRuntimeById.get(lane.id)?.bucket ?? "none") === laneStatusFilter);
+    }
+    return base.sort((a, b) => {
+      const aBucket = laneRuntimeById.get(a.id)?.bucket ?? "none";
+      const bBucket = laneRuntimeById.get(b.id)?.bucket ?? "none";
+      const byBucket = bucketRank[aBucket] - bucketRank[bBucket];
+      if (byBucket !== 0) return byBucket;
+      return (laneOrderById.get(a.id) ?? 0) - (laneOrderById.get(b.id) ?? 0);
+    });
+  }, [laneFilterMatchedLanes, laneRuntimeById, laneStatusFilter, laneOrderById]);
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
   const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
-  const visibleRestackSuggestions = useMemo(() => {
+  const visibleRebaseSuggestions = useMemo(() => {
     const laneIdSet = new Set(filteredLaneIds);
-    return restackSuggestions.filter((s) => laneIdSet.has(s.laneId));
-  }, [restackSuggestions, filteredLaneIds]);
+    return rebaseSuggestions.filter((s) => laneIdSet.has(s.laneId));
+  }, [rebaseSuggestions, filteredLaneIds]);
   const visibleAutoRebaseNeedsAttention = useMemo(() => {
     const laneIdSet = new Set(filteredLaneIds);
     return autoRebaseStatuses.filter((s) => laneIdSet.has(s.laneId) && s.state !== "autoRebased");
   }, [autoRebaseStatuses, filteredLaneIds]);
-  const showAutoRebaseSettingsHint = !autoRebaseEnabled && (visibleRestackSuggestions.length > 0 || visibleAutoRebaseNeedsAttention.length > 0);
+  const showAutoRebaseSettingsHint = !autoRebaseEnabled && (visibleRebaseSuggestions.length > 0 || visibleAutoRebaseNeedsAttention.length > 0);
 
   const activeWithPins = useMemo(
     () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
@@ -173,10 +280,10 @@ export function LanesPage() {
     } catch { /* best effort */ }
   }, []);
 
-  const refreshRestackSuggestions = useCallback(async () => {
+  const refreshRebaseSuggestions = useCallback(async () => {
     try {
-      const next = await window.ade.lanes.listRestackSuggestions();
-      setRestackSuggestions(next);
+      const next = await window.ade.lanes.listRebaseSuggestions();
+      setRebaseSuggestions(next);
     } catch { /* best effort */ }
   }, []);
 
@@ -197,6 +304,15 @@ export function LanesPage() {
       setAutoRebaseEnabled(enabled);
     } catch {
       setAutoRebaseEnabled(false);
+    }
+  }, []);
+
+  const refreshAllSessions = useCallback(async () => {
+    try {
+      const rows = await window.ade.sessions.list({ limit: 500 });
+      setAllSessions(rows);
+    } catch {
+      setAllSessions([]);
     }
   }, []);
 
@@ -261,13 +377,13 @@ export function LanesPage() {
   }, [loadConflictStatuses, pushConflictChips]);
 
   useEffect(() => {
-    void refreshRestackSuggestions();
-    const unsubscribe = window.ade.lanes.onRestackSuggestionsEvent((event) => {
-      if (event.type !== "restack-suggestions-updated") return;
-      setRestackSuggestions(event.suggestions);
+    void refreshRebaseSuggestions();
+    const unsubscribe = window.ade.lanes.onRebaseSuggestionsEvent((event) => {
+      if (event.type !== "rebase-suggestions-updated") return;
+      setRebaseSuggestions(event.suggestions);
     });
     return unsubscribe;
-  }, [refreshRestackSuggestions]);
+  }, [refreshRebaseSuggestions]);
 
   useEffect(() => {
     void refreshAutoRebaseStatuses();
@@ -278,7 +394,49 @@ export function LanesPage() {
     return unsubscribe;
   }, [refreshAutoRebaseStatuses]);
 
+  useEffect(() => {
+    const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
+      if (event.type !== "rebase-run-updated") return;
+      if (event.run.state !== "failed" || !event.run.failedLaneId) return;
+      const failedLane = lanesById.get(event.run.failedLaneId)?.name ?? event.run.failedLaneId;
+      setRebaseSuggestionError(`Rebase needs attention for ${failedLane}. ${event.run.error ?? ""}`.trim());
+    });
+    return unsubscribe;
+  }, [lanesById]);
+
   useEffect(() => { void refreshAutoRebaseEnabled(); }, [refreshAutoRebaseEnabled]);
+
+  useEffect(() => {
+    void refreshAllSessions();
+  }, [refreshAllSessions, project?.rootPath]);
+
+  useEffect(() => {
+    const unsubPtyData = window.ade.pty.onData(() => { void refreshAllSessions(); });
+    const unsubPtyExit = window.ade.pty.onExit(() => { void refreshAllSessions(); });
+    const unsubChat = window.ade.agentChat.onEvent(() => { void refreshAllSessions(); });
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void refreshAllSessions();
+    }, 5_000);
+    return () => {
+      try {
+        unsubPtyData();
+      } catch {
+        // ignore
+      }
+      try {
+        unsubPtyExit();
+      } catch {
+        // ignore
+      }
+      try {
+        unsubChat();
+      } catch {
+        // ignore
+      }
+      window.clearInterval(intervalId);
+    };
+  }, [refreshAllSessions]);
 
   useEffect(() => {
     const onFocus = () => { void refreshAutoRebaseEnabled(); };
@@ -552,47 +710,95 @@ export function LanesPage() {
     }
   }, [lanesById, pinnedLaneIds]);
 
-  const restackNow = async (laneId: string) => {
-    setRestackSuggestionError(null);
-    setRestackBusyLaneId(laneId);
+  const requestRebaseScope = useCallback((laneId: string) => {
+    const laneName = lanesById.get(laneId)?.name ?? laneId;
+    return new Promise<RebaseScope | null>((resolve) => {
+      setRebaseScopePrompt({ laneId, laneName, resolve });
+    });
+  }, [lanesById]);
+
+  const requestPushSelection = useCallback((run: RebaseRun) => {
+    const succeededLanes = run.lanes
+      .filter((lane) => lane.status === "succeeded")
+      .map((lane) => ({ laneId: lane.laneId, laneName: lane.laneName, selected: true }));
+    if (succeededLanes.length === 0) return Promise.resolve<string[] | null>([]);
+    return new Promise<string[] | null>((resolve) => {
+      setRebasePushReview({
+        runId: run.runId,
+        lanes: succeededLanes,
+        resolve
+      });
+    });
+  }, []);
+
+  const runRebaseFlow = useCallback(async (laneId: string, mode: "local_only" | "local_and_remote") => {
+    setRebaseSuggestionError(null);
+    setRebaseBusyLaneId(laneId);
     try {
-      const result = await window.ade.lanes.restack({ laneId, recursive: true });
-      if (result.error) throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
-      await Promise.all([refreshLanes(), refreshRestackSuggestions()]);
+      const scope = await requestRebaseScope(laneId);
+      if (!scope) return;
+
+      const start = await window.ade.lanes.rebaseStart({
+        laneId,
+        scope,
+        pushMode: mode === "local_and_remote" ? "review_then_push" : "none",
+        actor: "user"
+      });
+
+      if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
+        const failedLane = start.run.failedLaneId ? lanesById.get(start.run.failedLaneId)?.name ?? start.run.failedLaneId : null;
+        const detail = start.run.error ?? "Rebase failed.";
+        setRebaseSuggestionError(`Rebase needs attention${failedLane ? ` for ${failedLane}` : ""}. ${detail}`);
+        navigate("/prs?tab=rebase");
+        return;
+      }
+
+      if (mode === "local_and_remote") {
+        const laneIds = await requestPushSelection(start.run);
+        if (laneIds == null) return;
+        if (laneIds.length > 0) {
+          await window.ade.lanes.rebasePush({ runId: start.runId, laneIds });
+        }
+      }
+
+      await Promise.all([refreshLanes(), refreshRebaseSuggestions(), refreshAutoRebaseStatuses()]);
     } catch (err) {
-      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setRebaseSuggestionError(message);
+      navigate("/prs?tab=rebase");
     } finally {
-      setRestackBusyLaneId(null);
+      setRebaseBusyLaneId(null);
+    }
+  }, [lanesById, navigate, refreshAutoRebaseStatuses, refreshLanes, refreshRebaseSuggestions, requestPushSelection, requestRebaseScope]);
+
+  const dismissRebaseSuggestion = async (laneId: string) => {
+    setRebaseSuggestionError(null);
+    setRebaseBusyLaneId(laneId);
+    try {
+      await window.ade.lanes.dismissRebaseSuggestion({ laneId });
+      await refreshRebaseSuggestions();
+    } catch (err) {
+      setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRebaseBusyLaneId(null);
     }
   };
 
-  const dismissRestackSuggestion = async (laneId: string) => {
-    setRestackSuggestionError(null);
-    setRestackBusyLaneId(laneId);
+  const deferRebaseSuggestion = async (laneId: string, minutes: number) => {
+    setRebaseSuggestionError(null);
+    setRebaseBusyLaneId(laneId);
     try {
-      await window.ade.lanes.dismissRestackSuggestion({ laneId });
-      await refreshRestackSuggestions();
+      await window.ade.lanes.deferRebaseSuggestion({ laneId, minutes });
+      await refreshRebaseSuggestions();
     } catch (err) {
-      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
+      setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRestackBusyLaneId(null);
-    }
-  };
-
-  const deferRestackSuggestion = async (laneId: string, minutes: number) => {
-    setRestackSuggestionError(null);
-    setRestackBusyLaneId(laneId);
-    try {
-      await window.ade.lanes.deferRestackSuggestion({ laneId, minutes });
-      await refreshRestackSuggestions();
-    } catch (err) {
-      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRestackBusyLaneId(null);
+      setRebaseBusyLaneId(null);
     }
   };
 
   const openAutoRebaseSettings = useCallback(() => { navigate("/settings"); }, [navigate]);
+  const openRebaseDetails = useCallback(() => { navigate("/prs?tab=rebase"); }, [navigate]);
 
   const openRebaseConflictResolver = useCallback((laneId: string, parentLaneId: string | null) => {
     const search = new URLSearchParams({ tab: "merge-one", laneAId: laneId });
@@ -686,6 +892,7 @@ export function LanesPage() {
             lanes={stackGraphLanes}
             selectedLaneId={laneId}
             onSelect={(id) => handleLaneSelect(id, { extend: false })}
+            runtimeByLaneId={laneRuntimeById}
           />
         )
       },
@@ -713,6 +920,9 @@ export function LanesPage() {
             laneId={laneId}
             autoRebaseEnabled={autoRebaseEnabled}
             onOpenSettings={openAutoRebaseSettings}
+            onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
+            onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
+            onViewRebaseDetails={openRebaseDetails}
             onResolveRebaseConflict={openRebaseConflictResolver}
             selectedPath={laneDetail.selectedFilePath}
             selectedMode={laneDetail.selectedFileMode}
@@ -748,7 +958,7 @@ export function LanesPage() {
         children: <LaneInspectorPane laneId={laneId} />
       }
     };
-  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit, expandedGitActionsLaneId, autoRebaseEnabled, openAutoRebaseSettings, openRebaseConflictResolver]);
+  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit, expandedGitActionsLaneId, autoRebaseEnabled, openAutoRebaseSettings, runRebaseFlow, openRebaseDetails, openRebaseConflictResolver, laneRuntimeById]);
 
   /* ---- Render ---- */
 
@@ -887,6 +1097,45 @@ export function LanesPage() {
           ) : null}
         </div>
 
+        <div className="flex shrink-0 items-center gap-1 overflow-x-auto pb-0.5">
+          {([
+            { key: "all", label: "ALL", color: COLORS.accent, count: laneStatusCounts.all },
+            { key: "running", label: "RUNNING", color: COLORS.success, count: laneStatusCounts.running },
+            { key: "awaiting-input", label: "AWAITING INPUT", color: COLORS.warning, count: laneStatusCounts["awaiting-input"] },
+            { key: "ended", label: "ENDED", color: COLORS.danger, count: laneStatusCounts.ended },
+          ] as const).map((chip) => {
+            const active = laneStatusFilter === chip.key;
+            return (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => setLaneStatusFilter(chip.key)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  height: 24,
+                  padding: "0 8px",
+                  fontFamily: MONO_FONT,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: "1px",
+                  textTransform: "uppercase",
+                  border: active ? `1px solid ${chip.color}60` : `1px solid ${COLORS.outlineBorder}`,
+                  background: active ? `${chip.color}20` : "transparent",
+                  color: active ? chip.color : COLORS.textMuted,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+                title={`${chip.count} lane${chip.count === 1 ? "" : "s"}`}
+              >
+                <span>{chip.label}</span>
+                <span style={{ color: active ? chip.color : COLORS.textDim }}>{chip.count}</span>
+              </button>
+            );
+          })}
+        </div>
+
         {/* NEW LANE button + dropdown */}
         <div className="relative shrink-0" ref={addLaneDropdownRef}>
           <button type="button" style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })} disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
@@ -961,8 +1210,14 @@ export function LanesPage() {
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
           const conflictStatus = conflictStatusByLane[lane.id];
           const chips = conflictChipsByLane[lane.id] ?? [];
-          const laneTerminalAttention = terminalAttention.byLaneId[lane.id];
-          const restackSuggestion = restackByLaneId.get(lane.id) ?? null;
+          const laneRuntime = laneRuntimeById.get(lane.id) ?? {
+            bucket: "none",
+            runningCount: 0,
+            awaitingInputCount: 0,
+            endedCount: 0,
+            sessionCount: 0,
+          };
+          const rebaseSuggestion = rebaseByLaneId.get(lane.id) ?? null;
           const autoRebaseStatus = autoRebaseByLaneId.get(lane.id) ?? null;
           const tabNumber = String(index + 1).padStart(2, "0");
 
@@ -1008,19 +1263,25 @@ export function LanesPage() {
                 <span className="shrink-0" style={{ width: 10, height: 10, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
               )}
               {/* Terminal attention spinner */}
-              {laneTerminalAttention?.indicator && laneTerminalAttention.indicator !== "none" ? (
+              {laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input" ? (
                 <span
                   title={
-                    laneTerminalAttention.indicator === "running-needs-attention"
-                      ? `${laneTerminalAttention.needsAttentionCount} terminal${laneTerminalAttention.needsAttentionCount === 1 ? "" : "s"} need input`
-                      : `${laneTerminalAttention.runningCount} terminal${laneTerminalAttention.runningCount === 1 ? "" : "s"} running`
+                    laneRuntime.bucket === "awaiting-input"
+                      ? `${laneRuntime.awaitingInputCount} session${laneRuntime.awaitingInputCount === 1 ? "" : "s"} awaiting input`
+                      : `${laneRuntime.runningCount} session${laneRuntime.runningCount === 1 ? "" : "s"} running`
                   }
                   className="shrink-0 animate-spin"
                   style={{
                     width: 8, height: 8, borderRadius: "50%",
-                    border: `1.5px solid ${laneTerminalAttention.indicator === "running-needs-attention" ? COLORS.warning : COLORS.success}`,
+                    border: `1.5px solid ${laneRuntime.bucket === "awaiting-input" ? COLORS.warning : COLORS.success}`,
                     borderTopColor: "transparent",
                   }}
+                />
+              ) : laneRuntime.bucket === "ended" ? (
+                <span
+                  title={`${laneRuntime.endedCount} ended session${laneRuntime.endedCount === 1 ? "" : "s"}`}
+                  className="shrink-0"
+                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
                 />
               ) : null}
               {/* Lane name */}
@@ -1038,14 +1299,14 @@ export function LanesPage() {
                   color: COLORS.accent, background: `${COLORS.accent}30`,
                 }}>{lane.branchRef}</span>
               ) : null}
-              {/* Behind badge (restack suggestion) */}
-              {restackSuggestion ? (
+              {/* Behind badge (rebase suggestion) */}
+              {rebaseSuggestion ? (
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px",
                   fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
                   color: COLORS.warning, background: `${COLORS.warning}18`,
-                }} title={`Behind parent by ${restackSuggestion.behindCount} commit(s)`}>
-                  ↑{restackSuggestion.behindCount}
+                }} title={`Behind parent by ${rebaseSuggestion.behindCount} commit(s)`}>
+                  ↑{rebaseSuggestion.behindCount}
                 </span>
               ) : null}
               {/* Pinned badge */}
@@ -1127,17 +1388,19 @@ export function LanesPage() {
         })}
       </div>
 
-      {/* Restack / auto-rebase banners */}
-      <LaneRestackBanner
-        visibleRestackSuggestions={visibleRestackSuggestions}
+      {/* Rebase / auto-rebase banners */}
+      <LaneRebaseBanner
+        visibleRebaseSuggestions={visibleRebaseSuggestions}
         visibleAutoRebaseNeedsAttention={visibleAutoRebaseNeedsAttention}
         showAutoRebaseSettingsHint={showAutoRebaseSettingsHint}
         lanesById={lanesById}
-        restackBusyLaneId={restackBusyLaneId}
-        restackSuggestionError={restackSuggestionError}
-        onRestackNow={(laneId) => { void restackNow(laneId); }}
-        onDismissRestack={(laneId) => { void dismissRestackSuggestion(laneId); }}
-        onDeferRestack={(laneId, minutes) => { void deferRestackSuggestion(laneId, minutes); }}
+        rebaseBusyLaneId={rebaseBusyLaneId}
+        rebaseSuggestionError={rebaseSuggestionError}
+        onRebaseNowLocal={(laneId) => { void runRebaseFlow(laneId, "local_only"); }}
+        onRebaseAndPush={(laneId) => { void runRebaseFlow(laneId, "local_and_remote"); }}
+        onViewRebaseDetails={openRebaseDetails}
+        onDismissRebase={(laneId) => { void dismissRebaseSuggestion(laneId); }}
+        onDeferRebase={(laneId, minutes) => { void deferRebaseSuggestion(laneId, minutes); }}
         onOpenAutoRebaseSettings={openAutoRebaseSettings}
         onOpenRebaseConflictResolver={openRebaseConflictResolver}
       />
@@ -1179,7 +1442,13 @@ export function LanesPage() {
           ) : (
             <EmptyState
               title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
-              description={filteredLanes.length === 0 ? "Adjust the lane filter." : "Select a lane tab to begin."}
+              description={
+                filteredLanes.length === 0
+                  ? laneStatusFilter === "all"
+                    ? "Adjust the lane filter."
+                    : "Try a different status filter or adjust the lane filter."
+                  : "Select a lane tab to begin."
+              }
             />
           )}
         </div>
@@ -1309,6 +1578,110 @@ export function LanesPage() {
         setAttachPath={setAttachPath}
         onSubmit={handleAttachSubmit}
       />
+
+      {rebaseScopePrompt ? (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div style={{ width: "min(520px, 100%)", background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+            <div style={{ ...LABEL_STYLE, color: COLORS.accent }}>REBASE SCOPE</div>
+            <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
+              Choose how to rebase <strong>{rebaseScopePrompt.laneName}</strong>.
+            </div>
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <button
+                type="button"
+                style={outlineButton({ height: 34, padding: "0 10px", fontSize: 11 })}
+                onClick={() => {
+                  rebaseScopePrompt.resolve("lane_only");
+                  setRebaseScopePrompt(null);
+                }}
+              >
+                CURRENT LANE ONLY
+              </button>
+              <button
+                type="button"
+                style={primaryButton({ height: 34, padding: "0 10px", fontSize: 11 })}
+                onClick={() => {
+                  rebaseScopePrompt.resolve("lane_and_descendants");
+                  setRebaseScopePrompt(null);
+                }}
+              >
+                LANE + CHILDREN
+              </button>
+            </div>
+            <div className="flex justify-end" style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 10 })}
+                onClick={() => {
+                  rebaseScopePrompt.resolve(null);
+                  setRebaseScopePrompt(null);
+                }}
+              >
+                CANCEL
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {rebasePushReview ? (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div style={{ width: "min(620px, 100%)", background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+            <div style={{ ...LABEL_STYLE, color: COLORS.accent }}>REVIEW THEN PUSH</div>
+            <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
+              Select rebased lanes to push to remote.
+            </div>
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8, maxHeight: 240, overflowY: "auto" }}>
+              {rebasePushReview.lanes.map((lane) => (
+                <label
+                  key={lane.laneId}
+                  className="flex items-center gap-2"
+                  style={{ fontSize: 12, color: COLORS.textSecondary, border: `1px solid ${COLORS.border}`, padding: "8px 10px" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={lane.selected}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setRebasePushReview((prev) => {
+                        if (!prev) return prev;
+                        return {
+                          ...prev,
+                          lanes: prev.lanes.map((entry) => entry.laneId === lane.laneId ? { ...entry, selected: checked } : entry)
+                        };
+                      });
+                    }}
+                  />
+                  <span className="truncate">{lane.laneName}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center justify-end gap-2" style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 10 })}
+                onClick={() => {
+                  rebasePushReview.resolve(null);
+                  setRebasePushReview(null);
+                }}
+              >
+                CANCEL
+              </button>
+              <button
+                type="button"
+                style={primaryButton({ height: 30, padding: "0 10px", fontSize: 10 })}
+                onClick={() => {
+                  const laneIds = rebasePushReview.lanes.filter((lane) => lane.selected).map((lane) => lane.laneId);
+                  rebasePushReview.resolve(laneIds);
+                  setRebasePushReview(null);
+                }}
+              >
+                PUSH SELECTED
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

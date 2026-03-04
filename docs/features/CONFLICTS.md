@@ -38,7 +38,7 @@ proactive, guided workflow. Developers can see at a glance which lanes are safe 
 merge, which ones are drifting from the base branch, and which pairs of lanes are
 on a collision course.
 
-**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5). Resolution proposals via AI agent SDKs (diff preview, apply, undo) are **implemented** (Phase 6). External CLI resolution (Codex/Claude), active merge/rebase conflict management, restack suggestion integration, merge-plan workflows, and integration lane creation are **implemented** (Phase 8).
+**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5). Resolution proposals via AI agent SDKs (diff preview, apply, undo) are **implemented** (Phase 6). External CLI resolution (Codex/Claude), active merge/rebase conflict management, rebase suggestion integration, merge-plan workflows, and integration lane creation are **implemented** (Phase 8).
 
 ### Roadmap Alignment (Final Plan)
 
@@ -212,12 +212,12 @@ The layout uses `PaneTilingLayout` (a recursive `react-resizable-panels` tree), 
 - Sort by: risk level (highest first), then lane name
 - Click a lane to populate the center panel with its conflict summary
 - **Status filter chips** at the top: conflict / at-risk / clean / unknown — click to toggle filtering. Each chip shows the count of lanes in that category.
-- Restack suggestion badges appear on lanes whose parent has advanced (amber "restack" chip with behind-count tooltip)
+- Rebase suggestion badges appear on lanes whose parent has advanced (amber "rebase" chip with behind-count tooltip)
 
 **Center-top pane — Conflict detail** (for selected lane):
 
 - **Lane header**: Branch ref, base ref, parent lane (if stacked), with Open Folder and Refresh buttons
-- **Restack suggestion**: When a lane's parent has advanced, an amber banner offers "Restack now", "Defer 1h", "Defer 1d", and "Dismiss" actions
+- **Rebase suggestion**: When a lane's parent has advanced, an amber banner offers "Rebase now", "Defer 1h", "Defer 1d", and "Dismiss" actions
 - **Active Merge/Rebase panel**: Detects in-progress git merge or rebase via `git.getConflictState`. Shows conflicted file list (with red dots), Continue button (enabled when all conflicts resolved), and Abort button (with "type ABORT" confirmation dialog). When a merge-plan merge is paused on conflicts, the panel shows which source lane is blocked.
 - **Conflict summary** (`ConflictSummary` component): Lane status, overlapping file count, peer conflict count, last predicted timestamp, and per-peer overlap cards with risk level coloring and file lists
 - **Merge simulation panel** (`MergeSimulationPanel` component): Select two lanes (or lane + base), run simulation, see outcome (clean/conflict/error), diff stats, and per-file conflict marker previews via `ConflictFileDiff`
@@ -530,7 +530,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 | Database schema | `conflict_predictions` + `conflict_proposals` tables with SHA tracking, expiry, and proposal lifecycle |
 | Git merge-tree integration | Dry-merge via `git merge-tree` for zero-side-effect conflict detection |
 | External resolver infrastructure | Run artifacts at `.ade/packs/external-resolver-runs/<runId>/`, JSON run records (`ade.conflictExternalRun.v1`), pack ref building, context gap detection, commit workflow |
-| Restack suggestion integration | `restackSuggestionService.ts` — detects parent-advanced children, dismiss/defer/emit lifecycle, integrated into ConflictsPage |
+| Rebase suggestion integration | `rebaseSuggestionService.ts` — detects parent-advanced children, dismiss/defer/emit lifecycle, integrated into ConflictsPage |
 | Phase 4/5 gap resolution | G3 (risk tooltip hover details), G4 (conflict file diff language detection), G5 (batch conflict assessment) — all resolved |
 
 ### Prediction Engine
@@ -586,7 +586,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | DONE — Phase 7 (ConflictsPage restack suggestions + merge-plan workflows with stack-aware ordering) |
+| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | DONE — Phase 7 (ConflictsPage rebase suggestions + merge-plan workflows with stack-aware ordering) |
 | CONF-023 | Batch conflict assessment (all-lanes report) | DONE (batch conflict assessment implemented) |
 | CONF-024 | Conflict notification/alerts (in-app and system) | TODO — **moved to Phase 9** |
 
@@ -601,7 +601,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 | CONF-029 | External resolver run history | DONE — Phase 8 (`listExternalResolverRuns`, run artifacts at `.ade/packs/external-resolver-runs/`) |
 | CONF-030 | Merge-plan UI (sequential multi-lane merge) | DONE — Phase 8 (target lane selection, source checkboxes, stack-depth ordering, pause on conflicts) |
 | CONF-031 | Integration lane creation from Conflicts tab | DONE — Phase 8 (create child lane as merge target, auto-selects and initializes merge plan) |
-| CONF-032 | Restack suggestion integration in Conflicts tab | DONE — Phase 8 (restack banner with Restack Now / Defer / Dismiss, via `restackSuggestionService`) |
+| CONF-032 | Rebase suggestion integration in Conflicts tab | DONE — Phase 8 (rebase banner with Rebase Now / Defer / Dismiss, via `rebaseSuggestionService`) |
 | CONF-033 | PaneTilingLayout for Conflicts page | DONE — Phase 8 (4-pane layout: lanes, conflict-detail, resolution, risk-matrix) |
 | CONF-034 | Proposal apply modes (unstaged/staged/commit) | DONE — Phase 8 (radio selector for apply mode, optional commit message) |
 | CONF-035 | Proposal apply + auto-continue | DONE — Phase 8 (apply patch then auto-continue rebase/merge if canContinue) |
@@ -617,7 +617,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 
 **Phase 6 (AI Resolution Proposals) completed**: CONF-017 through CONF-021 (AI-powered resolution proposals) are fully implemented. AI integration service generates conflict proposals locally via AgentExecutor (Claude or Codex CLI). Proposals are generated on-device via one-shot SDK calls, presented in the Conflicts tab with diff preview, confidence scoring, user configuration options (change target, post-resolution action, PR behavior, autonomy level), apply (with operation record), and undo capabilities.
 
-**Phase 8 (Active Conflict Management) completed**: CONF-025 through CONF-038. Active merge/rebase conflict detection and management, external CLI resolution (Codex/Claude) with context validation and commit workflow, merge-plan sequential merge UI, integration lane creation, restack suggestions, PaneTilingLayout, proposal apply modes, batch progress tracking, and risk matrix animations are all operational.
+**Phase 8 (Active Conflict Management) completed**: CONF-025 through CONF-038. Active merge/rebase conflict detection and management, external CLI resolution (Codex/Claude) with context validation and commit workflow, merge-plan sequential merge UI, integration lane creation, rebase suggestions, PaneTilingLayout, proposal apply modes, batch progress tracking, and risk matrix animations are all operational.
 
 **Remaining tasks** are scheduled as follows:
 - **Phase 9 (Advanced Features)**: CONF-024 (conflict notifications)

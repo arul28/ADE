@@ -275,7 +275,7 @@ export function TopBar({
                           : `${terminalAttention.runningCount} running terminal${terminalAttention.runningCount === 1 ? "" : "s"}`
                       }
                       className={cn(
-                        "ade-status-dot h-1.5 w-1.5 shrink-0",
+                        "ade-status-dot h-1.5 w-1.5 shrink-0 animate-spin",
                         terminalAttention.indicator === "running-needs-attention"
                           ? "ade-status-dot-warning"
                           : "ade-status-dot-active"

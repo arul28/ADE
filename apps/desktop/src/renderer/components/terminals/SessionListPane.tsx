@@ -1,9 +1,10 @@
 import React from "react";
 import { Terminal } from "@phosphor-icons/react";
-import type { TerminalSessionSummary, TerminalSessionStatus } from "../../../shared/types";
+import type { TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaunchPanel } from "./LaunchPanel";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import type { WorkStatusFilter } from "../../state/appStore";
 
 /* ── inline style helpers ─────────────────────────────────────────── */
 
@@ -39,7 +40,7 @@ const chipInactive: React.CSSProperties = {
 
 function statusPillStyle(
   active: boolean,
-  variant: "all" | "running" | "ended",
+  variant: "all" | "running" | "awaiting-input" | "ended",
 ): React.CSSProperties {
   if (!active) {
     return {
@@ -64,12 +65,19 @@ function statusPillStyle(
         background: `${COLORS.success}18`,
         border: `1px solid ${COLORS.success}30`,
       };
+    case "awaiting-input":
+      return {
+        ...chipBase,
+        color: COLORS.warning,
+        background: `${COLORS.warning}18`,
+        border: `1px solid ${COLORS.warning}30`,
+      };
     case "ended":
       return {
         ...chipBase,
-        color: COLORS.info,
-        background: `${COLORS.info}15`,
-        border: `1px solid ${COLORS.info}30`,
+        color: COLORS.danger,
+        background: `${COLORS.danger}15`,
+        border: `1px solid ${COLORS.danger}30`,
       };
   }
 }
@@ -121,6 +129,7 @@ export function SessionListPane({
   lanes,
   filtered,
   runningFiltered,
+  awaitingInputFiltered,
   endedFiltered,
   loading: _loading,
   filterLaneId,
@@ -141,12 +150,13 @@ export function SessionListPane({
   lanes: { id: string; name: string }[];
   filtered: TerminalSessionSummary[];
   runningFiltered: TerminalSessionSummary[];
+  awaitingInputFiltered: TerminalSessionSummary[];
   endedFiltered: TerminalSessionSummary[];
   loading: boolean;
   filterLaneId: string;
   setFilterLaneId: (v: string) => void;
-  filterStatus: TerminalSessionStatus | "all";
-  setFilterStatus: (v: TerminalSessionStatus | "all") => void;
+  filterStatus: WorkStatusFilter;
+  setFilterStatus: (v: WorkStatusFilter) => void;
   q: string;
   setQ: (v: string) => void;
   selectedSessionId: string | null;
@@ -161,7 +171,8 @@ export function SessionListPane({
   const statusOptions = [
     { value: "all" as const, label: "ALL", variant: "all" as const },
     { value: "running" as const, label: "RUNNING", variant: "running" as const },
-    { value: "completed" as const, label: "ENDED", variant: "ended" as const },
+    { value: "awaiting-input" as const, label: "AWAITING INPUT", variant: "awaiting-input" as const },
+    { value: "ended" as const, label: "ENDED", variant: "ended" as const },
   ];
 
   return (
@@ -209,7 +220,7 @@ export function SessionListPane({
               key={opt.value}
               type="button"
               style={statusPillStyle(filterStatus === opt.value, opt.variant)}
-              onClick={() => setFilterStatus(opt.value === "completed" ? opt.value : opt.value as TerminalSessionStatus | "all")}
+              onClick={() => setFilterStatus(opt.value)}
             >
               {opt.label}
             </button>
@@ -324,26 +335,68 @@ export function SessionListPane({
               </div>
             )}
 
+            {/* Awaiting input group */}
+            {awaitingInputFiltered.length > 0 && (
+              <div className={runningFiltered.length > 0 ? "mt-4" : ""}>
+                <div style={groupHeaderBg}>
+                  <span
+                    className="animate-spin"
+                    style={{
+                      height: 6,
+                      width: 6,
+                      borderRadius: 0,
+                      border: `1.5px solid ${COLORS.warning}`,
+                      borderTopColor: "transparent",
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ ...groupLabelBase, color: COLORS.warning }}>
+                    AWAITING INPUT &middot; {awaitingInputFiltered.length}
+                  </span>
+                  <span
+                    style={{
+                      ...headerLineBase,
+                      background: `linear-gradient(to right, ${COLORS.warning}40, transparent)`,
+                    }}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  {awaitingInputFiltered.map((s) => (
+                    <SessionCard
+                      key={s.id}
+                      session={s}
+                      isSelected={selectedSessionId === s.id}
+                      onSelect={onSelectSession}
+                      onResume={() => onResume(s)}
+                      onInfoClick={(e) => onInfoClick(s, e)}
+                      onContextMenu={(e) => { e.preventDefault(); onContextMenu(s, e); }}
+                      resumingSessionId={resumingSessionId}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Ended group */}
             {endedFiltered.length > 0 && (
-              <div className={runningFiltered.length > 0 ? "mt-4" : ""}>
+              <div className={runningFiltered.length > 0 || awaitingInputFiltered.length > 0 ? "mt-4" : ""}>
                 <div style={groupHeaderBg}>
                   <span
                     style={{
                       height: 6,
                       width: 6,
                       borderRadius: 0,
-                      background: COLORS.textDim,
+                      background: COLORS.danger,
                       flexShrink: 0,
                     }}
                   />
-                  <span style={{ ...groupLabelBase, color: COLORS.textMuted }}>
+                  <span style={{ ...groupLabelBase, color: COLORS.danger }}>
                     ENDED &middot; {endedFiltered.length}
                   </span>
                   <span
                     style={{
                       ...headerLineBase,
-                      background: `linear-gradient(to right, ${COLORS.textMuted}30, transparent)`,
+                      background: `linear-gradient(to right, ${COLORS.danger}30, transparent)`,
                     }}
                   />
                 </div>

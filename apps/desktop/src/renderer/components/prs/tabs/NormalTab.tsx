@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRight, Eye, Sparkle, Trash, GitBranch, GitMerge, Plus, Minus, CheckCircle, XCircle, Circle, GithubLogo } from "@phosphor-icons/react";
+import { ArrowRight, Eye, Sparkle, Trash, GitBranch, GitMerge, Plus, Minus, CheckCircle, XCircle, Circle, GithubLogo, CircleNotch } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   LandResult,
@@ -101,16 +101,38 @@ type NormalTabProps = {
   onRefresh: () => Promise<void>;
 };
 
+type BackgroundResolverSession = {
+  ptyId: string;
+  sessionId: string;
+  provider: "codex" | "claude";
+  startedAt: string;
+  exitCode: number | null;
+};
+
 export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh }: NormalTabProps) {
   const navigate = useNavigate();
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
-  const { detailStatus, detailChecks, detailReviews, detailComments, detailBusy, rebaseNeeds, autoRebaseStatuses, setActiveTab } = usePrs();
+  const {
+    detailStatus,
+    detailChecks,
+    detailReviews,
+    detailComments,
+    detailBusy,
+    rebaseNeeds,
+    autoRebaseStatuses,
+    setActiveTab,
+    resolverModel,
+    resolverReasoningLevel,
+    setResolverModel,
+    setResolverReasoningLevel
+  } = usePrs();
 
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
   const [resolverOpen, setResolverOpen] = React.useState(false);
+  const [backgroundSession, setBackgroundSession] = React.useState<BackgroundResolverSession | null>(null);
   const [deleteConfirm, setDeleteConfirm] = React.useState(false);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
   const [deleteCloseGh, setDeleteCloseGh] = React.useState(false);
@@ -124,7 +146,25 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId,
     onSelectPr(prs[0]?.id ?? null);
   }, [prs, selectedPrId, onSelectPr]);
 
-  React.useEffect(() => { setActionBusy(false); setActionError(null); setActionResult(null); setDeleteConfirm(false); }, [selectedPrId]);
+  React.useEffect(() => {
+    setActionBusy(false);
+    setActionError(null);
+    setActionResult(null);
+    setDeleteConfirm(false);
+    setBackgroundSession(null);
+  }, [selectedPrId]);
+
+  React.useEffect(() => {
+    if (!backgroundSession?.ptyId) return;
+    const unsubscribe = window.ade.pty.onExit((event) => {
+      if (event.ptyId !== backgroundSession.ptyId) return;
+      setBackgroundSession((prev) => {
+        if (!prev || prev.ptyId !== event.ptyId) return prev;
+        return { ...prev, exitCode: event.exitCode ?? -1 };
+      });
+    });
+    return unsubscribe;
+  }, [backgroundSession?.ptyId]);
 
   const resolverTargetLaneId = React.useMemo(() => {
     if (!selectedPr) return null;
@@ -608,6 +648,64 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId,
               </button>
             </div>
 
+            {backgroundSession && !resolverOpen ? (
+              <div
+                className="flex items-center justify-between gap-2"
+                style={{ marginTop: 10, padding: "8px 10px", background: "#A78BFA10", border: "1px solid #A78BFA30" }}
+              >
+                <div className="flex items-center gap-2" style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#A1A1AA" }}>
+                  {backgroundSession.exitCode == null ? (
+                    <CircleNotch size={12} className="animate-spin" style={{ color: "#A78BFA" }} />
+                  ) : (
+                    <CheckCircle size={12} style={{ color: backgroundSession.exitCode === 0 ? "#22C55E" : "#F59E0B" }} />
+                  )}
+                  {backgroundSession.exitCode == null
+                    ? "AI resolver running in background."
+                    : (backgroundSession.exitCode === 0 ? "Background AI resolver finished." : "Background AI resolver exited with errors.")}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setResolverOpen(true)}
+                    style={{
+                      height: 26,
+                      padding: "0 10px",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      fontFamily: "JetBrains Mono, monospace",
+                      letterSpacing: "1px",
+                      color: "#A78BFA",
+                      border: "1px solid #A78BFA30",
+                      background: "transparent",
+                      cursor: "pointer",
+                    }}
+                  >
+                    REOPEN RUN
+                  </button>
+                  {backgroundSession.exitCode != null ? (
+                    <button
+                      type="button"
+                      onClick={() => setBackgroundSession(null)}
+                      style={{
+                        height: 26,
+                        padding: "0 10px",
+                        fontSize: 10,
+                        fontWeight: 700,
+                        fontFamily: "JetBrains Mono, monospace",
+                        letterSpacing: "1px",
+                        color: "#71717A",
+                        border: "1px solid #27272A",
+                        background: "transparent",
+                        cursor: "pointer",
+                      }}
+                    >
+                      DISMISS
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
             {/* Delete confirmation */}
             {deleteConfirm && (
               <div style={{ marginTop: 12, background: "#EF444408", border: "1px solid #EF444420", padding: 14 }}>
@@ -690,7 +788,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId,
             )}
           </div>
 
-          {resolverOpen && resolverTargetLaneId && (
+          {resolverTargetLaneId ? (
             <ResolverTerminalModal
               open={resolverOpen}
               onOpenChange={setResolverOpen}
@@ -698,9 +796,22 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId,
               targetLaneId={resolverTargetLaneId}
               cwdLaneId={resolverTargetLaneId}
               scenario="single-merge"
-              onCompleted={() => void onRefresh()}
+              sourceTab="normal"
+              initialModel={resolverModel}
+              initialReasoningEffort={resolverReasoningLevel}
+              onModelChange={(model, effort) => {
+                setResolverModel(model);
+                setResolverReasoningLevel(effort ?? resolverReasoningLevel);
+              }}
+              onBackgroundSession={(session) => {
+                setBackgroundSession({ ...session, exitCode: null });
+              }}
+              onCompleted={() => {
+                setBackgroundSession(null);
+                void onRefresh();
+              }}
             />
-          )}
+          ) : null}
         </div>
       ) : (
         <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", background: "#0F0D14" }}>

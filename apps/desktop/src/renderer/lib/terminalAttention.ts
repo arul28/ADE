@@ -1,6 +1,9 @@
 import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary } from "../../shared/types";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
+export type SessionStatusFilter = "all" | "running" | "awaiting-input" | "ended";
+export type SessionUiState = "running-active" | "running-needs-attention" | "ended";
+export type SessionStatusBucket = Exclude<SessionStatusFilter, "all">;
 
 export type LaneTerminalAttentionSummary = {
   runningCount: number;
@@ -67,14 +70,35 @@ export function sessionIndicatorState(args: {
   status: TerminalSessionStatus;
   lastOutputPreview: string | null;
   runtimeState?: TerminalRuntimeState;
-}): "running-active" | "running-needs-attention" | "completed" | "failed" | "disposed" {
+}): SessionUiState {
   if (args.status === "running") {
     if (args.runtimeState === "waiting-input") return "running-needs-attention";
     return runningSessionNeedsAttention(args.lastOutputPreview) ? "running-needs-attention" : "running-active";
   }
-  if (args.status === "failed") return "failed";
-  if (args.status === "disposed") return "disposed";
-  return "completed";
+  return "ended";
+}
+
+export function sessionStatusBucket(args: {
+  status: TerminalSessionStatus;
+  lastOutputPreview: string | null;
+  runtimeState?: TerminalRuntimeState;
+}): SessionStatusBucket {
+  const state = sessionIndicatorState(args);
+  if (state === "running-active") return "running";
+  if (state === "running-needs-attention") return "awaiting-input";
+  return "ended";
+}
+
+export function sessionMatchesStatusFilter(
+  args: {
+    status: TerminalSessionStatus;
+    lastOutputPreview: string | null;
+    runtimeState?: TerminalRuntimeState;
+  },
+  filter: SessionStatusFilter,
+): boolean {
+  if (filter === "all") return true;
+  return sessionStatusBucket(args) === filter;
 }
 
 export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): TerminalAttentionSummary {
@@ -84,13 +108,16 @@ export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): 
   const byLane: Record<string, { runningCount: number; activeCount: number; needsAttentionCount: number }> = {};
 
   for (const session of sessions) {
-    if (session.status !== "running" || !session.ptyId) continue;
+    const indicator = sessionIndicatorState({
+      status: session.status,
+      lastOutputPreview: session.lastOutputPreview,
+      runtimeState: session.runtimeState,
+    });
+    if (indicator === "ended") continue;
     const lane = byLane[session.laneId] ?? { runningCount: 0, activeCount: 0, needsAttentionCount: 0 };
     lane.runningCount += 1;
     runningCount += 1;
-    const needsAttention =
-      session.runtimeState === "waiting-input" || runningSessionNeedsAttention(session.lastOutputPreview);
-    if (needsAttention) {
+    if (indicator === "running-needs-attention") {
       lane.needsAttentionCount += 1;
       needsAttentionCount += 1;
     } else {

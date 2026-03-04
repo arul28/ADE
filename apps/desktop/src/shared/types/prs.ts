@@ -393,6 +393,50 @@ export type StartIntegrationResolutionResult = {
   integrationLaneId: string;
 };
 
+export type AiPermissionMode = "read_only" | "guarded_edit" | "full_edit";
+
+export type PrAiResolutionContext = {
+  sourceTab: "rebase" | "normal" | "integration" | "conflicts";
+  sourceLaneId?: string | null;
+  targetLaneId?: string | null;
+  proposalId?: string | null;
+  integrationLaneId?: string | null;
+  laneId?: string | null;
+  scenario?: "single-merge" | "sequential-merge" | "integration-merge";
+};
+
+export type PrAiResolutionStartArgs = {
+  context: PrAiResolutionContext;
+  model: string;
+  reasoning?: string | null;
+  permissionMode?: AiPermissionMode;
+};
+
+export type PrAiResolutionStartResult = {
+  sessionId: string;
+  provider: "codex" | "claude";
+  ptyId: string | null;
+  status: "started" | "failed";
+  error: string | null;
+  context: PrAiResolutionContext;
+};
+
+export type PrAiResolutionInputArgs = {
+  sessionId: string;
+  text: string;
+};
+
+export type PrAiResolutionStopArgs = {
+  sessionId: string;
+};
+
+export type PrAiResolutionEventPayload = {
+  sessionId: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  message: string | null;
+  timestamp: string;
+};
+
 export type RecheckIntegrationStepArgs = {
   proposalId: string;
   laneId: string;

@@ -24,11 +24,10 @@ const tabTrigger =
 
 const DEFAULT_PROFILE_IDS = ["claude", "codex", "shell"] as const;
 
-function statusDot(status: string) {
-  if (status === "running") return "border-2 border-emerald-500 border-t-transparent bg-transparent";
-  if (status === "failed") return "bg-red-700";
-  if (status === "disposed") return "bg-red-400/80";
-  return "bg-border";
+function statusDot(indicator: ReturnType<typeof sessionIndicatorState>) {
+  if (indicator === "running-active") return "border-2 border-emerald-500 border-t-transparent bg-transparent";
+  if (indicator === "running-needs-attention") return "border-2 border-amber-400 border-t-transparent bg-transparent";
+  return "bg-red-500";
 }
 
 function sessionTabLabel(session: TerminalSessionSummary): string {
@@ -354,10 +353,8 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                 lastOutputPreview: s.lastOutputPreview,
                 runtimeState: s.runtimeState
               });
-              const dotClass = indicator === "running-needs-attention"
-                ? "border-2 border-amber-400 border-t-transparent bg-transparent"
-                : statusDot(s.status);
-              const dotSpin = !profileColor && (indicator === "running-active" || indicator === "running-needs-attention");
+              const dotClass = statusDot(indicator);
+              const dotSpin = !profileColor && indicator !== "ended";
               return (
               <Tabs.Trigger key={s.id} className={cn(tabTrigger)} value={s.id}>
                 <span

@@ -42,7 +42,7 @@ function classifyStatus(status: ConflictStatus["status"] | undefined): Exclude<L
 export function LaneListPane() {
   const lanes = useAppStore((s) => s.lanes);
   const dispatch = useConflictsDispatch();
-  const { batch, selectedLaneId, statusFilter, laneListView, restackSuggestions, prsWithConflicts, prsLoading } =
+  const { batch, selectedLaneId, statusFilter, laneListView, rebaseSuggestions, prsWithConflicts, prsLoading } =
     useConflictsState();
 
   const statusByLane = React.useMemo(() => {
@@ -51,11 +51,11 @@ export function LaneListPane() {
     return map;
   }, [batch]);
 
-  const restackByLaneId = React.useMemo(() => {
-    const map = new Map<string, (typeof restackSuggestions)[0]>();
-    for (const s of restackSuggestions) map.set(s.laneId, s);
+  const rebaseByLaneId = React.useMemo(() => {
+    const map = new Map<string, (typeof rebaseSuggestions)[0]>();
+    for (const s of rebaseSuggestions) map.set(s.laneId, s);
     return map;
-  }, [restackSuggestions]);
+  }, [rebaseSuggestions]);
 
   const sortedLanes = React.useMemo(() => {
     return [...lanes].sort((a, b) => {
@@ -143,7 +143,7 @@ export function LaneListPane() {
           {filteredLanes.map((lane) => {
             const status = statusByLane.get(lane.id) ?? null;
             const selected = lane.id === selectedLaneId;
-            const restack = restackByLaneId.get(lane.id) ?? null;
+            const rebase = rebaseByLaneId.get(lane.id) ?? null;
             return (
               <button
                 key={lane.id}
@@ -163,13 +163,13 @@ export function LaneListPane() {
                 <div className="flex items-center gap-2">
                   <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full ring-2 ring-black/20", statusDotClass(status?.status ?? null))} />
                   <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
-                  {restack && (
+                  {rebase && (
                     <span
                       className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[11px] font-medium text-amber-200 ring-1 ring-inset ring-amber-500/30"
-                      title={`Parent advanced; behind ${restack.behindCount} commit(s).`}
+                      title={`Parent advanced; behind ${rebase.behindCount} commit(s).`}
                     >
                       <ArrowsClockwise size={10} />
-                      restack
+                      rebase
                     </span>
                   )}
                 </div>

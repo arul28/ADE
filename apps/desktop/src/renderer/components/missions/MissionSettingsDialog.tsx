@@ -11,10 +11,9 @@ import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "
 import {
   type MissionSettingsDraft,
   type PlannerProvider,
-  toApiPermissionMode,
-  toClaudePermissionMode,
-  toCodexApprovalMode,
-  toCodexSandboxPermissions,
+  toCliMode,
+  toCliSandboxPermissions,
+  toInProcessMode,
   toTeammatePlanMode,
 } from "./missionHelpers";
 
@@ -244,7 +243,7 @@ function PhaseProfileCard({
                     name: `Custom Phase ${prev.length + 1}`,
                     description: "",
                     instructions: "",
-                    model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+                    model: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
                     budget: {},
                     orderingConstraints: {},
                     askQuestions: { enabled: false, mode: "never" },
@@ -430,82 +429,46 @@ export function MissionSettingsDialog({
 
           <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
             <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>WORKER PERMISSIONS</div>
-            <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>CLAUDE WORKER</div>
+                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>CLI WORKERS</div>
                 <label className="text-xs block">
-                  <div style={settingsLabelStyle}>PERMISSION MODE</div>
+                  <div style={settingsLabelStyle}>MODE</div>
                   <select
                     style={settingsInputStyle}
-                    value={draft.claudePermissionMode}
-                    disabled={draft.claudeDangerouslySkip}
-                    onChange={(e) => onDraftChange({ claudePermissionMode: toClaudePermissionMode(e.target.value) })}
+                    value={draft.cliMode}
+                    onChange={(e) => onDraftChange({ cliMode: toCliMode(e.target.value) })}
                   >
-                    <option value="default">Ask Permissions</option>
-                    <option value="acceptEdits">Accept Edits</option>
-                    <option value="plan">Plan Mode</option>
-                    <option value="bypassPermissions">Bypass Permissions</option>
+                    <option value="read-only">Read-only</option>
+                    <option value="edit">Edit</option>
+                    <option value="full-auto">Full-auto</option>
                   </select>
                 </label>
-                <label className="flex items-center gap-2 text-xs" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
-                  <input
-                    type="checkbox"
-                    checked={draft.claudeDangerouslySkip}
-                    onChange={(e) => onDraftChange({ claudeDangerouslySkip: e.target.checked })}
-                  />
-                  Dangerously skip permissions
-                </label>
-                <div className="text-[11px]" style={{ color: COLORS.textMuted }}>
-                  Claude workers read `CLAUDE.md` and `.claude/settings.json` from the lane repository root.
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>CODEX WORKER</div>
                 <label className="text-xs block">
                   <div style={settingsLabelStyle}>SANDBOX MODE</div>
                   <select
                     style={settingsInputStyle}
-                    value={draft.codexSandboxPermissions}
-                    onChange={(e) => onDraftChange({ codexSandboxPermissions: toCodexSandboxPermissions(e.target.value) })}
+                    value={draft.cliSandboxPermissions}
+                    onChange={(e) => onDraftChange({ cliSandboxPermissions: toCliSandboxPermissions(e.target.value) })}
                   >
                     <option value="read-only">Read-only</option>
                     <option value="workspace-write">Workspace write</option>
                     <option value="danger-full-access">Full access (dangerous)</option>
                   </select>
                 </label>
-                <label className="text-xs block">
-                  <div style={settingsLabelStyle}>APPROVAL MODE</div>
-                  <select
-                    style={settingsInputStyle}
-                    value={draft.codexApprovalMode}
-                    onChange={(e) => onDraftChange({ codexApprovalMode: toCodexApprovalMode(e.target.value) })}
-                  >
-                    <option value="suggest">Suggest</option>
-                    <option value="auto-edit">Auto-edit</option>
-                    <option value="full-auto">Full auto</option>
-                  </select>
-                </label>
-                <label className="text-xs block">
-                  <div style={settingsLabelStyle}>CONFIG TOML PATH</div>
-                  <input
-                    type="text"
-                    style={settingsInputStyle}
-                    value={draft.codexConfigPath}
-                    onChange={(e) => onDraftChange({ codexConfigPath: e.target.value })}
-                    placeholder="e.g. /Users/you/.config/codex/config.toml"
-                  />
-                </label>
+                <div className="text-[11px]" style={{ color: COLORS.textMuted }}>
+                  Applies to CLI-wrapped workers regardless of provider.
+                </div>
               </div>
 
               <div className="space-y-2">
-                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>API MODELS</div>
+                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>IN-PROCESS WORKERS</div>
                 <label className="text-xs block">
-                  <div style={settingsLabelStyle}>PERMISSION MODE</div>
+                  <div style={settingsLabelStyle}>MODE</div>
                   <select
                     style={settingsInputStyle}
-                    value={draft.apiPermissionMode}
-                    onChange={(e) => onDraftChange({ apiPermissionMode: toApiPermissionMode(e.target.value) })}
+                    value={draft.inProcessMode}
+                    onChange={(e) => onDraftChange({ inProcessMode: toInProcessMode(e.target.value) })}
                   >
                     <option value="plan">Plan (read-only)</option>
                     <option value="edit">Edit (no shell)</option>
@@ -518,9 +481,8 @@ export function MissionSettingsDialog({
               </div>
             </div>
             {(
-              (draft.claudePermissionMode !== "bypassPermissions" && !draft.claudeDangerouslySkip) ||
-              draft.codexApprovalMode !== "full-auto" ||
-              draft.apiPermissionMode !== "full-auto"
+              draft.cliMode !== "full-auto" ||
+              draft.inProcessMode !== "full-auto"
             ) && (
               <div
                 className="mt-2 flex items-center gap-1"

@@ -5,31 +5,26 @@
 import type { ModelConfig, MissionModelConfig } from "./models";
 import type { PrStrategy } from "./prs";
 import type { OrchestratorExecutorKind, TeamRuntimeConfig, RecoveryLoopPolicy, IntegrationPrPolicy } from "./orchestrator";
-import type { AiClaudePermissionMode, AiCodexApprovalMode, AiCodexSandboxPermissions, AiApiPermissionMode } from "./config";
+import type { AiCliPermissionMode, AiCliSandboxPermissions, AiInProcessPermissionMode } from "./config";
 
-/** Per-provider permission overrides set at mission launch time. */
-export type MissionClaudePermissionMode = AiClaudePermissionMode;
-export type MissionCodexApprovalMode = AiCodexApprovalMode;
-export type MissionCodexSandboxPermissions = AiCodexSandboxPermissions;
-export type MissionApiPermissionMode = AiApiPermissionMode;
+/** Mission permission overrides use runtime classes, not provider buckets. */
+export type MissionCliPermissionMode = AiCliPermissionMode;
+export type MissionCliSandboxPermissions = AiCliSandboxPermissions;
+export type MissionInProcessPermissionMode = AiInProcessPermissionMode;
 
 export type MissionPermissionConfig = {
-  claude?: {
-    permissionMode?: MissionClaudePermissionMode;
-    settingsSources?: Array<"user" | "project" | "local">;
-    maxBudgetUsd?: number;
-    sandbox?: boolean;
-    dangerouslySkipPermissions?: boolean;
-    allowedTools?: string[];
-  };
-  codex?: {
-    sandboxPermissions?: MissionCodexSandboxPermissions;
-    approvalMode?: MissionCodexApprovalMode;
+  cli?: {
+    mode?: MissionCliPermissionMode;
+    sandboxPermissions?: MissionCliSandboxPermissions;
     writablePaths?: string[];
     commandAllowlist?: string[];
-    configPath?: string;
+    allowedTools?: string[];
+    settingsSources?: Array<"user" | "project" | "local">;
+    maxBudgetUsd?: number;
   };
-  api?: { permissionMode?: MissionApiPermissionMode };
+  inProcess?: {
+    mode?: MissionInProcessPermissionMode;
+  };
 };
 
 export type MissionStatus =
@@ -94,7 +89,7 @@ export type PlannerMissionStrategy = "sequential" | "parallel-lite" | "parallel-
 
 export type PlannerTaskType = "analysis" | "code" | "integration" | "test" | "review" | "merge" | "deploy" | "docs" | "milestone";
 
-export type PlannerExecutorHint = "claude" | "codex" | "either";
+export type PlannerExecutorHint = "unified" | "manual" | "either";
 
 export type PlannerPreferredScope = "lane" | "file" | "session" | "global";
 
@@ -468,8 +463,6 @@ export type CreateMissionArgs = {
   /** Mission-level completion/recovery settings (replaces executionPolicy fields) */
   allowCompletionWithRisk?: boolean;
   recoveryLoop?: RecoveryLoopPolicy;
-  orchestratorModel?: string;
-  thinkingBudgets?: Record<string, number>;
   modelConfig?: MissionModelConfig;
   /** Team runtime configuration for agent-team orchestration */
   teamRuntime?: TeamRuntimeConfig;

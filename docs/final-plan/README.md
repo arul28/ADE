@@ -23,6 +23,12 @@ Status: Active
 
 ---
 
+## Orchestrator Rebased Track (2026-03-04)
+
+For all remaining Phase 3 orchestrator work, see `docs/ORCHESTRATOR_OVERHAUL.md` (canonical source of truth). The `final-plan/phase-3.md` file is superseded.
+
+---
+
 ## 1. Purpose
 
 This file is the canonical implementation roadmap for future ADE work.
@@ -55,7 +61,7 @@ Baseline derived from code in `apps/desktop`.
 
 ### 2.2 Shipped capabilities
 
-- Lane/worktree lifecycle with stacks, restack suggestions, auto-rebase status
+- Lane/worktree lifecycle with stacks, rebase suggestions, auto-rebase status
 - PTY sessions with transcripts, summaries, deltas, and lane-scoped quick launch profiles
 - File explorer/editor with watch/search/quick-open and atomic writes
 - Full git workflow coverage for day-to-day branch operations
@@ -106,7 +112,7 @@ Baseline derived from code in `apps/desktop`.
 
 Not implemented yet:
 
-- Remaining Phase 3 Tasks 7-8 (reflection protocol and full integration soak coverage)
+- Remaining Phase 3 work (subagent delegation, validation enforcement, UI observability, reflection protocol — see `docs/ORCHESTRATOR_OVERHAUL.md` Phases 4-7)
 - CTO agent (persistent project-aware assistant, replaces Concierge)
 - Night Shift mode in Automations (overnight execution with morning briefing)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
@@ -127,16 +133,15 @@ Implemented in baseline:
 1. **Task 1: Orchestrator Autonomy Core** — team runtime schema/capability enforcement, structured reporting tools, autonomous `revise_plan` with supersede semantics, role tool profiles, `partially_completed` + recovery handoff
 2. **Task 2: Validation & Lane Continuity** — validation contract/reporting primitives, open-obligation surfacing, lane continuity for replacement/rework, explicit lane transfer audit trail
 
-Remaining execution tracks (see `phase-3.md` for full detail):
+Remaining execution tracks (see `ORCHESTRATOR_OVERHAUL.md` for current plan):
 
-3. **Task 3: Mission Phases Engine & Profiles** — implemented (phase cards/profiles, per-mission overrides, profile import/export, runtime phase transition telemetry)
-4. **Task 4: Mission UI Overhaul** — implemented (Plan tab, Work tab, home dashboard, mission settings profile management, phase-aware details)
-5. **Task 5: Pre-Flight, Intervention & HITL** — implemented (pre-flight checklist, granular intervention, escalation chain)
-6. **Task 6: Budget & Usage Tracking** — implemented (budget-aware orchestration, dual-mode budget, subscription usage)
-7. **Task 7: Reflection Protocol** — pending (reflection logs, retrospectives, improvement changelog)
-8. **Task 8: Integration Testing** — pending (extended orchestrator soak tests, missions overhaul coverage expansion)
+3. **Task 3: Mission Phases Engine & Profiles** — implemented (Task 3)
+4. **Task 4: Mission UI Overhaul** — implemented (Task 4)
+5. **Task 5: Pre-Flight, Intervention & HITL** — implemented (Task 5)
+6. **Task 6: Budget & Usage Tracking** — implemented (Task 6)
+7. **Tasks 7-8** — superseded by ORCHESTRATOR_OVERHAUL.md Phases 4-7 (subagent delegation, validation enforcement, UI observability, reflection protocol)
 
-Tasks 1-6 are now baseline. Immediate next execution focus is Task 7 (Reflection Protocol), with Task 8 (Integration Testing) as the final broad soak pass.
+Tasks 1-6 are baseline. Remaining work is tracked in `docs/ORCHESTRATOR_OVERHAUL.md`.
 
 ---
 
@@ -146,7 +151,7 @@ ADE becomes the execution control plane for parallel agentic development:
 
 1. Users execute AI tasks through configured providers (CLI subscriptions, API/OpenRouter, or local endpoints) without any ADE-hosted account/sign-up requirement.
 2. ADE's `AgentExecutor` interface unifies agent SDKs -- `ai-sdk-provider-claude-code` for Claude and `@openai/codex-sdk` for Codex -- spawning CLIs against user subscriptions.
-3. The AI orchestrator uses in-process Vercel AI SDK coordinator tools for mission coordination; the MCP server exposes ADE capabilities as a full headless orchestration API for external agents, evaluators, and CI/CD integration.
+3. The AI orchestrator coordinates missions via MCP tools exposed by the ADE MCP server; the same server provides a full headless orchestration API for external agents, evaluators, and CI/CD integration.
 4. Missions, lanes, packs, conflicts, and PRs share one coherent execution model.
 5. Desktop, relay machines, and iOS share one mission/audit state model.
 6. All core features work in `guest` mode (no AI) -- AI orchestration is additive, never mandatory.
@@ -164,7 +169,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server, Claude SDK, unified API/local runtime) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Waves 1-4 + Tasks 1-6 shipped; Tasks 7-8 remaining) |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Tasks 1-6 shipped; remaining work in `ORCHESTRATOR_OVERHAUL.md` Phases 4-7) |
 | Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
 | Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Implemented (Task 2 baseline, coordinator-driven loop) |
 | Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
@@ -199,7 +204,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Planned |
 | Memory Consolidation | Phase 4 | Phase 3 | Planned |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |
-| Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Planned |
+| Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Planned (ORCHESTRATOR_OVERHAUL.md Phase 7) |
 | Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Planned |
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 

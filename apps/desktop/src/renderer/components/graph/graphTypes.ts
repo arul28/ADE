@@ -29,8 +29,8 @@ export type GraphNodeData = {
   lastActivityAt: string | null;
   environment: { env: string; color: string | null } | null;
   highlight: boolean;
-  restackFailed: boolean;
-  restackPulse: boolean;
+  rebaseFailed: boolean;
+  rebasePulse: boolean;
   mergeInProgress: boolean;
   mergeDisappearing: boolean;
   isIntegration: boolean;
@@ -40,7 +40,7 @@ export type GraphNodeData = {
   proposalId?: string;
 };
 
-export type RestackPublishOutcome =
+export type RebasePublishOutcome =
   | { status: "done"; message?: string }
   | { status: "skipped"; message: string };
 

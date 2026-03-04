@@ -252,43 +252,27 @@ export type AiBudgetLimit = {
 
 export type AiBudgets = Partial<Record<AiFeatureKey, AiBudgetLimit>>;
 
-export type AiClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
-export type AiCodexSandboxPermissions = "read-only" | "workspace-write" | "danger-full-access";
-export type AiCodexApprovalMode =
-  | "untrusted"
-  | "on-request"
-  | "on-failure"
-  | "never"
-  | "suggest"
-  | "auto-edit"
-  | "full-auto";
-export type AiApiPermissionMode = "plan" | "edit" | "full-auto";
+export type AiCliPermissionMode = "read-only" | "edit" | "full-auto";
+export type AiCliSandboxPermissions = "read-only" | "workspace-write" | "danger-full-access";
+export type AiInProcessPermissionMode = "plan" | "edit" | "full-auto";
 
-export type AiClaudePermissionSettings = {
-  permissionMode?: AiClaudePermissionMode;
-  settingsSources?: Array<"user" | "project" | "local">;
-  maxBudgetUsd?: number;
-  sandbox?: boolean;
-  dangerouslySkipPermissions?: boolean;
-  allowedTools?: string[];
-};
-
-export type AiCodexPermissionSettings = {
-  sandboxPermissions?: AiCodexSandboxPermissions;
-  approvalMode?: AiCodexApprovalMode;
+export type AiCliPermissionSettings = {
+  mode?: AiCliPermissionMode;
+  sandboxPermissions?: AiCliSandboxPermissions;
   writablePaths?: string[];
   commandAllowlist?: string[];
-  configPath?: string;
+  allowedTools?: string[];
+  settingsSources?: Array<"user" | "project" | "local">;
+  maxBudgetUsd?: number;
 };
 
-export type AiApiPermissionSettings = {
-  permissionMode?: AiApiPermissionMode;
+export type AiInProcessPermissionSettings = {
+  mode?: AiInProcessPermissionMode;
 };
 
 export type AiPermissionSettings = {
-  claude?: AiClaudePermissionSettings;
-  codex?: AiCodexPermissionSettings;
-  api?: AiApiPermissionSettings;
+  cli?: AiCliPermissionSettings;
+  inProcess?: AiInProcessPermissionSettings;
 };
 
 export type WorkerSafetyPolicy = {
@@ -358,7 +342,7 @@ export type AiChatConfig = {
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
   /** Default permission mode for new unified/API-model chat sessions */
-  unifiedPermissionMode?: AiApiPermissionMode;
+  unifiedPermissionMode?: AiInProcessPermissionMode;
 };
 export type AiConfig = {
   mode?: ProviderMode;

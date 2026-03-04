@@ -80,8 +80,8 @@ describe("missionPreflightService", () => {
           effective: {
             ai: {
               permissions: {
-                claude: { permissionMode: "bypassPermissions" },
-                codex: { approvalMode: "full-auto" }
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
               }
             }
           }
@@ -153,8 +153,8 @@ describe("missionPreflightService", () => {
           effective: {
             ai: {
               permissions: {
-                claude: { permissionMode: "bypassPermissions" },
-                codex: { approvalMode: "full-auto" }
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
               }
             }
           }

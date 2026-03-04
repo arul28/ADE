@@ -1,8 +1,17 @@
 # Phase 3: AI Orchestrator + Missions Overhaul
 
-**Status**: In Progress
+> **SUPERSEDED** — For all current and remaining Phase 3 work, see **`docs/ORCHESTRATOR_OVERHAUL.md`** (2026-03-04).
+>
+> This file contains historical planning context and design rationale. It is **not authoritative** for:
+> - Executor/provider implementation (now unified, legacy adapters deleted)
+> - Orchestrator runtime contracts (now `modelId`-first, class-based permissions)
+> - Remaining work items (Phases 4-7 in ORCHESTRATOR_OVERHAUL.md supersede Tasks 7-8 here)
+>
+> Tasks 1-6 below accurately reflect what shipped. Tasks 7-8 are superseded by ORCHESTRATOR_OVERHAUL.md Phases 4-7.
+
+**Status**: Tasks 1-6 Complete, Tasks 7-8 superseded by ORCHESTRATOR_OVERHAUL.md
 **Dependencies**: Phases 1-2 complete (Agent SDKs, AgentExecutor, MCP server)
-**Last updated**: 2026-03-02
+**Last updated**: 2026-03-04
 
 ## Overview
 

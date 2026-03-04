@@ -50,7 +50,7 @@ const COST_TIER_LABEL: Record<string, string> = {
   "claude-only": "$$$",
 };
 
-const DEFAULT_MODEL: ModelConfig = { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" };
+const DEFAULT_MODEL: ModelConfig = { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" };
 
 /** Map PhaseProfile phase keys to MissionModelProfile phaseDefaults keys */
 const PHASE_KEY_MAP: Record<string, keyof MissionModelProfile["phaseDefaults"]> = {

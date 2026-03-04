@@ -231,8 +231,8 @@ describe("missionPlanningService planner contract", () => {
       validationErrors: []
     });
     expect(steps).toHaveLength(2);
-    expect(steps[0]?.metadata.executorKind).toBe("claude");
-    expect(steps[1]?.metadata.executorKind).toBe("codex");
+    expect(steps[0]?.metadata.executorKind).toBe("unified");
+    expect(steps[1]?.metadata.executorKind).toBe("unified");
 
     const codexOnly = plannerPlanToMissionSteps({
       plan,
@@ -243,7 +243,7 @@ describe("missionPlanningService planner contract", () => {
       reasonCode: null,
       validationErrors: []
     });
-    expect(codexOnly.every((step) => step.metadata.executorKind === "codex")).toBe(true);
+    expect(codexOnly.every((step) => step.metadata.executorKind === "unified")).toBe(true);
 
     const claudeOnly = plannerPlanToMissionSteps({
       plan,
@@ -254,7 +254,7 @@ describe("missionPlanningService planner contract", () => {
       reasonCode: null,
       validationErrors: []
     });
-    expect(claudeOnly.every((step) => step.metadata.executorKind === "claude")).toBe(true);
+    expect(claudeOnly.every((step) => step.metadata.executorKind === "unified")).toBe(true);
   });
 
   it("rejects generic step labels from AI planner output", () => {
@@ -315,7 +315,7 @@ describe("missionPlanningService planner contract", () => {
         name: "Build services",
         description: "Build all microservices in parallel",
         taskType: "code",
-        executorHint: "codex",
+        executorHint: "unified",
         preferredScope: "project",
         requiresContextProfiles: [],
         dependencies: [],
@@ -765,7 +765,7 @@ describe("policy-driven planner DAG", () => {
     });
     const reviewStep = plan.steps.find((s) => s.metadata?.taskType === "review");
     expect(reviewStep).toBeTruthy();
-    expect(reviewStep!.metadata?.executorKind).toBe("claude");
+    expect(reviewStep!.metadata?.executorKind).toBe("unified");
   });
 
   it("codeReview.mode=off does not emit review step", () => {
@@ -816,8 +816,8 @@ describe("policy-driven planner DAG", () => {
     });
     const implStep = plan.steps.find((s) => s.kind === "implementation");
     const valStep = plan.steps.find((s) => s.kind === "validation");
-    expect(implStep?.metadata?.executorKind).toBe("claude");
-    expect(valStep?.metadata?.executorKind).toBe("claude");
+    expect(implStep?.metadata?.executorKind).toBe("unified");
+    expect(valStep?.metadata?.executorKind).toBe("unified");
   });
 
   it("DAG is acyclic for all testing modes", () => {

@@ -30,8 +30,8 @@ export function conflictsReducer(state: ConflictsState, action: ConflictsAction)
       return { ...state, gitConflictBusy: action.busy };
     case "SET_GIT_CONFLICT_ERROR":
       return { ...state, gitConflictError: action.error };
-    case "SET_RESTACK_SUGGESTIONS":
-      return { ...state, restackSuggestions: action.suggestions };
+    case "SET_REBASE_SUGGESTIONS":
+      return { ...state, rebaseSuggestions: action.suggestions };
     case "SET_PROPOSALS":
       return { ...state, proposals: action.proposals };
     case "SET_PROPOSAL_BUSY":

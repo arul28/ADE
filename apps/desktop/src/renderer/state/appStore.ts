@@ -5,6 +5,17 @@ import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
+export type WorkViewMode = "tabs" | "grid";
+export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
+export type WorkProjectViewState = {
+  openItemIds: string[];
+  activeItemId: string | null;
+  selectedItemId: string | null;
+  viewMode: WorkViewMode;
+  laneFilter: string;
+  statusFilter: WorkStatusFilter;
+  search: string;
+};
 export type TerminalAttentionSnapshot = {
   runningCount: number;
   activeCount: number;
@@ -25,6 +36,22 @@ const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
   indicator: "none",
   byLaneId: {}
 };
+
+function createDefaultWorkProjectViewState(): WorkProjectViewState {
+  return {
+    openItemIds: [],
+    activeItemId: null,
+    selectedItemId: null,
+    viewMode: "tabs",
+    laneFilter: "all",
+    statusFilter: "all",
+    search: "",
+  };
+}
+
+function normalizeProjectKey(projectRoot: string | null | undefined): string {
+  return typeof projectRoot === "string" ? projectRoot.trim() : "";
+}
 
 function readInitialTheme(): ThemeId {
   try {
@@ -61,6 +88,7 @@ type AppState = {
   laneInspectorTabs: Record<string, LaneInspectorTab>;
   keybindings: KeybindingsSnapshot | null;
   terminalAttention: TerminalAttentionSnapshot;
+  workViewByProject: Record<string, WorkProjectViewState>;
 
   setProject: (project: ProjectInfo | null) => void;
   setShowWelcome: (show: boolean) => void;
@@ -71,6 +99,13 @@ type AppState = {
   focusSession: (sessionId: string | null) => void;
   setTheme: (theme: ThemeId) => void;
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
+  getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
+  setWorkViewState: (
+    projectRoot: string | null | undefined,
+    next:
+      | Partial<WorkProjectViewState>
+      | ((prev: WorkProjectViewState) => WorkProjectViewState)
+  ) => void;
   refreshProviderMode: () => Promise<void>;
   refreshKeybindings: () => Promise<void>;
 
@@ -96,6 +131,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   laneInspectorTabs: {},
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
+  workViewByProject: {},
 
   setProject: (project) => set({ project }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
@@ -115,6 +151,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ theme });
   },
   setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
+  getWorkViewState: (projectRoot) => {
+    const key = normalizeProjectKey(projectRoot);
+    if (!key) return createDefaultWorkProjectViewState();
+    return get().workViewByProject[key] ?? createDefaultWorkProjectViewState();
+  },
+  setWorkViewState: (projectRoot, next) => {
+    const key = normalizeProjectKey(projectRoot);
+    if (!key) return;
+    set((prev) => {
+      const current = prev.workViewByProject[key] ?? createDefaultWorkProjectViewState();
+      const updated =
+        typeof next === "function"
+          ? next(current)
+          : {
+              ...current,
+              ...next,
+            };
+      return {
+        workViewByProject: {
+          ...prev.workViewByProject,
+          [key]: updated,
+        },
+      };
+    });
+  },
 
   refreshProject: async () => {
     const project = await window.ade.app.getProject();

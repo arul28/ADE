@@ -228,7 +228,7 @@ The graph supports batch operations on multiple selected lanes. When multiple no
 
 | Operation | Description |
 |-----------|-------------|
-| **Restack** | Rebase selected lanes onto their parents (resolve stale stacks) |
+| **Rebase** | Rebase selected lanes onto their parents (resolve stale stacks) |
 | **Push** | Push all selected lanes to their remotes |
 | **Fetch** | Fetch upstream changes for all selected lanes |
 | **Archive** | Archive all selected lanes |
@@ -474,12 +474,12 @@ Workspace Graph is **implemented** (Phase 7). The checklist below is retained fo
 | GRAPH-029 | View modes (Stack / Risk / Activity / All) with per-mode auto-layout | DONE |
 | GRAPH-030 | Per-view-mode layout persistence (GraphLayoutPreset with byViewMode) | DONE |
 | GRAPH-031 | Drag-to-reparent with cycle detection and reparent dialog | DONE |
-| GRAPH-032 | Batch operations toolbar (restack, push, fetch, archive, delete, sync) | DONE |
+| GRAPH-032 | Batch operations toolbar (rebase, push, fetch, archive, delete, sync) | DONE |
 | GRAPH-033 | Batch progress indicator (per-lane step status) | DONE |
 | GRAPH-034 | Integration dialog (create integration lane from canvas) | DONE |
 | GRAPH-035 | Inline conflict panel on risk edge click | DONE |
 | GRAPH-036 | Filter panel (text search, status, environment) | DONE |
-| GRAPH-037 | Restack failure indication (node border pulse on restack failure) | DONE |
+| GRAPH-037 | Rebase failure indication (node border pulse on rebase failure) | DONE |
 | GRAPH-038 | Activity bucket sizing (hot/warm/cold node dimensions) | DONE |
 
 ### Dependency Notes

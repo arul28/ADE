@@ -6,6 +6,7 @@
 
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { createCoordinatorToolSet, type CoordinatorSendWorkerMessageFn } from "./coordinatorTools";
+import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "./unifiedOrchestratorAdapter";
 import {
   formatRuntimeEvent,
 } from "./coordinatorEventFormatter";
@@ -18,7 +19,7 @@ import {
 import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
 import { resolveModel } from "../ai/providerResolver";
 import { detectAllAuth } from "../ai/authDetector";
-import { getModelById } from "../../../shared/modelRegistry";
+import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
   DagMutationEvent,
@@ -132,7 +133,7 @@ const CHECKPOINT_DAG_MUTATION_TOOLS = new Set([
 export type WorkerIdentity = {
   name: string;
   role: string;
-  provider: "claude" | "codex";
+  provider: string;
   parentName: string;
   missionSummary: string;
   taskPrompt: string;
@@ -221,7 +222,7 @@ export class CoordinatorAgent {
 
     // Initialize compaction monitor if enabled
     if (deps.enableCompaction) {
-      const model = getModelById(deps.modelId);
+      const model = resolveModelDescriptor(deps.modelId);
       if (model) {
         this.compactionMonitor = createCompactionMonitor(
           model,
@@ -416,12 +417,14 @@ export class CoordinatorAgent {
 
   private async runTurn(): Promise<void> {
     const sdkModel = await this.resolveModel();
+    const descriptor = resolveModelDescriptor(this.deps.modelId);
+    const useSdkTools = !(descriptor?.isCliWrapped && (descriptor.family === "anthropic" || descriptor.family === "openai"));
 
     const result = streamText({
       model: sdkModel,
       system: this.systemPrompt,
       messages: this.conversationHistory,
-      tools: this.tools as any,
+      ...(useSdkTools ? { tools: this.tools as any } : {}),
       stopWhen: stepCountIs(MAX_TOOL_STEPS_PER_TURN),
     });
 
@@ -616,8 +619,7 @@ export class CoordinatorAgent {
     // Build available workers section
     let workersSection = `\n## Available Workers
 You can spawn these types of workers:
-- Claude Code agent (provider: "claude") — full coding agent with file editing, terminal, web access
-- Codex agent (provider: "codex") — fast implementation agent, great for focused coding tasks`;
+- Unified worker (tool: spawn_worker) — choose model per worker with \`modelId\`; CLI models run as subprocess sessions and API/local models run in-process.`;
     if (providers?.length) {
       const available = providers.filter((p) => p.available).map((p) => p.name);
       if (available.length > 0) {
@@ -682,7 +684,7 @@ Use delegate_to_subagent when a parent worker's task naturally decomposes into c
 These flags are enforced deterministically by the tools — violations are rejected, not warned:
 - **allowParallelAgents**: When false, spawn workers sequentially (one at a time).
 - **allowSubAgents**: When false, delegate_to_subagent is disabled. Use spawn_worker instead.
-- **allowClaudeAgentTeams**: When false, claude-native agent team patterns are blocked for sub-agents.
+- **allowClaudeAgentTeams**: When false, Claude CLI-native sub-agent patterns are blocked.
 ${phasesSection}
 ${workersSection}
 ${projectSection}
@@ -705,7 +707,7 @@ You are autonomous WITHIN user-configured settings. This means:
 - Model selection — use the configured coordinator and worker models
 - PR strategy — create PRs according to the user's chosen strategy
 - Budget limits — hard caps on cost/tokens are guardrails, not suggestions
-- Provider selection — use available providers as configured
+- Model selection — use available model IDs as configured
 - Thinking budgets / reasoning effort — respect per-model settings
 
 If the user disabled testing, do NOT spawn test workers. If the user set a specific worker model, use THAT model. If the user chose manual PR strategy, do NOT create PRs automatically. You decide HOW to accomplish the mission — the user decides WHAT constraints you operate under.
@@ -908,7 +910,30 @@ Your initial plan is a hypothesis. Adjust it as you learn:
       return this.cachedSdkModel;
     }
     const auth = await detectAllAuth();
-    const model = await resolveModel(this.deps.modelId, auth);
+    const descriptor = resolveModelDescriptor(this.deps.modelId);
+    const mcpServers = (() => {
+      if (!(descriptor?.isCliWrapped && (descriptor.family === "anthropic" || descriptor.family === "openai"))) {
+        return undefined;
+      }
+      const launch = resolveAdeMcpServerLaunch({
+        workspaceRoot: this.deps.projectRoot,
+        runtimeRoot: resolveUnifiedRuntimeRoot(),
+        missionId: this.deps.missionId,
+        runId: this.deps.runId,
+        defaultRole: "orchestrator"
+      });
+      return {
+        ade: {
+          command: launch.command,
+          args: launch.cmdArgs,
+          env: launch.env
+        }
+      } as Record<string, Record<string, unknown>>;
+    })();
+    const model = await resolveModel(this.deps.modelId, auth, {
+      cwd: this.deps.projectRoot,
+      cli: mcpServers ? { mcpServers } : undefined
+    });
     this.cachedSdkModel = model;
     this.cachedModelAt = now;
     return model;

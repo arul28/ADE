@@ -16,8 +16,16 @@ import type {
   ListLanesArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
-  RestackArgs,
-  RestackResult,
+  RebaseAbortArgs,
+  RebaseRun,
+  RebaseRunEventPayload,
+  RebaseRunLane,
+  RebaseRollbackArgs,
+  RebaseScope,
+  RebaseStartArgs,
+  RebaseStartResult,
+  RebasePushArgs,
+  PushMode,
   StackChainItem,
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
@@ -240,7 +248,8 @@ export function createLaneService({
   defaultBaseRef,
   worktreesDir,
   operationService,
-  onHeadChanged
+  onHeadChanged,
+  onRebaseEvent
 }: {
   db: AdeDb;
   projectRoot: string;
@@ -249,6 +258,7 @@ export function createLaneService({
   worktreesDir: string;
   operationService?: ReturnType<typeof createOperationService>;
   onHeadChanged?: (args: { laneId: string; reason: string; preHeadSha: string | null; postHeadSha: string | null }) => void;
+  onRebaseEvent?: (event: RebaseRunEventPayload) => void;
 }) {
   const getLaneRow = (laneId: string) =>
     db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
@@ -270,9 +280,78 @@ export function createLaneService({
     );
 
   const laneListCache = new Map<string, { expiresAt: number; rows: LaneSummary[] }>();
+  const rebaseRuns = new Map<string, RebaseRun>();
 
   const invalidateLaneListCache = (): void => {
     laneListCache.clear();
+  };
+
+  const cloneRebaseRunLane = (lane: RebaseRunLane): RebaseRunLane => ({
+    ...lane,
+    conflictingFiles: [...lane.conflictingFiles]
+  });
+
+  const cloneRebaseRun = (run: RebaseRun): RebaseRun => ({
+    ...run,
+    lanes: run.lanes.map(cloneRebaseRunLane),
+    pushedLaneIds: [...run.pushedLaneIds]
+  });
+
+  const emitRebaseEventSafe = (event: RebaseRunEventPayload): void => {
+    if (!onRebaseEvent) return;
+    try {
+      onRebaseEvent(event);
+    } catch {
+      // Avoid surfacing event callback failures to callers.
+    }
+  };
+
+  const emitRunUpdated = (run: RebaseRun): void => {
+    emitRebaseEventSafe({
+      type: "rebase-run-updated",
+      run: cloneRebaseRun(run),
+      timestamp: new Date().toISOString()
+    });
+  };
+
+  const emitRunLog = (args: { runId: string; laneId?: string | null; message: string }): void => {
+    emitRebaseEventSafe({
+      type: "rebase-run-log",
+      runId: args.runId,
+      laneId: args.laneId ?? null,
+      message: args.message,
+      timestamp: new Date().toISOString()
+    });
+  };
+
+  const parseConflictingFiles = (stdout: string): string[] =>
+    stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+  const resolveRebaseOrder = (args: { rootLaneId: string; scope: RebaseScope }): string[] => {
+    const activeRows = getAllLaneRows(false);
+    const childrenByParent = new Map<string, LaneRow[]>();
+    for (const row of activeRows) {
+      if (!row.parent_lane_id) continue;
+      const arr = childrenByParent.get(row.parent_lane_id) ?? [];
+      arr.push(row);
+      childrenByParent.set(row.parent_lane_id, arr);
+    }
+    for (const [parentId, children] of childrenByParent.entries()) {
+      childrenByParent.set(parentId, sortByCreatedAtAsc(children));
+    }
+
+    return args.scope === "lane_and_descendants"
+      ? collectDepthFirstIds({ rootLaneId: args.rootLaneId, childrenByParent, includeSelf: true })
+      : [args.rootLaneId];
+  };
+
+  const getStoredRebaseRun = (runId: string): RebaseRun => {
+    const run = rebaseRuns.get(runId);
+    if (!run) throw new Error(`Rebase run not found: ${runId}`);
+    return run;
   };
 
   const ensureSameRepo = async (candidatePath: string) => {
@@ -870,119 +949,310 @@ export function createLaneService({
       return out;
     },
 
-    async restack(args: RestackArgs): Promise<RestackResult> {
-      const recursive = args.recursive ?? true;
-      const reason = typeof args.reason === "string" && args.reason.trim().length ? args.reason.trim() : "restack";
+    async rebaseStart(args: RebaseStartArgs): Promise<RebaseStartResult> {
+      const scope: RebaseScope = args.scope ?? "lane_and_descendants";
+      const pushMode: PushMode = args.pushMode ?? "none";
+      const actor = typeof args.actor === "string" && args.actor.trim().length ? args.actor.trim() : "user";
+      const reason = typeof args.reason === "string" && args.reason.trim().length ? args.reason.trim() : "rebase";
+
       const target = getLaneRow(args.laneId);
       if (!target) throw new Error(`Lane not found: ${args.laneId}`);
-      if (!target.parent_lane_id) {
+
+      const runId = randomUUID();
+      const startedAt = new Date().toISOString();
+      const order = resolveRebaseOrder({ rootLaneId: target.id, scope });
+
+      const lanes: RebaseRunLane[] = order.map((laneId) => {
+        const lane = getLaneRow(laneId);
         return {
-          restackedLanes: [],
-          failedLaneId: null,
-          error: "Lane has no parent; nothing to restack."
+          laneId,
+          laneName: lane?.name ?? laneId,
+          parentLaneId: lane?.parent_lane_id ?? null,
+          status: "pending",
+          preHeadSha: null,
+          postHeadSha: null,
+          error: null,
+          conflictingFiles: [],
+          pushed: false
         };
+      });
+
+      const run: RebaseRun = {
+        runId,
+        rootLaneId: target.id,
+        scope,
+        pushMode,
+        state: "running",
+        startedAt,
+        finishedAt: null,
+        actor,
+        baseBranch: target.base_ref,
+        lanes,
+        currentLaneId: null,
+        failedLaneId: null,
+        error: null,
+        pushedLaneIds: [],
+        canRollback: false
+      };
+
+      rebaseRuns.set(runId, run);
+      emitRunLog({ runId, laneId: null, message: `Starting rebase run (${scope})` });
+      emitRunUpdated(run);
+
+      if (!target.parent_lane_id) {
+        run.state = "failed";
+        run.error = "Lane has no parent; nothing to rebase.";
+        run.finishedAt = new Date().toISOString();
+        run.canRollback = false;
+        emitRunLog({ runId, laneId: target.id, message: run.error });
+        emitRunUpdated(run);
+        return { runId, run: cloneRebaseRun(run) };
       }
 
-      const activeRows = getAllLaneRows(false);
-      const rowsById = new Map(activeRows.map((row) => [row.id, row] as const));
-      const childrenByParent = new Map<string, LaneRow[]>();
-      for (const row of activeRows) {
-        if (!row.parent_lane_id) continue;
-        const arr = childrenByParent.get(row.parent_lane_id) ?? [];
-        arr.push(row);
-        childrenByParent.set(row.parent_lane_id, arr);
-      }
-      for (const [parentId, children] of childrenByParent.entries()) {
-        childrenByParent.set(parentId, sortByCreatedAtAsc(children));
-      }
+      for (let index = 0; index < run.lanes.length; index += 1) {
+        const laneItem = run.lanes[index]!;
+        const lane = getLaneRow(laneItem.laneId);
+        if (!lane) {
+          laneItem.status = "blocked";
+          laneItem.error = `Lane not found: ${laneItem.laneId}`;
+          continue;
+        }
 
-      const restackOrder = recursive
-        ? collectDepthFirstIds({ rootLaneId: target.id, childrenByParent, includeSelf: true })
-        : [target.id];
+        if (!lane.parent_lane_id) {
+          laneItem.status = "skipped";
+          laneItem.error = "Primary lane has no parent to rebase against.";
+          continue;
+        }
 
-      const restackedLanes: string[] = [];
-      for (const laneId of restackOrder) {
-        const lane = rowsById.get(laneId) ?? getLaneRow(laneId);
-        if (!lane?.parent_lane_id) continue;
-        const parent = rowsById.get(lane.parent_lane_id) ?? getLaneRow(lane.parent_lane_id);
+        const parent = getLaneRow(lane.parent_lane_id);
         if (!parent) {
-          return {
-            restackedLanes,
-            failedLaneId: lane.id,
-            error: `Parent lane not found for ${lane.name}`
-          };
+          laneItem.status = "blocked";
+          laneItem.error = `Parent lane not found for ${lane.name}`;
+          run.state = "failed";
+          run.failedLaneId = lane.id;
+          run.error = laneItem.error;
+          for (let i = index + 1; i < run.lanes.length; i += 1) {
+            const pending = run.lanes[i]!;
+            if (pending.status === "pending") pending.status = "blocked";
+          }
+          break;
         }
 
         const parentHead = await getHeadSha(parent.worktree_path);
         if (!parentHead) {
-          return {
-            restackedLanes,
-            failedLaneId: lane.id,
-            error: `Unable to resolve parent HEAD for ${parent.name}`
-          };
+          laneItem.status = "blocked";
+          laneItem.error = `Unable to resolve parent HEAD for ${parent.name}`;
+          run.state = "failed";
+          run.failedLaneId = lane.id;
+          run.error = laneItem.error;
+          for (let i = index + 1; i < run.lanes.length; i += 1) {
+            const pending = run.lanes[i]!;
+            if (pending.status === "pending") pending.status = "blocked";
+          }
+          break;
         }
 
-        const preHeadSha = await getHeadSha(lane.worktree_path);
+        run.currentLaneId = lane.id;
+        laneItem.status = "running";
+        laneItem.error = null;
+        laneItem.preHeadSha = await getHeadSha(lane.worktree_path);
+        emitRunUpdated(run);
+        emitRunLog({
+          runId,
+          laneId: lane.id,
+          message: `Rebasing ${lane.name} onto ${parent.name} (${parentHead.slice(0, 8)})`
+        });
+
         const operation = operationService?.start({
           laneId: lane.id,
-          kind: "lane_restack",
-          preHeadSha,
+          kind: "lane_rebase",
+          preHeadSha: laneItem.preHeadSha,
           metadata: {
             reason,
             parentLaneId: parent.id,
             parentBranchRef: parent.branch_ref,
             parentHeadSha: parentHead,
-            recursive
+            recursive: scope === "lane_and_descendants"
           }
         });
 
-        try {
-          await runGitOrThrow(["rebase", parentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
-          const postHeadSha = await getHeadSha(lane.worktree_path);
+        const rebaseRes = await runGit(["rebase", parentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        if (rebaseRes.exitCode === 0) {
+          laneItem.status = "succeeded";
+          laneItem.postHeadSha = await getHeadSha(lane.worktree_path);
           if (operation?.operationId) {
             operationService?.finish({
               operationId: operation.operationId,
               status: "succeeded",
-              postHeadSha
+              postHeadSha: laneItem.postHeadSha
             });
           }
-          if (preHeadSha !== postHeadSha && onHeadChanged) {
+          if (laneItem.preHeadSha !== laneItem.postHeadSha && onHeadChanged) {
             try {
               onHeadChanged({
                 laneId: lane.id,
                 reason,
-                preHeadSha,
-                postHeadSha
+                preHeadSha: laneItem.preHeadSha,
+                postHeadSha: laneItem.postHeadSha
               });
             } catch {
-              // Avoid surfacing callback failures to restack callers.
+              // ignore callback failures
             }
           }
-          restackedLanes.push(lane.id);
-        } catch (error) {
-          const postHeadSha = await getHeadSha(lane.worktree_path);
-          const message = error instanceof Error ? error.message : String(error);
-          if (operation?.operationId) {
-            operationService?.finish({
-              operationId: operation.operationId,
-              status: "failed",
-              postHeadSha,
-              metadataPatch: { error: message }
+          emitRunUpdated(run);
+          continue;
+        }
+
+        const conflictRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+          cwd: lane.worktree_path,
+          timeoutMs: 15_000
+        });
+        laneItem.conflictingFiles = conflictRes.exitCode === 0 ? parseConflictingFiles(conflictRes.stdout) : [];
+        laneItem.status = "conflict";
+        laneItem.error = rebaseRes.stderr.trim() || "Rebase failed with conflicts";
+        laneItem.postHeadSha = await getHeadSha(lane.worktree_path);
+
+        const abortRes = await runGit(["rebase", "--abort"], { cwd: lane.worktree_path, timeoutMs: 15_000 });
+        if (abortRes.exitCode !== 0) {
+          emitRunLog({
+            runId,
+            laneId: lane.id,
+            message: `Failed to auto-abort rebase: ${abortRes.stderr.trim() || "unknown error"}`
+          });
+        }
+
+        if (operation?.operationId) {
+          operationService?.finish({
+            operationId: operation.operationId,
+            status: "failed",
+            postHeadSha: laneItem.postHeadSha,
+            metadataPatch: { error: laneItem.error }
+          });
+        }
+
+        run.state = "failed";
+        run.failedLaneId = lane.id;
+        run.error = laneItem.error;
+        for (let i = index + 1; i < run.lanes.length; i += 1) {
+          const pending = run.lanes[i]!;
+          if (pending.status === "pending") pending.status = "blocked";
+        }
+        emitRunLog({
+          runId,
+          laneId: lane.id,
+          message: `Rebase failed on ${lane.name}: ${laneItem.error}`
+        });
+        emitRunUpdated(run);
+        break;
+      }
+
+      run.currentLaneId = null;
+      run.finishedAt = new Date().toISOString();
+      if (run.state === "running") {
+        run.state = "completed";
+      }
+      run.canRollback = run.lanes.some((lane) => lane.status === "succeeded");
+      emitRunUpdated(run);
+      return { runId, run: cloneRebaseRun(run) };
+    },
+
+    async rebasePush(args: RebasePushArgs): Promise<RebaseRun> {
+      const run = getStoredRebaseRun(args.runId);
+      if (!Array.isArray(args.laneIds) || args.laneIds.length === 0) {
+        return cloneRebaseRun(run);
+      }
+
+      for (const laneId of args.laneIds) {
+        const laneItem = run.lanes.find((entry) => entry.laneId === laneId);
+        if (!laneItem || laneItem.status !== "succeeded") continue;
+        if (run.pushedLaneIds.includes(laneId)) continue;
+        const lane = getLaneRow(laneId);
+        if (!lane) continue;
+
+        await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        laneItem.pushed = true;
+        run.pushedLaneIds.push(laneId);
+        emitRunLog({
+          runId: run.runId,
+          laneId,
+          message: `Pushed ${laneItem.laneName} with --force-with-lease`
+        });
+      }
+
+      run.canRollback = run.pushedLaneIds.length === 0 && run.lanes.some((lane) => lane.status === "succeeded");
+      emitRunUpdated(run);
+      return cloneRebaseRun(run);
+    },
+
+    async rebaseRollback(args: RebaseRollbackArgs): Promise<RebaseRun> {
+      const run = getStoredRebaseRun(args.runId);
+      if (run.pushedLaneIds.length > 0) {
+        throw new Error("Cannot rollback after pushing lanes to remote.");
+      }
+
+      for (const laneItem of run.lanes) {
+        if (laneItem.status !== "succeeded") continue;
+        if (!laneItem.preHeadSha) continue;
+        const lane = getLaneRow(laneItem.laneId);
+        if (!lane) continue;
+        const beforeReset = await getHeadSha(lane.worktree_path);
+        await runGitOrThrow(["reset", "--hard", laneItem.preHeadSha], { cwd: lane.worktree_path, timeoutMs: 90_000 });
+        const afterReset = await getHeadSha(lane.worktree_path);
+        laneItem.postHeadSha = afterReset;
+        laneItem.status = "skipped";
+        emitRunLog({
+          runId: run.runId,
+          laneId: laneItem.laneId,
+          message: `Rolled back ${laneItem.laneName} to ${laneItem.preHeadSha.slice(0, 8)}`
+        });
+        if (beforeReset !== afterReset && onHeadChanged) {
+          try {
+            onHeadChanged({
+              laneId: laneItem.laneId,
+              reason: "rebase_rollback",
+              preHeadSha: beforeReset,
+              postHeadSha: afterReset
             });
+          } catch {
+            // ignore callback failures
           }
-          return {
-            restackedLanes,
-            failedLaneId: lane.id,
-            error: message
-          };
         }
       }
 
-      return {
-        restackedLanes,
-        failedLaneId: null,
-        error: null
-      };
+      run.state = "aborted";
+      run.finishedAt = new Date().toISOString();
+      run.canRollback = false;
+      emitRunUpdated(run);
+      return cloneRebaseRun(run);
+    },
+
+    async rebaseAbort(args: RebaseAbortArgs): Promise<RebaseRun> {
+      const run = getStoredRebaseRun(args.runId);
+      const activeLaneId = run.currentLaneId;
+      if (activeLaneId) {
+        const lane = getLaneRow(activeLaneId);
+        if (lane) {
+          await runGit(["rebase", "--abort"], { cwd: lane.worktree_path, timeoutMs: 20_000 });
+        }
+      }
+
+      run.currentLaneId = null;
+      run.state = "aborted";
+      run.finishedAt = new Date().toISOString();
+      for (const laneItem of run.lanes) {
+        if (laneItem.status === "running" || laneItem.status === "pending") {
+          laneItem.status = "skipped";
+        }
+      }
+      run.canRollback = run.pushedLaneIds.length === 0 && run.lanes.some((lane) => lane.status === "succeeded");
+      emitRunLog({ runId: run.runId, laneId: activeLaneId, message: "Rebase run aborted." });
+      emitRunUpdated(run);
+      return cloneRebaseRun(run);
+    },
+
+    getRebaseRun(runId: string): RebaseRun | null {
+      const run = rebaseRuns.get(runId);
+      return run ? cloneRebaseRun(run) : null;
     },
 
     async reparent({ laneId, newParentLaneId }: ReparentLaneArgs): Promise<ReparentLaneResult> {
@@ -1157,7 +1427,7 @@ export function createLaneService({
 
       const childRows = getChildrenRows(laneId, false);
       if (childRows.length > 0) {
-        throw new Error("Cannot delete a lane with active child lanes. Delete or restack/archive children first.");
+        throw new Error("Cannot delete a lane with active child lanes. Delete or rebase/archive children first.");
       }
 
       if (row.lane_type === "worktree" && row.worktree_path && fs.existsSync(row.worktree_path)) {

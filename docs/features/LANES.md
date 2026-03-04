@@ -74,7 +74,7 @@ A **stack** is a parent-child relationship between lanes. The child lane's branc
 
 - **Stacked PRs**: Each lane in the stack has its own PR, reviewed independently but merged in order.
 - **Layered development**: Build feature B on top of feature A before A is merged.
-- **Restack operations**: When a parent lane is updated, propagate those changes to all children.
+- **Rebase operations**: When a parent lane is updated, propagate those changes to all children.
 
 ---
 
@@ -136,7 +136,7 @@ The center pane is the main working area. The LanesPage uses `PaneTilingLayout` 
 
 **Sub-panes** within the center area (via PaneTilingLayout):
 - **Diff pane** (`LaneDiffPane`): Git diff viewer with Monaco side-by-side diffs, per-file stage/unstage/discard, commit diff viewing
-- **Git actions pane** (`LaneGitActionsPane`): Commit, stash, fetch, sync (merge/rebase), push operations with recent commits list, restack button for stacked lanes
+- **Git actions pane** (`LaneGitActionsPane`): Commit, stash, fetch, sync (merge/rebase), push operations with recent commits list, rebase button for stacked lanes
 - **Terminals pane** (`LaneTerminalsPanel`): Embedded terminal sessions with tab/tiling views, quick-launch profiles, session delta cards
 - **Work pane** (`LaneWorkPane`): Embedded terminal sessions and agent chat view (terminal/chat toggle)
 - **Stack pane** (`LaneStackPane`): Stack chain visualization and management
@@ -257,8 +257,8 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 
 | Service | Responsibility |
 |---------|---------------|
-| `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides restack (recursive rebase), reparent, stack chain, and appearance management. |
-| `restackSuggestionService` | Monitors stacked lanes for parent-advanced state. Generates restack suggestions with dismiss/defer lifecycle. Emits real-time suggestion events to the renderer. |
+| `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides rebase (recursive rebase), reparent, stack chain, and appearance management. |
+| `rebaseSuggestionService` | Monitors stacked lanes for parent-advanced state. Generates rebase suggestions with dismiss/defer lifecycle. Emits real-time suggestion events to the renderer. |
 | `gitService` | All git operations: stage, unstage, discard, commit, stash, fetch, sync (merge/rebase), push, conflict state detection (merge/rebase in-progress, continue, abort). Operates on a specified worktree path. Returns structured results with success/failure and output. |
 | `diffService` | Computes working tree diffs (unstaged changes) and index diffs (staged changes). Per-file diff content for the Monaco viewer. Handles binary file detection and large file truncation. |
 | `operationService` | Records all git operations with before/after SHA transitions. Provides an audit trail for every action taken in a lane. Used by the History tab. |
@@ -283,15 +283,15 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 | `ade.lanes.getStackChain` | `(args: { laneId: string }) => StackChainItem[]` | Get the full stack chain for a lane |
 | `ade.lanes.getChildren` | `(args: { laneId: string }) => LaneSummary[]` | Get direct child lanes |
 
-**Restack operations**:
+**Rebase operations**:
 
 | Channel | Signature | Description |
 |---------|-----------|-------------|
-| `ade.lanes.restack` | `(args: RestackArgs) => RestackResult` | Restack a lane (rebase onto parent), optionally recursive |
-| `ade.lanes.listRestackSuggestions` | `() => RestackSuggestion[]` | List lanes whose parent has advanced (restack recommended) |
-| `ade.lanes.dismissRestackSuggestion` | `(args: { laneId: string }) => void` | Dismiss a restack suggestion for the current parent HEAD |
-| `ade.lanes.deferRestackSuggestion` | `(args: { laneId: string; minutes: number }) => void` | Defer a restack suggestion for N minutes |
-| `ade.lanes.restackSuggestions.event` | Event stream | Emits `restack-suggestions-updated` when suggestions change |
+| `ade.lanes.rebaseStart` | `(args: RebaseStartArgs) => RebaseStartResult` | Rebase a lane (rebase onto parent), optionally recursive |
+| `ade.lanes.listRebaseSuggestions` | `() => RebaseSuggestion[]` | List lanes whose parent has advanced (rebase recommended) |
+| `ade.lanes.dismissRebaseSuggestion` | `(args: { laneId: string }) => void` | Dismiss a rebase suggestion for the current parent HEAD |
+| `ade.lanes.deferRebaseSuggestion` | `(args: { laneId: string; minutes: number }) => void` | Defer a rebase suggestion for N minutes |
+| `ade.lanes.rebaseSuggestions.event` | Event stream | Emits `rebase-suggestions-updated` when suggestions change |
 
 **Diff operations**:
 
@@ -431,7 +431,7 @@ lanes (
 | LANES-025 | Attached lane support (link existing worktree) | DONE — Phase 7 (`laneService.attach()`, `lane_type = 'attached'`, uses existing directory) |
 | LANES-026 | Stack creation (parent-child relationships) | DONE |
 | LANES-027 | Stack graph visualization in lane list | DONE |
-| LANES-028 | Restack operations (propagate parent to children) | DONE |
+| LANES-028 | Rebase operations (propagate parent to children) | DONE |
 | LANES-029 | Stack-aware status indicators | DONE |
 | LANES-030 | Conflict prediction indicators in lane rows | DONE (implemented in Phase 5) |
 | LANES-031 | Merge simulation from lane context menu | DONE — Phase 7 (merge simulation from canvas edge click + conflict panel in WorkspaceGraphPage) |
@@ -443,14 +443,14 @@ lanes (
 | LANES-037 | Branch create/delete/rename from lane | TODO — **moved to Phase 9** (Advanced Features) |
 | LANES-038 | Reset (soft/mixed/hard) with confirmation | TODO — **moved to Phase 9** (Advanced Features) |
 
-### Phase 8 — Tiling Layout, Restack Suggestions & Appearance
+### Phase 8 — Tiling Layout, Rebase Suggestions & Appearance
 
 | ID | Task | Status |
 |----|------|--------|
 | LANES-039 | PaneTilingLayout for LanesPage | DONE — Phase 8 (recursive react-resizable-panels tree with persisted sizes) |
 | LANES-040 | Lane terminal tiling (TilingLayout component) | DONE — Phase 8 (binary tree layout with alternating horizontal/vertical splits) |
-| LANES-041 | Restack suggestion service | DONE — Phase 8 (`restackSuggestionService.ts` — parent-advanced detection, dismiss/defer lifecycle, real-time events) |
-| LANES-042 | Restack suggestion UI in LanesPage | DONE — Phase 8 (amber restack badges on lane rows, restack/dismiss/defer actions in lane detail) |
+| LANES-041 | Rebase suggestion service | DONE — Phase 8 (`rebaseSuggestionService.ts` — parent-advanced detection, dismiss/defer lifecycle, real-time events) |
+| LANES-042 | Rebase suggestion UI in LanesPage | DONE — Phase 8 (amber rebase badges on lane rows, rebase/dismiss/defer actions in lane detail) |
 | LANES-043 | Lane appearance customization (color, icon, tags) | DONE — Phase 8 (`updateAppearance` IPC, `color`/`icon`/`tags_json` columns) |
 | LANES-044 | Lane reparent support | DONE — Phase 8 (`reparent` IPC, changes parent-child relationship in stack) |
 | LANES-045 | Create child lane from parent | DONE — Phase 8 (`createChild` IPC, used by ConflictsPage for integration lanes) |
@@ -464,7 +464,7 @@ lanes (
 
 **Phase 4 completed** as part of the `codex/ade-phase-4-5` branch merge (commit `65b7a6b`). Core stack management (LANES-026–029), lane overlay policies (LANES-033), and conflict prediction indicators (LANES-030, via Phase 5) are all operational.
 
-**Phase 8 completed**: LANES-039 through LANES-048. PaneTilingLayout, terminal tiling, restack suggestions, lane appearance customization, reparent, create child, import branch, quick-launch profiles, and lane filter/search are all operational.
+**Phase 8 completed**: LANES-039 through LANES-048. PaneTilingLayout, terminal tiling, rebase suggestions, lane appearance customization, reparent, create child, import branch, quick-launch profiles, and lane filter/search are all operational.
 
 **Remaining tasks** are scheduled as follows:
 - **Phase 9 (Advanced Features)**: LANES-032, LANES-036, LANES-037, LANES-038

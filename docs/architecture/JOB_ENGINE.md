@@ -324,7 +324,7 @@ try {
 | File Service / Git Service | Lane dirty state changed | `jobEngine.onLaneDirtyChanged({ laneId, reason })` |
 | IPC (Renderer) | Manual conflict prediction | `jobEngine.runConflictPredictionNow({ laneId? })` |
 
-The PTY service fires `onSessionEnded` after recording the session end in the database. The head watcher in `main.ts` polls for HEAD changes and routes them to `jobEngine.onHeadChanged`, `agentService` (automation pipeline), and `restackSuggestionService`. Lane dirty changes trigger conflict prediction with a shorter debounce (900ms).
+The PTY service fires `onSessionEnded` after recording the session end in the database. The head watcher in `main.ts` polls for HEAD changes and routes them to `jobEngine.onHeadChanged`, `automationService` (automation pipeline), `rebaseSuggestionService`, and `autoRebaseService`. Lane dirty changes trigger conflict prediction with a shorter debounce (900ms).
 
 ### Job Executors (Downstream)
 
@@ -360,8 +360,9 @@ const ptyService = createPtyService({
 // Head watcher in main.ts routes HEAD changes to multiple consumers:
 const handleHeadChanged = ({ laneId, reason }) => {
   jobEngine.onHeadChanged({ laneId, reason });
-  agentService.onHeadChanged({ laneId, reason });
-  restackSuggestionService?.evaluate({ laneId });
+  automationService.onHeadChanged({ laneId, reason });
+  rebaseSuggestionService?.onParentHeadChanged({ laneId, reason, preHeadSha, postHeadSha });
+  autoRebaseService?.onHeadChanged({ laneId, reason, preHeadSha, postHeadSha });
 };
 ```
 

@@ -45,13 +45,13 @@ export async function fetchGitConflictState(dispatch: Dispatch<ConflictsAction>,
   }
 }
 
-/** Fetch restack suggestions */
-export async function fetchRestackSuggestions(dispatch: Dispatch<ConflictsAction>) {
+/** Fetch rebase suggestions */
+export async function fetchRebaseSuggestions(dispatch: Dispatch<ConflictsAction>) {
   try {
-    const suggestions = await window.ade.lanes.listRestackSuggestions();
-    dispatch({ type: "SET_RESTACK_SUGGESTIONS", suggestions });
+    const suggestions = await window.ade.lanes.listRebaseSuggestions();
+    dispatch({ type: "SET_REBASE_SUGGESTIONS", suggestions });
   } catch {
-    dispatch({ type: "SET_RESTACK_SUGGESTIONS", suggestions: [] });
+    dispatch({ type: "SET_REBASE_SUGGESTIONS", suggestions: [] });
   }
 }
 

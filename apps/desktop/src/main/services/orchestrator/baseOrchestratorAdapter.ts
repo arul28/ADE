@@ -88,8 +88,6 @@ export interface BaseAdapterConfig {
     permissionConfig: OrchestratorExecutorStartArgs["permissionConfig"];
     teamRuntime?: TeamRuntimeConfig;
   }) => string;
-  /** Default model when step metadata doesn't specify one. */
-  defaultModel: string;
   /** Build adapter-specific metadata to include in the accepted result. */
   buildAcceptedMetadata: (args: {
     model: string;
@@ -523,7 +521,6 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
     sessionType,
     buildOverrideCommand,
     buildStartupCommand,
-    defaultModel,
     buildAcceptedMetadata
   } = config;
 
@@ -581,11 +578,15 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
           projectId: args.memoryProjectId,
         });
 
-        // 3. Determine model
-        const model =
-          typeof step.metadata?.model === "string" && step.metadata.model.trim().length
-            ? step.metadata.model.trim()
-            : defaultModel;
+        // 3. Determine model (strict cutover: modelId is required)
+        const model = typeof step.metadata?.modelId === "string" ? step.metadata.modelId.trim() : "";
+        if (!model.length) {
+          return {
+            status: "failed",
+            errorClass: "policy",
+            errorMessage: `Step '${step.stepKey}' is missing required metadata.modelId for ${executorKind} execution.`
+          };
+        }
 
         // 4. Construct startup command (adapter-specific)
         const teamRuntime = run.metadata && typeof run.metadata === "object" && !Array.isArray(run.metadata)

@@ -55,7 +55,7 @@ import type {
   PrDialogState,
   ConflictPanelState,
   IntegrationDialogState,
-  RestackPublishOutcome
+  RebasePublishOutcome
 } from "./graphTypes";
 import {
   VIEW_MODES,
@@ -274,8 +274,8 @@ function GraphInner() {
   const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
   const [nodeTooltip, setNodeTooltip] = React.useState<{ x: number; y: number; laneId: string } | null>(null);
   const [nodeTooltipPack, setNodeTooltipPack] = React.useState<PackSummary | null>(null);
-  const [restackFailedLaneId, setRestackFailedLaneId] = React.useState<string | null>(null);
-  const [restackFailedPulse, setRestackFailedPulse] = React.useState(false);
+  const [rebaseFailedLaneId, setRebaseFailedLaneId] = React.useState<string | null>(null);
+  const [rebaseFailedPulse, setRebaseFailedPulse] = React.useState(false);
   const [textPrompt, setTextPrompt] = React.useState<GraphTextPromptState | null>(null);
   const [textPromptError, setTextPromptError] = React.useState<string | null>(null);
 
@@ -928,8 +928,8 @@ function GraphInner() {
           lastActivityAt: lastActivityByLaneId[lane.id] ?? null,
           environment: environmentByLaneId[lane.id] ?? null,
           highlight: Boolean(hoveredNodeId) && connectedToHover,
-          restackFailed: restackFailedLaneId === lane.id,
-          restackPulse: restackFailedLaneId === lane.id && restackFailedPulse,
+          rebaseFailed: rebaseFailedLaneId === lane.id,
+          rebasePulse: rebaseFailedLaneId === lane.id && rebaseFailedPulse,
           mergeInProgress: Boolean(mergeInProgressByLaneId[lane.id]),
           mergeDisappearing: Boolean(mergeDisappearingAtByLaneId[lane.id]),
           isIntegration: isIntegrationLane(lane),
@@ -1008,8 +1008,8 @@ function GraphInner() {
           lastActivityAt: proposal.createdAt ?? null,
           environment: null,
           highlight: Boolean(hoveredNodeId) && connectedToHover,
-          restackFailed: false,
-          restackPulse: false,
+          rebaseFailed: false,
+          rebasePulse: false,
           mergeInProgress: false,
           mergeDisappearing: false,
           isIntegration: true,
@@ -1206,8 +1206,8 @@ function GraphInner() {
     lanes,
     lastActivityByLaneId,
     loadedGraphState,
-    restackFailedLaneId,
-    restackFailedPulse,
+    rebaseFailedLaneId,
+    rebaseFailedPulse,
     riskByPair,
     prOverlayByPair,
     selectedLaneIds,
@@ -1691,8 +1691,20 @@ function GraphInner() {
     [laneById]
   );
 
-  const runRestackAndPublishLane = React.useCallback(
-    async (laneId: string, args?: { confirmPublish?: boolean; recursive?: boolean }): Promise<RestackPublishOutcome> => {
+  const runLaneRebase = React.useCallback(async (laneId: string, recursive: boolean): Promise<void> => {
+    const result = await window.ade.lanes.rebaseStart({
+      laneId,
+      scope: recursive ? "lane_and_descendants" : "lane_only",
+      pushMode: "none",
+      actor: "user"
+    });
+    if (result.run.state === "failed" || result.run.error) {
+      throw new Error(result.run.error ?? "Rebase failed.");
+    }
+  }, []);
+
+  const runRebaseAndPublishLane = React.useCallback(
+    async (laneId: string, args?: { confirmPublish?: boolean; recursive?: boolean }): Promise<RebasePublishOutcome> => {
       const lane = laneById.get(laneId);
       if (!lane) {
         return { status: "skipped", message: "lane not found" };
@@ -1701,8 +1713,7 @@ function GraphInner() {
         return { status: "skipped", message: "no parent lane" };
       }
 
-      const result = await window.ade.lanes.restack({ laneId, recursive: Boolean(args?.recursive) });
-      if (result.error) throw new Error(result.error);
+      await runLaneRebase(laneId, Boolean(args?.recursive));
 
       await window.ade.git.fetch({ laneId }).catch(() => {});
       const sync = await window.ade.git.getSyncStatus({ laneId });
@@ -1752,18 +1763,18 @@ function GraphInner() {
         return { status: "skipped", message: `behind remote by ${sync.behind} commit${sync.behind === 1 ? "" : "s"}` };
       }
 
-      return { status: "done", message: "restacked and already synced" };
+      return { status: "done", message: "rebased and already pushed" };
     },
-    [laneById, graphConfirm]
+    [laneById, graphConfirm, runLaneRebase]
   );
 
   const runBatchOperation = React.useCallback(
-    async (operation: "restack" | "restack_publish" | "push" | "fetch" | "archive" | "delete") => {
+    async (operation: "rebase" | "rebase_publish" | "push" | "fetch" | "archive" | "delete") => {
       if (selectedLaneIds.length < 2) return;
-      const isRestackLike = operation === "restack" || operation === "restack_publish";
-      if (isRestackLike) {
-        setRestackFailedLaneId(null);
-        setRestackFailedPulse(false);
+      const isRebaseLike = operation === "rebase" || operation === "rebase_publish";
+      if (isRebaseLike) {
+        setRebaseFailedLaneId(null);
+        setRebaseFailedPulse(false);
       }
       const steps = selectedLaneIds.map((laneId) => ({
         laneId,
@@ -1780,7 +1791,7 @@ function GraphInner() {
       const descendantsCache = new Map<string, Set<string>>();
       for (const laneId of selectedLaneIds) descendantsCache.set(laneId, collectDescendants(lanes, laneId));
       const blocked = new Set<string>();
-      const ordered = isRestackLike
+      const ordered = isRebaseLike
         ? [...selectedLaneIds].sort((a, b) => (laneById.get(a)?.stackDepth ?? 0) - (laneById.get(b)?.stackDepth ?? 0))
         : [...selectedLaneIds];
 
@@ -1809,11 +1820,10 @@ function GraphInner() {
 
         try {
           let skippedReason: string | null = null;
-          if (operation === "restack") {
-            const result = await window.ade.lanes.restack({ laneId, recursive: false });
-            if (result.error) throw new Error(result.error);
-          } else if (operation === "restack_publish") {
-            const outcome = await runRestackAndPublishLane(laneId, { confirmPublish: true, recursive: false });
+          if (operation === "rebase") {
+            await runLaneRebase(laneId, false);
+          } else if (operation === "rebase_publish") {
+            const outcome = await runRebaseAndPublishLane(laneId, { confirmPublish: true, recursive: false });
             if (outcome.status === "skipped") {
               skippedReason = outcome.message;
             }
@@ -1866,13 +1876,13 @@ function GraphInner() {
             );
             return { ...prev, steps: nextSteps };
           });
-          if (isRestackLike) {
+          if (isRebaseLike) {
             const descendants = descendantsCache.get(laneId);
             for (const childId of descendants ?? []) blocked.add(childId);
-            setRestackFailedLaneId(laneId);
-            setRestackFailedPulse(true);
-            window.setTimeout(() => setRestackFailedPulse(false), 1650);
-            const label = operation === "restack_publish" ? "Restack + publish" : "Rebase";
+            setRebaseFailedLaneId(laneId);
+            setRebaseFailedPulse(true);
+            window.setTimeout(() => setRebaseFailedPulse(false), 1650);
+            const label = operation === "rebase_publish" ? "Rebase + push" : "Rebase";
             setErrorBanner(`${label} paused: conflict on '${laneById.get(laneId)?.name ?? laneId}'. ${doneCount}/${ordered.length} lanes completed.`);
           }
         }
@@ -1888,7 +1898,7 @@ function GraphInner() {
       await refreshLanes().catch(() => {});
       await refreshLaneSyncStatuses().catch(() => {});
     },
-    [laneById, lanes, refreshLaneSyncStatuses, refreshLanes, runRestackAndPublishLane, selectedLaneIds]
+    [laneById, lanes, refreshLaneSyncStatuses, refreshLanes, runLaneRebase, runRebaseAndPublishLane, selectedLaneIds]
   );
 
   const openContextForSelected = React.useCallback(() => {
@@ -1956,15 +1966,14 @@ function GraphInner() {
           if (confirmText?.trim().toLowerCase() !== `delete ${lane.name}`.toLowerCase()) return;
           await window.ade.lanes.delete({ laneId: lane.id, force: true, deleteBranch: false });
           await refreshLanes();
-        } else if (action === "restack") {
-          const result = await window.ade.lanes.restack({ laneId: lane.id, recursive: false });
-          if (result.error) throw new Error(result.error);
+        } else if (action === "rebase") {
+          await runLaneRebase(lane.id, false);
           await refreshLanes();
           shouldRefreshSync = true;
-        } else if (action === "restack-publish") {
-          const outcome = await runRestackAndPublishLane(lane.id, { confirmPublish: true, recursive: false });
+        } else if (action === "rebase-publish") {
+          const outcome = await runRebaseAndPublishLane(lane.id, { confirmPublish: true, recursive: false });
           if (outcome.status === "skipped") {
-            setErrorBanner(`Restack + publish skipped for '${lane.name}': ${outcome.message}`);
+            setErrorBanner(`Rebase + push skipped for '${lane.name}': ${outcome.message}`);
           }
           await refreshLanes();
           shouldRefreshSync = true;
@@ -2037,7 +2046,8 @@ function GraphInner() {
       refreshLanes,
       requestTextInput,
       runPullFromUpstream,
-      runRestackAndPublishLane,
+      runLaneRebase,
+      runRebaseAndPublishLane,
       updateGraphSnapshot
     ]
   );
@@ -2968,12 +2978,12 @@ function GraphInner() {
               { key: "create-child", label: "Create Child" },
               { key: "archive", label: "Archive", disabled: isPrimary, reason: "Primary lane cannot be archived." },
               { key: "delete", label: "Delete", disabled: isPrimary, reason: "Primary lane cannot be deleted." },
-              { key: "restack", label: "Rebase", disabled: !hasParent, reason: "Rebase is only available for child lanes." },
+              { key: "rebase", label: "Rebase", disabled: !hasParent, reason: "Rebase is only available for child lanes." },
               {
-                key: "restack-publish",
-                label: "Restack + Publish",
+                key: "rebase-publish",
+                label: "Rebase + Push",
                 disabled: !hasParent,
-                reason: "Restack + publish is only available for child lanes."
+                reason: "Rebase + push is only available for child lanes."
               },
               { key: "push", label: "Push" },
               { key: "fetch", label: "Fetch" },
@@ -3619,11 +3629,11 @@ function GraphInner() {
           <div className="pointer-events-auto rounded border border-border/10 bg-card/95 backdrop-blur-sm px-3 py-2 shadow-float">
             <div className="mb-1 text-[11px] text-muted-fg">{selectedLaneIds.length} lanes selected</div>
             <div className="flex items-center gap-1">
-              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("restack")}>
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("rebase")}>
                 Batch Rebase
               </Button>
-              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("restack_publish")}>
-                Batch Restack + Publish
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("rebase_publish")}>
+                Batch Rebase + Push
               </Button>
               <Button
                 size="sm"

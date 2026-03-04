@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useReducer, useEffect, type Dispatch } from "react";
 import { conflictsReducer } from "./conflictsReducer";
 import { initialConflictsState, type ConflictsState, type ConflictsAction } from "./types";
-import { fetchBatchAssessment, fetchRestackSuggestions } from "./conflictsActions";
+import { fetchBatchAssessment, fetchRebaseSuggestions } from "./conflictsActions";
 import type { ConflictEventPayload } from "../../../../shared/types";
 
 /**
@@ -19,7 +19,7 @@ export function ConflictsProvider({ children }: { children: React.ReactNode }) {
   // Initial data load
   useEffect(() => {
     fetchBatchAssessment(dispatch);
-    fetchRestackSuggestions(dispatch);
+    fetchRebaseSuggestions(dispatch);
   }, []);
 
   // Subscribe to conflict events for real-time progress updates
@@ -39,11 +39,11 @@ export function ConflictsProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  // Subscribe to restack suggestion events
+  // Subscribe to rebase suggestion events
   useEffect(() => {
-    const unsub = window.ade.lanes.onRestackSuggestionsEvent((event) => {
-      if (event.type === "restack-suggestions-updated") {
-        dispatch({ type: "SET_RESTACK_SUGGESTIONS", suggestions: event.suggestions });
+    const unsub = window.ade.lanes.onRebaseSuggestionsEvent((event) => {
+      if (event.type === "rebase-suggestions-updated") {
+        dispatch({ type: "SET_REBASE_SUGGESTIONS", suggestions: event.suggestions });
       }
     });
     return unsub;

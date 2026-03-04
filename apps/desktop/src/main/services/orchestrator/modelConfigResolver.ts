@@ -19,10 +19,7 @@ import {
 import { getMissionMetadata } from "./chatMessageService";
 import type { ModelConfig, OrchestratorCallType, MissionModelConfig } from "../../../shared/types";
 import { resolveCallTypeModel, modelConfigToServiceModel } from "../../../shared/modelProfiles";
-
-function budgetToEffort(budget: number): "low" | "medium" | "high" {
-  return budget < 1000 ? "low" : budget < 5000 ? "medium" : "high";
-}
+import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 
 const CALL_TYPE_CONFIG_TTL_MS = 30_000;
 
@@ -59,35 +56,21 @@ function resolveCallTypeConfigUncached(
       if (intelligenceConfig) {
         const callConfig = isRecord(intelligenceConfig[callType]) ? intelligenceConfig[callType] : null;
         if (callConfig) {
+          const modelIdRaw = typeof callConfig.modelId === "string" ? callConfig.modelId.trim() : "";
+          const descriptor = resolveModelDescriptor(modelIdRaw);
+          const resolvedModelId = descriptor?.id ?? defaults.model;
+          const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
+          const providerFromModel =
+            resolvedDescriptor?.family === "anthropic"
+              ? "claude"
+              : resolvedDescriptor?.family === "openai"
+                ? "codex"
+                : defaults.provider;
           return {
-            provider: typeof callConfig.provider === "string" ? callConfig.provider as "claude" | "codex" : defaults.provider,
-            model: typeof callConfig.modelId === "string" ? callConfig.modelId : defaults.model,
+            provider: providerFromModel,
+            model: resolvedModelId,
             reasoningEffort: typeof callConfig.thinkingLevel === "string" ? callConfig.thinkingLevel : defaults.reasoningEffort,
           };
-        }
-      }
-
-      // Priority 2: Top-level orchestratorModel (applies to all call types)
-      const topLevelModel = typeof launch?.orchestratorModel === "string" ? launch.orchestratorModel.trim().toLowerCase() : null;
-      if (topLevelModel && (topLevelModel === "opus" || topLevelModel === "sonnet" || topLevelModel === "haiku")) {
-        // Also check thinkingBudgets for per-call-type reasoning effort override
-        const thinkingBudgets = launch && isRecord(launch.thinkingBudgets) ? launch.thinkingBudgets : null;
-        const budgetForCallType = thinkingBudgets && typeof thinkingBudgets[callType] === "number" ? thinkingBudgets[callType] : null;
-        const budgetEffort = budgetForCallType != null ? budgetToEffort(budgetForCallType as number) : null;
-        return {
-          provider: "claude",
-          model: topLevelModel,
-          reasoningEffort: budgetEffort ?? defaults.reasoningEffort,
-        };
-      }
-
-      // Also check thinkingBudgets even without explicit model override
-      const thinkingBudgets = launch && isRecord(launch.thinkingBudgets) ? launch.thinkingBudgets : null;
-      if (thinkingBudgets) {
-        const budgetForCallType = typeof thinkingBudgets[callType] === "number" ? thinkingBudgets[callType] : null;
-        if (budgetForCallType != null) {
-          const budgetEffort = budgetToEffort(budgetForCallType as number);
-          return { ...defaults, reasoningEffort: budgetEffort };
         }
       }
     }
@@ -97,8 +80,8 @@ function resolveCallTypeConfigUncached(
 }
 
 const DEFAULT_ORCHESTRATOR_MODEL_CONFIG: ModelConfig = {
-  provider: "claude",
-  modelId: "claude-sonnet-4-6",
+  modelId: "anthropic/claude-sonnet-4-6",
+  provider: "anthropic",
   thinkingLevel: "medium"
 };
 

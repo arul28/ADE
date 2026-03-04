@@ -25,7 +25,7 @@ export type SqlValue = string | number | null | Uint8Array;
  *   "graph-state:<projectId>"     -> GraphPersistedState
  *   "terminal-profiles:<projId>"  -> TerminalProfilesSnapshot
  *   "auto-rebase:<laneId>"        -> StoredStatus
- *   "restack-suggestion:<laneId>" -> StoredSuggestionState
+ *   "rebase-suggestion:<laneId>"  -> StoredSuggestionState
  */
 
 export type AdeDb = {

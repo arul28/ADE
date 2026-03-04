@@ -44,7 +44,7 @@ const HIGHLIGHTS: FeatureGalleryItem[] = [
     eyebrow: "Lanes",
     title: "Parallel work, first-class",
     description:
-      "Spin up worktree-backed lanes, stack them, restack them, and keep each execution surface visible.",
+      "Spin up worktree-backed lanes, stack them, rebase them, and keep each execution surface visible.",
     bullets: [
       "Lane types: Primary, Worktree, Attached",
       "Stacks for layered branch workflows",

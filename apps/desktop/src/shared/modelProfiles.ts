@@ -25,12 +25,18 @@ export type ModelEntry = {
   recommended?: boolean;
 };
 
+function providerFromFamily(family: ModelDescriptor["family"]): ModelProvider {
+  if (family === "anthropic") return "claude";
+  if (family === "openai") return "codex";
+  return family;
+}
+
 /** Map a registry descriptor to a ModelEntry for the missions UI */
 function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boolean }): ModelEntry {
-  const provider: ModelProvider = d.family === "anthropic" ? "claude" : "codex";
+  const provider: ModelProvider = providerFromFamily(d.family);
   return {
     provider,
-    modelId: d.sdkModelId,
+    modelId: d.id,
     displayName: d.displayName,
     costTier: d.costTier ?? "medium",
     ...(overrides?.recommended ? { recommended: true } : {}),
@@ -51,14 +57,16 @@ export const CODEX_MODELS: ModelEntry[] = MODEL_REGISTRY
     recommended: d.sdkModelId === "gpt-5.3-codex",
   }));
 
-export const ALL_MODELS: ModelEntry[] = [...CLAUDE_MODELS, ...CODEX_MODELS];
+export const ALL_MODELS: ModelEntry[] = MODEL_REGISTRY
+  .filter((m) => !m.deprecated)
+  .map((m) => descriptorToEntry(m));
 
 export function findModel(modelId: string): ModelEntry | undefined {
   return ALL_MODELS.find((m) => m.modelId === modelId);
 }
 
 export function getModelsForProvider(provider: ModelProvider): ModelEntry[] {
-  return provider === "claude" ? CLAUDE_MODELS : CODEX_MODELS;
+  return ALL_MODELS.filter((entry) => entry.provider === provider);
 }
 
 // ─────────────────────────────────────────────────────
@@ -84,7 +92,14 @@ export const CODEX_THINKING_LEVELS: ThinkingOption[] = [
 ];
 
 export function getThinkingLevels(provider: ModelProvider): ThinkingOption[] {
-  return provider === "claude" ? CLAUDE_THINKING_LEVELS : CODEX_THINKING_LEVELS;
+  if (provider === "claude") return CLAUDE_THINKING_LEVELS;
+  if (provider === "codex") return CODEX_THINKING_LEVELS;
+  return [
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ];
 }
 
 // ─────────────────────────────────────────────────────
@@ -117,11 +132,11 @@ export const ORCHESTRATOR_CALL_TYPES: CallTypeInfo[] = [
 // Built-in model profiles
 // ─────────────────────────────────────────────────────
 
-const CLAUDE_SONNET: ModelConfig = { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" };
-const CLAUDE_HAIKU: ModelConfig = { provider: "claude", modelId: "claude-haiku-4-5-20251001", thinkingLevel: "low" };
-const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "claude-opus-4-6", thinkingLevel: "high" };
-const CODEX_53: ModelConfig = { provider: "codex", modelId: "gpt-5.3-codex", thinkingLevel: "medium" };
-const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "codex-mini-latest", thinkingLevel: "low" };
+const CLAUDE_SONNET: ModelConfig = { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" };
+const CLAUDE_HAIKU: ModelConfig = { provider: "claude", modelId: "anthropic/claude-haiku-4-5", thinkingLevel: "low" };
+const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "anthropic/claude-opus-4-6", thinkingLevel: "high" };
+const CODEX_53: ModelConfig = { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" };
+const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/codex-mini-latest", thinkingLevel: "low" };
 
 export const BUILT_IN_PROFILES: MissionModelProfile[] = [
   {
@@ -180,7 +195,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     decisionTimeoutCapHours: 24,
     phaseDefaults: {
       planning: CLAUDE_OPUS,
-      implementation: { provider: "codex", modelId: "gpt-5.1-codex-max", thinkingLevel: "high" },
+      implementation: { provider: "codex", modelId: "openai/gpt-5.1-codex-max", thinkingLevel: "high" },
       testing: CODEX_53,
       validation: CLAUDE_OPUS,
       codeReview: CLAUDE_OPUS,
@@ -259,15 +274,10 @@ export function resolveCallTypeModel(
 
 /** Convert a ModelConfig to the model string used by aiIntegrationService */
 export function modelConfigToServiceModel(config: ModelConfig): string {
-  // Claude models: use the alias form (opus, sonnet, haiku) if it's a known model
-  if (config.provider === "claude") {
-    if (config.modelId.includes("opus")) return "opus";
-    if (config.modelId.includes("haiku")) return "haiku";
-    if (config.modelId.includes("sonnet")) return "sonnet";
-    return config.modelId;
-  }
-  // Codex models: pass through the full model ID
-  return config.modelId;
+  const modelId = config.modelId?.trim();
+  if (modelId && modelId.length > 0) return modelId;
+  if (config.provider === "codex") return "openai/gpt-5.3-codex";
+  return "anthropic/claude-sonnet-4-6";
 }
 
 /** Convert ThinkingLevel to reasoning effort string for AI service */

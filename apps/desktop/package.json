@@ -25,7 +25,6 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.33",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.49",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
     "@openai/codex-sdk": "^0.104.0",
@@ -41,6 +40,7 @@
     "@xyflow/react": "^12.5.0",
     "ai": "^6.0.94",
     "ai-sdk-provider-claude-code": "^3.4.2",
+    "ai-sdk-provider-codex-cli": "^1.1.0",
     "chokidar": "^4.0.3",
     "clsx": "^2.1.1",
     "dagre": "^0.8.5",

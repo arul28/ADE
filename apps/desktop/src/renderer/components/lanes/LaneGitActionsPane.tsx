@@ -36,7 +36,7 @@ type LaneTextPromptState = {
 };
 
 type NextActionHint = {
-  action: GitRecommendedAction | "restack_publish";
+  action: GitRecommendedAction | "rebase_push";
   label: string;
   detail: string;
 };
@@ -60,6 +60,9 @@ export function LaneGitActionsPane({
   laneId,
   autoRebaseEnabled,
   onOpenSettings,
+  onRebaseNowLocal,
+  onRebaseAndPush,
+  onViewRebaseDetails,
   onResolveRebaseConflict,
   onSelectFile,
   onSelectCommit,
@@ -70,6 +73,9 @@ export function LaneGitActionsPane({
   laneId: string | null;
   autoRebaseEnabled: boolean;
   onOpenSettings: () => void;
+  onRebaseNowLocal?: (laneId: string) => Promise<void> | void;
+  onRebaseAndPush?: (laneId: string) => Promise<void> | void;
+  onViewRebaseDetails?: () => void;
   onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
   onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
@@ -263,7 +269,7 @@ export function LaneGitActionsPane({
         actionName === "push" ||
         actionName === "force push" ||
         actionName === "rebase" ||
-        actionName === "restack + publish";
+        actionName === "rebase + push";
       await refreshAll({ fetchRemote: shouldFetchRemote });
       if (
         actionName === "push" ||
@@ -271,7 +277,7 @@ export function LaneGitActionsPane({
         actionName === "pull" ||
         actionName === "fetch" ||
         actionName === "rebase" ||
-        actionName === "restack + publish"
+        actionName === "rebase + push"
       ) {
         setForcePushSuggested(false);
       }
@@ -412,12 +418,22 @@ export function LaneGitActionsPane({
     });
   };
 
-  const runRestackAndPublishFlow = (confirmPublish = true) => {
+  const runRebaseAndPushFlow = (confirmPublish = true) => {
     if (!laneId) return;
-    runAction("restack + publish", async () => {
-      const result = await window.ade.lanes.restack({ laneId, recursive: true });
-      if (result.error) {
-        throw new Error(result.error);
+    runAction("rebase and push", async () => {
+      if (onRebaseAndPush) {
+        await onRebaseAndPush(laneId);
+        return;
+      }
+
+      const start = await window.ade.lanes.rebaseStart({
+        laneId,
+        scope: "lane_only",
+        pushMode: "none",
+        actor: "user"
+      });
+      if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
+        throw new Error(start.run.error ?? "Rebase failed.");
       }
 
       await window.ade.git.fetch({ laneId }).catch(() => {});
@@ -460,9 +476,9 @@ export function LaneGitActionsPane({
     if (!laneId) return null;
     if (lane?.parentLaneId && lane.status.behind > 0) {
       return {
-        action: "restack_publish",
-        label: "Restack + Publish",
-        detail: `Behind parent by ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"}. Rebase on parent, then publish rewritten history.`
+        action: "rebase_push",
+        label: "Rebase and push (local + remote)",
+        detail: `Behind parent by ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"}. Rebase locally, then push rewritten history to remote.`
       };
     }
     if (forcePushSuggested) {
@@ -508,7 +524,7 @@ export function LaneGitActionsPane({
   const pullHighlighted = nextActionHint?.action === "pull";
   const pushHighlighted = nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" || divergedSync;
   const forcePushHighlighted = nextActionHint?.action === "force_push_lease" || divergedSync;
-  const restackPublishHighlighted = nextActionHint?.action === "restack_publish";
+  const rebasePushHighlighted = nextActionHint?.action === "rebase_push";
   const pushButtonTitle = syncStatus?.hasUpstream === false ? "Publish lane (first push)" : "Push to remote";
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
 
@@ -781,36 +797,63 @@ export function LaneGitActionsPane({
               opacity: (!laneId || busyAction != null) ? 0.4 : 1,
               pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
             }}
-            title="Rebase onto parent"
+            title="Rebase now (local only)"
             disabled={!laneId || busyAction != null}
             onClick={() => {
               if (!laneId) return;
+              if (onRebaseNowLocal) {
+                runAction("rebase", async () => {
+                  await onRebaseNowLocal(laneId);
+                });
+                return;
+              }
               runAction("rebase", async () => {
-                const result = await window.ade.lanes.restack({ laneId, recursive: true });
-                if (result.error) {
-                  throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
+                const start = await window.ade.lanes.rebaseStart({
+                  laneId,
+                  scope: "lane_only",
+                  pushMode: "none",
+                  actor: "user"
+                });
+                if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
+                  throw new Error(start.run.error ?? "Rebase failed.");
                 }
               });
             }}
           >
             <Stack size={14} />
+            Rebase now (local only)
           </button>
         ) : null}
         {lane?.parentLaneId ? (
           <button
             type="button"
             style={{
-              ...(restackPublishHighlighted
+              ...(rebasePushHighlighted
                 ? primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })
                 : outlineButton({ height: 32, padding: "0 12px", fontSize: 10 })),
               opacity: (!laneId || busyAction != null) ? 0.4 : 1,
               pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
             }}
-            title="Restack onto parent, then publish with confirmation"
+            title="Rebase and push (local + remote)"
             disabled={!laneId || busyAction != null}
-            onClick={() => runRestackAndPublishFlow(true)}
+            onClick={() => runRebaseAndPushFlow(true)}
           >
-            SYNC
+            Rebase and push (local + remote)
+          </button>
+        ) : null}
+        {lane?.parentLaneId ? (
+          <button
+            type="button"
+            style={{
+              ...outlineButton({ height: 32, padding: "0 10px", fontSize: 10 }),
+              opacity: (!laneId || busyAction != null) ? 0.4 : 1,
+              pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
+            }}
+            title="View rebase details"
+            disabled={!laneId || busyAction != null}
+            onClick={() => onViewRebaseDetails?.()}
+          >
+            View rebase details
           </button>
         ) : null}
 
@@ -959,9 +1002,9 @@ export function LaneGitActionsPane({
                 PULL ({syncMode.toUpperCase()})
               </button>
             ) : null}
-            {nextActionHint.action === "restack_publish" ? (
-              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runRestackAndPublishFlow(true)}>
-                RESTACK + PUBLISH
+            {nextActionHint.action === "rebase_push" ? (
+              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runRebaseAndPushFlow(true)}>
+                Rebase and push (local + remote)
               </button>
             ) : null}
             {nextActionHint.action === "pull" && divergedSync ? (
@@ -983,10 +1026,10 @@ export function LaneGitActionsPane({
         </div>
       ) : null}
 
-      {nextActionHint?.action === "restack_publish" && !autoRebaseEnabled ? (
+      {nextActionHint?.action === "rebase_push" && !autoRebaseEnabled ? (
         <div className="shrink-0" style={{ padding: "8px 16px", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.5px", borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.info}08`, color: COLORS.info }}>
           <div className="flex items-center gap-2">
-            <span className="truncate">Auto-rebase is off. Enable it in Settings to auto-sync child lanes when parent/main advances.</span>
+            <span className="truncate">Auto-rebase is off. Enable it in Settings to auto-rebase child lanes when parent/main advances.</span>
             <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), marginLeft: "auto", flexShrink: 0 }} onClick={onOpenSettings}>
               SETTINGS
             </button>
@@ -1007,7 +1050,7 @@ export function LaneGitActionsPane({
                   ? "Lane was rebased automatically."
                   : autoRebaseStatus.state === "rebaseConflict"
                     ? "Conflicts are expected. Resolve manually, then publish."
-                    : "Waiting for manual sync.")}
+                    : "Waiting for manual rebase.")}
             </span>
             {autoRebaseStatus.state !== "autoRebased" ? (
               <div style={{ marginLeft: "auto", flexShrink: 0 }}>
@@ -1016,8 +1059,8 @@ export function LaneGitActionsPane({
                     RESOLVE IN CONFLICTS
                   </button>
                 ) : (
-                  <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runRestackAndPublishFlow(true)}>
-                    RESTACK + PUBLISH
+                  <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runRebaseAndPushFlow(true)}>
+                    Rebase and push (local + remote)
                   </button>
                 )}
               </div>

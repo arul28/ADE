@@ -778,11 +778,9 @@ export function createMissionBudgetService(args: {
     for (const p of Object.keys(fiveHourUsage.byProvider)) missionProviders.add(p);
     for (const p of Object.keys(weeklyUsage.byProvider)) missionProviders.add(p);
     // Ensure at least the orchestrator model's provider is present
-    const orchestratorModelId = launchMeta && typeof launchMeta.orchestratorModel === "string"
-      ? launchMeta.orchestratorModel
-      : modelConfig && isRecord(modelConfig.orchestratorModel) && typeof (modelConfig.orchestratorModel as Record<string, unknown>).modelId === "string"
-        ? (modelConfig.orchestratorModel as Record<string, unknown>).modelId as string
-        : "claude-sonnet-4-6";
+    const orchestratorModelId = modelConfig && isRecord(modelConfig.orchestratorModel) && typeof (modelConfig.orchestratorModel as Record<string, unknown>).modelId === "string"
+      ? (modelConfig.orchestratorModel as Record<string, unknown>).modelId as string
+      : "anthropic/claude-sonnet-4-6";
     missionProviders.add(inferProviderFromModel(orchestratorModelId));
 
     const fiveHourHardStopPercent = smartBudget && typeof smartBudget.fiveHourHardStopPercent === "number"

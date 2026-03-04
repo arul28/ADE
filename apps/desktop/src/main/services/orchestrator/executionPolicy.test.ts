@@ -106,14 +106,14 @@ describe("executionPolicy", () => {
   });
 
   describe("phaseModelToExecutorKind", () => {
-    it("maps claude to claude executor", () => {
-      expect(phaseModelToExecutorKind("claude")).toBe("claude");
+    it("maps known model ids to unified executor", () => {
+      expect(phaseModelToExecutorKind("anthropic/claude-sonnet-4-6")).toBe("unified");
     });
 
-    it("maps codex and others to codex executor", () => {
-      expect(phaseModelToExecutorKind("codex")).toBe("codex");
-      expect(phaseModelToExecutorKind(undefined)).toBe("codex");
-      expect(phaseModelToExecutorKind(null)).toBe("codex");
+    it("falls back to unified when model id is absent/unknown", () => {
+      expect(phaseModelToExecutorKind("legacy-provider-string")).toBe("unified");
+      expect(phaseModelToExecutorKind(undefined)).toBe("unified");
+      expect(phaseModelToExecutorKind(null)).toBe("unified");
     });
   });
 
@@ -375,7 +375,7 @@ function makeAttempt(overrides?: Partial<OrchestratorAttempt>): OrchestratorAtte
     stepId: "step-1",
     attemptNumber: 1,
     status: "succeeded",
-    executorKind: "codex",
+    executorKind: "unified",
     executorSessionId: null,
     trackedSessionEnforced: false,
     contextProfile: "orchestrator_deterministic_v1",

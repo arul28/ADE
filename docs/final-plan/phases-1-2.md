@@ -1,5 +1,9 @@
 # Phases 1-2: Foundation (Complete)
 
+> Historical snapshot: This file documents original Phase 1-2 planning context. It is **not** authoritative for current orchestrator runtime contracts. For current execution contracts, use:
+> - `docs/ORCHESTRATOR_OVERHAUL.md` (orchestrator hard-cutover contract)
+> - `docs/architecture/AI_INTEGRATION.md` (current architecture behavior)
+
 ## Phase 1 -- Agent SDK Integration + AgentExecutor Interface (3-4 weeks)
 
 Goal: Consolidate AI execution on local-first agent SDK runtimes unified behind ADE's `AgentExecutor` interface. Establish the execution layer that all downstream phases build on.
@@ -119,7 +123,7 @@ Goal: Consolidate AI execution on local-first agent SDK runtimes unified behind 
   - Approval mode picker: `untrusted` / `on-request` / `never`
   - Writable paths list (additional paths beyond cwd)
   - Command allowlist (shell commands the agent may run)
-- These settings persist to `.ade/local.yaml` under `ai.permissions.claude` and `ai.permissions.codex`.
+- Current runtime contract persists class-based permissions under `ai.permissions.cli` and `ai.permissions.inProcess`.
 - Displayed with clear explanations of what each option does and security implications.
 
 #### W13: Settings — Model Selection

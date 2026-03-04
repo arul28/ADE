@@ -2,12 +2,14 @@
 // Model configuration types
 // ---------------------------------------------------------------------------
 
-export type ModelProvider = "claude" | "codex";
+export type ModelProvider = "claude" | "codex" | (string & {});
 
 export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh";
 
 export type ModelConfig = {
-  provider: ModelProvider;
+  /** Optional provider hint; routing is resolved from modelId via model registry. */
+  provider?: ModelProvider;
+  /** Canonical registry model id (for example: anthropic/claude-sonnet-4-6, openai/gpt-5.3-codex). */
   modelId: string;
   thinkingLevel?: ThinkingLevel;
 };
@@ -64,7 +66,7 @@ export type MissionModelConfig = {
 };
 
 export type ModelCapabilityProfile = {
-  provider: "claude" | "codex" | (string & {});
+  provider: ModelProvider;
   modelId: string;
   displayName: string;
   strengths: string[];

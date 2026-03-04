@@ -499,6 +499,31 @@ async function createFixture(args: {
     packService,
     projectConfigService
   });
+  const defaultUnifiedModelId = "anthropic/claude-sonnet-4-6";
+  const normalizeStepModelId = (step: any) => {
+    const executorKind = typeof step?.executorKind === "string" ? step.executorKind : null;
+    if (executorKind !== "unified") return step;
+    const metadata =
+      step?.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
+        ? step.metadata
+        : {};
+    const modelId = typeof metadata.modelId === "string" ? metadata.modelId.trim() : "";
+    if (modelId.length > 0) return { ...step, metadata: { ...metadata, modelId } };
+    return {
+      ...step,
+      metadata: {
+        ...metadata,
+        modelId: defaultUnifiedModelId,
+      },
+    };
+  };
+  const originalStartRun = orchestratorService.startRun.bind(orchestratorService);
+  (orchestratorService as any).startRun = ((input: any) =>
+    originalStartRun({
+      ...input,
+      steps: Array.isArray(input?.steps) ? input.steps.map((step: any) => normalizeStepModelId(step)) : input?.steps,
+    })) as typeof orchestratorService.startRun;
+
   const aiOrchestratorService = createAiOrchestratorService({
     db,
     logger: args.logger ?? createLogger(),
@@ -543,7 +568,7 @@ describe("aiOrchestratorService", () => {
       started = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "codex"
+        defaultExecutorKind: "unified"
       });
       // In the AI-first flow, there is no plan review gate — the coordinator handles everything.
       // The mission goes directly to in_progress.
@@ -570,7 +595,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "codex"
+        defaultExecutorKind: "unified"
       });
       expect(launched.started).toBeTruthy();
       expect(launched.started?.run.id).toBeTruthy();
@@ -605,7 +630,7 @@ describe("aiOrchestratorService", () => {
       const launched = await noRootService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "codex"
+        defaultExecutorKind: "unified"
       });
       expect(launched.started).toBeTruthy();
 
@@ -641,12 +666,12 @@ describe("aiOrchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "codex",
+            executorKind: "unified",
             ownerId: "autopilot-owner",
             parallelismCap: 1
           }
         },
-        steps: [{ stepKey: "guarded-step", title: "Guarded step", stepIndex: 0, executorKind: "codex" }]
+        steps: [{ stepKey: "guarded-step", title: "Guarded step", stepIndex: 0, executorKind: "unified" }]
       });
       fixture.db.run(`update orchestrator_runs set status = 'active', updated_at = ? where id = ?`, [new Date().toISOString(), started.run.id]);
       const step = fixture.orchestratorService.listSteps(started.run.id)[0];
@@ -765,7 +790,18 @@ describe("aiOrchestratorService", () => {
       // Add steps manually (simulating coordinator creating tasks)
       fixture.orchestratorService.addSteps({
         runId,
-        steps: [{ stepKey: "implement-changes", title: "Implement requested changes", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+        steps: [{
+          stepKey: "implement-changes",
+          title: "Implement requested changes",
+          stepIndex: 0,
+          dependencyStepKeys: [],
+          laneId: fixture.laneId,
+          executorKind: "manual",
+          metadata: {
+            instructions: "Do the work",
+            modelId: "openai/gpt-5.3-codex",
+          }
+        }]
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
@@ -836,7 +872,18 @@ describe("aiOrchestratorService", () => {
       // Add steps manually (simulating coordinator)
       fixture.orchestratorService.addSteps({
         runId,
-        steps: [{ stepKey: "implement-changes", title: "Implement requested changes", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+        steps: [{
+          stepKey: "implement-changes",
+          title: "Implement requested changes",
+          stepIndex: 0,
+          dependencyStepKeys: [],
+          laneId: fixture.laneId,
+          executorKind: "manual",
+          metadata: {
+            instructions: "Do the work",
+            modelId: "openai/gpt-5.3-codex",
+          }
+        }]
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
@@ -908,7 +955,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?
           where id = ?
         `,
@@ -973,7 +1020,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?
           where id = ?
         `,
@@ -1270,7 +1317,7 @@ describe("aiOrchestratorService", () => {
       });
       const sessionId = "session-idle-hook-1";
       fixture.db.run(
-        `update orchestrator_attempts set executor_kind = 'codex', executor_session_id = ? where id = ?`,
+        `update orchestrator_attempts set executor_kind = 'unified', executor_session_id = ? where id = ?`,
         [sessionId, attempt.id]
       );
       fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
@@ -1419,7 +1466,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               started_at = ?,
               created_at = ?
           where id = ?
@@ -1480,7 +1527,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?,
               started_at = ?,
               created_at = ?
@@ -1576,7 +1623,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?,
               started_at = ?,
               created_at = ?
@@ -1723,7 +1770,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?
           where id = ?
         `,
@@ -1808,7 +1855,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?
           where id = ?
         `,
@@ -1909,7 +1956,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?
           where id = ?
         `,
@@ -2006,7 +2053,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?
           where id = ?
         `,
@@ -2186,7 +2233,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?
           where id = ?
         `,
@@ -2311,7 +2358,7 @@ describe("aiOrchestratorService", () => {
           name: "AI Step One",
           description: "First AI step.",
           taskType: "code",
-          executorHint: "claude",
+          executorHint: "unified",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: [],
@@ -2326,7 +2373,7 @@ describe("aiOrchestratorService", () => {
           name: "AI Step Two",
           description: "Second AI step.",
           taskType: "test",
-          executorHint: "codex",
+          executorHint: "unified",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: ["ai-step-1"],
@@ -3449,7 +3496,7 @@ describe("aiOrchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "codex",
+            executorKind: "unified",
             ownerId: "test-owner",
             parallelismCap: 2
           }
@@ -3472,7 +3519,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'codex',
+          set executor_kind = 'unified',
               executor_session_id = ?
           where id = ?
         `,
@@ -4861,11 +4908,11 @@ describe("aiOrchestratorService", () => {
       );
 
       fixture.orchestratorService.registerExecutorAdapter({
-        kind: "codex",
+        kind: "unified",
         start: async () => ({
           status: "accepted" as const,
           sessionId,
-          metadata: { adapterKind: "codex" }
+          metadata: { adapterKind: "unified" }
         })
       });
 
@@ -4877,7 +4924,7 @@ describe("aiOrchestratorService", () => {
       const launch = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "manual",
-        defaultExecutorKind: "codex"
+        defaultExecutorKind: "unified"
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -4885,18 +4932,31 @@ describe("aiOrchestratorService", () => {
       // Add steps manually (simulating coordinator creating tasks)
       fixture.orchestratorService.addSteps({
         runId,
-        steps: [{ stepKey: "implement-changes", title: "Implement requested changes", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+        steps: [
+          {
+            stepKey: "implement-changes",
+            title: "Implement requested changes",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            laneId: fixture.laneId,
+            executorKind: "manual",
+            metadata: {
+              instructions: "Do the work",
+              modelId: "openai/gpt-5.3-codex",
+            },
+          }
+        ]
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
-      if (!readyStep) throw new Error("Expected a ready step");
+      const readyStep = graph.steps.find((s) => s.stepKey === "implement-changes" && s.status === "ready");
+      if (!readyStep) throw new Error("Expected implement-changes step to be ready");
 
       const attempt = await fixture.orchestratorService.startAttempt({
         runId,
         stepId: readyStep.id,
         ownerId: "test-owner",
-        executorKind: "codex"
+        executorKind: "unified"
       });
 
       // Verify the attempt is running before we backdate

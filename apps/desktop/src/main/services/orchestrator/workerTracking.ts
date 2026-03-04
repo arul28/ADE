@@ -43,6 +43,7 @@ import {
 import {
   PM_SYSTEM_PREAMBLE,
 } from "./coordinatorSession";
+import { getModelById } from "../../../shared/modelRegistry";
 import type {
   OrchestratorWorkerState,
   OrchestratorWorkerStatus,
@@ -71,6 +72,18 @@ export function getWorkerStates(
     if (state.runId === args.runId) result.push(state);
   }
   return result;
+}
+
+function resolveEvaluationProvider(attempt: {
+  metadata?: Record<string, unknown> | null;
+}): "claude" | "codex" {
+  const metadata = isRecord(attempt.metadata) ? attempt.metadata : null;
+  const modelRef = typeof metadata?.modelId === "string" ? metadata.modelId : null;
+  if (modelRef) {
+    const descriptor = getModelById(modelRef);
+    if (descriptor?.family === "openai") return "codex";
+  }
+  return "claude";
 }
 
 export function upsertWorkerState(
@@ -746,7 +759,7 @@ export function updateWorkerStateFromEventCtx(
               completionCriteria,
               resultSummary: attempt.resultEnvelope?.summary ?? null
             },
-            provider: attempt.executorKind === "codex" ? "codex" : "claude"
+            provider: resolveEvaluationProvider(attempt)
           }).then((evalResult: any) => {
             emitOrchestratorMessage(
               ctx,
@@ -936,7 +949,7 @@ export function updateWorkerStateFromEventCtx(
                       properties: {
                         title: { type: "string" },
                         instructions: { type: "string" },
-                        executorKind: { type: "string", enum: ["claude", "codex"] }
+                        executorKind: { type: "string", enum: ["unified", "manual"] }
                       }
                     },
                     downstreamGuidance: { type: "string" }
@@ -1009,7 +1022,7 @@ export function updateWorkerStateFromEventCtx(
                         title: typeof ws.title === "string" ? ws.title : `Workaround for ${stepTitleForMessage(step)}`,
                         stepIndex: step.stepIndex + 1,
                         dependencyStepKeys: [],
-                        executorKind: (typeof ws.executorKind === "string" && ["claude", "codex"].includes(ws.executorKind) ? ws.executorKind : "claude") as OrchestratorExecutorKind,
+                        executorKind: (typeof ws.executorKind === "string" && ["unified", "manual"].includes(ws.executorKind) ? ws.executorKind : "unified") as OrchestratorExecutorKind,
                         retryLimit: 2,
                         metadata: {
                           instructions: typeof ws.instructions === "string" ? ws.instructions : "",
@@ -1056,7 +1069,7 @@ export function updateWorkerStateFromEventCtx(
               deps.handleInterventionWithAI({
                 missionId: graph.run.missionId,
                 interventionId: intervention.id,
-                provider: attempt.executorKind === "codex" ? "codex" : "claude"
+                provider: resolveEvaluationProvider(attempt)
               }).catch((error: unknown) => {
                 ctx.logger.debug("ai_orchestrator.auto_intervention_failed", {
                   runId: event.runId,

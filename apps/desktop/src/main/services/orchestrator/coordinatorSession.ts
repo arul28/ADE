@@ -23,6 +23,12 @@ import {
   thinkingLevelToReasoningEffort,
 } from "../../../shared/modelProfiles";
 
+const DEFAULT_COORDINATOR_MODEL_CONFIG: ModelConfig = {
+  modelId: "anthropic/claude-sonnet-4-6",
+  provider: "anthropic",
+  thinkingLevel: "high",
+};
+
 // ── Coordinator Prompt Templates ─────────────────────────────────
 
 export const PM_SYSTEM_PREAMBLE = [
@@ -97,7 +103,7 @@ export async function startCoordinatorSession(
     const coordinatorSystemPrompt = buildCoordinatorSystemPrompt({ planSummary });
     const timeoutMs = deps?.resolveAiDecisionLikeTimeoutMs(missionId) ?? null;
 
-    const resolvedConfig = coordinatorModelConfig ?? deps?.resolveOrchestratorModelConfig(missionId, "coordinator") ?? ({ provider: "claude", model: "sonnet", thinkingLevel: "high" } as unknown as ModelConfig);
+    const resolvedConfig = coordinatorModelConfig ?? deps?.resolveOrchestratorModelConfig(missionId, "coordinator") ?? DEFAULT_COORDINATOR_MODEL_CONFIG;
     const entry: CoordinatorSessionEntry = {
       sessionId: null,
       missionId,
@@ -120,7 +126,6 @@ export async function startCoordinatorSession(
           taskType: "review" as const,
           prompt: buildCoordinatorInitPrompt(plan.steps.length),
           cwd: ctx.projectRoot!,
-          provider: resolvedConfig.provider === "codex" ? "codex" : "claude",
           model: modelConfigToServiceModel(resolvedConfig),
           systemPrompt: coordinatorSystemPrompt,
           reasoningEffort: thinkingLevelToReasoningEffort(resolvedConfig.thinkingLevel),
@@ -220,7 +225,6 @@ export async function sendCoordinatorEvent(
       taskType: "review" as const,
       prompt: eventMessage,
       cwd: ctx.projectRoot,
-      provider: session.modelConfig.provider === "codex" ? "codex" : "claude",
       model: modelConfigToServiceModel(session.modelConfig),
       systemPrompt: session.systemPrompt,
       reasoningEffort: thinkingLevelToReasoningEffort(session.modelConfig.thinkingLevel),

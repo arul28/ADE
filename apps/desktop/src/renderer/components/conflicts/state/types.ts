@@ -7,7 +7,7 @@ import type {
   GitConflictState,
   MultiMergeMode,
   PrWithConflicts,
-  RestackSuggestion,
+  RebaseSuggestion,
   SuggestResolverTargetResult
 } from "../../../../shared/types";
 
@@ -55,8 +55,8 @@ export type ConflictsState = {
   gitConflictBusy: boolean;
   gitConflictError: string | null;
 
-  // Restack
-  restackSuggestions: RestackSuggestion[];
+  // Rebase
+  rebaseSuggestions: RebaseSuggestion[];
 
   // Proposals
   proposals: ConflictProposal[];
@@ -140,7 +140,7 @@ export type ConflictsAction =
   | { type: "SET_GIT_CONFLICT"; state: GitConflictState | null }
   | { type: "SET_GIT_CONFLICT_BUSY"; busy: boolean }
   | { type: "SET_GIT_CONFLICT_ERROR"; error: string | null }
-  | { type: "SET_RESTACK_SUGGESTIONS"; suggestions: RestackSuggestion[] }
+  | { type: "SET_REBASE_SUGGESTIONS"; suggestions: RebaseSuggestion[] }
   | { type: "SET_PROPOSALS"; proposals: ConflictProposal[] }
   | { type: "SET_PROPOSAL_BUSY"; busy: boolean }
   | { type: "SET_PROPOSAL_ERROR"; error: string | null }
@@ -207,7 +207,7 @@ export const initialConflictsState: ConflictsState = {
   gitConflict: null,
   gitConflictBusy: false,
   gitConflictError: null,
-  restackSuggestions: [],
+  rebaseSuggestions: [],
   proposals: [],
   proposalBusy: false,
   proposalError: null,

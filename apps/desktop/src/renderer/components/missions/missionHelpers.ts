@@ -10,10 +10,9 @@ import {
   Pulse,
 } from "@phosphor-icons/react";
 import type {
-  MissionApiPermissionMode,
-  MissionClaudePermissionMode,
-  MissionCodexApprovalMode,
-  MissionCodexSandboxPermissions,
+  MissionCliPermissionMode,
+  MissionCliSandboxPermissions,
+  MissionInProcessPermissionMode,
   MissionPriority,
   MissionStatus,
   OrchestratorAttempt,
@@ -170,24 +169,18 @@ export type MissionSettingsDraft = {
   defaultPlannerProvider: PlannerProvider;
   teammatePlanMode: TeammatePlanMode;
   requirePlanReview: boolean;
-  claudePermissionMode: MissionClaudePermissionMode;
-  claudeDangerouslySkip: boolean;
-  codexSandboxPermissions: MissionCodexSandboxPermissions;
-  codexApprovalMode: Extract<MissionCodexApprovalMode, "suggest" | "auto-edit" | "full-auto">;
-  codexConfigPath: string;
-  apiPermissionMode: MissionApiPermissionMode;
+  cliMode: MissionCliPermissionMode;
+  cliSandboxPermissions: MissionCliSandboxPermissions;
+  inProcessMode: MissionInProcessPermissionMode;
 };
 
 export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   defaultPlannerProvider: "auto",
   teammatePlanMode: "auto",
   requirePlanReview: false,
-  claudePermissionMode: "bypassPermissions",
-  claudeDangerouslySkip: false,
-  codexSandboxPermissions: "workspace-write",
-  codexApprovalMode: "full-auto",
-  codexConfigPath: "",
-  apiPermissionMode: "full-auto",
+  cliMode: "full-auto",
+  cliSandboxPermissions: "workspace-write",
+  inProcessMode: "full-auto",
 };
 
 /* ════════════════════ PURE UTILITY FUNCTIONS ════════════════════ */
@@ -221,24 +214,17 @@ export function toTeammatePlanMode(value: string): TeammatePlanMode {
   return value === "off" || value === "required" || value === "auto" ? value : "auto";
 }
 
-export function toClaudePermissionMode(value: string): MissionClaudePermissionMode {
-  return value === "default" || value === "plan" || value === "acceptEdits" || value === "bypassPermissions" ? value : "default";
+export function toCliMode(value: string): MissionCliPermissionMode {
+  return value === "read-only" || value === "edit" || value === "full-auto" ? value : "full-auto";
 }
 
-export function toCodexSandboxPermissions(value: string): MissionCodexSandboxPermissions {
+export function toCliSandboxPermissions(value: string): MissionCliSandboxPermissions {
   return value === "read-only" || value === "workspace-write" || value === "danger-full-access" ? value : "workspace-write";
 }
 
-export function toCodexApprovalMode(value: string): Extract<MissionCodexApprovalMode, "suggest" | "auto-edit" | "full-auto"> {
-  if (value === "suggest" || value === "auto-edit" || value === "full-auto") return value;
-  if (value === "untrusted") return "suggest";
-  if (value === "on-request" || value === "on-failure") return "auto-edit";
-  if (value === "never") return "full-auto";
+export function toInProcessMode(value: string): MissionInProcessPermissionMode {
+  if (value === "plan" || value === "edit" || value === "full-auto") return value;
   return "full-auto";
-}
-
-export function toApiPermissionMode(value: string): MissionApiPermissionMode {
-  return value === "plan" || value === "edit" || value === "full-auto" ? value : "full-auto";
 }
 
 export function formatElapsed(startedAt: string | null, endedAt?: string | null): string {

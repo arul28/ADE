@@ -39,7 +39,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
         <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
           <XCircle size={14} weight="fill" style={{ color: "#EF4444", flexShrink: 0 }} />
           <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px", color: "#FCA5A5" }}>
-            AUTO-SYNC FAILED — conflicts need manual resolution
+            AUTO-REBASE FAILED — conflicts need manual resolution
           </span>
         </div>
         <button
@@ -56,7 +56,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
           }}
           onClick={() => onTabChange("rebase")}
         >
-          RESOLVE IN SYNC TAB
+          RESOLVE IN REBASE TAB
         </button>
       </div>
     );
@@ -99,7 +99,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
       <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
         <Warning size={14} weight="fill" style={{ color: "#F59E0B", flexShrink: 0 }} />
         <span className="font-mono font-bold" style={{ fontSize: 11, color: "#F5D08B" }}>
-          {need.behindBy} update{need.behindBy !== 1 ? "s" : ""} behind main — sync recommended before merging
+          {need.behindBy} update{need.behindBy !== 1 ? "s" : ""} behind main — rebase recommended before merging
         </span>
       </div>
       <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
@@ -118,7 +118,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
           }}
           onClick={() => void handleSync()}
         >
-          {syncBusy ? "SYNCING..." : "SYNC NOW"}
+          {syncBusy ? "REBASING..." : "REBASE NOW (LOCAL ONLY)"}
         </button>
         <button
           type="button"
@@ -133,7 +133,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
           }}
           onClick={() => onTabChange("rebase")}
         >
-          VIEW IN SYNC TAB
+          VIEW REBASE DETAILS
         </button>
         <button
           type="button"

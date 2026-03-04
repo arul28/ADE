@@ -50,6 +50,8 @@ export type ModelDescriptor = {
   costTier?: "low" | "medium" | "high" | "very_high";
 };
 
+export type WorkerExecutionPath = "cli" | "api" | "local";
+
 // ---------------------------------------------------------------------------
 // Registry data
 // ---------------------------------------------------------------------------
@@ -603,6 +605,29 @@ export function getAvailableModels(
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
   const normalized = alias.trim().toLowerCase();
   return byId.get(normalized) ?? byShortId.get(normalized);
+}
+
+export function resolveModelDescriptor(modelRef: string): ModelDescriptor | undefined {
+  const normalized = modelRef.trim();
+  if (!normalized.length) return undefined;
+  return getModelById(normalized) ?? resolveModelAlias(normalized);
+}
+
+export function resolveCliProviderForModel(
+  descriptor: ModelDescriptor,
+): "claude" | "codex" | null {
+  if (!descriptor.isCliWrapped) return null;
+  if (descriptor.family === "anthropic") return "claude";
+  if (descriptor.family === "openai") return "codex";
+  return null;
+}
+
+export function classifyWorkerExecutionPath(
+  descriptor: ModelDescriptor,
+): WorkerExecutionPath {
+  if (resolveCliProviderForModel(descriptor)) return "cli";
+  if (descriptor.authTypes.includes("local")) return "local";
+  return "api";
 }
 
 // ---------------------------------------------------------------------------

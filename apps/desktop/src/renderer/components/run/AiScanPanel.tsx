@@ -44,7 +44,7 @@ export function AiScanPanel({ open, onClose, onAddCommand, onAddAll }: AiScanPan
   const [scanError, setScanError] = React.useState<string | null>(null);
   const [modelConfig, setModelConfig] = React.useState<ModelConfig>({
     provider: "claude",
-    modelId: "claude-sonnet-4-20250514",
+    modelId: "anthropic/claude-sonnet-4-6",
     thinkingLevel: "medium",
   });
 

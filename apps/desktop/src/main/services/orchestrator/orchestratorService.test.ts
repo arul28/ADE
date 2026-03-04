@@ -45,6 +45,7 @@ async function createFixture(args: {
   conflictService?: any;
   packService?: Record<string, unknown>;
   projectConfigService?: Record<string, unknown> | null;
+  aiIntegrationService?: Record<string, unknown> | null;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-orchestrator-"));
   fs.mkdirSync(path.join(projectRoot, "docs", "architecture"), { recursive: true });
@@ -212,8 +213,36 @@ async function createFixture(args: {
     } as any,
     conflictService: args.conflictService,
     ptyService,
-    projectConfigService: (args.projectConfigService ?? null) as any
+    projectConfigService: (args.projectConfigService ?? null) as any,
+    aiIntegrationService: (args.aiIntegrationService ?? null) as any
   });
+
+  // Test harness convenience: unified workers require metadata.modelId in Phase 3.
+  // Inject a default modelId for tests that are validating unrelated behavior.
+  const defaultUnifiedModelId = "anthropic/claude-sonnet-4-6";
+  const normalizeStepModelId = (step: any) => {
+    const executorKind = typeof step?.executorKind === "string" ? step.executorKind : null;
+    if (executorKind !== "unified") return step;
+    const metadata =
+      step?.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
+        ? step.metadata
+        : {};
+    const modelId = typeof metadata.modelId === "string" ? metadata.modelId.trim() : "";
+    if (modelId.length > 0) return step;
+    return {
+      ...step,
+      metadata: {
+        ...metadata,
+        modelId: defaultUnifiedModelId,
+      },
+    };
+  };
+  const originalStartRun = service.startRun.bind(service);
+  (service as any).startRun = ((input: any) =>
+    originalStartRun({
+      ...input,
+      steps: Array.isArray(input?.steps) ? input.steps.map((step: any) => normalizeStepModelId(step)) : input?.steps,
+    })) as typeof service.startRun;
 
   return {
     db,
@@ -772,7 +801,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "codex",
+            executorKind: "unified",
             ownerId: "autopilot-owner",
             parallelismCap: 1
           }
@@ -782,7 +811,7 @@ describe("orchestratorService", () => {
             stepKey: "status-guarded",
             title: "Status Guarded",
             stepIndex: 0,
-            executorKind: "codex"
+            executorKind: "unified"
           }
         ]
       });
@@ -1127,15 +1156,15 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "codex",
+            executorKind: "unified",
             ownerId: "autopilot-owner",
             parallelismCap: 4
           }
         },
         steps: [
-          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "codex" },
-          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "codex" },
-          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "codex" }
+          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "unified" },
+          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "unified" },
+          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "unified" }
         ]
       });
 
@@ -1214,7 +1243,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "codex",
+            executorKind: "unified",
             ownerId: "autopilot-owner",
             parallelismCap: 4
           },
@@ -1226,9 +1255,9 @@ describe("orchestratorService", () => {
           }
         },
         steps: [
-          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "codex" },
-          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "codex" },
-          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "codex" }
+          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "unified" },
+          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "unified" },
+          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "unified" }
         ]
       });
 
@@ -1304,7 +1333,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "codex",
+            executorKind: "unified",
             ownerId: "autopilot-owner",
             parallelismCap: 1
           }
@@ -1315,7 +1344,7 @@ describe("orchestratorService", () => {
             title: "Low Priority",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "codex",
+            executorKind: "unified",
             metadata: { aiPriority: 1 }
           },
           {
@@ -1323,7 +1352,7 @@ describe("orchestratorService", () => {
             title: "High Priority",
             stepIndex: 1,
             laneId: fixture.laneId,
-            executorKind: "codex",
+            executorKind: "unified",
             metadata: { aiPriority: 50 }
           },
           {
@@ -1331,7 +1360,7 @@ describe("orchestratorService", () => {
             title: "No AI Priority",
             stepIndex: 2,
             laneId: fixture.laneId,
-            executorKind: "codex"
+            executorKind: "unified"
           }
         ]
       });
@@ -1464,7 +1493,7 @@ describe("orchestratorService", () => {
       const started = fixture.service.startRunFromMission({
         missionId: fixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "codex",
+        defaultExecutorKind: "unified",
         metadata: {
           plannerParallelismCap: 6
         }
@@ -1474,7 +1503,7 @@ describe("orchestratorService", () => {
       expect(run?.metadata?.runMode).toBe("autopilot");
       const autopilot = run?.metadata?.autopilot as Record<string, unknown> | undefined;
       expect(autopilot?.enabled).toBe(true);
-      expect(autopilot?.executorKind).toBe("codex");
+      expect(autopilot?.executorKind).toBe("unified");
       expect(autopilot?.parallelismCap).toBe(2);
       const planner = run?.metadata?.planner as Record<string, unknown> | undefined;
       expect(planner?.parallelismCap).toBe(2);
@@ -1544,7 +1573,7 @@ describe("orchestratorService", () => {
       const requiredStarted = requiredFixture.service.startRunFromMission({
         missionId: requiredFixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "codex"
+        defaultExecutorKind: "unified"
       });
       const requiredSteps = requiredFixture.service.listSteps(requiredStarted.run.id);
       const inferredStep = requiredSteps.find((step) => step.missionStepId === "mstep-plan-1");
@@ -1610,7 +1639,7 @@ describe("orchestratorService", () => {
       const offStarted = offFixture.service.startRunFromMission({
         missionId: offFixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "claude"
+        defaultExecutorKind: "unified"
       });
       const offSteps = offFixture.service.listSteps(offStarted.run.id);
       const inferredAnalysis = offSteps.find((step) => step.missionStepId === "mstep-plan-3");
@@ -2202,7 +2231,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "codex",
+            executorKind: "unified",
             ownerId: "orchestrator-autopilot"
           }
         },
@@ -2212,7 +2241,7 @@ describe("orchestratorService", () => {
             title: "First",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "codex"
+            executorKind: "unified"
           },
           {
             stepKey: "second",
@@ -2220,7 +2249,7 @@ describe("orchestratorService", () => {
             stepIndex: 1,
             dependencyStepKeys: ["first"],
             laneId: fixture.laneId,
-            executorKind: "codex"
+            executorKind: "unified"
           }
         ]
       });
@@ -2281,7 +2310,7 @@ describe("orchestratorService", () => {
             title: "First",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "codex"
+            executorKind: "unified"
           }
         ]
       });
@@ -2492,7 +2521,7 @@ describe("orchestratorService", () => {
     });
     try {
       fixture.service.registerExecutorAdapter({
-        kind: "claude",
+        kind: "unified",
         start: async () => ({
           status: "completed",
           result: {
@@ -2510,7 +2539,7 @@ describe("orchestratorService", () => {
             stepKey: "adapter",
             title: "Adapter Step",
             stepIndex: 0,
-            executorKind: "claude"
+            executorKind: "unified"
           }
         ]
       });
@@ -2565,8 +2594,8 @@ describe("orchestratorService", () => {
           JSON.stringify({
             launch: {
               permissionConfig: {
-                claude: { permissionMode: "plan" },
-                codex: { approvalMode: "auto-edit" }
+                cli: { mode: "edit", sandboxPermissions: "danger-full-access" },
+                inProcess: { mode: "plan" }
               }
             }
           }),
@@ -2577,7 +2606,7 @@ describe("orchestratorService", () => {
 
       let capturedPermissionConfig: Record<string, unknown> | undefined;
       fixture.service.registerExecutorAdapter({
-        kind: "claude",
+        kind: "unified",
         start: async (args) => {
           capturedPermissionConfig = args.permissionConfig as Record<string, unknown> | undefined;
           return {
@@ -2602,7 +2631,10 @@ describe("orchestratorService", () => {
             stepKey: "permissions-override",
             title: "Permissions override",
             stepIndex: 0,
-            executorKind: "claude"
+            executorKind: "unified",
+            metadata: {
+              modelId: "anthropic/claude-sonnet-4-6"
+            }
           }
         ]
       });
@@ -2615,10 +2647,11 @@ describe("orchestratorService", () => {
       });
 
       expect(attempt.status).toBe("succeeded");
-      const claude = capturedPermissionConfig?.claude as Record<string, unknown> | undefined;
-      const codex = capturedPermissionConfig?.codex as Record<string, unknown> | undefined;
-      expect(claude?.permissionMode).toBe("plan");
-      expect(codex?.approvalMode).toBe("auto-edit");
+      const cli = capturedPermissionConfig?.cli as Record<string, unknown> | undefined;
+      const inProcess = capturedPermissionConfig?.inProcess as Record<string, unknown> | undefined;
+      expect(cli?.mode).toBe("edit");
+      expect(cli?.sandboxPermissions).toBe("danger-full-access");
+      expect(inProcess?.mode).toBe("plan");
     } finally {
       fixture.dispose();
     }
@@ -2629,7 +2662,7 @@ describe("orchestratorService", () => {
     try {
       let capturedPermissionConfig: Record<string, unknown> | undefined;
       fixture.service.registerExecutorAdapter({
-        kind: "codex",
+        kind: "unified",
         start: async (args) => {
           capturedPermissionConfig = args.permissionConfig as Record<string, unknown> | undefined;
           return {
@@ -2654,7 +2687,10 @@ describe("orchestratorService", () => {
             stepKey: "permissions-defaults",
             title: "Permissions defaults",
             stepIndex: 0,
-            executorKind: "codex"
+            executorKind: "unified",
+            metadata: {
+              modelId: "openai/gpt-5.3-codex"
+            }
           }
         ]
       });
@@ -2667,11 +2703,53 @@ describe("orchestratorService", () => {
       });
 
       expect(attempt.status).toBe("succeeded");
-      const claude = capturedPermissionConfig?.claude as Record<string, unknown> | undefined;
-      const codex = capturedPermissionConfig?.codex as Record<string, unknown> | undefined;
-      expect(claude?.permissionMode).toBe("acceptEdits");
-      expect(codex?.approvalMode).toBe("auto-edit");
-      expect(codex?.sandboxPermissions).toBe("workspace-write");
+      const cli = capturedPermissionConfig?.cli as Record<string, unknown> | undefined;
+      const inProcess = capturedPermissionConfig?.inProcess as Record<string, unknown> | undefined;
+      expect(cli?.mode).toBe("full-auto");
+      expect(cli?.sandboxPermissions).toBe("workspace-write");
+      expect(inProcess?.mode).toBe("full-auto");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("runs non-CLI unified attempts in-process without spawning terminal sessions", async () => {
+    const fixture = await createFixture({
+      aiIntegrationService: {
+        executeViaUnified: async () => ({
+          text: "api/local execution completed",
+          structuredOutput: { ok: true },
+          sessionId: null
+        })
+      }
+    });
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "api-worker",
+            title: "API worker",
+            stepIndex: 0,
+            executorKind: "unified",
+            metadata: {
+              modelId: "openai/gpt-4.1"
+            }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+
+      expect(attempt.status).toBe("succeeded");
+      expect(attempt.resultEnvelope?.trackedSession).toBe(false);
+      expect(fixture.ptyCreateCalls).toHaveLength(0);
     } finally {
       fixture.dispose();
     }
@@ -3059,7 +3137,7 @@ describe("orchestratorService", () => {
 
       let adapterCallCount = 0;
       fixture.service.registerExecutorAdapter({
-        kind: "codex",
+        kind: "unified",
         start: async () => {
           adapterCallCount += 1;
           const sessionId = `adapter-session-${adapterCallCount}`;
@@ -3078,7 +3156,7 @@ describe("orchestratorService", () => {
           return {
             status: "accepted" as const,
             sessionId,
-            metadata: { adapterKind: "codex" }
+            metadata: { adapterKind: "unified" }
           };
         }
       });
@@ -3103,7 +3181,7 @@ describe("orchestratorService", () => {
       const started = fixture.service.startRunFromMission({
         missionId: fixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "codex",
+        defaultExecutorKind: "unified",
         metadata: { plannerParallelismCap: 4 }
       });
 
@@ -3139,11 +3217,11 @@ describe("orchestratorService", () => {
       // Register adapter that returns accepted with a sessionId, but do NOT insert
       // a terminal_sessions row — the session doesn't exist in the database.
       fixture.service.registerExecutorAdapter({
-        kind: "claude",
+        kind: "unified",
         start: async () => ({
           status: "accepted" as const,
           sessionId: "ghost-session-999",
-          metadata: { adapterKind: "claude" }
+          metadata: { adapterKind: "unified" }
         })
       });
 
@@ -3154,7 +3232,7 @@ describe("orchestratorService", () => {
             stepKey: "orphan-session-step",
             title: "Step with missing session",
             stepIndex: 0,
-            executorKind: "claude"
+            executorKind: "unified"
           }
         ]
       });

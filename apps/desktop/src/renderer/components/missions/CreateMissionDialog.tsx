@@ -28,10 +28,9 @@ import type {
   AggregatedUsageStats,
   TeamRuntimeConfig,
   MissionPermissionConfig,
-  MissionApiPermissionMode,
-  MissionClaudePermissionMode,
-  MissionCodexApprovalMode,
-  MissionCodexSandboxPermissions,
+  MissionCliPermissionMode,
+  MissionCliSandboxPermissions,
+  MissionInProcessPermissionMode,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { MODEL_REGISTRY } from "../../../shared/modelRegistry";
@@ -59,12 +58,9 @@ export type CreateDraft = {
 
 export type CreateMissionDefaults = {
   plannerProvider?: "auto" | "claude" | "codex";
-  claudePermissionMode?: MissionClaudePermissionMode;
-  claudeDangerouslySkip?: boolean;
-  codexSandboxPermissions?: MissionCodexSandboxPermissions;
-  codexApprovalMode?: Extract<MissionCodexApprovalMode, "suggest" | "auto-edit" | "full-auto">;
-  codexConfigPath?: string;
-  apiPermissionMode?: MissionApiPermissionMode;
+  cliMode?: MissionCliPermissionMode;
+  cliSandboxPermissions?: MissionCliSandboxPermissions;
+  inProcessMode?: MissionInProcessPermissionMode;
 };
 
 const DEFAULT_AGENT_RUNTIME: MissionAgentRuntimeConfig = {
@@ -76,8 +72,8 @@ const DEFAULT_AGENT_RUNTIME: MissionAgentRuntimeConfig = {
 const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
 
 const DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER: Record<"claude" | "codex", MissionModelConfig["orchestratorModel"]> = {
-  claude: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
-  codex: { provider: "codex", modelId: "gpt-5.3-codex", thinkingLevel: "medium" },
+  claude: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+  codex: { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
 };
 
 const HIGH_TEAMMATE_COUNT_GUARDRAIL_THRESHOLD = 5;
@@ -102,19 +98,12 @@ function buildDefaultModelConfig(
 }
 
 function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | undefined): MissionPermissionConfig {
-  const claudePermissionMode =
-    defaults?.claudeDangerouslySkip === true
-      ? "bypassPermissions"
-      : (defaults?.claudePermissionMode ?? "bypassPermissions");
-  const codexConfigPath = defaults?.codexConfigPath?.trim() ?? "";
   return {
-    claude: { permissionMode: claudePermissionMode },
-    codex: {
-      sandboxPermissions: defaults?.codexSandboxPermissions ?? "workspace-write",
-      approvalMode: defaults?.codexApprovalMode ?? "full-auto",
-      ...(codexConfigPath.length > 0 ? { configPath: codexConfigPath } : {}),
+    cli: {
+      mode: defaults?.cliMode ?? "full-auto",
+      sandboxPermissions: defaults?.cliSandboxPermissions ?? "workspace-write",
     },
-    api: { permissionMode: defaults?.apiPermissionMode ?? "full-auto" },
+    inProcess: { mode: defaults?.inProcessMode ?? "full-auto" },
   };
 }
 
@@ -821,64 +810,64 @@ function CreateMissionDialogInner({
                     WORKER PERMISSIONS
                   </span>
                   <div className="grid grid-cols-3 gap-3">
-                    {/* Claude */}
+                    {/* CLI Mode */}
                     <label className="space-y-1 text-[10px]">
-                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>CLAUDE</span>
+                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>CLI MODE</span>
                       <select
-                        value={draft.permissionConfig?.claude?.permissionMode ?? "bypassPermissions"}
+                        value={draft.permissionConfig?.cli?.mode ?? "full-auto"}
                         onChange={(e) => {
-                          const mode = e.target.value as MissionClaudePermissionMode;
+                          const mode = e.target.value as MissionCliPermissionMode;
                           setDraft((p) => ({
                             ...p,
                             permissionConfig: {
                               ...p.permissionConfig,
-                              claude: { ...p.permissionConfig?.claude, permissionMode: mode },
+                              cli: { ...p.permissionConfig?.cli, mode },
                             },
                           }));
                         }}
                         className="h-7 w-full px-2 outline-none"
                         style={dlgInputStyle}
                       >
-                        <option value="default">Ask Permissions</option>
-                        <option value="acceptEdits">Accept Edits</option>
-                        <option value="plan">Plan Mode</option>
-                        <option value="bypassPermissions">Bypass Permissions</option>
+                        <option value="read-only">Read-only</option>
+                        <option value="edit">Edit</option>
+                        <option value="full-auto">Full-auto</option>
                       </select>
                     </label>
-                    {/* Codex */}
+                    {/* CLI Sandbox */}
                     <label className="space-y-1 text-[10px]">
-                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>CODEX</span>
+                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>CLI SANDBOX</span>
                       <select
-                        value={draft.permissionConfig?.codex?.approvalMode ?? "full-auto"}
+                        value={draft.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write"}
                         onChange={(e) => {
-                          const mode = e.target.value as Extract<MissionCodexApprovalMode, "suggest" | "full-auto">;
+                          const mode = e.target.value as MissionCliSandboxPermissions;
                           setDraft((p) => ({
                             ...p,
                             permissionConfig: {
                               ...p.permissionConfig,
-                              codex: { ...p.permissionConfig?.codex, approvalMode: mode },
+                              cli: { ...p.permissionConfig?.cli, sandboxPermissions: mode },
                             },
                           }));
                         }}
                         className="h-7 w-full px-2 outline-none"
                         style={dlgInputStyle}
                       >
-                        <option value="suggest">Default Permissions</option>
-                        <option value="full-auto">Full Access</option>
+                        <option value="read-only">Read-only</option>
+                        <option value="workspace-write">Workspace write</option>
+                        <option value="danger-full-access">Danger full-access</option>
                       </select>
                     </label>
-                    {/* API Models */}
+                    {/* In-process */}
                     <label className="space-y-1 text-[10px]">
-                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>API MODELS</span>
+                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>IN-PROCESS MODE</span>
                       <select
-                        value={draft.permissionConfig?.api?.permissionMode ?? "full-auto"}
+                        value={draft.permissionConfig?.inProcess?.mode ?? "full-auto"}
                         onChange={(e) => {
-                          const mode = e.target.value as MissionApiPermissionMode;
+                          const mode = e.target.value as MissionInProcessPermissionMode;
                           setDraft((p) => ({
                             ...p,
                             permissionConfig: {
                               ...p.permissionConfig,
-                              api: { ...p.permissionConfig?.api, permissionMode: mode },
+                              inProcess: { ...p.permissionConfig?.inProcess, mode },
                             },
                           }));
                         }}
@@ -892,9 +881,8 @@ function CreateMissionDialogInner({
                     </label>
                   </div>
                   {(
-                    (draft.permissionConfig?.claude?.permissionMode && draft.permissionConfig.claude.permissionMode !== "bypassPermissions") ||
-                    (draft.permissionConfig?.codex?.approvalMode && draft.permissionConfig.codex.approvalMode !== "full-auto") ||
-                    (draft.permissionConfig?.api?.permissionMode && draft.permissionConfig.api.permissionMode !== "full-auto")
+                    (draft.permissionConfig?.cli?.mode && draft.permissionConfig.cli.mode !== "full-auto") ||
+                    (draft.permissionConfig?.inProcess?.mode && draft.permissionConfig.inProcess.mode !== "full-auto")
                   ) && (
                     <div
                       style={{
@@ -961,7 +949,7 @@ function CreateMissionDialogInner({
                               name: `Custom Phase ${prev.phaseOverride.length + 1}`,
                               description: "",
                               instructions: "",
-                              model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+                              model: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
                               budget: {},
                               orderingConstraints: {},
                               askQuestions: { enabled: false, mode: "never" },

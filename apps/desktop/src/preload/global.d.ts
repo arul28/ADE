@@ -121,6 +121,11 @@ import type {
   StartIntegrationResolutionResult,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
+  PrAiResolutionStartArgs,
+  PrAiResolutionStartResult,
+  PrAiResolutionInputArgs,
+  PrAiResolutionStopArgs,
+  PrAiResolutionEventPayload,
   CommitIntegrationArgs,
   LandQueueNextArgs,
   QueueLandingState,
@@ -129,6 +134,13 @@ import type {
   RebaseLaneArgs,
   RebaseResult,
   RebaseEventPayload,
+  RebaseStartArgs,
+  RebaseStartResult,
+  RebasePushArgs,
+  RebaseRollbackArgs,
+  RebaseAbortArgs,
+  RebaseRun,
+  RebaseRunEventPayload,
   DeletePrArgs,
   DeletePrResult,
   LinkPrToLaneArgs,
@@ -191,10 +203,8 @@ import type {
   RenameLaneArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
-  RestackArgs,
-  RestackResult,
-  RestackSuggestion,
-  RestackSuggestionsEventPayload,
+  RebaseSuggestion,
+  RebaseSuggestionsEventPayload,
   AutoRebaseLaneStatus,
   AutoRebaseEventPayload,
   RiskMatrixEntry,
@@ -472,11 +482,15 @@ declare global {
         delete: (args: DeleteLaneArgs) => Promise<void>;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
         getChildren: (laneId: string) => Promise<LaneSummary[]>;
-        restack: (args: RestackArgs) => Promise<RestackResult>;
-        listRestackSuggestions: () => Promise<RestackSuggestion[]>;
-        dismissRestackSuggestion: (args: { laneId: string }) => Promise<void>;
-        deferRestackSuggestion: (args: { laneId: string; minutes: number }) => Promise<void>;
-        onRestackSuggestionsEvent: (cb: (ev: RestackSuggestionsEventPayload) => void) => () => void;
+        rebaseStart: (args: RebaseStartArgs) => Promise<RebaseStartResult>;
+        rebasePush: (args: RebasePushArgs) => Promise<RebaseRun>;
+        rebaseRollback: (args: RebaseRollbackArgs) => Promise<RebaseRun>;
+        rebaseAbort: (args: RebaseAbortArgs) => Promise<RebaseRun>;
+        rebaseSubscribe: (cb: (ev: RebaseRunEventPayload) => void) => () => void;
+        listRebaseSuggestions: () => Promise<RebaseSuggestion[]>;
+        dismissRebaseSuggestion: (args: { laneId: string }) => Promise<void>;
+        deferRebaseSuggestion: (args: { laneId: string; minutes: number }) => Promise<void>;
+        onRebaseSuggestionsEvent: (cb: (ev: RebaseSuggestionsEventPayload) => void) => () => void;
         listAutoRebaseStatuses: () => Promise<AutoRebaseLaneStatus[]>;
         onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;
@@ -653,6 +667,10 @@ declare global {
         startIntegrationResolution(args: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult>;
         recheckIntegrationStep(args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult>;
         getIntegrationResolutionState(proposalId: string): Promise<IntegrationResolutionState | null>;
+        aiResolutionStart(args: PrAiResolutionStartArgs): Promise<PrAiResolutionStartResult>;
+        aiResolutionInput(args: PrAiResolutionInputArgs): Promise<void>;
+        aiResolutionStop(args: PrAiResolutionStopArgs): Promise<void>;
+        onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => () => void;
         landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
         landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
         getHealth: (prId: string) => Promise<PrHealth>;

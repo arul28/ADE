@@ -1,13 +1,12 @@
 import React from "react";
-import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle } from "@phosphor-icons/react";
-import type { LaneSummary, RebaseNeed } from "../../../../shared/types";
+import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle, CircleNotch } from "@phosphor-icons/react";
+import type { LaneSummary, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
 import { StatusDot } from "../shared/StatusDot";
-import { ModelSelector } from "../shared/ModelSelector";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 
@@ -23,6 +22,14 @@ type RebaseTabProps = {
 };
 
 type UrgencyCategory = "attention" | "clean" | "recent" | "upToDate";
+
+type BackgroundResolverSession = {
+  ptyId: string;
+  sessionId: string;
+  provider: "codex" | "claude";
+  startedAt: string;
+  exitCode: number | null;
+};
 
 function categorize(need: RebaseNeed): UrgencyCategory {
   if (need.dismissedAt) return "upToDate";
@@ -67,6 +74,11 @@ export function RebaseTab({
   const [rebaseBusy, setRebaseBusy] = React.useState(false);
   const [rebaseError, setRebaseError] = React.useState<string | null>(null);
   const [resolverOpen, setResolverOpen] = React.useState(false);
+  const [runScope, setRunScope] = React.useState<RebaseScope>("lane_and_descendants");
+  const [activeRun, setActiveRun] = React.useState<RebaseRun | null>(null);
+  const [runLogs, setRunLogs] = React.useState<string[]>([]);
+  const [selectedPushLaneIds, setSelectedPushLaneIds] = React.useState<string[]>([]);
+  const [backgroundSession, setBackgroundSession] = React.useState<BackgroundResolverSession | null>(null);
 
   const [collapsed, setCollapsed] = React.useState<Record<UrgencyCategory, boolean>>({
     attention: false,
@@ -96,6 +108,21 @@ export function RebaseTab({
     [rebaseNeeds, selectedItemId],
   );
 
+  React.useEffect(() => {
+    if (!activeRun) {
+      setSelectedPushLaneIds([]);
+      return;
+    }
+    const pushable = activeRun.lanes
+      .filter((lane) => lane.status === "succeeded" && !activeRun.pushedLaneIds.includes(lane.laneId))
+      .map((lane) => lane.laneId);
+    setSelectedPushLaneIds((prev) => {
+      const kept = prev.filter((laneId) => pushable.includes(laneId));
+      if (kept.length > 0) return kept;
+      return pushable;
+    });
+  }, [activeRun]);
+
   // Auto-select first item in highest-urgency group (guard against no-op updates when list is empty and nothing selected)
   React.useEffect(() => {
     if (rebaseNeeds.length === 0 && selectedItemId === null) return;
@@ -108,12 +135,42 @@ export function RebaseTab({
     setRebaseError(null);
   }, [selectedItemId]);
 
-  const handleRebase = async (aiAssisted: boolean) => {
+  React.useEffect(() => {
+    if (!backgroundSession?.ptyId) return;
+    const unsubscribe = window.ade.pty.onExit((event) => {
+      if (event.ptyId !== backgroundSession.ptyId) return;
+      setBackgroundSession((prev) => {
+        if (!prev || prev.ptyId !== event.ptyId) return prev;
+        return { ...prev, exitCode: event.exitCode ?? -1 };
+      });
+    });
+    return unsubscribe;
+  }, [backgroundSession?.ptyId]);
+
+  React.useEffect(() => {
+    const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
+      if (event.type === "rebase-run-updated") {
+        setActiveRun((prev) => {
+          if (!selectedNeed) return prev;
+          if (event.run.rootLaneId !== selectedNeed.laneId && prev?.runId !== event.run.runId) return prev;
+          return event.run;
+        });
+      } else if (event.type === "rebase-run-log") {
+        setRunLogs((prev) => {
+          const line = `[${new Date(event.timestamp).toLocaleTimeString()}] ${event.message}`;
+          const next = [...prev, line];
+          return next.slice(-80);
+        });
+      }
+    });
+    return unsubscribe;
+  }, [selectedNeed]);
+
+  const handleRebase = async (aiAssisted: boolean, pushMode: "none" | "review_then_push" = "none") => {
     if (!selectedNeed) return;
     setRebaseError(null);
 
     if (aiAssisted) {
-      // For AI-assisted: validate that we can resolve the target lane, then open modal
       if (!resolverTargetLaneId) {
         setRebaseError(`Cannot find a lane matching base branch "${selectedNeed.baseBranch}". Create the lane first or sync manually.`);
         return;
@@ -122,10 +179,66 @@ export function RebaseTab({
       return;
     }
 
-    // Manual rebase
     setRebaseBusy(true);
     try {
-      await window.ade.rebase.execute({ laneId: selectedNeed.laneId, aiAssisted: false });
+      const started = await window.ade.lanes.rebaseStart({
+        laneId: selectedNeed.laneId,
+        scope: runScope,
+        pushMode,
+        actor: "user"
+      });
+      setActiveRun(started.run);
+      setRunLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Started run ${started.runId}`].slice(-80));
+      const pushable = started.run.lanes.filter((lane) => lane.status === "succeeded").map((lane) => lane.laneId);
+      setSelectedPushLaneIds(pushable);
+      if (started.run.state === "failed") {
+        setRebaseError(started.run.error ?? "Rebase run failed.");
+      }
+      await onRefresh();
+    } catch (err: unknown) {
+      setRebaseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRebaseBusy(false);
+    }
+  };
+
+  const handleAbortRun = async () => {
+    if (!activeRun) return;
+    setRebaseBusy(true);
+    setRebaseError(null);
+    try {
+      const next = await window.ade.lanes.rebaseAbort({ runId: activeRun.runId });
+      setActiveRun(next);
+      await onRefresh();
+    } catch (err: unknown) {
+      setRebaseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRebaseBusy(false);
+    }
+  };
+
+  const handleRollbackRun = async () => {
+    if (!activeRun) return;
+    setRebaseBusy(true);
+    setRebaseError(null);
+    try {
+      const next = await window.ade.lanes.rebaseRollback({ runId: activeRun.runId });
+      setActiveRun(next);
+      await onRefresh();
+    } catch (err: unknown) {
+      setRebaseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRebaseBusy(false);
+    }
+  };
+
+  const handlePushSelected = async () => {
+    if (!activeRun || selectedPushLaneIds.length === 0) return;
+    setRebaseBusy(true);
+    setRebaseError(null);
+    try {
+      const next = await window.ade.lanes.rebasePush({ runId: activeRun.runId, laneIds: selectedPushLaneIds });
+      setActiveRun(next);
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -247,7 +360,7 @@ export function RebaseTab({
   const paneConfigs: Record<string, PaneConfig> = React.useMemo(
     () => ({
       list: {
-        title: "Sync Status",
+        title: "Rebase Status",
         icon: ArrowsDownUp,
         bodyClassName: "overflow-auto",
         children: (
@@ -267,7 +380,7 @@ export function RebaseTab({
                   color: S.textSecondary,
                 }}
               >
-                SYNC / DRIFT STATE
+                REBASE / DRIFT STATE
               </span>
             </div>
 
@@ -275,7 +388,7 @@ export function RebaseTab({
               <div style={{ padding: 16 }}>
                 <EmptyState
                   title="All lanes up to date"
-                  description="No lanes need syncing. This view auto-populates when lanes fall behind their base branch."
+                  description="No lanes need rebasing. This view auto-populates when lanes fall behind their base branch."
                 />
               </div>
             ) : (
@@ -303,8 +416,8 @@ export function RebaseTab({
       },
       detail: {
         title: selectedNeed
-          ? `Sync: ${laneById.get(selectedNeed.laneId)?.name ?? selectedNeed.laneId}`
-          : "Sync Detail",
+          ? `Rebase: ${laneById.get(selectedNeed.laneId)?.name ?? selectedNeed.laneId}`
+          : "Rebase Detail",
         icon: Eye,
         bodyClassName: "overflow-auto",
         children: selectedNeed ? (
@@ -349,7 +462,7 @@ export function RebaseTab({
                   style={{ borderRadius: 0 }}
                 >
                   <Sparkle size={14} weight="regular" className="mr-1" />
-                  SYNC WITH AI
+                  REBASE WITH AI
                 </Button>
               </div>
             </div>
@@ -521,6 +634,193 @@ export function RebaseTab({
               </div>
             )}
 
+            {/* ── Rebase Run Control Center ── */}
+            <div
+              style={{
+                backgroundColor: S.cardBg,
+                border: `1px solid ${S.borderDefault}`,
+                borderRadius: 0,
+                padding: 20,
+              }}
+            >
+              <div
+                className="font-mono font-bold uppercase"
+                style={{
+                  fontSize: 10,
+                  letterSpacing: "1px",
+                  color: S.textSecondary,
+                  marginBottom: 12,
+                }}
+              >
+                REBASE RUN CONTROL CENTER
+              </div>
+
+              <div className="flex items-center gap-2" style={{ marginBottom: 12 }}>
+                <span className="font-mono" style={{ fontSize: 10, color: S.textMuted }}>Scope:</span>
+                <button
+                  type="button"
+                  onClick={() => setRunScope("lane_only")}
+                  style={{
+                    fontSize: 10,
+                    padding: "4px 8px",
+                    border: `1px solid ${runScope === "lane_only" ? S.accentBorder : S.borderSubtle}`,
+                    background: runScope === "lane_only" ? S.accentSubtleBg : "transparent",
+                    color: runScope === "lane_only" ? S.accent : S.textSecondary
+                  }}
+                >
+                  CURRENT LANE ONLY
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRunScope("lane_and_descendants")}
+                  style={{
+                    fontSize: 10,
+                    padding: "4px 8px",
+                    border: `1px solid ${runScope === "lane_and_descendants" ? S.accentBorder : S.borderSubtle}`,
+                    background: runScope === "lane_and_descendants" ? S.accentSubtleBg : "transparent",
+                    color: runScope === "lane_and_descendants" ? S.accent : S.textSecondary
+                  }}
+                >
+                  LANE + CHILDREN
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2" style={{ marginBottom: 12 }}>
+                <Button size="sm" variant="outline" disabled>
+                  CONTINUE
+                </Button>
+                <Button size="sm" variant="outline" disabled>
+                  SKIP LANE
+                </Button>
+                <Button size="sm" variant="outline" disabled={rebaseBusy || !activeRun || activeRun.state !== "running"} onClick={() => void handleAbortRun()}>
+                  ABORT
+                </Button>
+                <Button size="sm" variant="outline" disabled={rebaseBusy || !activeRun || !activeRun.canRollback} onClick={() => void handleRollbackRun()}>
+                  ROLLBACK RUN
+                </Button>
+                <Button size="sm" variant="primary" disabled={rebaseBusy || !activeRun || selectedPushLaneIds.length === 0} onClick={() => void handlePushSelected()}>
+                  PUSH SELECTED
+                </Button>
+              </div>
+
+              {activeRun ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div
+                    style={{
+                      background: S.headerBg,
+                      border: `1px solid ${S.borderSubtle}`,
+                      padding: "10px 12px",
+                      fontSize: 11,
+                      color: S.textSecondary,
+                      fontFamily: "JetBrains Mono, monospace",
+                    }}
+                  >
+                    run {activeRun.runId.slice(0, 8)} | {activeRun.scope === "lane_only" ? "lane only" : "lane + children"} | state: {activeRun.state}
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {activeRun.lanes.map((lane) => {
+                      const statusColor = lane.status === "succeeded"
+                        ? S.success
+                        : lane.status === "running"
+                          ? S.info
+                          : lane.status === "conflict"
+                            ? S.error
+                            : lane.status === "blocked"
+                              ? S.warning
+                              : S.textMuted;
+                      const pushable = lane.status === "succeeded" && !activeRun.pushedLaneIds.includes(lane.laneId);
+                      return (
+                        <label
+                          key={lane.laneId}
+                          className="flex items-center gap-2"
+                          style={{
+                            border: `1px solid ${S.borderSubtle}`,
+                            background: S.headerBg,
+                            padding: "6px 8px",
+                            fontSize: 11,
+                            color: S.textSecondary,
+                            fontFamily: "JetBrains Mono, monospace"
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={!pushable}
+                            checked={selectedPushLaneIds.includes(lane.laneId)}
+                            onChange={(event) => {
+                              const checked = event.target.checked;
+                              setSelectedPushLaneIds((prev) => {
+                                if (checked) return [...new Set([...prev, lane.laneId])];
+                                return prev.filter((id) => id !== lane.laneId);
+                              });
+                            }}
+                          />
+                          <span style={{ minWidth: 140, color: S.textPrimary }}>{lane.laneName}</span>
+                          <span style={{ color: statusColor }}>{lane.status.toUpperCase()}</span>
+                          {lane.error ? <span style={{ color: S.error }} className="truncate">{lane.error}</span> : null}
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <div
+                    style={{
+                      border: `1px solid ${S.borderSubtle}`,
+                      background: S.headerBg,
+                      maxHeight: 160,
+                      overflow: "auto",
+                      padding: "8px 10px",
+                      fontSize: 10,
+                      color: S.textMuted,
+                      fontFamily: "JetBrains Mono, monospace"
+                    }}
+                  >
+                    {(runLogs.length > 0 ? runLogs : ["No run logs yet."]).map((line, index) => (
+                      <div key={`${line}-${index}`}>{line}</div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: S.textMuted }}>
+                  No active rebase run yet. Start from the actions below.
+                </div>
+              )}
+            </div>
+
+            {backgroundSession && !resolverOpen ? (
+              <div
+                style={{
+                  backgroundColor: S.cardBg,
+                  border: `1px solid ${S.accentBorder}`,
+                  borderLeft: `3px solid ${S.accent}`,
+                  borderRadius: 0,
+                  padding: 12,
+                }}
+                className="flex flex-wrap items-center justify-between gap-2"
+              >
+                <div className="flex items-center gap-2" style={{ color: S.textSecondary, fontSize: 11, fontFamily: "JetBrains Mono, monospace" }}>
+                  {backgroundSession.exitCode == null ? (
+                    <CircleNotch size={12} className="animate-spin" style={{ color: S.accent }} />
+                  ) : (
+                    <CheckCircle size={12} style={{ color: backgroundSession.exitCode === 0 ? S.success : S.warning }} />
+                  )}
+                  {backgroundSession.exitCode == null
+                    ? "AI resolver is running in background."
+                    : (backgroundSession.exitCode === 0 ? "Background AI resolver finished." : "Background AI resolver exited with errors.")}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setResolverOpen(true)}>
+                    REOPEN RUN
+                  </Button>
+                  {backgroundSession.exitCode != null ? (
+                    <Button size="sm" variant="ghost" onClick={() => setBackgroundSession(null)}>
+                      DISMISS
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
             {/* ── Resolution Card ── */}
             <div
               style={{
@@ -541,11 +841,9 @@ export function RebaseTab({
                 >
                   RESOLUTION
                 </div>
-                <ModelSelector
-                  model={resolverModel}
-                  reasoningLevel={resolverReasoningLevel}
-                  onChange={onResolverChange}
-                />
+                <span className="font-mono" style={{ fontSize: 10, color: S.textMuted }}>
+                  Model + thinking are selected inside the AI resolver modal.
+                </span>
               </div>
 
               {/* Action buttons */}
@@ -562,14 +860,14 @@ export function RebaseTab({
                     className="font-mono font-bold uppercase"
                     style={{ fontSize: 10, letterSpacing: "1px" }}
                   >
-                    SYNC WITH AI
+                    REBASE WITH AI
                   </span>
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={rebaseBusy || selectedNeed.behindBy === 0}
-                  onClick={() => void handleRebase(false)}
+                  onClick={() => void handleRebase(false, "none")}
                   style={{
                     borderRadius: 0,
                     borderColor: S.borderSubtle,
@@ -579,7 +877,24 @@ export function RebaseTab({
                     className="font-mono font-bold uppercase"
                     style={{ fontSize: 10, letterSpacing: "1px" }}
                   >
-                    SYNC MANUALLY
+                    REBASE NOW (LOCAL ONLY)
+                  </span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={rebaseBusy || selectedNeed.behindBy === 0}
+                  onClick={() => void handleRebase(false, "review_then_push")}
+                  style={{
+                    borderRadius: 0,
+                    borderColor: S.borderSubtle,
+                  }}
+                >
+                  <span
+                    className="font-mono font-bold uppercase"
+                    style={{ fontSize: 10, letterSpacing: "1px" }}
+                  >
+                    REBASE AND PUSH (REVIEW THEN PUSH)
                   </span>
                 </Button>
                 <Button
@@ -662,7 +977,7 @@ export function RebaseTab({
             )}
 
             {/* ── Resolver Modal ── */}
-            {resolverOpen && resolverTargetLaneId && (
+            {resolverTargetLaneId ? (
               <ResolverTerminalModal
                 open={resolverOpen}
                 onOpenChange={setResolverOpen}
@@ -670,16 +985,26 @@ export function RebaseTab({
                 targetLaneId={resolverTargetLaneId}
                 cwdLaneId={selectedNeed.laneId}
                 scenario="single-merge"
-                onCompleted={() => void onRefresh()}
+                sourceTab="rebase"
+                initialModel={resolverModel}
+                initialReasoningEffort={resolverReasoningLevel}
+                onModelChange={(model, effort) => onResolverChange(model, effort ?? resolverReasoningLevel)}
+                onBackgroundSession={(session) => {
+                  setBackgroundSession({ ...session, exitCode: null });
+                }}
+                onCompleted={() => {
+                  setBackgroundSession(null);
+                  void onRefresh();
+                }}
               />
-            )}
+            ) : null}
           </div>
         ) : (
           <div
             className="flex h-full items-center justify-center"
             style={{ backgroundColor: S.mainBg }}
           >
-            <EmptyState title="No lane selected" description="Select a lane to view sync status and resolve conflicts." />
+            <EmptyState title="No lane selected" description="Select a lane to view rebase status and resolve conflicts." />
           </div>
         ),
       },

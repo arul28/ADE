@@ -22,6 +22,7 @@ import type {
   ModelConfig,
 } from "../../../shared/types";
 import { getErrorMessage } from "../shared/utils";
+import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ export const DEFAULT_TEAM_TEMPLATE: TeamTemplate = {
       name: "coordinator",
       description: "Mission lead that plans, delegates, and decides recovery strategy.",
       capabilities: ["coordinator", "planner"],
-      defaultModel: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "high" },
+      defaultModel: { modelId: "anthropic/claude-sonnet-4-6", provider: "anthropic", thinkingLevel: "high" },
       maxInstances: 1,
       toolProfile: {
         allowedTools: [
@@ -70,14 +71,14 @@ export const DEFAULT_TEAM_TEMPLATE: TeamTemplate = {
       name: "implementer",
       description: "Executes implementation tasks and reports structured progress/results.",
       capabilities: ["implementation"],
-      defaultModel: { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
+      defaultModel: { modelId: "openai/gpt-5.3-codex", provider: "openai", thinkingLevel: "medium" },
       maxInstances: 12
     },
     {
       name: "validator",
       description: "Validates outputs at gates and returns actionable remediation guidance.",
       capabilities: ["validator", "review", "testing"],
-      defaultModel: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+      defaultModel: { modelId: "anthropic/claude-sonnet-4-6", provider: "anthropic", thinkingLevel: "medium" },
       maxInstances: 4
     }
   ],
@@ -161,17 +162,19 @@ export function parseRoleDefinition(value: unknown): RoleDefinition | null {
     ? value.capabilities.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
     : [];
   const defaultModel = isRecord(value.defaultModel) ? value.defaultModel : null;
-  const provider = defaultModel?.provider === "claude" || defaultModel?.provider === "codex" ? defaultModel.provider : null;
   const modelId = typeof defaultModel?.modelId === "string" ? defaultModel.modelId.trim() : "";
-  if (!provider || !modelId.length) return null;
+  if (!modelId.length) return null;
+  const descriptor = resolveModelDescriptor(modelId);
+  const providerRaw = typeof defaultModel?.provider === "string" ? defaultModel.provider.trim() : "";
+  const provider = providerRaw.length > 0 ? providerRaw : descriptor?.family;
   const maxInstancesRaw = Number(value.maxInstances);
   return {
     name,
     description: description.length ? description : `${name} role`,
     capabilities,
     defaultModel: {
-      provider,
       modelId,
+      ...(provider ? { provider } : {}),
       ...(defaultModel?.thinkingLevel && typeof defaultModel.thinkingLevel === "string"
         ? { thinkingLevel: defaultModel.thinkingLevel as ModelConfig["thinkingLevel"] }
         : {})

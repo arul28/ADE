@@ -3,12 +3,11 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentExecutor";
-import { createClaudeExecutor } from "./claudeExecutor";
-import { createCodexExecutor } from "./codexExecutor";
 import type { AiApiKeyVerificationResult } from "../../../shared/types";
 import {
   getModelById,
   getAvailableModels,
+  MODEL_REGISTRY,
   resolveModelAlias,
 } from "../../../shared/modelRegistry";
 import { detectAllAuth, getCachedCliAuthStatuses, verifyProviderApiKey, type DetectedAuth, type CliAuthStatus } from "./authDetector";
@@ -90,55 +89,45 @@ export type ExecuteAiTaskResult = {
 };
 
 type RuntimeTaskDefaults = {
-  provider: AgentProvider;
-  model: string;
+  modelId: string;
   timeoutMs: number;
 };
 
 const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   planning: {
-    provider: "claude",
-    model: "sonnet",
+    modelId: "anthropic/claude-sonnet-4-6",
     timeoutMs: 45_000
   },
   implementation: {
-    provider: "codex",
-    model: "gpt-5.3-codex",
+    modelId: "openai/gpt-5.3-codex",
     timeoutMs: 120_000
   },
   review: {
-    provider: "claude",
-    model: "sonnet",
+    modelId: "anthropic/claude-sonnet-4-6",
     timeoutMs: 30_000
   },
   conflict_resolution: {
-    provider: "claude",
-    model: "sonnet",
+    modelId: "anthropic/claude-sonnet-4-6",
     timeoutMs: 60_000
   },
   narrative: {
-    provider: "claude",
-    model: "haiku",
+    modelId: "anthropic/claude-haiku-4-5",
     timeoutMs: 45_000
   },
   pr_description: {
-    provider: "claude",
-    model: "haiku",
+    modelId: "anthropic/claude-haiku-4-5",
     timeoutMs: 30_000
   },
   terminal_summary: {
-    provider: "claude",
-    model: "haiku",
+    modelId: "anthropic/claude-haiku-4-5",
     timeoutMs: 20_000
   },
   mission_planning: {
-    provider: "claude",
-    model: "sonnet",
+    modelId: "anthropic/claude-sonnet-4-6",
     timeoutMs: 300_000
   },
   initial_context: {
-    provider: "claude",
-    model: "sonnet",
+    modelId: "anthropic/claude-sonnet-4-6",
     timeoutMs: 45_000
   }
 };
@@ -153,13 +142,6 @@ const CODEX_FALLBACK_MODELS: AgentModelDescriptor[] = [
   { id: "o3", label: "o3" }
 ];
 
-const PROVIDER_DEFAULT_MODEL: Record<AgentProvider, string> = {
-  claude: "sonnet",
-  codex: "gpt-5.3-codex"
-};
-
-type ClaudeProviderConfig = NonNullable<NonNullable<ExecutorOpts["providerConfig"]>["claude"]>;
-
 function toStringOrNull(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";
   return text.length ? text : null;
@@ -168,11 +150,6 @@ function toStringOrNull(value: unknown): string | null {
 function toNumberOrNull(value: unknown): number | null {
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
-}
-
-function toPositiveNumberOrUndefined(value: unknown): number | undefined {
-  const num = toNumberOrNull(value);
-  return num != null && num > 0 ? num : undefined;
 }
 
 function toTextPreview(value: string, maxChars = 800): string {
@@ -196,47 +173,8 @@ function startOfDayIso(now = new Date()): string {
   return new Date(utc).toISOString();
 }
 
-function extractTaskRouting(snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>): Record<string, unknown> {
-  const ai = snapshot.effective.ai;
-  return isRecord(ai) && isRecord(ai.taskRouting) ? ai.taskRouting : {};
-}
-
 function extractAiConfig(snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>): Record<string, unknown> {
   return isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
-}
-
-function extractTaskOverride(snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>, taskType: AiTaskType): Record<string, unknown> {
-  const routing = extractTaskRouting(snapshot);
-  return isRecord(routing[taskType]) ? (routing[taskType] as Record<string, unknown>) : {};
-}
-
-function mapClaudePermission(mode: string | null): ExecutorOpts["permissions"]["mode"] {
-  if (mode === "acceptEdits") return "edit";
-  if (mode === "bypassPermissions") return "full-auto";
-  return "read-only";
-}
-
-function mapCodexPermission(args: {
-  sandboxPermissions: string | null;
-  approvalMode: string | null;
-}): ExecutorOpts["permissions"]["mode"] {
-  if (args.approvalMode === "full-auto") return "full-auto";
-  if (args.approvalMode === "auto-edit") return "edit";
-  if (args.approvalMode === "suggest") return "read-only";
-  if (args.sandboxPermissions === "danger-full-access" || args.approvalMode === "never") return "full-auto";
-  if (args.sandboxPermissions === "workspace-write" || args.approvalMode === "on-request" || args.approvalMode === "on-failure") {
-    return "edit";
-  }
-  return "read-only";
-}
-
-function parseClaudeSettingSources(value: unknown): Array<"user" | "project" | "local"> | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const normalized = value.filter(
-    (entry): entry is "user" | "project" | "local" =>
-      entry === "user" || entry === "project" || entry === "local"
-  );
-  return normalized.length > 0 ? normalized : undefined;
 }
 
 function extractConfiguredApiKeys(snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>): Record<string, string> {
@@ -323,11 +261,6 @@ export function createAiIntegrationService(args: {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
 }) {
   const { db, logger, projectConfigService } = args;
-
-  const executors = {
-    claude: createClaudeExecutor(),
-    codex: createCodexExecutor()
-  };
 
   // Non-blocking: fetch models.dev data and enrich pricing + registry
   initModelsDevService().then((modelData) => {
@@ -528,12 +461,22 @@ export function createAiIntegrationService(args: {
   };
 
   const resolveModelForTask = async (taskType: AiTaskType, modelIdHint?: string): Promise<string> => {
+    const snapshot = projectConfigService.get();
+    const aiConfig = extractAiConfig(snapshot);
+    const taskRouting = isRecord(aiConfig.taskRouting) ? aiConfig.taskRouting : {};
+    const taskOverride = isRecord(taskRouting[taskType]) ? (taskRouting[taskType] as Record<string, unknown>) : {};
+    const overrideModelId = toStringOrNull(taskOverride.model);
+    const requestedModelHint = modelIdHint ?? overrideModelId ?? undefined;
+
     // If explicit model ID provided and valid, use it
-    if (modelIdHint && getModelById(modelIdHint)) return modelIdHint;
+    if (requestedModelHint) {
+      const exact = getModelById(requestedModelHint);
+      if (exact) return exact.id;
+    }
 
     // Resolve from alias (e.g. "sonnet" -> "anthropic/claude-sonnet-4-6")
-    if (modelIdHint) {
-      const resolved = resolveModelAlias(modelIdHint);
+    if (requestedModelHint) {
+      const resolved = resolveModelAlias(requestedModelHint);
       if (resolved) return resolved.id;
     }
 
@@ -546,13 +489,13 @@ export function createAiIntegrationService(args: {
       throw new Error("No AI providers detected. Install Claude Code CLI, Codex CLI, or configure an API key.");
     }
 
-    // Try to match the configured default provider family.
-    const preferredProvider = defaults.provider;
-    const familyMatch = available.find(m =>
-      (preferredProvider === "claude" && m.family === "anthropic") ||
-      (preferredProvider === "codex" && m.family === "openai")
-    );
-    if (familyMatch) return familyMatch.id;
+    const preferredDescriptor = getModelById(defaults.modelId) ?? resolveModelAlias(defaults.modelId);
+    if (preferredDescriptor) {
+      const exactMatch = available.find((candidate) => candidate.id === preferredDescriptor.id || candidate.shortId === preferredDescriptor.shortId);
+      if (exactMatch) return exactMatch.id;
+      const familyMatch = available.find((candidate) => candidate.family === preferredDescriptor.family);
+      if (familyMatch) return familyMatch.id;
+    }
 
     // Fall back to first available
     return available[0].id;
@@ -616,161 +559,6 @@ export function createAiIntegrationService(args: {
     };
   };
 
-  const resolveProviderForTask = async (taskType: AiTaskType, providerHint?: AgentProvider | null): Promise<AgentProvider> => {
-    const snapshot = projectConfigService.get();
-    const defaults = TASK_DEFAULTS[taskType];
-    const override = extractTaskOverride(snapshot, taskType);
-
-    const preferred = providerHint ?? toStringOrNull(override.provider);
-    const normalizedPreferred = preferred?.toLowerCase() ?? "";
-
-    const availability = toCliAvailability(await detectAuth());
-
-    const preferredProvider =
-      normalizedPreferred === "claude" || normalizedPreferred === "codex"
-        ? (normalizedPreferred as AgentProvider)
-        : defaults.provider;
-
-    if (preferredProvider === "claude" && availability.claude) return "claude";
-    if (preferredProvider === "codex" && availability.codex) return "codex";
-    if (availability.claude) return "claude";
-    if (availability.codex) return "codex";
-
-    throw new Error("No compatible AI CLI provider detected. Install and authenticate Claude Code and/or Codex.");
-  };
-
-  const buildExecutorOpts = (args: {
-    taskType: AiTaskType;
-    provider: AgentProvider;
-    cwd: string;
-    model?: string;
-    reasoningEffort?: string;
-    timeoutMs?: number;
-    systemPrompt?: string;
-    jsonSchema?: unknown;
-    permissionMode?: ExecutorOpts["permissions"]["mode"];
-    oneShot?: boolean;
-  }): ExecutorOpts => {
-    const snapshot = projectConfigService.get();
-    const defaults = TASK_DEFAULTS[args.taskType];
-    const taskOverride = extractTaskOverride(snapshot, args.taskType);
-    const aiConfig = extractAiConfig(snapshot);
-
-    const rawModel =
-      toStringOrNull(args.model) ??
-      toStringOrNull(taskOverride.model) ??
-      defaults.model;
-
-    // Guard against provider/model mismatch (e.g. when planning falls back
-    // from Claude to Codex but the default model is still "sonnet").
-    const provider = args.provider as AgentProvider | undefined;
-    const model = (() => {
-      const normalizedRawModel = rawModel.toLowerCase();
-      const namespacedFamily = normalizedRawModel.includes("/")
-        ? normalizedRawModel.split("/", 1)[0]
-        : null;
-      const resolvedModel = getModelById(rawModel) ?? resolveModelAlias(rawModel);
-
-      if (provider === "codex") {
-        if (resolvedModel) {
-          if (!resolvedModel.isCliWrapped || resolvedModel.family !== "openai") {
-            return PROVIDER_DEFAULT_MODEL.codex;
-          }
-          return rawModel;
-        }
-        if (namespacedFamily === "anthropic") {
-          return PROVIDER_DEFAULT_MODEL.codex;
-        }
-        return rawModel;
-      }
-
-      if (provider === "claude") {
-        if (resolvedModel) {
-          if (!resolvedModel.isCliWrapped || resolvedModel.family !== "anthropic") {
-            return PROVIDER_DEFAULT_MODEL.claude;
-          }
-          return rawModel;
-        }
-        if (namespacedFamily === "openai") {
-          return PROVIDER_DEFAULT_MODEL.claude;
-        }
-        return rawModel;
-      }
-
-      return rawModel;
-    })();
-
-    const timeoutMs =
-      toNumberOrNull(args.timeoutMs) ??
-      toNumberOrNull(taskOverride.timeoutMs) ??
-      defaults.timeoutMs;
-
-    const permissions = isRecord(aiConfig.permissions) ? (aiConfig.permissions as Record<string, unknown>) : {};
-    const claudePermissions = isRecord(permissions.claude) ? (permissions.claude as Record<string, unknown>) : {};
-    const codexPermissions = isRecord(permissions.codex) ? (permissions.codex as Record<string, unknown>) : {};
-
-    const permissionMode = (() => {
-      if (args.permissionMode) return args.permissionMode;
-      if (args.provider === "claude") {
-        return mapClaudePermission(toStringOrNull(claudePermissions.permissionMode));
-      }
-      return mapCodexPermission({
-        sandboxPermissions: toStringOrNull(codexPermissions.sandboxPermissions),
-        approvalMode: toStringOrNull(codexPermissions.approvalMode)
-      });
-    })();
-
-    const codexApprovalModeRaw = toStringOrNull(codexPermissions.approvalMode);
-    const codexApprovalMode =
-      codexApprovalModeRaw === "untrusted"
-      || codexApprovalModeRaw === "on-request"
-      || codexApprovalModeRaw === "on-failure"
-      || codexApprovalModeRaw === "never"
-        ? codexApprovalModeRaw
-        : undefined;
-
-    const claudeMaxBudgetUsd = toPositiveNumberOrUndefined(claudePermissions.maxBudgetUsd);
-
-    return {
-      cwd: args.cwd,
-      model,
-      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
-      timeoutMs: Math.max(1_000, Math.floor(timeoutMs)),
-      systemPrompt: args.systemPrompt,
-      jsonSchema: args.jsonSchema,
-      oneShot: args.oneShot,
-      maxBudgetUsd: claudeMaxBudgetUsd,
-      permissions: {
-        mode: permissionMode,
-        allowedTools: undefined,
-        disallowedTools: undefined
-      },
-      providerConfig: {
-        claude: {
-          permissionMode: toStringOrNull(claudePermissions.permissionMode) as ClaudeProviderConfig["permissionMode"],
-          settingSources: parseClaudeSettingSources(claudePermissions.settingSources),
-          sandbox: claudePermissions.sandbox === true,
-          maxBudgetUsd: claudeMaxBudgetUsd
-        },
-        codex: {
-          approvalMode: codexApprovalMode,
-          sandboxPermissions:
-            toStringOrNull(codexPermissions.sandboxPermissions) as
-              | "read-only"
-              | "workspace-write"
-              | "danger-full-access"
-              | undefined,
-          writablePaths: Array.isArray(codexPermissions.writablePaths)
-            ? codexPermissions.writablePaths.map((entry) => String(entry))
-            : [],
-          commandAllowlist: Array.isArray(codexPermissions.commandAllowlist)
-            ? codexPermissions.commandAllowlist.map((entry) => String(entry))
-            : []
-        }
-      }
-    };
-  };
-
   const executeTask = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
     const requestId = randomUUID();
     if (getMode() === "guest") {
@@ -792,187 +580,57 @@ export function createAiIntegrationService(args: {
     }
 
     checkBudget(args.feature);
-
     const requestedModel = toStringOrNull(args.model);
-    const requestedDescriptor = requestedModel
+    const explicitDescriptor = requestedModel
       ? (getModelById(requestedModel) ?? resolveModelAlias(requestedModel))
       : null;
-    // Try unified path for non-CLI registry models only.
-    if (requestedDescriptor && !requestedDescriptor.isCliWrapped) {
-      return executeViaUnifiedPath({ ...args, model: requestedDescriptor.id });
+    if (requestedModel && !explicitDescriptor) {
+      throw new Error(`Unknown model '${requestedModel}'.`);
     }
 
-    // API-key/local only fallback: if no CLI provider is available, pick a
-    // resolved non-CLI default model for this task and route through unified.
-    if (!requestedDescriptor && !requestedModel) {
-      const availability = toCliAvailability(await detectAuth());
-      if (!availability.claude && !availability.codex) {
-        const resolvedModelId = await resolveModelForTask(args.taskType);
-        const resolvedDescriptor = getModelById(resolvedModelId);
-        if (resolvedDescriptor && !resolvedDescriptor.isCliWrapped) {
-          return executeViaUnifiedPath({ ...args, model: resolvedDescriptor.id });
-        }
-      }
-    }
-
-    const providerHintFromModel = requestedDescriptor?.isCliWrapped
-      ? (requestedDescriptor.family === "openai" ? "codex" : requestedDescriptor.family === "anthropic" ? "claude" : null)
-      : null;
-    const provider = await resolveProviderForTask(args.taskType, providerHintFromModel ?? args.provider ?? null);
-    const normalizedLegacyModel = requestedDescriptor?.isCliWrapped
-      ? requestedDescriptor.shortId
-      : requestedModel ?? undefined;
-    const executor = executors[provider];
-    const opts = buildExecutorOpts({
-      taskType: args.taskType,
-      provider,
-      cwd: args.cwd,
-      model: normalizedLegacyModel,
-      reasoningEffort: args.reasoningEffort,
-      timeoutMs: args.timeoutMs,
-      systemPrompt: args.systemPrompt,
-      jsonSchema: args.jsonSchema,
-      permissionMode: args.permissionMode,
-      oneShot: args.oneShot
-    });
-
-    const requestedSessionId = typeof args.sessionId === "string" && args.sessionId.trim().length > 0
-      ? args.sessionId.trim()
-      : null;
-
+    const resolvedModelId = explicitDescriptor?.id ?? await resolveModelForTask(args.taskType, requestedModel ?? undefined);
     logger.info("ai.task.begin", {
       requestId,
       taskType: args.taskType,
       feature: args.feature,
-      provider,
-      model: opts.model ?? null,
-      sessionId: requestedSessionId,
-      resume: requestedSessionId != null,
-      timeoutMs: opts.timeoutMs,
-      permissionMode: opts.permissions.mode,
-      oneShot: opts.oneShot === true,
-      hasJsonSchema: opts.jsonSchema != null,
+      model: resolvedModelId,
+      timeoutMs: args.timeoutMs ?? null,
+      permissionMode: args.permissionMode ?? null,
+      hasJsonSchema: args.jsonSchema != null,
       promptChars: args.prompt.length,
       promptPreview: toTextPreview(args.prompt),
-      claude: provider === "claude"
-        ? {
-            permissionMode: opts.providerConfig?.claude?.permissionMode ?? null,
-            settingSources: opts.providerConfig?.claude?.settingSources ?? [],
-            sandbox: opts.providerConfig?.claude?.sandbox ?? null,
-            maxBudgetUsd: opts.providerConfig?.claude?.maxBudgetUsd ?? null
-          }
-        : null,
-      codex: provider === "codex"
-        ? {
-            sandboxPermissions: opts.providerConfig?.codex?.sandboxPermissions ?? null,
-            approvalMode: opts.providerConfig?.codex?.approvalMode ?? null,
-            writablePaths: opts.providerConfig?.codex?.writablePaths?.length ?? 0,
-            commandAllowlist: opts.providerConfig?.codex?.commandAllowlist?.length ?? 0
-          }
-        : null
     });
 
-    const startedAt = Date.now();
-    let sessionId: string | null = null;
-    let resolvedModel: string | null = opts.model ?? null;
-    let inputTokens: number | null = null;
-    let outputTokens: number | null = null;
-    let text = "";
-    let structuredOutput: unknown = null;
-
     try {
-      const stream = requestedSessionId != null
-        ? executor.resume(requestedSessionId, args.prompt, opts)
-        : executor.execute(args.prompt, opts);
-
-      for await (const event of stream) {
-        if (event.type === "text") {
-          text += event.content;
-          continue;
-        }
-        if (event.type === "structured_output") {
-          structuredOutput = event.data;
-          continue;
-        }
-        if (event.type === "error") {
-          throw new Error(event.message || "AI execution failed.");
-        }
-        if (event.type === "done") {
-          sessionId = event.sessionId;
-          resolvedModel = event.model ?? resolvedModel;
-          inputTokens = toNumberOrNull(event.usage?.inputTokens ?? null);
-          outputTokens = toNumberOrNull(event.usage?.outputTokens ?? null);
-        }
-      }
-
-      const durationMs = Date.now() - startedAt;
-      logUsage({
-        feature: args.feature,
-        provider,
-        model: resolvedModel,
-        inputTokens,
-        outputTokens,
-        durationMs,
-        success: true,
-        sessionId
+      const result = await executeViaUnifiedPath({
+        ...args,
+        model: resolvedModelId,
       });
-
       logger.info("ai.task.done", {
         requestId,
         taskType: args.taskType,
         feature: args.feature,
-        provider,
-        model: resolvedModel,
-        sessionId,
-        durationMs,
-        inputTokens,
-        outputTokens,
-        textChars: text.length,
-        textPreview: toTextPreview(text),
-        structuredOutputPreview: toJsonPreview(structuredOutput)
+        provider: result.provider,
+        model: result.model,
+        sessionId: result.sessionId,
+        durationMs: result.durationMs,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        textChars: result.text.length,
+        textPreview: toTextPreview(result.text),
+        structuredOutputPreview: toJsonPreview(result.structuredOutput),
       });
-
-      return {
-        text,
-        structuredOutput,
-        provider,
-        model: resolvedModel,
-        sessionId,
-        inputTokens,
-        outputTokens,
-        durationMs
-      };
+      return result;
     } catch (error) {
-      const durationMs = Date.now() - startedAt;
-      logUsage({
-        feature: args.feature,
-        provider,
-        model: resolvedModel,
-        inputTokens,
-        outputTokens,
-        durationMs,
-        success: false,
-        sessionId
-      });
-
       logger.warn("ai.task.failed", {
         requestId,
         taskType: args.taskType,
-        provider,
         feature: args.feature,
-        model: resolvedModel,
-        sessionId,
-        durationMs,
-        inputTokens,
-        outputTokens,
-        partialTextChars: text.length,
-        partialTextPreview: toTextPreview(text),
-        structuredOutputPreview: toJsonPreview(structuredOutput),
+        model: resolvedModelId,
         promptChars: args.prompt.length,
         promptPreview: toTextPreview(args.prompt),
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
-
       throw error;
     }
   };
@@ -987,24 +645,27 @@ export function createAiIntegrationService(args: {
       return cached.models;
     }
 
-    const executor = executors[provider];
-    if (!executor.listModels) {
-      const fallback = provider === "codex" ? CODEX_FALLBACK_MODELS : [];
-      modelListCache.set(provider, { models: fallback, cachedAt: now });
-      return fallback;
+    const auth = await detectAuth();
+    const available = getAvailableModels(auth);
+    const family = provider === "codex" ? "openai" : "anthropic";
+    const models = available
+      .filter((descriptor) => descriptor.family === family)
+      .map((descriptor) => ({
+        id: descriptor.id,
+        label: descriptor.displayName,
+        description: `${descriptor.family}${descriptor.isCliWrapped ? " (CLI)" : " (API/local)"}`,
+      }));
+
+    if (models.length > 0) {
+      modelListCache.set(provider, { models, cachedAt: now });
+      return models;
     }
 
-    try {
-      const models = await executor.listModels();
-      if (models.length) {
-        modelListCache.set(provider, { models, cachedAt: now });
-        return models;
-      }
-    } catch {
-      // fallback below
-    }
-
-    const fallback = provider === "codex" ? CODEX_FALLBACK_MODELS : [];
+    const fallback = provider === "codex"
+      ? CODEX_FALLBACK_MODELS
+      : MODEL_REGISTRY
+          .filter((descriptor) => descriptor.family === "anthropic" && !descriptor.deprecated)
+          .map((descriptor) => ({ id: descriptor.id, label: descriptor.displayName }));
     modelListCache.set(provider, { models: fallback, cachedAt: now });
     return fallback;
   };

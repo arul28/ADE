@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import type { TerminalSessionSummary, TerminalSessionStatus, TerminalToolType } from "../../../shared/types";
+import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type WorkProjectViewState, type WorkStatusFilter, type WorkViewMode } from "../../state/appStore";
+import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
 import { isChatToolType } from "../../lib/sessions";
+
+const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
+  openItemIds: [],
+  activeItemId: null,
+  selectedItemId: null,
+  viewMode: "tabs",
+  laneFilter: "all",
+  statusFilter: "all",
+  search: "",
+};
 
 function inferToolFromResumeCommand(command: string): string | null {
   const n = command.trim().toLowerCase();
@@ -19,31 +30,179 @@ function resolveModelDescriptor(modelIdOrAlias: string | null | undefined) {
   return getModelById(raw) ?? resolveModelAlias(raw);
 }
 
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function mapUrlStatusFilter(statusParamRaw: string): WorkStatusFilter | null {
+  const statusParam = statusParamRaw.trim().toLowerCase();
+  if (!statusParam) return null;
+  if (statusParam === "running") return "running";
+  if (statusParam === "awaiting-input" || statusParam === "awaiting") return "awaiting-input";
+  if (statusParam === "ended") return "ended";
+  if (statusParam === "all") return "all";
+  if (statusParam === "completed" || statusParam === "failed" || statusParam === "disposed") return "ended";
+  return null;
+}
+
 export function useWorkSessions() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
   const selectLane = useAppStore((s) => s.selectLane);
+  const workViewByProject = useAppStore((s) => s.workViewByProject);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const [filterLaneId, setFilterLaneId] = useState<string>("all");
-  const [filterStatus, setFilterStatus] = useState<TerminalSessionStatus | "all">("all");
-  const [q, setQ] = useState("");
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
   const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-
-  /* ---- Tabs state ---- */
-  const [openTabIds, setOpenTabIds] = useState<string[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"tabs" | "grid">("tabs");
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
+
+  const projectViewState = useMemo(() => {
+    if (!projectRoot) return DEFAULT_PROJECT_WORK_STATE;
+    return workViewByProject[projectRoot] ?? DEFAULT_PROJECT_WORK_STATE;
+  }, [projectRoot, workViewByProject]);
+
+  const setProjectViewState = useCallback(
+    (
+      next:
+        | Partial<WorkProjectViewState>
+        | ((prev: WorkProjectViewState) => WorkProjectViewState),
+    ) => {
+      if (!projectRoot) return;
+      setWorkViewState(projectRoot, next);
+    },
+    [projectRoot, setWorkViewState],
+  );
+
+  const openItemIds = projectViewState.openItemIds;
+  const activeItemId = projectViewState.activeItemId;
+  const selectedSessionId = projectViewState.selectedItemId;
+  const viewMode = projectViewState.viewMode;
+  const filterLaneId = projectViewState.laneFilter;
+  const filterStatus = projectViewState.statusFilter;
+  const q = projectViewState.search;
+
+  const setViewMode = useCallback(
+    (nextMode: WorkViewMode) => {
+      setProjectViewState({ viewMode: nextMode });
+    },
+    [setProjectViewState],
+  );
+
+  const setFilterLaneId = useCallback(
+    (laneId: string) => {
+      setProjectViewState({ laneFilter: laneId || "all" });
+    },
+    [setProjectViewState],
+  );
+
+  const setFilterStatus = useCallback(
+    (status: WorkStatusFilter) => {
+      setProjectViewState({ statusFilter: status });
+    },
+    [setProjectViewState],
+  );
+
+  const setQ = useCallback(
+    (search: string) => {
+      setProjectViewState({ search });
+    },
+    [setProjectViewState],
+  );
+
+  const setSelectedSessionId = useCallback(
+    (sessionId: string | null) => {
+      setProjectViewState((prev) => {
+        const nextOpen =
+          sessionId && !prev.openItemIds.includes(sessionId)
+            ? [...prev.openItemIds, sessionId]
+            : prev.openItemIds;
+        return {
+          ...prev,
+          openItemIds: nextOpen,
+          selectedItemId: sessionId,
+          activeItemId: sessionId ?? prev.activeItemId,
+        };
+      });
+    },
+    [setProjectViewState],
+  );
+
+  const setActiveItemId = useCallback(
+    (sessionId: string | null) => {
+      setProjectViewState((prev) => {
+        if (!sessionId) {
+          return {
+            ...prev,
+            activeItemId: null,
+            selectedItemId: null,
+          };
+        }
+        const nextOpen = prev.openItemIds.includes(sessionId)
+          ? prev.openItemIds
+          : [...prev.openItemIds, sessionId];
+        return {
+          ...prev,
+          openItemIds: nextOpen,
+          activeItemId: sessionId,
+          selectedItemId: sessionId,
+        };
+      });
+    },
+    [setProjectViewState],
+  );
+
+  const openSessionTab = useCallback(
+    (sessionId: string) => {
+      setProjectViewState((prev) => {
+        const nextOpen = prev.openItemIds.includes(sessionId)
+          ? prev.openItemIds
+          : [...prev.openItemIds, sessionId];
+        return {
+          ...prev,
+          openItemIds: nextOpen,
+          activeItemId: sessionId,
+          selectedItemId: sessionId,
+        };
+      });
+    },
+    [setProjectViewState],
+  );
+
+  const closeTab = useCallback(
+    (sessionId: string) => {
+      setProjectViewState((prev) => {
+        const idx = prev.openItemIds.indexOf(sessionId);
+        if (idx < 0) return prev;
+        const nextOpen = prev.openItemIds.filter((id) => id !== sessionId);
+        const fallbackActive =
+          nextOpen.length > 0
+            ? nextOpen[Math.min(idx, nextOpen.length - 1)] ?? nextOpen[0] ?? null
+            : null;
+        const nextActive = prev.activeItemId === sessionId ? fallbackActive : prev.activeItemId;
+        const nextSelected = prev.selectedItemId === sessionId ? nextActive : prev.selectedItemId;
+        return {
+          ...prev,
+          openItemIds: nextOpen,
+          activeItemId: nextActive,
+          selectedItemId: nextSelected,
+        };
+      });
+    },
+    [setProjectViewState],
+  );
 
   const refresh = useCallback(async (options: { showLoading?: boolean } = {}) => {
     const showLoading = options.showLoading ?? true;
@@ -74,7 +233,6 @@ export function useWorkSessions() {
     }, delayMs);
   }, [refresh]);
 
-  // Initial fetch
   useEffect(() => {
     refresh({ showLoading: true }).catch(() => {});
   }, [refresh]);
@@ -83,17 +241,18 @@ export function useWorkSessions() {
     hasRunningSessionsRef.current = sessions.some((s) => s.status === "running");
   }, [sessions]);
 
-  // URL params
   useEffect(() => {
     const laneParam = (searchParams.get("laneId") ?? searchParams.get("lane") ?? "").trim();
-    if (laneParam && lanes.some((l) => l.id === laneParam)) setFilterLaneId(laneParam);
-    const statusParam = (searchParams.get("status") ?? "").trim();
-    if (["running", "completed", "failed", "disposed", "all"].includes(statusParam)) {
-      setFilterStatus(statusParam as TerminalSessionStatus | "all");
-    }
-  }, [searchParams, lanes]);
+    const laneExists = laneParam && lanes.some((lane) => lane.id === laneParam);
+    const status = mapUrlStatusFilter(searchParams.get("status") ?? "");
+    if (!laneExists && !status) return;
+    setProjectViewState((prev) => ({
+      ...prev,
+      laneFilter: laneExists ? laneParam : prev.laneFilter,
+      statusFilter: status ?? prev.statusFilter,
+    }));
+  }, [lanes, searchParams, setProjectViewState]);
 
-  // Event subscriptions
   useEffect(() => {
     const unsubExit = window.ade.pty.onExit(() => {
       scheduleBackgroundRefresh(120);
@@ -104,7 +263,11 @@ export function useWorkSessions() {
       scheduleBackgroundRefresh(180);
     }, 5_000);
     return () => {
-      try { unsubExit(); } catch { /* ignore */ }
+      try {
+        unsubExit();
+      } catch {
+        // ignore
+      }
       clearInterval(t);
     };
   }, [scheduleBackgroundRefresh]);
@@ -126,93 +289,166 @@ export function useWorkSessions() {
     };
   }, []);
 
-  // Enhanced filtering with prefix search
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return sessions.filter((s) => {
-      if (filterLaneId !== "all" && s.laneId !== filterLaneId) return false;
-      if (filterStatus !== "all" && s.status !== filterStatus) return false;
+    return sessions.filter((session) => {
+      if (filterLaneId !== "all" && session.laneId !== filterLaneId) return false;
+      if (
+        !sessionMatchesStatusFilter(
+          {
+            status: session.status,
+            lastOutputPreview: session.lastOutputPreview,
+            runtimeState: session.runtimeState,
+          },
+          filterStatus,
+        )
+      ) {
+        return false;
+      }
       if (!needle) return true;
 
-      // Prefix search: lane:, type:, tracked:
       if (needle.startsWith("lane:")) {
-        const val = needle.slice(5).trim();
-        return s.laneName.toLowerCase().includes(val);
+        const value = needle.slice(5).trim();
+        return session.laneName.toLowerCase().includes(value);
       }
       if (needle.startsWith("type:")) {
-        const val = needle.slice(5).trim();
-        return (s.toolType ?? "").toLowerCase().includes(val);
+        const value = needle.slice(5).trim();
+        return (session.toolType ?? "").toLowerCase().includes(value);
       }
       if (needle.startsWith("tracked:")) {
-        const val = needle.slice(8).trim();
-        if (val === "yes" || val === "true") return s.tracked;
-        if (val === "no" || val === "false") return !s.tracked;
+        const value = needle.slice(8).trim();
+        if (value === "yes" || value === "true") return session.tracked;
+        if (value === "no" || value === "false") return !session.tracked;
         return true;
       }
 
       return (
-        (s.goal ?? s.title).toLowerCase().includes(needle) ||
-        s.laneName.toLowerCase().includes(needle) ||
-        (s.toolType ?? "").toLowerCase().includes(needle) ||
-        (s.lastOutputPreview ?? "").toLowerCase().includes(needle) ||
-        (s.summary ?? "").toLowerCase().includes(needle) ||
-        (s.resumeCommand ?? "").toLowerCase().includes(needle)
+        (session.goal ?? session.title).toLowerCase().includes(needle) ||
+        session.laneName.toLowerCase().includes(needle) ||
+        (session.toolType ?? "").toLowerCase().includes(needle) ||
+        (session.lastOutputPreview ?? "").toLowerCase().includes(needle) ||
+        (session.summary ?? "").toLowerCase().includes(needle) ||
+        (session.resumeCommand ?? "").toLowerCase().includes(needle)
       );
     });
   }, [sessions, filterLaneId, filterStatus, q]);
 
+  const runningFiltered = useMemo(
+    () =>
+      filtered.filter(
+        (session) =>
+          sessionStatusBucket({
+            status: session.status,
+            lastOutputPreview: session.lastOutputPreview,
+            runtimeState: session.runtimeState,
+          }) === "running",
+      ),
+    [filtered],
+  );
+
+  const awaitingInputFiltered = useMemo(
+    () =>
+      filtered.filter(
+        (session) =>
+          sessionStatusBucket({
+            status: session.status,
+            lastOutputPreview: session.lastOutputPreview,
+            runtimeState: session.runtimeState,
+          }) === "awaiting-input",
+      ),
+    [filtered],
+  );
+
+  const endedFiltered = useMemo(
+    () =>
+      filtered.filter(
+        (session) =>
+          sessionStatusBucket({
+            status: session.status,
+            lastOutputPreview: session.lastOutputPreview,
+            runtimeState: session.runtimeState,
+          }) === "ended",
+      ),
+    [filtered],
+  );
+
   const runningSessions = useMemo(
-    () => sessions.filter((s) => s.status === "running" && Boolean(s.ptyId)),
+    () => sessions.filter((session) => session.status === "running"),
     [sessions],
   );
 
+  const sessionsById = useMemo(() => {
+    const map = new Map<string, TerminalSessionSummary>();
+    for (const session of sessions) map.set(session.id, session);
+    return map;
+  }, [sessions]);
+
+  const visibleSessions = useMemo(() => {
+    const fromOpen = openItemIds
+      .map((id) => sessionsById.get(id))
+      .filter((session): session is TerminalSessionSummary => session != null);
+    if (fromOpen.length > 0) return fromOpen;
+
+    const selected = selectedSessionId ? sessionsById.get(selectedSessionId) ?? null : null;
+    if (selected) return [selected];
+
+    const preferred = sessions.find((session) => session.status === "running") ?? sessions[0] ?? null;
+    return preferred ? [preferred] : [];
+  }, [openItemIds, selectedSessionId, sessionsById, sessions]);
+
   const selectedSession = useMemo(
-    () => (selectedSessionId ? sessions.find((s) => s.id === selectedSessionId) ?? null : null),
+    () => (selectedSessionId ? sessions.find((session) => session.id === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId],
   );
 
-  const runningFiltered = useMemo(() => filtered.filter((s) => s.status === "running"), [filtered]);
-  const endedFiltered = useMemo(() => filtered.filter((s) => s.status !== "running"), [filtered]);
-
-  // Auto-select first running session
   useEffect(() => {
-    if (!selectedSessionId && runningSessions.length > 0) setSelectedSessionId(runningSessions[0]!.id);
-  }, [selectedSessionId, runningSessions]);
+    if (!projectRoot) return;
+    const validIds = new Set(sessions.map((session) => session.id));
+    const fallbackId = sessions.find((session) => session.status === "running")?.id ?? sessions[0]?.id ?? null;
 
-  /* ---- Tab management ---- */
-  const openSessionTab = useCallback(
-    (sessionId: string) => {
-      setOpenTabIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
-      setActiveTabId(sessionId);
-      setSelectedSessionId(sessionId);
-    },
-    [],
-  );
+    setProjectViewState((prev) => {
+      const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
+      const hadOpen = nextOpen.length > 0;
+      const normalizedOpen = hadOpen ? nextOpen : fallbackId ? [fallbackId] : [];
+      const nextActive =
+        prev.activeItemId && validIds.has(prev.activeItemId)
+          ? prev.activeItemId
+          : normalizedOpen[0] ?? null;
+      const nextSelected =
+        prev.selectedItemId && validIds.has(prev.selectedItemId)
+          ? prev.selectedItemId
+          : nextActive;
 
-  const closeTab = useCallback(
-    (sessionId: string) => {
-      setOpenTabIds((prev) => {
-        const next = prev.filter((id) => id !== sessionId);
-        if (activeTabId === sessionId) {
-          const idx = prev.indexOf(sessionId);
-          const newActive = next[Math.min(idx, next.length - 1)] ?? null;
-          setActiveTabId(newActive);
-          setSelectedSessionId(newActive);
-        }
-        return next;
-      });
-    },
-    [activeTabId],
-  );
+      if (
+        arraysEqual(prev.openItemIds, normalizedOpen) &&
+        prev.activeItemId === nextActive &&
+        prev.selectedItemId === nextSelected
+      ) {
+        return prev;
+      }
 
-  /* ---- Session actions ---- */
+      return {
+        ...prev,
+        openItemIds: normalizedOpen,
+        activeItemId: nextActive,
+        selectedItemId: nextSelected,
+      };
+    });
+  }, [projectRoot, sessions, setProjectViewState]);
 
   const markPtyClosed = (ptyId: string) => {
     setSessions((prev) =>
-      prev.map((s) =>
-        s.ptyId === ptyId
-          ? { ...s, ptyId: null, status: "disposed" as const, runtimeState: "killed" as const, endedAt: new Date().toISOString(), exitCode: null }
-          : s,
+      prev.map((session) =>
+        session.ptyId === ptyId
+          ? {
+              ...session,
+              ptyId: null,
+              status: "disposed" as const,
+              runtimeState: "killed" as const,
+              endedAt: new Date().toISOString(),
+              exitCode: null,
+            }
+          : session,
       ),
     );
   };
@@ -220,29 +456,24 @@ export function useWorkSessions() {
   const closeSession = useCallback(
     async (ptyId: string) => {
       setClosingPtyIds((prev) => {
-        const n = new Set(prev);
-        n.add(ptyId);
-        return n;
+        const next = new Set(prev);
+        next.add(ptyId);
+        return next;
       });
       markPtyClosed(ptyId);
       try {
         await window.ade.pty.dispose({ ptyId });
       } finally {
         setClosingPtyIds((prev) => {
-          const n = new Set(prev);
-          n.delete(ptyId);
-          return n;
+          const next = new Set(prev);
+          next.delete(ptyId);
+          return next;
         });
         await refresh();
       }
     },
     [refresh],
   );
-
-  const closeAllRunning = useCallback(async () => {
-    const ids = runningSessions.map((s) => s.ptyId).filter((id): id is string => Boolean(id));
-    await Promise.allSettled(ids.map((id) => closeSession(id)));
-  }, [runningSessions, closeSession]);
 
   const resumeSession = useCallback(
     async (session: TerminalSessionSummary) => {
@@ -253,7 +484,7 @@ export function useWorkSessions() {
           await window.ade.agentChat.resume({ sessionId: session.id });
           selectLane(session.laneId);
           focusSession(session.id);
-          setSelectedSessionId(session.id);
+          setActiveItemId(session.id);
           await refresh();
         } finally {
           setResumingSessionId(null);
@@ -276,13 +507,13 @@ export function useWorkSessions() {
         });
         selectLane(session.laneId);
         focusSession(started.sessionId);
-        setSelectedSessionId(started.sessionId);
+        setActiveItemId(started.sessionId);
         navigate(`/lanes?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(started.sessionId)}`);
       } finally {
         setResumingSessionId(null);
       }
     },
-    [focusSession, navigate, refresh, resumingSessionId, selectLane],
+    [focusSession, navigate, refresh, resumingSessionId, selectLane, setActiveItemId],
   );
 
   const closeChatSession = useCallback(
@@ -292,17 +523,30 @@ export function useWorkSessions() {
         await window.ade.agentChat.dispose({ sessionId });
         await refresh();
       } finally {
-        setClosingChatSessionId((c) => (c === sessionId ? null : c));
+        setClosingChatSessionId((current) => (current === sessionId ? null : current));
       }
     },
     [refresh],
   );
 
-  /* ---- Launch new sessions ---- */
+  const closeAllRunning = useCallback(async () => {
+    const ptyIds = runningSessions.map((session) => session.ptyId).filter((id): id is string => Boolean(id));
+    const chatSessionIds = runningSessions
+      .filter((session) => isChatToolType(session.toolType))
+      .map((session) => session.id);
+    await Promise.allSettled([
+      ...ptyIds.map((id) => closeSession(id)),
+      ...chatSessionIds.map((id) => closeChatSession(id)),
+    ]);
+  }, [runningSessions, closeSession, closeChatSession]);
 
   const handleLaunchPty = useCallback(
     async (laneId: string, profile: "claude" | "codex" | "shell", tracked = true) => {
-      const toolTypeMap = { claude: "claude" as const, codex: "codex" as const, shell: "shell" as const };
+      const toolTypeMap = {
+        claude: "claude" as const,
+        codex: "codex" as const,
+        shell: "shell" as const,
+      };
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
       const commandMap = { claude: "claude", codex: "codex", shell: "" };
       const result = await window.ade.pty.create({
@@ -316,16 +560,14 @@ export function useWorkSessions() {
       });
       selectLane(laneId);
       focusSession(result.sessionId);
-      setSelectedSessionId(result.sessionId);
       openSessionTab(result.sessionId);
       await refresh();
     },
-    [selectLane, focusSession, refresh, openSessionTab],
+    [focusSession, openSessionTab, refresh, selectLane],
   );
 
   const handleLaunchChat = useCallback(
     async (laneId: string, modelIdOrProvider?: string) => {
-      // Accept either a model ID (e.g. "anthropic/claude-sonnet-4-6") or legacy provider ("claude"/"codex")
       let provider: "claude" | "codex" | "unified" = "codex";
       let model = "gpt-5.3-codex";
       let modelId: string | undefined;
@@ -351,13 +593,16 @@ export function useWorkSessions() {
       } else if (modelIdOrProvider && modelIdOrProvider.trim().length) {
         applyDescriptor(modelIdOrProvider);
       } else {
-        // No explicit model/provider: choose a runnable default from live availability.
         try {
           const status = await window.ade.ai.getStatus();
-          const detectedLocal = (status.detectedAuth ?? [])
-            .find((entry) => entry.type === "local" && (entry.provider === "lmstudio" || entry.provider === "ollama" || entry.provider === "vllm"));
+          const detectedLocal = (status.detectedAuth ?? []).find(
+            (entry) =>
+              entry.type === "local" &&
+              (entry.provider === "lmstudio" || entry.provider === "ollama" || entry.provider === "vllm"),
+          );
           if (detectedLocal) {
-            const localModelId = detectedLocal.provider === "ollama" ? "ollama/llama-3.3" : `${detectedLocal.provider}/auto`;
+            const localModelId =
+              detectedLocal.provider === "ollama" ? "ollama/llama-3.3" : `${detectedLocal.provider}/auto`;
             applyDescriptor(localModelId);
           } else if (status.availableProviders.codex) {
             const codexId = status.models.codex?.[0]?.id ?? "openai/gpt-5.3-codex";
@@ -381,25 +626,24 @@ export function useWorkSessions() {
       const session = await window.ade.agentChat.create({ laneId, provider, model, modelId });
       selectLane(laneId);
       focusSession(session.id);
-      setSelectedSessionId(session.id);
       openSessionTab(session.id);
       await refresh();
     },
-    [selectLane, focusSession, refresh, openSessionTab],
+    [focusSession, openSessionTab, refresh, selectLane],
   );
 
   return {
-    // Data
     sessions,
     lanes,
     filtered,
     runningFiltered,
+    awaitingInputFiltered,
     endedFiltered,
     runningSessions,
+    visibleSessions,
     selectedSession,
     loading,
 
-    // Filters
     filterLaneId,
     setFilterLaneId,
     filterStatus,
@@ -407,25 +651,21 @@ export function useWorkSessions() {
     q,
     setQ,
 
-    // Selection
     selectedSessionId,
     setSelectedSessionId,
 
-    // Tabs
-    openTabIds,
-    activeTabId,
+    openItemIds,
+    activeItemId,
+    setActiveItemId,
     viewMode,
     setViewMode,
     openSessionTab,
     closeTab,
-    setActiveTabId,
 
-    // In-flight state
     closingPtyIds,
     closingChatSessionId,
     resumingSessionId,
 
-    // Actions
     refresh,
     closeSession,
     closeAllRunning,
@@ -434,7 +674,6 @@ export function useWorkSessions() {
     handleLaunchPty,
     handleLaunchChat,
 
-    // Navigation helpers
     navigate,
     selectLane,
     focusSession,

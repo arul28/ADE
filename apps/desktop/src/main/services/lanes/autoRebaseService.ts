@@ -276,15 +276,17 @@ export function createAutoRebaseService(args: {
         continue;
       }
 
-      const restack = await laneService.restack({
+      const rebaseRun = await laneService.rebaseStart({
         laneId: lane.id,
-        recursive: false,
+        scope: "lane_only",
+        pushMode: "none",
+        actor: "system",
         reason: "auto_rebase"
       });
-      if (restack.error) {
+      if (rebaseRun.run.error) {
         blocked = true;
         blockedLaneId = lane.id;
-        const conflictHint = /conflict|could not apply|resolve/i.test(restack.error);
+        const conflictHint = /conflict|could not apply|resolve/i.test(rebaseRun.run.error);
         setStatus({
           laneId: lane.id,
           parentLaneId: lane.parentLaneId,
@@ -293,7 +295,7 @@ export function createAutoRebaseService(args: {
           conflictCount: conflictHint ? 1 : 0,
           message: conflictHint
             ? "Auto-rebase stopped due to conflicts. Resolve manually, then publish."
-            : `Auto-rebase failed: ${restack.error}`
+            : `Auto-rebase failed: ${rebaseRun.run.error}`
         });
         continue;
       }

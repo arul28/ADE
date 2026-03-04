@@ -289,7 +289,7 @@ export function normalizeAttemptStatus(value: string): OrchestratorAttemptStatus
 }
 
 export function normalizeExecutorKind(value: string): OrchestratorExecutorKind {
-  if (value === "unified" || value === "claude" || value === "codex" || value === "shell" || value === "manual") return value;
+  if (value === "unified" || value === "shell" || value === "manual") return value;
   return "manual";
 }
 

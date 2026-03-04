@@ -40,6 +40,10 @@ import { readMissionStateDocument, updateMissionStateDocument } from "./missionS
 import { isWithinDir } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { registerTeamMember } from "./teamRuntimeState";
+import {
+  classifyWorkerExecutionPath,
+  resolveModelDescriptor,
+} from "../../../shared/modelRegistry";
 
 const VALIDATION_CONTRACT_SCHEMA = z
   .object({
@@ -235,6 +239,13 @@ function resolveRoleToolProfile(teamRuntime: TeamRuntimeConfig | null, roleName:
   }
   const roleDef = resolveRoleDefinition(teamRuntime, normalized);
   return (roleDef?.toolProfile as unknown as Record<string, unknown>) ?? null;
+}
+
+function resolveModelIdFromConfig(config: unknown): string {
+  const record = asRecord(config);
+  if (!record) return "";
+  const modelId = typeof record.modelId === "string" ? record.modelId.trim() : "";
+  return modelId.length > 0 ? modelId : "";
 }
 
 function parseValidationContract(value: unknown): ValidationContract | null {
@@ -448,7 +459,7 @@ export function createCoordinatorToolSet(deps: {
   /** Register a spawned worker/sub-agent as a team member for tracking. */
   function trackTeamMember(args: {
     workerId: string;
-    provider: "claude" | "codex";
+    provider: string;
     role: string | null;
     isSubAgent?: boolean;
     parentWorkerId?: string | null;
@@ -603,12 +614,41 @@ export function createCoordinatorToolSet(deps: {
     }
   }
 
+  type PhaseModelResolution =
+    | {
+        ok: true;
+        modelId: string;
+      }
+    | {
+        ok: false;
+        error: string;
+      };
+
+  function resolveModelFromPhaseModel(g: OrchestratorRunGraph): PhaseModelResolution {
+    const runMeta = asRecord(g.run.metadata);
+    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+    const currentPhaseModel = asRecord(phaseRuntime?.currentPhaseModel);
+    const modelIdHint = typeof currentPhaseModel?.modelId === "string" ? currentPhaseModel.modelId.trim() : "";
+    if (modelIdHint.length > 0) {
+      const descriptor = resolveModelDescriptor(modelIdHint);
+      if (!descriptor) {
+        return {
+          ok: false,
+          error: `Current phase model '${modelIdHint}' is not registered. Select a valid model ID before spawning workers.`
+        };
+      }
+      return { ok: true, modelId: descriptor.id };
+    }
+
+    return { ok: false, error: "Current phase does not define modelId. Configure a phase model before spawning workers." };
+  }
+
   // ─── Worker Management ────────────────────────────────────────
 
   const spawnWorkerStep = (args: {
     stepKey?: string | null;
     name: string;
-    provider: "claude" | "codex";
+    modelId: string;
     prompt: string;
     dependsOn: string[];
     roleName?: string | null;
@@ -628,7 +668,15 @@ export function createCoordinatorToolSet(deps: {
     const roleDef = args.roleName ? resolveRoleDefinition(teamRuntime, args.roleName) : null;
     const roleName = roleDef?.name ?? (args.roleName?.trim().length ? args.roleName.trim() : null);
     const toolProfile = roleName ? resolveRoleToolProfile(teamRuntime, roleName) : null;
-    const resolvedProvider = roleDef?.defaultModel.provider ?? args.provider;
+    const roleDefaultModelId = resolveModelIdFromConfig(roleDef?.defaultModel);
+    const resolvedModelId = roleDefaultModelId || args.modelId.trim();
+    const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
+    const resolvedProvider = roleDef?.defaultModel.provider
+      ?? (resolvedDescriptor?.family === "anthropic"
+        ? "claude"
+        : resolvedDescriptor?.family === "openai"
+          ? "codex"
+          : resolvedDescriptor?.family ?? "unknown");
     const replacementForWorkerId = args.replacementForWorkerId?.trim() || null;
     const replacementSourceStep = replacementForWorkerId ? resolveStep(g, replacementForWorkerId) : null;
     if (replacementForWorkerId && !replacementSourceStep) {
@@ -660,11 +708,14 @@ export function createCoordinatorToolSet(deps: {
           stepIndex: maxIndex + 1,
           laneId: effectiveLaneId,
           dependencyStepKeys: args.dependsOn,
-          executorKind: resolvedProvider === "codex" ? "codex" : "claude",
+          executorKind: "unified",
           metadata: {
             instructions: args.prompt,
             workerName: args.name,
             spawnedByCoordinator: true,
+            modelId: resolvedModelId,
+            modelProviderHint: resolvedProvider,
+            modelExecutionPath: resolvedDescriptor ? classifyWorkerExecutionPath(resolvedDescriptor) : "api",
             role: roleName,
             roleCapabilities: roleDef?.capabilities ?? [],
             roleDefaultModel: roleDef?.defaultModel ?? null,
@@ -906,7 +957,7 @@ export function createCoordinatorToolSet(deps: {
       "Spawn a new agent worker session. The worker will execute the given prompt autonomously. Returns a worker ID (step key) you can use to track, message, or stop the worker.",
     inputSchema: z.object({
       name: z.string().describe("Human-readable name for the worker (e.g. 'auth-implementer', 'test-writer')"),
-      provider: z.enum(["claude", "codex"]).optional().describe("Which agent provider to use"),
+      modelId: z.string().optional().describe("Optional model ID override for this worker (for example: openai/gpt-5.3-codex)"),
       role: z.string().optional().describe("Optional team role to bind (e.g. implementer, validator, researcher)"),
       prompt: z.string().describe("The full task prompt for the worker — be specific about what to do"),
       laneId: z.string().optional().describe("Optional lane ID override for the worker step"),
@@ -922,7 +973,7 @@ export function createCoordinatorToolSet(deps: {
         .default([])
         .describe("Step keys this worker depends on (must complete before worker starts)"),
     }),
-    execute: async ({ name, provider, role, prompt, laneId, replacementForWorkerId, replacementReason, validationContract, dependsOn }) => {
+    execute: async ({ name, modelId, role, prompt, laneId, replacementForWorkerId, replacementReason, validationContract, dependsOn }) => {
       try {
         const g = graph();
         const teamRuntime = resolveTeamRuntimeConfig(g);
@@ -939,16 +990,26 @@ export function createCoordinatorToolSet(deps: {
           return { ok: false, error: "Invalid validationContract payload." };
         }
 
-        // Resolve provider from current phase card's model config if not explicitly given
-        let resolvedProvider: "claude" | "codex" = provider ?? "claude";
-        if (!provider) {
-          const runMeta = asRecord(g.run.metadata);
-          const phaseRuntime = asRecord(runMeta?.phaseRuntime);
-          const currentPhaseModel = asRecord(phaseRuntime?.currentPhaseModel);
-          if (typeof currentPhaseModel?.provider === "string") {
-            resolvedProvider = currentPhaseModel.provider as "claude" | "codex";
+        // Resolve worker model from explicit input -> role default -> active phase model.
+        const explicitModelId = typeof modelId === "string" ? modelId.trim() : "";
+        let resolvedModelId = explicitModelId;
+        if (!resolvedModelId.length) {
+          const phaseModelResolution = resolveModelFromPhaseModel(g);
+          if (!phaseModelResolution.ok) {
+            return { ok: false, error: phaseModelResolution.error };
           }
+          resolvedModelId = phaseModelResolution.modelId;
         }
+        const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
+        if (!resolvedDescriptor) {
+          return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
+        }
+        const resolvedProvider =
+          resolvedDescriptor.family === "anthropic"
+            ? "claude"
+            : resolvedDescriptor.family === "openai"
+              ? "codex"
+              : resolvedDescriptor.family;
 
         // Hard cap check: refuse to spawn if budget hard caps are triggered
         const budgetCheck = await checkBudgetHardCaps({
@@ -1010,7 +1071,7 @@ export function createCoordinatorToolSet(deps: {
 
         const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
           name,
-          provider: resolvedProvider,
+          modelId: resolvedModelId,
           prompt,
           dependsOn,
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
@@ -1082,6 +1143,7 @@ export function createCoordinatorToolSet(deps: {
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
           name,
+          modelId: resolvedModelId,
           provider: resolvedProvider,
           role: roleName,
           toolProfile,
@@ -1314,9 +1376,16 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
+        const roleDefaultModelId = resolveModelIdFromConfig(roleDef.defaultModel);
+        const phaseModelResolution = resolveModelFromPhaseModel(g);
+        const specialistModelId = roleDefaultModelId || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
+        if (!specialistModelId) {
+          return { ok: false, error: "Unable to resolve specialist model ID from role default or active phase model." };
+        }
+
         const { workerId, step, roleName, toolProfile } = spawnWorkerStep({
           name: workerName,
-          provider: roleDef.defaultModel.provider,
+          modelId: specialistModelId,
           prompt: objective,
           dependsOn,
           roleName: roleDef.name,
@@ -2425,7 +2494,7 @@ export function createCoordinatorToolSet(deps: {
           title: z.string(),
           description: z.string(),
           dependsOn: z.array(z.string()).default([]),
-          provider: z.enum(["claude", "codex"]).optional(),
+          modelId: z.string().optional(),
           role: z.string().optional(),
           laneId: z.string().nullable().optional(),
           replaces: z.array(z.string()).default([]),
@@ -2479,7 +2548,7 @@ export function createCoordinatorToolSet(deps: {
           key: string;
           title: string;
           description: string;
-          provider: "claude" | "codex";
+          modelId: string;
           roleName: string | null;
           laneId: string | null;
           dependsOn: string[];
@@ -2520,7 +2589,8 @@ export function createCoordinatorToolSet(deps: {
             return { ok: false, error: `Step key '${normalizedKey}' already exists.` };
           }
           const normalizedRole = entry.role?.trim() ?? "";
-          if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
+          const roleDef = normalizedRole.length > 0 ? resolveRoleDefinition(teamRuntime, normalizedRole) : null;
+          if (normalizedRole.length > 0 && !roleDef) {
             return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
           }
           const parsedContract = parseValidationContract(entry.validationContract ?? null);
@@ -2529,11 +2599,28 @@ export function createCoordinatorToolSet(deps: {
           }
           const dependsOn = [...new Set(entry.dependsOn.map((candidate) => candidate.trim()).filter((candidate) => candidate.length > 0))];
           const replacementSourceStep = replaces.length > 0 ? (stepByKey.get(replaces[0]) ?? null) : null;
+          const phaseModelResolution = resolveModelFromPhaseModel(initialGraph);
+          const modelOverride = typeof entry.modelId === "string" ? entry.modelId.trim() : "";
+          const resolvedModel =
+            modelOverride.length > 0
+              ? modelOverride
+              : resolveModelIdFromConfig(roleDef?.defaultModel)
+                || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
+          if (!resolvedModel.length) {
+            return {
+              ok: false,
+              error: `Unable to resolve modelId for new step '${normalizedKey}'. Add modelId explicitly or configure the phase modelId.`
+            };
+          }
+          const descriptor = resolveModelDescriptor(resolvedModel);
+          if (!descriptor) {
+            return { ok: false, error: `Unknown model '${resolvedModel}' for new step '${normalizedKey}'.` };
+          }
           parsedNewSteps.push({
             key: normalizedKey,
             title: entry.title,
             description: entry.description,
-            provider: entry.provider ?? "claude",
+            modelId: descriptor.id,
             roleName: normalizedRole.length > 0 ? normalizedRole : null,
             laneId: entry.laneId ?? replacementSourceStep?.laneId ?? null,
             dependsOn,
@@ -2598,7 +2685,7 @@ export function createCoordinatorToolSet(deps: {
           const spawnResult = spawnWorkerStep({
             stepKey: plannedStep.key,
             name: plannedStep.title,
-            provider: plannedStep.provider,
+            modelId: plannedStep.modelId,
             prompt: plannedStep.description,
             dependsOn: plannedStep.dependsOn,
             roleName: plannedStep.roleName,
@@ -3946,10 +4033,10 @@ export function createCoordinatorToolSet(deps: {
       parentWorkerId: z.string().describe("Step key of the parent worker that owns this subtask"),
       name: z.string().describe("Human-readable name for the sub-agent"),
       prompt: z.string().describe("Full task prompt for the sub-agent"),
-      provider: z.enum(["claude", "codex"]).optional().describe("Which agent provider to use"),
+      modelId: z.string().optional().describe("Optional model ID override for the sub-agent"),
       role: z.string().optional().describe("Optional team role to bind (e.g. implementer, validator)"),
     }),
-    execute: async ({ parentWorkerId, name, prompt, provider, role }) => {
+    execute: async ({ parentWorkerId, name, prompt, modelId, role }) => {
       try {
         const g = graph();
         const teamRuntime = resolveTeamRuntimeConfig(g);
@@ -3972,9 +4059,29 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        // Hard constraint: allowClaudeAgentTeams must be enabled for claude provider sub-agents
-        const resolvedProvider: "claude" | "codex" = provider ?? "claude";
-        if (resolvedProvider === "claude" && teamRuntime?.allowClaudeAgentTeams === false) {
+        // Resolve model for sub-agent: explicit override -> role default -> parent worker modelId -> phase modelId.
+        const roleDef = role?.trim().length ? resolveRoleDefinition(teamRuntime, role.trim()) : null;
+        const parentMeta = asRecord(parentStep.metadata);
+        const parentModel = typeof parentMeta?.modelId === "string" ? parentMeta.modelId.trim() : "";
+        const phaseModelResolution = resolveModelFromPhaseModel(g);
+        const requestedModelId = typeof modelId === "string" ? modelId.trim() : "";
+        const resolvedModelId = requestedModelId || resolveModelIdFromConfig(roleDef?.defaultModel) || parentModel || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
+        if (!resolvedModelId.length) {
+          return { ok: false, error: "Unable to resolve sub-agent modelId from override, role default, parent worker, or current phase." };
+        }
+        const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
+        if (!resolvedDescriptor) {
+          return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
+        }
+        const resolvedProvider =
+          resolvedDescriptor.family === "anthropic"
+            ? "claude"
+            : resolvedDescriptor.family === "openai"
+              ? "codex"
+              : resolvedDescriptor.family;
+
+        // Hard constraint: allowClaudeAgentTeams must be enabled for Claude CLI sub-agents
+        if (resolvedProvider === "claude" && resolvedDescriptor.isCliWrapped && teamRuntime?.allowClaudeAgentTeams === false) {
           return {
             ok: false,
             error: "Claude agent teams are disabled (allowClaudeAgentTeams=false). Cannot delegate claude sub-agent.",
@@ -4005,7 +4112,7 @@ export function createCoordinatorToolSet(deps: {
         // Create child step via spawnWorkerStep with parent linkage
         const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
           name,
-          provider: resolvedProvider,
+          modelId: resolvedDescriptor.id,
           prompt,
           dependsOn: [parentWorkerId],
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
@@ -4085,6 +4192,7 @@ export function createCoordinatorToolSet(deps: {
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
           name,
+          modelId: resolvedDescriptor.id,
           provider: resolvedProvider,
           role: roleName,
           toolProfile,

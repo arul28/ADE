@@ -255,7 +255,7 @@ High-frequency event streams include:
 - `ade.prs.event`
 - `ade.agents.event`
 - `ade.missions.event`
-- `ade.lanes.restackSuggestions.event`
+- `ade.lanes.rebaseSuggestions.event`
 - `ade.lanes.autoRebase.event`
 - `ade.project.missing`
 

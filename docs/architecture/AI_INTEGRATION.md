@@ -18,9 +18,8 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
   - [Why MCP for Tool Access?](#why-mcp-for-tool-access)
   - [Why AI Orchestrator?](#why-ai-orchestrator)
 - [Technical Details](#technical-details)
-  - [AgentExecutor Interface](#agentexecutor-interface)
-  - [Claude Executor](#claude-executor)
-  - [Codex Executor](#codex-executor)
+  - [Unified Executor Interface](#unified-executor-interface)
+  - [Agent Execution (Unified Runtime)](#agent-execution-unified-runtime)
   - [AI Integration Service](#ai-integration-service)
   - [MCP Server](#mcp-server)
   - [Computer Use MCP Tools](#computer-use-mcp-tools)
@@ -100,43 +99,16 @@ This also aligns AI cost with tools developers already budget for. There is no s
 
 ### SDK Strategy
 
-ADE uses the best available SDK for each agent rather than forcing both through a single unified layer. The unification point is ADE's own `AgentExecutor` interface -- a thin abstraction that the orchestrator works against, ensuring the orchestration and UI layers never couple to a specific SDK.
+ADE uses a unified executor runtime that routes work based on model class rather than provider-specific executor implementations. The unification point is the `unified` executor kind — a single execution path that classifies models as CLI-wrapped (subprocess) or API/local (in-process) and routes accordingly.
 
-#### Claude: Community Vercel AI SDK Provider (Workaround)
+**Key SDKs**:
+- `ai-sdk-provider-claude-code` — Community Vercel AI SDK provider (Ben Vargas) wrapping Claude CLI. Authentication flows through `claude login`.
+- `@openai/codex-sdk` — Official OpenAI SDK for Codex CLI. Supports subscription auth natively.
+- `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`, etc. — Vercel AI SDK providers for API-key models.
 
-Anthropic's official Agent SDK (`@anthropic-ai/claude-agent-sdk`) currently restricts subscription/OAuth usage in third-party applications (as of Feb 19, 2026 -- this policy is contested and may change). To work around this, ADE uses `ai-sdk-provider-claude-code`, a community-maintained Vercel AI SDK provider by Ben Vargas. This provider wraps `@anthropic-ai/claude-agent-sdk`, which in turn spawns the Claude Code CLI as a subprocess. Authentication flows through `claude login` (the user's existing Anthropic subscription).
+**Model resolution**: `modelId` → registry lookup → `isCliWrapped` classification → subprocess or in-process path. See `docs/ORCHESTRATOR_OVERHAUL.md` for the full runtime contract.
 
-The Vercel AI SDK is therefore still present in the stack, but only on the Claude path -- it is not the "unified layer" for both agents.
-
-#### Codex: Official OpenAI SDK (Direct)
-
-OpenAI's official `@openai/codex-sdk` is well-maintained and supports subscription auth (ChatGPT Plus/Pro) natively. It directly spawns the Codex CLI as a subprocess via JSONL over stdin/stdout. There is no need for a Vercel AI SDK wrapper -- the official SDK provides everything ADE needs: thread management, streaming, structured output, and sandbox controls.
-
-#### The AgentExecutor Interface
-
-ADE owns a thin `AgentExecutor` interface that abstracts over both SDK paths. The orchestrator, AI integration service, and mission planner all work against this interface. This means:
-
-- **Provider abstraction**: The orchestrator dispatches steps to an executor without knowing which SDK runs underneath.
-- **Streaming**: Both executors surface `AsyncIterable<AgentEvent>` streams, providing a uniform streaming contract for the UI layer.
-- **Structured output**: JSON schema enforcement is handled by each executor's underlying SDK, but the result contract is identical.
-- **Tool interception**: Each executor implements its own tool interception mechanism (Vercel's `canUseTool` callback for Claude, Codex SDK's approval hooks for Codex), but the orchestrator sees a uniform permission interface.
-- **Session management**: Session state is managed per-executor, but the `resume()` contract is the same.
-
-```typescript
-interface AgentExecutor {
-  execute(prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent>;
-  resume(sessionId: string): AsyncIterable<AgentEvent>;
-}
-
-class ClaudeExecutor implements AgentExecutor { /* wraps ai-sdk-provider-claude-code */ }
-class CodexExecutor implements AgentExecutor { /* wraps @openai/codex-sdk */ }
-```
-
-#### Migration Path
-
-- If Anthropic opens subscription access for the Agent SDK: switch `ClaudeExecutor` to use `@anthropic-ai/claude-agent-sdk` directly and drop the Vercel provider wrapper. No orchestrator or UI changes required.
-- If a new agent CLI appears (e.g., Gemini): add a new executor implementing the same `AgentExecutor` interface. The orchestrator and UI code do not change.
-- The `AgentExecutor` interface is the stable contract; the SDKs underneath are implementation details that can be swapped without ripple effects.
+> **Historical note**: The original architecture used separate `ClaudeExecutor` and `CodexExecutor` classes with per-provider `AgentExecutor` interface implementations. These were deleted during the Phase 2-3 orchestrator overhaul (2026-03-04) in favor of the unified runtime.
 
 ### Why MCP for Tool Access?
 
@@ -163,296 +135,44 @@ Simple AI tasks (generate a narrative, draft a PR description) still execute in 
 - **Failure handling**: Failed steps need retry logic, intervention routing, or graceful degradation.
 - **Conflict prevention**: Agents working in parallel must not create merge conflicts.
 
-The AI Orchestrator is a Claude session using **in-process Vercel AI SDK coordinator tools** (defined in `coordinatorTools.ts`) that handles this coordination. It receives a mission prompt, plans the execution strategy, spawns agents for each step, monitors progress through structured worker reports, and routes interventions to the user when human input is required. The orchestrator does **not** use the MCP server — its tools are registered directly with the Vercel AI SDK `streamText()` call. The MCP server (`apps/mcp-server`) serves a different role: it is the **external tool interface** for spawned worker agents and external observers/evaluators.
+The AI Orchestrator is a coordinator agent that plans execution strategy, spawns workers for each step, monitors progress through structured reports, and routes interventions to the user. Coordinator tools are exposed via the ADE MCP server — both the coordinator and workers connect to the same MCP server with different identity contexts.
 
-Autonomy boundary: the coordinator owns strategic decisions (spawn, replan, validation routing, lane transfer, escalation). The deterministic runtime only enforces state integrity and policy constraints. For example, `revise_plan` requires explicit dependency patches from the coordinator; runtime validation does not auto-rewire dependencies. If the coordinator is unavailable, runs pause/escalate instead of falling back to deterministic strategy handlers.
+Autonomy boundary: the coordinator owns strategic decisions (spawn, replan, validation routing, lane transfer, escalation). The deterministic runtime only enforces state integrity and policy constraints.
 
 This is distinct from the orchestrator service (`orchestratorService.ts`), which is the deterministic state machine that tracks runs, steps, attempts, and claims. The AI Orchestrator is the intelligent layer on top that decides *what* to do next; the orchestrator service is the durable layer underneath that records *what happened*.
+
+> For current orchestrator runtime contracts, execution architecture, and remaining work, see `docs/ORCHESTRATOR_OVERHAUL.md`.
 
 ---
 
 ## Technical Details
 
-### AgentExecutor Interface
+### Unified Executor Interface
 
-The `AgentExecutor` interface is ADE's central abstraction over agent SDKs. All AI task dispatching flows through this interface, ensuring the orchestrator and UI layers remain SDK-agnostic.
+All AI task dispatching flows through the unified executor (`unifiedExecutor.ts`). The executor resolves models via the registry, classifies by model class (CLI-wrapped vs API/local), and routes accordingly. Permission schema is class-based: `permissionConfig.cli` for CLI-wrapped models, `permissionConfig.inProcess` for API/local models.
 
-```typescript
-interface AgentExecutor {
-  execute(prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent>;
-  resume(sessionId: string): AsyncIterable<AgentEvent>;
-}
+### Agent Execution (Unified Runtime)
 
-interface ExecutorOpts {
-  cwd: string;                              // Working directory (lane worktree path)
-  contextPack: PackExport;                  // Token-budgeted context bundle
-  systemPrompt?: string;                    // Task-specific system prompt
-  jsonSchema?: object;                      // Structured output enforcement
-  model?: string;                           // Model override (resolved from Settings)
-  timeoutMs: number;                        // Hard timeout for the execution
-  maxBudgetUsd?: number;                    // Budget cap (Claude only, currently)
-  oneShot?: boolean;                        // If true, use codex exec / non-streaming mode
+> **Note**: The legacy `ClaudeExecutor` and `CodexExecutor` classes have been deleted. All AI worker execution now routes through a single `unified` executor kind. See `docs/ORCHESTRATOR_OVERHAUL.md` for the current runtime contract.
 
-  // Permission and sandbox configuration (mapped to provider-specific options)
-  permissions: {
-    mode: "read-only" | "edit" | "full-auto";  // ADE's unified permission model
-    allowedTools?: string[];                    // Tool whitelist
-    disallowedTools?: string[];                 // Tool blacklist
-    canUseTool?: (invocation: ToolInvocation) => boolean;  // Runtime hook
-    sandboxLevel?: "strict" | "workspace" | "unrestricted"; // Filesystem access
-  };
+The unified runtime supports three model classes:
+- **CLI-wrapped** (Claude CLI, Codex CLI): Spawned as subprocesses. Authentication inherits from user's existing CLI login (`claude login`, Codex subscription). MCP server injected via `--mcp-config` flag.
+- **API/key models** (Anthropic API, OpenAI, Google, Mistral, DeepSeek, xAI, OpenRouter): In-process execution via Vercel AI SDK `streamText()`. Authentication via configured API keys.
+- **Local models** (Ollama, LM Studio, vLLM): In-process execution via OpenAI-compatible endpoints.
 
-  // Provider-specific overrides (passed through to underlying SDK)
-  providerConfig?: {
-    claude?: {
-      permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
-      settingSources?: ("user" | "project" | "local")[];
-      hooks?: Record<string, unknown>;
-    };
-    codex?: {
-      approval_mode?: "untrusted" | "on-request" | "never";
-      sandbox_permissions?: "read-only" | "workspace-write" | "danger-full-access";
-      writable_paths?: string[];
-      command_allowlist?: string[];
-    };
-  };
-}
+Model resolution is `modelId`-first: the registry (`modelRegistry.ts`) resolves model descriptors with `isCliWrapped` classification, and the runtime routes accordingly. Permission schema is class-based (`cli` + `inProcess`) rather than provider-bucketed.
 
-type AgentEvent =
-  | { type: "text"; content: string }
-  | { type: "tool_call"; name: string; args: unknown }
-  | { type: "tool_result"; name: string; result: unknown }
-  | { type: "structured_output"; data: unknown }
-  | { type: "error"; message: string }
-  | { type: "done"; sessionId: string };
-```
-
-The orchestrator service, AI integration service, and mission planner all depend on `AgentExecutor` rather than on any specific SDK. This makes executor swaps a one-file change with zero impact on upstream consumers.
-
-### Claude Executor
-
-`ClaudeExecutor` wraps `ai-sdk-provider-claude-code` (community Vercel AI SDK provider by Ben Vargas), which in turn wraps `@anthropic-ai/claude-agent-sdk`, which spawns the Claude Code CLI as a subprocess.
-
-**SDK chain**: `ClaudeExecutor` -> `ai-sdk-provider-claude-code` -> `@anthropic-ai/claude-agent-sdk` -> `claude` CLI process
-
-**Authentication**: Inherits the user's Anthropic subscription via `claude login`. ADE never sees or stores credentials.
-
-**CLI invocation** (spawned by the underlying SDK):
-
-```
-claude -p --output-format json --permission-mode plan --no-session-persistence <prompt>
-```
-
-- Used for planning, review, conflict resolution, and narrative generation.
-- Supports `--json-schema` for structured output enforcement.
-- Permission mode is set per task: `plan` for read-only analysis, `full` for implementation steps.
-
-**Tool interception**: The Vercel AI SDK's `canUseTool` callback is wired through the executor:
-
-```typescript
-canUseTool({ toolName, args, context }) => {
-  // Check against ADE's permission policy
-  // Log the tool invocation attempt
-  // Return allow/deny decision
-}
-```
-
-This callback is the enforcement point for ADE's trust boundary. Even if a model attempts to use a tool it should not have access to, ADE can deny the request and log the attempt.
-
-**SDK Configuration Options** (via `ai-sdk-provider-claude-code`):
-
-The community Vercel provider exposes nearly all options from `@anthropic-ai/claude-agent-sdk`:
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `permissionMode` | `"default"` \| `"acceptEdits"` \| `"bypassPermissions"` \| `"plan"` | Controls what Claude can do without asking. `plan` = read-only analysis; `acceptEdits` = auto-approve file edits; `bypassPermissions` = full autonomy. |
-| `allowedTools` | `string[]` | Whitelist of tools Claude may use (e.g., `["Read", "Grep", "Glob"]`). |
-| `disallowedTools` | `string[]` | Blacklist of tools Claude may not use. |
-| `canUseTool` | `(invocation) => boolean` | Runtime callback for per-invocation tool approval -- ADE's enforcement point. |
-| `mcpServers` | `McpServerConfig[]` | MCP servers to connect (ADE passes its own MCP server here). |
-| `systemPrompt` | `string` | System prompt prepended to every conversation. Used by ADE for task-specific instructions. |
-| `settingSources` | `("user" \| "project" \| "local")[]` | Which `.claude/settings.json` files to load. **Not loaded by default** -- ADE must opt in via `settingSources: ["project"]` to honor project-level settings. |
-| `maxBudgetUsd` | `number` | Hard budget cap for the session. Claude stops when budget is reached. |
-| `hooks` | `HookConfig` | 12 hook event types (PreToolUse, PostToolUse, Stop, SessionStart, etc.) for lifecycle interception. |
-| `sandbox` | `boolean` | Enable sandbox mode for filesystem isolation. |
-
-**Important: Settings Loading Behavior**
-
-By default, the Claude Agent SDK does **NOT** load `.claude/settings.json` or `CLAUDE.md` files from the project. ADE must explicitly opt in:
-
-- To honor project settings: set `settingSources: ["project"]`
-- To load CLAUDE.md: requires `settingSources: ["project"]` AND the preset system prompt must reference it
-- ADE controls what settings are loaded -- this is a feature, not a bug. It means ADE can enforce its own permission policies without interference from project-level Claude settings.
-
-**Available Models** (via `supportedModels()` method):
-
-| Alias | Full Model ID | Use Case |
-|-------|---------------|----------|
-| `opus` | `claude-opus-4-6` | Complex reasoning, mission planning |
-| `sonnet` | `claude-sonnet-4-6` | Balanced -- review, conflict analysis, narratives |
-| `haiku` | `claude-haiku-4-5-20251001` | Fast, cheap -- terminal summaries, PR descriptions |
-
-Settings and runtime routing are registry-ID first. ADE resolves models through the registry (`getModelById`) and the registry short-id index (`resolveModelAlias`) instead of maintaining a separate legacy alias remap compatibility layer. The `supportedModels()` SDK method can be called at startup to populate the model picker with the latest available models.
-
-**Migration note**: If Anthropic opens subscription access for the Agent SDK, `ClaudeExecutor` will switch to using `@anthropic-ai/claude-agent-sdk` directly, dropping the Vercel provider wrapper. The `AgentExecutor` interface contract does not change.
-
-### Codex Executor
-
-`CodexExecutor` wraps `@openai/codex-sdk` (official OpenAI SDK) directly. No Vercel AI SDK involvement.
-
-**SDK chain**: `CodexExecutor` -> `@openai/codex-sdk` -> `codex` CLI process (JSONL over stdin/stdout)
-
-**Authentication**: Inherits the user's OpenAI subscription (ChatGPT Plus/Pro) natively. The official SDK supports subscription auth out of the box.
-
-**SDK API usage**:
-
-```typescript
-import Codex from "@openai/codex-sdk";
-
-const codex = new Codex();
-const thread = codex.startThread();
-
-// One-shot execution
-const result = await thread.run("Implement auth middleware", {
-  cwd: laneWorktreePath,
-  sandbox: "read-only",
-});
-
-// Streaming execution
-for await (const event of thread.runStreamed("Implement auth middleware", {
-  cwd: laneWorktreePath,
-  sandbox: "read-only",
-})) {
-  // event: text chunk, tool call, tool result, or done
-}
-```
-
-- Used for implementation, code generation, and structured analysis.
-- Sandbox mode (`read-only` or `network-off`) provides filesystem isolation.
-- Thread management (`startThread()`, `run()`, `runStreamed()`) handles session state natively.
-- The Codex SDK handles JSONL serialization over stdin/stdout internally.
-
-**Thread API (for complex, multi-turn tasks)**:
-
-The Codex SDK uses a thread-based API for managing conversational sessions:
-
-```typescript
-import Codex from "@openai/codex-sdk";
-
-const codex = new Codex();
-
-// Start a new thread (creates a new Codex CLI subprocess)
-const thread = codex.startThread({
-  workingDirectory: laneWorktreePath,
-  config: {
-    // SDK config is flattened to TOML and passed to the CLI
-    model: "gpt-5.3-codex",
-    approval_mode: "on-request",    // untrusted | on-request | never
-    sandbox_permissions: "workspace-write", // read-only | workspace-write | danger-full-access
-  }
-});
-
-// One-shot execution (waits for full result)
-const result = await thread.run("Implement auth middleware");
-
-// Streaming execution (yields events as they happen)
-for await (const event of thread.runStreamed("Implement auth middleware")) {
-  // event types: text chunk, tool call, tool result, done
-}
-
-// Resume an existing thread (for multi-turn)
-const resumed = codex.resumeThread(threadId);
-```
-
-**Non-Interactive Mode (`codex exec`) for one-shot tasks**:
-
-For simple, one-shot AI tasks (narrative generation, PR descriptions, terminal summaries), ADE uses `codex exec` -- Codex's non-interactive mode designed for scripts and automation:
-
-```typescript
-// Via child_process (not the SDK — codex exec is a CLI command)
-const result = await execAsync(
-  `codex exec --full-auto --sandbox read-only --json "Generate a narrative summary for this lane" < context.json`,
-  { cwd: laneWorktreePath }
-);
-```
-
-- `--full-auto`: No approval prompts, runs to completion
-- `--sandbox read-only`: Filesystem isolation (can read but not write)
-- `--json`: Output as structured JSON
-- `--output-schema <file>`: Enforce structured output via JSON schema
-- `--ephemeral`: No session persistence (clean state each time)
-- Streams progress to stderr, final result to stdout
-
-**When to use Thread API vs `codex exec`**:
-
-| Scenario | API | Rationale |
-|----------|-----|-----------|
-| Mission planning | Thread API | Multi-step reasoning, may need follow-up |
-| Implementation steps | Thread API | Complex, multi-file changes with tool use |
-| Narrative generation | `codex exec` | One-shot, no follow-up needed |
-| PR description drafting | `codex exec` | One-shot, structured output |
-| Terminal summaries | `codex exec` | One-shot, fast turnaround |
-| Conflict proposals | Thread API | Needs detailed context analysis, may produce complex diffs |
-
-**SDK Configuration** (via `config` option):
-
-The Codex SDK accepts a `config` object that is flattened to TOML format and passed to the underlying CLI process. This config merges with (and overrides) any `codex.toml` files:
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `model` | `string` | Model to use. Available: `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-5.1-codex-max`, `codex-mini-latest`, `o4-mini`, `o3` |
-| `approval_mode` | `"untrusted"` \| `"on-request"` \| `"never"` | How tool use is approved. `never` = full autonomy. `on-request` = approve mutations. `untrusted` = approve everything. |
-| `sandbox_permissions` | `"read-only"` \| `"workspace-write"` \| `"danger-full-access"` | Filesystem sandbox level. `read-only` = safest. `workspace-write` = can write within cwd. `danger-full-access` = no restrictions. |
-| `writable_paths` | `string[]` | Additional paths allowed when using `workspace-write` sandbox. |
-| `command_allowlist` | `string[]` | Shell commands the agent is allowed to run (prefix matching). |
-| `disable_tools` | `string[]` | Tools to disable (e.g., `["shell"]` to prevent command execution). |
-| `mcp_servers` | `object` | MCP server definitions (ADE passes its MCP server here). |
-
-**`codex.toml` Honoring Behavior**:
-
-The Codex SDK loads config from multiple layers (lowest to highest priority):
-1. System-level `codex.toml` (`~/.config/codex/codex.toml`)
-2. Project-level `codex.toml` (in repo root)
-3. SDK `config` option (highest priority -- what ADE passes)
-
-ADE always passes its own config via the SDK, which overrides project-level codex.toml. This ensures ADE controls the agent's behavior regardless of what the project's codex.toml says. Users can configure these overrides in ADE Settings.
-
-**Available Models**:
-
-| Model ID | Description | Use Case |
-|----------|-------------|----------|
-| `gpt-5.3-codex` | Latest, most capable | Complex implementation, mission execution |
-| `gpt-5.2-codex` | Previous generation | Balanced performance/cost |
-| `gpt-5.1-codex-max` | Extended context | Large codebase tasks |
-| `codex-mini-latest` | Fast, lightweight | One-shot tasks, summaries |
-| `o4-mini` | Reasoning model | Planning, analysis |
-| `o3` | Advanced reasoning | Complex multi-step reasoning |
-| `gpt-5.3-codex-spark` | Near-instant speed | Quick iterations, lightweight tasks |
-
-**Tool interception**: The Codex SDK's approval hooks are mapped to the same `canUseTool` contract via the executor adapter, maintaining a uniform permission interface for the orchestrator.
-
+**Key SDK dependencies**:
+- `ai-sdk-provider-claude-code` — Vercel AI SDK provider wrapping Claude CLI (community, Ben Vargas)
+- `@openai/codex-sdk` — Official OpenAI SDK for Codex CLI
+- `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`, etc. — Vercel AI SDK providers for API models
 #### Streaming Support
 
-All AI responses stream back to the renderer process via IPC push events (`webContents.send`). Both executors produce `AsyncIterable<AgentEvent>` streams, which the AI integration service consumes uniformly. The UI renders streaming tokens in real time, providing immediate feedback during:
-
-- Mission planning (showing the planner's reasoning as it builds a step plan)
-- Narrative generation (showing the narrative as it is written)
-- Conflict resolution (showing the analysis and proposed diff as they are generated)
+All AI responses stream back to the renderer process via IPC push events (`webContents.send`). Executors produce `AsyncIterable<AgentEvent>` streams, which the AI integration service consumes uniformly. The UI renders streaming tokens in real time.
 
 #### Session Management
 
-For multi-turn interactions (such as the orchestrator's planning loop), each executor manages session state through its underlying SDK:
-
-- **Claude**: The Vercel AI SDK provider manages conversational context across multi-turn interactions.
-- **Codex**: The official SDK's thread API (`codex.startThread()`) maintains session state natively.
-
-Session data includes:
-
-- Conversation history (bounded by token budget)
-- Tool-use history (which tools were called and their results)
-- Context window contents (pack exports, lane state snapshots)
-
-Sessions are ephemeral and scoped to a single orchestrator run. They are not persisted to disk.
+Sessions are ephemeral and scoped to a single orchestrator run. Session data includes conversation history (bounded by token budget), tool-use history, and context window contents.
 
 ### AI Integration Service
 
@@ -812,7 +532,7 @@ When a mission is created, the orchestrator's planning phase:
 
 1. Receives the mission prompt, title, and any attached context.
 2. Assembles a context bundle: project pack (Standard), docs digest, active lane summaries, operation history, and any user-attached files.
-3. Builds a structured planner prompt and invokes the configured planning executor (`ClaudeExecutor` or `CodexExecutor`).
+3. Builds a structured planner prompt and invokes the configured planning `modelId` via unified runtime routing.
 4. The planner returns a JSON plan conforming to the mission plan schema:
    ```typescript
    interface MissionPlan {
@@ -834,8 +554,8 @@ When a mission is created, the orchestrator's planning phase:
      title: string;
      description: string;
      dependsOn: string[];               // step IDs
-     executorKind: "claude" | "codex" | "shell" | "manual";
-     executorHint?: string;             // model preference
+     executorKind: "unified" | "shell" | "manual";
+     modelId: string;                   // canonical worker model id (required for unified workers)
      requiresPlanApproval: boolean;     // worker must plan before implementing
      claimPolicy: {
        lanes: string[];                 // lane IDs or "new"
@@ -871,7 +591,7 @@ For each step that enters the `claimed` state, the orchestrator spawns a worker 
 
 3. **MCP Server Connection**: Each worker agent connects to the same ADE MCP server instance. The MCP permission layer enforces that workers can only access resources within their claimed scope (lane + file patterns). A worker cannot `commit_changes` in a lane it doesn't hold a claim on.
 
-4. **Session Tracking**: The worker's CLI process is registered as a tracked session (`terminal_sessions` row with `tool_type: "codex-orchestrated"` or `"claude-orchestrated"`). This enables transcript capture, delta computation, and pack integration — the same lifecycle as interactive chat sessions.
+4. **Session Tracking**: Worker execution attempts are registered as tracked sessions/attempts for transcript capture, delta computation, and pack integration — the same lifecycle guarantees as interactive chat sessions.
 
 #### Worker Coordination Patterns
 
@@ -912,11 +632,10 @@ For each step in the plan, the orchestrator:
    c. Orchestrator evaluates the plan (checks for scope creep, file ownership violations, test coverage).
    d. If approved, re-dispatches the worker with edit permissions.
    e. If rejected, provides feedback and re-dispatches in plan mode for revision.
-5. Dispatches the step to the appropriate `AgentExecutor` implementation matching the step's `executorKind`:
-   - `claude`: `ClaudeExecutor` spawns a Claude CLI process via `ai-sdk-provider-claude-code` with the step's prompt and context.
-   - `codex`: `CodexExecutor` spawns a Codex CLI process via `@openai/codex-sdk` with the step's prompt and context in a sandboxed lane worktree.
-   - `shell`: Runs a shell command (for deterministic steps like test execution).
-   - `manual`: Waits for user action (for steps requiring human judgment).
+5. Dispatches the step by `executorKind`:
+   - `unified`: resolve descriptor from `modelId`, then route by execution class (CLI descriptor -> subprocess adapter, non-CLI descriptor -> in-process unified path).
+   - `shell`: runs a shell command (for deterministic steps like test execution).
+   - `manual`: waits for user action (for steps requiring human judgment).
 6. Monitors the attempt via session tracking and claim heartbeats.
 7. On completion, records the result envelope, releases claims, and optionally triggers merge.
 
@@ -1431,18 +1150,18 @@ Backend capability matrix:
 
 ### Per-Task-Type Configuration
 
-ADE supports fine-grained control over which provider and model handles each type of AI task.
+ADE supports fine-grained control over which `modelId` handles each type of AI task.
 
 #### Task Types
 
-| Task Type | Description | Default Provider |
+| Task Type | Description | Default Model ID |
 |-----------|-------------|-----------------|
-| `planning` | Mission decomposition into steps | Claude CLI |
-| `implementation` | Code generation and modification | Codex CLI |
-| `review` | Code review and analysis | Claude CLI |
-| `conflict_resolution` | Merge conflict analysis and resolution | Claude CLI |
-| `narrative` | Lane narrative generation | Claude CLI |
-| `pr_description` | Pull request description drafting | Claude CLI |
+| `planning` | Mission decomposition into steps | `anthropic/claude-sonnet-4-6` |
+| `implementation` | Code generation and modification | `openai/gpt-5.3-codex` |
+| `review` | Code review and analysis | `anthropic/claude-sonnet-4-6` |
+| `conflict_resolution` | Merge conflict analysis and resolution | `anthropic/claude-sonnet-4-6` |
+| `narrative` | Lane narrative generation | `anthropic/claude-haiku-4-5` |
+| `pr_description` | Pull request description drafting | `anthropic/claude-haiku-4-5` |
 
 #### Configuration Schema
 
@@ -1450,37 +1169,27 @@ Per-task-type settings are stored in `.ade/local.yaml`:
 
 ```yaml
 ai:
-  # Global defaults
-  mode: "subscription"          # "guest" | "subscription"
-  defaultProvider: "auto"       # "auto" | "claude" | "codex"
-
   # Per-task-type overrides
   taskRouting:
     planning:
-      provider: "claude"
-      model: "anthropic/claude-sonnet-4-6-api"
+      model: "anthropic/claude-sonnet-4-6"
       timeoutMs: 45000
     implementation:
-      provider: "codex"
       model: "openai/gpt-5.3-codex"
       timeoutMs: 120000
     review:
-      provider: "claude"
-      model: "anthropic/claude-sonnet-4-6-api"
+      model: "anthropic/claude-sonnet-4-6"
       timeoutMs: 30000
     conflict_resolution:
-      provider: "claude"
-      model: "anthropic/claude-sonnet-4-6-api"
+      model: "anthropic/claude-sonnet-4-6"
       timeoutMs: 60000
     narrative:
-      provider: "claude"
-      model: "anthropic/claude-haiku-4-5-api"
+      model: "anthropic/claude-haiku-4-5"
       timeoutMs: 15000
       maxOutputTokens: 900
       temperature: 0.2
     pr_description:
-      provider: "claude"
-      model: "anthropic/claude-haiku-4-5-api"
+      model: "anthropic/claude-haiku-4-5"
       timeoutMs: 15000
       maxOutputTokens: 1200
       temperature: 0.2
@@ -1488,16 +1197,14 @@ ai:
 
 #### Resolution Order
 
-When determining which provider to use for a task:
+When determining which model to use for a task:
 
-1. Explicit per-step `executorHint` from the mission planner (highest priority).
-2. Per-task-type `taskRouting.<task>.provider` setting in `.ade/local.yaml`.
-3. Mission-level `executorPolicy` (`codex`, `claude`, or `both`).
-4. Global `defaultProvider` setting.
-5. Built-in default for the task type (as listed in the table above).
-6. First available CLI tool on the system (fallback).
+1. Explicit per-call or per-step `modelId` hint (highest priority).
+2. Per-task-type `taskRouting.<task>.model` setting in `.ade/local.yaml`.
+3. Mission-level model policy/overrides.
+4. Built-in default model for the task type (as listed in the table above).
 
-If no CLI tool is available, the runtime cannot start; ADE surfaces a clear failure and recommended setup action instead of silently substituting strategy logic.
+If the resolved `modelId` is missing or unknown, runtime startup fails with an explicit error instead of silently substituting a provider/model fallback.
 
 ### One-Shot AI Task Patterns
 

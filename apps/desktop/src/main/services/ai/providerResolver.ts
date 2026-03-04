@@ -33,6 +33,16 @@ async function loadClaudeCodeProvider() {
   return mod.createClaudeCode;
 }
 
+async function loadCodexCliProvider() {
+  const mod = await import("ai-sdk-provider-codex-cli");
+  const moduleRecord = mod as Record<string, unknown>;
+  const factory = moduleRecord.createCodexCli ?? moduleRecord.createCodexCLI;
+  if (typeof factory !== "function") {
+    throw new Error("ai-sdk-provider-codex-cli is installed but does not export createCodexCli/createCodexCLI.");
+  }
+  return factory as (opts?: { defaultSettings?: Record<string, unknown> }) => (model: string) => unknown;
+}
+
 async function loadAnthropicProvider() {
   const mod = await tryImport("@ai-sdk/anthropic");
   return mod.createAnthropic as (opts: { apiKey: string }) => (model: string) => unknown;
@@ -159,7 +169,28 @@ export type ResolveModelOpts = {
   cwd?: string;
   /** Middleware options. Pass false to skip middleware entirely. */
   middleware?: WrapMiddlewareOpts | false;
+  /** CLI provider-specific model settings (for MCP/server injection, etc). */
+  cli?: {
+    mcpServers?: Record<string, Record<string, unknown>>;
+    claude?: Record<string, unknown>;
+    codex?: Record<string, unknown>;
+  };
 };
+
+function buildCliDefaultSettings(
+  provider: "claude" | "codex",
+  opts?: ResolveModelOpts,
+): Record<string, unknown> {
+  const settings: Record<string, unknown> = {};
+  const cwd = opts?.cwd?.trim() || process.cwd();
+  settings.cwd = cwd;
+  if (opts?.cli?.mcpServers) settings.mcpServers = opts.cli.mcpServers;
+  const providerOverrides = provider === "claude" ? opts?.cli?.claude : opts?.cli?.codex;
+  if (providerOverrides && typeof providerOverrides === "object") {
+    Object.assign(settings, providerOverrides);
+  }
+  return settings;
+}
 
 export async function resolveModel(
   modelId: string,
@@ -202,7 +233,7 @@ async function resolveCliWrapped(
     }
     const createClaudeCode = await loadClaudeCodeProvider();
     const provider = createClaudeCode({
-      defaultSettings: { cwd: opts?.cwd ?? process.cwd() },
+      defaultSettings: buildCliDefaultSettings("claude", opts),
     });
     return provider(descriptor.sdkModelId) as LanguageModel;
   }
@@ -213,9 +244,11 @@ async function resolveCliWrapped(
         "Codex CLI is required for this model but was not detected. Install and authenticate Codex.",
       );
     }
-    throw new Error(
-      `Codex CLI AI SDK provider is not yet available. Model "${descriptor.id}" cannot be resolved at this time.`,
-    );
+    const createCodexCli = await loadCodexCliProvider();
+    const provider = createCodexCli({
+      defaultSettings: buildCliDefaultSettings("codex", opts),
+    });
+    return provider(descriptor.sdkModelId) as LanguageModel;
   }
 
   throw new Error(`Unknown CLI command "${cli}" for model "${descriptor.id}".`);

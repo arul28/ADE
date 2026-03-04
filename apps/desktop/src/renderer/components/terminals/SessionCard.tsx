@@ -26,10 +26,8 @@ function statusDot(session: TerminalSessionSummary): { cls: string; spinning: bo
   if (ind === "running-active")
     return { cls: "border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
   if (ind === "running-needs-attention")
-    return { cls: "border-2 border-amber-300 border-t-transparent bg-transparent", spinning: true, label: "Needs input" };
-  if (ind === "failed") return { cls: "bg-red-400", spinning: false, label: "Failed" };
-  if (ind === "disposed") return { cls: "bg-red-400/80", spinning: false, label: "Stopped" };
-  return { cls: "bg-sky-400/80", spinning: false, label: "Completed" };
+    return { cls: "border-2 border-amber-300 border-t-transparent bg-transparent", spinning: true, label: "Awaiting input" };
+  return { cls: "bg-red-400", spinning: false, label: "Ended" };
 }
 
 function truncateSummary(text: string | null, maxWords = 8): string {

@@ -413,10 +413,8 @@ function hasMultipleLanes(steps: OrchestratorStep[]): boolean {
 // Model/executor helpers
 // ─────────────────────────────────────────────────────
 
-export function phaseModelToExecutorKind(model?: string | null, fallback: OrchestratorExecutorKind = "codex"): OrchestratorExecutorKind {
+export function phaseModelToExecutorKind(model?: string | null, fallback: OrchestratorExecutorKind = "unified"): OrchestratorExecutorKind {
   if (!model) return fallback;
-  if (model === "claude") return "claude";
-  if (model === "codex") return "codex";
   const descriptor = getModelById(model);
   if (descriptor) return "unified";
   return fallback;
@@ -701,8 +699,8 @@ export function buildExecutionPlanPreview(args: {
     const recoveryPhases = new Set(["testing", "codeReview", "testReview", "validation"]);
     const recoveryEnabled = recoveryPolicy.enabled && recoveryPhases.has(phaseName);
 
-    const model = phaseSteps[0]?.model ?? "codex";
-    const executorKind = phaseSteps[0]?.executorKind ?? "codex";
+    const model = phaseSteps[0]?.model ?? "default";
+    const executorKind = phaseSteps[0]?.executorKind ?? "unified";
 
     const stepPreviews: ExecutionPlanStepPreview[] = phaseSteps.map((step) => ({
       stepKey: step.stepKey,
@@ -1026,8 +1024,8 @@ export function buildExecutionPlanPreviewFromPhases(args: {
     const recoveryPhases = new Set(["testing", "codeReview", "testReview", "validation"]);
     const recoveryEnabled = recoveryPolicy.enabled && recoveryPhases.has(phaseName);
 
-    const model = phaseSteps[0]?.model ?? "codex";
-    const executorKind = phaseSteps[0]?.executorKind ?? "codex";
+    const model = phaseSteps[0]?.model ?? "default";
+    const executorKind = phaseSteps[0]?.executorKind ?? "unified";
 
     const stepPreviews: ExecutionPlanStepPreview[] = phaseSteps.map((step) => ({
       stepKey: step.stepKey,

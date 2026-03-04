@@ -200,6 +200,11 @@ import type {
   StartIntegrationResolutionResult,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
+  PrAiResolutionStartArgs,
+  PrAiResolutionStartResult,
+  PrAiResolutionInputArgs,
+  PrAiResolutionStopArgs,
+  PrAiResolutionEventPayload,
   CommitIntegrationArgs,
   LandStackEnhancedArgs,
   LandQueueNextArgs,
@@ -212,14 +217,19 @@ import type {
   RebaseLaneArgs,
   RebaseResult,
   RebaseEventPayload,
+  RebaseStartArgs,
+  RebaseStartResult,
+  RebasePushArgs,
+  RebaseRollbackArgs,
+  RebaseAbortArgs,
+  RebaseRun,
+  RebaseRunEventPayload,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
-  RestackArgs,
-  RestackResult,
-  RestackSuggestion,
-  RestackSuggestionsEventPayload,
+  RebaseSuggestion,
+  RebaseSuggestionsEventPayload,
   AutoRebaseLaneStatus,
   AutoRebaseEventPayload,
   UpdateLaneAppearanceArgs,
@@ -585,16 +595,28 @@ contextBridge.exposeInMainWorld("ade", {
     getStackChain: async (laneId: string): Promise<StackChainItem[]> =>
       ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
     getChildren: async (laneId: string): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
-    restack: async (args: RestackArgs): Promise<RestackResult> => ipcRenderer.invoke(IPC.lanesRestack, args),
-    listRestackSuggestions: async (): Promise<RestackSuggestion[]> => ipcRenderer.invoke(IPC.lanesListRestackSuggestions),
-    dismissRestackSuggestion: async (args: { laneId: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDismissRestackSuggestion, args),
-    deferRestackSuggestion: async (args: { laneId: string; minutes: number }): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDeferRestackSuggestion, args),
-    onRestackSuggestionsEvent: (cb: (ev: RestackSuggestionsEventPayload) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: RestackSuggestionsEventPayload) => cb(payload);
-      ipcRenderer.on(IPC.lanesRestackSuggestionsEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.lanesRestackSuggestionsEvent, listener);
+    rebaseStart: async (args: RebaseStartArgs): Promise<RebaseStartResult> =>
+      ipcRenderer.invoke(IPC.lanesRebaseStart, args),
+    rebasePush: async (args: RebasePushArgs): Promise<RebaseRun> =>
+      ipcRenderer.invoke(IPC.lanesRebasePush, args),
+    rebaseRollback: async (args: RebaseRollbackArgs): Promise<RebaseRun> =>
+      ipcRenderer.invoke(IPC.lanesRebaseRollback, args),
+    rebaseAbort: async (args: RebaseAbortArgs): Promise<RebaseRun> =>
+      ipcRenderer.invoke(IPC.lanesRebaseAbort, args),
+    rebaseSubscribe: (cb: (ev: RebaseRunEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RebaseRunEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.lanesRebaseEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesRebaseEvent, listener);
+    },
+    listRebaseSuggestions: async (): Promise<RebaseSuggestion[]> => ipcRenderer.invoke(IPC.lanesListRebaseSuggestions),
+    dismissRebaseSuggestion: async (args: { laneId: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDismissRebaseSuggestion, args),
+    deferRebaseSuggestion: async (args: { laneId: string; minutes: number }): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDeferRebaseSuggestion, args),
+    onRebaseSuggestionsEvent: (cb: (ev: RebaseSuggestionsEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RebaseSuggestionsEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.lanesRebaseSuggestionsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesRebaseSuggestionsEvent, listener);
     },
     listAutoRebaseStatuses: async (): Promise<AutoRebaseLaneStatus[]> => ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
     onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => {
@@ -900,6 +922,17 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsGetIntegrationResolutionState, { proposalId }),
     recheckIntegrationStep: (args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult> =>
       ipcRenderer.invoke(IPC.prsRecheckIntegrationStep, args),
+    aiResolutionStart: (args: PrAiResolutionStartArgs): Promise<PrAiResolutionStartResult> =>
+      ipcRenderer.invoke(IPC.prsAiResolutionStart, args),
+    aiResolutionInput: (args: PrAiResolutionInputArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsAiResolutionInput, args),
+    aiResolutionStop: (args: PrAiResolutionStopArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsAiResolutionStop, args),
+    onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: PrAiResolutionEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.prsAiResolutionEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.prsAiResolutionEvent, listener);
+    },
     onEvent: (cb: (ev: PrEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PrEventPayload) => cb(payload);
       ipcRenderer.on(IPC.prsEvent, listener);

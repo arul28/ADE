@@ -114,7 +114,7 @@ Lane types:
 
 ### Stack
 
-A layered arrangement of lanes where each child branch is based on its parent lane's branch rather than on the project's default base branch. Stacks enable stacked PR workflows where changes are reviewed incrementally. Restacking propagates parent changes to children in dependency order.
+A layered arrangement of lanes where each child branch is based on its parent lane's branch rather than on the project's default base branch. Stacks enable stacked PR workflows where changes are reviewed incrementally. Rebasing propagates parent changes to children in dependency order.
 
 ### Pack
 
@@ -274,9 +274,9 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 | Graph/Canvas | React Flow |
 | Routing | React Router |
 | Layout | react-resizable-panels |
-| AI Execution | AgentExecutor interface (ADE-owned abstraction) |
-| AI Providers | `ai-sdk-provider-claude-code` (Claude), `@openai/codex-sdk` (Codex) |
-| Agent Chat | `AgentChatService` interface — `CodexChatBackend`, `ClaudeChatBackend`, and unified runtime backend for API/OpenRouter/local models |
+| AI Execution | Unified executor (`modelId`-first routing, CLI subprocess + in-process SDK paths) |
+| AI Providers | `ai-sdk-provider-claude-code` (Claude CLI), `@openai/codex-sdk` (Codex CLI), Vercel AI SDK providers (API/local) |
+| Agent Chat | `AgentChatService` interface — provider-agnostic chat with Codex, Claude, and API/local models |
 | AI Tool Protocol | MCP Server (`apps/mcp-server`), JSON-RPC 2.0, stdio transport |
 | GitHub Integration | `gh` CLI (local), personal access tokens |
 
@@ -533,7 +533,7 @@ Each architecture area is specified in detail in the following documents. These 
 | 1 | System Overview | [architecture/SYSTEM_OVERVIEW.md](architecture/SYSTEM_OVERVIEW.md) | Top-level component breakdown (desktop UI, local core engine, AI Integration Layer), the happy-path data flow from lane creation through PR landing, key contracts, and the multi-provider model (CLI/API/local). |
 | 2 | Desktop App | [architecture/DESKTOP_APP.md](architecture/DESKTOP_APP.md) | Electron process model (main, renderer, preload), IPC contracts and typed channel allowlist, PTY hosting in the main process, and the recommended folder/repo layout. |
 | 3 | Data Model | [architecture/DATA_MODEL.md](architecture/DATA_MODEL.md) | Local SQLite schema covering projects, workspaces, lanes, stacks, sessions, processes, tests, operations, checkpoints, pack events, pack versions, pack heads, missions (mission/step/event/artifact/intervention), planning threads, plan versions, conflict predictions, orchestrator timeline events, and orchestrator gate reports. |
-| 4 | Git Engine | [architecture/GIT_ENGINE.md](architecture/GIT_ENGINE.md) | Git worktree management, drift status computation (ahead/behind/dirty), sync operations (merge and rebase with undo), dry-run conflict prediction, and stack-aware restack operations. |
+| 4 | Git Engine | [architecture/GIT_ENGINE.md](architecture/GIT_ENGINE.md) | Git worktree management, drift status computation (ahead/behind/dirty), sync operations (merge and rebase with undo), dry-run conflict prediction, and stack-aware rebase operations. |
 | 5 | Job Engine | [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md) | Event-driven pipeline with coalescing rules. Covers all event types, idempotent job definitions, the lane refresh pipeline (checkpoint through AI augmentation), real-time conflict pass, re-plan pipeline, and failure handling. |
 | 6 | AI Integration | [architecture/AI_INTEGRATION.md](architecture/AI_INTEGRATION.md) | Local AI integration architecture. Covers the AgentExecutor interface, native agent SDK executors, MCP server tool surface, AI orchestrator session management, per-task-type model routing, CLI/API/local provider handling, and the safety contract for AI-generated proposals. |
 | 7 | Configuration | [architecture/CONFIGURATION.md](architecture/CONFIGURATION.md) | `.ade/` folder structure, config layering (app defaults, `ade.yaml` shared baseline, `local.yaml` machine overrides), schemas for processes, stack buttons, test suites, lane profiles, overlay policies, validation rules, and trust/change confirmation. |

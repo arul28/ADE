@@ -28,6 +28,7 @@ import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
+import type { ProjectInfo } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -40,15 +41,13 @@ import { createOnboardingService } from "./services/onboarding/onboardingService
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createCiService } from "./services/ci/ciService";
-import { createRestackSuggestionService } from "./services/lanes/restackSuggestionService";
+import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
 import { createMemoryService } from "./services/memory/memoryService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
-import { createClaudeOrchestratorAdapter } from "./services/orchestrator/claudeOrchestratorAdapter";
-import { createCodexOrchestratorAdapter } from "./services/orchestrator/codexOrchestratorAdapter";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import type { Logger } from "./services/logging/logger";
 
@@ -405,7 +404,30 @@ app.whenReady().then(async () => {
     return require("node-pty") as typeof import("node-pty");
   };
 
-  let ctxRef!: AppContext;
+  const normalizeProjectRoot = (projectRoot: string) => path.resolve(projectRoot);
+  const projectContexts = new Map<string, AppContext>();
+  const closeContextPromises = new Map<string, Promise<void>>();
+  let activeProjectRoot: string | null = null;
+  let dormantContext!: AppContext;
+
+  const setActiveProject = (projectRoot: string | null): void => {
+    activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+  };
+
+  const getActiveContext = (): AppContext => {
+    if (activeProjectRoot) {
+      const ctx = projectContexts.get(activeProjectRoot);
+      if (ctx) return ctx;
+      activeProjectRoot = null;
+    }
+    return dormantContext;
+  };
+
+  const emitProjectEvent = (projectRoot: string, channel: string, payload: unknown): void => {
+    if (!activeProjectRoot) return;
+    if (normalizeProjectRoot(projectRoot) !== activeProjectRoot) return;
+    broadcast(channel, payload);
+  };
 
   const initContextForProjectRoot = async ({
     projectRoot,
@@ -450,7 +472,7 @@ app.whenReady().then(async () => {
 
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     let automationService: ReturnType<typeof createAutomationService> | null = null;
-    let restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null = null;
+    let rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null = null;
     let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
@@ -480,7 +502,7 @@ app.whenReady().then(async () => {
         preHeadSha: prev,
         postHeadSha
       });
-      void restackSuggestionService
+      void rebaseSuggestionService
         ?.onParentHeadChanged({ laneId, reason: args.reason, preHeadSha: prev, postHeadSha })
         .catch(() => {});
       void autoRebaseService
@@ -495,7 +517,8 @@ app.whenReady().then(async () => {
       defaultBaseRef: baseRef,
       worktreesDir: adePaths.worktreesDir,
       operationService,
-      onHeadChanged: handleHeadChanged
+      onHeadChanged: handleHeadChanged,
+      onRebaseEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesRebaseEvent, event)
     });
     await laneService.ensurePrimaryLane();
 
@@ -537,7 +560,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       operationService,
       aiIntegrationService,
-      onEvent: (event) => broadcast(IPC.packsEvent, event)
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.packsEvent, event)
     });
 
     const onboardingService = createOnboardingService({
@@ -551,19 +574,19 @@ app.whenReady().then(async () => {
       projectConfigService
     });
 
-    restackSuggestionService = createRestackSuggestionService({
+    rebaseSuggestionService = createRebaseSuggestionService({
       db,
       logger,
       projectId,
       laneService,
-      onEvent: (event) => broadcast(IPC.lanesRestackSuggestionsEvent, event)
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event)
     });
     // Prime suggestions once on init so the UI can show them without waiting for a head change.
-    void restackSuggestionService
+    void rebaseSuggestionService
       .listSuggestions()
       .then((suggestions) =>
-        broadcast(IPC.lanesRestackSuggestionsEvent, {
-          type: "restack-suggestions-updated",
+        emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, {
+          type: "rebase-suggestions-updated",
           computedAt: new Date().toISOString(),
           suggestions
         })
@@ -588,10 +611,10 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => {
-        broadcast(IPC.conflictsEvent, event);
+        emitProjectEvent(projectRoot, IPC.conflictsEvent, event);
         // Forward rebase events to the dedicated rebaseEvent channel
         if (event.type === "rebase-started" || event.type === "rebase-completed" || event.type === "rebase-needs-updated") {
-          broadcast(IPC.rebaseEvent, event);
+          emitProjectEvent(projectRoot, IPC.rebaseEvent, event);
         }
       }
     });
@@ -602,7 +625,7 @@ app.whenReady().then(async () => {
       laneService,
       conflictService,
       projectConfigService,
-      onEvent: (event) => broadcast(IPC.lanesAutoRebaseEvent, event)
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesAutoRebaseEvent, event)
     });
     // Prime status stream so renderer can render immediately on load.
     void autoRebaseService.emit().catch(() => {});
@@ -636,7 +659,7 @@ app.whenReady().then(async () => {
       logger,
       prService,
       projectConfigService,
-      onEvent: (event) => broadcast(IPC.prsEvent, event)
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event)
     });
 
     const queueLandingService = createQueueLandingService({
@@ -644,7 +667,7 @@ app.whenReady().then(async () => {
       logger,
       projectId,
       prService,
-      emitEvent: (event) => broadcast(IPC.prsEvent, event)
+      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event)
     });
     queueLandingService.init();
 
@@ -678,8 +701,8 @@ app.whenReady().then(async () => {
       sessionService,
       aiIntegrationService,
       logger,
-      broadcastData: (ev) => broadcast(IPC.ptyData, ev),
-      broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
+      broadcastData: (ev) => emitProjectEvent(projectRoot, IPC.ptyData, ev),
+      broadcastExit: (ev) => emitProjectEvent(projectRoot, IPC.ptyExit, ev),
       onSessionEnded: onTrackedSessionEnded,
       onSessionRuntimeSignal: (signal) => {
         aiOrchestratorServiceRef?.onSessionRuntimeSignal(signal);
@@ -698,7 +721,7 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
-        broadcast(IPC.agentChatEvent, event);
+        emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
       onSessionEnded: onTrackedSessionEnded
     });
@@ -723,7 +746,7 @@ app.whenReady().then(async () => {
       logger,
       laneService,
       projectConfigService,
-      broadcastEvent: (ev) => broadcast(IPC.processesEvent, ev)
+      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.processesEvent, ev)
     });
 
     const testService = createTestService({
@@ -733,7 +756,7 @@ app.whenReady().then(async () => {
       logger,
       laneService,
       projectConfigService,
-      broadcastEvent: (ev) => broadcast(IPC.testsEvent, ev)
+      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.testsEvent, ev)
     });
 
     automationService = createAutomationService({
@@ -746,14 +769,14 @@ app.whenReady().then(async () => {
       packService,
       conflictService,
       testService,
-      onEvent: (event) => broadcast(IPC.automationsEvent, event)
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.automationsEvent, event)
     });
 
     const missionService = createMissionService({
       db,
       projectId,
       projectRoot,
-      onEvent: (event) => broadcast(IPC.missionsEvent, event)
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.missionsEvent, event)
     });
     const missionBudgetService = createMissionBudgetService({
       db,
@@ -784,10 +807,11 @@ app.whenReady().then(async () => {
       ptyService,
       prService,
       projectConfigService,
+      aiIntegrationService,
       memoryService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
-        broadcast(IPC.orchestratorEvent, event);
+        emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
       }
     });
     orchestratorServiceRef = orchestratorService;
@@ -803,12 +827,10 @@ app.whenReady().then(async () => {
       prService,
       projectRoot,
       missionBudgetService,
-      onThreadEvent: (event) => broadcast(IPC.orchestratorThreadEvent, event),
-      onDagMutation: (event) => broadcast(IPC.orchestratorDagMutation, event)
+      onThreadEvent: (event) => emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
+      onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
-    orchestratorService.registerExecutorAdapter(createClaudeOrchestratorAdapter());
-    orchestratorService.registerExecutorAdapter(createCodexOrchestratorAdapter());
 
     // Resume any active team runtimes that were running before app restart
     setImmediate(() => aiOrchestratorService.resumeActiveTeamRuntimes());
@@ -822,7 +844,7 @@ app.whenReady().then(async () => {
     });
 
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
-    // then routes them through the same onHeadChanged pipeline (packs, automations, restack suggestions).
+    // then routes them through the same onHeadChanged pipeline (packs, automations, rebase suggestions).
     let headWatcherTimer: NodeJS.Timeout | null = null;
     let headWatcherActive = false;
     let headWatcherRunning = false;
@@ -853,7 +875,7 @@ app.whenReady().then(async () => {
         if (!fs.existsSync(projectRoot)) {
           if (!missingBroadcasted) {
             missingBroadcasted = true;
-            broadcast(IPC.projectMissing, { rootPath: projectRoot });
+            emitProjectEvent(projectRoot, IPC.projectMissing, { rootPath: projectRoot });
           }
         } else {
           missingBroadcasted = false;
@@ -1014,7 +1036,7 @@ app.whenReady().then(async () => {
       agentToolsService,
       onboardingService,
       laneService,
-      restackSuggestionService,
+      rebaseSuggestionService,
       autoRebaseService,
       sessionService,
       ptyService,
@@ -1047,7 +1069,6 @@ app.whenReady().then(async () => {
     };
   };
 
-  let closeContextPromise: Promise<void> | null = null;
   const createDormantProjectContext = (projectRoot = ""): AppContext => {
     const rootIsDefined = typeof projectRoot === "string" && projectRoot.trim().length > 0;
     const normalizedRoot = rootIsDefined ? path.resolve(projectRoot) : "";
@@ -1071,7 +1092,7 @@ app.whenReady().then(async () => {
       onboardingService: null,
       ciService: null,
       laneService: null,
-      restackSuggestionService: null,
+      rebaseSuggestionService: null,
       autoRebaseService: null,
       sessionService: null,
       ptyService: null,
@@ -1102,141 +1123,181 @@ app.whenReady().then(async () => {
     } as unknown as AppContext);
   };
 
-  const closeContext = async () => {
-    if (closeContextPromise) {
-      await closeContextPromise;
-      return;
+  const disposeContextResources = async (ctx: AppContext): Promise<void> => {
+    try {
+      ctx.disposeHeadWatcher();
+    } catch {
+      // ignore
     }
-    const ctx = ctxRef;
-    closeContextPromise = (async () => {
-      try {
-        ctx.disposeHeadWatcher();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.prPollingService.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.automationService.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.aiOrchestratorService.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.jobEngine.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.fileService.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.testService.disposeAll();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.processService.disposeAll();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.ptyService.disposeAll();
-      } catch {
-        // ignore
-      }
-      try {
-        await ctx.agentChatService.disposeAll();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.mcpSocketServer?.close();
-      } catch {
-        // ignore
-      }
-      try {
-        if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.db.flushNow();
-        ctx.db.close();
-      } catch {
-        // ignore
-      }
-    })().finally(() => {
-      closeContextPromise = null;
-    });
-    await closeContextPromise;
+    try {
+      ctx.prPollingService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.automationService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.aiOrchestratorService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.jobEngine.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.fileService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.testService.disposeAll();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.processService.disposeAll();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.ptyService.disposeAll();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.agentChatService.disposeAll();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.mcpSocketServer?.close();
+    } catch {
+      // ignore
+    }
+    try {
+      if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.db.flushNow();
+      ctx.db.close();
+    } catch {
+      // ignore
+    }
   };
 
-  const switchProjectFromDialog = async (selectedPath: string) => {
-    const repoRoot = await resolveRepoRoot(selectedPath); // require a real git repo for onboarding.
+  const closeProjectContext = async (projectRoot: string): Promise<void> => {
+    const normalizedRoot = normalizeProjectRoot(projectRoot);
+    const existingPromise = closeContextPromises.get(normalizedRoot);
+    if (existingPromise) {
+      await existingPromise;
+      return;
+    }
+    const ctx = projectContexts.get(normalizedRoot);
+    if (!ctx) return;
+
+    const closePromise = (async () => {
+      await disposeContextResources(ctx);
+      projectContexts.delete(normalizedRoot);
+      if (activeProjectRoot === normalizedRoot) {
+        activeProjectRoot = null;
+      }
+    })().finally(() => {
+      closeContextPromises.delete(normalizedRoot);
+    });
+    closeContextPromises.set(normalizedRoot, closePromise);
+    await closePromise;
+  };
+
+  const closeAllProjectContexts = async (): Promise<void> => {
+    const roots = Array.from(projectContexts.keys());
+    for (const root of roots) {
+      await closeProjectContext(root);
+    }
+    setActiveProject(null);
+  };
+
+  const persistRecentProject = (
+    project: ProjectInfo,
+    options: { recordLastProject?: boolean; recordRecent?: boolean } = {}
+  ): void => {
+    const state = upsertRecentProject(readGlobalState(globalStatePath), project, options);
+    writeGlobalState(globalStatePath, state);
+  };
+
+  const switchProjectFromDialog = async (selectedPath: string): Promise<ProjectInfo> => {
+    const repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+    const existing = projectContexts.get(repoRoot);
+    if (existing) {
+      existing.hasUserSelectedProject = true;
+      setActiveProject(repoRoot);
+      persistRecentProject(existing.project, { recordLastProject: true, recordRecent: true });
+      return existing.project;
+    }
+
     const baseRef = await detectDefaultBaseRef(repoRoot);
-    await closeContext();
-    ctxRef = await initContextForProjectRoot({
+    const ctx = await initContextForProjectRoot({
       projectRoot: repoRoot,
       baseRef,
       ensureExclude: true,
       recordLastProject: true,
+      recordRecent: true,
       userSelectedProject: true
     });
-    return ctxRef.project;
+    projectContexts.set(repoRoot, ctx);
+    setActiveProject(repoRoot);
+    return ctx.project;
+  };
+
+  const closeProjectByPath = async (projectRoot: string): Promise<void> => {
+    const normalizedRoot = normalizeProjectRoot(projectRoot);
+    const wasActive = activeProjectRoot === normalizedRoot;
+    await closeProjectContext(normalizedRoot);
+    if (wasActive) {
+      dormantContext = createDormantProjectContext(normalizedRoot);
+    }
   };
 
   const closeCurrentProject = async () => {
-    if (!ctxRef.hasUserSelectedProject) {
-      ctxRef = createDormantProjectContext(ctxRef.project?.rootPath);
-      return;
+    const current = getActiveContext();
+    const previousRoot = current.project?.rootPath;
+    if (activeProjectRoot) {
+      await closeProjectContext(activeProjectRoot);
     }
-    const previousRoot = ctxRef.project?.rootPath;
-    await closeContext();
-    ctxRef = createDormantProjectContext(previousRoot);
+    setActiveProject(null);
+    dormantContext = createDormantProjectContext(previousRoot);
   };
+
+  dormantContext = createDormantProjectContext();
 
   // Initial project context: only load a user-specified project automatically (e.g. ADE_PROJECT_ROOT).
   // Otherwise, start in a no-project state until the user selects one.
   if (startupUserSelected) {
     try {
-      const repoRoot = await resolveRepoRoot(initialCandidate);
-      const baseRef = await detectDefaultBaseRef(repoRoot);
-      ctxRef = await initContextForProjectRoot({
-        projectRoot: repoRoot,
-        baseRef,
-        ensureExclude: true,
-        recordLastProject: true,
-        recordRecent: true,
-        userSelectedProject: true
-      });
+      await switchProjectFromDialog(initialCandidate);
     } catch {
-      ctxRef = createDormantProjectContext();
+      setActiveProject(null);
+      dormantContext = createDormantProjectContext();
     }
-  } else {
-    ctxRef = createDormantProjectContext();
   }
 
   process.on("uncaughtException", (err) => {
-    ctxRef.logger.error("process.uncaught_exception", {
+    getActiveContext().logger.error("process.uncaught_exception", {
       err: String(err),
       stack: err instanceof Error ? err.stack : undefined
     });
   });
   process.on("unhandledRejection", (reason) => {
-    ctxRef.logger.error("process.unhandled_rejection", { reason: String(reason) });
+    getActiveContext().logger.error("process.unhandled_rejection", { reason: String(reason) });
   });
   app.on("child-process-gone", (_event, details) => {
-    ctxRef.logger.warn("app.child_process_gone", {
+    getActiveContext().logger.warn("app.child_process_gone", {
       type: details.type,
       reason: details.reason,
       exitCode: details.exitCode,
@@ -1246,17 +1307,18 @@ app.whenReady().then(async () => {
   });
 
   registerIpc({
-    getCtx: () => ctxRef,
+    getCtx: () => getActiveContext(),
     switchProjectFromDialog,
     closeCurrentProject,
+    closeProjectByPath,
     globalStatePath
   });
 
-  await createWindow(ctxRef.logger);
+  await createWindow(getActiveContext().logger);
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      await createWindow(ctxRef.logger);
+      await createWindow(getActiveContext().logger);
     }
   });
 
@@ -1265,8 +1327,8 @@ app.whenReady().then(async () => {
     if (quitAfterCleanup) return;
     quitAfterCleanup = true;
     event.preventDefault();
-    ctxRef.logger.info("app.before_quit");
-    void closeContext()
+    getActiveContext().logger.info("app.before_quit");
+    void closeAllProjectContexts()
       .catch(() => {
         // ignore
       })

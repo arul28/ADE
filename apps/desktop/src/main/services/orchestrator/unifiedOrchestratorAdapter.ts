@@ -2,13 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
 import { createBaseOrchestratorAdapter, shellEscapeArg } from "./baseOrchestratorAdapter";
-import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
-import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 import {
-  DEFAULT_CLAUDE_PERMISSION_MODE,
-  DEFAULT_CODEX_APPROVAL_MODE,
-  DEFAULT_CODEX_SANDBOX_PERMISSIONS
-} from "./orchestratorConstants";
+  classifyWorkerExecutionPath,
+  getModelById,
+  resolveCliProviderForModel,
+  resolveModelAlias,
+  resolveModelDescriptor,
+} from "../../../shared/modelRegistry";
+import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 
 /**
  * Build environment variable assignments for worker identity.
@@ -29,6 +30,59 @@ function buildWorkerEnvVars(args: {
   ];
 }
 
+export function resolveAdeMcpServerLaunch(args: {
+  workspaceRoot: string;
+  runtimeRoot: string;
+  missionId?: string;
+  runId?: string;
+  stepId?: string;
+  attemptId?: string;
+  defaultRole?: string;
+}): {
+  command: string;
+  cmdArgs: string[];
+  env: Record<string, string>;
+} {
+  const mcpServerDir = path.resolve(args.runtimeRoot, "apps", "mcp-server");
+  const builtEntry = path.join(mcpServerDir, "dist", "index.cjs");
+  const srcEntry = path.join(mcpServerDir, "src", "index.ts");
+
+  let command: string;
+  let cmdArgs: string[];
+
+  if (fs.existsSync(builtEntry)) {
+    command = "node";
+    cmdArgs = [builtEntry, "--project-root", args.workspaceRoot];
+  } else {
+    command = "npx";
+    cmdArgs = ["tsx", srcEntry, "--project-root", args.workspaceRoot];
+  }
+
+  return {
+    command,
+    cmdArgs,
+    env: {
+      ADE_PROJECT_ROOT: args.workspaceRoot,
+      ADE_MISSION_ID: args.missionId ?? "",
+      ADE_RUN_ID: args.runId ?? "",
+      ADE_STEP_ID: args.stepId ?? "",
+      ADE_ATTEMPT_ID: args.attemptId ?? "",
+      ADE_DEFAULT_ROLE: args.defaultRole ?? "agent",
+    }
+  };
+}
+
+export function getUnifiedUnsupportedModelReason(modelRef: string): string | null {
+  const descriptor = resolveModelDescriptor(modelRef);
+  if (!descriptor) {
+    return `Model '${modelRef}' is not registered.`;
+  }
+  const cliProvider = resolveCliProviderForModel(descriptor);
+  if (cliProvider) return null;
+  const executionPath = classifyWorkerExecutionPath(descriptor);
+  return `Model '${descriptor.id}' requires ${executionPath} execution (${descriptor.family}), but the unified worker adapter currently supports only Claude/Codex CLI models.`;
+}
+
 /**
  * Write a temporary MCP config JSON file for Claude CLI's --mcp-config flag.
  * The config tells Claude CLI to connect to the ADE MCP server via stdio.
@@ -46,36 +100,22 @@ function writeMcpConfigFile(args: {
 
   const configPath = path.join(configDir, `worker-${args.attemptId}.json`);
 
-  // Resolve the MCP server entry point
-  // Use the built version if available, otherwise use tsx for dev
-  const mcpServerDir = path.resolve(args.runtimeRoot, "apps", "mcp-server");
-  const builtEntry = path.join(mcpServerDir, "dist", "index.cjs");
-  const srcEntry = path.join(mcpServerDir, "src", "index.ts");
-
-  let command: string;
-  let cmdArgs: string[];
-
-  if (fs.existsSync(builtEntry)) {
-    command = "node";
-    cmdArgs = [builtEntry, "--project-root", args.workspaceRoot];
-  } else {
-    command = "npx";
-    cmdArgs = ["tsx", srcEntry, "--project-root", args.workspaceRoot];
-  }
+  const launch = resolveAdeMcpServerLaunch({
+    workspaceRoot: args.workspaceRoot,
+    runtimeRoot: args.runtimeRoot,
+    missionId: args.missionId,
+    runId: args.runId,
+    stepId: args.stepId,
+    attemptId: args.attemptId,
+    defaultRole: "agent"
+  });
 
   const config = {
     mcpServers: {
       ade: {
-        command,
-        args: cmdArgs,
-        env: {
-          ADE_PROJECT_ROOT: args.workspaceRoot,
-          ADE_MISSION_ID: args.missionId,
-          ADE_RUN_ID: args.runId,
-          ADE_STEP_ID: args.stepId,
-          ADE_ATTEMPT_ID: args.attemptId,
-          ADE_DEFAULT_ROLE: "agent"
-        }
+        command: launch.command,
+        args: launch.cmdArgs,
+        env: launch.env
       }
     }
   };
@@ -88,7 +128,7 @@ function writeMcpConfigFile(args: {
  * Resolve the project root from the current working directory.
  * Walks up from cwd looking for package.json with the monorepo marker.
  */
-function resolveRuntimeRoot(): string {
+export function resolveUnifiedRuntimeRoot(): string {
   // The adapter runs inside the desktop Electron process.
   // The project root is the monorepo root (parent of apps/).
   // Walk up from __dirname to find the root containing apps/mcp-server.
@@ -117,32 +157,27 @@ function buildCodexMcpConfigFlags(args: {
   stepId: string;
   attemptId: string;
 }): string[] {
-  const mcpServerDir = path.resolve(args.runtimeRoot, "apps", "mcp-server");
-  const builtEntry = path.join(mcpServerDir, "dist", "index.cjs");
-  const srcEntry = path.join(mcpServerDir, "src", "index.ts");
-
-  let command: string;
-  let cmdArgs: string[];
-
-  if (fs.existsSync(builtEntry)) {
-    command = "node";
-    cmdArgs = [builtEntry, "--project-root", args.workspaceRoot];
-  } else {
-    command = "npx";
-    cmdArgs = ["tsx", srcEntry, "--project-root", args.workspaceRoot];
-  }
+  const launch = resolveAdeMcpServerLaunch({
+    workspaceRoot: args.workspaceRoot,
+    runtimeRoot: args.runtimeRoot,
+    missionId: args.missionId,
+    runId: args.runId,
+    stepId: args.stepId,
+    attemptId: args.attemptId,
+    defaultRole: "agent"
+  });
 
   // Codex -c flag parses values as TOML
-  const argsToml = `[${cmdArgs.map((a) => `"${a.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`;
+  const argsToml = `[${launch.cmdArgs.map((a) => `"${a.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`;
   const flags: string[] = [
-    "-c", `mcp_servers.ade.command="${command}"`,
+    "-c", `mcp_servers.ade.command="${launch.command}"`,
     "-c", `mcp_servers.ade.args=${argsToml}`,
-    "-c", `mcp_servers.ade.env.ADE_PROJECT_ROOT="${args.workspaceRoot}"`,
-    "-c", `mcp_servers.ade.env.ADE_MISSION_ID="${args.missionId}"`,
-    "-c", `mcp_servers.ade.env.ADE_RUN_ID="${args.runId}"`,
-    "-c", `mcp_servers.ade.env.ADE_STEP_ID="${args.stepId}"`,
-    "-c", `mcp_servers.ade.env.ADE_ATTEMPT_ID="${args.attemptId}"`,
-    "-c", `mcp_servers.ade.env.ADE_DEFAULT_ROLE="agent"`
+    "-c", `mcp_servers.ade.env.ADE_PROJECT_ROOT="${launch.env.ADE_PROJECT_ROOT}"`,
+    "-c", `mcp_servers.ade.env.ADE_MISSION_ID="${launch.env.ADE_MISSION_ID}"`,
+    "-c", `mcp_servers.ade.env.ADE_RUN_ID="${launch.env.ADE_RUN_ID}"`,
+    "-c", `mcp_servers.ade.env.ADE_STEP_ID="${launch.env.ADE_STEP_ID}"`,
+    "-c", `mcp_servers.ade.env.ADE_ATTEMPT_ID="${launch.env.ADE_ATTEMPT_ID}"`,
+    "-c", `mcp_servers.ade.env.ADE_DEFAULT_ROLE="${launch.env.ADE_DEFAULT_ROLE}"`
   ];
   return flags;
 }
@@ -181,6 +216,12 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
   }
 }
 
+function resolveCliMode(permissionConfig: { cli?: { mode?: "read-only" | "edit" | "full-auto" } } | undefined): "read-only" | "edit" | "full-auto" {
+  const mode = permissionConfig?.cli?.mode;
+  if (mode === "read-only" || mode === "edit" || mode === "full-auto") return mode;
+  return "full-auto";
+}
+
 /**
  * Unified orchestrator adapter that handles ALL model providers.
  * For CLI-wrapped models (Claude CLI, Codex CLI), it delegates to the appropriate CLI.
@@ -192,7 +233,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
 }): OrchestratorExecutorAdapter {
   const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length
     ? options.runtimeRoot.trim()
-    : resolveRuntimeRoot();
+    : resolveUnifiedRuntimeRoot();
   const workspaceRoot = typeof options?.workspaceRoot === "string" && options.workspaceRoot.trim().length
     ? options.workspaceRoot.trim()
     : runtimeRoot;
@@ -203,7 +244,6 @@ export function createUnifiedOrchestratorAdapter(options?: {
   return createBaseOrchestratorAdapter({
     executorKind: "unified",
     sessionType: "ai-orchestrated",
-    defaultModel: "anthropic/claude-sonnet-4-6",
 
     buildOverrideCommand: ({ prompt }) => {
       // For override commands, try to detect the best CLI
@@ -232,13 +272,10 @@ export function createUnifiedOrchestratorAdapter(options?: {
       if (descriptor?.isCliWrapped && descriptor.family === "anthropic") {
         // Claude CLI path
         const cliModel = resolveClaudeCliModel(descriptor?.sdkModelId ?? model);
-        const permissionMode =
-          typeof step.metadata?.permissionMode === "string" && step.metadata.permissionMode.trim().length
-            ? step.metadata.permissionMode.trim()
-            : permissionConfig?.claude?.permissionMode ?? DEFAULT_CLAUDE_PERMISSION_MODE;
-
-        const dangerouslySkip = permissionConfig?.claude?.dangerouslySkipPermissions === true;
-        const allowedTools = permissionConfig?.claude?.allowedTools ?? [];
+        const cliMode = resolveCliMode(permissionConfig);
+        const permissionMode = cliMode === "read-only" ? "plan" : "acceptEdits";
+        const dangerouslySkip = cliMode === "full-auto";
+        const allowedTools = permissionConfig?.cli?.allowedTools ?? [];
 
         const parts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
 
@@ -273,26 +310,15 @@ export function createUnifiedOrchestratorAdapter(options?: {
 
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
         // Codex CLI path — inject ADE MCP server via -c config overrides
-        const approvalMode =
-          typeof step.metadata?.approvalMode === "string" && step.metadata.approvalMode.trim().length
-            ? step.metadata.approvalMode.trim()
-            : permissionConfig?.codex?.approvalMode ?? DEFAULT_CODEX_APPROVAL_MODE;
-
+        const cliMode = resolveCliMode(permissionConfig);
         const approvalPolicy =
-          approvalMode === "suggest" || approvalMode === "untrusted"
-            ? "untrusted"
-            : approvalMode === "auto-edit" || approvalMode === "on-request" || approvalMode === "on-failure"
+          cliMode === "full-auto"
+            ? "never"
+            : cliMode === "edit"
               ? "on-request"
-              : approvalMode === "never" || approvalMode === "full-auto"
-                ? "never"
-                : "on-request";
-
-        const sandboxMode =
-          typeof step.metadata?.sandboxPermissions === "string" && step.metadata.sandboxPermissions.trim().length
-            ? step.metadata.sandboxPermissions.trim()
-            : permissionConfig?.codex?.sandboxPermissions ?? DEFAULT_CODEX_SANDBOX_PERMISSIONS;
-
-        const writablePaths = permissionConfig?.codex?.writablePaths ?? [];
+              : "untrusted";
+        const sandboxMode = permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+        const writablePaths = permissionConfig?.cli?.writablePaths ?? [];
 
         const parts: string[] = [
           "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.sdkModelId)),
@@ -317,9 +343,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
       }
 
       // Non-CLI or unknown models cannot run via this shell-based adapter.
-      const unsupportedReason = !descriptor
-        ? `Model '${model}' is not registered.`
-        : `Model '${descriptor.id}' is not CLI-wrapped (${descriptor.family}).`;
+      const unsupportedReason = getUnifiedUnsupportedModelReason(model) ?? `Model '${model}' is not supported by unified adapter.`;
       const failureMessage = `[ADE] Unified orchestrator adapter currently supports CLI-wrapped Anthropic/OpenAI models only. ${unsupportedReason} Select a CLI model for this worker.`;
       return `printf '%s\\n' ${shellEscapeArg(failureMessage)} >&2; exit 64`;
     },

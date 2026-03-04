@@ -355,7 +355,7 @@ function plannerSchemaJson(): Record<string, unknown> {
     name: { type: "string" },
     description: { type: "string" },
     taskType: { type: "string", enum: TASK_TYPES },
-    executorHint: { type: "string", enum: ["claude", "codex", "either"] },
+    executorHint: { type: "string", enum: ["unified", "manual", "either"] },
     preferredScope: { type: "string", enum: ["lane", "file", "session", "global"] },
     requiresContextProfiles: {
       type: "array",
@@ -617,7 +617,7 @@ function buildPlannerPrompt(args: {
       `- Testing mode: ${p.testing.mode}.`,
       `- Code review: ${p.codeReview.mode}.`,
       `- Merge: ${p.merge.mode}.`,
-      `- Executor preferences: planning=${p.planning.model ?? "codex"}, implementation=${p.implementation.model ?? "codex"}, testing=${p.testing.model ?? "codex"}.`,
+      `- Executor preferences: planning=${p.planning.model ?? "unified"}, implementation=${p.implementation.model ?? "unified"}, testing=${p.testing.model ?? "unified"}.`,
       ""
     );
     if (p.testing.mode === "none") {
@@ -650,7 +650,7 @@ function normalizePlannerStep(step: unknown, index: number): PlannerStepPlan {
     name: normalizeText(record.name, `Step ${index + 1}`),
     description: normalizeText(record.description, "Execute this step and verify completion criteria."),
     taskType: toEnum(record.taskType, TASK_TYPES, "code"),
-    executorHint: toEnum(record.executorHint, ["claude", "codex", "either"] as const, "either"),
+    executorHint: toEnum(record.executorHint, ["unified", "manual", "either"] as const, "either"),
     preferredScope: toEnum(record.preferredScope, ["lane", "file", "session", "global"] as const, "lane"),
     requiresContextProfiles: (() => {
       const values = toStringArray(record.requiresContextProfiles)
@@ -1030,15 +1030,10 @@ function mapHintToExecutor(args: {
   taskType: PlannerTaskType;
   executorPolicy: string;
 }): OrchestratorExecutorKind {
-  if (args.executorPolicy === "codex") return "codex";
-  if (args.executorPolicy === "claude") return "claude";
-
-  if (args.hint === "claude") return "claude";
-  if (args.hint === "codex") return "codex";
-  if (args.taskType === "code" || args.taskType === "integration" || args.taskType === "merge" || args.taskType === "test" || args.taskType === "deploy") {
-    return "codex";
-  }
-  return "claude";
+  void args.taskType;
+  void args.executorPolicy;
+  if (args.hint === "manual") return "manual";
+  return "unified";
 }
 
 function inferReviewTarget(step: PlannerStepPlan): "code" | "tests" {

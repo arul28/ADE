@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { Tool } from "ai";
+import { createCoordinatorToolSet } from "../../desktop/src/main/services/orchestrator/coordinatorTools";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { ContextExportLevel, MergeMethod } from "../../desktop/src/shared/types";
 import type { AdeMcpRuntime } from "./bootstrap";
@@ -15,7 +17,9 @@ type ToolSpec = {
 type SessionIdentity = {
   callerId: string;
   role: "orchestrator" | "agent" | "external" | "evaluator";
+  missionId: string | null;
   runId: string | null;
+  stepId: string | null;
   attemptId: string | null;
   ownerId: string | null;
 };
@@ -668,6 +672,60 @@ const TOOL_SPECS: ToolSpec[] = [
   }
 ];
 
+const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
+  {
+    name: "spawn_worker",
+    description: "Coordinator: spawn a new worker step in the current mission run.",
+    inputSchema: {
+      type: "object",
+      required: ["name", "prompt"],
+      additionalProperties: true,
+      properties: {
+        name: { type: "string", minLength: 1 },
+        prompt: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  { name: "insert_milestone", description: "Coordinator: insert a milestone gate into the DAG.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "request_specialist", description: "Coordinator: request a specialist worker role.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "delegate_to_subagent", description: "Coordinator: delegate a subtask from a parent worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "stop_worker", description: "Coordinator: stop a running worker attempt.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "send_message", description: "Coordinator: send a direct message to a worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "message_worker", description: "Coordinator: relay a message between two workers.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "broadcast", description: "Coordinator: broadcast a message to active workers.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "get_worker_output", description: "Coordinator: fetch latest output/report for a worker step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "list_workers", description: "Coordinator: list current worker states.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "report_status", description: "Worker: report progress/status to the coordinator.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "report_result", description: "Worker: report completion result to the coordinator.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "report_validation", description: "Validator: report validation verdict/findings for a step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "read_mission_status", description: "Coordinator: read full mission/run status snapshot.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "read_mission_state", description: "Coordinator: read persisted mission state document.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "update_mission_state", description: "Coordinator: patch persisted mission state document.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "revise_plan", description: "Coordinator: revise mission DAG/plan.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "update_tool_profiles", description: "Coordinator: update runtime role/tool profiles.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "transfer_lane", description: "Coordinator: transfer a worker step to another lane.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "provision_lane", description: "Coordinator: provision a new mission child lane.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "create_task", description: "Coordinator: create a logical mission task without spawning a worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "update_task", description: "Coordinator: update task metadata/status.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "assign_task", description: "Coordinator: assign a task to an existing worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "list_tasks", description: "Coordinator: list mission tasks and status.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "skip_step", description: "Coordinator: skip a worker step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "mark_step_complete", description: "Coordinator: mark a worker step as succeeded.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "mark_step_failed", description: "Coordinator: mark a worker step as failed.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "retry_step", description: "Coordinator: retry a failed worker step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "complete_mission", description: "Coordinator: finalize the mission run as succeeded.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "fail_mission", description: "Coordinator: finalize the mission run as failed.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "get_budget_status", description: "Coordinator: inspect mission budget pressure/hard caps.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "request_user_input", description: "Coordinator: open a user intervention with a question.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "read_file", description: "Coordinator: read a file within project root.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "read_step_output", description: "Coordinator: read output artifact for a specific step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "search_files", description: "Coordinator: search files/content in project root.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "get_project_context", description: "Coordinator: return compact mission/project context for planning.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+];
+
+const ALL_TOOL_SPECS: ToolSpec[] = [...TOOL_SPECS, ...COORDINATOR_TOOL_SPECS];
+const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
+
 const READ_ONLY_TOOLS = new Set([
   "read_context",
   "check_conflicts",
@@ -1019,7 +1077,7 @@ type CallerContext = {
   attemptId: string | null;
 };
 
-function resolveCallerContext(): CallerContext {
+function resolveEnvCallerContext(): CallerContext {
   return {
     missionId: process.env.ADE_MISSION_ID?.trim() || null,
     runId: process.env.ADE_RUN_ID?.trim() || null,
@@ -1028,10 +1086,21 @@ function resolveCallerContext(): CallerContext {
   };
 }
 
+function resolveCallerContext(session?: SessionState): CallerContext {
+  const envContext = resolveEnvCallerContext();
+  if (!session) return envContext;
+  return {
+    missionId: session.identity.missionId ?? envContext.missionId,
+    runId: session.identity.runId ?? envContext.runId,
+    stepId: session.identity.stepId ?? envContext.stepId,
+    attemptId: session.identity.attemptId ?? envContext.attemptId
+  };
+}
+
 function parseInitializeIdentity(params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
-  const envContext = resolveCallerContext();
+  const envContext = resolveEnvCallerContext();
   const role = asTrimmedString(identity.role) || process.env.ADE_DEFAULT_ROLE || "";
   const validRole: SessionIdentity["role"] =
     role === "orchestrator" || role === "agent" || role === "evaluator" ? role : "external";
@@ -1039,7 +1108,9 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.attemptId ?? "unknown",
     role: validRole,
+    missionId: asOptionalTrimmedString(identity.missionId) ?? envContext.missionId,
     runId: asOptionalTrimmedString(identity.runId) ?? envContext.runId,
+    stepId: asOptionalTrimmedString(identity.stepId) ?? envContext.stepId,
     attemptId: asOptionalTrimmedString(identity.attemptId) ?? envContext.attemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId)
   };
@@ -1206,7 +1277,7 @@ function buildResourceList(args: {
 }
 
 function findToolSpec(name: string): ToolSpec {
-  const match = TOOL_SPECS.find((entry) => entry.name === name);
+  const match = ALL_TOOL_SPECS.find((entry) => entry.name === name);
   if (!match) {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown MCP tool: ${name}`);
   }
@@ -1362,6 +1433,120 @@ function ensureMemorySearchAllowed(session: SessionState): void {
   session.memorySearchEvents.push(now);
 }
 
+type CoordinatorToolCacheEntry = {
+  missionId: string;
+  tools: Record<string, Tool>;
+};
+
+const coordinatorToolCacheByRuntime = new WeakMap<AdeMcpRuntime, Map<string, CoordinatorToolCacheEntry>>();
+
+function resolveMissionIdForRun(runtime: AdeMcpRuntime, runId: string): string | null {
+  const graphMissionId = (() => {
+    try {
+      const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const runRecord = safeObject(graph.run);
+      return asOptionalTrimmedString(runRecord.missionId);
+    } catch {
+      return null;
+    }
+  })();
+  if (graphMissionId) return graphMissionId;
+  const row = runtime.db.get<{ mission_id: string | null }>(
+    `
+      select mission_id
+      from orchestrator_runs
+      where id = ?
+      limit 1
+    `,
+    [runId]
+  );
+  return asOptionalTrimmedString(row?.mission_id);
+}
+
+function getCoordinatorToolSet(args: {
+  runtime: AdeMcpRuntime;
+  runId: string;
+  missionId: string;
+}): Record<string, Tool> {
+  let runtimeCache = coordinatorToolCacheByRuntime.get(args.runtime);
+  if (!runtimeCache) {
+    runtimeCache = new Map<string, CoordinatorToolCacheEntry>();
+    coordinatorToolCacheByRuntime.set(args.runtime, runtimeCache);
+  }
+  const cached = runtimeCache.get(args.runId);
+  if (cached && cached.missionId === args.missionId) {
+    return cached.tools;
+  }
+
+  const missionRecord = safeObject(args.runtime.missionService.get(args.missionId));
+  const missionLaneId = asOptionalTrimmedString(missionRecord.laneId ?? missionRecord.lane_id);
+  const toolSet = createCoordinatorToolSet({
+    orchestratorService: args.runtime.orchestratorService,
+    missionService: args.runtime.missionService,
+    runId: args.runId,
+    missionId: args.missionId,
+    logger: args.runtime.logger,
+    db: args.runtime.db,
+    projectRoot: args.runtime.projectRoot,
+    missionLaneId: missionLaneId ?? undefined,
+    onDagMutation: (event) => {
+      args.runtime.eventBuffer.push({
+        timestamp: nowIso(),
+        category: "dag_mutation",
+        payload: event as unknown as Record<string, unknown>
+      });
+    }
+  });
+  runtimeCache.set(args.runId, {
+    missionId: args.missionId,
+    tools: toolSet
+  });
+  return toolSet;
+}
+
+async function runCoordinatorTool(args: {
+  runtime: AdeMcpRuntime;
+  name: string;
+  toolArgs: Record<string, unknown>;
+  callerCtx: CallerContext;
+}): Promise<Record<string, unknown>> {
+  const runId = args.callerCtx.runId ?? asOptionalTrimmedString(args.toolArgs.runId);
+  if (!runId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Coordinator tool '${args.name}' requires run context. Provide runId or set ADE_RUN_ID.`
+    );
+  }
+  const missionId =
+    args.callerCtx.missionId
+    ?? asOptionalTrimmedString(args.toolArgs.missionId)
+    ?? resolveMissionIdForRun(args.runtime, runId);
+  if (!missionId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Coordinator tool '${args.name}' requires mission context. Provide missionId or set ADE_MISSION_ID.`
+    );
+  }
+
+  const toolSet = getCoordinatorToolSet({
+    runtime: args.runtime,
+    runId,
+    missionId
+  });
+  const toolEntry = toolSet[args.name] as { execute?: (input: Record<string, unknown>) => Promise<unknown> } | undefined;
+  if (!toolEntry?.execute) {
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
+  }
+  const output = await toolEntry.execute(args.toolArgs);
+  if (isRecord(output)) {
+    return output;
+  }
+  return {
+    ok: true,
+    result: output ?? null
+  };
+}
+
 
 async function runTool(args: {
   runtime: AdeMcpRuntime;
@@ -1370,7 +1555,11 @@ async function runTool(args: {
   toolArgs: Record<string, unknown>;
 }): Promise<Record<string, unknown>> {
   const { runtime, session, name, toolArgs } = args;
-  const callerCtx = resolveCallerContext();
+  const callerCtx = resolveCallerContext(session);
+
+  if (COORDINATOR_TOOL_NAMES.has(name)) {
+    return await runCoordinatorTool({ runtime, name, toolArgs, callerCtx });
+  }
 
   if (name === "list_lanes") {
     const includeArchived = asBoolean(toolArgs.includeArchived, false);
@@ -2643,7 +2832,9 @@ export function createMcpRequestHandler(args: {
     identity: {
       callerId: "unknown",
       role: "external",
+      missionId: null,
       runId: null,
+      stepId: null,
       attemptId: null,
       ownerId: null
     },
@@ -2678,7 +2869,9 @@ export function createMcpRequestHandler(args: {
         tool: toolName,
         callerId: session.identity.callerId,
         role: session.identity.role,
+        missionId: session.identity.missionId,
         runId: session.identity.runId,
+        stepId: session.identity.stepId,
         attemptId: session.identity.attemptId,
         ownerId: session.identity.ownerId,
         args: sanitizeForAudit(toolArgs)
@@ -2751,7 +2944,7 @@ export function createMcpRequestHandler(args: {
 
     if (method === "tools/list") {
       return {
-        tools: TOOL_SPECS.map((tool) => ({
+        tools: ALL_TOOL_SPECS.map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema
@@ -2775,6 +2968,7 @@ export function createMcpRequestHandler(args: {
             OBSERVATION_TOOLS.has(toolName) ||
             EVALUATOR_TOOLS.has(toolName) ||
             EVALUATION_READ_TOOLS.has(toolName) ||
+            COORDINATOR_TOOL_NAMES.has(toolName) ||
             toolName === "spawn_agent" ||
             toolName === "ask_user"
           ) {

@@ -1,9 +1,10 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
+import { getModelById } from "../../../shared/modelRegistry";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -88,6 +89,13 @@ import type {
   StartIntegrationResolutionResult,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
+  PrAiResolutionInputArgs,
+  PrAiResolutionStartArgs,
+  PrAiResolutionStartResult,
+  PrAiResolutionStopArgs,
+  PrAiResolutionEventPayload,
+  PrAiResolutionContext,
+  AiPermissionMode,
   LinkPrToLaneArgs,
   LandResult,
   LandStackEnhancedArgs,
@@ -190,9 +198,14 @@ import type {
   ReparentLaneArgs,
   ReparentLaneResult,
   RenameLaneArgs,
-  RestackArgs,
-  RestackResult,
-  RestackSuggestion,
+  RebaseAbortArgs,
+  RebasePushArgs,
+  RebaseRollbackArgs,
+  RebaseRun,
+  RebaseStartArgs,
+  RebaseStartResult,
+  RebaseSuggestion,
+  RebaseRunEventPayload,
   AutoRebaseLaneStatus,
   RiskMatrixEntry,
   PrepareConflictProposalArgs,
@@ -317,7 +330,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
-import type { createRestackSuggestionService } from "../lanes/restackSuggestionService";
+import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createPtyService } from "../pty/ptyService";
@@ -370,7 +383,7 @@ export type AppContext = {
   onboardingService: ReturnType<typeof createOnboardingService>;
   ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
-  restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null;
+  rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
@@ -492,8 +505,8 @@ async function safeRefreshMissionPack(
 
 function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "claude" || raw === "codex" || raw === "shell" || raw === "manual") return raw;
-  return "codex";
+  if (raw === "shell" || raw === "manual" || raw === "unified") return raw;
+  return "unified";
 }
 
 
@@ -848,15 +861,82 @@ function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapsho
   };
 }
 
+function isChatToolType(toolType: string | null | undefined): boolean {
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
+}
+
+function inferPrAiProvider(modelId: string): "codex" | "claude" {
+  const descriptor = getModelById(modelId);
+  return descriptor?.family === "anthropic" ? "claude" : "codex";
+}
+
+function collectPrAiSourceLaneIds(context: PrAiResolutionContext): string[] {
+  const sourceLaneIds = new Set<string>();
+  const add = (value: string | null | undefined) => {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    if (normalized) sourceLaneIds.add(normalized);
+  };
+  add(context.sourceLaneId ?? null);
+  add(context.laneId ?? null);
+  return Array.from(sourceLaneIds);
+}
+
+function buildPrAiResolverCommand(
+  provider: "codex" | "claude",
+  opts: {
+    promptFilePath: string;
+    permissionMode: AiPermissionMode;
+    model: string;
+    reasoning?: string | null;
+  }
+): string {
+  const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+  const promptArg = `"$(cat ${q(opts.promptFilePath)})"`;
+
+  if (provider === "claude") {
+    const parts: string[] = ["claude"];
+    if (opts.permissionMode === "full_edit") {
+      parts.push("--dangerously-skip-permissions");
+    } else if (opts.permissionMode === "guarded_edit") {
+      parts.push("--permission-mode", "acceptEdits");
+    } else {
+      parts.push("--permission-mode", "manual");
+    }
+    parts.push("--model", opts.model);
+    if (opts.reasoning) {
+      parts.push("--reasoning-effort", opts.reasoning);
+    }
+    parts.push(promptArg);
+    return parts.join(" ");
+  }
+
+  const parts: string[] = ["codex"];
+  if (opts.permissionMode === "full_edit") {
+    parts.push("--full-auto");
+  } else if (opts.permissionMode === "guarded_edit") {
+    parts.push("--ask-for-approval", "on-failure", "--sandbox", "workspace-write");
+  } else {
+    parts.push("--ask-for-approval", "untrusted", "--sandbox", "read-only");
+  }
+  parts.push("--model", opts.model);
+  if (opts.reasoning) {
+    parts.push("--reasoning-effort", opts.reasoning);
+  }
+  parts.push(promptArg);
+  return parts.join(" ");
+}
+
 export function registerIpc({
   getCtx,
   switchProjectFromDialog,
   closeCurrentProject,
+  closeProjectByPath,
   globalStatePath
 }: {
   getCtx: () => AppContext;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
   closeCurrentProject: () => Promise<void>;
+  closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
 }) {
   const watcherCleanupBoundSenders = new Set<number>();
@@ -903,6 +983,81 @@ export function registerIpc({
           error: error instanceof Error ? error.message : String(error)
         });
       });
+  };
+
+  type PrAiRuntimeSession = {
+    sessionId: string;
+    ptyId: string;
+    runId: string;
+    provider: "codex" | "claude";
+    context: PrAiResolutionContext;
+    pollTimer: ReturnType<typeof setInterval> | null;
+    finalizing: boolean;
+  };
+
+  const prAiSessions = new Map<string, PrAiRuntimeSession>();
+
+  const emitPrAiResolutionEvent = (payload: PrAiResolutionEventPayload): void => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      try {
+        win.webContents.send(IPC.prsAiResolutionEvent, payload);
+      } catch {
+        // ignore broadcast failures
+      }
+    }
+  };
+
+  const clearPrAiSession = (sessionId: string): void => {
+    const runtime = prAiSessions.get(sessionId);
+    if (!runtime) return;
+    if (runtime.pollTimer) {
+      clearInterval(runtime.pollTimer);
+    }
+    prAiSessions.delete(sessionId);
+  };
+
+  const finalizePrAiSession = async (
+    sessionId: string,
+    opts: { forceStatus?: "cancelled" | "completed" | "failed"; message?: string } = {}
+  ): Promise<void> => {
+    const runtime = prAiSessions.get(sessionId);
+    if (!runtime || runtime.finalizing) return;
+    runtime.finalizing = true;
+    const ctx = getCtx();
+    try {
+      const detail = ctx.sessionService.get(sessionId);
+      const derivedExitCode = opts.forceStatus === "cancelled"
+        ? 130
+        : (detail?.exitCode ?? (detail?.status === "completed" ? 0 : 1));
+      try {
+        await ctx.conflictService.finalizeResolverSession({
+          runId: runtime.runId,
+          exitCode: derivedExitCode
+        });
+      } catch (error) {
+        ctx.logger.debug("ipc.prs_ai_resolution_finalize_failed", {
+          sessionId,
+          runId: runtime.runId,
+          error: getErrorMessage(error)
+        });
+      }
+
+      const status = opts.forceStatus
+        ?? (detail?.status === "disposed"
+          ? "cancelled"
+          : derivedExitCode === 0
+            ? "completed"
+            : "failed");
+      emitPrAiResolutionEvent({
+        sessionId,
+        status,
+        message: opts.message ?? null,
+        timestamp: nowIso()
+      });
+    } finally {
+      clearPrAiSession(sessionId);
+    }
   };
 
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
@@ -1190,6 +1345,11 @@ export function registerIpc({
       delete next.lastProjectRoot;
     }
     writeGlobalState(globalStatePath, next);
+    try {
+      await closeProjectByPath(rootPath);
+    } catch {
+      // Best effort; forgetting a project should still update recents even if teardown fails.
+    }
     return filtered.map((entry) => ({
       rootPath: entry.rootPath,
       displayName: entry.displayName,
@@ -1505,7 +1665,7 @@ export function registerIpc({
     const runMode = arg?.launchMode === "manual" ? "manual" : "autopilot";
     const defaultExecutorKind: OrchestratorExecutorKind = runMode === "manual"
       ? "manual"
-      : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? "codex");
+      : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? "unified");
 
     // Fast-path for autostart missions: create immediately and launch in the background
     // so renderer IPC does not block on planning/launch work.
@@ -1577,7 +1737,7 @@ export function registerIpc({
       timeoutMs: arg?.planningTimeoutMs,
       allowPlanningQuestions: arg?.allowPlanningQuestions,
       phaseCards: Array.isArray(arg?.phaseOverride) ? arg.phaseOverride : undefined,
-      model: arg?.orchestratorModel ?? arg?.modelConfig?.orchestratorModel?.modelId,
+      model: arg?.modelConfig?.orchestratorModel?.modelId,
       projectRoot: ctx.project.rootPath,
       contextBundle: buildMissionPlanningContextBundle({
         ctx,
@@ -2148,27 +2308,42 @@ export function registerIpc({
     return await ctx.laneService.getChildren(arg.laneId);
   });
 
-  ipcMain.handle(IPC.lanesRestack, async (_event, arg: RestackArgs): Promise<RestackResult> => {
+  ipcMain.handle(IPC.lanesRebaseStart, async (_event, arg: RebaseStartArgs): Promise<RebaseStartResult> => {
     const ctx = getCtx();
-    return await ctx.laneService.restack(arg);
+    return await ctx.laneService.rebaseStart(arg);
   });
 
-  ipcMain.handle(IPC.lanesListRestackSuggestions, async (): Promise<RestackSuggestion[]> => {
+  ipcMain.handle(IPC.lanesRebasePush, async (_event, arg: RebasePushArgs): Promise<RebaseRun> => {
     const ctx = getCtx();
-    if (!ctx.restackSuggestionService) return [];
-    return await ctx.restackSuggestionService.listSuggestions();
+    return await ctx.laneService.rebasePush(arg);
   });
 
-  ipcMain.handle(IPC.lanesDismissRestackSuggestion, async (_event, arg: { laneId: string }): Promise<void> => {
+  ipcMain.handle(IPC.lanesRebaseRollback, async (_event, arg: RebaseRollbackArgs): Promise<RebaseRun> => {
     const ctx = getCtx();
-    if (!ctx.restackSuggestionService) return;
-    await ctx.restackSuggestionService.dismiss({ laneId: arg.laneId });
+    return await ctx.laneService.rebaseRollback(arg);
   });
 
-  ipcMain.handle(IPC.lanesDeferRestackSuggestion, async (_event, arg: { laneId: string; minutes: number }): Promise<void> => {
+  ipcMain.handle(IPC.lanesRebaseAbort, async (_event, arg: RebaseAbortArgs): Promise<RebaseRun> => {
     const ctx = getCtx();
-    if (!ctx.restackSuggestionService) return;
-    await ctx.restackSuggestionService.defer({ laneId: arg.laneId, minutes: arg.minutes });
+    return await ctx.laneService.rebaseAbort(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListRebaseSuggestions, async (): Promise<RebaseSuggestion[]> => {
+    const ctx = getCtx();
+    if (!ctx.rebaseSuggestionService) return [];
+    return await ctx.rebaseSuggestionService.listSuggestions();
+  });
+
+  ipcMain.handle(IPC.lanesDismissRebaseSuggestion, async (_event, arg: { laneId: string }): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.rebaseSuggestionService) return;
+    await ctx.rebaseSuggestionService.dismiss({ laneId: arg.laneId });
+  });
+
+  ipcMain.handle(IPC.lanesDeferRebaseSuggestion, async (_event, arg: { laneId: string; minutes: number }): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.rebaseSuggestionService) return;
+    await ctx.rebaseSuggestionService.defer({ laneId: arg.laneId, minutes: arg.minutes });
   });
 
   ipcMain.handle(IPC.lanesListAutoRebaseStatuses, async (): Promise<AutoRebaseLaneStatus[]> => {
@@ -2188,7 +2363,26 @@ export function registerIpc({
     return await withIpcTiming(
       ctx,
       "sessions.list",
-      async () => ctx.ptyService.enrichSessions(ctx.sessionService.list(arg)),
+      async () => {
+        const sessions = ctx.ptyService.enrichSessions(ctx.sessionService.list(arg));
+        const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+        let chats: AgentChatSessionSummary[] = [];
+        try {
+          chats = await ctx.agentChatService.listSessions(laneId || undefined);
+        } catch {
+          chats = [];
+        }
+        if (chats.length === 0) return sessions;
+        const chatStatusBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat.status] as const));
+        return sessions.map((session) => {
+          if (!isChatToolType(session.toolType)) return session;
+          if (session.status !== "running") return session;
+          const chatStatus = chatStatusBySessionId.get(session.id);
+          if (chatStatus === "active") return { ...session, runtimeState: "running" as const };
+          if (chatStatus === "idle") return { ...session, runtimeState: "waiting-input" as const };
+          return session;
+        });
+      },
       {
         laneId: typeof arg?.laneId === "string" ? arg.laneId : null,
         limit: typeof arg?.limit === "number" ? arg.limit : null
@@ -3093,6 +3287,187 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsRecheckIntegrationStep, async (_event, arg: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult> =>
     getCtx().prService.recheckIntegrationStep(arg));
+
+  ipcMain.handle(IPC.prsAiResolutionStart, async (_event, arg: PrAiResolutionStartArgs): Promise<PrAiResolutionStartResult> => {
+    const ctx = getCtx();
+    const context = (arg?.context ?? {}) as PrAiResolutionContext;
+    const model = typeof arg?.model === "string" ? arg.model.trim() : "";
+    const targetLaneId = typeof context.targetLaneId === "string" ? context.targetLaneId.trim() : "";
+    const sourceLaneIds = collectPrAiSourceLaneIds(context);
+    const permissionMode: AiPermissionMode = arg?.permissionMode ?? "guarded_edit";
+    const reasoning = typeof arg?.reasoning === "string" && arg.reasoning.trim().length > 0
+      ? arg.reasoning.trim()
+      : null;
+    let pty: PtyCreateResult | null = null;
+    let runId = "";
+
+    if (!model) {
+      const sessionId = randomUUID();
+      const error = "Model is required to start AI resolution.";
+      emitPrAiResolutionEvent({
+        sessionId,
+        status: "failed",
+        message: error,
+        timestamp: nowIso()
+      });
+      return { sessionId, provider: "codex", ptyId: null, status: "failed", error, context };
+    }
+    if (!targetLaneId) {
+      const sessionId = randomUUID();
+      const error = "Target lane is required to start AI resolution.";
+      emitPrAiResolutionEvent({
+        sessionId,
+        status: "failed",
+        message: error,
+        timestamp: nowIso()
+      });
+      return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error, context };
+    }
+    if (sourceLaneIds.length === 0) {
+      const sessionId = randomUUID();
+      const error = "At least one source lane is required to start AI resolution.";
+      emitPrAiResolutionEvent({
+        sessionId,
+        status: "failed",
+        message: error,
+        timestamp: nowIso()
+      });
+      return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error, context };
+    }
+
+    try {
+      const provider = inferPrAiProvider(model);
+      const prep = await ctx.conflictService.prepareResolverSession({
+        provider,
+        targetLaneId,
+        sourceLaneIds,
+        cwdLaneId: typeof context.integrationLaneId === "string" && context.integrationLaneId.trim().length > 0
+          ? context.integrationLaneId.trim()
+          : (typeof context.laneId === "string" && context.laneId.trim().length > 0
+            ? context.laneId.trim()
+            : undefined),
+        scenario: context.scenario ?? (sourceLaneIds.length > 1 ? "integration-merge" : "single-merge")
+      });
+      runId = prep.runId;
+      if (prep.status === "blocked") {
+        const sessionId = randomUUID();
+        const reason = prep.contextGaps.length
+          ? prep.contextGaps.map((gap) => gap.message).join(", ")
+          : "Resolver session blocked due to insufficient context.";
+        emitPrAiResolutionEvent({
+          sessionId,
+          status: "failed",
+          message: reason,
+          timestamp: nowIso()
+        });
+        return { sessionId, provider, ptyId: null, status: "failed", error: reason, context };
+      }
+
+      pty = await ctx.ptyService.create({
+        laneId: prep.cwdLaneId,
+        cwd: prep.cwdWorktreePath,
+        cols: 100,
+        rows: 30,
+        title: `PR AI resolution (${provider})`,
+        tracked: false,
+        toolType: provider
+      });
+
+      const command = buildPrAiResolverCommand(provider, {
+        promptFilePath: prep.promptFilePath,
+        permissionMode,
+        model,
+        reasoning
+      });
+      ctx.ptyService.write({ ptyId: pty.ptyId, data: `${command}\r` });
+
+      const runtime: PrAiRuntimeSession = {
+        sessionId: pty.sessionId,
+        ptyId: pty.ptyId,
+        runId: prep.runId,
+        provider,
+        context,
+        pollTimer: null,
+        finalizing: false
+      };
+      runtime.pollTimer = setInterval(() => {
+        const current = prAiSessions.get(runtime.sessionId);
+        if (!current || current.finalizing) return;
+        const detail = getCtx().sessionService.get(runtime.sessionId);
+        if (!detail || detail.status === "running") return;
+        void finalizePrAiSession(runtime.sessionId);
+      }, 1_000);
+      prAiSessions.set(runtime.sessionId, runtime);
+      emitPrAiResolutionEvent({
+        sessionId: runtime.sessionId,
+        status: "running",
+        message: null,
+        timestamp: nowIso()
+      });
+      return {
+        sessionId: runtime.sessionId,
+        provider,
+        ptyId: runtime.ptyId,
+        status: "started",
+        error: null,
+        context
+      };
+    } catch (error) {
+      if (pty?.ptyId) {
+        try {
+          ctx.ptyService.dispose({ ptyId: pty.ptyId, sessionId: pty.sessionId });
+        } catch {
+          // ignore dispose failures
+        }
+      }
+      if (runId) {
+        try {
+          await ctx.conflictService.finalizeResolverSession({ runId, exitCode: 1 });
+        } catch {
+          // ignore finalize failures
+        }
+      }
+      const sessionId = pty?.sessionId ?? randomUUID();
+      const message = getErrorMessage(error);
+      emitPrAiResolutionEvent({
+        sessionId,
+        status: "failed",
+        message,
+        timestamp: nowIso()
+      });
+      return {
+        sessionId,
+        provider: inferPrAiProvider(model),
+        ptyId: pty?.ptyId ?? null,
+        status: "failed",
+        error: message,
+        context
+      };
+    }
+  });
+
+  ipcMain.handle(IPC.prsAiResolutionInput, async (_event, arg: PrAiResolutionInputArgs): Promise<void> => {
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    const text = typeof arg?.text === "string" ? arg.text : "";
+    if (!sessionId || !text.length) return;
+    const runtime = prAiSessions.get(sessionId);
+    if (!runtime) throw new Error(`AI resolution session not found: ${sessionId}`);
+    const ctx = getCtx();
+    ctx.ptyService.write({ ptyId: runtime.ptyId, data: text });
+  });
+
+  ipcMain.handle(IPC.prsAiResolutionStop, async (_event, arg: PrAiResolutionStopArgs): Promise<void> => {
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) return;
+    const runtime = prAiSessions.get(sessionId);
+    if (!runtime) return;
+    const ctx = getCtx();
+    ctx.ptyService.dispose({ ptyId: runtime.ptyId, sessionId });
+    await finalizePrAiSession(sessionId, {
+      forceStatus: "cancelled",
+      message: "AI resolution stopped by user."
+    });
+  });
 
   ipcMain.handle(IPC.rebaseScanNeeds, async () => getCtx().conflictService.scanRebaseNeeds());
 

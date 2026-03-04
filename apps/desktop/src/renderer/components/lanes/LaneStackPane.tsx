@@ -17,14 +17,19 @@ type TreeNodeLayout = {
   dotY: number;
 };
 
+type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";
+type LaneRuntimeMap = Map<string, { bucket: LaneRuntimeBucket }>;
+
 function StackGraph({
   lanes,
   selectedLaneId,
-  onSelect
+  onSelect,
+  runtimeByLaneId,
 }: {
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   onSelect: (id: string) => void;
+  runtimeByLaneId: LaneRuntimeMap;
 }) {
   const layout = React.useMemo(() => {
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
@@ -198,6 +203,39 @@ function StackGraph({
                 }
               }}
             >
+              {runtimeByLaneId.get(lane.id)?.bucket === "running" ? (
+                <span
+                  className="shrink-0 animate-spin"
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    border: `1.5px solid ${COLORS.success}`,
+                    borderTopColor: "transparent",
+                  }}
+                  title="Running"
+                />
+              ) : runtimeByLaneId.get(lane.id)?.bucket === "awaiting-input" ? (
+                <span
+                  className="shrink-0 animate-spin"
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    border: `1.5px solid ${COLORS.warning}`,
+                    borderTopColor: "transparent",
+                  }}
+                  title="Awaiting input"
+                />
+              ) : runtimeByLaneId.get(lane.id)?.bucket === "ended" ? (
+                <span
+                  className="shrink-0"
+                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
+                  title="Ended"
+                />
+              ) : (
+                <span className="shrink-0" style={{ width: 8, height: 8 }} />
+              )}
               <span className="truncate" style={{
                 maxWidth: 160,
                 fontFamily: MONO_FONT,
@@ -218,11 +256,13 @@ function StackGraph({
 export function LaneStackPane({
   lanes,
   selectedLaneId,
-  onSelect
+  onSelect,
+  runtimeByLaneId,
 }: {
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   onSelect: (id: string) => void;
+  runtimeByLaneId: LaneRuntimeMap;
 }) {
   const navigate = useNavigate();
 
@@ -247,6 +287,7 @@ export function LaneStackPane({
         lanes={lanes}
         selectedLaneId={selectedLaneId}
         onSelect={onSelect}
+        runtimeByLaneId={runtimeByLaneId}
       />
     </div>
   );

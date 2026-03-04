@@ -206,9 +206,9 @@ export function ProvidersSection() {
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
   const [verificationByProvider, setVerificationByProvider] = useState<Record<string, AiApiKeyVerificationResult>>({});
   const [workerPermDraft, setWorkerPermDraft] = useState({
-    claudePermissionMode: "acceptEdits" as string,
-    codexSandboxPermissions: "workspace-write" as string,
-    codexApprovalMode: "full-auto" as string,
+    cliMode: "full-auto" as string,
+    cliSandboxPermissions: "workspace-write" as string,
+    inProcessMode: "full-auto" as string,
   });
   const [summaryModel, setSummaryModel] = useState("haiku");
 
@@ -234,15 +234,15 @@ export function ProvidersSection() {
       const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
       const localPermissions = isRecord(localAi.permissions) ? localAi.permissions : {};
       const effectivePermissions = isRecord(effectiveAi.permissions) ? effectiveAi.permissions : {};
-      const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
-      const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
-      const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
-      const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
+      const localCli = isRecord(localPermissions.cli) ? localPermissions.cli : {};
+      const effectiveCli = isRecord(effectivePermissions.cli) ? effectivePermissions.cli : {};
+      const localInProcess = isRecord(localPermissions.inProcess) ? localPermissions.inProcess : {};
+      const effectiveInProcess = isRecord(effectivePermissions.inProcess) ? effectivePermissions.inProcess : {};
 
       setWorkerPermDraft({
-        claudePermissionMode: readString(localClaude.permissionMode, effectiveClaude.permissionMode, "acceptEdits"),
-        codexSandboxPermissions: readString(localCodex.sandboxPermissions, effectiveCodex.sandboxPermissions, "workspace-write"),
-        codexApprovalMode: readString(localCodex.approvalMode, effectiveCodex.approvalMode, "full-auto"),
+        cliMode: readString(localCli.mode, effectiveCli.mode, "full-auto"),
+        cliSandboxPermissions: readString(localCli.sandboxPermissions, effectiveCli.sandboxPermissions, "workspace-write"),
+        inProcessMode: readString(localInProcess.mode, effectiveInProcess.mode, "full-auto"),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -362,23 +362,23 @@ export function ProvidersSection() {
 
       const nextPermissions: Record<string, Record<string, unknown>> = {};
 
-      const claudePermissions: Record<string, unknown> = {};
-      if (workerPermDraft.claudePermissionMode && workerPermDraft.claudePermissionMode !== "acceptEdits") {
-        claudePermissions.permissionMode = workerPermDraft.claudePermissionMode;
+      const cliPermissions: Record<string, unknown> = {};
+      if (workerPermDraft.cliMode && workerPermDraft.cliMode !== "full-auto") {
+        cliPermissions.mode = workerPermDraft.cliMode;
       }
-      if (Object.keys(claudePermissions).length > 0) {
-        nextPermissions.claude = claudePermissions;
+      if (workerPermDraft.cliSandboxPermissions && workerPermDraft.cliSandboxPermissions !== "workspace-write") {
+        cliPermissions.sandboxPermissions = workerPermDraft.cliSandboxPermissions;
+      }
+      if (Object.keys(cliPermissions).length > 0) {
+        nextPermissions.cli = cliPermissions;
       }
 
-      const codexPermissions: Record<string, unknown> = {};
-      if (workerPermDraft.codexSandboxPermissions && workerPermDraft.codexSandboxPermissions !== "workspace-write") {
-        codexPermissions.sandboxPermissions = workerPermDraft.codexSandboxPermissions;
+      const inProcessPermissions: Record<string, unknown> = {};
+      if (workerPermDraft.inProcessMode && workerPermDraft.inProcessMode !== "full-auto") {
+        inProcessPermissions.mode = workerPermDraft.inProcessMode;
       }
-      if (workerPermDraft.codexApprovalMode && workerPermDraft.codexApprovalMode !== "full-auto") {
-        codexPermissions.approvalMode = workerPermDraft.codexApprovalMode;
-      }
-      if (Object.keys(codexPermissions).length > 0) {
-        nextPermissions.codex = codexPermissions;
+      if (Object.keys(inProcessPermissions).length > 0) {
+        nextPermissions.inProcess = inProcessPermissions;
       }
 
       await window.ade.projectConfig.save({
@@ -393,7 +393,7 @@ export function ProvidersSection() {
         },
       });
 
-      setNotice("Provider permissions saved.");
+      setNotice("Execution permissions saved.");
       await refreshStatus();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -741,14 +741,14 @@ export function ProvidersSection() {
             lineHeight: 1.5,
           }}
         >
-          These settings control runtime mutation/sandbox behavior for Claude and Codex workers.
+          These settings control unattended behavior by execution class: CLI workers and in-process workers.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
           <div
             style={{
               background: COLORS.recessedBg,
               border: `1px solid ${COLORS.border}`,
-              borderLeft: `3px solid ${claudeConnected ? COLORS.success : COLORS.textDim}`,
+              borderLeft: `3px solid ${(claudeConnected || codexConnected) ? COLORS.success : COLORS.textDim}`,
               padding: 12,
               display: "flex",
               flexDirection: "column",
@@ -756,23 +756,32 @@ export function ProvidersSection() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <ClaudeLogo size={20} />
-                <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>Claude</span>
-              </div>
-              <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: claudeConnected ? COLORS.success : COLORS.textMuted, textTransform: "uppercase", letterSpacing: "1px" }}>
-                {claudeConnected ? "Connected" : "Unavailable"}
+              <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>CLI Workers</span>
+              <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: (claudeConnected || codexConnected) ? COLORS.success : COLORS.textMuted, textTransform: "uppercase", letterSpacing: "1px" }}>
+                {(claudeConnected || codexConnected) ? "Available" : "Unavailable"}
               </span>
             </div>
+            <div style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: -4 }}>
+              Claude CLI: {claudeConnected ? "connected" : "offline"} · Codex CLI: {codexConnected ? "connected" : "offline"}
+            </div>
             <SelectField
-              label="PERMISSION MODE"
-              value={workerPermDraft.claudePermissionMode}
-              disabled={!claudeConnected}
-              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, claudePermissionMode: value }))}
+              label="MODE"
+              value={workerPermDraft.cliMode}
+              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, cliMode: value }))}
               options={[
-                { value: "plan", label: "Plan (read-only)" },
-                { value: "acceptEdits", label: "Accept edits" },
-                { value: "bypassPermissions", label: "Bypass permissions" },
+                { value: "read-only", label: "Read-only" },
+                { value: "edit", label: "Edit" },
+                { value: "full-auto", label: "Full auto" },
+              ]}
+            />
+            <SelectField
+              label="SANDBOX MODE"
+              value={workerPermDraft.cliSandboxPermissions}
+              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, cliSandboxPermissions: value }))}
+              options={[
+                { value: "read-only", label: "Read-only" },
+                { value: "workspace-write", label: "Workspace write" },
+                { value: "danger-full-access", label: "Danger full access" },
               ]}
             />
           </div>
@@ -781,7 +790,7 @@ export function ProvidersSection() {
             style={{
               background: COLORS.recessedBg,
               border: `1px solid ${COLORS.border}`,
-              borderLeft: `3px solid ${codexConnected ? COLORS.success : COLORS.textDim}`,
+              borderLeft: `3px solid ${COLORS.info}`,
               padding: 12,
               display: "flex",
               flexDirection: "column",
@@ -789,33 +798,18 @@ export function ProvidersSection() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <CodexLogo size={20} className="text-zinc-100" />
-                <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>Codex</span>
-              </div>
-              <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: codexConnected ? COLORS.success : COLORS.textMuted, textTransform: "uppercase", letterSpacing: "1px" }}>
-                {codexConnected ? "Connected" : "Unavailable"}
+              <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>In-Process Workers</span>
+              <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.info, textTransform: "uppercase", letterSpacing: "1px" }}>
+                Unified Runtime
               </span>
             </div>
             <SelectField
-              label="SANDBOX MODE"
-              value={workerPermDraft.codexSandboxPermissions}
-              disabled={!codexConnected}
-              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, codexSandboxPermissions: value }))}
+              label="MODE"
+              value={workerPermDraft.inProcessMode}
+              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, inProcessMode: value }))}
               options={[
-                { value: "read-only", label: "Read-only" },
-                { value: "workspace-write", label: "Workspace write" },
-                { value: "danger-full-access", label: "Danger full access" },
-              ]}
-            />
-            <SelectField
-              label="APPROVAL MODE"
-              value={workerPermDraft.codexApprovalMode}
-              disabled={!codexConnected}
-              onChange={(value) => setWorkerPermDraft((prev) => ({ ...prev, codexApprovalMode: value }))}
-              options={[
-                { value: "suggest", label: "Suggest" },
-                { value: "auto-edit", label: "Auto-edit" },
+                { value: "plan", label: "Plan" },
+                { value: "edit", label: "Edit" },
                 { value: "full-auto", label: "Full auto" },
               ]}
             />

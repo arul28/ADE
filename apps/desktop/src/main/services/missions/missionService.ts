@@ -62,6 +62,7 @@ import {
 } from "./phaseEngine";
 import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "../orchestrator/teamRuntimeConfig";
+import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "partially_completed", "failed", "canceled"]);
 
@@ -323,24 +324,33 @@ function isPlannerClarifyingInterventionMetadata(
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return value === "none"
+    || value === "minimal"
     || value === "low"
     || value === "medium"
     || value === "high"
-    || value === "max";
+    || value === "max"
+    || value === "xhigh";
 }
 
 function toModelConfig(value: unknown): PhaseCard["model"] {
   const record = isRecord(value) ? value : {};
-  const provider = record.provider === "claude" || record.provider === "codex" ? record.provider : "claude";
   const modelId = typeof record.modelId === "string" && record.modelId.trim().length > 0
     ? record.modelId.trim()
-    : provider === "claude"
-      ? "claude-sonnet-4-6"
-      : "gpt-5.3-codex";
+    : typeof record.model === "string" && record.model.trim().length > 0
+      ? record.model.trim()
+      : "anthropic/claude-sonnet-4-6";
+  const descriptor = resolveModelDescriptor(modelId);
+  const providerHint = typeof record.provider === "string" && record.provider.trim().length > 0
+    ? record.provider.trim().toLowerCase()
+    : descriptor?.family === "anthropic"
+      ? "claude"
+      : descriptor?.family === "openai"
+        ? "codex"
+        : null;
   const thinkingLevel = isThinkingLevel(record.thinkingLevel) ? record.thinkingLevel : undefined;
   return {
-    provider,
     modelId,
+    ...(providerHint ? { provider: providerHint } : {}),
     ...(thinkingLevel ? { thinkingLevel } : {})
   };
 }
@@ -2328,13 +2338,8 @@ export function createMissionService({
       const plannerPlan = args.plannerPlan ?? null;
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
-      const autopilotExecutor = args.autopilotExecutor ?? "codex";
+      const autopilotExecutor = args.autopilotExecutor ?? "unified";
       const allowPlanningQuestions = args.allowPlanningQuestions !== false;
-      const launchModelRaw = typeof args.orchestratorModel === "string" ? args.orchestratorModel.trim().toLowerCase() : "";
-      const launchModel =
-        launchModelRaw === "opus" || launchModelRaw === "sonnet" || launchModelRaw === "haiku"
-          ? launchModelRaw
-          : null;
       const launchAgentRuntime = normalizeAgentRuntimeFlags(
         isRecord(args.agentRuntime) ? (args.agentRuntime as Record<string, unknown>) : {}
       );
@@ -2355,17 +2360,6 @@ export function createMissionService({
               ? args.teamRuntime.allowClaudeAgentTeams
               : launchAgentRuntime.allowClaudeAgentTeams
         };
-      })();
-      const launchThinkingBudgets = (() => {
-        if (!isRecord(args.thinkingBudgets)) return null;
-        const out: Record<string, number> = {};
-        for (const [key, value] of Object.entries(args.thinkingBudgets)) {
-          const normalizedKey = String(key).trim();
-          const numeric = Number(value);
-          if (!normalizedKey.length || !Number.isFinite(numeric) || numeric < 0) continue;
-          out[normalizedKey] = Math.floor(numeric);
-        }
-        return Object.keys(out).length > 0 ? out : null;
       })();
       // Resolve execution policy from args when provided by the caller.
       const executionPolicyArg = args.executionPolicy && typeof args.executionPolicy === "object"
@@ -2453,8 +2447,6 @@ export function createMissionService({
           autopilotExecutor,
           allowPlanningQuestions,
           agentRuntime: launchAgentRuntime,
-          ...(launchModel ? { orchestratorModel: launchModel } : {}),
-          ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {}),
           ...(args.modelConfig ? { modelConfig: args.modelConfig } : {}),
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
           ...(launchTeamRuntime ? { teamRuntime: launchTeamRuntime } : {}),

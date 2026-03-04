@@ -355,12 +355,12 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         : "single_branch_default";
 
   // Policy-driven executor kind helpers
-  const analysisExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.planning.model) : "codex";
-  const implExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.implementation.model) : "codex";
-  const testExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.testing.model) : "codex";
-  const reviewExecutor: OrchestratorExecutorKind = policy?.codeReview.model ? phaseModelToExecutorKind(policy.codeReview.model) : "codex";
-  const testReviewExecutor: OrchestratorExecutorKind = policy?.testReview.model ? phaseModelToExecutorKind(policy.testReview.model) : "codex";
-  const integrationExecutor: OrchestratorExecutorKind = "codex";
+  const analysisExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.planning.model) : "unified";
+  const implExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.implementation.model) : "unified";
+  const testExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.testing.model) : "unified";
+  const reviewExecutor: OrchestratorExecutorKind = policy?.codeReview.model ? phaseModelToExecutorKind(policy.codeReview.model) : "unified";
+  const testReviewExecutor: OrchestratorExecutorKind = policy?.testReview.model ? phaseModelToExecutorKind(policy.testReview.model) : "unified";
+  const integrationExecutor: OrchestratorExecutorKind = "unified";
 
   const rawSteps: RawPlanStep[] = [];
   let previousIndex = -1;
@@ -626,7 +626,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
     quorumCount: null,
     timeoutMs: 180_000,
     retryLimit: 0,
-    executorKind: "codex",
+    executorKind: "unified",
     doneCriteria: "Outcome summary and required artifact links are persisted for operators.",
     splitReason: "Mission completion requires a deterministic audit and handoff record.",
     policy: buildPolicy({
@@ -655,7 +655,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         quorumCount: null,
         timeoutMs: 300_000,
         retryLimit: 0,
-        executorKind: "claude",
+        executorKind: "unified",
         doneCriteria: "Slash command execution completed.",
         splitReason: "Slash command detected in prompt.",
         policy: buildPolicy({
@@ -681,7 +681,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         quorumCount: null,
         timeoutMs: 300_000,
         retryLimit: 0,
-        executorKind: "claude",
+        executorKind: "unified",
         doneCriteria: "Slash command execution completed.",
         splitReason: "Slash command detected in prompt.",
         policy: buildPolicy({

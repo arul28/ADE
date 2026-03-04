@@ -66,12 +66,12 @@ import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_CONTEXT_VIEW_POLICIES,
   DEFAULT_ROLE_ISOLATION_RULES,
-  DEFAULT_CLAUDE_PERMISSION_MODE,
-  DEFAULT_CODEX_APPROVAL_MODE,
-  DEFAULT_CODEX_SANDBOX_PERMISSIONS
 } from "./orchestratorConstants";
 import { evaluateRunCompletion, evaluateRunCompletionFromPhases, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
-import { createUnifiedOrchestratorAdapter, cleanupMcpConfigFile } from "./unifiedOrchestratorAdapter";
+import {
+  createUnifiedOrchestratorAdapter,
+  cleanupMcpConfigFile,
+} from "./unifiedOrchestratorAdapter";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
@@ -82,7 +82,9 @@ import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
 import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
-import { shellEscapeArg } from "./baseOrchestratorAdapter";
+import { buildFullPrompt, shellEscapeArg } from "./baseOrchestratorAdapter";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import {
   type RunRow, type StepRow, type AttemptRow, type ClaimRow,
   type ContextSnapshotRow, type HandoffRow, type TimelineRow,
@@ -174,19 +176,17 @@ export type OrchestratorExecutorStartArgs = {
   fullDocs: Array<{ path: string; content: string; truncated: boolean }>;
   createTrackedSession: (args: Omit<PtyCreateArgs, "tracked"> & { tracked?: boolean }) => Promise<{ ptyId: string; sessionId: string }>;
   permissionConfig?: {
-    claude?: {
-      permissionMode?: string;
-      dangerouslySkipPermissions?: boolean;
-      allowedTools?: string[];
-      settingsSources?: string[];
-      sandbox?: boolean;
-    };
-    codex?: {
-      sandboxPermissions?: string;
-      approvalMode?: string;
+    cli?: {
+      mode?: "read-only" | "edit" | "full-auto";
+      sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
       writablePaths?: string[];
       commandAllowlist?: string[];
-      configPath?: string;
+      allowedTools?: string[];
+      settingsSources?: string[];
+      maxBudgetUsd?: number;
+    };
+    inProcess?: {
+      mode?: "plan" | "edit" | "full-auto";
     };
   };
   /** Checkpoint content from a previous interrupted attempt's worker checkpoint file. */
@@ -236,6 +236,7 @@ export function createOrchestratorService({
   ptyService,
   prService,
   projectConfigService,
+  aiIntegrationService,
   memoryService,
   onEvent
 }: {
@@ -247,6 +248,7 @@ export function createOrchestratorService({
   ptyService?: ReturnType<typeof createPtyService>;
   prService?: ReturnType<typeof createPrService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
@@ -2831,7 +2833,7 @@ export function createOrchestratorService({
   };
 
   const defaultAdapterFor = (kind: OrchestratorExecutorKind): OrchestratorExecutorAdapter | null => {
-    if (kind !== "claude" && kind !== "codex" && kind !== "unified") return null;
+    if (kind !== "unified") return null;
     return {
       kind,
       start: async (args) => {
@@ -2940,20 +2942,51 @@ export function createOrchestratorService({
 
           const prompt = promptParts.join("\n");
 
-          const commandParts: string[] = [kind];
-          const model = typeof args.step.metadata?.model === "string" ? args.step.metadata.model.trim() : "";
+          const modelRef = typeof args.step.metadata?.modelId === "string" ? args.step.metadata.modelId.trim() : "";
+          if (!modelRef.length) {
+            return {
+              status: "failed",
+              errorClass: "policy",
+              errorMessage: `Step '${args.step.stepKey}' is missing required metadata.modelId.`,
+              metadata: {
+                adapterKind: kind,
+                adapterState: "model_id_missing"
+              }
+            };
+          }
+          const descriptor = resolveModelDescriptor(modelRef);
+          if (!descriptor) {
+            return {
+              status: "failed",
+              errorClass: "policy",
+              errorMessage: `Model '${modelRef}' is not registered.`,
+              metadata: {
+                adapterKind: kind,
+                adapterState: "model_not_registered",
+                modelId: modelRef
+              }
+            };
+          }
+          const cliCommand = descriptor?.cliCommand === "codex" ? "codex" : "claude";
+          const commandParts: string[] = [cliCommand];
+          const model = modelRef;
           if (model) {
-            const effectiveModel = kind === "claude"
+            const effectiveModel = cliCommand === "claude"
               ? resolveClaudeCliModel(model)
-              : kind === "codex"
+              : cliCommand === "codex"
                 ? resolveCodexCliModel(model)
                 : model;
             commandParts.push("--model", shellEscapeArg(effectiveModel));
           }
-          if (kind === "codex") {
-            commandParts.push("--sandbox", requiresPlanApproval ? "read-only" : DEFAULT_CODEX_SANDBOX_PERMISSIONS);
+          const cliMode = args.permissionConfig?.cli?.mode ?? "full-auto";
+          if (cliCommand === "codex") {
+            commandParts.push("--sandbox", requiresPlanApproval ? "read-only" : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write");
           } else {
-            commandParts.push("--permission-mode", requiresPlanApproval ? "plan" : DEFAULT_CLAUDE_PERMISSION_MODE);
+            if (!requiresPlanApproval && cliMode === "full-auto") {
+              commandParts.push("--dangerously-skip-permissions");
+            } else {
+              commandParts.push("--permission-mode", requiresPlanApproval || cliMode === "read-only" ? "plan" : "acceptEdits");
+            }
           }
           commandParts.push(shellEscapeArg(prompt));
           const startupCommand = commandParts.join(" ");
@@ -3490,7 +3523,7 @@ export function createOrchestratorService({
           typeof metadata.requiresPlanApproval === "boolean" ? metadata.requiresPlanApproval : null;
         const inferredRequiresPlanApproval =
           inferredPattern === "plan_then_implement" || stepType === "analysis";
-        const isAiTeammate = explicitExecutor === "claude" || explicitExecutor === "codex";
+        const isAiTeammate = normalizeExecutorKind(String(explicitExecutor ?? "manual")) === "unified";
         const requiresPlanApproval = explicitRequiresPlanApproval != null
           ? explicitRequiresPlanApproval
           : runtimeConfig.teammatePlanMode === "required" && isAiTeammate
@@ -4724,7 +4757,9 @@ export function createOrchestratorService({
       const attemptNumber = Number(attemptNumRow?.max_attempt ?? 0) + 1;
       const attemptId = randomUUID();
       const createdAt = nowIso();
-      const executorKind = args.executorKind ?? normalizeExecutorKind(String(step.metadata?.executorKind ?? "manual"));
+      const executorKind = normalizeExecutorKind(
+        String(args.executorKind ?? step.metadata?.executorKind ?? "manual"),
+      );
       const stepPolicy = resolveStepPolicy(step);
       const contextPolicy = resolveContextPolicy({ runProfileId: run.contextProfile, stepPolicy });
 
@@ -5100,45 +5135,278 @@ export function createOrchestratorService({
         });
       }
 
+      let unifiedStepModelId: string | null = null;
+      if (executorKind === "unified") {
+        const stepModelRaw = typeof step.metadata?.modelId === "string" ? step.metadata.modelId.trim() : "";
+        const phaseModel = asRecord(step.metadata?.phaseModel);
+        const phaseModelIdRaw = typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";
+        const runMeta = asRecord(run.metadata);
+        const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+        const runtimePhaseModel = asRecord(phaseRuntime?.currentPhaseModel);
+        const runtimePhaseModelIdRaw = typeof runtimePhaseModel?.modelId === "string" ? runtimePhaseModel.modelId.trim() : "";
+        const unifiedModelRef = stepModelRaw || phaseModelIdRaw || runtimePhaseModelIdRaw;
+        if (!unifiedModelRef.length) {
+          appendTimelineEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: attempt.id,
+            eventType: "execution_path_unsupported",
+            reason: "unified_model_missing",
+            detail: {
+              executorKind,
+              message: `Step '${step.stepKey}' is missing required metadata.modelId (and no phase model is available).`
+            }
+          });
+          return completeAndAdvance({
+            attemptId: attempt.id,
+            status: "failed",
+            errorClass: "policy",
+            errorMessage: `Step '${step.stepKey}' is missing required metadata.modelId.`,
+            metadata: {
+              executorKind,
+              adapterState: "model_id_missing"
+            }
+          });
+        }
+        const descriptor = resolveModelDescriptor(unifiedModelRef);
+        unifiedStepModelId = descriptor?.id ?? null;
+        const executionPath = descriptor ? classifyWorkerExecutionPath(descriptor) : "api";
+        if (!descriptor) {
+          appendTimelineEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: attempt.id,
+            eventType: "execution_path_unsupported",
+            reason: "unified_model_unregistered",
+            detail: {
+              executorKind,
+              modelId: unifiedModelRef,
+              message: `Model '${unifiedModelRef}' is not registered.`
+            }
+          });
+          return completeAndAdvance({
+            attemptId: attempt.id,
+            status: "failed",
+            errorClass: "policy",
+            errorMessage: `Model '${unifiedModelRef}' is not registered.`,
+            metadata: {
+              executorKind,
+              adapterState: "model_not_registered",
+              modelId: unifiedModelRef
+            }
+          });
+        }
+
+        // API/local models execute in-process and complete attempts directly.
+        if (executionPath !== "cli") {
+          if (!aiIntegrationService) {
+            return completeAndAdvance({
+              attemptId: attempt.id,
+              status: "failed",
+              errorClass: "executor_failure",
+              errorMessage: "AI integration service is unavailable for in-process worker execution.",
+              metadata: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                adapterState: "in_process_unavailable",
+              }
+            });
+          }
+
+          const allSteps = listStepRows(run.id).map(toStep);
+          const promptPack = buildFullPrompt(
+            {
+              run,
+              step,
+              attempt,
+              allSteps,
+              contextProfile: contextPolicy,
+              laneExport: snapshot.laneExport,
+              projectExport: snapshot.projectExport,
+              docsRefs: snapshot.docsRefs,
+              fullDocs: snapshot.fullDocs,
+              createTrackedSession: async () => {
+                throw new Error("In-process execution does not create tracked terminal sessions.");
+              },
+            },
+            "unified",
+            memoryService ? { memoryService, projectId } : undefined,
+          );
+
+          const laneWorktreePath = (() => {
+            if (!step.laneId) return projectRoot;
+            const row = db.get<{ worktree_path: string | null }>(
+              `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+              [step.laneId, projectId],
+            );
+            const worktree = typeof row?.worktree_path === "string" ? row.worktree_path.trim() : "";
+            return worktree.length > 0 ? worktree : projectRoot;
+          })();
+
+          const stepType = String(step.metadata?.stepType ?? step.metadata?.taskType ?? "").trim().toLowerCase();
+          const taskType: import("../ai/aiIntegrationService").AiTaskType =
+            stepType === "analysis" || stepType === "planning"
+              ? "planning"
+              : stepType === "review" || stepType === "test_review" || stepType === "review_test"
+                ? "review"
+                : stepType === "conflict" || stepType === "conflict_resolution"
+                  ? "conflict_resolution"
+                  : "implementation";
+
+          const reasoningEffort = (() => {
+            const fromMeta = typeof step.metadata?.reasoningEffort === "string" ? step.metadata.reasoningEffort.trim() : "";
+            if (fromMeta.length > 0) return fromMeta;
+            const fromPhase = typeof phaseModel?.thinkingLevel === "string" ? phaseModel.thinkingLevel.trim() : "";
+            return fromPhase.length > 0 ? fromPhase : undefined;
+          })();
+
+          const timeoutMs = Number.isFinite(Number(step.metadata?.timeoutMs))
+            ? Math.max(1_000, Math.floor(Number(step.metadata?.timeoutMs)))
+            : runtimeConfig.stepTimeoutDefaultMs;
+
+          const requiresPlanApproval =
+            step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
+
+          try {
+            const aiResult = await aiIntegrationService.executeViaUnified({
+              feature: "orchestrator",
+              taskType,
+              prompt: promptPack.prompt,
+              cwd: laneWorktreePath,
+              model: descriptor.id,
+              ...(reasoningEffort ? { reasoningEffort } : {}),
+              timeoutMs,
+              permissionMode: requiresPlanApproval ? "read-only" : "full-auto",
+              oneShot: true,
+            });
+
+            appendTimelineEvent({
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              eventType: "worker_started",
+              reason: "in_process_worker_started",
+              detail: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                workerState: "running"
+              }
+            });
+
+            const summary = aiResult.text.trim().length > 0
+              ? clipText(aiResult.text, 1_500)
+              : `Completed ${taskType} step with ${descriptor.displayName}.`;
+            return completeAndAdvance({
+              attemptId: attempt.id,
+              status: "succeeded",
+              result: normalizeEnvelope({
+                success: true,
+                summary,
+                outputs: {
+                  text: aiResult.text,
+                  structuredOutput: aiResult.structuredOutput ?? null,
+                  modelId: descriptor.id,
+                  executionPath,
+                },
+                warnings: [],
+                sessionId: aiResult.sessionId,
+                trackedSession: false
+              }),
+              metadata: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                adapterState: "in_process_completed",
+                promptLength: promptPack.prompt.length,
+                steeringDirectiveCount: promptPack.steeringDirectiveCount,
+              }
+            });
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            appendTimelineEvent({
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              eventType: "worker_failed",
+              reason: "in_process_worker_failed",
+              detail: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                error: errorMessage
+              }
+            });
+            return completeAndAdvance({
+              attemptId: attempt.id,
+              status: "failed",
+              errorClass: "executor_failure",
+              errorMessage,
+              metadata: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                adapterState: "in_process_failed",
+              }
+            });
+          }
+        }
+      }
+
       const adapter = adapters.get(executorKind) ?? defaultAdapterFor(executorKind);
       if (adapter) {
         // Start from safe defaults, then layer project and mission overrides.
         const permissionConfig = (() => {
           const config: NonNullable<OrchestratorExecutorStartArgs["permissionConfig"]> = {
-            claude: {
-              permissionMode: DEFAULT_CLAUDE_PERMISSION_MODE
+            cli: {
+              mode: "full-auto",
+              sandboxPermissions: "workspace-write"
             },
-            codex: {
-              approvalMode: DEFAULT_CODEX_APPROVAL_MODE,
-              sandboxPermissions: DEFAULT_CODEX_SANDBOX_PERMISSIONS
+            inProcess: {
+              mode: "full-auto"
             }
           };
+          const toStringArray = (value: unknown): string[] | undefined => {
+            if (!Array.isArray(value)) return undefined;
+            const normalized = value
+              .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+              .filter((entry) => entry.length > 0);
+            return normalized.length > 0 ? normalized : undefined;
+          };
+          const applyCliOverrides = (source: Record<string, unknown> | null) => {
+            if (!source) return;
+            const mode = typeof source.mode === "string" ? source.mode : "";
+            const sandboxPermissions = typeof source.sandboxPermissions === "string" ? source.sandboxPermissions : "";
+            config.cli = {
+              ...(config.cli ?? {}),
+              ...(mode === "read-only" || mode === "edit" || mode === "full-auto" ? { mode } : {}),
+              ...(sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access"
+                ? { sandboxPermissions }
+                : {}),
+              ...(toStringArray(source.writablePaths) ? { writablePaths: toStringArray(source.writablePaths) } : {}),
+              ...(toStringArray(source.commandAllowlist) ? { commandAllowlist: toStringArray(source.commandAllowlist) } : {}),
+              ...(toStringArray(source.allowedTools) ? { allowedTools: toStringArray(source.allowedTools) } : {}),
+              ...(toStringArray(source.settingsSources) ? { settingsSources: toStringArray(source.settingsSources) } : {}),
+              ...(Number.isFinite(Number(source.maxBudgetUsd)) ? { maxBudgetUsd: Number(source.maxBudgetUsd) } : {})
+            };
+          };
+          const applyInProcessOverrides = (source: Record<string, unknown> | null) => {
+            if (!source) return;
+            const mode = typeof source.mode === "string" ? source.mode : "";
+            if (mode !== "plan" && mode !== "edit" && mode !== "full-auto") return;
+            config.inProcess = {
+              ...(config.inProcess ?? {}),
+              mode
+            };
+          };
+
           const snapshot = projectConfigService?.get();
           const ai = asRecord(snapshot?.effective?.ai);
           const permissions = asRecord(ai?.permissions);
           if (!permissions) return config;
-          const claudePerms = asRecord(permissions.claude);
-          const codexPerms = asRecord(permissions.codex);
-          if (claudePerms) {
-            config.claude = {
-              ...config.claude,
-              permissionMode: typeof claudePerms.permissionMode === "string" ? claudePerms.permissionMode : config.claude?.permissionMode,
-              dangerouslySkipPermissions: typeof claudePerms.dangerouslySkipPermissions === "boolean" ? claudePerms.dangerouslySkipPermissions : config.claude?.dangerouslySkipPermissions,
-              allowedTools: Array.isArray(claudePerms.allowedTools) ? claudePerms.allowedTools.filter((v): v is string => typeof v === "string") : config.claude?.allowedTools,
-              settingsSources: Array.isArray(claudePerms.settingsSources) ? claudePerms.settingsSources.filter((v): v is string => typeof v === "string") : config.claude?.settingsSources,
-              sandbox: typeof claudePerms.sandbox === "boolean" ? claudePerms.sandbox : config.claude?.sandbox,
-            };
-          }
-          if (codexPerms) {
-            config.codex = {
-              ...config.codex,
-              sandboxPermissions: typeof codexPerms.sandboxPermissions === "string" ? codexPerms.sandboxPermissions : config.codex?.sandboxPermissions,
-              approvalMode: typeof codexPerms.approvalMode === "string" ? codexPerms.approvalMode : config.codex?.approvalMode,
-              writablePaths: Array.isArray(codexPerms.writablePaths) ? codexPerms.writablePaths.filter((v): v is string => typeof v === "string") : config.codex?.writablePaths,
-              commandAllowlist: Array.isArray(codexPerms.commandAllowlist) ? codexPerms.commandAllowlist.filter((v): v is string => typeof v === "string") : config.codex?.commandAllowlist,
-              configPath: typeof codexPerms.configPath === "string" ? codexPerms.configPath : config.codex?.configPath,
-            };
-          }
+          applyCliOverrides(asRecord(permissions.cli));
+          applyInProcessOverrides(asRecord(permissions.inProcess));
           return config;
         })();
 
@@ -5152,19 +5420,60 @@ export function createOrchestratorService({
             if (missionRow?.metadata_json) {
               const meta = asRecord(JSON.parse(missionRow.metadata_json));
               const missionPerms = asRecord(asRecord(meta?.launch)?.permissionConfig);
-              const missionClaude = asRecord(missionPerms?.claude);
-              const missionCodex = asRecord(missionPerms?.codex);
-              if (missionClaude && typeof missionClaude.permissionMode === "string") {
-                permissionConfig.claude = {
-                  ...(permissionConfig.claude ?? {}),
-                  permissionMode: missionClaude.permissionMode
+              const missionCli = asRecord(missionPerms?.cli);
+              const missionInProcess = asRecord(missionPerms?.inProcess);
+              if (missionCli) {
+                const mode = typeof missionCli.mode === "string" ? missionCli.mode : "";
+                const sandboxPermissions = typeof missionCli.sandboxPermissions === "string" ? missionCli.sandboxPermissions : "";
+                permissionConfig.cli = {
+                  ...(permissionConfig.cli ?? {}),
+                  ...(mode === "read-only" || mode === "edit" || mode === "full-auto" ? { mode } : {}),
+                  ...(sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access"
+                    ? { sandboxPermissions }
+                    : {}),
+                  ...(Array.isArray(missionCli.writablePaths)
+                    ? {
+                        writablePaths: missionCli.writablePaths
+                          .filter((entry): entry is string => typeof entry === "string")
+                          .map((entry) => entry.trim())
+                          .filter((entry) => entry.length > 0)
+                      }
+                    : {}),
+                  ...(Array.isArray(missionCli.commandAllowlist)
+                    ? {
+                        commandAllowlist: missionCli.commandAllowlist
+                          .filter((entry): entry is string => typeof entry === "string")
+                          .map((entry) => entry.trim())
+                          .filter((entry) => entry.length > 0)
+                      }
+                    : {}),
+                  ...(Array.isArray(missionCli.allowedTools)
+                    ? {
+                        allowedTools: missionCli.allowedTools
+                          .filter((entry): entry is string => typeof entry === "string")
+                          .map((entry) => entry.trim())
+                          .filter((entry) => entry.length > 0)
+                      }
+                    : {}),
+                  ...(Array.isArray(missionCli.settingsSources)
+                    ? {
+                        settingsSources: missionCli.settingsSources
+                          .filter((entry): entry is string => typeof entry === "string")
+                          .map((entry) => entry.trim())
+                          .filter((entry) => entry.length > 0)
+                      }
+                    : {}),
+                  ...(Number.isFinite(Number(missionCli.maxBudgetUsd)) ? { maxBudgetUsd: Number(missionCli.maxBudgetUsd) } : {})
                 };
               }
-              if (missionCodex && typeof missionCodex.approvalMode === "string") {
-                permissionConfig.codex = {
-                  ...(permissionConfig.codex ?? {}),
-                  approvalMode: missionCodex.approvalMode
-                };
+              if (missionInProcess) {
+                const mode = typeof missionInProcess.mode === "string" ? missionInProcess.mode : "";
+                if (mode === "plan" || mode === "edit" || mode === "full-auto") {
+                  permissionConfig.inProcess = {
+                    ...(permissionConfig.inProcess ?? {}),
+                    mode
+                  };
+                }
               }
             }
           } catch {
@@ -5257,9 +5566,18 @@ export function createOrchestratorService({
         })();
 
         const allSteps = listStepRows(run.id).map(toStep);
+        const stepForExecutor = unifiedStepModelId && !(typeof step.metadata?.modelId === "string" && step.metadata.modelId.trim().length > 0)
+          ? ({
+              ...step,
+              metadata: {
+                ...(step.metadata ?? {}),
+                modelId: unifiedStepModelId,
+              }
+            } satisfies OrchestratorStep)
+          : step;
         const result = await adapter.start({
           run,
-          step,
+          step: stepForExecutor,
           attempt,
           allSteps,
           contextProfile: contextPolicy,

@@ -294,7 +294,7 @@ export function listRunningAttemptsForSession(
     .map((row) => {
       const executorKindRaw = String(row.executor_kind ?? "").trim();
       const executorKind: OrchestratorExecutorKind =
-        executorKindRaw === "claude" || executorKindRaw === "codex" || executorKindRaw === "shell" || executorKindRaw === "manual"
+        executorKindRaw === "unified" || executorKindRaw === "shell" || executorKindRaw === "manual"
           ? executorKindRaw
           : "manual";
       return {

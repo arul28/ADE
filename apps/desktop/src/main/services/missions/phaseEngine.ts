@@ -20,11 +20,11 @@ export const BUILT_IN_PHASE_KEYS = {
 } as const;
 
 const DEFAULT_MODELS: Record<string, ModelConfig> = {
-  [BUILT_IN_PHASE_KEYS.planning]: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
-  [BUILT_IN_PHASE_KEYS.development]: { provider: "codex", modelId: "gpt-5.3-codex", thinkingLevel: "medium" },
-  [BUILT_IN_PHASE_KEYS.testing]: { provider: "codex", modelId: "gpt-5.3-codex", thinkingLevel: "low" },
-  [BUILT_IN_PHASE_KEYS.validation]: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
-  [BUILT_IN_PHASE_KEYS.prAndConflicts]: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "low" },
+  [BUILT_IN_PHASE_KEYS.planning]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+  [BUILT_IN_PHASE_KEYS.development]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
+  [BUILT_IN_PHASE_KEYS.testing]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "low" },
+  [BUILT_IN_PHASE_KEYS.validation]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+  [BUILT_IN_PHASE_KEYS.prAndConflicts]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "low" },
 };
 
 export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
@@ -359,7 +359,7 @@ export function applyPhaseCardsToPlanSteps(steps: MissionPlanStepDraft[], phases
     const phase = byKey.get(phaseKey) ?? phases[0] ?? null;
     if (!phase) return step;
 
-    const executorKind = phaseModelToExecutorKind(`${phase.model.provider}/${phase.model.modelId}`);
+    const executorKind = phaseModelToExecutorKind(phase.model.modelId);
     return {
       ...step,
       metadata: {

@@ -71,8 +71,8 @@ Core service groups:
 
 - **Project/context bootstrapping**: project service, config service, keybindings, terminal profiles, agent tools, onboarding, CI
 - **Core execution**: lane/session/pty/file/diff/git/process/test/history
-- **Context and risk systems**: pack service (decomposed: `packService.ts` core + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts`), conflict service, restack suggestion service, auto-rebase service, job engine
-- **AI Integration**: AI integration service (AgentExecutor interface, dual SDK), AI orchestrator service (decomposed: `aiOrchestratorService.ts` core + `chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`), orchestrator service (decomposed: `orchestratorService.ts` core + `orchestratorQueries.ts`, `stepPolicyResolver.ts`, `orchestratorConstants.ts`), MCP server, GitHub service, PR service + polling, models.dev service (dynamic pricing/capabilities), middleware (logging, retry, cost guard, reasoning extraction), provider options (tier passthrough), universal tools (API-key/local model support)
+- **Context and risk systems**: pack service (decomposed: `packService.ts` core + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts`), conflict service, rebase suggestion service, auto-rebase service, job engine
+- **AI Integration**: AI integration service (unified executor, `modelId`-first routing), AI orchestrator service (decomposed: `aiOrchestratorService.ts` core + `chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`), orchestrator service (decomposed: `orchestratorService.ts` core + `orchestratorQueries.ts`, `stepPolicyResolver.ts`, `orchestratorConstants.ts`), MCP server, GitHub service, PR service + polling, models.dev service (dynamic pricing/capabilities), middleware (logging, retry, cost guard, reasoning extraction), provider options (tier passthrough), universal tools (API-key/local model support). See `docs/ORCHESTRATOR_OVERHAUL.md` for runtime contracts.
 - **Agent Chat**: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn, unified runtime for API-key/local models with permission modes, persisted as `codex-chat` / `claude-chat` / `ai-chat` sessions)
 - **Agents / Automations (current runtime)**: automation service + automation planner service (automation, Night Shift, watcher, review flows under the current Automations domain model)
 - **Missions**: mission service (mission lifecycle CRUD + eventing)
@@ -104,7 +104,7 @@ High-frequency/broadcast event channels include:
 - `ade.prs.event`
 - `ade.agents.event`
 - `ade.missions.event`
-- `ade.lanes.restackSuggestions.event`
+- `ade.lanes.rebaseSuggestions.event`
 - `ade.lanes.autoRebase.event`
 - `ade.agentChat.event`
 - `ade.project.missing`

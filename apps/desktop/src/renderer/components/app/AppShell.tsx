@@ -193,6 +193,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     const unsubData = window.ade.pty.onData(() => scheduleRefresh());
     const unsubExit = window.ade.pty.onExit(() => scheduleRefresh());
+    const unsubChat = window.ade.agentChat.onEvent(() => scheduleRefresh(220));
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefresh();
@@ -208,6 +209,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       try {
         unsubData();
         unsubExit();
+        unsubChat();
       } catch {
         // ignore
       }

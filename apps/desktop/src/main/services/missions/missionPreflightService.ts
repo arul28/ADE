@@ -112,7 +112,6 @@ export function createMissionPreflightService(args: {
       if (!toNonEmptyString(phase.description)) structuralIssues.push(`${prefix}: missing description.`);
       if (!toNonEmptyString(phase.instructions)) structuralIssues.push(`${prefix}: missing instructions.`);
       if (!toNonEmptyString(phase.model.modelId)) structuralIssues.push(`${prefix}: missing model ID.`);
-      if (!toNonEmptyString(phase.model.provider)) structuralIssues.push(`${prefix}: missing model provider.`);
     }
     checklist.push(
       structuralIssues.length === 0
@@ -171,13 +170,15 @@ export function createMissionPreflightService(args: {
           });
         }
       }
-      const orchestratorModel = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId)
-        ?? toNonEmptyString(launch.orchestratorModel)
-        ?? "anthropic/claude-sonnet-4-6";
-      requestedModels.push({
-        label: "Orchestrator",
-        modelId: orchestratorModel,
-      });
+      const orchestratorModelId = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId);
+      if (orchestratorModelId) {
+        requestedModels.push({
+          label: "Orchestrator",
+          modelId: orchestratorModelId,
+        });
+      } else {
+        modelFailures.push("Orchestrator: missing modelConfig.orchestratorModel.modelId.");
+      }
 
       for (const requestModel of requestedModels) {
         const resolved = getModelById(requestModel.modelId) ?? resolveModelAlias(requestModel.modelId);
@@ -229,41 +230,43 @@ export function createMissionPreflightService(args: {
           }),
     );
 
-    const requiredProviders = new Set<string>();
+    const requestedDescriptors = new Map<string, ReturnType<typeof getModelById>>();
     for (const phase of selected.phases) {
-      const explicitProvider = toNonEmptyString(phase.model.provider);
-      if (explicitProvider) requiredProviders.add(explicitProvider.toLowerCase());
       const descriptor = getModelById(phase.model.modelId) ?? resolveModelAlias(phase.model.modelId);
-      if (descriptor?.family === "anthropic") requiredProviders.add("claude");
-      if (descriptor?.family === "openai") requiredProviders.add("codex");
+      if (descriptor) requestedDescriptors.set(descriptor.id, descriptor);
     }
-    const orchestratorProvider = toNonEmptyString(launch.modelConfig?.orchestratorModel?.provider);
-    if (orchestratorProvider) requiredProviders.add(orchestratorProvider.toLowerCase());
     const orchestratorDescriptor = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId)
       ? getModelById(launch.modelConfig!.orchestratorModel.modelId)
         ?? resolveModelAlias(launch.modelConfig!.orchestratorModel.modelId)
       : null;
-    if (orchestratorDescriptor?.family === "anthropic") requiredProviders.add("claude");
-    if (orchestratorDescriptor?.family === "openai") requiredProviders.add("codex");
+    if (orchestratorDescriptor) requestedDescriptors.set(orchestratorDescriptor.id, orchestratorDescriptor);
+
+    const requiresCli = Array.from(requestedDescriptors.values()).some(
+      (descriptor) => descriptor?.isCliWrapped === true,
+    );
+    const requiresInProcess = Array.from(requestedDescriptors.values()).some(
+      (descriptor) => descriptor?.isCliWrapped === false,
+    );
 
     const config = projectConfigService.get();
     const aiConfig = config.effective.ai;
-    const claudePerm = aiConfig?.permissions?.claude;
-    const codexPerm = aiConfig?.permissions?.codex;
-    const claudeFullAuto = claudePerm?.permissionMode === "bypassPermissions" || claudePerm?.dangerouslySkipPermissions === true;
-    const codexFullAuto =
-      codexPerm?.approvalMode === "full-auto"
-      || codexPerm?.approvalMode === "never"
-      || codexPerm?.sandboxPermissions === "danger-full-access";
+    const projectPermissions = aiConfig?.permissions;
+    const missionPermissions = launch.permissionConfig;
+    const effectiveCliMode = missionPermissions?.cli?.mode ?? projectPermissions?.cli?.mode ?? "read-only";
+    const effectiveInProcessMode = missionPermissions?.inProcess?.mode ?? projectPermissions?.inProcess?.mode ?? "plan";
+    const cliFullAuto = effectiveCliMode === "full-auto";
+    const inProcessFullAuto = effectiveInProcessMode === "full-auto";
     const permissionFailures: string[] = [];
     const permissionDetails: string[] = [];
-    if (requiredProviders.has("claude")) {
-      if (!claudeFullAuto) permissionFailures.push("Claude is not configured for full-auto (requires permissionMode=bypassPermissions).");
-      permissionDetails.push(`Claude: ${claudeFullAuto ? "full-auto" : "not full-auto"}`);
+    if (requiresCli) {
+      if (!cliFullAuto) permissionFailures.push("CLI models require permissions.cli.mode=full-auto for unattended execution.");
+      permissionDetails.push(`CLI: ${cliFullAuto ? "full-auto" : `mode=${effectiveCliMode}`}`);
     }
-    if (requiredProviders.has("codex")) {
-      if (!codexFullAuto) permissionFailures.push("Codex is not configured for full-auto (requires approvalMode=full-auto/never or sandboxPermissions=danger-full-access).");
-      permissionDetails.push(`Codex: ${codexFullAuto ? "full-auto" : "not full-auto"}`);
+    if (requiresInProcess) {
+      if (!inProcessFullAuto) {
+        permissionFailures.push("In-process models require permissions.inProcess.mode=full-auto for unattended worker execution.");
+      }
+      permissionDetails.push(`In-process: ${inProcessFullAuto ? "full-auto" : `mode=${effectiveInProcessMode}`}`);
     }
     checklist.push(
       permissionFailures.length === 0
@@ -280,7 +283,7 @@ export function createMissionPreflightService(args: {
             title: "Permissions",
             summary: "Unattended execution requires full-auto permission settings.",
             details: permissionFailures,
-            fixHint: "Update ai.permissions in local.yaml to full-auto for all providers used by this mission.",
+            fixHint: "Set ai.permissions.cli.mode=full-auto and/or ai.permissions.inProcess.mode=full-auto based on selected models.",
           }),
     );
 

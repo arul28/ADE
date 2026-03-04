@@ -46,11 +46,36 @@ function createCoordinatorHarness(args: {
   onBudgetWarning?: (pressure: "warning" | "critical", detail: string) => void;
   projectRoot?: string;
 }) {
+  const runMetadata = {
+    phaseRuntime: {
+      currentPhaseModel: {
+        modelId: "anthropic/claude-sonnet-4-6",
+        thinkingLevel: "medium",
+      },
+    },
+    ...(
+      args.graph?.run?.metadata && typeof args.graph.run.metadata === "object" && !Array.isArray(args.graph.run.metadata)
+        ? args.graph.run.metadata
+        : {}
+    ),
+  };
   const graph = {
-    run: { metadata: {}, ...(args.graph?.run ?? {}) },
+    run: { ...(args.graph?.run ?? {}) },
     steps: [],
     attempts: [],
     ...(args.graph ?? {}),
+  };
+  const graphRun = graph.run && typeof graph.run === "object" && !Array.isArray(graph.run) ? graph.run : {};
+  const graphRunMetadata =
+    graphRun.metadata && typeof graphRun.metadata === "object" && !Array.isArray(graphRun.metadata)
+      ? graphRun.metadata
+      : {};
+  graph.run = {
+    ...graphRun,
+    metadata: {
+      ...runMetadata,
+      ...graphRunMetadata,
+    },
   };
   const onDagMutation = vi.fn();
 
@@ -237,7 +262,7 @@ describe("coordinatorTools mission lane fallback", () => {
                 {
                   name: "validator",
                   capabilities: ["validation"],
-                  defaultModel: { provider: "codex", model: "gpt-5.3-codex" }
+                  defaultModel: { provider: "openai", modelId: "openai/gpt-5.3-codex" }
                 }
               ]
             }
@@ -276,6 +301,45 @@ describe("coordinatorTools mission lane fallback", () => {
 });
 
 describe("coordinatorTools budget hard-cap guards", () => {
+  it("spawn_worker allows API/local phase models and creates unified worker steps", async () => {
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseModel: {
+                modelId: "openai/gpt-4.1",
+                provider: "openai"
+              }
+            }
+          }
+        },
+        steps: [],
+        attempts: [],
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "blocked-api-worker",
+      prompt: "Attempt API worker spawn",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      modelId: "openai/gpt-4.1",
+    });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        steps: [
+          expect.objectContaining({
+            executorKind: "unified",
+          }),
+        ],
+      })
+    );
+  });
+
   it("spawn_worker blocks and reports hard caps before mutating the DAG", async () => {
     const getMissionBudgetStatus = vi.fn(async () => ({
       perProvider: [
@@ -349,7 +413,7 @@ describe("coordinatorTools budget hard-cap guards", () => {
                   {
                     name: "validator",
                     capabilities: ["validation"],
-                    defaultModel: { provider: "codex", model: "gpt-5.3-codex" }
+                    defaultModel: { provider: "openai", modelId: "openai/gpt-5.3-codex" }
                   }
                 ]
               }

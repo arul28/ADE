@@ -337,7 +337,7 @@ Renderer: user clicks "Commit"
 - HEAD change event propagation to job engine
 - Conflict prediction via dry-merge simulation using `git merge-tree --write-tree --messages` (Phase 5, no old merge-tree fallback path)
 - Pairwise lane conflict detection across all active lanes (Phase 5)
-- Stack operations: parent-child lane relationships with restack propagation (Phase 4)
+- Stack operations: parent-child lane relationships with rebase propagation (Phase 4)
 - Primary lane support: main repo directory represented as a lane (Phase 7)
 - Attached worktree support: link pre-existing worktrees to ADE (Phase 7)
 

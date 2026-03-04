@@ -421,8 +421,8 @@ export const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeede
 export const TRANSIENT_ERROR_CLASSES = new Set(["transient", "claim_conflict", "resume_recovered"]);
 
 export const CALL_TYPE_DEFAULTS: Record<OrchestratorCallType, ResolvedCallTypeConfig> = {
-  coordinator: { provider: "claude", model: "sonnet", reasoningEffort: "high" },
-  chat_response: { provider: "claude", model: "sonnet", reasoningEffort: "medium" },
+  coordinator: { provider: "claude", model: "anthropic/claude-sonnet-4-6", reasoningEffort: "high" },
+  chat_response: { provider: "claude", model: "anthropic/claude-sonnet-4-6", reasoningEffort: "medium" },
 };
 
 // ── OrchestratorContext ──────────────────────────────────────────────

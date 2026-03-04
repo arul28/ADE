@@ -399,57 +399,43 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   const permissionsRaw = isRecord(value.permissions) ? value.permissions : null;
   if (permissionsRaw) {
     const permissions: NonNullable<AiConfig["permissions"]> = {};
-    const claude = isRecord(permissionsRaw.claude) ? permissionsRaw.claude : null;
-    if (claude) {
-      const entry: NonNullable<NonNullable<AiConfig["permissions"]>["claude"]> = {};
-      const permissionMode = asString(claude.permissionMode)?.trim();
-      if (permissionMode === "default" || permissionMode === "acceptEdits" || permissionMode === "bypassPermissions" || permissionMode === "plan") {
-        entry.permissionMode = permissionMode;
+    const cli = isRecord(permissionsRaw.cli) ? permissionsRaw.cli : null;
+    if (cli) {
+      const entry: NonNullable<NonNullable<AiConfig["permissions"]>["cli"]> = {};
+      const mode = asString(cli.mode)?.trim();
+      if (mode === "read-only" || mode === "edit" || mode === "full-auto") {
+        entry.mode = mode;
       }
-      const settingsSources = Array.isArray(claude.settingsSources) ? claude.settingsSources : null;
+      const sandboxPermissions = asString(cli.sandboxPermissions)?.trim();
+      if (sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access") {
+        entry.sandboxPermissions = sandboxPermissions;
+      }
+      const writablePaths = asStringArray(cli.writablePaths);
+      if (writablePaths?.length) entry.writablePaths = writablePaths;
+      const commandAllowlist = asStringArray(cli.commandAllowlist);
+      if (commandAllowlist?.length) entry.commandAllowlist = commandAllowlist;
+      const allowedTools = asStringArray(cli.allowedTools);
+      if (allowedTools?.length) entry.allowedTools = allowedTools;
+      const settingsSources = Array.isArray(cli.settingsSources) ? cli.settingsSources : null;
       if (settingsSources) {
         const normalized = settingsSources
           .map((item) => String(item).trim())
           .filter((item): item is "user" | "project" | "local" => item === "user" || item === "project" || item === "local");
         if (normalized.length) entry.settingsSources = normalized;
       }
-      const maxBudgetUsd = asNumber(claude.maxBudgetUsd);
+      const maxBudgetUsd = asNumber(cli.maxBudgetUsd);
       if (maxBudgetUsd != null && maxBudgetUsd > 0) entry.maxBudgetUsd = maxBudgetUsd;
-      const sandbox = asBool(claude.sandbox);
-      if (sandbox != null) entry.sandbox = sandbox;
-      const dangerouslySkipPermissions = asBool(claude.dangerouslySkipPermissions);
-      if (dangerouslySkipPermissions != null) entry.dangerouslySkipPermissions = dangerouslySkipPermissions;
-      const allowedTools = asStringArray(claude.allowedTools);
-      if (allowedTools?.length) entry.allowedTools = allowedTools;
-      if (Object.keys(entry).length) permissions.claude = entry;
+      if (Object.keys(entry).length) permissions.cli = entry;
     }
 
-    const codex = isRecord(permissionsRaw.codex) ? permissionsRaw.codex : null;
-    if (codex) {
-      const entry: NonNullable<NonNullable<AiConfig["permissions"]>["codex"]> = {};
-      const sandboxPermissions = asString(codex.sandboxPermissions)?.trim();
-      if (sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access") {
-        entry.sandboxPermissions = sandboxPermissions;
+    const inProcess = isRecord(permissionsRaw.inProcess) ? permissionsRaw.inProcess : null;
+    if (inProcess) {
+      const entry: NonNullable<NonNullable<AiConfig["permissions"]>["inProcess"]> = {};
+      const mode = asString(inProcess.mode)?.trim();
+      if (mode === "plan" || mode === "edit" || mode === "full-auto") {
+        entry.mode = mode;
       }
-      const approvalMode = asString(codex.approvalMode)?.trim();
-      if (
-        approvalMode === "untrusted"
-        || approvalMode === "on-request"
-        || approvalMode === "on-failure"
-        || approvalMode === "never"
-        || approvalMode === "suggest"
-        || approvalMode === "auto-edit"
-        || approvalMode === "full-auto"
-      ) {
-        entry.approvalMode = approvalMode;
-      }
-      const writablePaths = asStringArray(codex.writablePaths);
-      if (writablePaths?.length) entry.writablePaths = writablePaths;
-      const commandAllowlist = asStringArray(codex.commandAllowlist);
-      if (commandAllowlist?.length) entry.commandAllowlist = commandAllowlist;
-      const configPath = asString(codex.configPath);
-      if (configPath) entry.configPath = configPath;
-      if (Object.keys(entry).length) permissions.codex = entry;
+      if (Object.keys(entry).length) permissions.inProcess = entry;
     }
 
     if (Object.keys(permissions).length) out.permissions = permissions;

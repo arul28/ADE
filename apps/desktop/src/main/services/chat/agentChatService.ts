@@ -5,11 +5,6 @@ import path from "node:path";
 import readline from "node:readline";
 import { streamText, stepCountIs, type LanguageModel } from "ai";
 import { createClaudeCode } from "ai-sdk-provider-claude-code";
-import {
-  unstable_v2_createSession,
-  type ModelInfo,
-  type PermissionResult
-} from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
@@ -54,6 +49,12 @@ type JsonRpcEnvelope = {
     message?: string;
     data?: unknown;
   };
+};
+
+type ClaudeToolPermissionResult = {
+  behavior: "allow" | "deny";
+  message?: string;
+  interrupt?: boolean;
 };
 
 type PersistedClaudeMessage = {
@@ -548,32 +549,28 @@ export function createAgentChatService(args: {
     const ai = snapshot.effective.ai ?? {};
     const permissions = ai.permissions ?? {};
     const chat = ai.chat ?? {};
+    const cliMode = permissions.cli?.mode ?? "edit";
+    const inProcessMode = permissions.inProcess?.mode ?? "edit";
 
     const approvalPolicy = (() => {
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
-      const codexApproval = permissions.codex?.approvalMode;
-      if (codexApproval === "untrusted" || codexApproval === "on-request" || codexApproval === "on-failure" || codexApproval === "never") {
-        return codexApproval;
-      }
-      if (codexApproval === "suggest") return "untrusted" as const;
-      if (codexApproval === "auto-edit") return "on-request" as const;
-      if (codexApproval === "full-auto") return "never" as const;
+      if (cliMode === "full-auto") return "never" as const;
+      if (cliMode === "read-only") return "untrusted" as const;
       return "on-request" as const;
     })();
 
     const sandboxMode = (() => {
       if (chat.codexSandbox) return chat.codexSandbox;
-      if (permissions.codex?.sandboxPermissions) return permissions.codex.sandboxPermissions;
+      if (permissions.cli?.sandboxPermissions) return permissions.cli.sandboxPermissions;
       return "workspace-write" as const;
     })();
 
     const claudePermissionMode = (() => {
       if (chat.claudePermissionMode) return chat.claudePermissionMode;
-      if (permissions.claude?.permissionMode === "plan") return "plan" as const;
-      if (permissions.claude?.permissionMode === "bypassPermissions") return "bypassPermissions" as const;
-      if (permissions.claude?.permissionMode === "acceptEdits") return "acceptEdits" as const;
+      if (cliMode === "read-only") return "plan" as const;
+      if (cliMode === "full-auto") return "bypassPermissions" as const;
       return "acceptEdits" as const;
     })();
 
@@ -581,12 +578,15 @@ export function createAgentChatService(args: {
       if (chat.unifiedPermissionMode === "plan" || chat.unifiedPermissionMode === "edit" || chat.unifiedPermissionMode === "full-auto") {
         return chat.unifiedPermissionMode;
       }
+      if (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto") {
+        return inProcessMode;
+      }
       if (claudePermissionMode === "bypassPermissions") return "full-auto" as const;
       if (claudePermissionMode === "plan") return "plan" as const;
       return "edit" as const;
     })();
 
-    const budget = Number(chat.sessionBudgetUsd ?? permissions.claude?.maxBudgetUsd ?? NaN);
+    const budget = Number(chat.sessionBudgetUsd ?? permissions.cli?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
 
     return {
@@ -1088,7 +1088,7 @@ export function createAgentChatService(args: {
           ? mapSessionPermissionToClaude(managed.session.permissionMode)
           : chatConfig.claudePermissionMode;
 
-        const canUseTool = async (toolName: string, toolInput: unknown): Promise<PermissionResult> => {
+        const canUseTool = async (toolName: string, toolInput: unknown): Promise<ClaudeToolPermissionResult> => {
           const itemId = randomUUID();
           emitChatEvent(managed, {
             type: "approval_request",
@@ -1928,57 +1928,33 @@ export function createAgentChatService(args: {
   };
 
   const listClaudeModelsFromSdk = async (): Promise<AgentChatModelInfo[]> => {
-    try {
-      const session = unstable_v2_createSession({
-        model: resolveClaudeCliModel("claude-sonnet-4-6"),
-        permissionMode: "plan"
-      }) as unknown as {
-        supportedModels?: () => Promise<ModelInfo[]>;
-        close: () => void;
-      };
+    const mapped = MODEL_REGISTRY
+      .filter((descriptor) => descriptor.family === "anthropic" && !descriptor.deprecated)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName))
+      .map((descriptor): AgentChatModelInfo => {
+        const id = descriptor.id;
+        const displayName = descriptor.displayName;
+        const description = describeClaudeModel(`${descriptor.shortId} ${displayName}`);
+        return {
+          id,
+          displayName,
+          ...(description ? { description } : {}),
+          isDefault: descriptor.shortId === "sonnet" || /sonnet/i.test(displayName),
+          reasoningEfforts: CLAUDE_REASONING_EFFORTS,
+          maxThinkingTokens: 32768
+        };
+      });
 
-      try {
-        if (typeof session.supportedModels !== "function") {
-          return CLAUDE_FALLBACK_MODELS;
-        }
-
-        const discovered = await session.supportedModels();
-        const mapped = discovered
-          .map((entry): AgentChatModelInfo | null => {
-            const id = String(entry.value ?? "").trim();
-            if (!id.length) return null;
-            const displayName = String(entry.displayName ?? entry.value ?? id).trim() || id;
-            const description = describeClaudeModel(`${id} ${displayName}`);
-            return {
-              id,
-              displayName,
-              ...(description ? { description } : {}),
-              isDefault: resolveClaudeCliModel(id) === "sonnet",
-              reasoningEfforts: CLAUDE_REASONING_EFFORTS,
-              maxThinkingTokens: 32768
-            };
-          })
-          .filter((entry): entry is AgentChatModelInfo => entry != null);
-
-        if (mapped.length) {
-          if (!mapped.some((entry) => entry.isDefault)) {
-            const preferredIdx = mapped.findIndex((entry) => /sonnet/i.test(entry.id) || /sonnet/i.test(entry.displayName));
-            if (preferredIdx >= 0) {
-              mapped[preferredIdx] = { ...mapped[preferredIdx]!, isDefault: true };
-            } else {
-              mapped[0] = { ...mapped[0]!, isDefault: true };
-            }
-          }
-          return mapped;
-        }
-      } finally {
-        session.close();
+    if (!mapped.length) return CLAUDE_FALLBACK_MODELS;
+    if (!mapped.some((entry) => entry.isDefault)) {
+      const preferredIdx = mapped.findIndex((entry) => /sonnet/i.test(entry.id) || /sonnet/i.test(entry.displayName));
+      if (preferredIdx >= 0) {
+        mapped[preferredIdx] = { ...mapped[preferredIdx]!, isDefault: true };
+      } else {
+        mapped[0] = { ...mapped[0]!, isDefault: true };
       }
-    } catch {
-      // fall back below
     }
-
-    return CLAUDE_FALLBACK_MODELS;
+    return mapped;
   };
 
   const createSession = async ({ laneId, provider, model, modelId, reasoningEffort, permissionMode: requestedPermMode }: AgentChatCreateArgs): Promise<AgentChatSession> => {

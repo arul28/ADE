@@ -4,7 +4,9 @@ import { Button } from "../../ui/Button";
 import { TerminalView } from "../../terminals/TerminalView";
 import { PostResolutionActions } from "../shared/PostResolutionActions";
 import { UnifiedModelSelector } from "../../shared/UnifiedModelSelector";
+import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import type {
+  AiDetectedAuth,
   AiConfig,
   ExternalConflictResolverProvider,
   PrepareResolverSessionResult,
@@ -14,11 +16,7 @@ import type {
 
 type ResolverModalPhase = "configure" | "preparing" | "running" | "done";
 type DoneStatus = "completed" | "failed" | "cancelled";
-
-// Claude permission modes
-type ClaudePermissionMode = "bypass" | "acceptEdits" | "manual";
-// Codex approval modes
-type CodexApprovalMode = "fullAuto" | "autoEdit" | "suggest" | "manual";
+type AiPermissionMode = "read_only" | "guarded_edit" | "full_edit";
 
 type PostResolutionBehavior = {
   autoCommit: boolean;
@@ -30,9 +28,9 @@ function buildResolverCommand(
   provider: ExternalConflictResolverProvider,
   opts: {
     promptFilePath: string;
-    claudePermission: ClaudePermissionMode;
-    codexApproval: CodexApprovalMode;
+    permissionMode: AiPermissionMode;
     model?: string;
+    reasoningEffort?: string | null;
   }
 ): string {
   const q = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
@@ -40,10 +38,12 @@ function buildResolverCommand(
 
   if (provider === "claude") {
     const parts: string[] = ["claude"];
-    if (opts.claudePermission === "bypass") {
+    if (opts.permissionMode === "full_edit") {
       parts.push("--dangerously-skip-permissions");
-    } else if (opts.claudePermission === "acceptEdits") {
+    } else if (opts.permissionMode === "guarded_edit") {
       parts.push("--permission-mode", "acceptEdits");
+    } else {
+      parts.push("--permission-mode", "manual");
     }
     if (opts.model) {
       parts.push("--model", opts.model);
@@ -54,18 +54,110 @@ function buildResolverCommand(
 
   // Codex
   const parts: string[] = ["codex"];
-  if (opts.codexApproval === "fullAuto") {
+  if (opts.permissionMode === "full_edit") {
     parts.push("--full-auto");
-  } else if (opts.codexApproval === "autoEdit") {
+  } else if (opts.permissionMode === "guarded_edit") {
     parts.push("--ask-for-approval", "on-failure", "--sandbox", "workspace-write");
-  } else if (opts.codexApproval === "suggest") {
-    parts.push("--ask-for-approval", "untrusted", "--sandbox", "workspace-write");
+  } else {
+    parts.push("--ask-for-approval", "untrusted", "--sandbox", "read-only");
   }
   if (opts.model) {
     parts.push("--model", opts.model);
   }
+  if (opts.reasoningEffort) {
+    parts.push("--reasoning-effort", opts.reasoningEffort);
+  }
   parts.push(promptArg);
   return parts.join(" ");
+}
+
+function resolveRegistryModelId(value: string | null | undefined): string | null {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized.length) return null;
+  const match = MODEL_REGISTRY.find(
+    (model) =>
+      model.id.toLowerCase() === normalized
+      || model.shortId.toLowerCase() === normalized
+      || model.sdkModelId.toLowerCase() === normalized
+  );
+  return match?.id ?? null;
+}
+
+function resolveCliRegistryModelId(provider: "codex" | "claude", value: string | null | undefined): string | null {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized.length) return null;
+  const family = provider === "codex" ? "openai" : "anthropic";
+  const match = MODEL_REGISTRY.find(
+    (model) =>
+      model.isCliWrapped
+      && model.family === family
+      && (
+        model.id.toLowerCase() === normalized
+        || model.shortId.toLowerCase() === normalized
+        || model.sdkModelId.toLowerCase() === normalized
+      )
+  );
+  return match?.id ?? null;
+}
+
+function hasConfiguredNonCliAuth(model: ModelDescriptor, detectedAuth: AiDetectedAuth[]): boolean {
+  return model.authTypes.some((authType) => {
+    if (authType === "api-key") {
+      return detectedAuth.some((auth) => auth.type === "api-key" && auth.provider === model.family);
+    }
+    if (authType === "openrouter") {
+      return detectedAuth.some((auth) => auth.type === "openrouter");
+    }
+    if (authType === "local") {
+      if (model.family === "ollama" || model.family === "lmstudio" || model.family === "vllm") {
+        return detectedAuth.some((auth) => auth.type === "local" && auth.provider === model.family);
+      }
+      return detectedAuth.some((auth) => auth.type === "local");
+    }
+    return false;
+  });
+}
+
+function deriveConfiguredCliModelIdsFromStatus(status: {
+  availableProviders: { codex: boolean; claude: boolean };
+  models: { codex: Array<{ id: string }>; claude: Array<{ id: string }> };
+  detectedAuth?: AiDetectedAuth[];
+}): string[] {
+  const available = new Set<string>();
+
+  if (status.availableProviders.codex) {
+    for (const model of status.models.codex ?? []) {
+      const resolved = resolveCliRegistryModelId("codex", model.id);
+      if (resolved) available.add(resolved);
+    }
+  }
+
+  if (status.availableProviders.claude) {
+    for (const model of status.models.claude ?? []) {
+      const resolved = resolveCliRegistryModelId("claude", model.id);
+      if (resolved) available.add(resolved);
+    }
+  }
+
+  const detectedAuth = status.detectedAuth ?? [];
+  if (detectedAuth.length) {
+    for (const model of MODEL_REGISTRY) {
+      if (model.deprecated || model.isCliWrapped) continue;
+      if (!hasConfiguredNonCliAuth(model, detectedAuth)) continue;
+      // Resolver modal is currently terminal-based; map non-CLI configured models to closest CLI family defaults.
+      if (model.family === "anthropic") available.add("anthropic/claude-sonnet-4-6");
+      if (model.family === "openai") available.add("openai/gpt-5.3-codex");
+    }
+  }
+
+  return MODEL_REGISTRY
+    .filter((model) => model.isCliWrapped && !model.deprecated && available.has(model.id))
+    .map((model) => model.id);
+}
+
+function inferProviderFromModel(modelId: string): ExternalConflictResolverProvider {
+  const descriptor = getModelById(modelId);
+  return descriptor?.family === "anthropic" ? "claude" : "codex";
 }
 
 function Spinner({ className }: { className?: string }) {
@@ -123,6 +215,12 @@ export function ResolverTerminalModal({
   cwdLaneId,
   scenario,
   postResolutionDefaults,
+  initialModel,
+  initialReasoningEffort,
+  availableModelIds: availableModelIdsProp,
+  onModelChange,
+  sourceTab,
+  onBackgroundSession,
   onCompleted,
 }: {
   open: boolean;
@@ -133,6 +231,17 @@ export function ResolverTerminalModal({
   cwdLaneId?: string | null;
   scenario?: ResolverSessionScenario;
   postResolutionDefaults?: Partial<PostResolutionBehavior>;
+  initialModel?: string;
+  initialReasoningEffort?: string | null;
+  availableModelIds?: string[];
+  onModelChange?: (model: string, reasoningEffort: string | null) => void;
+  sourceTab?: "rebase" | "normal" | "integration" | "conflicts";
+  onBackgroundSession?: (session: {
+    ptyId: string;
+    sessionId: string;
+    provider: ExternalConflictResolverProvider;
+    startedAt: string;
+  }) => void;
   onCompleted?: (result?: {
     status: DoneStatus;
     laneId: string | null;
@@ -143,11 +252,16 @@ export function ResolverTerminalModal({
 }) {
   // Local state
   const [phase, setPhase] = React.useState<ResolverModalPhase>("configure");
-  const [resolverModel, setResolverModel] = React.useState("");
-  const [codexModelIds, setCodexModelIds] = React.useState<Set<string>>(new Set());
-  const provider: ExternalConflictResolverProvider = codexModelIds.has(resolverModel) ? "codex" : "claude";
-  const [claudePermission, setClaudePermission] = React.useState<ClaudePermissionMode>("bypass");
-  const [codexApproval, setCodexApproval] = React.useState<CodexApprovalMode>("fullAuto");
+  const [resolverModel, setResolverModel] = React.useState(initialModel ?? "");
+  const [resolverReasoningEffort, setResolverReasoningEffort] = React.useState<string | null>(initialReasoningEffort ?? "medium");
+  const [availableModelIds, setAvailableModelIds] = React.useState<string[]>(availableModelIdsProp ?? []);
+  const provider: ExternalConflictResolverProvider = inferProviderFromModel(resolverModel);
+  const [permissionMode, setPermissionMode] = React.useState<AiPermissionMode>("guarded_edit");
+  const [anticipatedRepoPath, setAnticipatedRepoPath] = React.useState<string | null>(null);
+  const [keptRunningInBackground, setKeptRunningInBackground] = React.useState(false);
+  const selectedModelDescriptor = getModelById(resolverModel);
+  const reasoningTiers = selectedModelDescriptor?.reasoningTiers ?? [];
+  const effectiveAvailableModelIds = availableModelIdsProp?.length ? availableModelIdsProp : availableModelIds;
   const [postResolution, setPostResolution] = React.useState<PostResolutionBehavior>(() => ({
     autoCommit: postResolutionDefaults?.autoCommit === true,
     autoPush: postResolutionDefaults?.autoPush === true,
@@ -158,6 +272,7 @@ export function ResolverTerminalModal({
   const [prepResult, setPrepResult] = React.useState<PrepareResolverSessionResult | null>(null);
   const [ptyId, setPtyId] = React.useState<string | null>(null);
   const [sessionId, setSessionId] = React.useState<string | null>(null);
+  const [runStartedAt, setRunStartedAt] = React.useState<string | null>(null);
 
   // Done state
   const [doneStatus, setDoneStatus] = React.useState<DoneStatus | null>(null);
@@ -178,25 +293,75 @@ export function ResolverTerminalModal({
   React.useEffect(() => {
     void (async () => {
       try {
-        const [s, snapshot] = await Promise.all([
+        const [s, snapshot, laneRows] = await Promise.all([
           window.ade.ai.getStatus(),
           window.ade.projectConfig.get(),
+          window.ade.lanes.list({ includeStatus: false }).catch(() => []),
         ]);
-        const ids = new Set(s.models.codex.map((m) => m.id));
-        setCodexModelIds(ids);
+        const configuredCliModelIds = deriveConfiguredCliModelIdsFromStatus(s);
+        setAvailableModelIds(configuredCliModelIds);
         const effectiveAiRaw = snapshot.effective?.ai;
         const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
         const persisted = effectiveAi?.featureModelOverrides?.conflict_proposals;
-        if (persisted) {
-          setResolverModel(persisted);
-        } else if (s.models.claude[0]) {
-          setResolverModel(s.models.claude[0].id);
+        const resolvedPersisted = resolveRegistryModelId(persisted);
+        const fallback = configuredCliModelIds.includes(resolvedPersisted ?? "")
+          ? (resolvedPersisted ?? "")
+          : (configuredCliModelIds[0] ?? "");
+        if (!initialModel) {
+          setResolverModel(fallback);
+        }
+        const anticipatedLaneId = (cwdLaneId ?? sourceLaneId ?? targetLaneId ?? "").trim();
+        if (anticipatedLaneId) {
+          const lane = Array.isArray(laneRows) ? laneRows.find((entry) => entry.id === anticipatedLaneId) : null;
+          setAnticipatedRepoPath(typeof lane?.worktreePath === "string" ? lane.worktreePath : null);
         }
       } catch {
         // ignore — model picker will default to empty
       }
     })();
-  }, []);
+  }, [cwdLaneId, initialModel, sourceLaneId, targetLaneId]);
+
+  React.useEffect(() => {
+    if (!initialModel) return;
+    setResolverModel(initialModel);
+  }, [initialModel]);
+
+  React.useEffect(() => {
+    if (initialReasoningEffort === undefined) return;
+    setResolverReasoningEffort(initialReasoningEffort ?? null);
+  }, [initialReasoningEffort]);
+
+  React.useEffect(() => {
+    if (!effectiveAvailableModelIds.length) return;
+    if (resolverModel && effectiveAvailableModelIds.includes(resolverModel)) return;
+    const fallback = initialModel && effectiveAvailableModelIds.includes(initialModel)
+      ? initialModel
+      : (effectiveAvailableModelIds[0] ?? "");
+    setResolverModel(fallback);
+    onModelChange?.(fallback, resolverReasoningEffort);
+  }, [effectiveAvailableModelIds, initialModel, onModelChange, resolverModel, resolverReasoningEffort]);
+
+  React.useEffect(() => {
+    if (!reasoningTiers.length) {
+      if (resolverReasoningEffort !== null) {
+        setResolverReasoningEffort(null);
+        onModelChange?.(resolverModel, null);
+      }
+      return;
+    }
+    if (resolverReasoningEffort && reasoningTiers.includes(resolverReasoningEffort)) return;
+    const preferred = initialReasoningEffort && reasoningTiers.includes(initialReasoningEffort)
+      ? initialReasoningEffort
+      : (reasoningTiers.includes("medium") ? "medium" : (reasoningTiers[0] ?? null));
+    setResolverReasoningEffort(preferred);
+    onModelChange?.(resolverModel, preferred);
+  }, [initialReasoningEffort, onModelChange, reasoningTiers, resolverModel, resolverReasoningEffort]);
+
+  React.useEffect(() => {
+    if (open && keptRunningInBackground) {
+      setKeptRunningInBackground(false);
+    }
+  }, [keptRunningInBackground, open]);
 
   const runPostResolutionActions = React.useCallback(
     async (laneId: string): Promise<{ autoCommitted: boolean; autoPushed: boolean; error: string | null }> => {
@@ -231,11 +396,13 @@ export function ResolverTerminalModal({
   // Reset state when modal closes or lane props change while open
   React.useEffect(() => {
     if (open) return;
+    if (keptRunningInBackground) return;
     const id = setTimeout(() => {
       setPhase("configure");
       setPrepResult(null);
       setPtyId(null);
       setSessionId(null);
+      setRunStartedAt(null);
       setDoneStatus(null);
       setExitCode(null);
       setModifiedFiles([]);
@@ -249,9 +416,10 @@ export function ResolverTerminalModal({
       setPostActionInfo(null);
       setPostActionError(null);
       ptyIdRef.current = null;
+      setKeptRunningInBackground(false);
     }, 200);
     return () => clearTimeout(id);
-  }, [open, postResolutionDefaults, sourceLaneId, targetLaneId]);
+  }, [keptRunningInBackground, open, postResolutionDefaults, sourceLaneId, targetLaneId]);
 
   // Listen for PTY exit
   React.useEffect(() => {
@@ -307,11 +475,16 @@ export function ResolverTerminalModal({
   // Run handler
   const handleRun = async () => {
     if (!targetLaneId) return;
+    if (!resolverModel) {
+      setErrorMsg("Select a configured model before starting.");
+      return;
+    }
 
     setPhase("preparing");
     setErrorMsg(null);
     setPostActionInfo(null);
     setPostActionError(null);
+    setKeptRunningInBackground(false);
 
     const sources = sourceLaneIds ?? (sourceLaneId ? [sourceLaneId] : []);
     const scenarioToUse = scenario ?? (sources.length > 1 ? "sequential-merge" : "single-merge");
@@ -343,14 +516,15 @@ export function ResolverTerminalModal({
       });
       setPtyId(pty.ptyId);
       setSessionId(pty.sessionId);
+      setRunStartedAt(new Date().toISOString());
       ptyIdRef.current = pty.ptyId;
       setPhase("running");
 
       const cmd = buildResolverCommand(provider, {
         promptFilePath: result.promptFilePath,
-        claudePermission,
-        codexApproval,
+        permissionMode,
         model: resolverModel || undefined,
+        reasoningEffort: resolverReasoningEffort,
       });
       await window.ade.pty.write({ ptyId: pty.ptyId, data: cmd + "\r" });
     } catch (err) {
@@ -380,11 +554,34 @@ export function ResolverTerminalModal({
   const handleOpenChange = (next: boolean) => {
     if (!next) {
       if (phase === "running") {
-        const shouldClose = window.confirm(
-          "Resolution is still running. Closing will kill the process. Continue?"
+        const keepRunning = window.confirm(
+          "Resolution is still running.\nPress OK to keep it running in the background.\nPress Cancel to stop it now."
         );
-        if (!shouldClose) return;
-        void disposePty().then(() => onOpenChange(false));
+        if (keepRunning) {
+          if (ptyId && sessionId) {
+            onBackgroundSession?.({
+              ptyId,
+              sessionId,
+              provider,
+              startedAt: runStartedAt ?? new Date().toISOString()
+            });
+          }
+          setKeptRunningInBackground(true);
+          onOpenChange(false);
+          return;
+        }
+        void disposePty().then(() => {
+          setDoneStatus("cancelled");
+          setPhase("done");
+          onCompleted?.({
+            status: "cancelled",
+            laneId: prepResultRef.current?.cwdLaneId ?? null,
+            autoCommitted: false,
+            autoPushed: false,
+            error: null
+          });
+          onOpenChange(false);
+        });
         return;
       }
       void disposePty();
@@ -392,7 +589,15 @@ export function ResolverTerminalModal({
     onOpenChange(next);
   };
 
-  const canRun = !!targetLaneId && (!!sourceLaneId || (sourceLaneIds && sourceLaneIds.length > 0));
+  const hasConfiguredModels = effectiveAvailableModelIds.length > 0;
+  const modelReady = hasConfiguredModels ? effectiveAvailableModelIds.includes(resolverModel) : Boolean(resolverModel);
+  const canRun = !!targetLaneId && (!!sourceLaneId || (sourceLaneIds && sourceLaneIds.length > 0)) && modelReady;
+
+  const permissionDescription = permissionMode === "read_only"
+    ? "Read only: AI can inspect files and produce suggestions, but should not apply edits."
+    : permissionMode === "guarded_edit"
+      ? "Guarded edit: AI can edit files in this repo path and will ask before risky operations."
+      : "Full edit: AI can apply edits freely in this repo path. Use only when you trust the prompt and context.";
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
@@ -422,43 +627,43 @@ export function ResolverTerminalModal({
                 <label className="mb-1 block text-xs font-medium text-fg">Model</label>
                 <UnifiedModelSelector
                   value={resolverModel}
+                  availableModelIds={effectiveAvailableModelIds}
+                  showReasoning
+                  reasoningEffort={resolverReasoningEffort}
+                  onReasoningEffortChange={(effort) => {
+                    setResolverReasoningEffort(effort);
+                    onModelChange?.(resolverModel, effort);
+                  }}
                   onChange={(modelId) => {
                     setResolverModel(modelId);
+                    onModelChange?.(modelId, resolverReasoningEffort);
                     void window.ade.ai.updateConfig({
                       featureModelOverrides: { conflict_proposals: modelId } as AiConfig["featureModelOverrides"],
                     });
                   }}
                 />
               </div>
-              {provider === "claude" && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-fg">Permission mode</label>
+                <select
+                  value={permissionMode}
+                  onChange={(e) => setPermissionMode(e.target.value as AiPermissionMode)}
+                  className="w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
+                >
+                  <option value="read_only">Read only</option>
+                  <option value="guarded_edit">Guarded edit</option>
+                  <option value="full_edit">Full edit</option>
+                </select>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-fg">Permission Mode</label>
-                  <select
-                    value={claudePermission}
-                    onChange={(e) => setClaudePermission(e.target.value as ClaudePermissionMode)}
-                    className="w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
-                  >
-                    <option value="bypass">Bypass permissions</option>
-                    <option value="acceptEdits">Accept edits</option>
-                    <option value="manual">Manual</option>
-                  </select>
+                  <div className="mt-2 text-[11px] text-muted-fg">{permissionDescription}</div>
+                  <div className="mt-1 text-[11px] text-muted-fg">
+                    Repo path scope: <span className="font-mono text-fg/80">{anticipatedRepoPath ?? "determined at run start"}</span>
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-fg">
+                    Source tab: <span className="font-mono text-fg/80">{sourceTab ?? "conflicts"}</span> · Provider: <span className="font-mono text-fg/80">{provider}</span>
+                  </div>
                 </div>
-              )}
-              {provider === "codex" && (
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-fg">Approval Mode</label>
-                  <select
-                    value={codexApproval}
-                    onChange={(e) => setCodexApproval(e.target.value as CodexApprovalMode)}
-                    className="w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
-                  >
-                    <option value="fullAuto">Full auto</option>
-                    <option value="autoEdit">Auto edit</option>
-                    <option value="suggest">Suggest</option>
-                    <option value="manual">Manual</option>
-                  </select>
-                </div>
-              )}
+              </div>
 
               <div className="rounded-lg border border-border/50 bg-card/40 p-3 space-y-2">
                 <div className="text-xs font-medium text-fg">After Resolution</div>
@@ -510,6 +715,11 @@ export function ResolverTerminalModal({
                   {errorMsg}
                 </div>
               )}
+              {effectiveAvailableModelIds.length === 0 ? (
+                <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+                  No configured resolver models are available. Configure a CLI-backed model in settings first.
+                </div>
+              ) : null}
 
               <div className="flex justify-end gap-2 pt-2">
                 <Dialog.Close asChild>

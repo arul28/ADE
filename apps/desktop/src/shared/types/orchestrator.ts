@@ -97,7 +97,7 @@ export type OrchestratorAttemptStatus =
 export type OrchestratorJoinPolicy = "all_success" | "any_success" | "quorum" | "advisory";
 
 // Built-in executor kinds. Third-party adapters can register any string.
-export type OrchestratorExecutorKind = "unified" | "claude" | "codex" | "shell" | "manual" | (string & {});
+export type OrchestratorExecutorKind = "unified" | "shell" | "manual" | (string & {});
 
 export type OrchestratorErrorClass =
   | "none"

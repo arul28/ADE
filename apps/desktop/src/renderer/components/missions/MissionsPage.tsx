@@ -61,10 +61,9 @@ import {
   readString,
   toPlannerProvider,
   toTeammatePlanMode,
-  toClaudePermissionMode,
-  toCodexSandboxPermissions,
-  toCodexApprovalMode,
-  toApiPermissionMode,
+  toCliMode,
+  toCliSandboxPermissions,
+  toInProcessMode,
   ElapsedTime,
   type WorkspaceTab,
   type MissionListViewMode,
@@ -190,12 +189,9 @@ export default function MissionsPage() {
   );
   const createMissionDefaults = useMemo<CreateMissionDefaults>(() => ({
     plannerProvider: missionSettingsDraft.defaultPlannerProvider,
-    claudePermissionMode: missionSettingsDraft.claudePermissionMode,
-    claudeDangerouslySkip: missionSettingsDraft.claudeDangerouslySkip,
-    codexSandboxPermissions: missionSettingsDraft.codexSandboxPermissions,
-    codexApprovalMode: missionSettingsDraft.codexApprovalMode,
-    codexConfigPath: missionSettingsDraft.codexConfigPath,
-    apiPermissionMode: missionSettingsDraft.apiPermissionMode,
+    cliMode: missionSettingsDraft.cliMode,
+    cliSandboxPermissions: missionSettingsDraft.cliSandboxPermissions,
+    inProcessMode: missionSettingsDraft.inProcessMode,
   }), [missionSettingsDraft]);
 
   const applyMissionSettingsSnapshot = useCallback((snapshot: ProjectConfigSnapshot) => {
@@ -207,12 +203,10 @@ export default function MissionsPage() {
 
     const localPermissions = isRecord(localAi.permissions) ? localAi.permissions : {};
     const effectivePermissions = isRecord(effectiveAi.permissions) ? effectiveAi.permissions : {};
-    const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
-    const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
-    const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
-    const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
-    const localApi = isRecord(localPermissions.api) ? localPermissions.api : {};
-    const effectiveApi = isRecord(effectivePermissions.api) ? effectivePermissions.api : {};
+    const localCli = isRecord(localPermissions.cli) ? localPermissions.cli : {};
+    const effectiveCli = isRecord(effectivePermissions.cli) ? effectivePermissions.cli : {};
+    const localInProcess = isRecord(localPermissions.inProcess) ? localPermissions.inProcess : {};
+    const effectiveInProcess = isRecord(effectivePermissions.inProcess) ? effectivePermissions.inProcess : {};
 
     setMissionSettingsSnapshot(snapshot);
     setMissionSettingsDraft({
@@ -227,19 +221,14 @@ export default function MissionsPage() {
         )
       ),
       requirePlanReview: readBool(localOrchestrator.requirePlanReview, effectiveOrchestrator.requirePlanReview, false),
-      claudePermissionMode: toClaudePermissionMode(
-        readString(localClaude.permissionMode, effectiveClaude.permissionMode, "bypassPermissions")
+      cliMode: toCliMode(
+        readString(localCli.mode, effectiveCli.mode, "full-auto")
       ),
-      claudeDangerouslySkip: readBool(localClaude.dangerouslySkipPermissions, effectiveClaude.dangerouslySkipPermissions, false),
-      codexSandboxPermissions: toCodexSandboxPermissions(
-        readString(localCodex.sandboxPermissions, effectiveCodex.sandboxPermissions, "workspace-write")
+      cliSandboxPermissions: toCliSandboxPermissions(
+        readString(localCli.sandboxPermissions, effectiveCli.sandboxPermissions, "workspace-write")
       ),
-      codexApprovalMode: toCodexApprovalMode(
-        readString(localCodex.approvalMode, effectiveCodex.approvalMode, "full-auto")
-      ),
-      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, ""),
-      apiPermissionMode: toApiPermissionMode(
-        readString(localApi.permissionMode, effectiveApi.permissionMode, "full-auto")
+      inProcessMode: toInProcessMode(
+        readString(localInProcess.mode, effectiveInProcess.mode, "full-auto")
       ),
     });
   }, []);
@@ -263,15 +252,13 @@ export default function MissionsPage() {
       const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
       const localOrchestrator = isRecord(localAi.orchestrator) ? localAi.orchestrator : {};
       const localPermissions = isRecord(localAi.permissions) ? localAi.permissions : {};
-      const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
-      const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
-      const localApi = isRecord(localPermissions.api) ? localPermissions.api : {};
+      const localCli = isRecord(localPermissions.cli) ? localPermissions.cli : {};
+      const localInProcess = isRecord(localPermissions.inProcess) ? localPermissions.inProcess : {};
 
       const normalizedPlannerProvider = toPlannerProvider(missionSettingsDraft.defaultPlannerProvider);
-      const normalizedClaudePermissionMode = toClaudePermissionMode(missionSettingsDraft.claudePermissionMode);
-      const normalizedCodexSandbox = toCodexSandboxPermissions(missionSettingsDraft.codexSandboxPermissions);
-      const normalizedCodexApproval = toCodexApprovalMode(missionSettingsDraft.codexApprovalMode);
-      const normalizedApiPermissionMode = toApiPermissionMode(missionSettingsDraft.apiPermissionMode);
+      const normalizedCliMode = toCliMode(missionSettingsDraft.cliMode);
+      const normalizedCliSandbox = toCliSandboxPermissions(missionSettingsDraft.cliSandboxPermissions);
+      const normalizedInProcessMode = toInProcessMode(missionSettingsDraft.inProcessMode);
 
       const nextOrchestrator: Record<string, unknown> = {
         ...localOrchestrator,
@@ -282,30 +269,15 @@ export default function MissionsPage() {
       delete nextOrchestrator.defaultDepthTier;
       delete nextOrchestrator.default_depth_tier;
 
-      const nextClaude: Record<string, unknown> = {
-        ...localClaude,
-        permissionMode: normalizedClaudePermissionMode
+      const nextCli: Record<string, unknown> = {
+        ...localCli,
+        mode: normalizedCliMode,
+        sandboxPermissions: normalizedCliSandbox
       };
-      if (missionSettingsDraft.claudeDangerouslySkip) {
-        nextClaude.dangerouslySkipPermissions = true;
-      } else {
-        delete nextClaude.dangerouslySkipPermissions;
-      }
 
-      const nextCodex: Record<string, unknown> = {
-        ...localCodex,
-        sandboxPermissions: normalizedCodexSandbox,
-        approvalMode: normalizedCodexApproval
-      };
-      if (missionSettingsDraft.codexConfigPath.trim().length > 0) {
-        nextCodex.configPath = missionSettingsDraft.codexConfigPath.trim();
-      } else {
-        delete nextCodex.configPath;
-      }
-
-      const nextApi: Record<string, unknown> = {
-        ...localApi,
-        permissionMode: normalizedApiPermissionMode
+      const nextInProcess: Record<string, unknown> = {
+        ...localInProcess,
+        mode: normalizedInProcessMode
       };
 
       const saved = await window.ade.projectConfig.save({
@@ -317,9 +289,8 @@ export default function MissionsPage() {
             orchestrator: nextOrchestrator,
             permissions: {
               ...localPermissions,
-              claude: nextClaude,
-              codex: nextCodex,
-              api: nextApi
+              cli: nextCli,
+              inProcess: nextInProcess
             }
           }
         }

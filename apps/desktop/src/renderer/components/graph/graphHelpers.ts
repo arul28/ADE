@@ -26,8 +26,8 @@ export const COLOR_PALETTE = ["#dc2626", "#ea580c", "#ca8a04", "#16a34a", "#2563
 export const DEFAULT_PRESET = "__default__";
 
 export const BATCH_OPERATION_LABELS: Record<string, string> = {
-  restack: "Rebase",
-  restack_publish: "Restack + Publish",
+  rebase: "Rebase",
+  rebase_publish: "Rebase + Push",
   push: "Push",
   fetch: "Fetch",
   archive: "Archive",

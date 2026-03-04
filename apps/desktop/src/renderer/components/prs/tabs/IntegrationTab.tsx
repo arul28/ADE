@@ -172,6 +172,23 @@ type ProposalConflictPair = {
   files: ConflictPreviewFile[];
 };
 
+type BackgroundResolverSession = {
+  ptyId: string;
+  sessionId: string;
+  provider: "codex" | "claude";
+  startedAt: string;
+  exitCode: number | null;
+};
+
+type ProposalResolverConfig = {
+  sourceLaneId: string;
+  sourceLaneIds?: string[];
+  targetLaneId: string;
+  cwdLaneId: string;
+  scenario: "single-merge" | "sequential-merge" | "integration-merge";
+  recheckLaneIds: string[];
+};
+
 function readQueryParam(name: string): string | null {
   try {
     const fromSearch = new URLSearchParams(window.location.search).get(name);
@@ -250,12 +267,22 @@ type IntegrationTabProps = {
 
 export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _mergeMethod, selectedPrId, onSelectPr, onRefresh }: IntegrationTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
-  const { rebaseNeeds, autoRebaseStatuses, setActiveTab } = usePrs();
+  const {
+    rebaseNeeds,
+    autoRebaseStatuses,
+    setActiveTab,
+    resolverModel,
+    resolverReasoningLevel,
+    setResolverModel,
+    setResolverReasoningLevel
+  } = usePrs();
 
   const [simulateResult, setSimulateResult] = React.useState<IntegrationProposal | null>(null);
   const [simulateBusy, setSimulateBusy] = React.useState(false);
   const [simulateError, setSimulateError] = React.useState<string | null>(null);
   const [resolverOpen, setResolverOpen] = React.useState(false);
+  const [backgroundSession, setBackgroundSession] = React.useState<BackgroundResolverSession | null>(null);
+  const [proposalResolverConfig, setProposalResolverConfig] = React.useState<ProposalResolverConfig | null>(null);
   const [deleteConfirm, setDeleteConfirm] = React.useState(false);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
   const [deleteCloseGh, setDeleteCloseGh] = React.useState(false);
@@ -307,6 +334,23 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
 
   const selectedPr = React.useMemo(() => prs.find((p) => p.id === selectedPrId) ?? null, [prs, selectedPrId]);
   const selectedMergeContext = selectedPr ? mergeContextByPrId[selectedPr.id] ?? null : null;
+
+  React.useEffect(() => {
+    if (!backgroundSession?.ptyId) return;
+    const unsubscribe = window.ade.pty.onExit((event) => {
+      if (event.ptyId !== backgroundSession.ptyId) return;
+      setBackgroundSession((prev) => {
+        if (!prev || prev.ptyId !== event.ptyId) return prev;
+        return { ...prev, exitCode: event.exitCode ?? -1 };
+      });
+    });
+    return unsubscribe;
+  }, [backgroundSession?.ptyId]);
+
+  React.useEffect(() => {
+    setProposalResolverConfig(null);
+    setBackgroundSession(null);
+  }, [selectedPrId, selectedProposalId]);
 
   React.useEffect(() => {
     const syncFromUrl = () => setUrlProposalId(readQueryParam("proposalId"));
@@ -696,31 +740,59 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     }
   }, [resolutionState, selectedProposal]);
 
-  const handleResolveWithAI = async (stepLaneId: string) => {
+  const launchProposalResolver = React.useCallback(async (laneIds: string[]) => {
     if (!selectedProposal) return;
-    setResolvingLaneId(stepLaneId);
+    const uniqueLaneIds = Array.from(new Set(laneIds.filter(Boolean)));
+    if (!uniqueLaneIds.length) {
+      setCommitError("No lanes were selected for AI resolution.");
+      return;
+    }
+
+    setResolvingLaneId(uniqueLaneIds[0] ?? null);
     try {
       const resState = await ensureIntegrationLaneForResolution();
       if (!resState?.integrationLaneId) return;
 
-      await window.ade.prs.startIntegrationResolution({
-        proposalId: selectedProposal.proposalId,
-        laneId: stepLaneId,
+      const normalizedBase = normalizeBranchName(selectedProposal.baseBranch);
+      const targetLaneId = lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalizedBase)?.id;
+      if (!targetLaneId) {
+        setCommitError(`Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`);
+        return;
+      }
+
+      setResolutionState((prev) => {
+        if (!prev) return prev;
+        const nextStepResolutions = { ...prev.stepResolutions };
+        for (const laneId of uniqueLaneIds) {
+          nextStepResolutions[laneId] = "resolving";
+        }
+        return {
+          ...prev,
+          stepResolutions: nextStepResolutions,
+          activeWorkerStepId: uniqueLaneIds[0] ?? null,
+          activeLaneId: uniqueLaneIds[0] ?? null,
+          updatedAt: new Date().toISOString()
+        };
       });
-
-      setResolutionState((prev) => prev ? {
-        ...prev,
-        stepResolutions: { ...prev.stepResolutions, [stepLaneId]: "resolving" },
-        activeWorkerStepId: stepLaneId,
-        activeLaneId: stepLaneId,
-      } : prev);
-
-      setActiveWorkerStepId(stepLaneId);
+      setActiveWorkerStepId(uniqueLaneIds[0] ?? null);
+      setProposalResolverConfig({
+        sourceLaneId: uniqueLaneIds[0]!,
+        sourceLaneIds: uniqueLaneIds.length > 1 ? uniqueLaneIds : undefined,
+        targetLaneId,
+        cwdLaneId: resState.integrationLaneId,
+        scenario: uniqueLaneIds.length > 1 ? "integration-merge" : "single-merge",
+        recheckLaneIds: uniqueLaneIds
+      });
+      setResolverOpen(true);
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
     } finally {
       setResolvingLaneId(null);
     }
+  }, [ensureIntegrationLaneForResolution, lanes, selectedProposal]);
+
+  const handleResolveWithAI = async (stepLaneId: string) => {
+    await launchProposalResolver([stepLaneId]);
   };
 
   const handleAutoResolveAll = async () => {
@@ -745,30 +817,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       return;
     }
 
-    const resState = await ensureIntegrationLaneForResolution();
-    if (!resState?.integrationLaneId) return;
-
-    for (const laneId of conflictLaneIds) {
-      setResolvingLaneId(laneId);
-      try {
-        await window.ade.prs.startIntegrationResolution({
-          proposalId: selectedProposal.proposalId,
-          laneId,
-        });
-        setResolutionState((prev) => prev ? {
-          ...prev,
-          stepResolutions: { ...prev.stepResolutions, [laneId]: "resolving" },
-          activeWorkerStepId: laneId,
-          activeLaneId: laneId,
-        } : prev);
-        setActiveWorkerStepId(laneId);
-      } catch (err: unknown) {
-        setCommitError(err instanceof Error ? err.message : String(err));
-        break;
-      } finally {
-        setResolvingLaneId(null);
-      }
-    }
+    await launchProposalResolver(conflictLaneIds);
   };
 
   const handleRecheck = async (stepLaneId: string) => {
@@ -1423,7 +1472,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
               <Button
                 size="sm"
                 variant="primary"
-                onClick={() => setResolverOpen(true)}
+                onClick={() => {
+                  setProposalResolverConfig(null);
+                  setResolverOpen(true);
+                }}
                 style={{ borderRadius: 0 }}
               >
                 <Sparkle size={12} weight="fill" className="mr-1" />
@@ -1436,8 +1488,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
         )}
 
         {/* ---- Action bar ---- */}
-        <div style={{ marginBottom: 20 }}>
-          <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
+          <div style={{ marginBottom: 20 }}>
+            <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
             {/* Resolve with AI - accent outline */}
             {!hasConflicts && (
               <button
@@ -1454,7 +1506,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                 }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "#A78BFA12"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                onClick={() => setResolverOpen(true)}
+                onClick={() => {
+                  setProposalResolverConfig(null);
+                  setResolverOpen(true);
+                }}
               >
                 <Sparkle size={12} weight="regular" style={{ marginRight: 4 }} />
                 RESOLVE WITH AI
@@ -1480,11 +1535,49 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             >
               <Trash size={12} weight="regular" style={{ marginRight: 4 }} />
               REMOVE PR
-            </button>
-          </div>
+              </button>
+            </div>
 
-          {/* Delete confirmation panel */}
-          {deleteConfirm && (
+            {backgroundSession && !resolverOpen ? (
+              <div
+                className="flex items-center justify-between"
+                style={{ marginTop: 10, padding: "8px 10px", gap: 8, background: "#A78BFA10", border: "1px solid #A78BFA30" }}
+              >
+                <div className="flex items-center" style={{ gap: 8, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#A1A1AA" }}>
+                  {backgroundSession.exitCode == null ? (
+                    <CircleNotch size={12} className="animate-spin" style={{ color: "#A78BFA" }} />
+                  ) : (
+                    <CheckCircle size={12} style={{ color: backgroundSession.exitCode === 0 ? "#22C55E" : "#F59E0B" }} />
+                  )}
+                  {backgroundSession.exitCode == null
+                    ? "AI resolver running in background."
+                    : (backgroundSession.exitCode === 0 ? "Background AI resolver finished." : "Background AI resolver exited with errors.")}
+                </div>
+                <div className="flex items-center" style={{ gap: 8 }}>
+                  <button
+                    type="button"
+                    className="inline-flex items-center font-mono font-bold uppercase tracking-[1px]"
+                    style={{ fontSize: 10, height: 26, padding: "0 10px", background: "transparent", color: "#A78BFA", border: "1px solid #A78BFA30", cursor: "pointer" }}
+                    onClick={() => setResolverOpen(true)}
+                  >
+                    REOPEN RUN
+                  </button>
+                  {backgroundSession.exitCode != null ? (
+                    <button
+                      type="button"
+                      className="inline-flex items-center font-mono font-bold uppercase tracking-[1px]"
+                      style={{ fontSize: 10, height: 26, padding: "0 10px", background: "transparent", color: "#71717A", border: "1px solid #27272A", cursor: "pointer" }}
+                      onClick={() => setBackgroundSession(null)}
+                    >
+                      DISMISS
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Delete confirmation panel */}
+            {deleteConfirm && (
             <div
               style={{
                 marginTop: 12,
@@ -1550,17 +1643,32 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
           )}
         </div>
 
-        {/* ---- Resolver modal (unchanged) ---- */}
-        <ResolverTerminalModal
-          open={resolverOpen}
-          onOpenChange={setResolverOpen}
-          sourceLaneId={mergeSourcesResolved[0]?.laneId ?? selectedPr.laneId}
-          sourceLaneIds={mergeSourcesResolved.length > 1 ? mergeSourcesResolved.map((s) => s.laneId) : undefined}
-          targetLaneId={resolverTargetLaneId}
-          cwdLaneId={resolverTargetLaneId}
-          scenario={mergeSourcesResolved.length > 1 ? "integration-merge" : "single-merge"}
-          onCompleted={() => void onRefresh()}
-        />
+        {/* ---- Resolver modal ---- */}
+        {resolverTargetLaneId ? (
+          <ResolverTerminalModal
+            open={resolverOpen}
+            onOpenChange={setResolverOpen}
+            sourceLaneId={mergeSourcesResolved[0]?.laneId ?? selectedPr.laneId}
+            sourceLaneIds={mergeSourcesResolved.length > 1 ? mergeSourcesResolved.map((s) => s.laneId) : undefined}
+            targetLaneId={resolverTargetLaneId}
+            cwdLaneId={resolverTargetLaneId}
+            scenario={mergeSourcesResolved.length > 1 ? "integration-merge" : "single-merge"}
+            sourceTab="integration"
+            initialModel={resolverModel}
+            initialReasoningEffort={resolverReasoningLevel}
+            onModelChange={(model, effort) => {
+              setResolverModel(model);
+              setResolverReasoningLevel(effort ?? resolverReasoningLevel);
+            }}
+            onBackgroundSession={(session) => {
+              setBackgroundSession({ ...session, exitCode: null });
+            }}
+            onCompleted={() => {
+              setBackgroundSession(null);
+              void onRefresh();
+            }}
+          />
+        ) : null}
       </div>
     </div>
   ) : selectedProposal ? (
@@ -2121,7 +2229,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
               </div>
               <div className="font-mono" style={{ fontSize: 10, color: "#71717A", marginTop: 6 }}>
                 {totalProposalConflictFiles} conflict file{totalProposalConflictFiles === 1 ? "" : "s"} across {proposalConflictingPairs.length} lane pair{proposalConflictingPairs.length !== 1 ? "s" : ""}.
-                The orchestrator will spawn workers to resolve conflicts automatically. Model and provider are configured via the mission execution policy.
+                Launches the same live AI resolver terminal used across PR tabs, with shared model and reasoning controls.
               </div>
             </div>
 
@@ -2182,13 +2290,51 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                 >
                   <Gear size={12} weight="fill" style={{ color: "#A78BFA" }} className="animate-spin" />
                   <span className="font-mono" style={{ fontSize: 11, color: "#A78BFA" }}>
-                    Orchestrator worker running
+                    AI resolver session running
                   </span>
                   <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 4 }}>
-                    View worker progress in the Work tab
+                    Reopen the resolver to watch/edit in real time.
                   </span>
                 </div>
               )}
+
+              {backgroundSession && !resolverOpen ? (
+                <div
+                  className="flex items-center justify-between"
+                  style={{ gap: 8, marginTop: 10, padding: "8px 10px", background: "#A78BFA10", border: "1px solid #A78BFA30" }}
+                >
+                  <div className="flex items-center" style={{ gap: 8, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#A1A1AA" }}>
+                    {backgroundSession.exitCode == null ? (
+                      <CircleNotch size={12} className="animate-spin" style={{ color: "#A78BFA" }} />
+                    ) : (
+                      <CheckCircle size={12} style={{ color: backgroundSession.exitCode === 0 ? "#22C55E" : "#F59E0B" }} />
+                    )}
+                    {backgroundSession.exitCode == null
+                      ? "AI resolver running in background."
+                      : (backgroundSession.exitCode === 0 ? "Background AI resolver finished." : "Background AI resolver exited with errors.")}
+                  </div>
+                  <div className="flex items-center" style={{ gap: 8 }}>
+                    <button
+                      type="button"
+                      className="inline-flex items-center font-mono font-bold uppercase tracking-[1px]"
+                      style={{ fontSize: 10, height: 26, padding: "0 10px", background: "transparent", color: "#A78BFA", border: "1px solid #A78BFA30", cursor: "pointer" }}
+                      onClick={() => setResolverOpen(true)}
+                    >
+                      REOPEN RUN
+                    </button>
+                    {backgroundSession.exitCode != null ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center font-mono font-bold uppercase tracking-[1px]"
+                        style={{ fontSize: 10, height: 26, padding: "0 10px", background: "transparent", color: "#71717A", border: "1px solid #27272A", cursor: "pointer" }}
+                        onClick={() => setBackgroundSession(null)}
+                      >
+                        DISMISS
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         )}
@@ -2216,7 +2362,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             >
               <div className="flex items-center" style={{ gap: 10 }}>
                 <Robot size={14} weight="fill" style={{ color: "#A78BFA" }} />
-                <SectionHeader>WORKER RESOLUTION PROGRESS</SectionHeader>
+                  <SectionHeader>AI RESOLUTION PROGRESS</SectionHeader>
               </div>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <Button
@@ -2268,7 +2414,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                   const statusConfig = {
                     "resolved":     { label: "RESOLVED",    color: "#22C55E", bg: "#22C55E18" },
                     "merged-clean": { label: "CLEAN",       color: "#22C55E", bg: "#22C55E18" },
-                    "resolving":    { label: "WORKER RUNNING", color: "#A78BFA", bg: "#A78BFA18" },
+                      "resolving":    { label: "AI RUNNING", color: "#A78BFA", bg: "#A78BFA18" },
                     "failed":       { label: "FAILED",      color: "#EF4444", bg: "#EF444418" },
                     "pending":      { label: "PENDING",     color: "#71717A", bg: "#71717A18" },
                   }[status ?? "pending"] ?? { label: "PENDING", color: "#71717A", bg: "#71717A18" };
@@ -2314,10 +2460,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                 >
                   <Gear size={10} weight="fill" style={{ color: "#A78BFA" }} className="animate-spin" />
                   <span className="font-mono" style={{ fontSize: 10, color: "#A78BFA" }}>
-                    Orchestrator worker resolving: {proposalLaneCards.find((l) => l.laneId === resolutionState.activeLaneId)?.laneName ?? resolutionState.activeLaneId}
+                    AI resolver active on: {proposalLaneCards.find((l) => l.laneId === resolutionState.activeLaneId)?.laneName ?? resolutionState.activeLaneId}
                   </span>
                   <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 8 }}>
-                    View worker progress in the Work tab
+                    Reopen the resolver terminal to inspect logs.
                   </span>
                 </div>
               )}
@@ -2445,6 +2591,41 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             </div>
           )}
         </div>
+
+        {proposalResolverConfig ? (
+          <ResolverTerminalModal
+            open={resolverOpen}
+            onOpenChange={setResolverOpen}
+            sourceLaneId={proposalResolverConfig.sourceLaneId}
+            sourceLaneIds={proposalResolverConfig.sourceLaneIds}
+            targetLaneId={proposalResolverConfig.targetLaneId}
+            cwdLaneId={proposalResolverConfig.cwdLaneId}
+            scenario={proposalResolverConfig.scenario}
+            sourceTab="integration"
+            initialModel={resolverModel}
+            initialReasoningEffort={resolverReasoningLevel}
+            onModelChange={(model, effort) => {
+              setResolverModel(model);
+              setResolverReasoningLevel(effort ?? resolverReasoningLevel);
+            }}
+            onBackgroundSession={(session) => {
+              setBackgroundSession({ ...session, exitCode: null });
+            }}
+            onCompleted={() => {
+              const recheckLaneIds = [...proposalResolverConfig.recheckLaneIds];
+              void (async () => {
+                for (const laneId of recheckLaneIds) {
+                  await handleRecheck(laneId);
+                }
+                setActiveWorkerStepId(null);
+                setBackgroundSession(null);
+                setProposalResolverConfig(null);
+                await loadProposals();
+                await onRefresh();
+              })();
+            }}
+          />
+        ) : null}
 
         {/* ---- Description (if any) ---- */}
         {selectedProposal.body && (

@@ -9,7 +9,7 @@ Goal: Validate lane combinations before merge/land.
 - [features/CONFLICTS.md](../features/CONFLICTS.md) — conflict prediction, merge simulation, risk matrix, proposal workflows
 - [features/PULL_REQUESTS.md](../features/PULL_REQUESTS.md) — PR readiness gates, land stack flow
 - [features/WORKSPACE_GRAPH.md](../features/WORKSPACE_GRAPH.md) — graph overlays for merge readiness
-- [features/LANES.md](../features/LANES.md) — stack workflows, restack operations
+- [features/LANES.md](../features/LANES.md) — stack workflows, rebase operations
 
 ### Dependencies
 

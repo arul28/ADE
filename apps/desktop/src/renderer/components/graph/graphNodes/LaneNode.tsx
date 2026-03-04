@@ -34,8 +34,8 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
         data.dimmed && "opacity-20 scale-50",
         data.highlight && "scale-[1.02] shadow-[0_2px_8px_rgba(0,0,0,0.2)]",
         data.activityBucket === "high" && "shadow-[0_0_18px_rgba(34,197,94,0.2)]",
-        data.restackFailed && "border-red-500 ring-1 ring-red-500/80",
-        data.restackPulse && "ade-node-failed-pulse",
+        data.rebaseFailed && "border-red-500 ring-1 ring-red-500/80",
+        data.rebasePulse && "ade-node-failed-pulse",
         data.mergeInProgress && "ade-node-merging",
         data.mergeDisappearing && "ade-node-disappear",
         data.focusGlow && "ring-2 ring-purple-400/60 shadow-[0_0_20px_rgba(167,139,250,0.35)]"

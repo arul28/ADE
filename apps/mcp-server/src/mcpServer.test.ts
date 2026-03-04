@@ -166,13 +166,25 @@ function createRuntime() {
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
       landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" }))
     },
-    memoryService: {} as any,
+    memoryService: {
+      addMemory: vi.fn(() => ({
+        id: "memory-1",
+        category: "fact",
+        content: "x",
+        importance: "medium",
+        createdAt: new Date().toISOString()
+      })),
+      addSharedFact: vi.fn(() => ({
+        id: "shared-fact-1"
+      })),
+      searchMemories: vi.fn(() => [])
+    } as any,
     orchestratorService: {
       listRuns: vi.fn(() => []),
       pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
       resumeRun: vi.fn(({ runId }: any) => ({ id: runId, status: "running" })),
       getRunGraph: vi.fn(({ runId }: any) => ({
-        run: { id: runId, status: "running" },
+        run: { id: runId, missionId: "mission-1", status: "running" },
         steps: [{ id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "completed" }],
         attempts: [{ id: "attempt-1", stepId: "step-1", status: "completed" }],
         claims: [],
@@ -186,7 +198,39 @@ function createRuntime() {
         { id: "tl-1", runId, stepId: null, eventType: "run_started", reason: "started" },
         { id: "tl-2", runId, stepId: "step-1", eventType: "step_started", reason: "started" }
       ]),
-      listAttempts: vi.fn(() => [])
+      listAttempts: vi.fn(() => []),
+      addSteps: vi.fn(({ steps }: { steps: Array<Record<string, unknown>> }) =>
+        steps.map((step, index) => ({
+          id: `step-created-${index + 1}`,
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: String(step.stepKey ?? `step-created-${index + 1}`),
+          stepIndex: Number(step.stepIndex ?? index),
+          title: String(step.title ?? "Created step"),
+          laneId: typeof step.laneId === "string" ? step.laneId : null,
+          status: "pending",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: null,
+          completedAt: null,
+          metadata: step.metadata ?? {}
+        }))
+      ),
+      createHandoff: vi.fn(),
+      startReadyAutopilotAttempts: vi.fn(async () => 0),
+      skipStep: vi.fn(),
+      completeAttempt: vi.fn(),
+      updateStepMetadata: vi.fn(),
+      supersedeStep: vi.fn(),
+      updateStepDependencies: vi.fn(),
+      appendRuntimeEvent: vi.fn(),
+      appendTimelineEvent: vi.fn()
     } as any,
     aiOrchestratorService: {
       startMissionRun: vi.fn(async ({ missionId }: any) => ({
@@ -254,7 +298,7 @@ async function callTool(
 }
 
 describe("mcpServer", () => {
-  it("lists the full tool surface (38 tools)", async () => {
+  it("lists the full tool surface including coordinator orchestration tools", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
 
@@ -294,10 +338,25 @@ describe("mcpServer", () => {
         "get_final_diff",
         "evaluate_run",
         "list_evaluations",
-        "get_evaluation_report"
+        "get_evaluation_report",
+        "spawn_worker",
+        "read_mission_status",
+        "revise_plan",
+        "retry_step",
+        "skip_step",
+        "message_worker",
+        "report_status",
+        "report_result",
+        "report_validation",
+        "update_tool_profiles",
+        "transfer_lane",
+        "request_specialist",
+        "read_file",
+        "search_files",
+        "get_project_context"
       ])
     );
-    expect(names.length).toBe(38);
+    expect(names.length).toBeGreaterThan(38);
   });
 
   it("supports read_context contracts for all pack scopes", async () => {
@@ -350,6 +409,88 @@ describe("mcpServer", () => {
     expect(response.structuredContent.startupCommand).toContain("--permission-mode");
     expect(response.structuredContent.permissionMode).toBe("edit");
     expect(response.structuredContent.contextRef?.path).toBeNull();
+  });
+
+  it("routes coordinator report_status via MCP and mutates run metadata through coordinator tools", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        {
+          id: "step-worker-1",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "worker-1",
+          stepIndex: 0,
+          title: "Worker 1",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        }
+      ],
+      attempts: [],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-1" });
+    const response = await callTool(handler, "report_status", {
+      workerId: "worker-1",
+      progressPct: 45,
+      blockers: [],
+      confidence: 0.82,
+      nextAction: "continue implementation",
+      laneId: "lane-1",
+      details: "working through API edge cases"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.ok).toBe(true);
+    expect(fixture.runtime.orchestratorService.updateStepMetadata).toHaveBeenCalled();
+    expect(fixture.runtime.orchestratorService.appendRuntimeEvent).toHaveBeenCalled();
+  });
+
+  it("uses initialize identity context for shared-fact writes (proxy-mode identity forwarding path)", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-from-identity",
+      stepId: "step-from-identity",
+      attemptId: "attempt-from-identity"
+    });
+    const response = await callTool(handler, "memory_add", {
+      content: "Cache layer requires warm-up before benchmark runs.",
+      category: "fact",
+      importance: "high"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.memoryService.addSharedFact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-from-identity",
+        stepId: "step-from-identity",
+      })
+    );
+    expect(response.structuredContent.sharedFact.written).toBe(true);
   });
 
   it("materializes compact context manifests for spawn_agent to keep prompts lightweight", async () => {

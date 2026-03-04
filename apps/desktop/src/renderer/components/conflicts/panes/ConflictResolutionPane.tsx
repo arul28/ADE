@@ -407,6 +407,7 @@ export function ConflictResolutionPane() {
         sourceLaneId={selectedLaneId}
         targetLaneId={targetLaneId}
         cwdLaneId={effectiveCwdLaneId}
+        sourceTab="conflicts"
         onCompleted={() => {
           dispatch({ type: "RESET_RESOLVER_STATE" });
         }}

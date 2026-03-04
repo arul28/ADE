@@ -77,6 +77,7 @@ export function TerminalsPage() {
             lanes={work.lanes.map((l) => ({ id: l.id, name: l.name }))}
             filtered={work.filtered}
             runningFiltered={work.runningFiltered}
+            awaitingInputFiltered={work.awaitingInputFiltered}
             endedFiltered={work.endedFiltered}
             loading={work.loading}
             filterLaneId={work.filterLaneId}
@@ -104,21 +105,13 @@ export function TerminalsPage() {
         children: (
           <WorkViewArea
             sessions={work.sessions}
-            runningSessions={work.runningSessions}
-            openTabIds={work.openTabIds}
-            activeTabId={work.activeTabId}
+            visibleSessions={work.visibleSessions}
+            activeItemId={work.activeItemId}
             viewMode={work.viewMode}
             setViewMode={work.setViewMode}
-            onSelectTab={(id) => {
-              work.setActiveTabId(id);
-              work.setSelectedSessionId(id);
-            }}
-            onCloseTab={work.closeTab}
+            onSelectItem={work.setActiveItemId}
+            onCloseItem={work.closeTab}
             closingPtyIds={work.closingPtyIds}
-            onCloseSession={(id) => {
-              const session = work.sessions.find((s) => s.id === id);
-              if (session?.ptyId) work.closeSession(session.ptyId).catch(() => {});
-            }}
           />
         ),
       },

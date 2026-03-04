@@ -295,7 +295,7 @@ export function resolveWorkerDeliveryContextCtx(
   const sessionToolType = toOptionalString(attemptContext?.session_tool_type) ?? null;
   const executorKindRaw = toOptionalString(attemptContext?.executor_kind);
   const executorKind: OrchestratorExecutorKind | null =
-    executorKindRaw === "claude" || executorKindRaw === "codex" || executorKindRaw === "shell" || executorKindRaw === "manual"
+    executorKindRaw === "unified" || executorKindRaw === "shell" || executorKindRaw === "manual"
       ? executorKindRaw
       : null;
   const resolvedTarget: Extract<OrchestratorChatTarget, { kind: "worker" }> = {
