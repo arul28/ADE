@@ -48,6 +48,7 @@ import {
 import {
   getTrackedSessionState,
 } from "./recoveryService";
+import { getErrorMessage } from "../shared/utils";
 import type {
   OrchestratorChatMessage,
   OrchestratorChatTarget,
@@ -891,6 +892,11 @@ export async function deliverWorkerMessageCtx(
   }
 
   if (!ctx.agentChatService) {
+    ctx.logger.warn("ai_orchestrator.worker_delivery_no_chat_service", {
+      messageId: message.id,
+      missionId: message.missionId,
+      threadId: message.threadId ?? null
+    });
     return updateWorkerDeliveryStateCtx(ctx, {
       message,
       context: contextBase,
@@ -1006,6 +1012,14 @@ export async function deliverWorkerMessageCtx(
       });
     }
     const nextRetryAt = new Date(Date.now() + computeWorkerRetryBackoffMs(nextRetries)).toISOString();
+    ctx.logger.warn("ai_orchestrator.worker_delivery_retry_queued", {
+      messageId: workingMessage.id,
+      missionId: workingMessage.missionId,
+      retries: nextRetries,
+      maxRetries: deliveryMeta.maxRetries,
+      error: failure,
+      nextRetryAt
+    });
     return updateWorkerDeliveryStateCtx(ctx, {
       message: workingMessage,
       context,
@@ -1093,7 +1107,7 @@ export async function replayQueuedWorkerMessagesCtx(
         const ignoreBackoff = args.reason.startsWith("runtime_signal") || args.reason.startsWith("agent_chat");
         const previous = ctx.workerDeliveryThreadQueues.get(threadId) ?? Promise.resolve();
         const next = previous
-          .catch(() => undefined)
+          .catch((error) => { ctx.logger.warn("ai_orchestrator.worker_delivery_queue_previous_failed", { threadId, error: getErrorMessage(error) }); })
           .then(async () => {
             if (ctx.disposed.current) return;
             for (const candidate of messages) {

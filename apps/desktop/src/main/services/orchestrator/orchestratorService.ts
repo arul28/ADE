@@ -113,6 +113,7 @@ import {
   doesFileClaimMatchPath, doFileClaimsOverlap,
   readDocPaths,
 } from "./stepPolicyResolver";
+import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 
 // Row types, StepPolicy, and other extracted types are imported from
 // ./orchestratorQueries and ./stepPolicyResolver
@@ -188,7 +189,7 @@ export type OrchestratorExecutorStartArgs = {
       configPath?: string;
     };
   };
-  /** Checkpoint content from a previous interrupted attempt's `.ade-checkpoint.md` file. */
+  /** Checkpoint content from a previous interrupted attempt's worker checkpoint file. */
   previousCheckpoint?: string;
   /** Summary/error from the previous attempt on the same step (for retry context). */
   previousAttemptSummary?: string;
@@ -221,6 +222,11 @@ function sha256(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
+function getWorkerCheckpointPath(worktreePath: string, stepKey: string): string {
+  const sanitizedStepKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(worktreePath, ".ade", "checkpoints", `${sanitizedStepKey}.md`);
+}
+
 export function createOrchestratorService({
   db,
   projectId,
@@ -246,7 +252,7 @@ export function createOrchestratorService({
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
   // Register the unified adapter that handles all model providers
-  adapters.set("unified", createUnifiedOrchestratorAdapter());
+  adapters.set("unified", createUnifiedOrchestratorAdapter({ workspaceRoot: projectRoot }));
   const autopilotRunLocks = new Set<string>();
   const recoveryLoopStates = new Map<string, RecoveryLoopState>();
   const getRuntimeConfig = (): ResolvedOrchestratorRuntimeConfig => {
@@ -1463,7 +1469,6 @@ export function createOrchestratorService({
     const runRow = getRunRow(runId);
     const runMetadata = runRow ? parseJsonRecord(runRow.metadata_json) : null;
 
-    // Prefer phase-based evaluation when phaseConfiguration + missionLevelSettings exist
     const phaseConfig = runMetadata && typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration
       ? (runMetadata.phaseConfiguration as Record<string, unknown>)
       : null;
@@ -1474,23 +1479,14 @@ export function createOrchestratorService({
       ? (runMetadata.missionLevelSettings as MissionLevelSettings)
       : null;
 
-    let evaluation;
-    if (rawPhases && rawPhases.length > 0 && missionLevelSettings) {
-      evaluation = evaluateRunCompletionFromPhases(steps, rawPhases, missionLevelSettings);
-    } else if (missionLevelSettings) {
-      // Backward compat shim: missionLevelSettings exists but no phases — convert to phases-like eval
-      // using old policy for phase mapping
-      const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
-        ? (runMetadata.executionPolicy as MissionExecutionPolicy)
-        : DEFAULT_EXECUTION_POLICY;
-      evaluation = evaluateRunCompletion(steps, executionPolicy);
-    } else {
-      // Legacy: no missionLevelSettings at all, pure old-style eval
-      const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
-        ? (runMetadata.executionPolicy as MissionExecutionPolicy)
-        : DEFAULT_EXECUTION_POLICY;
-      evaluation = evaluateRunCompletion(steps, executionPolicy);
-    }
+    const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
+      ? (runMetadata.executionPolicy as MissionExecutionPolicy)
+      : DEFAULT_EXECUTION_POLICY;
+
+    const evaluation =
+      rawPhases && rawPhases.length > 0 && missionLevelSettings
+        ? evaluateRunCompletionFromPhases(steps, rawPhases, missionLevelSettings)
+        : evaluateRunCompletion(steps, executionPolicy);
 
     // When the evaluation signals completion readiness, persist diagnostics
     // into run metadata so they are available via getRunGraph and other consumers.
@@ -2299,7 +2295,7 @@ export function createOrchestratorService({
         : (integrationConfig.scenario as PrepareResolverSessionArgs["scenario"] | undefined) ?? "single-merge";
     const integrationLaneName =
       typeof integrationConfig.integrationLaneName === "string" ? integrationConfig.integrationLaneName : undefined;
-    const allowSubscriptionFallback = integrationConfig.allowSubscriptionFallback === true || integrationConfig.allowLegacyFallback === true;
+    const allowSubscriptionFallback = integrationConfig.allowSubscriptionFallback === true;
 
     appendTimelineEvent({
       runId: args.run.id,
@@ -3569,6 +3565,9 @@ export function createOrchestratorService({
         acc[key] = (acc[key] ?? 0) + 1;
         return acc;
       }, {});
+      const launchMeta = asRecord(missionMetadata.launch);
+      const launchTeamRuntime = asRecord(launchMeta?.teamRuntime);
+      const launchAgentRuntime = asRecord(launchMeta?.agentRuntime);
 
       const started = this.startRun({
         missionId,
@@ -3580,6 +3579,19 @@ export function createOrchestratorService({
           missionGoal: mission.prompt ?? "",
           missionPrompt: mission.prompt ?? "",
           runMode: requestedRunMode,
+          ...(launchTeamRuntime
+            ? {
+                teamRuntime: {
+                  ...launchTeamRuntime,
+                  ...normalizeAgentRuntimeFlags(launchTeamRuntime)
+                }
+              }
+            : {}),
+          ...(launchAgentRuntime
+            ? {
+                agentRuntime: normalizeAgentRuntimeFlags(launchAgentRuntime)
+              }
+            : {}),
           planner: {
             source: "mission_steps",
             stepCount: normalized.length,
@@ -5165,7 +5177,7 @@ export function createOrchestratorService({
           if (attemptNumber <= 1) return {};
           const result: { previousCheckpoint?: string; previousAttemptSummary?: string } = {};
 
-          // 1. Read .ade-checkpoint.md from the lane worktree if available, fall back to DB
+          // 1. Read checkpoint file from the lane worktree if available, fall back to DB
           if (step.laneId) {
             const laneRow = db.get<{ worktree_path: string | null }>(
               `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
@@ -5175,8 +5187,7 @@ export function createOrchestratorService({
               ? laneRow.worktree_path.trim()
               : null;
             if (worktreePath) {
-              const sanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-              const checkpointPath = path.join(worktreePath, `.ade-checkpoint-${sanitizedStepKey}.md`);
+              const checkpointPath = getWorkerCheckpointPath(worktreePath, step.stepKey);
               try {
                 const content = fs.readFileSync(checkpointPath, "utf8");
                 if (content.trim().length > 0) {
@@ -5186,7 +5197,7 @@ export function createOrchestratorService({
                     : content;
                 }
               } catch {
-                // File does not exist or is unreadable — fall back to DB
+                // File does not exist or is unreadable — continue to DB fallback.
               }
             }
           }
@@ -5582,8 +5593,7 @@ export function createOrchestratorService({
           ? ckLaneRow.worktree_path.trim()
           : null;
         if (ckWorktreePath) {
-          const ckSanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-          const ckPath = path.join(ckWorktreePath, `.ade-checkpoint-${ckSanitizedStepKey}.md`);
+          const ckPath = getWorkerCheckpointPath(ckWorktreePath, step.stepKey);
           try {
             const ckContent = fs.readFileSync(ckPath, "utf8");
             if (ckContent.trim().length > 0) {
@@ -5598,7 +5608,7 @@ export function createOrchestratorService({
               });
             }
           } catch {
-            // File may not exist — expected when no checkpoint was written
+            // File may not exist — expected when no checkpoint was written.
           }
         }
       }
@@ -5628,12 +5638,11 @@ export function createOrchestratorService({
             ? laneRow.worktree_path.trim()
             : null;
           if (worktreePath) {
-            const sanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-            const checkpointPath = path.join(worktreePath, `.ade-checkpoint-${sanitizedStepKey}.md`);
+            const checkpointPath = getWorkerCheckpointPath(worktreePath, step.stepKey);
             try {
               fs.unlinkSync(checkpointPath);
             } catch {
-              // File may not exist — expected when no checkpoint was written
+              // File may not exist — expected when no checkpoint was written.
             }
           }
         }

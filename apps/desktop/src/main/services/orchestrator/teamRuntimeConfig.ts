@@ -18,8 +18,10 @@ import type {
   TeamRuntimeConfig,
   RoleDefinition,
   MissionPolicyFlags,
+  MissionAgentRuntimeConfig,
   ModelConfig,
 } from "../../../shared/types";
+import { getErrorMessage } from "../shared/utils";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -85,6 +87,19 @@ export const DEFAULT_TEAM_TEMPLATE: TeamTemplate = {
     requiredRoles: [...REQUIRED_TEAM_CAPABILITIES]
   }
 };
+
+// ── Agent runtime flag normalization ─────────────────────────────
+
+/** Normalize optional boolean agent runtime flags to concrete booleans (default true). */
+export function normalizeAgentRuntimeFlags(
+  raw: Partial<MissionAgentRuntimeConfig> | undefined | null
+): MissionAgentRuntimeConfig {
+  return {
+    allowParallelAgents: raw?.allowParallelAgents !== false,
+    allowSubAgents: raw?.allowSubAgents !== false,
+    allowClaudeAgentTeams: raw?.allowClaudeAgentTeams !== false,
+  };
+}
 
 // ── Pure Parsing Functions ────────────────────────────────────────
 
@@ -247,6 +262,7 @@ export function resolveMissionTeamRuntime(
           enabled: true,
           targetProvider: (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "codex") ? teamRuntime.targetProvider : "auto",
           teammateCount: boundedTeammateCount,
+          ...normalizeAgentRuntimeFlags(teamRuntime as Partial<MissionAgentRuntimeConfig>),
           template,
           toolProfiles: toClampedToolProfileMap(teamRuntime.toolProfiles),
           mcpServerAllowlist: Array.isArray(teamRuntime.mcpServerAllowlist)
@@ -261,7 +277,7 @@ export function resolveMissionTeamRuntime(
   } catch (error) {
     ctx.logger.warn("ai_orchestrator.team_runtime_config_invalid", {
       missionId,
-      error: error instanceof Error ? error.message : String(error)
+      error: getErrorMessage(error)
     });
     throw error;
   }
@@ -296,6 +312,7 @@ export function normalizeTeamRuntimeConfig(_missionId: string, config: TeamRunti
         ? config.targetProvider
         : "auto",
     teammateCount,
+    ...normalizeAgentRuntimeFlags(config),
     template,
     policyOverrides
   };

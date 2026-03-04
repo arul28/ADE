@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import type {
   PhaseCard,
@@ -107,6 +106,7 @@ export type MissionPlanningResult = {
 };
 
 type PlannerAdapterResult = {
+  structuredOutput: unknown | null;
   rawResponse: string;
   commandPreview: string;
   engine: MissionPlannerResolvedEngine;
@@ -316,36 +316,36 @@ function extractFirstJsonObject(text: string): string | null {
   return null;
 }
 
-function getPlanOutputPath(missionId: string): string {
-  return path.join(os.tmpdir(), `ade-mission-plan-${missionId}.json`);
+function getPlannerArtifactsDir(projectRoot: string, missionId: string): string {
+  return path.join(projectRoot, ".ade", "missions", "planning", missionId);
 }
 
-/**
- * Clean up any leftover plan output temp files. Safe to call at any time.
- */
-export function cleanupPlanTempFiles(missionId?: string): void {
+function getPlannerRunArtifactPath(projectRoot: string, missionId: string, plannerRunId: string): string {
+  return path.join(getPlannerArtifactsDir(projectRoot, missionId), `${plannerRunId}.json`);
+}
+
+function writePlannerRunArtifact(args: {
+  projectRoot: string;
+  missionId: string;
+  plannerRunId: string;
+  plan: PlannerPlan;
+  run: MissionPlannerRun;
+}): string | null {
   try {
-    if (missionId) {
-      const filePath = getPlanOutputPath(missionId);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    } else {
-      // Clean up all ade-mission-plan-*.json files in tmpdir
-      const tmpDir = os.tmpdir();
-      const entries = fs.readdirSync(tmpDir);
-      for (const entry of entries) {
-        if (entry.startsWith("ade-mission-plan-") && entry.endsWith(".json")) {
-          try {
-            fs.unlinkSync(path.join(tmpDir, entry));
-          } catch {
-            // best-effort cleanup
-          }
-        }
-      }
-    }
+    const outPath = getPlannerRunArtifactPath(args.projectRoot, args.missionId, args.plannerRunId);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    const payload = {
+      schema: "ade.planner_run.v1",
+      savedAt: new Date().toISOString(),
+      missionId: args.missionId,
+      plannerRunId: args.plannerRunId,
+      run: args.run,
+      plan: args.plan
+    };
+    fs.writeFileSync(outPath, JSON.stringify(payload, null, 2), "utf8");
+    return outPath;
   } catch {
-    // best-effort cleanup — never throw
+    return null;
   }
 }
 
@@ -490,31 +490,14 @@ function buildPlannerPrompt(args: {
   policy?: MissionExecutionPolicy;
   phases?: PhaseCard[];
   settings?: import("../../../shared/types").MissionLevelSettings;
-  planOutputPath: string;
   teamRuntime?: TeamRuntimeConfig;
 }): string {
-  const MAX_DOC_CONTENT_CHARS = 12_000;
-  const MAX_TOTAL_DOCS_CHARS = 200_000;
-  const docsEntries = (args.contextBundle?.docsDigest ?? []).slice(0, 20);
-  let totalDocsChars = 0;
-  const docsBlocks: string[] = [];
-  for (const entry of docsEntries) {
-    if (entry.content && entry.content.length > 0) {
-      const budget = Math.min(MAX_DOC_CONTENT_CHARS, MAX_TOTAL_DOCS_CHARS - totalDocsChars);
-      if (budget <= 0) {
-        docsBlocks.push(`### ${entry.path} (${entry.bytes} bytes — skipped, context budget exhausted)`);
-        continue;
-      }
-      const truncated = entry.content.length > budget;
-      const slice = truncated ? entry.content.slice(0, budget) : entry.content;
-      totalDocsChars += slice.length;
-      const suffix = truncated ? `\n... [truncated from ${entry.bytes} bytes]` : "";
-      docsBlocks.push(`### ${entry.path}\n${slice}${suffix}`);
-    } else {
-      docsBlocks.push(`### ${entry.path} (${entry.bytes} bytes — content not available)`);
-    }
-  }
-  const docsSection = docsBlocks.length > 0 ? docsBlocks.join("\n\n") : "- none";
+  const docsEntries = (args.contextBundle?.docsDigest ?? []).slice(0, 30);
+  const docsSection = docsEntries.length > 0
+    ? docsEntries
+      .map((entry) => `- ${entry.path} (${entry.bytes} bytes, sha256 ${entry.sha256.slice(0, 12)})`)
+      .join("\n")
+    : "- none";
   const knowledgeEntries = (args.projectKnowledge ?? [])
     .map((entry) => ({
       category: String(entry.category ?? "fact").trim() || "fact",
@@ -525,10 +508,13 @@ function buildPlannerPrompt(args: {
   const knowledgeSection = knowledgeEntries.length
     ? knowledgeEntries.map((entry) => `- [${entry.category}] ${entry.content}`).join("\n")
     : "- none";
+  const bundleConstraints = (args.contextBundle?.constraints ?? [])
+    .map((entry) => String(entry ?? "").trim())
+    .filter((entry) => entry.length > 0)
+    .slice(0, 10);
   const constraints = [
     "AI owns mission strategy (planning, delegation, validation, replanning). Runtime enforces safety, budgets, and state integrity.",
-    `IMPORTANT: Write your final plan as a JSON file. Use your file writing tool to create the file at the path provided in the PLAN_OUTPUT_PATH variable below. The file must contain ONLY valid JSON — no markdown, no comments, no explanations. After writing the file, respond with exactly: PLAN_WRITTEN`,
-    `PLAN_OUTPUT_PATH: ${args.planOutputPath}`,
+    "Return a single JSON object that matches the required schema exactly (no markdown, no explanations).",
     "Use stable deterministic step IDs suitable for resume/replay.",
     "Do not use generic names such as 'Step 1' or 'Task 2'. Step names must be specific and action-oriented.",
     "Each step description must include concrete deliverables and verification intent.",
@@ -538,10 +524,10 @@ function buildPlannerPrompt(args: {
     args.clarificationPolicy.enabled
       ? `Clarifying questions are enabled for planning (${args.clarificationPolicy.mode}, max ${args.clarificationPolicy.maxQuestions}).`
       : "Clarifying questions are disabled for planning. Fill assumptions conservatively and continue."
-  ];
+  ].concat(bundleConstraints.map((entry) => `Mission runtime constraint: ${entry}`));
 
   const lines = [
-    "You are a PLANNING agent. Your job is to analyze the request and produce a structured mission plan. You have READ-ONLY access to the codebase to understand the project structure. You MUST NOT write any code, create any source files, or modify any project files. The ONLY file you write is the plan JSON at PLAN_OUTPUT_PATH.",
+    "You are a PLANNING agent. Your job is to analyze the request and produce a structured mission plan. You have READ-ONLY access to the codebase to understand the project structure. You MUST NOT write code or modify repository files.",
     "",
     "You are ADE mission planner.",
     "Generate a deterministic mission plan object that matches the provided JSON schema exactly.",
@@ -589,9 +575,7 @@ function buildPlannerPrompt(args: {
       ? `- \"clarifyingQuestions\": [{ \"question\": string, \"context\": string, \"defaultAssumption\": string, \"impact\": string }] (max ${args.clarificationPolicy.maxQuestions})`
       : "- (disabled)",
     "",
-    "IMPORTANT: All relevant project documentation is provided inline below. Do NOT attempt to read or open any files yourself — all context you need for planning is already included in this prompt.",
-    "",
-    "Project documentation (inline):",
+    "Discovered documentation paths (read these directly if needed):",
     docsSection,
     "",
     "Project knowledge (memory budget, standard):",
@@ -655,7 +639,7 @@ function buildPlannerPrompt(args: {
     ""
   );
 
-  lines.push(`Output: Write one JSON object to ${args.planOutputPath}. Then reply with PLAN_WRITTEN.`);
+  lines.push("Output: Return exactly one JSON object matching the schema. No markdown fences. No extra prose.");
   return lines.join("\n");
 }
 
@@ -892,7 +876,7 @@ function inferComplexity(prompt: string): PlannerMissionComplexity {
   return "high";
 }
 
-function mapLegacyStrategy(strategy: string): PlannerMissionStrategy {
+function mapDeterministicStrategy(strategy: string): PlannerMissionStrategy {
   if (strategy.includes("parallel")) return "parallel-first";
   if (strategy.includes("integration_gate")) return "parallel-lite";
   return "sequential";
@@ -906,13 +890,13 @@ export function buildDeterministicPlannerPlan(args: {
   phases?: PhaseCard[];
   settings?: import("../../../shared/types").MissionLevelSettings;
 }): PlannerPlan {
-  const legacy = buildDeterministicMissionPlan({
+  const deterministic = buildDeterministicMissionPlan({
     prompt: args.prompt,
     laneId: args.laneId,
     policy: args.policy
   });
-  const idByIndex = legacy.steps.map((_, index) => `plan-${String(index + 1).padStart(3, "0")}`);
-  const steps: PlannerStepPlan[] = legacy.steps.map((step, index) => {
+  const idByIndex = deterministic.steps.map((_, index) => `plan-${String(index + 1).padStart(3, "0")}`);
+  const steps: PlannerStepPlan[] = deterministic.steps.map((step, index) => {
     const metadata = step.metadata ?? {};
     const depIndices = Array.isArray(metadata.dependencyIndices)
       ? metadata.dependencyIndices.map((value) => Number(value)).filter((value) => Number.isFinite(value))
@@ -967,7 +951,7 @@ export function buildDeterministicPlannerPlan(args: {
     };
   });
 
-  const strategy = mapLegacyStrategy(legacy.strategy);
+  const strategy = mapDeterministicStrategy(deterministic.strategy);
   return {
     schemaVersion: "1.0",
     clarifyingQuestions: [],
@@ -1010,7 +994,6 @@ async function runPlannerAdapter(args: {
   prompt: string;
   timeoutMs: number;
   model?: string;
-  planOutputPath: string;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
 }): Promise<PlannerAdapterResult> {
   if (!args.aiIntegrationService || args.aiIntegrationService.getMode() === "guest") {
@@ -1019,9 +1002,6 @@ async function runPlannerAdapter(args: {
 
   if (args.engine === "codex_cli" || args.engine === "claude_cli") {
     const provider = args.engine === "codex_cli" ? "codex" : "claude";
-    // Use "edit" permission mode so the planner can write its plan JSON to the
-    // temp file at planOutputPath. The planner prompt explicitly constrains the
-    // agent to only write that single file — no project files.
     const aiResult = await args.aiIntegrationService.planMission({
       cwd: args.cwd,
       prompt: args.prompt,
@@ -1029,13 +1009,14 @@ async function runPlannerAdapter(args: {
       model: args.model,
       provider,
       jsonSchema: plannerSchemaJson(),
-      permissionMode: "edit"
+      permissionMode: "read-only"
     });
     const rawResponse =
       aiResult.structuredOutput != null && typeof aiResult.structuredOutput === "object"
         ? JSON.stringify(aiResult.structuredOutput)
         : aiResult.text;
     return {
+      structuredOutput: aiResult.structuredOutput ?? null,
       engine: args.engine,
       rawResponse,
       commandPreview: `aiIntegrationService.planMission(provider=${provider})`
@@ -1255,7 +1236,6 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
   const requestedEngine: MissionPlannerEngine = args.plannerEngine ?? "auto";
   const order = plannerEngineOrder(requestedEngine, args.aiIntegrationService);
   const plannerAttempts: MissionPlannerAttempt[] = [];
-  const planOutputPath = getPlanOutputPath(missionId);
   const clarificationPolicy = resolvePlannerClarificationPolicy({
     allowPlanningQuestions: args.allowPlanningQuestions === true,
     phaseCards: args.phaseCards
@@ -1263,7 +1243,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
   const projectKnowledge: PlannerProjectKnowledgeEntry[] = (() => {
     if (!args.memoryService || !memoryProjectId.length) return [];
     try {
-      const memories = args.memoryService.getMemoryBudget(memoryProjectId, "standard");
+      const memories = args.memoryService.getMemoryBudget(memoryProjectId, "standard", { includeCandidates: true });
       return memories
         .map((memory) => ({
           category: String(memory.category ?? "fact").trim() || "fact",
@@ -1289,7 +1269,6 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
     contextBundle: args.contextBundle,
     projectKnowledge,
     policy: args.policy,
-    planOutputPath,
     teamRuntime: args.teamRuntime
   });
 
@@ -1310,84 +1289,26 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         prompt,
         timeoutMs,
         model: args.model,
-        planOutputPath,
         aiIntegrationService: args.aiIntegrationService
       });
 
-      // --- Multi-strategy plan extraction ---
       let rawJson: string | null = null;
-      let planSource: "file" | "text" | "recovery" | null = null;
-
-      // Strategy 1: Read plan JSON from the temp file the planner was instructed to write
-      try {
-        if (fs.existsSync(planOutputPath)) {
-          const fileContent = fs.readFileSync(planOutputPath, "utf-8").trim();
-          if (fileContent.startsWith("{")) {
-            rawJson = fileContent;
-            planSource = "file";
-            args.logger?.info?.("ai_orchestrator.planner_plan_from_file", {
-              missionId,
-              path: planOutputPath
-            });
-          }
+      let planSource: "structured" | "text" | null = null;
+      if (adapterResult.structuredOutput != null && typeof adapterResult.structuredOutput === "object") {
+        try {
+          rawJson = JSON.stringify(adapterResult.structuredOutput);
+          planSource = "structured";
+        } catch {
+          rawJson = null;
         }
-      } catch {
-        // file read failed — fall through to text extraction
       }
 
-      // Strategy 2: Extract JSON from the planner's text output (existing fallback)
       if (!rawJson && adapterResult.rawResponse) {
         rawJson = extractFirstJsonObject(adapterResult.rawResponse);
         if (rawJson) {
           planSource = "text";
-          args.logger?.info?.("ai_orchestrator.planner_plan_from_text", { missionId });
         }
       }
-
-      // Strategy 3: Recovery — ask planner to re-output the plan to the file
-      if (!rawJson) {
-        args.logger?.warn?.("ai_orchestrator.planner_plan_recovery", { missionId });
-        try {
-          const recoveryResult = await runPlannerAdapter({
-            engine,
-            cwd: args.projectRoot,
-            prompt: `Your plan was not saved correctly. Write ONLY the JSON plan object to ${planOutputPath}. No other text. Use your file writing tool to create the file. After writing, respond with: PLAN_WRITTEN`,
-            timeoutMs: Math.min(timeoutMs, 60_000), // shorter timeout for recovery
-            model: args.model,
-            planOutputPath,
-            aiIntegrationService: args.aiIntegrationService
-          });
-          // Try reading the file again after recovery
-          try {
-            if (fs.existsSync(planOutputPath)) {
-              const recoveryFileContent = fs.readFileSync(planOutputPath, "utf-8").trim();
-              if (recoveryFileContent.startsWith("{")) {
-                rawJson = recoveryFileContent;
-                planSource = "recovery";
-                args.logger?.info?.("ai_orchestrator.planner_plan_from_recovery_file", { missionId });
-              }
-            }
-          } catch {
-            // file read failed after recovery
-          }
-          // Try extracting from recovery text output
-          if (!rawJson && recoveryResult.rawResponse) {
-            rawJson = extractFirstJsonObject(recoveryResult.rawResponse);
-            if (rawJson) {
-              planSource = "recovery";
-              args.logger?.info?.("ai_orchestrator.planner_plan_from_recovery_text", { missionId });
-            }
-          }
-        } catch (recoveryError) {
-          args.logger?.warn?.("ai_orchestrator.planner_recovery_failed", {
-            missionId,
-            error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
-          });
-        }
-      }
-
-      // Clean up temp file after extraction
-      try { if (fs.existsSync(planOutputPath)) fs.unlinkSync(planOutputPath); } catch { /* best-effort */ }
 
       if (!rawJson) {
         plannerAttempts.push({
@@ -1395,7 +1316,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
           engine,
           status: "failed",
           reasonCode: "planner_parse_error",
-          detail: "Planner output did not contain a valid JSON plan after all extraction strategies (file, text, recovery).",
+          detail: "Planner output did not contain a valid JSON plan.",
           commandPreview: adapterResult.commandPreview,
           rawResponse: adapterResult.rawResponse,
           validationErrors: [],
@@ -1404,7 +1325,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         runtimeErrors.push({
           engine,
           reasonCode: "planner_parse_error",
-          detail: "Planner output did not contain a valid JSON plan after all extraction strategies (file, text, recovery).",
+          detail: "Planner output did not contain a valid JSON plan.",
           rawResponse: adapterResult.rawResponse,
           commandPreview: adapterResult.commandPreview
         });
@@ -1463,7 +1384,6 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
               prompt: retryPrompt,
               timeoutMs,
               model: args.model,
-              planOutputPath,
               aiIntegrationService: args.aiIntegrationService
             });
 
@@ -1650,11 +1570,20 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         }
       }
 
+      const plannerArtifactPath = writePlannerRunArtifact({
+        projectRoot: args.projectRoot,
+        missionId,
+        plannerRunId,
+        plan,
+        run
+      });
+
       args.logger?.info?.("missions.planner.success", {
         plannerRunId,
         requestedEngine,
         resolvedEngine: engine,
         planSource,
+        plannerArtifactPath,
         durationMs: run.durationMs
       });
       return { plan, run };
@@ -1681,9 +1610,6 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
       });
     }
   }
-
-  // Clean up temp file on failure path too
-  try { if (fs.existsSync(planOutputPath)) fs.unlinkSync(planOutputPath); } catch { /* best-effort */ }
 
   // All engines exhausted — throw with summary of failures
   const allValidationErrors = runtimeErrors.flatMap((e) => e.validationErrors ?? []);

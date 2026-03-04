@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import cron from "node-cron";
 import type {
@@ -297,7 +296,9 @@ async function runCodexExec(args: {
   webSearch: boolean;
   additionalWritableDirs: string[];
 }): Promise<{ jsonText: string; commandPreview: string }> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-codex-"));
+  const tmpRoot = path.join(path.resolve(args.cwd), ".ade", "tmp");
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  const tmpDir = fs.mkdtempSync(path.join(tmpRoot, "automation-planner-codex-"));
   const schemaPath = path.join(tmpDir, "schema.json");
   const outPath = path.join(tmpDir, "out.txt");
   fs.writeFileSync(schemaPath, JSON.stringify(args.schema, null, 2), "utf8");

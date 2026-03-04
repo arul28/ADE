@@ -28,7 +28,6 @@ export type ConflictPackBuilderDeps = {
   projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
   getConflictPredictionPath: (laneId: string) => string;
-  getLegacyConflictPredictionPath: (laneId: string) => string;
   getLanePackPath: (laneId: string) => string;
 };
 
@@ -38,19 +37,16 @@ export function readConflictPredictionPack(
   deps: ConflictPackBuilderDeps,
   laneId: string
 ): ConflictPredictionPackFile | null {
-  const candidates = [deps.getConflictPredictionPath(laneId), deps.getLegacyConflictPredictionPath(laneId)];
-  for (const filePath of candidates) {
-    if (!fs.existsSync(filePath)) continue;
-    try {
-      const raw = fs.readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (!isRecord(parsed)) continue;
-      return parsed as ConflictPredictionPackFile;
-    } catch {
-      continue;
-    }
+  const filePath = deps.getConflictPredictionPath(laneId);
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return null;
+    return parsed as ConflictPredictionPackFile;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 // ── Git conflict state ──────────────────────────────────────────────────────

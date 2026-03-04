@@ -17,6 +17,7 @@ import {
   parseTerminalRuntimeState,
   ATTEMPT_RUNTIME_PERSIST_INTERVAL_MS,
 } from "./orchestratorContext";
+import { getErrorMessage } from "../shared/utils";
 import type {
   OrchestratorExecutorKind,
   TerminalRuntimeState,
@@ -172,8 +173,8 @@ export function hydratePersistedAttemptRuntimeState(
       `
     );
   } catch (error) {
-    ctx.logger.debug("ai_orchestrator.runtime_state_prune_failed", {
-      error: error instanceof Error ? error.message : String(error)
+    ctx.logger.warn("ai_orchestrator.runtime_state_prune_failed", {
+      error: getErrorMessage(error)
     });
   }
 
@@ -317,9 +318,9 @@ export function deletePersistedAttemptRuntimeState(
   try {
     ctx.db.run(`delete from orchestrator_attempt_runtime where attempt_id = ?`, [attemptId]);
   } catch (error) {
-    ctx.logger.debug("ai_orchestrator.runtime_state_delete_failed", {
+    ctx.logger.warn("ai_orchestrator.runtime_state_delete_failed", {
       attemptId,
-      error: error instanceof Error ? error.message : String(error)
+      error: getErrorMessage(error)
     });
   }
 }
@@ -388,9 +389,9 @@ export function persistAttemptRuntimeState(
     );
     tracker.lastPersistedAtMs = nowMs;
   } catch (error) {
-    ctx.logger.debug("ai_orchestrator.runtime_state_persist_failed", {
+    ctx.logger.warn("ai_orchestrator.runtime_state_persist_failed", {
       attemptId,
-      error: error instanceof Error ? error.message : String(error)
+      error: getErrorMessage(error)
     });
   }
 }

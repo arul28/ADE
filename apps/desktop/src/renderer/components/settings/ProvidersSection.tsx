@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   AiApiKeyVerificationResult,
+  AiConfig,
   AiDetectedAuth,
   AiSettingsStatus,
   ProjectConfigSnapshot,
@@ -209,6 +210,7 @@ export function ProvidersSection() {
     codexSandboxPermissions: "workspace-write" as string,
     codexApprovalMode: "full-auto" as string,
   });
+  const [summaryModel, setSummaryModel] = useState("haiku");
 
   const refreshStatus = useCallback(async () => {
     setLoading(true);
@@ -223,6 +225,10 @@ export function ProvidersSection() {
       setStatus(nextStatus);
       setStoredProviders(nextStoredProviders.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
       setConfigSnapshot(snapshot);
+
+      const effectiveAiRaw = snapshot.effective?.ai;
+      const effectiveAiConfig = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
+      setSummaryModel((effectiveAiConfig?.featureModelOverrides?.terminal_summaries) ?? "haiku");
 
       const effectiveAi = isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
       const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
@@ -825,6 +831,33 @@ export function ProvidersSection() {
             {savingPermissions ? "Saving..." : "Save Permissions"}
           </button>
         </div>
+      </section>
+
+      {/* ── Session Summaries ── */}
+      <section style={{ marginTop: 24 }}>
+        <div style={{ ...LABEL_STYLE, fontSize: 11, marginBottom: 6 }}>SESSION SUMMARIES</div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 10 }}>
+          Model used when summarizing terminal sessions on close.
+        </div>
+        <SelectField
+          label="MODEL"
+          value={summaryModel}
+          onChange={(value) => {
+            setSummaryModel(value);
+            void window.ade.ai.updateConfig({
+              featureModelOverrides: { terminal_summaries: value } as AiConfig["featureModelOverrides"],
+            });
+          }}
+          options={
+            status
+              ? [...status.models.claude, ...status.models.codex].map((m) => ({ value: m.id, label: m.label }))
+              : [
+                  { value: "haiku", label: "Haiku" },
+                  { value: "sonnet", label: "Sonnet" },
+                  { value: "opus", label: "Opus" },
+                ]
+          }
+        />
       </section>
     </div>
   );

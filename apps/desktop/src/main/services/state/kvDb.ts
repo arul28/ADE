@@ -79,75 +79,6 @@ function mapExecRows(rows: { columns: string[]; values: unknown[][] }[]): Record
   return out;
 }
 
-function hasColumn(db: Database, table: string, column: string): boolean {
-  try {
-    const rows = db.exec(`pragma table_info(${table})`);
-    const mapped = mapExecRows(rows);
-    return mapped.some((row) => String(row.name ?? "") === column);
-  } catch {
-    return false;
-  }
-}
-
-function addColumnIfMissing(db: Database, table: string, columnSql: string, columnName: string) {
-  if (hasColumn(db, table, columnName)) return;
-  db.run(`alter table ${table} add column ${columnSql}`);
-}
-
-function createIndexIfColumnsExist(db: Database, indexSql: string, table: string, columns: string[]) {
-  const allPresent = columns.every((column) => hasColumn(db, table, column));
-  if (!allPresent) return;
-  db.run(indexSql);
-}
-
-function ensureProcessRuntimeLaneSchema(db: Database) {
-  const hasLaneId = hasColumn(db, "process_runtime", "lane_id");
-  if (hasLaneId) {
-    db.run("create index if not exists idx_process_runtime_project_lane on process_runtime(project_id, lane_id)");
-    return;
-  }
-
-  db.run("alter table process_runtime rename to process_runtime_legacy");
-  db.run(`
-    create table process_runtime (
-      project_id text not null,
-      lane_id text not null,
-      process_key text not null,
-      status text not null,
-      pid integer,
-      started_at text,
-      ended_at text,
-      exit_code integer,
-      readiness text not null,
-      updated_at text not null,
-      primary key(project_id, lane_id, process_key),
-      foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-
-  db.run(`
-    insert into process_runtime(
-      project_id, lane_id, process_key, status, pid, started_at, ended_at, exit_code, readiness, updated_at
-    )
-    select
-      project_id,
-      '__legacy__',
-      process_key,
-      status,
-      pid,
-      started_at,
-      ended_at,
-      exit_code,
-      readiness,
-      updated_at
-    from process_runtime_legacy
-  `);
-  db.run("drop table process_runtime_legacy");
-  db.run("create index if not exists idx_process_runtime_project_id on process_runtime(project_id)");
-  db.run("create index if not exists idx_process_runtime_project_lane on process_runtime(project_id, lane_id)");
-}
-
 function migrate(db: Database) {
   // Keep KV for UI layout persistence.
   db.run("create table if not exists kv (key text primary key, value text not null)");
@@ -180,6 +111,7 @@ function migrate(db: Database) {
       color text,
       icon text,
       tags_json text,
+      folder text,
       status text not null,
       created_at text not null,
       archived_at text,
@@ -187,27 +119,9 @@ function migrate(db: Database) {
       foreign key(parent_lane_id) references lanes(id)
     )
   `);
-  addColumnIfMissing(db, "lanes", "lane_type text not null default 'worktree'", "lane_type");
-  addColumnIfMissing(db, "lanes", "attached_root_path text", "attached_root_path");
-  addColumnIfMissing(db, "lanes", "is_edit_protected integer not null default 0", "is_edit_protected");
-  addColumnIfMissing(db, "lanes", "parent_lane_id text", "parent_lane_id");
-  addColumnIfMissing(db, "lanes", "color text", "color");
-  addColumnIfMissing(db, "lanes", "icon text", "icon");
-  addColumnIfMissing(db, "lanes", "tags_json text", "tags_json");
-  addColumnIfMissing(db, "lanes", "folder text", "folder");
-  createIndexIfColumnsExist(db, "create index if not exists idx_lanes_project_id on lanes(project_id)", "lanes", ["project_id"]);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)",
-    "lanes",
-    ["project_id", "lane_type"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)",
-    "lanes",
-    ["project_id", "parent_lane_id"]
-  );
+  db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
+  db.run("create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)");
+  db.run("create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)");
 
   db.run(`
     create table if not exists terminal_sessions (
@@ -233,37 +147,10 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  addColumnIfMissing(db, "terminal_sessions", "tracked integer not null default 1", "tracked");
-  addColumnIfMissing(db, "terminal_sessions", "goal text", "goal");
-  addColumnIfMissing(db, "terminal_sessions", "tool_type text", "tool_type");
-  addColumnIfMissing(db, "terminal_sessions", "pinned integer not null default 0", "pinned");
-  addColumnIfMissing(db, "terminal_sessions", "summary text", "summary");
-  addColumnIfMissing(db, "terminal_sessions", "last_output_at text", "last_output_at");
-  addColumnIfMissing(db, "terminal_sessions", "resume_command text", "resume_command");
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_terminal_sessions_lane_id on terminal_sessions(lane_id)",
-    "terminal_sessions",
-    ["lane_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_terminal_sessions_status on terminal_sessions(status)",
-    "terminal_sessions",
-    ["status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_terminal_sessions_started_at on terminal_sessions(started_at desc)",
-    "terminal_sessions",
-    ["started_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_terminal_sessions_lane_started_at on terminal_sessions(lane_id, started_at desc)",
-    "terminal_sessions",
-    ["lane_id", "started_at"]
-  );
+  db.run("create index if not exists idx_terminal_sessions_lane_id on terminal_sessions(lane_id)");
+  db.run("create index if not exists idx_terminal_sessions_status on terminal_sessions(status)");
+  db.run("create index if not exists idx_terminal_sessions_started_at on terminal_sessions(started_at desc)");
+  db.run("create index if not exists idx_terminal_sessions_lane_started_at on terminal_sessions(lane_id, started_at desc)");
 
   // Phase 2 process/test config and history tables.
   db.run(`
@@ -290,7 +177,7 @@ function migrate(db: Database) {
   db.run(`
     create table if not exists process_runtime (
       project_id text not null,
-      lane_id text not null default '__legacy__',
+      lane_id text not null,
       process_key text not null,
       status text not null,
       pid integer,
@@ -304,19 +191,8 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  ensureProcessRuntimeLaneSchema(db);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_process_runtime_project_id on process_runtime(project_id)",
-    "process_runtime",
-    ["project_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_process_runtime_project_lane on process_runtime(project_id, lane_id)",
-    "process_runtime",
-    ["project_id", "lane_id"]
-  );
+  db.run("create index if not exists idx_process_runtime_project_id on process_runtime(project_id)");
+  db.run("create index if not exists idx_process_runtime_project_lane on process_runtime(project_id, lane_id)");
 
   db.run(`
     create table if not exists process_runs (
@@ -333,25 +209,9 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  addColumnIfMissing(db, "process_runs", "lane_id text", "lane_id");
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_process_runs_project_proc on process_runs(project_id, process_key)",
-    "process_runs",
-    ["project_id", "process_key"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_process_runs_project_lane on process_runs(project_id, lane_id)",
-    "process_runs",
-    ["project_id", "lane_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_process_runs_started_at on process_runs(started_at)",
-    "process_runs",
-    ["started_at"]
-  );
+  db.run("create index if not exists idx_process_runs_project_proc on process_runs(project_id, process_key)");
+  db.run("create index if not exists idx_process_runs_project_lane on process_runs(project_id, lane_id)");
+  db.run("create index if not exists idx_process_runs_started_at on process_runs(started_at)");
 
   db.run(`
     create table if not exists stack_buttons (
@@ -402,19 +262,8 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  addColumnIfMissing(db, "test_runs", "lane_id text", "lane_id");
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_test_runs_project_suite on test_runs(project_id, suite_key)",
-    "test_runs",
-    ["project_id", "suite_key"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_test_runs_started_at on test_runs(started_at)",
-    "test_runs",
-    ["started_at"]
-  );
+  db.run("create index if not exists idx_test_runs_project_suite on test_runs(project_id, suite_key)");
+  db.run("create index if not exists idx_test_runs_started_at on test_runs(started_at)");
 
   // Phase 2.5 + Phase 3 git operations timeline and deterministic packs.
   db.run(`
@@ -433,25 +282,9 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  addColumnIfMissing(db, "operations", "lane_id text", "lane_id");
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_operations_project_started on operations(project_id, started_at)",
-    "operations",
-    ["project_id", "started_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_operations_lane_started on operations(lane_id, started_at)",
-    "operations",
-    ["lane_id", "started_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_operations_kind on operations(kind)",
-    "operations",
-    ["kind"]
-  );
+  db.run("create index if not exists idx_operations_project_started on operations(project_id, started_at)");
+  db.run("create index if not exists idx_operations_lane_started on operations(lane_id, started_at)");
+  db.run("create index if not exists idx_operations_kind on operations(kind)");
 
   db.run(`
     create table if not exists packs_index (
@@ -468,19 +301,8 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  addColumnIfMissing(db, "packs_index", "lane_id text", "lane_id");
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_packs_index_project on packs_index(project_id)",
-    "packs_index",
-    ["project_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_packs_index_lane on packs_index(lane_id)",
-    "packs_index",
-    ["lane_id"]
-  );
+  db.run("create index if not exists idx_packs_index_project on packs_index(project_id)");
+  db.run("create index if not exists idx_packs_index_lane on packs_index(lane_id)");
 
   db.run(`
     create table if not exists session_deltas (
@@ -502,18 +324,8 @@ function migrate(db: Database) {
       foreign key(session_id) references terminal_sessions(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_session_deltas_lane_started on session_deltas(lane_id, started_at)",
-    "session_deltas",
-    ["lane_id", "started_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_session_deltas_project_started on session_deltas(project_id, started_at)",
-    "session_deltas",
-    ["project_id", "started_at"]
-  );
+  db.run("create index if not exists idx_session_deltas_lane_started on session_deltas(lane_id, started_at)");
+  db.run("create index if not exists idx_session_deltas_project_started on session_deltas(project_id, started_at)");
 
   // Phase 5 conflict radar predictions.
   db.run(`
@@ -534,24 +346,9 @@ function migrate(db: Database) {
       foreign key(lane_b_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_cp_lane_a on conflict_predictions(lane_a_id)",
-    "conflict_predictions",
-    ["lane_a_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_cp_lane_b on conflict_predictions(lane_b_id)",
-    "conflict_predictions",
-    ["lane_b_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_cp_predicted_at on conflict_predictions(predicted_at)",
-    "conflict_predictions",
-    ["predicted_at"]
-  );
+  db.run("create index if not exists idx_cp_lane_a on conflict_predictions(lane_a_id)");
+  db.run("create index if not exists idx_cp_lane_b on conflict_predictions(lane_b_id)");
+  db.run("create index if not exists idx_cp_predicted_at on conflict_predictions(predicted_at)");
 
   db.run(`
     create table if not exists conflict_proposals (
@@ -578,18 +375,8 @@ function migrate(db: Database) {
       foreign key(applied_operation_id) references operations(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_conflict_proposals_lane on conflict_proposals(project_id, lane_id)",
-    "conflict_proposals",
-    ["project_id", "lane_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_conflict_proposals_status on conflict_proposals(project_id, status)",
-    "conflict_proposals",
-    ["project_id", "status"]
-  );
+  db.run("create index if not exists idx_conflict_proposals_lane on conflict_proposals(project_id, lane_id)");
+  db.run("create index if not exists idx_conflict_proposals_status on conflict_proposals(project_id, status)");
 
   db.run(`
     create table if not exists ai_usage_log (
@@ -605,18 +392,8 @@ function migrate(db: Database) {
       session_id text
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_ai_usage_feature_timestamp on ai_usage_log(feature, timestamp)",
-    "ai_usage_log",
-    ["feature", "timestamp"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_ai_usage_timestamp on ai_usage_log(timestamp)",
-    "ai_usage_log",
-    ["timestamp"]
-  );
+  db.run("create index if not exists idx_ai_usage_feature_timestamp on ai_usage_log(feature, timestamp)");
+  db.run("create index if not exists idx_ai_usage_timestamp on ai_usage_log(timestamp)");
 
   // Phase 7 GitHub PR tracking (lane -> PR mapping).
   db.run(`
@@ -646,18 +423,8 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id)",
-    "pull_requests",
-    ["lane_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_pull_requests_project_id on pull_requests(project_id)",
-    "pull_requests",
-    ["project_id"]
-  );
+  db.run("create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id)");
+  db.run("create index if not exists idx_pull_requests_project_id on pull_requests(project_id)");
 
   // Phase 8 pack versioning + checkpoints.
   db.run(`
@@ -675,18 +442,8 @@ function migrate(db: Database) {
       foreign key(session_id) references terminal_sessions(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_checkpoints_project_created on checkpoints(project_id, created_at)",
-    "checkpoints",
-    ["project_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_checkpoints_lane_created on checkpoints(lane_id, created_at)",
-    "checkpoints",
-    ["lane_id", "created_at"]
-  );
+  db.run("create index if not exists idx_checkpoints_project_created on checkpoints(project_id, created_at)");
+  db.run("create index if not exists idx_checkpoints_lane_created on checkpoints(lane_id, created_at)");
 
   db.run(`
     create table if not exists pack_events (
@@ -699,18 +456,8 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_pack_events_project_created on pack_events(project_id, created_at)",
-    "pack_events",
-    ["project_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_pack_events_pack_key_created on pack_events(project_id, pack_key, created_at)",
-    "pack_events",
-    ["project_id", "pack_key", "created_at"]
-  );
+  db.run("create index if not exists idx_pack_events_project_created on pack_events(project_id, created_at)");
+  db.run("create index if not exists idx_pack_events_pack_key_created on pack_events(project_id, pack_key, created_at)");
 
   db.run(`
     create table if not exists pack_versions (
@@ -724,12 +471,7 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_pack_versions_project_pack on pack_versions(project_id, pack_key)",
-    "pack_versions",
-    ["project_id", "pack_key"]
-  );
+  db.run("create index if not exists idx_pack_versions_project_pack on pack_versions(project_id, pack_key)");
   db.run(
     "create unique index if not exists idx_pack_versions_project_pack_version on pack_versions(project_id, pack_key, version_number)"
   );
@@ -744,12 +486,7 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_pack_heads_project on pack_heads(project_id)",
-    "pack_heads",
-    ["project_id"]
-  );
+  db.run("create index if not exists idx_pack_heads_project on pack_heads(project_id)");
 
   // Phase 8 automations run logs.
   db.run(`
@@ -768,18 +505,8 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_automation_runs_project_started on automation_runs(project_id, started_at)",
-    "automation_runs",
-    ["project_id", "started_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_automation_runs_project_automation on automation_runs(project_id, automation_id)",
-    "automation_runs",
-    ["project_id", "automation_id"]
-  );
+  db.run("create index if not exists idx_automation_runs_project_started on automation_runs(project_id, started_at)");
+  db.run("create index if not exists idx_automation_runs_project_automation on automation_runs(project_id, automation_id)");
 
   db.run(`
     create table if not exists automation_action_results (
@@ -797,19 +524,18 @@ function migrate(db: Database) {
       foreign key(run_id) references automation_runs(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_automation_action_results_project_run on automation_action_results(project_id, run_id)",
-    "automation_action_results",
-    ["project_id", "run_id"]
-  );
+  db.run("create index if not exists idx_automation_action_results_project_run on automation_action_results(project_id, run_id)");
 
-  // Phase 8+ PR groups (stacked / integration).
+  // Phase 8+ PR groups (queue / integration).
   db.run(`
     create table if not exists pr_groups (
       id text primary key,
       project_id text not null,
       group_type text not null,
+      name text,
+      auto_rebase integer not null default 0,
+      ci_gating integer not null default 0,
+      target_branch text,
       created_at text not null,
       foreign key(project_id) references projects(id)
     )
@@ -832,15 +558,6 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)");
   db.run("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)");
 
-  // PR groups: add columns for queue overhaul
-  addColumnIfMissing(db, "pr_groups", "name text", "name");
-  addColumnIfMissing(db, "pr_groups", "auto_rebase integer not null default 0", "auto_rebase");
-  addColumnIfMissing(db, "pr_groups", "ci_gating integer not null default 0", "ci_gating");
-  addColumnIfMissing(db, "pr_groups", "target_branch text", "target_branch");
-
-  // Migrate "stacked" → "queue" group type
-  db.run(`update pr_groups set group_type = 'queue' where group_type = 'stacked'`);
-
   // Integration proposals table (dry-merge simulation results)
   db.run(`
     create table if not exists integration_proposals (
@@ -849,21 +566,21 @@ function migrate(db: Database) {
       source_lane_ids_json text not null,
       base_branch text not null,
       steps_json text not null,
+      title text default '',
+      body text default '',
+      draft integer not null default 0,
+      integration_lane_name text default '',
+      status text not null default 'proposed',
+      integration_lane_id text,
+      resolution_state_json text,
+      pairwise_results_json text not null default '[]',
+      lane_summaries_json text not null default '[]',
       overall_outcome text not null,
       created_at text not null,
       foreign key(project_id) references projects(id)
     )
   `);
   db.run("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)");
-  addColumnIfMissing(db, "integration_proposals", "title text default ''", "title");
-  addColumnIfMissing(db, "integration_proposals", "body text default ''", "body");
-  addColumnIfMissing(db, "integration_proposals", "draft integer not null default 0", "draft");
-  addColumnIfMissing(db, "integration_proposals", "integration_lane_name text default ''", "integration_lane_name");
-  addColumnIfMissing(db, "integration_proposals", "status text not null default 'proposed'", "status");
-  addColumnIfMissing(db, "integration_proposals", "integration_lane_id text", "integration_lane_id");
-  addColumnIfMissing(db, "integration_proposals", "resolution_state_json text", "resolution_state_json");
-  addColumnIfMissing(db, "integration_proposals", "pairwise_results_json text not null default '[]'", "pairwise_results_json");
-  addColumnIfMissing(db, "integration_proposals", "lane_summaries_json text not null default '[]'", "lane_summaries_json");
 
   // Queue landing state table (crash recovery for sequential landing)
   db.run(`
@@ -927,24 +644,9 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_missions_project_updated on missions(project_id, updated_at)",
-    "missions",
-    ["project_id", "updated_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_missions_project_status on missions(project_id, status)",
-    "missions",
-    ["project_id", "status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_missions_project_lane on missions(project_id, lane_id)",
-    "missions",
-    ["project_id", "lane_id"]
-  );
+  db.run("create index if not exists idx_missions_project_updated on missions(project_id, updated_at)");
+  db.run("create index if not exists idx_missions_project_status on missions(project_id, status)");
+  db.run("create index if not exists idx_missions_project_lane on missions(project_id, lane_id)");
 
   db.run(`
     create table if not exists mission_steps (
@@ -968,18 +670,8 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_steps_mission_index on mission_steps(mission_id, step_index)",
-    "mission_steps",
-    ["mission_id", "step_index"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_steps_project_status on mission_steps(project_id, status)",
-    "mission_steps",
-    ["project_id", "status"]
-  );
+  db.run("create index if not exists idx_mission_steps_mission_index on mission_steps(mission_id, step_index)");
+  db.run("create index if not exists idx_mission_steps_project_status on mission_steps(project_id, status)");
 
   db.run(`
     create table if not exists mission_events (
@@ -995,18 +687,8 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_events_mission_created on mission_events(mission_id, created_at)",
-    "mission_events",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_events_project_created on mission_events(project_id, created_at)",
-    "mission_events",
-    ["project_id", "created_at"]
-  );
+  db.run("create index if not exists idx_mission_events_mission_created on mission_events(mission_id, created_at)");
+  db.run("create index if not exists idx_mission_events_project_created on mission_events(project_id, created_at)");
 
   db.run(`
     create table if not exists mission_artifacts (
@@ -1027,12 +709,7 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_artifacts_mission_created on mission_artifacts(mission_id, created_at)",
-    "mission_artifacts",
-    ["mission_id", "created_at"]
-  );
+  db.run("create index if not exists idx_mission_artifacts_mission_created on mission_artifacts(mission_id, created_at)");
 
   db.run(`
     create table if not exists mission_interventions (
@@ -1055,18 +732,8 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_interventions_mission_status on mission_interventions(mission_id, status)",
-    "mission_interventions",
-    ["mission_id", "status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_interventions_project_status on mission_interventions(project_id, status)",
-    "mission_interventions",
-    ["project_id", "status"]
-  );
+  db.run("create index if not exists idx_mission_interventions_mission_status on mission_interventions(mission_id, status)");
+  db.run("create index if not exists idx_mission_interventions_project_status on mission_interventions(project_id, status)");
 
   // Phase 3: mission phases engine + profile storage.
   db.run(`
@@ -1092,12 +759,7 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_phase_cards_project_position on phase_cards(project_id, position)",
-    "phase_cards",
-    ["project_id", "position"]
-  );
+  db.run("create index if not exists idx_phase_cards_project_position on phase_cards(project_id, position)");
 
   db.run(`
     create table if not exists phase_profiles (
@@ -1114,18 +776,8 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_phase_profiles_project_updated on phase_profiles(project_id, updated_at)",
-    "phase_profiles",
-    ["project_id", "updated_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_phase_profiles_project_default on phase_profiles(project_id, is_default)",
-    "phase_profiles",
-    ["project_id", "is_default"]
-  );
+  db.run("create index if not exists idx_phase_profiles_project_updated on phase_profiles(project_id, updated_at)");
+  db.run("create index if not exists idx_phase_profiles_project_default on phase_profiles(project_id, is_default)");
 
   db.run(`
     create table if not exists mission_phase_overrides (
@@ -1142,18 +794,8 @@ function migrate(db: Database) {
       foreign key(profile_id) references phase_profiles(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_phase_overrides_project_mission on mission_phase_overrides(project_id, mission_id)",
-    "mission_phase_overrides",
-    ["project_id", "mission_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_phase_overrides_profile on mission_phase_overrides(profile_id)",
-    "mission_phase_overrides",
-    ["profile_id"]
-  );
+  db.run("create index if not exists idx_mission_phase_overrides_project_mission on mission_phase_overrides(project_id, mission_id)");
+  db.run("create index if not exists idx_mission_phase_overrides_profile on mission_phase_overrides(profile_id)");
 
   // Phase 1.5 orchestrator/context hardening gate.
   db.run(`
@@ -1175,24 +817,9 @@ function migrate(db: Database) {
       foreign key(mission_id) references missions(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_runs_project_status on orchestrator_runs(project_id, status)",
-    "orchestrator_runs",
-    ["project_id", "status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_runs_mission on orchestrator_runs(mission_id)",
-    "orchestrator_runs",
-    ["mission_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_runs_project_updated on orchestrator_runs(project_id, updated_at)",
-    "orchestrator_runs",
-    ["project_id", "updated_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_runs_project_status on orchestrator_runs(project_id, status)");
+  db.run("create index if not exists idx_orchestrator_runs_mission on orchestrator_runs(mission_id)");
+  db.run("create index if not exists idx_orchestrator_runs_project_updated on orchestrator_runs(project_id, updated_at)");
 
   db.run(`
     create table if not exists orchestrator_steps (
@@ -1224,24 +851,9 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_steps_run_status on orchestrator_steps(run_id, status)",
-    "orchestrator_steps",
-    ["run_id", "status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_steps_project_status on orchestrator_steps(project_id, status)",
-    "orchestrator_steps",
-    ["project_id", "status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_steps_run_order on orchestrator_steps(run_id, step_index)",
-    "orchestrator_steps",
-    ["run_id", "step_index"]
-  );
+  db.run("create index if not exists idx_orchestrator_steps_run_status on orchestrator_steps(run_id, status)");
+  db.run("create index if not exists idx_orchestrator_steps_project_status on orchestrator_steps(project_id, status)");
+  db.run("create index if not exists idx_orchestrator_steps_run_order on orchestrator_steps(run_id, step_index)");
 
   db.run(`
     create table if not exists orchestrator_attempts (
@@ -1271,24 +883,9 @@ function migrate(db: Database) {
       foreign key(context_snapshot_id) references orchestrator_context_snapshots(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_attempts_run_status on orchestrator_attempts(run_id, status)",
-    "orchestrator_attempts",
-    ["run_id", "status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_attempts_step_status on orchestrator_attempts(step_id, status)",
-    "orchestrator_attempts",
-    ["step_id", "status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_attempts_project_created on orchestrator_attempts(project_id, created_at)",
-    "orchestrator_attempts",
-    ["project_id", "created_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_attempts_run_status on orchestrator_attempts(run_id, status)");
+  db.run("create index if not exists idx_orchestrator_attempts_step_status on orchestrator_attempts(step_id, status)");
+  db.run("create index if not exists idx_orchestrator_attempts_project_created on orchestrator_attempts(project_id, created_at)");
 
   db.run(`
     create table if not exists orchestrator_attempt_runtime (
@@ -1307,18 +904,8 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_attempt_runtime_session on orchestrator_attempt_runtime(session_id)",
-    "orchestrator_attempt_runtime",
-    ["session_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_attempt_runtime_updated on orchestrator_attempt_runtime(updated_at)",
-    "orchestrator_attempt_runtime",
-    ["updated_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_attempt_runtime_session on orchestrator_attempt_runtime(session_id)");
+  db.run("create index if not exists idx_orchestrator_attempt_runtime_updated on orchestrator_attempt_runtime(updated_at)");
 
   db.run(`
     create table if not exists orchestrator_runtime_events (
@@ -1339,30 +926,10 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_runtime_events_run_occurred on orchestrator_runtime_events(run_id, occurred_at)",
-    "orchestrator_runtime_events",
-    ["run_id", "occurred_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_runtime_events_attempt_occurred on orchestrator_runtime_events(attempt_id, occurred_at)",
-    "orchestrator_runtime_events",
-    ["attempt_id", "occurred_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_runtime_events_session_occurred on orchestrator_runtime_events(session_id, occurred_at)",
-    "orchestrator_runtime_events",
-    ["session_id", "occurred_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)",
-    "orchestrator_runtime_events",
-    ["project_id", "event_key"]
-  );
+  db.run("create index if not exists idx_orchestrator_runtime_events_run_occurred on orchestrator_runtime_events(run_id, occurred_at)");
+  db.run("create index if not exists idx_orchestrator_runtime_events_attempt_occurred on orchestrator_runtime_events(attempt_id, occurred_at)");
+  db.run("create index if not exists idx_orchestrator_runtime_events_session_occurred on orchestrator_runtime_events(session_id, occurred_at)");
+  db.run("create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)");
 
   db.run(`
     create table if not exists orchestrator_claims (
@@ -1387,24 +954,9 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_claims_run_state on orchestrator_claims(run_id, state)",
-    "orchestrator_claims",
-    ["run_id", "state"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_claims_scope_state on orchestrator_claims(project_id, scope_kind, scope_value, state)",
-    "orchestrator_claims",
-    ["project_id", "scope_kind", "scope_value", "state"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_claims_expires on orchestrator_claims(state, expires_at)",
-    "orchestrator_claims",
-    ["state", "expires_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_claims_run_state on orchestrator_claims(run_id, state)");
+  db.run("create index if not exists idx_orchestrator_claims_scope_state on orchestrator_claims(project_id, scope_kind, scope_value, state)");
+  db.run("create index if not exists idx_orchestrator_claims_expires on orchestrator_claims(state, expires_at)");
   db.run(
     "create unique index if not exists idx_orchestrator_claims_active_scope on orchestrator_claims(project_id, scope_kind, scope_value) where state = 'active'"
   );
@@ -1426,18 +978,8 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_context_snapshots_run_created on orchestrator_context_snapshots(run_id, created_at)",
-    "orchestrator_context_snapshots",
-    ["run_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_context_snapshots_attempt on orchestrator_context_snapshots(attempt_id)",
-    "orchestrator_context_snapshots",
-    ["attempt_id"]
-  );
+  db.run("create index if not exists idx_orchestrator_context_snapshots_run_created on orchestrator_context_snapshots(run_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_context_snapshots_attempt on orchestrator_context_snapshots(attempt_id)");
 
   db.run(`
     create table if not exists mission_step_handoffs (
@@ -1460,24 +1002,9 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_step_handoffs_mission_created on mission_step_handoffs(mission_id, created_at)",
-    "mission_step_handoffs",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_step_handoffs_step_created on mission_step_handoffs(mission_step_id, created_at)",
-    "mission_step_handoffs",
-    ["mission_step_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_step_handoffs_attempt on mission_step_handoffs(attempt_id)",
-    "mission_step_handoffs",
-    ["attempt_id"]
-  );
+  db.run("create index if not exists idx_mission_step_handoffs_mission_created on mission_step_handoffs(mission_id, created_at)");
+  db.run("create index if not exists idx_mission_step_handoffs_step_created on mission_step_handoffs(mission_step_id, created_at)");
+  db.run("create index if not exists idx_mission_step_handoffs_attempt on mission_step_handoffs(attempt_id)");
 
   // Phase 2 orchestrator runtime v2: durable timeline + quality gate snapshots.
   db.run(`
@@ -1499,24 +1026,9 @@ function migrate(db: Database) {
       foreign key(claim_id) references orchestrator_claims(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_timeline_run_created on orchestrator_timeline_events(run_id, created_at)",
-    "orchestrator_timeline_events",
-    ["run_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_timeline_attempt on orchestrator_timeline_events(attempt_id)",
-    "orchestrator_timeline_events",
-    ["attempt_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_timeline_project_created on orchestrator_timeline_events(project_id, created_at)",
-    "orchestrator_timeline_events",
-    ["project_id", "created_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_timeline_run_created on orchestrator_timeline_events(run_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_timeline_attempt on orchestrator_timeline_events(attempt_id)");
+  db.run("create index if not exists idx_orchestrator_timeline_project_created on orchestrator_timeline_events(project_id, created_at)");
 
   db.run(`
     create table if not exists orchestrator_gate_reports (
@@ -1527,12 +1039,7 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_gate_reports_project_generated on orchestrator_gate_reports(project_id, generated_at)",
-    "orchestrator_gate_reports",
-    ["project_id", "generated_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_gate_reports_project_generated on orchestrator_gate_reports(project_id, generated_at)");
 
   // Big-bang orchestrator overhaul: threaded chat, digest/checkpoint, lane decisions, and mission metrics.
   db.run(`
@@ -1561,30 +1068,10 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_threads_mission_updated on orchestrator_chat_threads(mission_id, updated_at)",
-    "orchestrator_chat_threads",
-    ["mission_id", "updated_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_threads_project_mission on orchestrator_chat_threads(project_id, mission_id)",
-    "orchestrator_chat_threads",
-    ["project_id", "mission_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_threads_mission_type on orchestrator_chat_threads(mission_id, thread_type)",
-    "orchestrator_chat_threads",
-    ["mission_id", "thread_type"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_threads_lane on orchestrator_chat_threads(lane_id)",
-    "orchestrator_chat_threads",
-    ["lane_id"]
-  );
+  db.run("create index if not exists idx_orchestrator_chat_threads_mission_updated on orchestrator_chat_threads(mission_id, updated_at)");
+  db.run("create index if not exists idx_orchestrator_chat_threads_project_mission on orchestrator_chat_threads(project_id, mission_id)");
+  db.run("create index if not exists idx_orchestrator_chat_threads_mission_type on orchestrator_chat_threads(mission_id, thread_type)");
+  db.run("create index if not exists idx_orchestrator_chat_threads_lane on orchestrator_chat_threads(lane_id)");
 
   db.run(`
     create table if not exists orchestrator_chat_messages (
@@ -1613,36 +1100,11 @@ function migrate(db: Database) {
       foreign key(run_id) references orchestrator_runs(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_messages_thread_ts on orchestrator_chat_messages(thread_id, timestamp)",
-    "orchestrator_chat_messages",
-    ["thread_id", "timestamp"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_messages_mission_ts on orchestrator_chat_messages(mission_id, timestamp)",
-    "orchestrator_chat_messages",
-    ["mission_id", "timestamp"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_messages_attempt_ts on orchestrator_chat_messages(attempt_id, timestamp)",
-    "orchestrator_chat_messages",
-    ["attempt_id", "timestamp"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_messages_lane_ts on orchestrator_chat_messages(lane_id, timestamp)",
-    "orchestrator_chat_messages",
-    ["lane_id", "timestamp"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_chat_messages_delivery_queue on orchestrator_chat_messages(delivery_state, role, mission_id, thread_id, timestamp)",
-    "orchestrator_chat_messages",
-    ["delivery_state", "role", "mission_id", "thread_id", "timestamp"]
-  );
+  db.run("create index if not exists idx_orchestrator_chat_messages_thread_ts on orchestrator_chat_messages(thread_id, timestamp)");
+  db.run("create index if not exists idx_orchestrator_chat_messages_mission_ts on orchestrator_chat_messages(mission_id, timestamp)");
+  db.run("create index if not exists idx_orchestrator_chat_messages_attempt_ts on orchestrator_chat_messages(attempt_id, timestamp)");
+  db.run("create index if not exists idx_orchestrator_chat_messages_lane_ts on orchestrator_chat_messages(lane_id, timestamp)");
+  db.run("create index if not exists idx_orchestrator_chat_messages_delivery_queue on orchestrator_chat_messages(delivery_state, role, mission_id, thread_id, timestamp)");
 
   db.run(`
     create table if not exists orchestrator_worker_digests (
@@ -1672,30 +1134,10 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_worker_digests_mission_created on orchestrator_worker_digests(mission_id, created_at)",
-    "orchestrator_worker_digests",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_worker_digests_run_created on orchestrator_worker_digests(run_id, created_at)",
-    "orchestrator_worker_digests",
-    ["run_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_worker_digests_attempt on orchestrator_worker_digests(attempt_id)",
-    "orchestrator_worker_digests",
-    ["attempt_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_worker_digests_lane_created on orchestrator_worker_digests(lane_id, created_at)",
-    "orchestrator_worker_digests",
-    ["lane_id", "created_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_worker_digests_mission_created on orchestrator_worker_digests(mission_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_worker_digests_run_created on orchestrator_worker_digests(run_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_worker_digests_attempt on orchestrator_worker_digests(attempt_id)");
+  db.run("create index if not exists idx_orchestrator_worker_digests_lane_created on orchestrator_worker_digests(lane_id, created_at)");
 
   db.run(`
     create table if not exists orchestrator_artifacts (
@@ -1718,24 +1160,9 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_artifacts_mission_created on orchestrator_artifacts(mission_id, created_at)",
-    "orchestrator_artifacts",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_artifacts_step on orchestrator_artifacts(step_id)",
-    "orchestrator_artifacts",
-    ["step_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_artifacts_mission_key on orchestrator_artifacts(mission_id, artifact_key)",
-    "orchestrator_artifacts",
-    ["mission_id", "artifact_key"]
-  );
+  db.run("create index if not exists idx_orchestrator_artifacts_mission_created on orchestrator_artifacts(mission_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_artifacts_step on orchestrator_artifacts(step_id)");
+  db.run("create index if not exists idx_orchestrator_artifacts_mission_key on orchestrator_artifacts(mission_id, artifact_key)");
 
   db.run(`
     create table if not exists orchestrator_context_checkpoints (
@@ -1752,18 +1179,8 @@ function migrate(db: Database) {
       foreign key(run_id) references orchestrator_runs(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_context_checkpoints_mission_created on orchestrator_context_checkpoints(mission_id, created_at)",
-    "orchestrator_context_checkpoints",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_context_checkpoints_run_created on orchestrator_context_checkpoints(run_id, created_at)",
-    "orchestrator_context_checkpoints",
-    ["run_id", "created_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_context_checkpoints_mission_created on orchestrator_context_checkpoints(mission_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_context_checkpoints_run_created on orchestrator_context_checkpoints(run_id, created_at)");
 
   db.run(`
     create table if not exists orchestrator_worker_checkpoints (
@@ -1785,24 +1202,9 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_worker_checkpoints_mission_step_key on orchestrator_worker_checkpoints(mission_id, step_key)",
-    "orchestrator_worker_checkpoints",
-    ["mission_id", "step_key"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_worker_checkpoints_run on orchestrator_worker_checkpoints(run_id)",
-    "orchestrator_worker_checkpoints",
-    ["run_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_worker_checkpoints_mission on orchestrator_worker_checkpoints(mission_id, updated_at)",
-    "orchestrator_worker_checkpoints",
-    ["mission_id", "updated_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_worker_checkpoints_mission_step_key on orchestrator_worker_checkpoints(mission_id, step_key)");
+  db.run("create index if not exists idx_orchestrator_worker_checkpoints_run on orchestrator_worker_checkpoints(run_id)");
+  db.run("create index if not exists idx_orchestrator_worker_checkpoints_mission on orchestrator_worker_checkpoints(mission_id, updated_at)");
 
   db.run(`
     create table if not exists orchestrator_lane_decisions (
@@ -1826,30 +1228,10 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_lane_decisions_mission_created on orchestrator_lane_decisions(mission_id, created_at)",
-    "orchestrator_lane_decisions",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_lane_decisions_run_created on orchestrator_lane_decisions(run_id, created_at)",
-    "orchestrator_lane_decisions",
-    ["run_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_lane_decisions_step_created on orchestrator_lane_decisions(step_id, created_at)",
-    "orchestrator_lane_decisions",
-    ["step_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_lane_decisions_lane_created on orchestrator_lane_decisions(lane_id, created_at)",
-    "orchestrator_lane_decisions",
-    ["lane_id", "created_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_lane_decisions_mission_created on orchestrator_lane_decisions(mission_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_lane_decisions_run_created on orchestrator_lane_decisions(run_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_lane_decisions_step_created on orchestrator_lane_decisions(step_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_lane_decisions_lane_created on orchestrator_lane_decisions(lane_id, created_at)");
 
   db.run(`
     create table if not exists orchestrator_ai_decisions (
@@ -1880,36 +1262,11 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_mission_created on orchestrator_ai_decisions(mission_id, created_at)",
-    "orchestrator_ai_decisions",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_run_created on orchestrator_ai_decisions(run_id, created_at)",
-    "orchestrator_ai_decisions",
-    ["run_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_step_created on orchestrator_ai_decisions(step_id, created_at)",
-    "orchestrator_ai_decisions",
-    ["step_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_project_category_created on orchestrator_ai_decisions(project_id, call_type, created_at)",
-    "orchestrator_ai_decisions",
-    ["project_id", "call_type", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_created on orchestrator_ai_decisions(created_at)",
-    "orchestrator_ai_decisions",
-    ["created_at"]
-  );
+  db.run("create index if not exists idx_orchestrator_ai_decisions_mission_created on orchestrator_ai_decisions(mission_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_ai_decisions_run_created on orchestrator_ai_decisions(run_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_ai_decisions_step_created on orchestrator_ai_decisions(step_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_ai_decisions_project_category_created on orchestrator_ai_decisions(project_id, call_type, created_at)");
+  db.run("create index if not exists idx_orchestrator_ai_decisions_created on orchestrator_ai_decisions(created_at)");
 
   db.run(`
     create table if not exists mission_metrics_config (
@@ -1921,12 +1278,7 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_mission_metrics_config_project_updated on mission_metrics_config(project_id, updated_at)",
-    "mission_metrics_config",
-    ["project_id", "updated_at"]
-  );
+  db.run("create index if not exists idx_mission_metrics_config_project_updated on mission_metrics_config(project_id, updated_at)");
 
   db.run(`
     create table if not exists orchestrator_metrics_samples (
@@ -1946,191 +1298,9 @@ function migrate(db: Database) {
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_metrics_samples_mission_created on orchestrator_metrics_samples(mission_id, created_at)",
-    "orchestrator_metrics_samples",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_metrics_samples_run_created on orchestrator_metrics_samples(run_id, created_at)",
-    "orchestrator_metrics_samples",
-    ["run_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_metrics_samples_metric_created on orchestrator_metrics_samples(metric, created_at)",
-    "orchestrator_metrics_samples",
-    ["metric", "created_at"]
-  );
-
-  // Legacy compatibility hardening for orchestrator tables created before recent schema expansions.
-  addColumnIfMissing(db, "orchestrator_runs", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
-  addColumnIfMissing(db, "orchestrator_runs", "scheduler_state text not null default 'queued'", "scheduler_state");
-  addColumnIfMissing(db, "orchestrator_runs", "runtime_cursor_json text", "runtime_cursor_json");
-  addColumnIfMissing(db, "orchestrator_runs", "last_error text", "last_error");
-  addColumnIfMissing(db, "orchestrator_runs", "metadata_json text", "metadata_json");
-  addColumnIfMissing(db, "orchestrator_runs", "started_at text", "started_at");
-  addColumnIfMissing(db, "orchestrator_runs", "completed_at text", "completed_at");
-
-  addColumnIfMissing(db, "orchestrator_steps", "mission_step_id text", "mission_step_id");
-  addColumnIfMissing(db, "orchestrator_steps", "join_policy text not null default 'all_success'", "join_policy");
-  addColumnIfMissing(db, "orchestrator_steps", "quorum_count integer", "quorum_count");
-  addColumnIfMissing(db, "orchestrator_steps", "dependency_step_ids_json text not null default '[]'", "dependency_step_ids_json");
-  addColumnIfMissing(db, "orchestrator_steps", "retry_limit integer not null default 0", "retry_limit");
-  addColumnIfMissing(db, "orchestrator_steps", "retry_count integer not null default 0", "retry_count");
-  addColumnIfMissing(db, "orchestrator_steps", "last_attempt_id text", "last_attempt_id");
-  addColumnIfMissing(db, "orchestrator_steps", "policy_json text", "policy_json");
-  addColumnIfMissing(db, "orchestrator_steps", "metadata_json text", "metadata_json");
-  addColumnIfMissing(db, "orchestrator_steps", "started_at text", "started_at");
-  addColumnIfMissing(db, "orchestrator_steps", "completed_at text", "completed_at");
-
-  addColumnIfMissing(db, "orchestrator_attempts", "executor_session_id text", "executor_session_id");
-  addColumnIfMissing(db, "orchestrator_attempts", "tracked_session_enforced integer not null default 1", "tracked_session_enforced");
-  addColumnIfMissing(db, "orchestrator_attempts", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
-  addColumnIfMissing(db, "orchestrator_attempts", "context_snapshot_id text", "context_snapshot_id");
-  addColumnIfMissing(db, "orchestrator_attempts", "error_class text not null default 'none'", "error_class");
-  addColumnIfMissing(db, "orchestrator_attempts", "error_message text", "error_message");
-  addColumnIfMissing(db, "orchestrator_attempts", "retry_backoff_ms integer not null default 0", "retry_backoff_ms");
-  addColumnIfMissing(db, "orchestrator_attempts", "result_envelope_json text", "result_envelope_json");
-  addColumnIfMissing(db, "orchestrator_attempts", "metadata_json text", "metadata_json");
-  addColumnIfMissing(db, "orchestrator_attempts", "started_at text", "started_at");
-  addColumnIfMissing(db, "orchestrator_attempts", "completed_at text", "completed_at");
-
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "session_id text", "session_id");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "runtime_state text", "runtime_state");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_signal_at text", "last_signal_at");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_output_preview text", "last_output_preview");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_preview_digest text", "last_preview_digest");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "digest_since_ms integer not null default 0", "digest_since_ms");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "repeat_count integer not null default 0", "repeat_count");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_waiting_intervention_at_ms integer not null default 0", "last_waiting_intervention_at_ms");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_event_heartbeat_at_ms integer not null default 0", "last_event_heartbeat_at_ms");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_waiting_notified_at_ms integer not null default 0", "last_waiting_notified_at_ms");
-  addColumnIfMissing(db, "orchestrator_attempt_runtime", "updated_at text not null default ''", "updated_at");
-
-  addColumnIfMissing(db, "orchestrator_runtime_events", "step_id text", "step_id");
-  addColumnIfMissing(db, "orchestrator_runtime_events", "attempt_id text", "attempt_id");
-  addColumnIfMissing(db, "orchestrator_runtime_events", "session_id text", "session_id");
-  addColumnIfMissing(db, "orchestrator_runtime_events", "event_key text", "event_key");
-  addColumnIfMissing(db, "orchestrator_runtime_events", "occurred_at text", "occurred_at");
-  addColumnIfMissing(db, "orchestrator_runtime_events", "payload_json text", "payload_json");
-  addColumnIfMissing(db, "orchestrator_runtime_events", "created_at text", "created_at");
-  createIndexIfColumnsExist(
-    db,
-    "create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)",
-    "orchestrator_runtime_events",
-    ["project_id", "event_key"]
-  );
-
-  addColumnIfMissing(db, "orchestrator_claims", "step_id text", "step_id");
-  addColumnIfMissing(db, "orchestrator_claims", "attempt_id text", "attempt_id");
-  addColumnIfMissing(db, "orchestrator_claims", "released_at text", "released_at");
-  addColumnIfMissing(db, "orchestrator_claims", "policy_json text", "policy_json");
-  addColumnIfMissing(db, "orchestrator_claims", "metadata_json text", "metadata_json");
-
-  addColumnIfMissing(db, "orchestrator_context_snapshots", "step_id text", "step_id");
-  addColumnIfMissing(db, "orchestrator_context_snapshots", "attempt_id text", "attempt_id");
-  addColumnIfMissing(db, "orchestrator_context_snapshots", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
-  addColumnIfMissing(db, "orchestrator_context_snapshots", "cursor_json text not null default '{}'", "cursor_json");
-
-  addColumnIfMissing(db, "orchestrator_timeline_events", "step_id text", "step_id");
-  addColumnIfMissing(db, "orchestrator_timeline_events", "attempt_id text", "attempt_id");
-  addColumnIfMissing(db, "orchestrator_timeline_events", "claim_id text", "claim_id");
-  addColumnIfMissing(db, "orchestrator_timeline_events", "detail_json text", "detail_json");
-
-  addColumnIfMissing(db, "orchestrator_chat_threads", "run_id text", "run_id");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "step_id text", "step_id");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "step_key text", "step_key");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "attempt_id text", "attempt_id");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "session_id text", "session_id");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "lane_id text", "lane_id");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "status text not null default 'active'", "status");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "unread_count integer not null default 0", "unread_count");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "metadata_json text", "metadata_json");
-  addColumnIfMissing(db, "orchestrator_chat_threads", "updated_at text not null default ''", "updated_at");
-
-  addColumnIfMissing(db, "orchestrator_chat_messages", "step_key text", "step_key");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "target_json text", "target_json");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "visibility text not null default 'full'", "visibility");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "delivery_state text not null default 'delivered'", "delivery_state");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "source_session_id text", "source_session_id");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "attempt_id text", "attempt_id");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "lane_id text", "lane_id");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "run_id text", "run_id");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "metadata_json text", "metadata_json");
-  addColumnIfMissing(db, "orchestrator_chat_messages", "created_at text not null default ''", "created_at");
-
-  addColumnIfMissing(db, "orchestrator_worker_digests", "step_key text", "step_key");
-  addColumnIfMissing(db, "orchestrator_worker_digests", "lane_id text", "lane_id");
-  addColumnIfMissing(db, "orchestrator_worker_digests", "session_id text", "session_id");
-  addColumnIfMissing(db, "orchestrator_worker_digests", "tokens_json text", "tokens_json");
-  addColumnIfMissing(db, "orchestrator_worker_digests", "cost_usd real", "cost_usd");
-  addColumnIfMissing(db, "orchestrator_worker_digests", "suggested_next_actions_json text not null default '[]'", "suggested_next_actions_json");
-
-  addColumnIfMissing(db, "orchestrator_context_checkpoints", "run_id text", "run_id");
-  addColumnIfMissing(db, "orchestrator_lane_decisions", "run_id text", "run_id");
-  addColumnIfMissing(db, "orchestrator_lane_decisions", "step_id text", "step_id");
-  addColumnIfMissing(db, "orchestrator_lane_decisions", "step_key text", "step_key");
-  addColumnIfMissing(db, "orchestrator_lane_decisions", "lane_id text", "lane_id");
-  addColumnIfMissing(db, "orchestrator_lane_decisions", "metadata_json text", "metadata_json");
-
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "project_id text not null default ''", "project_id");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "mission_id text not null default ''", "mission_id");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "run_id text", "run_id");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "step_id text", "step_id");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "attempt_id text", "attempt_id");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "call_type text not null default 'unknown'", "call_type");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "provider text", "provider");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "model text", "model");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "timeout_cap_ms integer", "timeout_cap_ms");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "decision_json text not null default '{}'", "decision_json");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "action_trace_json text", "action_trace_json");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "validation_json text", "validation_json");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "rationale text", "rationale");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "fallback_used integer not null default 0", "fallback_used");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "failure_reason text", "failure_reason");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "duration_ms integer", "duration_ms");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "prompt_tokens integer", "prompt_tokens");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "completion_tokens integer", "completion_tokens");
-  addColumnIfMissing(db, "orchestrator_ai_decisions", "created_at text not null default ''", "created_at");
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_mission_created on orchestrator_ai_decisions(mission_id, created_at)",
-    "orchestrator_ai_decisions",
-    ["mission_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_run_created on orchestrator_ai_decisions(run_id, created_at)",
-    "orchestrator_ai_decisions",
-    ["run_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_step_created on orchestrator_ai_decisions(step_id, created_at)",
-    "orchestrator_ai_decisions",
-    ["step_id", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_project_category_created on orchestrator_ai_decisions(project_id, call_type, created_at)",
-    "orchestrator_ai_decisions",
-    ["project_id", "call_type", "created_at"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_ai_decisions_created on orchestrator_ai_decisions(created_at)",
-    "orchestrator_ai_decisions",
-    ["created_at"]
-  );
-
-  addColumnIfMissing(db, "mission_metrics_config", "project_id text", "project_id");
-  addColumnIfMissing(db, "orchestrator_metrics_samples", "run_id text", "run_id");
-  addColumnIfMissing(db, "orchestrator_metrics_samples", "attempt_id text", "attempt_id");
-  addColumnIfMissing(db, "orchestrator_metrics_samples", "unit text", "unit");
-  addColumnIfMissing(db, "orchestrator_metrics_samples", "metadata_json text", "metadata_json");
+  db.run("create index if not exists idx_orchestrator_metrics_samples_mission_created on orchestrator_metrics_samples(mission_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_metrics_samples_run_created on orchestrator_metrics_samples(run_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_metrics_samples_metric_created on orchestrator_metrics_samples(metric, created_at)");
 
   // WS8 Memory & Context Enhancement System.
   db.run(`
@@ -2143,48 +1313,21 @@ function migrate(db: Database) {
       importance text default 'medium',
       source_session_id text,
       source_pack_key text,
+      status text default 'promoted',
+      agent_id text,
+      confidence real default 1.0,
+      promoted_at text,
+      source_run_id text,
       created_at text not null,
       last_accessed_at text not null,
       access_count integer default 0
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_memories_project_scope on memories(project_id, scope)",
-    "memories",
-    ["project_id", "scope"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_memories_project_importance on memories(project_id, importance)",
-    "memories",
-    ["project_id", "importance"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_memories_last_accessed on memories(last_accessed_at)",
-    "memories",
-    ["last_accessed_at"]
-  );
-
-  // WS7 Memory promotion flow: add status, agent_id, confidence, promoted_at, source_run_id columns.
-  addColumnIfMissing(db, "memories", "status text default 'promoted'", "status");
-  addColumnIfMissing(db, "memories", "agent_id text", "agent_id");
-  addColumnIfMissing(db, "memories", "confidence real default 1.0", "confidence");
-  addColumnIfMissing(db, "memories", "promoted_at text", "promoted_at");
-  addColumnIfMissing(db, "memories", "source_run_id text", "source_run_id");
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_memories_status on memories(project_id, status)",
-    "memories",
-    ["project_id", "status"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_memories_agent on memories(agent_id)",
-    "memories",
-    ["agent_id"]
-  );
+  db.run("create index if not exists idx_memories_project_scope on memories(project_id, scope)");
+  db.run("create index if not exists idx_memories_project_importance on memories(project_id, importance)");
+  db.run("create index if not exists idx_memories_last_accessed on memories(last_accessed_at)");
+  db.run("create index if not exists idx_memories_status on memories(project_id, status)");
+  db.run("create index if not exists idx_memories_agent on memories(agent_id)");
 
   // WS7 Agent identities table (schema placeholder for future).
   db.run(`
@@ -2202,12 +1345,7 @@ function migrate(db: Database) {
       updated_at text not null
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_agent_identities_project on agent_identities(project_id)",
-    "agent_identities",
-    ["project_id"]
-  );
+  db.run("create index if not exists idx_agent_identities_project on agent_identities(project_id)");
 
   db.run(`
     create table if not exists orchestrator_shared_facts (
@@ -2219,18 +1357,8 @@ function migrate(db: Database) {
       created_at text not null
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_shared_facts_run on orchestrator_shared_facts(run_id)",
-    "orchestrator_shared_facts",
-    ["run_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_shared_facts_run_type on orchestrator_shared_facts(run_id, fact_type)",
-    "orchestrator_shared_facts",
-    ["run_id", "fact_type"]
-  );
+  db.run("create index if not exists idx_orchestrator_shared_facts_run on orchestrator_shared_facts(run_id)");
+  db.run("create index if not exists idx_orchestrator_shared_facts_run_type on orchestrator_shared_facts(run_id, fact_type)");
 
   // Team runtime: persistent team member registry for agent-team orchestration.
   db.run(`
@@ -2251,24 +1379,9 @@ function migrate(db: Database) {
       foreign key(mission_id) references missions(id)
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_team_members_run on orchestrator_team_members(run_id)",
-    "orchestrator_team_members",
-    ["run_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_team_members_mission on orchestrator_team_members(mission_id)",
-    "orchestrator_team_members",
-    ["mission_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_orchestrator_team_members_status on orchestrator_team_members(run_id, status)",
-    "orchestrator_team_members",
-    ["run_id", "status"]
-  );
+  db.run("create index if not exists idx_orchestrator_team_members_run on orchestrator_team_members(run_id)");
+  db.run("create index if not exists idx_orchestrator_team_members_mission on orchestrator_team_members(mission_id)");
+  db.run("create index if not exists idx_orchestrator_team_members_status on orchestrator_team_members(run_id, status)");
 
   // Team runtime: durable run-level state for team lifecycle (phase, completion gating).
   db.run(`
@@ -2302,18 +1415,8 @@ function migrate(db: Database) {
       updated_at text not null
     )
   `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_attempt_transcripts_attempt on attempt_transcripts(attempt_id)",
-    "attempt_transcripts",
-    ["attempt_id"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_attempt_transcripts_run on attempt_transcripts(run_id)",
-    "attempt_transcripts",
-    ["run_id"]
-  );
+  db.run("create index if not exists idx_attempt_transcripts_attempt on attempt_transcripts(attempt_id)");
+  db.run("create index if not exists idx_attempt_transcripts_run on attempt_transcripts(run_id)");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

@@ -1,8 +1,8 @@
 # Configuration System Architecture
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-04
 
 The ADE configuration system manages project-level and workspace-level settings through a layered YAML-based approach. It supports shared team configuration, personal local overrides, and a trust model that prevents unauthorized command execution.
 
@@ -177,28 +177,30 @@ testSuites:
 
 # AI configuration (local.yaml only)
 ai:
+  mode: "subscription"             # "guest" | "subscription"
+  defaultProvider: "auto"         # "auto" | "claude" | "codex"
   taskRouting:
     planning:
       provider: "claude"           # "claude" | "codex"
-      model: "sonnet"              # Model identifier
+      model: "anthropic/claude-sonnet-4-6-api"   # Registry model ID
     implementation:
       provider: "codex"
-      model: "gpt-4.1"
+      model: "openai/gpt-5.3-codex"
     review:
       provider: "claude"
-      model: "sonnet"
+      model: "anthropic/claude-sonnet-4-6-api"
     conflict_resolution:
       provider: "claude"
-      model: "sonnet"
+      model: "anthropic/claude-sonnet-4-6-api"
     narrative:
       provider: "claude"
-      model: "haiku"
+      model: "anthropic/claude-haiku-4-5-api"
     pr_description:
       provider: "claude"
-      model: "haiku"
+      model: "anthropic/claude-haiku-4-5-api"
 ```
 
-The `ai` section belongs in `local.yaml` only, since it reflects the individual developer's installed CLI tools and preferences. ADE auto-detects available CLI tools (Claude Code, Codex) and populates provider information automatically. The `taskRouting` section allows per-task-type configuration of which provider and model to use. Model identifiers reference entries in the unified model registry (`src/shared/modelRegistry.ts`), which serves as the single source of truth for all supported models, their capabilities, and pricing (see DATA_MODEL.md for details).
+The `ai` section belongs in `local.yaml` only, since it reflects the individual developer's installed CLI tools and preferences. ADE auto-detects available CLI tools (Claude Code, Codex) and populates provider information automatically. The `taskRouting` section allows per-task-type configuration of which provider and model to use. Model identifiers reference entries in the unified model registry (`src/shared/modelRegistry.ts`), which serves as the single source of truth for all supported models, their capabilities, and pricing (see DATA_MODEL.md for details). Provider mode is derived from `ai.mode`; legacy `providers.mode` values are ignored and stripped on save rather than migrated.
 
 ### Orchestrator Evolution Configuration
 
@@ -482,9 +484,9 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | Run narrative configuration | Done | Enable/disable, model selection |
 | Lane profiles | Not started | Schema designed, runtime not implemented |
 | Lane overlay policies | Done | Implemented via `laneOverlayMatcher.ts` (Phase 4) |
-| Config migration (version upgrades) | Not started | Only version 1 exists currently |
+| Config versioning layer | N/A | Runtime consumes version 1 config shape directly; no legacy provider-mode migration path is maintained |
 
-**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Orchestrator evolution configuration (meta-reasoner, compaction, memory, shared facts, run narrative) is DONE. Lane profiles are NOT YET STARTED. Config migration system is NOT YET STARTED.
+**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Orchestrator evolution configuration (meta-reasoner, compaction, memory, shared facts, run narrative) is DONE. Lane profiles are NOT YET STARTED. Runtime behavior is no-legacy baseline for provider mode handling (`ai.mode` only).
 
 ---
 

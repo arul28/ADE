@@ -18,7 +18,7 @@ import {
 } from "./orchestratorContext";
 import { getMissionMetadata } from "./chatMessageService";
 import type { ModelConfig, OrchestratorCallType, MissionModelConfig } from "../../../shared/types";
-import { resolveCallTypeModel, modelConfigToServiceModel, legacyToModelConfig } from "../../../shared/modelProfiles";
+import { resolveCallTypeModel, modelConfigToServiceModel } from "../../../shared/modelProfiles";
 
 function budgetToEffort(budget: number): "low" | "medium" | "high" {
   return budget < 1000 ? "low" : budget < 5000 ? "medium" : "high";
@@ -96,30 +96,11 @@ function resolveCallTypeConfigUncached(
   return defaults;
 }
 
-export function resolveMissionLaunchPlannerModel(
-  ctx: OrchestratorContext,
-  missionId: string
-): "opus" | "sonnet" | "haiku" | null {
-  const row = ctx.db.get<{ metadata_json: string | null }>(
-    `
-      select metadata_json
-      from missions
-      where id = ?
-      limit 1
-    `,
-    [missionId]
-  );
-  if (!row?.metadata_json) return null;
-  try {
-    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    const launch = isRecord(metadata.launch) ? (metadata.launch as Record<string, unknown>) : null;
-    const raw = typeof launch?.orchestratorModel === "string" ? launch.orchestratorModel.trim().toLowerCase() : "";
-    if (raw === "opus" || raw === "sonnet" || raw === "haiku") return raw;
-    return null;
-  } catch {
-    return null;
-  }
-}
+const DEFAULT_ORCHESTRATOR_MODEL_CONFIG: ModelConfig = {
+  provider: "claude",
+  modelId: "claude-sonnet-4-6",
+  thinkingLevel: "medium"
+};
 
 export function resolveMissionDecisionTimeoutCapMs(
   ctx: OrchestratorContext,
@@ -139,13 +120,12 @@ export function resolveAiDecisionLikeTimeoutMs(
   return null;
 }
 
-/** Resolve a per-call-type ModelConfig from mission metadata, with fallback to legacy model */
+/** Resolve a per-call-type ModelConfig from mission metadata. */
 export function resolveOrchestratorModelConfig(
   ctx: OrchestratorContext,
   missionId: string,
   callType: OrchestratorCallType
 ): ModelConfig {
-  // Try to load full MissionModelConfig from mission metadata
   const metadata = getMissionMetadata(ctx, missionId);
   const missionModelConfig = metadata?.modelConfig as MissionModelConfig | undefined;
 
@@ -157,12 +137,10 @@ export function resolveOrchestratorModelConfig(
     );
   }
 
-  // Fallback: use legacy orchestratorModel from launch metadata
-  const legacyModel = resolveMissionLaunchPlannerModel(ctx, missionId);
-  return legacyToModelConfig(legacyModel);
+  return DEFAULT_ORCHESTRATOR_MODEL_CONFIG;
 }
 
-/** Resolve the orchestrator model for AI decision calls — defaults to "sonnet" (backward compat wrapper) */
+/** Resolve the orchestrator model for AI decision calls. */
 export function resolveOrchestratorModel(
   ctx: OrchestratorContext,
   missionId: string

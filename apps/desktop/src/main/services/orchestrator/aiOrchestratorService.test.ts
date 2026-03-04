@@ -3952,15 +3952,16 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("keeps legacy chat backfill idempotent across repeated startup reconciliation when legacy IDs are missing", async () => {
+  it("ignores legacy metadata chat entries without message IDs during startup reconciliation", async () => {
     const fixture = await createFixture();
     let restartedService: ReturnType<typeof createAiOrchestratorService> | null = null;
     try {
       const mission = fixture.missionService.create({
-        prompt: "Preserve deterministic reconciliation for legacy chat metadata.",
+        prompt: "Legacy metadata entries without IDs should not be imported.",
         laneId: fixture.laneId
       });
       const legacyContent = "legacy-backfill-without-id";
+      const missionThreadId = `mission:${mission.id}`;
       fixture.db.run(
         `
           update missions
@@ -3997,31 +3998,41 @@ describe("aiOrchestratorService", () => {
 
       restartedService = restart();
       await waitFor(() => {
-        const count = fixture.db.get<{ count: number }>(
+        const thread = fixture.db.get<{ id: string }>(
           `
-            select count(1) as count
-            from orchestrator_chat_messages
+            select id
+            from orchestrator_chat_threads
             where mission_id = ?
-              and content = ?
+              and id = ?
           `,
-          [mission.id, legacyContent]
+          [mission.id, missionThreadId]
         );
-        return Number(count?.count ?? 0) === 1;
+        return Boolean(thread?.id);
       });
+      const firstCount = fixture.db.get<{ count: number }>(
+        `
+          select count(1) as count
+          from orchestrator_chat_messages
+          where mission_id = ?
+            and content = ?
+        `,
+        [mission.id, legacyContent]
+      );
+      expect(firstCount?.count).toBe(0);
       restartedService.dispose();
 
       restartedService = restart();
       await waitFor(() => {
-        const count = fixture.db.get<{ count: number }>(
+        const thread = fixture.db.get<{ id: string }>(
           `
-            select count(1) as count
-            from orchestrator_chat_messages
+            select id
+            from orchestrator_chat_threads
             where mission_id = ?
-              and content = ?
+              and id = ?
           `,
-          [mission.id, legacyContent]
+          [mission.id, missionThreadId]
         );
-        return Number(count?.count ?? 0) === 1;
+        return Boolean(thread?.id);
       });
 
       const finalCount = fixture.db.get<{ count: number }>(
@@ -4033,7 +4044,7 @@ describe("aiOrchestratorService", () => {
         `,
         [mission.id, legacyContent]
       );
-      expect(finalCount?.count).toBe(1);
+      expect(finalCount?.count).toBe(0);
     } finally {
       restartedService?.dispose();
       fixture.dispose();

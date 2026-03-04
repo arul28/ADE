@@ -8,7 +8,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
-import { uniqueSorted } from "../shared/utils";
+import { getErrorMessage, toOptionalString, uniqueSorted } from "../shared/utils";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type {
   Checkpoint,
@@ -48,7 +48,8 @@ import type {
   ProjectExportManifestV1,
   ProjectManifestLaneEntryV1,
   SessionDeltaSummary,
-  TestRunStatus
+  TestRunStatus,
+  ContextRefreshTrigger
 } from "../../../shared/types";
 import {
   ADE_INTENT_END,
@@ -171,7 +172,6 @@ export function createPackService({
   const conflictsRootDir = path.join(packsDir, "conflicts");
   const conflictPredictionsDir = path.join(conflictsRootDir, "predictions");
   const getConflictPredictionPath = (laneId: string) => path.join(conflictPredictionsDir, `${laneId}.json`);
-  const getLegacyConflictPredictionPath = (laneId: string) => path.join(conflictsRootDir, `${laneId}.json`);
 
   const versionsDir = path.join(packsDir, "versions");
   const historyDir = path.join(path.dirname(packsDir), "history");
@@ -209,7 +209,6 @@ export function createPackService({
     projectRoot,
     laneService,
     getConflictPredictionPath,
-    getLegacyConflictPredictionPath,
     getLanePackPath
   };
 
@@ -222,7 +221,116 @@ export function createPackService({
   const readContextDocMeta = () => readContextDocMetaImpl(projectRoot);
   const readContextStatus = () => readContextStatusImpl({ db, projectId, projectRoot, packsDir });
 
-  const runContextDocGeneration = (args: ContextGenerateDocsArgs) => runContextDocGenerationImpl(projectPackBuilderDeps, args);
+  type ContextDocRefreshPrefs = {
+    cadence: ContextRefreshTrigger;
+    provider: "codex" | "claude" | "unified";
+    modelId: string | null;
+    reasoningEffort: string | null;
+    updatedAt: string;
+  };
+  const CONTEXT_DOC_PREFS_KEY = "context:docs:preferences.v1";
+  const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
+  const AUTO_REFRESH_MIN_INTERVAL_MS: Record<Exclude<ContextRefreshTrigger, "manual">, number> = {
+    per_mission: 15 * 60_000,
+    per_pr: 15 * 60_000,
+    per_lane_refresh: 45 * 60_000
+  };
+
+  const normalizeRefreshTrigger = (value: unknown): ContextRefreshTrigger => {
+    const normalized = String(value ?? "").trim();
+    if (normalized === "per_mission" || normalized === "per_pr" || normalized === "per_lane_refresh") return normalized;
+    return "manual";
+  };
+
+  const normalizeContextProvider = (value: unknown): "codex" | "claude" | "unified" => {
+    const normalized = String(value ?? "").trim();
+    if (normalized === "codex" || normalized === "claude") return normalized;
+    return "unified";
+  };
+
+  const normalizeOptionalString = toOptionalString;
+
+  const readContextDocRefreshPrefs = (): ContextDocRefreshPrefs | null => {
+    const raw = db.getJson<Record<string, unknown>>(CONTEXT_DOC_PREFS_KEY);
+    if (!raw) return null;
+    return {
+      cadence: normalizeRefreshTrigger(raw.cadence),
+      provider: normalizeContextProvider(raw.provider),
+      modelId: normalizeOptionalString(raw.modelId),
+      reasoningEffort: normalizeOptionalString(raw.reasoningEffort),
+      updatedAt: normalizeOptionalString(raw.updatedAt) ?? nowIso()
+    };
+  };
+
+  const persistContextDocRefreshPrefs = (args: ContextGenerateDocsArgs): ContextDocRefreshPrefs => {
+    const prefs: ContextDocRefreshPrefs = {
+      cadence: normalizeRefreshTrigger(args.trigger),
+      provider: normalizeContextProvider(args.provider),
+      modelId: normalizeOptionalString(args.modelId),
+      reasoningEffort: normalizeOptionalString(args.reasoningEffort),
+      updatedAt: nowIso()
+    };
+    db.setJson(CONTEXT_DOC_PREFS_KEY, prefs);
+    return prefs;
+  };
+
+  const readLastContextDocRunAt = (): number | null => {
+    const raw = db.getJson<Record<string, unknown>>(CONTEXT_DOC_LAST_RUN_KEY);
+    const generatedAt = normalizeOptionalString(raw?.generatedAt);
+    if (!generatedAt) return null;
+    const ts = Date.parse(generatedAt);
+    return Number.isFinite(ts) ? ts : null;
+  };
+
+  const runContextDocGeneration = async (args: ContextGenerateDocsArgs) => {
+    persistContextDocRefreshPrefs(args);
+    return await runContextDocGenerationImpl(projectPackBuilderDeps, args);
+  };
+
+  const maybeAutoRefreshContextDocs = async (args: {
+    trigger: Exclude<ContextRefreshTrigger, "manual">;
+    reason?: string;
+    force?: boolean;
+  }): Promise<ContextGenerateDocsResult | null> => {
+    const trigger = normalizeRefreshTrigger(args.trigger);
+    if (trigger === "manual") return null;
+    const prefs = readContextDocRefreshPrefs();
+    if (!prefs || prefs.cadence !== trigger) return null;
+    const minIntervalMs = AUTO_REFRESH_MIN_INTERVAL_MS[trigger];
+    if (!args.force) {
+      const lastRunAt = readLastContextDocRunAt();
+      if (lastRunAt != null && Date.now() - lastRunAt < minIntervalMs) {
+        logger.debug("packs.context_docs.auto_refresh_skipped_recent", {
+          trigger,
+          reason: args.reason ?? null,
+          minIntervalMs
+        });
+        return null;
+      }
+    }
+    try {
+      logger.info("packs.context_docs.auto_refresh_start", {
+        trigger,
+        reason: args.reason ?? null,
+        provider: prefs.provider,
+        modelId: prefs.modelId
+      });
+      return await runContextDocGeneration({
+        provider: prefs.provider,
+        ...(prefs.modelId ? { modelId: prefs.modelId } : {}),
+        ...(prefs.reasoningEffort ? { reasoningEffort: prefs.reasoningEffort } : {}),
+        trigger
+      });
+    } catch (error) {
+      logger.warn("packs.context_docs.auto_refresh_failed", {
+        trigger,
+        reason: args.reason ?? null,
+        error: getErrorMessage(error)
+      });
+      return null;
+    }
+  };
+
   const prepareContextDocGeneration = (args: ContextPrepareDocGenArgs) => prepareContextDocGenerationImpl(projectPackBuilderDeps, args);
   const installGeneratedDocs = (args: ContextInstallGeneratedDocsArgs) => installGeneratedDocsImpl(projectPackBuilderDeps, args);
   const resolveContextDocPath = (docId: ContextDocStatus["id"]) => resolveContextDocPathImpl(projectRoot, docId);
@@ -1480,6 +1588,14 @@ export function createPackService({
 
     async generateContextDocs(args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> {
       return runContextDocGeneration(args);
+    },
+
+    async maybeAutoRefreshContextDocs(args: {
+      trigger: "per_mission" | "per_pr" | "per_lane_refresh";
+      reason?: string;
+      force?: boolean;
+    }): Promise<ContextGenerateDocsResult | null> {
+      return await maybeAutoRefreshContextDocs(args);
     },
 
     prepareContextDocGeneration(args: ContextPrepareDocGenArgs): ContextPrepareDocGenResult {

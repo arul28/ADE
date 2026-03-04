@@ -16,12 +16,77 @@ import {
   Checks,
   ListChecks,
   User,
-  Robot
+  Robot,
+  MagnifyingGlass,
+  Globe,
+  Note,
+  Notepad,
+  ListBullets,
+  Scissors,
+  StopCircle,
+  PencilSimpleLine,
+  FolderOpen,
+  Cpu,
+  ArrowSquareOut,
+  ClipboardText,
 } from "@phosphor-icons/react";
+import type { Icon } from "@phosphor-icons/react";
 import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
+
+/* ── Per-tool metadata ── */
+
+type ToolMeta = {
+  label: string;
+  icon: Icon;
+  color: string;              // hex for border/badge accent
+  badgeCls: string;           // tailwind classes for the badge chip
+  category: "read" | "write" | "exec" | "web" | "plan" | "meta" | "codex";
+  /** Extract a primary "target" string from args for the summary line */
+  getTarget?: (args: Record<string, unknown>) => string | null;
+};
+
+const TOOL_META: Record<string, ToolMeta> = {
+  // ── Claude Code: read ops ──────────────────────────────────────
+  Read:         { label: "Read",       icon: FileCode,         color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300",   category: "read", getTarget: a => String(a.file_path ?? a.path ?? "") || null },
+  Grep:         { label: "Grep",       icon: MagnifyingGlass,  color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300",   category: "read", getTarget: a => String(a.pattern ?? a.path ?? "") || null },
+  Glob:         { label: "Glob",       icon: FolderOpen,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300",   category: "read", getTarget: a => String(a.pattern ?? "") || null },
+  LS:           { label: "LS",         icon: ListBullets,      color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300",   category: "read", getTarget: a => String(a.path ?? "") || null },
+  // ── Claude Code: write ops ─────────────────────────────────────
+  Write:        { label: "Write",      icon: Note,             color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? "") || null },
+  Edit:         { label: "Edit",       icon: PencilSimpleLine, color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? "") || null },
+  MultiEdit:    { label: "MultiEdit",  icon: Notepad,          color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? "") || null },
+  NotebookEdit: { label: "Notebook",   icon: Notepad,          color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.notebook_path ?? "") || null },
+  // ── Claude Code: exec ops ──────────────────────────────────────
+  Bash:         { label: "Bash",       icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300",  category: "exec", getTarget: a => String(a.command ?? "") || null },
+  BashOutput:   { label: "Output",     icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300",  category: "exec" },
+  KillBash:     { label: "Kill",       icon: StopCircle,       color: "#F87171", badgeCls: "border-red-400/25 bg-red-400/10 text-red-300",        category: "exec" },
+  // ── Claude Code: web ops ───────────────────────────────────────
+  WebSearch:    { label: "Search",     icon: MagnifyingGlass,  color: "#818CF8", badgeCls: "border-indigo-400/25 bg-indigo-400/10 text-indigo-300", category: "web", getTarget: a => String(a.query ?? "") || null },
+  WebFetch:     { label: "Fetch",      icon: Globe,            color: "#818CF8", badgeCls: "border-indigo-400/25 bg-indigo-400/10 text-indigo-300", category: "web", getTarget: a => String(a.url ?? "") || null },
+  // ── Claude Code: todo/plan ops ─────────────────────────────────
+  TodoWrite:    { label: "Todo",       icon: ClipboardText,    color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan" },
+  TodoRead:     { label: "Todos",      icon: ClipboardText,    color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan" },
+  // ── Claude Code: meta ops ──────────────────────────────────────
+  Task:         { label: "Task",       icon: Cpu,              color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
+  ExitPlanMode: { label: "ExitPlan",   icon: ArrowSquareOut,   color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
+  // ── Codex tools ────────────────────────────────────────────────
+  exec_command: { label: "Shell",      icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300",  category: "codex", getTarget: a => String(a.command ?? a.cmd ?? "") || null },
+  apply_patch:  { label: "Patch",      icon: Scissors,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "codex" },
+  update_plan:  { label: "Plan",       icon: ListChecks,       color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "codex" },
+};
+
+function getToolMeta(toolName: string): ToolMeta {
+  return TOOL_META[toolName] ?? {
+    label: toolName,
+    icon: Wrench,
+    color: "#A78BFA",
+    badgeCls: "border-accent/25 bg-accent/10 text-accent/80",
+    category: "meta",
+  };
+}
 
 type RenderEnvelope = {
   key: string;
@@ -363,17 +428,17 @@ function renderEvent(
   if (event.type === "user_message") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[80%] bg-gradient-to-l from-accent/[0.10] via-accent/[0.05] to-transparent px-4 py-3">
+        <div className="max-w-[80%] rounded-2xl border border-accent/25 bg-accent/[0.12] px-4 py-2.5 shadow-[0_2px_12px_-4px_rgba(167,139,250,0.15)]">
           <div className="mb-1.5 flex items-center gap-2">
-            <User size={11} weight="bold" className="text-accent/50" />
-            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-accent/45">You</span>
+            <User size={11} weight="bold" className="text-accent/60" />
+            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-accent/50">You</span>
             <span className="ml-auto font-mono text-[9px] text-muted-fg/30">{formatTime(envelope.timestamp)}</span>
           </div>
           <div className="whitespace-pre-wrap break-words text-[12.5px] leading-[1.6] text-fg/90">{event.text}</div>
           {event.attachments?.length ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {event.attachments.map((attachment, index) => (
-                <span key={`${attachment.path}:${index}`} className="inline-flex items-center gap-1 bg-accent/[0.06] px-2 py-0.5 font-mono text-[9px] text-fg/50">
+                <span key={`${attachment.path}:${index}`} className="inline-flex items-center gap-1 rounded border border-accent/20 bg-accent/[0.06] px-2 py-0.5 font-mono text-[9px] text-fg/50">
                   {attachment.type}: {attachment.path}
                 </span>
               ))}
@@ -388,10 +453,10 @@ function renderEvent(
   if (event.type === "text") {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[92%] border-l-2 border-l-accent/20 pl-4 py-3">
+        <div className="max-w-[92%] border-l-2 border-accent/40 py-2 pl-3">
           <div className="mb-1.5 flex items-center gap-2">
-            <Robot size={11} weight="bold" className="text-accent/40" />
-            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-accent/35">Agent</span>
+            <Robot size={11} weight="bold" className="text-accent/50" />
+            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-accent/40">Agent</span>
             <span className="ml-auto font-mono text-[9px] text-muted-fg/30">{formatTime(envelope.timestamp)}</span>
           </div>
           <MarkdownBlock markdown={event.text} />
@@ -534,13 +599,19 @@ function renderEvent(
         defaultOpen={false}
         summary={
           <div className="flex items-center gap-2 font-mono text-[11px]">
-            <Brain size={13} weight="bold" className="text-purple-400/50" />
-            <span className="font-bold text-purple-400/60">thinking</span>
+            <span className="relative flex h-3 w-3 items-center justify-center">
+              <span className="absolute h-full w-full animate-ping rounded-full bg-purple-500/25" />
+              <Brain size={11} weight="bold" className="relative text-purple-400/70" />
+            </span>
+            <span className="font-bold text-purple-400/70">Thinking</span>
+            <span className="font-mono text-[9px] text-muted-fg/35 uppercase tracking-wider">
+              {event.text.length > 0 ? `${Math.ceil(event.text.length / 5)} tokens` : ""}
+            </span>
           </div>
         }
-        className="border-purple-500/8 bg-gradient-to-r from-purple-500/[0.03] to-transparent"
+        className="border-purple-500/10 bg-gradient-to-r from-purple-500/[0.04] to-transparent"
       >
-        <div className="text-fg/70">
+        <div className="text-fg/65">
           <MarkdownBlock markdown={event.text} />
         </div>
       </CollapsibleCard>
@@ -560,96 +631,63 @@ function renderEvent(
 
   /* ── Tool call ── */
   if (event.type === "tool_call") {
-    const toolName = event.tool;
+    const meta = getToolMeta(event.tool);
+    const ToolIcon = meta.icon;
     const args = event.args as Record<string, unknown> | null;
+    const safeArgs = args && typeof args === "object" ? args : {};
 
-    // Determine badge color and label based on tool type
-    const isRead = toolName === "readFile" || toolName === "Read" || toolName === "grep" || toolName === "Grep" || toolName === "glob" || toolName === "Glob";
-    const isBash = toolName === "bash" || toolName === "Bash";
-    const isEdit = toolName === "editFile" || toolName === "Edit" || toolName === "writeFile" || toolName === "Write";
+    const targetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
 
-    const badgeLabel = isBash ? "BASH" : isRead ? "READ" : isEdit ? "EDIT" : toolName.toUpperCase();
-    const badgeCls = isBash
-      ? "border-amber-500/20 bg-amber-500/10 text-amber-400"
-      : isRead
-        ? "border-cyan-500/20 bg-cyan-500/10 text-cyan-400"
-        : isEdit
-          ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
-          : "border-accent/20 bg-accent/10 text-accent";
-    const BadgeIcon = isBash ? Terminal : isRead ? FileCode : isEdit ? FileCode : Wrench;
-
-    // Build the target/description line
-    let targetLine: string | null = null;
-    if (isBash) {
-      targetLine = args && typeof args === "object" && "command" in args ? String(args.command) : null;
-    } else if (isRead) {
-      targetLine = args && typeof args === "object"
-        ? ("file_path" in args ? String(args.file_path) : "path" in args ? String(args.path) : "pattern" in args ? String(args.pattern) : null)
-        : null;
-    } else if (isEdit) {
-      targetLine = args && typeof args === "object" && "file_path" in args ? String(args.file_path) : null;
-    }
-
-    let argsDisplay: React.ReactNode;
-    if (targetLine) {
-      const extraPairs = args && typeof args === "object"
-        ? Object.entries(args).filter(([k]) => !["command", "file_path", "path", "pattern"].includes(k))
-        : [];
-      argsDisplay = (
-        <div className="border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] text-fg/80">
-          {isBash ? (
-            <span className="flex items-center gap-1.5">
-              <span className="select-none text-muted-fg/30">$ </span>
-              <span>{targetLine}</span>
-            </span>
-          ) : (
-            <div className="text-accent/70">{targetLine}</div>
-          )}
-          {extraPairs.length > 0 ? (
-            <div className="mt-1 text-muted-fg/50">
-              {extraPairs.map(([k, v]) => (
-                <span key={k} className="mr-2">{k}=<span className="text-fg/60">{String(v)}</span></span>
-              ))}
+    // Build expandable args display
+    const kvPairs = Object.entries(safeArgs);
+    const argsDisplay = kvPairs.length > 0 ? (
+      <div className="space-y-1 border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px]">
+        {kvPairs.map(([k, v]) => {
+          const val = typeof v === "string" ? v : JSON.stringify(v);
+          const truncated = val.length > 300 ? `${val.slice(0, 300)}…` : val;
+          const isLongStr = typeof v === "string" && v.includes("\n");
+          return (
+            <div key={k} className={isLongStr ? "flex flex-col gap-0.5" : "flex items-start gap-2"}>
+              <span className="flex-shrink-0 text-muted-fg/40">{k}</span>
+              {isLongStr ? (
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] text-fg/55 leading-[1.5]">{truncated}</pre>
+              ) : (
+                <span className="min-w-0 break-all text-fg/65">{truncated}</span>
+              )}
             </div>
-          ) : null}
-        </div>
-      );
-    } else {
-      const kvPairs = args && typeof args === "object" ? Object.entries(args) : [];
-      argsDisplay = kvPairs.length > 0 ? (
-        <div className="border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] text-fg/60">
-          {kvPairs.map(([k, v]) => {
-            const val = typeof v === "string" ? v : JSON.stringify(v);
-            const truncated = val && val.length > 200 ? `${val.slice(0, 200)}...` : val;
-            return (
-              <div key={k} className="py-0.5">
-                <span className="text-muted-fg/40">{k}</span>=<span className="text-fg/60">{truncated}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] text-fg/60">
-          {JSON.stringify(args, null, 2)}
-        </pre>
-      );
-    }
+          );
+        })}
+      </div>
+    ) : (
+      <div className="border border-border/10 bg-[#0C0A10] px-4 py-2 font-mono text-[10px] text-muted-fg/40">
+        No arguments
+      </div>
+    );
+
+    const cardBorderCls =
+      meta.category === "exec" || meta.category === "codex"
+        ? "border-amber-500/8 from-amber-500/[0.03]"
+        : meta.category === "write"
+          ? "border-emerald-500/8 from-emerald-500/[0.03]"
+          : meta.category === "web"
+            ? "border-indigo-500/8 from-indigo-500/[0.03]"
+            : "border-accent/8 from-accent/[0.02]";
 
     return (
       <CollapsibleCard
         defaultOpen={false}
         summary={
           <div className="flex items-center gap-2 font-mono text-[11px]">
-            <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", badgeCls)}>
-              <BadgeIcon size={11} weight="bold" />
-              {badgeLabel}
+            <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", meta.badgeCls)}>
+              <ToolIcon size={11} weight="bold" />
+              {meta.label}
             </span>
             {targetLine ? (
-              <span className="flex-1 truncate text-[10px] text-fg/50">{targetLine}</span>
+              <span className="flex-1 truncate text-[10px] text-fg/45">{targetLine}</span>
             ) : null}
           </div>
         }
-        className="border-border/10 bg-gradient-to-r from-surface/40 to-transparent"
+        className={cn("bg-gradient-to-r to-transparent", cardBorderCls)}
       >
         {argsDisplay}
       </CollapsibleCard>

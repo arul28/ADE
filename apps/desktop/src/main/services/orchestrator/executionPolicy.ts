@@ -292,7 +292,7 @@ export function evaluateRunCompletion(
   const anyPhaseFailed = diagnostics.some((d) => d.code === "phase_failed");
   const anyPhaseInProgress = diagnostics.some((d) => d.code === "phase_in_progress");
 
-  // Also check raw step statuses for legacy safety
+  // Also check raw step statuses as a final status gate.
   const allStepStatuses = steps.map((s) => s.status);
   const allStepsTerminal = allStepStatuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
   const anyStepBlocked = allStepStatuses.some((s) => s === "blocked");

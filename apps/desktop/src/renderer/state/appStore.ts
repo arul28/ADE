@@ -138,8 +138,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshProviderMode: async () => {
-    const snapshot = await window.ade.projectConfig.get();
-    set({ providerMode: snapshot.effective.providerMode ?? "guest" });
+    const [snapshot, aiStatus] = await Promise.all([
+      window.ade.projectConfig.get(),
+      window.ade.ai.getStatus().catch(() => null),
+    ]);
+    const configMode = snapshot.effective.providerMode ?? "guest";
+    // Auto-elevate to subscription if any AI provider is configured
+    const hasProvider =
+      aiStatus != null &&
+      (aiStatus.availableProviders.claude ||
+        aiStatus.availableProviders.codex ||
+        (aiStatus.detectedAuth != null && aiStatus.detectedAuth.length > 0));
+    set({ providerMode: configMode === "subscription" || hasProvider ? "subscription" : "guest" });
   },
 
   refreshKeybindings: async () => {

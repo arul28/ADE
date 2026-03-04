@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import type { CreatePrFromLaneArgs, LandResult, MergeMethod, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import type { AiConfig, CreatePrFromLaneArgs, LandResult, MergeMethod, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -75,6 +76,26 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
   const [reviewersDraft, setReviewersDraft] = React.useState("");
   const [descPreview, setDescPreview] = React.useState<{ title: string; body: string } | null>(null);
   const [descPreviewBusy, setDescPreviewBusy] = React.useState(false);
+  const [prDescModel, setPrDescModel] = React.useState("");
+
+  const loadPrDescModel = useCallback(async () => {
+    try {
+      const s = await window.ade.ai.getStatus();
+      const snapshot = await window.ade.projectConfig.get();
+      const effectiveAiRaw = snapshot.effective?.ai;
+      const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
+      const persisted = effectiveAi?.featureModelOverrides?.pr_descriptions;
+      if (persisted) {
+        setPrDescModel(persisted);
+      } else if (s.models.claude[0]) {
+        setPrDescModel(s.models.claude[0].id);
+      }
+    } catch {
+      // ignore — model picker will just show empty/default
+    }
+  }, []);
+
+  useEffect(() => { void loadPrDescModel(); }, [loadPrDescModel]);
 
   const defaultBaseBranch = React.useMemo(() => {
     if (!lane) return branchNameFromRef(primaryLane?.branchRef ?? "main");
@@ -243,7 +264,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     setLoading(true);
     setError(null);
     try {
-      const drafted = await window.ade.prs.draftDescription(laneId);
+      const drafted = await window.ade.prs.draftDescription(laneId, prDescModel || undefined);
       setCreateDraft((prev) => ({ ...prev, title: drafted.title, body: drafted.body }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -257,7 +278,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     setDescPreviewBusy(true);
     setError(null);
     try {
-      const drafted = await window.ade.prs.draftDescription(laneId);
+      const drafted = await window.ade.prs.draftDescription(laneId, prDescModel || undefined);
       setDescPreview(drafted);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -376,9 +397,20 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                   Create as draft
                 </label>
                 <div className="flex items-center justify-between gap-2">
-                  <Button size="sm" variant="outline" className="h-7" onClick={() => void draftFromPack()}>
-                    Draft From Pack
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" className="h-7" onClick={() => void draftFromPack()}>
+                      Draft From Pack
+                    </Button>
+                    <UnifiedModelSelector
+                      value={prDescModel}
+                      onChange={(modelId) => {
+                        setPrDescModel(modelId);
+                        void window.ade.ai.updateConfig({
+                          featureModelOverrides: { pr_descriptions: modelId } as AiConfig["featureModelOverrides"],
+                        });
+                      }}
+                    />
+                  </div>
                   <Button size="sm" variant="primary" className="h-7" disabled={loading || !createDraft.title.trim()} onClick={() => void createPr()}>
                     {loading ? "Working…" : "Create PR"}
                   </Button>
@@ -441,10 +473,19 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
               Open PRs Tab
             </Button>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
             <Button size="sm" variant="outline" className="h-7" onClick={() => void updateDescription()} disabled={loading || descPreviewBusy}>
               {descPreviewBusy ? "Drafting..." : "Update Description"}
             </Button>
+            <UnifiedModelSelector
+              value={prDescModel}
+              onChange={(modelId) => {
+                setPrDescModel(modelId);
+                void window.ade.ai.updateConfig({
+                  featureModelOverrides: { pr_descriptions: modelId } as AiConfig["featureModelOverrides"],
+                });
+              }}
+            />
             <select
               value={mergeMethod}
               onChange={(e) => setMergeMethod(e.target.value as MergeMethod)}

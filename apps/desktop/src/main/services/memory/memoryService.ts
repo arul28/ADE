@@ -53,40 +53,193 @@ export type AddCandidateMemoryOpts = AddMemoryOpts & {
 
 export type MemoryBudgetLevel = "lite" | "standard" | "deep";
 
+function normalizeMemoryForDedup(content: string): string {
+  return String(content ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function memoryImportanceRank(importance: MemoryImportance): number {
+  if (importance === "high") return 3;
+  if (importance === "medium") return 2;
+  return 1;
+}
+
+function resolveHigherImportance(left: MemoryImportance, right: MemoryImportance): MemoryImportance {
+  return memoryImportanceRank(left) >= memoryImportanceRank(right) ? left : right;
+}
+
+function memoryStatusRank(status: MemoryStatus): number {
+  if (status === "promoted") return 3;
+  if (status === "candidate") return 2;
+  return 1;
+}
+
+function toMemoryStatus(value: unknown): MemoryStatus {
+  const raw = String(value ?? "").trim();
+  if (raw === "promoted" || raw === "candidate" || raw === "archived") return raw;
+  return "candidate";
+}
+
+function resolveHigherStatus(left: MemoryStatus, right: MemoryStatus): MemoryStatus {
+  return memoryStatusRank(left) >= memoryStatusRank(right) ? left : right;
+}
+
 export function createMemoryService(db: AdeDb) {
-  function addMemory(opts: AddMemoryOpts): Memory {
-    const id = randomUUID();
+  function upsertMemory(args: {
+    projectId: string;
+    scope: MemoryScope;
+    category: MemoryCategory;
+    content: string;
+    importance: MemoryImportance;
+    status: MemoryStatus;
+    sourceSessionId?: string;
+    sourcePackKey?: string;
+    agentId?: string;
+    sourceRunId?: string;
+    confidence: number;
+  }): Memory {
     const now = new Date().toISOString();
-    const importance = opts.importance ?? "medium";
+    const normalized = normalizeMemoryForDedup(args.content);
+    const existingRows = normalized.length > 0
+      ? db.all<Record<string, unknown>>(
+          `
+            SELECT *
+            FROM memories
+            WHERE project_id = ?
+              AND scope = ?
+              AND category = ?
+            ORDER BY
+              CASE status WHEN 'promoted' THEN 3 WHEN 'candidate' THEN 2 ELSE 1 END DESC,
+              CASE importance WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+              confidence DESC,
+              last_accessed_at DESC
+          `,
+          [args.projectId, args.scope, args.category]
+        )
+      : [];
+    const existing = existingRows.find((row) => normalizeMemoryForDedup(String(row.content ?? "")) === normalized) ?? null;
+
+    if (existing?.id) {
+      const currentImportance = String(existing.importance ?? "medium") as MemoryImportance;
+      const nextImportance = resolveHigherImportance(currentImportance, args.importance);
+      const currentStatus = toMemoryStatus(existing.status);
+      const nextStatus = resolveHigherStatus(currentStatus, args.status);
+      const promotedAt = nextStatus === "promoted"
+        ? String(existing.promoted_at ?? "").trim() || now
+        : null;
+      db.run(
+        `
+          UPDATE memories
+          SET
+            status = ?,
+            importance = ?,
+            source_session_id = COALESCE(?, source_session_id),
+            source_pack_key = COALESCE(?, source_pack_key),
+            last_accessed_at = ?,
+            access_count = access_count + 1,
+            agent_id = COALESCE(?, agent_id),
+            confidence = CASE WHEN ? > confidence THEN ? ELSE confidence END,
+            promoted_at = ?,
+            source_run_id = COALESCE(?, source_run_id)
+          WHERE id = ?
+        `,
+        [
+          nextStatus,
+          nextImportance,
+          args.sourceSessionId ?? null,
+          args.sourcePackKey ?? null,
+          now,
+          args.agentId ?? null,
+          args.confidence,
+          args.confidence,
+          promotedAt,
+          args.sourceRunId ?? null,
+          String(existing.id)
+        ]
+      );
+
+      const refreshed = db.get<Record<string, unknown>>(`SELECT * FROM memories WHERE id = ? LIMIT 1`, [String(existing.id)]);
+      if (refreshed) return mapMemoryRow(refreshed);
+    }
+
+    const id = randomUUID();
+    const promotedAt = args.status === "promoted" ? now : null;
     db.run(
-      `INSERT INTO memories (id, project_id, scope, category, content, importance, source_session_id, source_pack_key, created_at, last_accessed_at, access_count, status, agent_id, confidence, promoted_at, source_run_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'promoted', ?, 1.0, ?, ?)`,
-      [id, opts.projectId, opts.scope, opts.category, opts.content, importance, opts.sourceSessionId ?? null, opts.sourcePackKey ?? null, now, now, opts.agentId ?? null, now, opts.sourceRunId ?? null]
+      `INSERT INTO memories (
+         id, project_id, scope, category, content, importance, source_session_id, source_pack_key,
+         created_at, last_accessed_at, access_count, status, agent_id, confidence, promoted_at, source_run_id
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        args.projectId,
+        args.scope,
+        args.category,
+        args.content,
+        args.importance,
+        args.sourceSessionId ?? null,
+        args.sourcePackKey ?? null,
+        now,
+        now,
+        args.status,
+        args.agentId ?? null,
+        args.confidence,
+        promotedAt,
+        args.sourceRunId ?? null
+      ]
     );
     return {
-      id, projectId: opts.projectId, scope: opts.scope, category: opts.category,
-      content: opts.content, importance, sourceSessionId: opts.sourceSessionId ?? null,
-      sourcePackKey: opts.sourcePackKey ?? null, createdAt: now, lastAccessedAt: now, accessCount: 0,
-      status: "promoted", agentId: opts.agentId ?? null, confidence: 1.0, promotedAt: now, sourceRunId: opts.sourceRunId ?? null
+      id,
+      projectId: args.projectId,
+      scope: args.scope,
+      category: args.category,
+      content: args.content,
+      importance: args.importance,
+      sourceSessionId: args.sourceSessionId ?? null,
+      sourcePackKey: args.sourcePackKey ?? null,
+      createdAt: now,
+      lastAccessedAt: now,
+      accessCount: 0,
+      status: args.status,
+      agentId: args.agentId ?? null,
+      confidence: args.confidence,
+      promotedAt,
+      sourceRunId: args.sourceRunId ?? null
     };
   }
 
+  function addMemory(opts: AddMemoryOpts): Memory {
+    const importance = opts.importance ?? "medium";
+    return upsertMemory({
+      projectId: opts.projectId,
+      scope: opts.scope,
+      category: opts.category,
+      content: opts.content,
+      importance,
+      sourceSessionId: opts.sourceSessionId,
+      sourcePackKey: opts.sourcePackKey,
+      agentId: opts.agentId,
+      sourceRunId: opts.sourceRunId,
+      status: "promoted",
+      confidence: 1.0
+    });
+  }
+
   function addCandidateMemory(opts: AddCandidateMemoryOpts): Memory {
-    const id = randomUUID();
-    const now = new Date().toISOString();
     const importance = opts.importance ?? "medium";
     const confidence = opts.confidence ?? 0.5;
-    db.run(
-      `INSERT INTO memories (id, project_id, scope, category, content, importance, source_session_id, source_pack_key, created_at, last_accessed_at, access_count, status, agent_id, confidence, promoted_at, source_run_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'candidate', ?, ?, NULL, ?)`,
-      [id, opts.projectId, opts.scope, opts.category, opts.content, importance, opts.sourceSessionId ?? null, opts.sourcePackKey ?? null, now, now, opts.agentId ?? null, confidence, opts.sourceRunId ?? null]
-    );
-    return {
-      id, projectId: opts.projectId, scope: opts.scope, category: opts.category,
-      content: opts.content, importance, sourceSessionId: opts.sourceSessionId ?? null,
-      sourcePackKey: opts.sourcePackKey ?? null, createdAt: now, lastAccessedAt: now, accessCount: 0,
-      status: "candidate", agentId: opts.agentId ?? null, confidence, promotedAt: null, sourceRunId: opts.sourceRunId ?? null
-    };
+    return upsertMemory({
+      projectId: opts.projectId,
+      scope: opts.scope,
+      category: opts.category,
+      content: opts.content,
+      importance,
+      sourceSessionId: opts.sourceSessionId,
+      sourcePackKey: opts.sourcePackKey,
+      agentId: opts.agentId,
+      sourceRunId: opts.sourceRunId,
+      status: "candidate",
+      confidence
+    });
   }
 
   function promoteMemory(id: string): void {
@@ -165,17 +318,25 @@ export function createMemoryService(db: AdeDb) {
     return rows.map(mapMemoryRow);
   }
 
-  function getMemoryBudget(projectId: string, level: MemoryBudgetLevel): Memory[] {
+  function getMemoryBudget(
+    projectId: string,
+    level: MemoryBudgetLevel,
+    opts?: { includeCandidates?: boolean }
+  ): Memory[] {
     const limits: Record<MemoryBudgetLevel, number> = { lite: 3, standard: 8, deep: 20 };
     const limit = limits[level];
+    const includeCandidates = opts?.includeCandidates === true;
+    const statuses = includeCandidates ? ["promoted", "candidate"] : ["promoted"];
     const rows = db.all<Record<string, unknown>>(
-      `SELECT * FROM memories WHERE project_id = ? AND status = 'promoted'
+      `SELECT * FROM memories WHERE project_id = ? AND status IN (${statuses.map(() => "?").join(",")})
        ORDER BY
+         CASE status WHEN 'promoted' THEN 2 WHEN 'candidate' THEN 1 ELSE 0 END DESC,
          CASE importance WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+         confidence DESC,
          access_count DESC,
          last_accessed_at DESC
        LIMIT ?`,
-      [projectId, limit]
+      [projectId, ...statuses, limit]
     );
     return rows.map(mapMemoryRow);
   }

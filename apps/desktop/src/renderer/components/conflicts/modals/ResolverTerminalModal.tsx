@@ -2,9 +2,10 @@ import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../../ui/Button";
 import { TerminalView } from "../../terminals/TerminalView";
-import { ProviderSelector } from "../shared/ProviderSelector";
 import { PostResolutionActions } from "../shared/PostResolutionActions";
+import { UnifiedModelSelector } from "../../shared/UnifiedModelSelector";
 import type {
+  AiConfig,
   ExternalConflictResolverProvider,
   PrepareResolverSessionResult,
   ResolverSessionScenario,
@@ -31,6 +32,7 @@ function buildResolverCommand(
     promptFilePath: string;
     claudePermission: ClaudePermissionMode;
     codexApproval: CodexApprovalMode;
+    model?: string;
   }
 ): string {
   const q = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
@@ -42,6 +44,9 @@ function buildResolverCommand(
       parts.push("--dangerously-skip-permissions");
     } else if (opts.claudePermission === "acceptEdits") {
       parts.push("--permission-mode", "acceptEdits");
+    }
+    if (opts.model) {
+      parts.push("--model", opts.model);
     }
     parts.push(promptArg);
     return parts.join(" ");
@@ -55,6 +60,9 @@ function buildResolverCommand(
     parts.push("--ask-for-approval", "on-failure", "--sandbox", "workspace-write");
   } else if (opts.codexApproval === "suggest") {
     parts.push("--ask-for-approval", "untrusted", "--sandbox", "workspace-write");
+  }
+  if (opts.model) {
+    parts.push("--model", opts.model);
   }
   parts.push(promptArg);
   return parts.join(" ");
@@ -135,7 +143,9 @@ export function ResolverTerminalModal({
 }) {
   // Local state
   const [phase, setPhase] = React.useState<ResolverModalPhase>("configure");
-  const [provider, setProvider] = React.useState<ExternalConflictResolverProvider>("claude");
+  const [resolverModel, setResolverModel] = React.useState("");
+  const [codexModelIds, setCodexModelIds] = React.useState<Set<string>>(new Set());
+  const provider: ExternalConflictResolverProvider = codexModelIds.has(resolverModel) ? "codex" : "claude";
   const [claudePermission, setClaudePermission] = React.useState<ClaudePermissionMode>("bypass");
   const [codexApproval, setCodexApproval] = React.useState<CodexApprovalMode>("fullAuto");
   const [postResolution, setPostResolution] = React.useState<PostResolutionBehavior>(() => ({
@@ -163,6 +173,30 @@ export function ResolverTerminalModal({
 
   // Keep prepResultRef in sync so the exit handler always reads the latest value
   React.useEffect(() => { prepResultRef.current = prepResult; }, [prepResult]);
+
+  // Load persisted model override on mount
+  React.useEffect(() => {
+    void (async () => {
+      try {
+        const [s, snapshot] = await Promise.all([
+          window.ade.ai.getStatus(),
+          window.ade.projectConfig.get(),
+        ]);
+        const ids = new Set(s.models.codex.map((m) => m.id));
+        setCodexModelIds(ids);
+        const effectiveAiRaw = snapshot.effective?.ai;
+        const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
+        const persisted = effectiveAi?.featureModelOverrides?.conflict_proposals;
+        if (persisted) {
+          setResolverModel(persisted);
+        } else if (s.models.claude[0]) {
+          setResolverModel(s.models.claude[0].id);
+        }
+      } catch {
+        // ignore — model picker will default to empty
+      }
+    })();
+  }, []);
 
   const runPostResolutionActions = React.useCallback(
     async (laneId: string): Promise<{ autoCommitted: boolean; autoPushed: boolean; error: string | null }> => {
@@ -316,6 +350,7 @@ export function ResolverTerminalModal({
         promptFilePath: result.promptFilePath,
         claudePermission,
         codexApproval,
+        model: resolverModel || undefined,
       });
       await window.ade.pty.write({ ptyId: pty.ptyId, data: cmd + "\r" });
     } catch (err) {
@@ -383,14 +418,47 @@ export function ResolverTerminalModal({
           {/* Configure phase */}
           {phase === "configure" && (
             <div className="mt-4 space-y-4">
-              <ProviderSelector
-                provider={provider}
-                onProviderChange={setProvider}
-                claudePermissionMode={claudePermission}
-                onClaudePermissionModeChange={(m) => setClaudePermission(m as ClaudePermissionMode)}
-                codexApprovalMode={codexApproval}
-                onCodexApprovalModeChange={(m) => setCodexApproval(m as CodexApprovalMode)}
-              />
+              <div>
+                <label className="mb-1 block text-xs font-medium text-fg">Model</label>
+                <UnifiedModelSelector
+                  value={resolverModel}
+                  onChange={(modelId) => {
+                    setResolverModel(modelId);
+                    void window.ade.ai.updateConfig({
+                      featureModelOverrides: { conflict_proposals: modelId } as AiConfig["featureModelOverrides"],
+                    });
+                  }}
+                />
+              </div>
+              {provider === "claude" && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-fg">Permission Mode</label>
+                  <select
+                    value={claudePermission}
+                    onChange={(e) => setClaudePermission(e.target.value as ClaudePermissionMode)}
+                    className="w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
+                  >
+                    <option value="bypass">Bypass permissions</option>
+                    <option value="acceptEdits">Accept edits</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </div>
+              )}
+              {provider === "codex" && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-fg">Approval Mode</label>
+                  <select
+                    value={codexApproval}
+                    onChange={(e) => setCodexApproval(e.target.value as CodexApprovalMode)}
+                    className="w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
+                  >
+                    <option value="fullAuto">Full auto</option>
+                    <option value="autoEdit">Auto edit</option>
+                    <option value="suggest">Suggest</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </div>
+              )}
 
               <div className="rounded-lg border border-border/50 bg-card/40 p-3 space-y-2">
                 <div className="text-xs font-medium text-fg">After Resolution</div>

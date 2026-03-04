@@ -97,29 +97,6 @@ function hasCliSubscription(auth: DetectedAuth[], cli: string): boolean {
   return auth.some((a) => a.type === "cli-subscription" && a.cli === cli);
 }
 
-function resolveLegacyModelId(modelId: string, auth: DetectedAuth[]): string | null {
-  const normalized = modelId.trim().toLowerCase();
-  if (!normalized.length) return null;
-
-  if (normalized.includes("claude-sonnet")) {
-    return hasCliSubscription(auth, "claude")
-      ? "anthropic/claude-sonnet-4-6"
-      : "anthropic/claude-sonnet-4-6-api";
-  }
-  if (normalized.includes("claude-opus")) {
-    return hasCliSubscription(auth, "claude")
-      ? "anthropic/claude-opus-4-6"
-      : "anthropic/claude-opus-4-6-api";
-  }
-  if (normalized.includes("claude-haiku")) {
-    return hasCliSubscription(auth, "claude")
-      ? "anthropic/claude-haiku-4-5"
-      : "anthropic/claude-haiku-4-5-api";
-  }
-
-  return null;
-}
-
 // ---------------------------------------------------------------------------
 // Base URL map for OpenAI-compatible providers
 // ---------------------------------------------------------------------------
@@ -189,11 +166,7 @@ export async function resolveModel(
   auth: DetectedAuth[],
   opts?: ResolveModelOpts,
 ): Promise<LanguageModel> {
-  let descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
-  if (!descriptor) {
-    const legacyId = resolveLegacyModelId(modelId, auth);
-    if (legacyId) descriptor = getModelById(legacyId);
-  }
+  const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
   if (!descriptor) {
     throw new Error(`Unknown model: "${modelId}". Check the model registry for available models.`);
   }

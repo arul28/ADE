@@ -13,6 +13,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import type {
   ContextDocStatus,
   ContextGenerateDocsArgs,
@@ -39,6 +40,11 @@ const ADE_DOC_PRD_REL = ".ade/context/PRD.ade.md";
 const ADE_DOC_ARCH_REL = ".ade/context/ARCHITECTURE.ade.md";
 const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
 const CONTEXT_CLIP_TAG = "omitted_due_size";
+const DOC_TEXT_EXT_RE = /\.(md|mdx|txt|rst)$/i;
+const DOC_CONTEXT_EXT_RE = /\.(md|mdx|txt|rst|yaml|yml|json)$/i;
+const DOC_PRD_HINT_RE = /(prd|product|roadmap|feature|requirement|spec|user-story|planning)/i;
+const DOC_ARCH_HINT_RE = /(architecture|system|design|technical|infra|platform|lanes|conflict|pack)/i;
+const DOC_GUIDE_HINT_RE = /(readme|guide|overview|context|contributing|claude|agents)/i;
 
 // ── Deps ─────────────────────────────────────────────────────────────────────
 
@@ -183,31 +189,13 @@ const writeDocWithFallback = (args: {
 // ── Exported helpers used by packService.ts ──────────────────────────────────
 
 export function collectContextDocPaths(projectRoot: string): string[] {
-  const out = new Set<string>(["docs/PRD.md", ADE_DOC_PRD_REL, ADE_DOC_ARCH_REL]);
-  const walk = (relDir: string, depth: number) => {
-    if (depth < 0) return;
-    const abs = path.join(projectRoot, relDir);
-    if (!fs.existsSync(abs)) return;
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = fs.readdirSync(abs, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
-      const rel = path.join(relDir, entry.name).replace(/\\/g, "/");
-      if (entry.isDirectory()) {
-        walk(rel, depth - 1);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (!/\.(md|mdx|txt|yaml|yml|json)$/i.test(entry.name)) continue;
-      out.add(rel);
-    }
-  };
-  walk("docs/architecture", 3);
-  walk("docs/features", 3);
+  const out = new Set<string>([ADE_DOC_PRD_REL, ADE_DOC_ARCH_REL]);
+  for (const absPath of readDocPaths(projectRoot)) {
+    const rel = path.relative(projectRoot, absPath).replace(/\\/g, "/");
+    if (!rel.length || rel.startsWith("..")) continue;
+    if (!DOC_CONTEXT_EXT_RE.test(rel)) continue;
+    out.add(rel);
+  }
   return [...out]
     .sort((a, b) => a.localeCompare(b))
     .sort((a, b) => {
@@ -215,6 +203,28 @@ export function collectContextDocPaths(projectRoot: string): string[] {
       const bAde = b.endsWith(".ade.md") ? 0 : 1;
       return aAde - bAde;
     });
+}
+
+function scoreDocPath(relPath: string): number {
+  const rel = relPath.replace(/\\/g, "/");
+  const base = path.posix.basename(rel).toLowerCase();
+  let score = 0;
+  if (rel.startsWith(".ade/context/")) score += 120;
+  if (base === "readme.md" || base === "readme.mdx") score += 80;
+  if (DOC_PRD_HINT_RE.test(rel)) score += 55;
+  if (DOC_ARCH_HINT_RE.test(rel)) score += 50;
+  if (DOC_GUIDE_HINT_RE.test(rel)) score += 25;
+  if (rel.toLowerCase().includes("/docs/")) score += 12;
+  score += Math.max(0, 35 - Math.floor(rel.length / 5));
+  return score;
+}
+
+function rankDocPathsByRelevance(paths: string[]): string[] {
+  return [...paths].sort((left, right) => {
+    const scoreDiff = scoreDocPath(right) - scoreDocPath(left);
+    if (scoreDiff !== 0) return scoreDiff;
+    return left.localeCompare(right);
+  });
 }
 
 export function readContextDocMeta(projectRoot: string): {
@@ -436,20 +446,31 @@ export async function runContextDocGeneration(
   args: ContextGenerateDocsArgs
 ): Promise<ContextGenerateDocsResult> {
   const FALLBACK_GENERATED_ROOT = path.join(path.dirname(deps.packsDir), "context", "generated");
-  const provider = args.provider;
+  const provider = args.provider ?? "unified";
+  const trigger = args.trigger ?? "manual";
+  const modelId = typeof args.modelId === "string" && args.modelId.trim().length > 0 ? args.modelId.trim() : null;
+  const reasoningEffort =
+    typeof args.reasoningEffort === "string" && args.reasoningEffort.trim().length > 0
+      ? args.reasoningEffort.trim()
+      : null;
+  const providerHint = provider === "codex" || provider === "claude" ? provider : undefined;
   const generatedAt = nowIso();
   const warnings: ContextGenerateDocsResult["warnings"] = [];
   const canonicalPaths = collectContextDocPaths(deps.projectRoot).filter((rel) => !rel.endsWith(".ade.md"));
 
+  const rankedCanonicalPaths = rankDocPathsByRelevance(canonicalPaths);
+  const prdSources = canonicalPaths.filter((rel) => DOC_PRD_HINT_RE.test(rel) || DOC_GUIDE_HINT_RE.test(rel));
+  const archSources = canonicalPaths.filter((rel) => DOC_ARCH_HINT_RE.test(rel));
+
   const prdDigest = formatDocDigest({
     title: "PRD.ade",
-    sources: canonicalPaths.filter((rel) => /prd|product|roadmap|feature/i.test(rel)).concat(["docs/PRD.md"]).filter(Boolean),
+    sources: prdSources.length > 0 ? prdSources : rankedCanonicalPaths.slice(0, 20),
     maxChars: 18_000,
     projectRoot: deps.projectRoot
   });
   const archDigest = formatDocDigest({
     title: "ARCHITECTURE.ade",
-    sources: canonicalPaths.filter((rel) => /architecture|system|design|lanes|conflict|pack/i.test(rel)),
+    sources: archSources.length > 0 ? archSources : rankedCanonicalPaths.slice(0, 20),
     maxChars: 20_000,
     projectRoot: deps.projectRoot
   });
@@ -458,7 +479,8 @@ export async function runContextDocGeneration(
   }
 
   const prompt = [
-    "Generate two markdown documents from the provided repository context digest.",
+    "Generate two COMPLETE markdown documents from the provided repository context digest.",
+    "These are canonical context docs. Rewrite them to match the CURRENT repository state (no changelog, no delta section, no historical timeline).",
     "Return ONLY one JSON object with this exact shape:",
     '{"prd":"<markdown>","architecture":"<markdown>"}',
     "Do not include markdown fences or prose outside JSON.",
@@ -482,9 +504,11 @@ export async function runContextDocGeneration(
     try {
       const aiResult = await deps.aiIntegrationService.generateInitialContext({
         cwd: deps.projectRoot,
-        provider: provider === "codex" ? "codex" : "claude",
+        ...(providerHint ? { provider: providerHint } : {}),
         prompt,
         timeoutMs: 120_000,
+        ...(modelId ? { model: modelId } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         jsonSchema: {
           type: "object",
           additionalProperties: false,
@@ -519,7 +543,7 @@ export async function runContextDocGeneration(
     } catch (error) {
       warnings.push({
         code: "generator_failed",
-        message: `provider=${provider} error=${error instanceof Error ? error.message : String(error)}`
+        message: `provider=${provider}${modelId ? ` model=${modelId}` : ""} error=${error instanceof Error ? error.message : String(error)}`
       });
     }
   }
@@ -565,6 +589,9 @@ export async function runContextDocGeneration(
   deps.db.setJson(CONTEXT_DOC_LAST_RUN_KEY, {
     generatedAt,
     provider,
+    trigger,
+    modelId,
+    reasoningEffort,
     prdPath: prdWrite.writtenPath,
     architecturePath: archWrite.writtenPath,
     warnings
@@ -661,6 +688,7 @@ Before writing, explore to understand:
 - Keep each document concise (under 2500 words)
 - Use the project's actual terminology
 - If existing docs/ exist, use them as primary source material
+- If target files already exist, REWRITE them to reflect current state (do not append changelog/delta sections)
 - Write the files directly to the paths above — do not ask questions
 `;
 
@@ -750,48 +778,17 @@ export async function buildProjectBootstrap(deps: ProjectPackBuilderDeps, args: 
   })();
 
   const pickDocs = (): string[] => {
-    const out: string[] = [];
-    const push = (rel: string) => {
-      const normalized = rel.replace(/\\/g, "/");
-      if (out.includes(normalized)) return;
-      const abs = path.join(deps.projectRoot, normalized);
-      try {
-        if (fs.statSync(abs).isFile()) out.push(normalized);
-      } catch {
-        // ignore
-      }
-    };
-
-    push("README.md");
-    push("docs/README.md");
-    push(ADE_DOC_PRD_REL);
-    push(ADE_DOC_ARCH_REL);
-    push("docs/PRD.md");
-    push("docs/architecture/SYSTEM_OVERVIEW.md");
-    push("docs/architecture/DESKTOP_APP.md");
-    push("docs/architecture/HOSTED_AGENT.md");
-    push("docs/features/LANES.md");
-    push("docs/features/PACKS.md");
-    push("docs/features/ONBOARDING_AND_SETTINGS.md");
-
-    const addDir = (relDir: string, limit: number) => {
-      const absDir = path.join(deps.projectRoot, relDir);
-      try {
-        const entries = fs
-          .readdirSync(absDir)
-          .filter((name) => name.endsWith(".md"))
-          .slice(0, limit);
-        for (const name of entries) push(path.posix.join(relDir.replace(/\\/g, "/"), name));
-      } catch {
-        // ignore
-      }
-    };
-
-    addDir("docs/architecture", 6);
-    addDir("docs/features", 6);
-    addDir("docs/guides", 4);
-
-    return out.slice(0, 14);
+    const candidates = collectContextDocPaths(deps.projectRoot)
+      .filter((rel) => DOC_TEXT_EXT_RE.test(rel))
+      .filter((rel) => {
+        const abs = path.join(deps.projectRoot, rel);
+        try {
+          return fs.statSync(abs).isFile();
+        } catch {
+          return false;
+        }
+      });
+    return rankDocPathsByRelevance(candidates).slice(0, 14);
   };
 
   const excerptDoc = (rel: string): { rel: string; title: string; blurb: string } | null => {

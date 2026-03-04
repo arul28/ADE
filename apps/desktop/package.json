@@ -24,6 +24,7 @@
     "rebuild:native": "electron-rebuild -f -w node-pty"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.33",
     "@anthropic-ai/claude-agent-sdk": "^0.2.49",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",

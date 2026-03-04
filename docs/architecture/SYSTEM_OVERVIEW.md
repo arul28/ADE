@@ -1,10 +1,10 @@
 # ADE System Architecture Overview
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-04
 >
-> Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan.md`.
+> Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan/README.md`.
 
 ---
 
@@ -32,6 +32,8 @@ ADE (Agentic Development Environment) is a desktop application designed to augme
 The core insight behind ADE's architecture is that developer context -- the state of code changes, terminal output, test results, process health, and git history -- is fragmented across tools. ADE unifies this context into structured artifacts called "packs" that serve both humans and AI agents.
 
 The AI integration layer replaces the previous hosted cloud backend with a local-first, provider-flexible approach. ADE can run with CLI subscriptions (`claude`/`codex`), API-key/OpenRouter providers, and local model endpoints (LM Studio/Ollama/vLLM). An MCP server exposes ADE's internal tools to these AI processes, and an AI orchestrator coordinates multi-step mission execution.
+
+The current baseline is no-legacy at runtime: provider mode is resolved from current `ai.mode` config, threaded mission chat is persisted in dedicated chat tables (no metadata backfill job), and git conflict simulation uses the current merge-tree path.
 
 ---
 
@@ -135,7 +137,7 @@ Shared types live in `src/shared/types/`, a directory of 17 domain-scoped module
 | `models.ts` | Model descriptors, provider families, pricing, registry types |
 | `usage.ts` | Token usage, cost aggregation, billing events |
 
-Runtime constants (status maps, default isolation rules, legacy mappings) live in `src/main/services/orchestrator/orchestratorConstants.ts`, separate from the type definitions.
+Runtime constants (status maps and default isolation rules) live in `src/main/services/orchestrator/orchestratorConstants.ts`, separate from the type definitions.
 
 #### Shared Utilities
 
@@ -463,7 +465,7 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Mission service + planning | Complete |
 | Orchestrator service (run/step/attempt/claim state machine) | Complete |
 | Mission planning via claude/codex CLI | Complete |
-| Deterministic mission planner (fallback) | Complete |
+| Deterministic mission planner fallback | Removed (fail-hard planning path) |
 | Agent SDK integration (dual-SDK) | Complete |
 | AgentExecutor interface | Complete |
 | AI integration service | Complete |
@@ -488,4 +490,4 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 
 Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 focuses on agent-first runtime unification plus four new architectural capabilities: memory architecture upgrade (sqlite-vec vector search, hybrid retrieval, pre-compaction flush), CTO Agent (external system bridge via MCP), external MCP consumption (agents connecting to third-party MCP servers), and `.ade/` portable state (git-based cross-machine sync). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
-- `docs/final-plan.md`
+- `docs/final-plan/README.md`

@@ -1,6 +1,6 @@
 # Desktop Application Architecture
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
 > Last updated: 2026-03-02
 
@@ -172,4 +172,4 @@ Desktop architecture is mature and production-oriented for current scope:
 | `computeBackendService` | Compute backend abstraction (Local/VPS/Daytona selection and lifecycle) | 5.5 |
 | `daytonaService` | Daytona SDK integration for opt-in cloud sandbox environments | 5.5 |
 
-Future architecture expansion (Machines, relay transport, core extraction) is tracked in `docs/final-plan.md`.
+Future architecture expansion (Machines, relay transport, core extraction) is tracked in `docs/final-plan/README.md`.

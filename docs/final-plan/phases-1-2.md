@@ -2,13 +2,13 @@
 
 ## Phase 1 -- Agent SDK Integration + AgentExecutor Interface (3-4 weeks)
 
-Goal: Replace all legacy AI call paths with local-first agent SDK runtimes unified behind ADE's `AgentExecutor` interface. Establish the execution layer that all downstream phases build on.
+Goal: Consolidate AI execution on local-first agent SDK runtimes unified behind ADE's `AgentExecutor` interface. Establish the execution layer that all downstream phases build on.
 
 ### Reference docs
 
-- [architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md) — SDK strategy, AgentExecutor interface, ClaudeExecutor and CodexExecutor details, per-task-type configuration, migration path
+- [architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md) — SDK strategy, AgentExecutor interface, ClaudeExecutor and CodexExecutor details, per-task-type configuration
 - [features/ONBOARDING_AND_SETTINGS.md](../features/ONBOARDING_AND_SETTINGS.md) — AI provider detection, task routing UI, AI feature toggles, AI usage dashboard, budget controls
-- [architecture/JOB_ENGINE.md](../architecture/JOB_ENGINE.md) — AI call site migration (narrative generation, conflict proposals)
+- [architecture/JOB_ENGINE.md](../architecture/JOB_ENGINE.md) — AI call sites and job-triggered augmentation paths (narratives, conflict proposals)
 - [features/PACKS.md](../features/PACKS.md) — narrative generation pipeline (§ Structured terminal summaries, § Narrative augmentation)
 - [features/CONFLICTS.md](../features/CONFLICTS.md) — AI conflict proposal generation (§ Phase 6 completion notes)
 - [features/PULL_REQUESTS.md](../features/PULL_REQUESTS.md) — AI PR description drafting
@@ -61,17 +61,18 @@ Goal: Replace all legacy AI call paths with local-first agent SDK runtimes unifi
 - Create `aiIntegrationService` as the single AI execution surface for all main-process callers.
 - Provider model: `guest` (no AI), `subscription` (CLI), plus API-key/OpenRouter/local provider support through unified runtimes.
 - Per-task-type model/provider routing with resolution order: step-level hint → task config → mission policy → global default → built-in default → first available CLI.
-- All Phase 1 AI tasks were initially one-pass (no multi-turn): send prompt + context, receive result, session ends. Phase 4+ preserves this UX while routing through standardized agent runtime records.
+- Runtime call flow is migration-free: all programmatic AI work routes through `aiIntegrationService` to executor/unified runtime paths; no legacy hosted/BYOK compatibility branch.
+- All Phase 1 AI tasks run one-pass (no multi-turn): send prompt + context, receive result, session ends. Later phases preserve this UX while routing through standardized agent runtime records.
 
-#### W6: Migration — Narrative Generation
-- Migrate pack narrative generation from direct CLI spawn to `AgentExecutor.execute()`.
+#### W6: Runtime Integration — Narrative Generation
+- Route pack narrative generation through `AgentExecutor.execute()`.
 - Default: Claude with `haiku` model, `read-only` permissions, 15s timeout.
 - One-shot pattern: build prompt from `LaneExportStandard`, receive structured markdown, apply via marker replacement.
-- Deterministic fallback when AI is unavailable (`guest` mode packs remain fully functional).
+- `guest` mode skips AI narrative augmentation while deterministic pack generation remains fully functional.
 - Log every call to `ai_usage_log` table.
 
-#### W7: Migration — Conflict Proposals
-- Migrate conflict proposal generation to `AgentExecutor.execute()`.
+#### W7: Runtime Integration — Conflict Proposals
+- Route conflict proposal generation through `AgentExecutor.execute()`.
 - Default: Claude with `sonnet` model, `read-only` permissions, 60s timeout.
 - One-shot pattern: build prompt from `LaneExportLite` × 2 + `ConflictExportStandard`, receive resolution diff + confidence + explanation.
 - **New user configuration options** (added to Conflicts tab resolution UI):
@@ -82,27 +83,28 @@ Goal: Replace all legacy AI call paths with local-first agent SDK runtimes unifi
 - These configuration options are stored in `.ade/local.yaml` under `ai.conflict_resolution`.
 - Preserve external CLI resolver chain as alternative path (Terminals tab).
 
-#### W8: Migration — PR Descriptions
-- Migrate PR description drafting to `AgentExecutor.execute()`.
+#### W8: Runtime Integration — PR Descriptions
+- Route PR description drafting through `AgentExecutor.execute()`.
 - Default: Claude with `haiku` model, `read-only` permissions, 15s timeout.
 - One-shot pattern: build prompt from `LaneExportStandard` with commit history, receive PR title + body markdown.
 
-#### W9: Migration — Terminal Summaries
-- Migrate terminal session summaries to `AgentExecutor.execute()`.
+#### W9: Runtime Integration — Terminal Summaries
+- Route terminal session summaries through `AgentExecutor.execute()`.
 - Default: Claude with `haiku` model, `read-only` permissions, 10s timeout.
 - One-shot pattern: build prompt from session transcript + metadata, receive structured summary (intent detection, outcome assessment, key findings, next steps).
 - Displayed in the Session Delta Card in the Terminals tab.
 
-#### W10: Migration — Mission Planning
+#### W10: Runtime Integration — Mission Planning
 - Upgrade mission planner from rule/keyword classifier to AI-assisted planning via `AgentExecutor.execute()`.
 - Default: Claude with `sonnet` model, `read-only` permissions, 45s timeout.
 - One-shot pattern: build structured planner prompt from mission prompt + project context, receive JSON plan conforming to mission plan schema.
-- Preserve deterministic planner as fallback when AI is unavailable.
+- Planner path is fail-hard in runtime launch flow; if planner execution is unavailable, ADE surfaces intervention instead of non-autonomous fallback planning.
 
-#### W11: Migration — Initial Context Loading
-- Migrate onboarding PRD/architecture doc generation from direct CLI spawn to `AgentExecutor.execute()`.
+#### W11: Runtime Integration — Initial Context Loading
+- Route onboarding context doc generation through `AgentExecutor.execute()`.
 - Uses SDKs (not CLI) — the user never sees a terminal for this operation.
-- One-shot pattern: build prompt from repository scan results, receive document drafts.
+- One-shot pattern: build prompt from repository scan/digest results, receive structured `prd` + `architecture` markdown output.
+- Install outputs to `.ade/context/PRD.ade.md` and `.ade/context/ARCHITECTURE.ade.md`, with deterministic digest fallback when AI output is unavailable or invalid.
 - CLI is reserved exclusively for: (a) Terminals tab interactive sessions, (b) Work Pane in Lanes tab.
 
 #### W12: Settings — AI Permissions and Sandbox Configuration
@@ -147,7 +149,7 @@ Goal: Replace all legacy AI call paths with local-first agent SDK runtimes unifi
 - One-shot execution tests: verify each task type produces expected output format.
 - Permission mapping tests: verify ADE's unified model maps correctly to both Claude and Codex provider-specific options.
 
-#### Migration Note
+#### Implementation Note
 - If Anthropic opens subscription access for the official Agent SDK, switch `ClaudeExecutor` internals to use `@anthropic-ai/claude-agent-sdk` directly, dropping the Vercel provider wrapper. Orchestrator code does not change because all callers use the `AgentExecutor` interface.
 
 ### Exit criteria
@@ -157,7 +159,7 @@ Goal: Replace all legacy AI call paths with local-first agent SDK runtimes unifi
 - `AgentExecutor` interface abstracts SDK differences; orchestrator and job engine callers have no direct SDK imports.
 - One-shot execution works for all 6 task types: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, initial context generation.
 - Conflict resolution UI exposes user configuration options: change target, post-resolution action, PR behavior, AI autonomy level.
-- No references to hosted backend, BYOK, Clerk, or API keys remain in the codebase.
+- No hosted backend/Clerk runtime path remains in the codebase; API-key/OpenRouter/local provider paths are supported through unified runtime adapters.
 - `guest` mode preserves full local functionality without AI.
 - Per-task-type model/provider configuration persists and applies correctly.
 - AI permissions/sandbox settings persist and map correctly to both Claude and Codex SDKs.

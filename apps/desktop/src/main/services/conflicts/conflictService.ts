@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import type {
   ApplyConflictProposalArgs,
   BatchOverlapEntry,
@@ -61,6 +60,7 @@ import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createPackService } from "../packs/packService";
+import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
 import { asString, isRecord, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
@@ -364,8 +364,10 @@ function safeParseMetadata(raw: string | null | undefined): Record<string, unkno
   return isRecord(parsed) ? parsed : {};
 }
 
-function writePatchFile(content: string): string {
-  const filePath = path.join(os.tmpdir(), `ade-proposal-${randomUUID()}.patch`);
+function writePatchFile(content: string, worktreePath: string): string {
+  const patchDir = path.join(worktreePath, ".ade", "tmp", "conflict-proposals");
+  fs.mkdirSync(patchDir, { recursive: true });
+  const filePath = path.join(patchDir, `proposal-${randomUUID()}.patch`);
   fs.writeFileSync(filePath, content, "utf8");
   return filePath;
 }
@@ -620,11 +622,11 @@ export function createConflictService({
   const lanePackPath = (laneId: string) => path.join(resolvedPacksRootDir, "lanes", laneId, "lane_pack.md");
   const conflictPackPath = (laneId: string, peerKey: string) =>
     path.join(resolvedPacksRootDir, "conflicts", "v2", `${laneId}__${safeSegment(peerKey)}.md`);
-  const contextDocPaths = [
+  const contextDocPaths = uniqueSorted([
     path.join(projectRoot, ".ade/context/PRD.ade.md"),
     path.join(projectRoot, ".ade/context/ARCHITECTURE.ade.md"),
-    path.join(projectRoot, "docs/PRD.md")
-  ];
+    ...readDocPaths(projectRoot)
+  ]);
   const toRepoRelativePath = (absPath: string): string => {
     const rel = path.relative(projectRoot, absPath).replace(/\\/g, "/");
     if (!rel || rel.startsWith("..")) return absPath.replace(/\\/g, "/");
@@ -3156,7 +3158,7 @@ export function createConflictService({
       }
     });
 
-    const patchFile = writePatchFile(row.diff_patch);
+    const patchFile = writePatchFile(row.diff_patch, lane.worktreePath);
     try {
       const applyResult = await runGit(
         ["apply", "--3way", "--whitespace=nowarn", patchFile],
@@ -3266,7 +3268,7 @@ export function createConflictService({
       if (applyMode === "commit" && appliedCommitSha.trim()) {
         await runGitOrThrow(["revert", "--no-edit", appliedCommitSha.trim()], { cwd: lane.worktreePath, timeoutMs: 90_000 });
       } else {
-        const patchFile = writePatchFile(row.diff_patch);
+        const patchFile = writePatchFile(row.diff_patch, lane.worktreePath);
         try {
           const undoResult = await runGit(
             ["apply", "-R", "--3way", "--whitespace=nowarn", patchFile],

@@ -237,7 +237,7 @@ describe("AgentChatPane", () => {
     render(<AgentChatPane laneId="lane-1" />);
 
     await waitFor(() => {
-      expect(screen.getByText("Start a new chat")).toBeTruthy();
+      expect(screen.getByText("Start a conversation")).toBeTruthy();
     });
   });
 
@@ -343,15 +343,26 @@ describe("AgentChatPane", () => {
       expect(ade.agentChat.list).toHaveBeenCalledWith({ laneId: "lane-1" });
     });
 
-    const modelSelect = screen.getByLabelText("Model") as HTMLSelectElement;
+    // The model selector is now a custom dropdown button
+    const modelButton = screen.getByLabelText("Select model");
     await waitFor(() => {
-      expect(modelSelect.value).toBe("openai/gpt-5.3-codex");
+      // Verify the current model is displayed in the button text
+      expect(modelButton.textContent).toContain("GPT-5.3 Codex");
+    });
+
+    // Open the dropdown and select the Claude model
+    await act(async () => {
+      fireEvent.click(modelButton);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("listbox")).toBeTruthy();
     });
     await act(async () => {
-      fireEvent.change(modelSelect, { target: { value: "anthropic/claude-sonnet-4-6" } });
+      const claudeOption = screen.getByRole("option", { name: /Claude Sonnet 4\.6/ });
+      fireEvent.click(claudeOption);
     });
     await waitFor(() => {
-      expect(modelSelect.value).toBe("anthropic/claude-sonnet-4-6");
+      expect(modelButton.textContent).toContain("Claude Sonnet 4.6");
     });
 
     const textarea = screen.getByPlaceholderText("Message the agent...");

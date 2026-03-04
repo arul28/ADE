@@ -1,8 +1,8 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-03-02
+Last updated: 2026-03-04
 
-Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
+Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
 ---
 
@@ -88,7 +88,7 @@ Users can build personal agent setups on top of ADE. For example, a **"Virtual M
 
 The CTO is ADE's always-on project-aware agent and designated entry point for external systems. It receives development requests -- whether from a user, an external agent, or a webhook -- and routes them to the appropriate internal workflow: mission planning, agent spawning, context retrieval, or human-in-the-loop escalation.
 
-ADE does not replace the IDE or the git CLI. It integrates deeply with external agent CLIs via tracked sessions, agent flows, and first-class mission/orchestrator execution as defined in `docs/final-plan.md`.
+ADE does not replace the IDE or the git CLI. It integrates deeply with external agent CLIs via tracked sessions, agent flows, and first-class mission/orchestrator execution as defined in `docs/final-plan/README.md`.
 
 ---
 
@@ -300,7 +300,7 @@ Current tab routes:
 - `/missions`
 - `/settings`
 
-The detailed ownership model for future additions (including Machines) is maintained in `docs/final-plan.md`.
+The detailed ownership model for future additions (including Machines) is maintained in `docs/final-plan/README.md`.
 
 ### 7.1 Run (▶)
 
@@ -334,7 +334,7 @@ See: [features/CONFLICTS.md](features/CONFLICTS.md)
 
 ### 7.6 Context
 
-The Context tab is the documentation and context-inventory surface. It shows project/lane context health, supports context docs generation workflows, and provides a real-time sectioned inventory of tracked context primitives (packs by type, checkpoints, tracked session deltas, mission handoffs, and orchestrator runtime state) so users can audit evolution as it happens.
+The Context tab is the documentation and context-inventory surface. It shows project/lane context health, generates and installs `.ade/context/PRD.ade.md` + `.ade/context/ARCHITECTURE.ade.md` from ranked repository docs, and provides a real-time sectioned inventory of tracked context primitives (packs by type, checkpoints, tracked session deltas, mission handoffs, and orchestrator runtime state). Doc generation is AI-assisted when available and falls back to deterministic digests when AI output is unavailable or invalid.
 
 See: [features/PACKS.md](features/PACKS.md)
 
@@ -555,12 +555,12 @@ Packs are ADE's core differentiator for agentic workflows. They provide a durabl
 - **Pack Version**: Immutable rendered version of a pack (markdown + metadata + source inputs). Never edited in place.
 - **Pack Head**: Mutable pointer per pack key referencing the latest deterministic version, latest narrative version, and active version.
 
-**Context hardening policy (Phase 1.5 gate)**:
+**Context hardening policy (current baseline)**:
 
 - Orchestrator state transitions, scheduling, retries, claims, and gates are deterministic code/state-machine paths.
-- AI is advisory-only (decomposition, strategy suggestions, patch proposals, summaries).
-- Default orchestrator context profile excludes narrative text; narrative inclusion is explicit opt-in.
-- Orchestrator context defaults to PRD/architecture digest refs and bounded exports; full doc bodies are included only when step policy requires it.
+- The coordinator AI owns strategy decisions (planning, delegation, replanning, completion) while runtime code enforces boundaries (permissions, budgets, state integrity, and auditability).
+- Mission startup is fail-hard: if planner/coordinator startup fails, ADE pauses with intervention instead of switching to non-autonomous fallback logic.
+- Default orchestrator context profile uses bounded digest refs (prioritizing `.ade/context/PRD.ade.md` and `.ade/context/ARCHITECTURE.ade.md` plus discovered docs); full doc bodies are included only when step policy explicitly requires `includeFullDocs`.
 
 **Update pipeline**: On session end, the pipeline creates a checkpoint, appends events, materializes lane/project/feature packs, predicts conflicts, updates conflict packs if needed, and optionally requests AI narrative augmentation via the agent SDKs. This pipeline runs through the job engine with coalescing to avoid redundant work.
 
@@ -672,6 +672,8 @@ Candidate entries are promoted by relevance/confidence and policy. The Context B
 
 **Per-task-type model routing**: Users configure which model/provider handles each task type in Settings. The AI Integration Layer routes requests accordingly, allowing mixed-provider workflows (e.g., Claude for planning, Codex for implementation).
 
+**Runtime call-flow contract**: Programmatic AI execution uses one modern call path (`aiIntegrationService` -> executor/unified runtime). Legacy hosted/BYOK compatibility branches are removed from runtime execution flow.
+
 **Cost controls**: Execution is tied to session boundaries, not keystrokes. Context pack exports are bounded by default. The orchestrator context profile excludes narrative text unless explicitly opted in. Content-hash caching avoids redundant work.
 
 **Usage tracking**: Every AI call is logged to a local `ai_usage_log` table with feature type, provider, model, token counts, duration, and success status. The Settings tab surfaces this data as a usage dashboard with per-feature progress bars, subscription status, and configurable budget controls. Budget enforcement supports both per-phase caps in missions and per-automation caps in the Automations system (Night Shift, scheduled tasks, etc.).
@@ -736,6 +738,8 @@ ADE supports three complementary modes of work:
 
 Background automations are configured in the Automations section of Settings. Each automation defines a trigger, behavior, compute backend, and guardrails (budget caps, stop conditions).
 
+Development baseline: ADE assumes a modern Git CLI (worktrees, `git restore`, `git merge-tree --write-tree`, and `--ignore-other-worktrees` flows). There is no legacy-git compatibility mode in runtime call paths.
+
 ### 10.11 Cross-Machine Portability
 
 ADE state is designed to be portable across machines without any dedicated sync service, hub, or event bus. **Git IS the sync layer.** Agents write code, commit, and push. Other machines pull. The core development workflow -- code changes flowing through git -- is inherently cross-machine.
@@ -752,7 +756,7 @@ The `.ade/` directory is committable to the repository. By committing `.ade/` (o
 
 Machine-specific state (local overrides, cache, active terminal sessions) stays in `.ade/local.yaml` and `.ade/cache/`, which are git-ignored by default. Everything else is portable.
 
-Phase 8 (Relay) in `docs/final-plan.md` adds remote execution routing -- for example, launching a mission on a Mac Mini from a laptop. But even with relay, the state sync mechanism remains git-based. The relay handles execution dispatch, not state replication.
+Phase 8 (Relay) in `docs/final-plan/README.md` adds remote execution routing -- for example, launching a mission on a Mac Mini from a laptop. But even with relay, the state sync mechanism remains git-based. The relay handles execution dispatch, not state replication.
 
 ### 10.12 External Agent Bridge
 
@@ -894,7 +898,7 @@ When a configured CLI tool is not installed or not authenticated, ADE falls back
 - **ADE does not replace the git CLI.** It provides a UI for common git workflows (stage, commit, push, branch, stash, sync) but does not aim to cover every git operation. Power users can always drop to an external terminal.
 - **ADE is not a closed agent runtime.** ADE supports external agent CLIs and orchestration workflows but does not lock execution to a proprietary agent implementation.
 - **ADE does not manage AI service accounts or billing directly.** Users bring their own providers (CLI subscriptions, API keys/OpenRouter, or local endpoints). ADE tracks local usage telemetry and displays provider status, but does not interact with billing systems or enforce provider-side limits.
-- **Mobile/relay support is roadmap scope, not a non-goal.** Desktop is the current primary runtime, while relay + iOS capabilities are planned in `docs/final-plan.md`.
+- **Mobile/relay support is roadmap scope, not a non-goal.** Desktop is the current primary runtime, while relay + iOS capabilities are planned in `docs/final-plan/README.md`.
 - **No multi-repo support in V1.** Each ADE instance manages a single git repository. Multi-repo orchestration may be considered post-V1.
 - **No real-time collaboration.** ADE is a single-user tool per desktop instance. Team features are limited to shared config and stacked PR workflows.
 
@@ -924,9 +928,9 @@ When a configured CLI tool is not installed or not authenticated, ADE falls back
 
 Implementation sequencing, future phases, and dependency ordering are now maintained in:
 
-- `docs/final-plan.md`
+- `docs/final-plan/README.md`
 
-Current status: Phase 1 (Agent SDK Integration), Phase 1.5 (Agent Chat Integration), Phase 2 (MCP Server), and Phase 3 (AI Orchestrator) are complete. The Orchestrator Evolution (Project Hivemind) is complete, delivering inter-worker communication, AI meta-reasoner for smart fan-out, context compaction, and scoped memory architecture.
+Current status: Phase 1 (Agent SDK Integration), Phase 1.5 (Agent Chat Integration), and Phase 2 (MCP Server) are complete. Phase 3 (AI Orchestrator + Missions Overhaul) is in progress with Tasks 1-6 complete and Tasks 7-8 (reflection protocol + full integration soak) remaining.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 
@@ -952,4 +956,4 @@ This PRD intentionally focuses on product scope and behavior, while roadmap exec
 
 ---
 
-*This document is the authoritative product requirements reference for ADE. For implementation details, consult the linked feature and architecture documents; roadmap sequencing is maintained in `docs/final-plan.md`.*
+*This document is the authoritative product requirements reference for ADE. For implementation details, consult the linked feature and architecture documents; roadmap sequencing is maintained in `docs/final-plan/README.md`.*

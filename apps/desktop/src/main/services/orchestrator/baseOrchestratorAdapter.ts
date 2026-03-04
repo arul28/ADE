@@ -395,7 +395,7 @@ export function buildFullPrompt(
           "- You can report progress, blockers, and discoveries",
           "- Focus on your claimed task — the coordinator manages task distribution",
           "- When your task is done, report completion and the coordinator will assign more work or finalize the run",
-          "- If you discover something relevant to other tasks, write it with memoryAdd so it is preserved in project memories and shared facts"
+          "- If you discover something relevant to other tasks, write it with memory_add so it is preserved in project memories and shared facts"
         ].join("\n")
       );
     }
@@ -406,7 +406,7 @@ export function buildFullPrompt(
     const sanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
     systemParts.push(
       [
-        `PROGRESS CHECKPOINTING: After completing each significant unit of work (e.g., finishing a function, completing a file, passing a test), write a checkpoint file at \`.ade-checkpoint-${sanitizedStepKey}.md\` in your working directory with:`,
+        `PROGRESS CHECKPOINTING: After completing each significant unit of work (e.g., finishing a function, completing a file, passing a test), write a checkpoint file at \`.ade/checkpoints/${sanitizedStepKey}.md\` in your working directory with (create the \`.ade/checkpoints\` folder if needed):`,
         "- What you have accomplished so far",
         "- Files you have modified and why",
         "- Key decisions you made and your reasoning",

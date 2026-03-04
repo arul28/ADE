@@ -481,10 +481,15 @@ export type ContextInventorySnapshot = {
   orchestrator: ContextInventoryOrchestratorSummary;
 };
 
-export type ContextDocProvider = "codex" | "claude";
+export type ContextDocProvider = "codex" | "claude" | "unified";
+
+export type ContextRefreshTrigger = "manual" | "per_mission" | "per_pr" | "per_lane_refresh";
 
 export type ContextGenerateDocsArgs = {
-  provider: ContextDocProvider;
+  provider?: ContextDocProvider;
+  modelId?: string;
+  reasoningEffort?: string | null;
+  trigger?: ContextRefreshTrigger;
   force?: boolean;
 };
 

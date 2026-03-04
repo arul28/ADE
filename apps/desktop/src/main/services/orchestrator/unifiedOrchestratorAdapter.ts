@@ -34,20 +34,21 @@ function buildWorkerEnvVars(args: {
  * The config tells Claude CLI to connect to the ADE MCP server via stdio.
  */
 function writeMcpConfigFile(args: {
-  projectRoot: string;
+  workspaceRoot: string;
+  runtimeRoot: string;
   runId: string;
   attemptId: string;
   missionId: string;
   stepId: string;
 }): string {
-  const configDir = path.join(args.projectRoot, ".ade", "orchestrator", "mcp-configs");
+  const configDir = path.join(args.workspaceRoot, ".ade", "orchestrator", "mcp-configs");
   fs.mkdirSync(configDir, { recursive: true });
 
   const configPath = path.join(configDir, `worker-${args.attemptId}.json`);
 
   // Resolve the MCP server entry point
   // Use the built version if available, otherwise use tsx for dev
-  const mcpServerDir = path.resolve(args.projectRoot, "apps", "mcp-server");
+  const mcpServerDir = path.resolve(args.runtimeRoot, "apps", "mcp-server");
   const builtEntry = path.join(mcpServerDir, "dist", "index.cjs");
   const srcEntry = path.join(mcpServerDir, "src", "index.ts");
 
@@ -56,10 +57,10 @@ function writeMcpConfigFile(args: {
 
   if (fs.existsSync(builtEntry)) {
     command = "node";
-    cmdArgs = [builtEntry, "--project-root", args.projectRoot];
+    cmdArgs = [builtEntry, "--project-root", args.workspaceRoot];
   } else {
     command = "npx";
-    cmdArgs = ["tsx", srcEntry, "--project-root", args.projectRoot];
+    cmdArgs = ["tsx", srcEntry, "--project-root", args.workspaceRoot];
   }
 
   const config = {
@@ -68,7 +69,7 @@ function writeMcpConfigFile(args: {
         command,
         args: cmdArgs,
         env: {
-          ADE_PROJECT_ROOT: args.projectRoot,
+          ADE_PROJECT_ROOT: args.workspaceRoot,
           ADE_MISSION_ID: args.missionId,
           ADE_RUN_ID: args.runId,
           ADE_STEP_ID: args.stepId,
@@ -87,7 +88,7 @@ function writeMcpConfigFile(args: {
  * Resolve the project root from the current working directory.
  * Walks up from cwd looking for package.json with the monorepo marker.
  */
-function resolveProjectRoot(): string {
+function resolveRuntimeRoot(): string {
   // The adapter runs inside the desktop Electron process.
   // The project root is the monorepo root (parent of apps/).
   // Walk up from __dirname to find the root containing apps/mcp-server.
@@ -109,13 +110,14 @@ function resolveProjectRoot(): string {
  * `-c key=value` flag overrides individual dotted TOML paths.
  */
 function buildCodexMcpConfigFlags(args: {
-  projectRoot: string;
+  workspaceRoot: string;
+  runtimeRoot: string;
   missionId: string;
   runId: string;
   stepId: string;
   attemptId: string;
 }): string[] {
-  const mcpServerDir = path.resolve(args.projectRoot, "apps", "mcp-server");
+  const mcpServerDir = path.resolve(args.runtimeRoot, "apps", "mcp-server");
   const builtEntry = path.join(mcpServerDir, "dist", "index.cjs");
   const srcEntry = path.join(mcpServerDir, "src", "index.ts");
 
@@ -124,10 +126,10 @@ function buildCodexMcpConfigFlags(args: {
 
   if (fs.existsSync(builtEntry)) {
     command = "node";
-    cmdArgs = [builtEntry, "--project-root", args.projectRoot];
+    cmdArgs = [builtEntry, "--project-root", args.workspaceRoot];
   } else {
     command = "npx";
-    cmdArgs = ["tsx", srcEntry, "--project-root", args.projectRoot];
+    cmdArgs = ["tsx", srcEntry, "--project-root", args.workspaceRoot];
   }
 
   // Codex -c flag parses values as TOML
@@ -135,7 +137,7 @@ function buildCodexMcpConfigFlags(args: {
   const flags: string[] = [
     "-c", `mcp_servers.ade.command="${command}"`,
     "-c", `mcp_servers.ade.args=${argsToml}`,
-    "-c", `mcp_servers.ade.env.ADE_PROJECT_ROOT="${args.projectRoot}"`,
+    "-c", `mcp_servers.ade.env.ADE_PROJECT_ROOT="${args.workspaceRoot}"`,
     "-c", `mcp_servers.ade.env.ADE_MISSION_ID="${args.missionId}"`,
     "-c", `mcp_servers.ade.env.ADE_RUN_ID="${args.runId}"`,
     "-c", `mcp_servers.ade.env.ADE_STEP_ID="${args.stepId}"`,
@@ -184,11 +186,19 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
  * For CLI-wrapped models (Claude CLI, Codex CLI), it delegates to the appropriate CLI.
  * For API-key models, it constructs a direct SDK invocation command.
  */
-export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter {
-  const projectRoot = resolveProjectRoot();
+export function createUnifiedOrchestratorAdapter(options?: {
+  workspaceRoot?: string;
+  runtimeRoot?: string;
+}): OrchestratorExecutorAdapter {
+  const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length
+    ? options.runtimeRoot.trim()
+    : resolveRuntimeRoot();
+  const workspaceRoot = typeof options?.workspaceRoot === "string" && options.workspaceRoot.trim().length
+    ? options.workspaceRoot.trim()
+    : runtimeRoot;
 
   // Clean up stale MCP config files from previous runs
-  cleanupStaleMcpConfigFiles(projectRoot);
+  cleanupStaleMcpConfigFiles(workspaceRoot);
 
   return createBaseOrchestratorAdapter({
     executorKind: "unified",
@@ -210,7 +220,8 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
         attemptId: attempt.id
       });
       const mcpIdentity = {
-        projectRoot,
+        workspaceRoot,
+        runtimeRoot,
         missionId: run.missionId,
         runId: run.id,
         stepId: step.id,
@@ -248,7 +259,11 @@ export function createUnifiedOrchestratorAdapter(): OrchestratorExecutorAdapter 
         parts.push("-p", shellEscapeArg(prompt));
 
         const envParts: string[] = [...workerEnv];
-        if (teamRuntime?.enabled && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")) {
+        if (
+          teamRuntime?.enabled
+          && teamRuntime.allowClaudeAgentTeams !== false
+          && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")
+        ) {
           envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
         }
 

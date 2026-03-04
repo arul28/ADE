@@ -636,27 +636,10 @@ export function parseChatTarget(value: unknown): OrchestratorChatTarget | null {
 
 export function parseThreadType(value: unknown): OrchestratorChatThreadType | null {
   if (value === "coordinator" || value === "teammate" || value === "worker") return value;
-  // Migrate legacy thread types
-  if (value === "mission") return "coordinator";
   return null;
 }
 
-export function fallbackLegacyChatMessageId(value: Record<string, unknown>, missionId: string, ordinalHint: number): string {
-  const normalizedOrdinal = Number.isFinite(ordinalHint) ? Math.max(0, Math.floor(ordinalHint)) : 0;
-  const rawTarget = isRecord(value.target) ? JSON.stringify(value.target) : "";
-  const seed = [
-    missionId,
-    String(normalizedOrdinal),
-    typeof value.role === "string" ? value.role : "",
-    typeof value.content === "string" ? value.content.slice(0, 64) : "",
-    typeof value.timestamp === "string" ? value.timestamp : "",
-    rawTarget
-  ].join("|");
-  const digest = createHash("sha256").update(seed).digest("hex").slice(0, 32);
-  return `legacy-${digest}`;
-}
-
-export function parseChatMessage(value: unknown, missionId: string, ordinalHint = 0): OrchestratorChatMessage | null {
+export function parseChatMessage(value: unknown, missionId: string): OrchestratorChatMessage | null {
   if (!isRecord(value)) return null;
   const role = value.role === "user" || value.role === "orchestrator" || value.role === "worker"
     ? value.role
@@ -665,9 +648,8 @@ export function parseChatMessage(value: unknown, missionId: string, ordinalHint 
   const content = typeof value.content === "string" ? value.content.trim() : "";
   const timestamp = typeof value.timestamp === "string" ? value.timestamp : nowIso();
   if (!content.length) return null;
-  const id = typeof value.id === "string" && value.id.trim().length > 0
-    ? value.id.trim()
-    : fallbackLegacyChatMessageId(value as Record<string, unknown>, missionId, ordinalHint);
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id.length) return null;
   return {
     id,
     missionId,

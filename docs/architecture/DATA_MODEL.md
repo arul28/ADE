@@ -1,8 +1,8 @@
 # Data Model & Persistence
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-04
 
 ---
 
@@ -135,12 +135,12 @@ This two-file structure ensures that adding a new model requires only a single e
 1. Locate the sql.js WASM binary via `require.resolve("sql.js/dist/sql-wasm.wasm")`
 2. Initialize sql.js with the WASM locator
 3. Load existing database file if present, otherwise create new in-memory database
-4. Run migrations (idempotent `CREATE TABLE IF NOT EXISTS` statements)
+4. Bootstrap the current schema via idempotent `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` statements
 5. Return the `AdeDb` interface
 
 ### Database Schema
 
-The following 40 tables are created by the migration system in `kvDb.ts`:
+The following 63 tables are created by the schema bootstrap in `kvDb.ts`:
 
 #### Key-Value Store
 
@@ -326,7 +326,7 @@ Stores the resolved process definitions derived from `ade.yaml` and `local.yaml`
 ```sql
 CREATE TABLE IF NOT EXISTS process_runtime (
   project_id   TEXT NOT NULL,
-  lane_id      TEXT NOT NULL DEFAULT '__legacy__',
+  lane_id      TEXT NOT NULL,
   process_key  TEXT NOT NULL,
   status       TEXT NOT NULL,            -- 'stopped' | 'starting' | 'running' | etc.
   pid          INTEGER,
@@ -343,7 +343,7 @@ CREATE INDEX IF NOT EXISTS idx_process_runtime_project_id   ON process_runtime(p
 CREATE INDEX IF NOT EXISTS idx_process_runtime_project_lane ON process_runtime(project_id, lane_id);
 ```
 
-Tracks the current runtime state of each managed process, scoped per lane. The `lane_id` column was added to support per-lane process isolation. Legacy rows use `'__legacy__'` as the lane_id (migrated automatically from the old schema).
+Tracks the current runtime state of each managed process, scoped per lane. `lane_id` is required for every runtime row.
 
 #### Process Runs
 
@@ -1005,9 +1005,9 @@ All queries use parameterized statements (`?` placeholders), preventing SQL inje
 
 ### Migration System
 
-Migrations are defined in the `migrate()` function in `kvDb.ts`. All migrations use `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`, making them idempotent. The migration function runs on every database open, ensuring the schema is always current.
+Schema bootstrap is defined in the `migrate()` function in `kvDb.ts`. Runtime startup creates the current tables/indexes idempotently and enables foreign keys (`pragma foreign_keys = on`).
 
-There is no explicit version tracking -- the idempotent nature of the DDL statements serves as the migration mechanism. Future schema changes that require data transformation will need a version column in the `kv` table.
+The no-legacy baseline assumes current table shapes. Runtime code does not maintain helper backfill layers (`addColumnIfMissing`, `createIndexIfColumnsExist`) or runtime data backfill shims for old schemas.
 
 ### Filesystem Artifacts
 
@@ -1114,10 +1114,10 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - Orchestrator evolution persistence: `memories` (with status/agent_id/confidence/promoted_at/source_run_id extensions), `agent_identities` (agent definition/identity store), `orchestrator_shared_facts`, `attempt_transcripts` (Orchestrator Evolution)
 - Lanes table extended with: `lane_type`, `attached_root_path`, `is_edit_protected`, `parent_lane_id`, `color`, `icon`, `tags_json`
 - Terminal sessions table extended with: `tracked`, `goal`, `tool_type`, `pinned`, `summary`
-- Process runtime table extended with `lane_id` (per-lane process isolation, with legacy migration)
+- Process runtime table uses required `lane_id` (per-lane process isolation)
 - Filesystem artifact directories (transcripts, packs, process-logs, test-logs, worktrees)
 - Global state persistence (recent projects)
-- Idempotent migration system with `addColumnIfMissing` and `createIndexIfColumnsExist` helpers
+- Idempotent schema bootstrap with `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`
 
 ### Planned (Not Yet Created)
 
@@ -1215,7 +1215,7 @@ CREATE TABLE IF NOT EXISTS memories (
   created_at        TEXT NOT NULL,
   last_accessed_at  TEXT NOT NULL,
   access_count      INTEGER DEFAULT 0,
-  -- New columns (added via addColumnIfMissing):
+  -- Current memory lifecycle columns:
   status            TEXT DEFAULT 'promoted',     -- 'candidate' | 'promoted' | 'archived'
   agent_id          TEXT,                        -- originating agent identity
   confidence        REAL DEFAULT 1.0,            -- 0.0-1.0 confidence score

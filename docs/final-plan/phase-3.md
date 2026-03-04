@@ -522,7 +522,7 @@ The rework cycle when validation fails:
 - Development guardrails for Task 3:
   - Keep orchestration strategy AI-owned; phase engine should provide context/gates, not hard-coded strategy.
   - Treat phase cards as declarative constraints/config, not imperative workflow code.
-  - Maintain compatibility with existing mission metadata (migration-safe schema evolution).
+  - Keep metadata evolution additive and auditable without introducing legacy runtime execution branches.
 
 #### 3A: Phase Engine Data Model & Storage
 
@@ -753,7 +753,7 @@ When no mission is selected, the Missions tab shows a home screen:
 | ✓  Add user preferences API    23 min · $1.20   [View] [Rerun] |
 | ✗  Fix flaky CI tests          8 min · $0.40    [View] [Retry] |
 | ✓  Update dependencies         12 min · $0.80   [View] [Rerun] |
-| ~  Migrate legacy endpoints    45 min · $2.10   [View] [Resume]|
+| ~  Stabilize API endpoints     45 min · $2.10   [View] [Resume]|
 |                                                                    |
 | STATS (This Week)                                                  |
 | Missions: 12  │  Success: 83%  │  Avg Duration: 18 min           |
@@ -778,7 +778,7 @@ When no mission is selected, the Missions tab shows a home screen:
 - `Details` tab now surfaces phase profile and per-phase completion summary alongside usage/budget telemetry.
 - UI contract remains autonomy-first: all state is rendered from mission/orchestrator runtime events and persisted rows, not inferred deterministic hidden state.
 
-#### 4F: Migration + Operator Notes
+#### 4F: Operator Notes
 
 - Existing missions remain valid with no backfill requirement; phase config defaults resolve from seeded built-ins when no mission override exists.
 - Operators can inspect phase progression via durable `phase_transition` events in mission timeline/activity.
@@ -908,7 +908,7 @@ Human provides guidance → Coordinator resumes affected worker
 - Development guardrails for Task 6:
   - Budget pressure informs coordinator decisions via explicit tools/contracts; runtime must not hard-code strategy overrides.
   - Distinguish hard limits (API-key mode) vs advisory estimates (subscription mode) in both runtime behavior and UI.
-  - Keep accounting migration-safe and auditable (durable budget snapshots/events, reproducible aggregations).
+  - Keep accounting auditable and reproducible (durable budget snapshots/events, reproducible aggregations) without legacy compatibility branches in runtime decision flow.
 
 #### 6A: Budget Service
 

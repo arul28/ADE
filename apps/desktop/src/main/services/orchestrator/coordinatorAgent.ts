@@ -40,6 +40,9 @@ export type CoordinatorUserRules = {
   providerPreference?: string;
   costMode?: string;
   maxParallelWorkers?: number;
+  allowParallelAgents?: boolean;
+  allowSubAgents?: boolean;
+  allowClaudeAgentTeams?: boolean;
   laneStrategy?: string;
   customInstructions?: string;
   coordinatorModel?: string;
@@ -53,7 +56,8 @@ export type CoordinatorUserRules = {
 /** Project context provided to the coordinator at startup. */
 export type CoordinatorProjectContext = {
   projectRoot: string;
-  projectDocs?: Record<string, string>;
+  projectDocPaths?: string[];
+  projectKnowledge?: string[];
   fileTree?: string;
 };
 
@@ -556,6 +560,9 @@ export class CoordinatorAgent {
       if (rules.providerPreference) ruleLines.push(`- Provider preference: ${rules.providerPreference}`);
       if (rules.costMode) ruleLines.push(`- Cost mode: ${rules.costMode}`);
       if (rules.maxParallelWorkers != null) ruleLines.push(`- Maximum parallel workers: ${rules.maxParallelWorkers}`);
+      if (rules.allowParallelAgents != null) ruleLines.push(`- Parallel agents: ${rules.allowParallelAgents ? "enabled" : "disabled (run work sequentially)"}`);
+      if (rules.allowSubAgents != null) ruleLines.push(`- Sub-agents: ${rules.allowSubAgents ? "enabled" : "disabled (do not use nested delegation)"}`);
+      if (rules.allowClaudeAgentTeams != null) ruleLines.push(`- Claude native agent teams: ${rules.allowClaudeAgentTeams ? "enabled" : "disabled"}`);
       if (rules.laneStrategy) ruleLines.push(`- Lane strategy: ${rules.laneStrategy}`);
       if (rules.customInstructions) ruleLines.push(`- Custom instructions: ${rules.customInstructions}`);
       if (rules.coordinatorModel) ruleLines.push(`- Coordinator model: ${rules.coordinatorModel} (your model — user selected this, do not change)`);
@@ -622,10 +629,16 @@ You can spawn these types of workers:
     let projectSection = "";
     if (ctx) {
       projectSection = `\n## Project Context\nProject root: ${ctx.projectRoot}`;
-      if (ctx.projectDocs && Object.keys(ctx.projectDocs).length > 0) {
-        projectSection += "\n\nProject documentation:";
-        for (const [docPath, content] of Object.entries(ctx.projectDocs)) {
-          projectSection += `\n\n### ${docPath}\n${content}`;
+      if (ctx.projectDocPaths && ctx.projectDocPaths.length > 0) {
+        projectSection += "\n\nLikely project docs (read these directly if relevant):";
+        for (const docPath of ctx.projectDocPaths.slice(0, 40)) {
+          projectSection += `\n- ${docPath}`;
+        }
+      }
+      if (ctx.projectKnowledge && ctx.projectKnowledge.length > 0) {
+        projectSection += "\n\nProject memory highlights:";
+        for (const line of ctx.projectKnowledge.slice(0, 12)) {
+          projectSection += `\n- ${line}`;
         }
       }
       if (ctx.fileTree) {
@@ -649,6 +662,27 @@ ${this.deps.missionGoal}
 Run ID: ${this.deps.runId}
 Mission ID: ${this.deps.missionId}
 ${rulesSection}
+
+## Enforcement & Constraints
+
+### Phase Ordering
+Phase ordering is enforced by spawn_worker — if it rejects a spawn due to phase ordering violations, adapt your plan to respect the configured phase sequence. Do not attempt to bypass phase gates.
+
+### Validation Tiers
+Each phase may specify a validation gate tier. Follow these rules strictly:
+- **self-check**: After implementation completes, validate the output yourself by reading it (get_worker_output, read_file) and calling report_validation with your verdict. No extra worker needed.
+- **spot-check**: Spawn a validator worker for a random sample of completed steps in the phase. Not every step needs validation — use judgment on which are highest risk.
+- **dedicated**: Always spawn a validator worker after each implementation step completes. The validator must pass before the step is considered done.
+- **none**: No validation required for the phase.
+
+### Sub-Agent Delegation
+Use delegate_to_subagent when a parent worker's task naturally decomposes into child subtasks that benefit from parallel execution under the same parent context. Use spawn_worker for independent top-level work. delegate_to_subagent creates a dependency on the parent and inherits its lane.
+
+### Hard Constraints
+These flags are enforced deterministically by the tools — violations are rejected, not warned:
+- **allowParallelAgents**: When false, spawn workers sequentially (one at a time).
+- **allowSubAgents**: When false, delegate_to_subagent is disabled. Use spawn_worker instead.
+- **allowClaudeAgentTeams**: When false, claude-native agent team patterns are blocked for sub-agents.
 ${phasesSection}
 ${workersSection}
 ${projectSection}
@@ -845,6 +879,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Reload durable memory | read_mission_state |
 | Insert milestone | insert_milestone |
 | Request specialist | request_specialist |
+| Delegate subtask to child agent | delegate_to_subagent |
 | Stop a worker | stop_worker |
 | Check budget pressure | get_budget_status |
 | Need human input | request_user_input |

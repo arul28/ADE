@@ -565,6 +565,7 @@ export default function MissionsPage() {
         priority: draft.priority,
         allowPlanningQuestions: draft.allowPlanningQuestions,
         allowCompletionWithRisk: draft.allowCompletionWithRisk,
+        agentRuntime: draft.agentRuntime,
         teamRuntime: draft.teamRuntime,
         executionPolicy: {
           prStrategy: draft.prStrategy,

@@ -45,7 +45,11 @@ export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
 
       // Team runtime env vars — enable native teams when ADE team runtime is active
       const envParts: string[] = [];
-      if (teamRuntime?.enabled && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")) {
+      if (
+        teamRuntime?.enabled
+        && teamRuntime.allowClaudeAgentTeams !== false
+        && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")
+      ) {
         envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
       }
 

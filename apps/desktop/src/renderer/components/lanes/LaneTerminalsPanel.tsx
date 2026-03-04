@@ -65,6 +65,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
   const laneName = useMemo(() => lanes.find((l) => l.id === laneId)?.name ?? null, [lanes, laneId]);
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
+  const [chatSessions, setChatSessions] = useState<TerminalSessionSummary[]>([]);
   const [viewMode, setViewMode] = useState<"tabs" | "grid">("tabs");
   const [closingSessionIds, setClosingSessionIds] = useState<Set<string>>(new Set());
   const [localFocusedSessionId, setLocalFocusedSessionId] = useState<string | null>(null);
@@ -89,11 +90,13 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     if (!laneId) return;
     const rows = await window.ade.sessions.list({ laneId, limit: 80 });
     const nonChatRows = rows.filter((row) => !isChatToolType(row.toolType));
+    const chatRows = rows.filter((row) => isChatToolType(row.toolType));
     setSessions(nonChatRows);
-    laneSessionIdsRef.current = new Set(nonChatRows.map((row) => row.id));
-    if (rows.length > 0) {
-      const runningOnly = rows.filter((s) => s.status === "running" && Boolean(s.ptyId));
-      const visible = viewMode === "tabs" && runningOnly.length ? runningOnly : rows;
+    setChatSessions(chatRows);
+    laneSessionIdsRef.current = new Set(rows.map((row) => row.id));
+    if (nonChatRows.length > 0) {
+      const runningOnly = nonChatRows.filter((s) => s.status === "running" && Boolean(s.ptyId));
+      const visible = viewMode === "tabs" && runningOnly.length ? runningOnly : nonChatRows;
       const currentExists = focusedSessionId && visible.some((s) => s.id === focusedSessionId);
       if (!currentExists && viewMode === "tabs") {
         focusSession(visible[0]!.id);
@@ -105,6 +108,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
 
   useEffect(() => {
     setSessions([]);
+    setChatSessions([]);
     setClosingSessionIds(new Set());
     laneSessionIdsRef.current = new Set();
     if (!laneId) return;
@@ -439,8 +443,12 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
         /* TILE MODE */
         <div className="min-h-0 flex-1 border border-border bg-black/20 rounded-lg overflow-hidden">
           <TilingLayout
-            sessions={sessions.filter((s) => s.status === "running" && Boolean(s.ptyId))}
+            sessions={[
+              ...sessions.filter((s) => s.status === "running" && Boolean(s.ptyId)),
+              ...chatSessions.filter((s) => s.status === "running"),
+            ]}
             focusedSessionId={focusedSessionId}
+            laneId={laneId}
             onFocus={focusSession}
             onClose={(id) => {
               const s = sessions.find((x) => x.id === id);

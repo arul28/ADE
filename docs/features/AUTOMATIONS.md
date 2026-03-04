@@ -1,6 +1,6 @@
 # Automations (Legacy)
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
 > Last updated: 2026-02-26
 
@@ -24,4 +24,4 @@ Beginning in Phase 4, ADE moves to an **agent-first** model where automation beh
 - [docs/features/MISSIONS.md](MISSIONS.md)
 - [docs/architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md)
 - [docs/architecture/CONTEXT_CONTRACT.md](../architecture/CONTEXT_CONTRACT.md)
-- [docs/final-plan.md](../final-plan.md)
+- [docs/final-plan/README.md](../final-plan/README.md)

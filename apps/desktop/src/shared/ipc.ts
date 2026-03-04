@@ -242,7 +242,6 @@ export const IPC = {
   prsLandStack: "ade.prs.landStack",
   prsDraftDescription: "ade.prs.draftDescription",
   prsOpenInGitHub: "ade.prs.openInGitHub",
-  prsCreateStacked: "ade.prs.createStacked",
   prsCreateIntegration: "ade.prs.createIntegration",
   prsLandStackEnhanced: "ade.prs.landStackEnhanced",
   prsGetConflictAnalysis: "ade.prs.getConflictAnalysis",

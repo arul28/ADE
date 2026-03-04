@@ -244,54 +244,6 @@ export function getProfileById(id: string): MissionModelProfile | undefined {
 // Resolution helpers
 // ─────────────────────────────────────────────────────
 
-const VALID_THINKING_LEVELS: Set<string> = new Set([
-  "none", "minimal", "low", "medium", "high", "max", "xhigh",
-]);
-
-function toThinkingLevel(value?: string | null): ThinkingLevel {
-  if (value && VALID_THINKING_LEVELS.has(value)) return value as ThinkingLevel;
-  return "medium";
-}
-
-/** Convert a legacy PhaseModelChoice + reasoningEffort to a ModelConfig */
-export function legacyToModelConfig(
-  model?: string | null,
-  reasoningEffort?: string | null
-): ModelConfig {
-  const trimmedModel = (model ?? "").trim();
-  const normalizedModel = trimmedModel.toLowerCase();
-  const thinking = toThinkingLevel(reasoningEffort);
-  if (!normalizedModel || normalizedModel === "codex") {
-    return { provider: "codex", modelId: "gpt-5.3-codex", thinkingLevel: thinking };
-  }
-  if (normalizedModel === "claude") {
-    return { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: thinking };
-  }
-  // Specific model IDs - detect provider from namespaced IDs first, then aliases.
-  const namespacedFamily = normalizedModel.includes("/") ? normalizedModel.split("/", 1)[0] : null;
-  if (namespacedFamily === "anthropic") {
-    return { provider: "claude", modelId: trimmedModel, thinkingLevel: thinking };
-  }
-  if (namespacedFamily === "openai") {
-    return { provider: "codex", modelId: trimmedModel, thinkingLevel: thinking };
-  }
-  const provider: ModelProvider = normalizedModel.includes("claude")
-    || normalizedModel.startsWith("opus")
-    || normalizedModel.startsWith("sonnet")
-    || normalizedModel.startsWith("haiku")
-    ? "claude"
-    : "codex";
-  return { provider, modelId: trimmedModel, thinkingLevel: thinking };
-}
-
-/** Convert ModelConfig back to legacy format for backward compat */
-export function modelConfigToLegacy(config: ModelConfig): { model: string; reasoningEffort: string } {
-  return {
-    model: config.provider,
-    reasoningEffort: config.thinkingLevel ?? "medium"
-  };
-}
-
 /** Resolve the model config for a specific orchestrator call type */
 export function resolveCallTypeModel(
   callType: OrchestratorCallType,

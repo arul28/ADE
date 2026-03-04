@@ -16,6 +16,7 @@ import {
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type {
+  MissionAgentRuntimeConfig,
   MissionModelConfig,
   MissionPreflightChecklistItem,
   MissionPreflightResult,
@@ -51,6 +52,7 @@ export type CreateDraft = {
   modelConfig: MissionModelConfig;
   phaseProfileId: string | null;
   phaseOverride: PhaseCard[];
+  agentRuntime: MissionAgentRuntimeConfig;
   teamRuntime?: TeamRuntimeConfig;
   permissionConfig: MissionPermissionConfig;
 };
@@ -63,6 +65,12 @@ export type CreateMissionDefaults = {
   codexApprovalMode?: Extract<MissionCodexApprovalMode, "suggest" | "auto-edit" | "full-auto">;
   codexConfigPath?: string;
   apiPermissionMode?: MissionApiPermissionMode;
+};
+
+const DEFAULT_AGENT_RUNTIME: MissionAgentRuntimeConfig = {
+  allowParallelAgents: true,
+  allowSubAgents: true,
+  allowClaudeAgentTeams: true,
 };
 
 const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
@@ -132,6 +140,7 @@ export function buildCreateMissionDraft(
     modelConfig: buildDefaultModelConfig(defaults, builtInProfiles),
     phaseProfileId: null,
     phaseOverride: [],
+    agentRuntime: { ...DEFAULT_AGENT_RUNTIME },
     permissionConfig: createDefaultPermissionConfig(defaults),
   };
 }
@@ -1422,6 +1431,64 @@ function CreateMissionDialogInner({
                   ALLOW COMPLETION WITH RISK
                 </label>
 
+                <div className="space-y-1.5">
+                  <span style={dlgLabelStyle}>AGENT RUNTIME CAPABILITIES</span>
+                  <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <input
+                      type="checkbox"
+                      checked={draft.agentRuntime.allowParallelAgents}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setDraft((p) => ({
+                          ...p,
+                          agentRuntime: { ...p.agentRuntime, allowParallelAgents: checked },
+                          ...(p.teamRuntime
+                            ? { teamRuntime: { ...p.teamRuntime, allowParallelAgents: checked } }
+                            : {})
+                        }));
+                      }}
+                    />
+                    ALLOW PARALLEL AGENTS / WORKERS
+                  </label>
+                  <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <input
+                      type="checkbox"
+                      checked={draft.agentRuntime.allowSubAgents}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setDraft((p) => ({
+                          ...p,
+                          agentRuntime: { ...p.agentRuntime, allowSubAgents: checked },
+                          ...(p.teamRuntime
+                            ? { teamRuntime: { ...p.teamRuntime, allowSubAgents: checked } }
+                            : {})
+                        }));
+                      }}
+                    />
+                    ALLOW SUB-AGENTS (NESTED DELEGATION)
+                  </label>
+                  <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <input
+                      type="checkbox"
+                      checked={draft.agentRuntime.allowClaudeAgentTeams}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setDraft((p) => ({
+                          ...p,
+                          agentRuntime: { ...p.agentRuntime, allowClaudeAgentTeams: checked },
+                          ...(p.teamRuntime
+                            ? { teamRuntime: { ...p.teamRuntime, allowClaudeAgentTeams: checked } }
+                            : {})
+                        }));
+                      }}
+                    />
+                    ALLOW CLAUDE CODE AGENT TEAMS
+                  </label>
+                  <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 2 }}>
+                    These controls are passed to planner/coordinator strategy prompts and runtime metadata.
+                  </div>
+                </div>
+
                 <div className="space-y-2">
                   <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                     <input
@@ -1433,6 +1500,9 @@ function CreateMissionDialogInner({
                           enabled: e.target.checked,
                           targetProvider: p.teamRuntime?.targetProvider ?? "auto",
                           teammateCount: p.teamRuntime?.teammateCount ?? 2,
+                          allowParallelAgents: p.agentRuntime.allowParallelAgents,
+                          allowSubAgents: p.agentRuntime.allowSubAgents,
+                          allowClaudeAgentTeams: p.agentRuntime.allowClaudeAgentTeams,
                         }
                       }))}
                     />

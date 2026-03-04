@@ -135,7 +135,7 @@ export type AgentChatEventEnvelope = {
   event: AgentChatEvent;
 };
 
-export type AgentChatPermissionMode = "plan" | "edit" | "full-auto";
+export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
 
 export type AgentChatSession = {
   id: string;

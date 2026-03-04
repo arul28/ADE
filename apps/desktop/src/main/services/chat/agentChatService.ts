@@ -241,24 +241,11 @@ const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = [
   }
 ];
 
-const CLAUDE_ALIAS_TO_MODEL: Record<string, string> = {
-  opus: "claude-opus-4-6",
-  "opus-4-6": "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
-  "sonnet-4-6": "claude-sonnet-4-6",
-  "sonnet-4-5": "claude-sonnet-4-5-20241022",
-  haiku: "claude-haiku-4-5-20251001",
-  "haiku-4-5": "claude-haiku-4-5-20251001"
-};
-
 const CLAUDE_FALLBACK_MODELS: AgentChatModelInfo[] = [
   { id: "claude-opus-4-6", displayName: "Claude Opus 4.6", description: "Highest capability for complex strategy and review.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
   { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", description: "Latest balanced model — quality and speed for everyday work.", isDefault: true, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
   { id: "claude-sonnet-4-5-20241022", displayName: "Claude Sonnet 4.5", description: "Previous-gen Sonnet — stable and cost-effective.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
   { id: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", description: "Fastest Claude variant for lightweight tasks.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
-  { id: "opus", displayName: "Opus (alias)", description: "Alias for Claude Opus 4.6.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
-  { id: "sonnet", displayName: "Sonnet (alias)", description: "Alias for Claude Sonnet 4.6.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
-  { id: "haiku", displayName: "Haiku (alias)", description: "Alias for Claude Haiku 4.5.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 }
 ];
 
 function normalizeReasoningEffort(value: unknown): string | null {
@@ -371,37 +358,12 @@ function parseJsonLine(raw: string): JsonRpcEnvelope | null {
   }
 }
 
-function resolveLegacyModelAliasToRegistryId(
-  model: string,
-  providerHint?: AgentChatProvider,
-): string | undefined {
-  const normalized = model.trim().toLowerCase();
-  if (!normalized.length) return undefined;
-
-  // Handle older shorthand names seen in persisted sessions/config.
-  const compact = normalized.replace(/[\s._-]+/g, "");
-  const prefersUnifiedApiModel = providerHint === "unified";
-
-  if (compact === "4o" || compact === "gpt4o") {
-    return prefersUnifiedApiModel ? "openai/o4-mini-api" : "openai/o4-mini";
-  }
-
-  if (compact === "gptmini" || compact === "codexmini") {
-    return "openai/codex-mini-latest";
-  }
-
-  return undefined;
-}
-
 function resolveModelIdFromStoredValue(
   model: string,
   providerHint?: AgentChatProvider,
 ): string | undefined {
   const normalized = model.trim().toLowerCase();
   if (!normalized.length) return undefined;
-
-  const legacyAliasMatch = resolveLegacyModelAliasToRegistryId(normalized, providerHint);
-  if (legacyAliasMatch) return legacyAliasMatch;
 
   const matches = MODEL_REGISTRY.filter(
     (entry) =>
@@ -434,29 +396,37 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
   return DEFAULT_UNIFIED_MODEL_ID;
 }
 
-function mapSessionPermissionToClaude(mode: AgentChatSession["permissionMode"]): "plan" | "acceptEdits" | "bypassPermissions" {
+function mapSessionPermissionToClaude(mode: AgentChatSession["permissionMode"]): "default" | "plan" | "acceptEdits" | "bypassPermissions" {
   if (mode === "full-auto") return "bypassPermissions";
   if (mode === "edit") return "acceptEdits";
+  if (mode === "default") return "default";
   return "plan";
 }
 
 function mapSessionPermissionToCodex(mode: AgentChatSession["permissionMode"]): {
   approvalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
-} {
+} | null {
   if (mode === "full-auto") {
     return { approvalPolicy: "never", sandbox: "danger-full-access" };
   }
-  if (mode === "edit") {
-    return { approvalPolicy: "on-request", sandbox: "workspace-write" };
+  // "config-toml" means run with no flags — let Codex read its own config.toml
+  if (mode === "config-toml") {
+    return null;
   }
+  // "default" / "plan" / undefined → suggest mode (approval required for every action)
   return { approvalPolicy: "untrusted", sandbox: "read-only" };
+}
+
+/** Spread-ready codex policy args (approvalPolicy + sandbox) or empty object if null. */
+function codexPolicyArgs(policy: ReturnType<typeof mapSessionPermissionToCodex>): Record<string, string> {
+  return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
 }
 
 function normalizePersistedPermissionMode(value: unknown): AgentChatSession["permissionMode"] | undefined {
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw.length) return undefined;
-  if (raw === "plan" || raw === "edit" || raw === "full-auto") {
+  if (raw === "default" || raw === "plan" || raw === "edit" || raw === "full-auto" || raw === "config-toml") {
     return raw;
   }
   return undefined;
@@ -531,7 +501,7 @@ export function createAgentChatService(args: {
     const descriptor = getModelById(modelId);
     if (!descriptor) return "fallthrough";
 
-    // CLI-wrapped models -> fall through to legacy runtimes
+    // CLI-wrapped models -> defer to CLI session runtimes.
     if (descriptor.isCliWrapped) return "fallthrough";
 
     logger.info("agent_chat.unified_session_starting", {
@@ -546,9 +516,13 @@ export function createAgentChatService(args: {
     });
 
     const chatConfig = resolveChatConfig();
-    const permMode: PermissionMode =
-      managed.session.permissionMode ??
-      chatConfig.unifiedPermissionMode;
+    // Map AgentChatPermissionMode to PermissionMode ("default" → "edit" for unified models)
+    const sessionPermMode = managed.session.permissionMode;
+    const mappedSessionPermMode: PermissionMode | undefined =
+      sessionPermMode === "default" ? "edit"
+      : sessionPermMode === "plan" || sessionPermMode === "edit" || sessionPermMode === "full-auto" ? sessionPermMode
+      : undefined;
+    const permMode: PermissionMode = mappedSessionPermMode ?? chatConfig.unifiedPermissionMode;
 
     const runtime: UnifiedRuntime = {
       kind: "unified",
@@ -1100,6 +1074,12 @@ export function createAgentChatService(args: {
           providerOptions: providerOptions as any,
           stopWhen: stepCountIs(20),
           abortSignal: abortController.signal,
+          onError({ error }) {
+            logger.warn("agent_chat.unified_stream_error", {
+              sessionId: managed.session.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
         });
       } else {
         const claudeRt = runtime as ClaudeRuntime;
@@ -1152,7 +1132,13 @@ export function createAgentChatService(args: {
         stream = streamText({
           model: claudeProvider(resolveClaudeCliModel(managed.session.model), claudeOpts as any),
           messages: runtime.messages.map((message) => ({ role: message.role, content: message.content })) as any,
-          abortSignal: abortController.signal
+          abortSignal: abortController.signal,
+          onError({ error }) {
+            logger.warn("agent_chat.claude_stream_error", {
+              sessionId: managed.session.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
         });
       }
 
@@ -1944,7 +1930,7 @@ export function createAgentChatService(args: {
   const listClaudeModelsFromSdk = async (): Promise<AgentChatModelInfo[]> => {
     try {
       const session = unstable_v2_createSession({
-        model: resolveClaudeCliModel(CLAUDE_ALIAS_TO_MODEL.sonnet),
+        model: resolveClaudeCliModel("claude-sonnet-4-6"),
         permissionMode: "plan"
       }) as unknown as {
         supportedModels?: () => Promise<ModelInfo[]>;
@@ -2173,8 +2159,7 @@ export function createAgentChatService(args: {
           model: managed.session.model,
           ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
           cwd: managed.laneWorktreePath,
-          approvalPolicy: codexPolicy.approvalPolicy,
-          sandbox: codexPolicy.sandbox,
+          ...codexPolicyArgs(codexPolicy),
           persistExtendedHistory: true
         };
 
@@ -2193,8 +2178,7 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
-            approvalPolicy: codexPolicy.approvalPolicy,
-            sandbox: codexPolicy.sandbox,
+            ...codexPolicyArgs(codexPolicy),
             experimentalRawEvents: false,
             persistExtendedHistory: true
           });
@@ -2215,8 +2199,7 @@ export function createAgentChatService(args: {
           model: managed.session.model,
           ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
           cwd: managed.laneWorktreePath,
-          approvalPolicy: codexPolicy.approvalPolicy,
-          sandbox: codexPolicy.sandbox,
+          ...codexPolicyArgs(codexPolicy),
           experimentalRawEvents: false,
           persistExtendedHistory: true
         });
@@ -2352,8 +2335,7 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
-            approvalPolicy: codexPolicy.approvalPolicy,
-            sandbox: codexPolicy.sandbox,
+            ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
           });
           managed.session.threadId = threadId;
@@ -2370,8 +2352,7 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
-            approvalPolicy: codexPolicy.approvalPolicy,
-            sandbox: codexPolicy.sandbox,
+            ...codexPolicyArgs(codexPolicy),
             experimentalRawEvents: false,
             persistExtendedHistory: true
           });
@@ -2503,7 +2484,7 @@ export function createAgentChatService(args: {
       return listClaudeModelsFromSdk();
     }
 
-    // For "unified" or any non-legacy provider: return all models with valid auth
+    // For unified/non-CLI providers: return all models with valid auth.
     try {
       const auth = await detectAuth();
       const available = getRegistryModels(auth);
@@ -2611,7 +2592,11 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
 
     if (managed.runtime?.kind === "unified") {
-      managed.runtime.permissionMode = permissionMode;
+      // Map to unified PermissionMode (which doesn't include "default" or "config-toml")
+      const unifiedMode: PermissionMode = permissionMode === "default" || permissionMode === "config-toml" ? "edit"
+        : permissionMode === "plan" || permissionMode === "edit" || permissionMode === "full-auto" ? permissionMode
+        : "edit";
+      managed.runtime.permissionMode = unifiedMode;
     }
 
     managed.session.permissionMode = permissionMode;

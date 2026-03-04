@@ -17,7 +17,7 @@ This plan has been split into individual phase files for maintainability. Each p
 
 ---
 
-Last updated: 2026-03-02
+Last updated: 2026-03-04
 Owner: ADE
 Status: Active
 
@@ -62,11 +62,12 @@ Baseline derived from code in `apps/desktop`.
 - Conflict prediction, risk matrix, merge simulation, proposal apply/undo, external resolver runs
 - PR workflows (including stacked and integration PR paths)
 - Packs/checkpoints/version/event pipeline with bounded exports
+- Context-doc pipeline: `.ade/context/PRD.ade.md` + `.ade/context/ARCHITECTURE.ade.md` generation (AI-assisted with deterministic digest fallback) and digest-ref-first orchestrator consumption
 - Automations engine + natural-language planner
 - Mission intake/tracking lifecycle (status lanes, steps, interventions, artifacts, events)
 - Deterministic orchestrator runtime: DAG scheduling, claims, context snapshots, timeline, gate evaluator
-- Executor scaffold adapters for Claude/Codex/Gemini (tracked-session scaffold, not yet AI-driven)
-- Mission planning with deterministic planner pass (rule/keyword classifier, dependency/join/done-criteria metadata)
+- AI-driven planner/runtime adapters for Claude and Codex with mission-step schema validation and retry logic
+- Coordinator-owned mission orchestration (persistent coordinator agent, runtime event routing, fail-hard startup semantics)
 - Local GitHub integration via `gh` CLI
 - AI orchestrator runtime (mission lifecycle, fail-hard planner with 300s timeout)
 - PR strategies (integration/per-lane/queue/manual replacing merge phase)
@@ -97,6 +98,8 @@ Baseline derived from code in `apps/desktop`.
 - `registerIpc.ts` concentration remains a known extraction bottleneck (targeted for Phase 7).
 - Core product behavior is local-first and fully operational without any cloud backend.
 - Orchestrator runtime (deterministic kernel) is shipped infrastructure; AI orchestration sits on top.
+- Runtime execution flow is single-path (`aiIntegrationService` -> executor/unified runtime); no legacy hosted/BYOK migration branch remains in call flow.
+- Developer baseline assumes modern Git CLI semantics (worktrees, `restore`, `merge-tree --write-tree`, `--ignore-other-worktrees`).
 - **Codebase modularized (2026-03-02)**: AI orchestrator decomposed into 9 domain modules (42% size reduction), pack service decomposed into 4 builder modules (45% reduction), type system split into 17 domain files, frontend components decomposed (MissionsPage 60% reduction). Shared utilities consolidated. This decomposition directly enables Phase 7 core extraction.
 
 ### 2.4 Confirmed gaps
@@ -206,6 +209,6 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 
 - No phase ships with undocumented safety bypass defaults.
 - Every new execution path emits durable event/audit records.
-- Every phase includes migration notes for existing local state.
+- Every phase keeps runtime call flow migration-free (no legacy compatibility branching in active execution paths).
 - Every phase includes automated test coverage additions.
 - Every phase updates impacted docs in the same delivery window.

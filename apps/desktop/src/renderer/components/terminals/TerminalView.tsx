@@ -481,8 +481,10 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
   host.className = "h-full w-full m-0 p-0 border-0 overflow-hidden";
 
   const term = new Terminal({
+    allowProposedApi: true,
     convertEol: true,
     cursorBlink: true,
+    cursorInactiveStyle: "none",
     scrollback: 6000,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
     fontSize: 13,
@@ -573,7 +575,15 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
 
     if (isMac && ev.metaKey && ev.key === "Backspace") {
       ev.preventDefault();
+      // Ctrl+U: kill to beginning of line
       window.ade.pty.write({ ptyId: runtime.ptyId, data: "\x15" }).catch(() => {});
+      return false;
+    }
+
+    // Ctrl+Backspace: delete word backward (same as Ctrl+W)
+    if (ev.ctrlKey && ev.key === "Backspace") {
+      ev.preventDefault();
+      window.ade.pty.write({ ptyId: runtime.ptyId, data: "\x17" }).catch(() => {});
       return false;
     }
 

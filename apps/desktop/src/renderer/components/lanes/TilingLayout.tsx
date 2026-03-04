@@ -5,7 +5,9 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { TerminalView } from "../terminals/TerminalView";
+import { AgentChatPane } from "../chat/AgentChatPane";
 import type { TerminalSessionSummary } from "../../../shared/types";
+import { isChatToolType } from "../../lib/sessions";
 
 type TileNode =
   | { type: "leaf"; id: string; sessionId: string; leafCount: number }
@@ -41,12 +43,14 @@ function proportionalSize(node: TileNode, total: number): number {
 export function TilingLayout({
   sessions,
   focusedSessionId,
+  laneId,
   onFocus,
   onClose,
   closingSessionIds
 }: {
   sessions: TerminalSessionSummary[];
   focusedSessionId: string | null;
+  laneId?: string | null;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   closingSessionIds?: Set<string>;
@@ -56,7 +60,7 @@ export function TilingLayout({
     return buildTree(sessions);
   }, [sessions]);
 
-  if (!layout) return <div className="p-4 text-muted-fg text-xs text-center">No terminals.</div>;
+  if (!layout) return <div className="p-4 text-muted-fg text-xs text-center">No sessions.</div>;
 
   return (
     <div className="h-full w-full">
@@ -64,6 +68,7 @@ export function TilingLayout({
         node={layout}
         sessions={sessions}
         focusedSessionId={focusedSessionId}
+        laneId={laneId ?? null}
         onFocus={onFocus}
         onClose={onClose}
         closingSessionIds={closingSessionIds ?? new Set()}
@@ -76,6 +81,7 @@ function TileRenderer({
   node,
   sessions,
   focusedSessionId,
+  laneId,
   onFocus,
   onClose,
   closingSessionIds
@@ -83,6 +89,7 @@ function TileRenderer({
   node: TileNode;
   sessions: TerminalSessionSummary[];
   focusedSessionId: string | null;
+  laneId: string | null;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   closingSessionIds: Set<string>;
@@ -91,7 +98,8 @@ function TileRenderer({
     const session = sessions.find((s) => s.id === node.sessionId);
     if (!session) return null;
 
-    const isRunning = session.status === "running" && !!session.ptyId;
+    const isChat = isChatToolType(session.toolType);
+    const isRunning = session.status === "running" && (isChat || !!session.ptyId);
     const isActive = session.id === focusedSessionId;
     const isClosing = closingSessionIds.has(session.id);
 
@@ -106,27 +114,31 @@ function TileRenderer({
         <div
           className={cn(
             "absolute inset-x-0 top-0 z-10 flex items-center justify-between px-2 py-1 transition-opacity",
-            isRunning ? "bg-black/40 text-white opacity-0 backdrop-blur-sm group-hover:opacity-100" : "bg-muted/20 text-muted-fg opacity-100"
+            isRunning && !isChat ? "bg-black/40 text-white opacity-0 backdrop-blur-sm group-hover:opacity-100" : "bg-muted/20 text-muted-fg opacity-100"
           )}
         >
           <span className="max-w-[80%] truncate font-mono text-[11px]">{session.title}</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-4 w-4 p-0 text-current hover:text-red-400"
-            disabled={isClosing}
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose(session.id);
-            }}
-            title={isClosing ? "Closing terminal" : "Close terminal"}
-          >
-            <X size={12} />
-          </Button>
+          {!isChat && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-4 w-4 p-0 text-current hover:text-red-400"
+              disabled={isClosing}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose(session.id);
+              }}
+              title={isClosing ? "Closing" : "Close"}
+            >
+              <X size={12} />
+            </Button>
+          )}
         </div>
 
         <div className="min-h-0 flex-1 bg-bg">
-          {isRunning ? (
+          {isChat ? (
+            <AgentChatPane laneId={laneId} lockSessionId={session.id} />
+          ) : isRunning ? (
             <TerminalView ptyId={session.ptyId!} sessionId={session.id} className="h-full" />
           ) : (
             <div className="flex h-full flex-col items-center justify-center p-4 text-center text-muted-fg">
@@ -151,6 +163,7 @@ function TileRenderer({
           node={first}
           sessions={sessions}
           focusedSessionId={focusedSessionId}
+          laneId={laneId}
           onFocus={onFocus}
           onClose={onClose}
           closingSessionIds={closingSessionIds}
@@ -162,6 +175,7 @@ function TileRenderer({
           node={second}
           sessions={sessions}
           focusedSessionId={focusedSessionId}
+          laneId={laneId}
           onFocus={onFocus}
           onClose={onClose}
           closingSessionIds={closingSessionIds}

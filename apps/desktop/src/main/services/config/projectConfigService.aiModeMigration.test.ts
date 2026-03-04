@@ -25,7 +25,7 @@ function makeLogger() {
   } as any;
 }
 
-describe("projectConfigService legacy AI mode migration", () => {
+describe("projectConfigService AI mode normalization", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
@@ -36,7 +36,7 @@ describe("projectConfigService legacy AI mode migration", () => {
     }
   });
 
-  it("maps legacy providers.mode to ai.mode and removes providers.mode on save", () => {
+  it("ignores providers.mode and removes it on save", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-"));
     tempDirs.push(root);
 
@@ -74,8 +74,8 @@ describe("projectConfigService legacy AI mode migration", () => {
     });
 
     const snapshot = service.get();
-    expect(snapshot.effective.providerMode).toBe("subscription");
-    expect(snapshot.local.ai?.mode).toBe("subscription");
+    expect(snapshot.effective.providerMode).toBe("guest");
+    expect(snapshot.local.ai?.mode).toBeUndefined();
     expect((snapshot.local.providers as Record<string, unknown> | undefined)?.mode).toBeUndefined();
     expect((snapshot.local.providers as Record<string, unknown> | undefined)?.contextTools).toBeDefined();
 
@@ -85,10 +85,10 @@ describe("projectConfigService legacy AI mode migration", () => {
     });
 
     const persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, unknown>;
-    const persistedAi = persisted.ai as Record<string, unknown>;
+    const persistedAi = persisted.ai as Record<string, unknown> | undefined;
     const persistedProviders = persisted.providers as Record<string, unknown> | undefined;
 
-    expect(persistedAi.mode).toBe("subscription");
+    expect(persistedAi).toBeUndefined();
     expect(persistedProviders?.mode).toBeUndefined();
     expect((persistedProviders?.contextTools as Record<string, unknown> | undefined)).toBeDefined();
   });

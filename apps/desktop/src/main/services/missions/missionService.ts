@@ -61,6 +61,7 @@ import {
   groupMissionStepsByPhase,
 } from "./phaseEngine";
 import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
+import { normalizeAgentRuntimeFlags } from "../orchestrator/teamRuntimeConfig";
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "partially_completed", "failed", "canceled"]);
 
@@ -2334,6 +2335,27 @@ export function createMissionService({
         launchModelRaw === "opus" || launchModelRaw === "sonnet" || launchModelRaw === "haiku"
           ? launchModelRaw
           : null;
+      const launchAgentRuntime = normalizeAgentRuntimeFlags(
+        isRecord(args.agentRuntime) ? (args.agentRuntime as Record<string, unknown>) : {}
+      );
+      const launchTeamRuntime = (() => {
+        if (!args.teamRuntime) return undefined;
+        return {
+          ...args.teamRuntime,
+          allowParallelAgents:
+            typeof args.teamRuntime.allowParallelAgents === "boolean"
+              ? args.teamRuntime.allowParallelAgents
+              : launchAgentRuntime.allowParallelAgents,
+          allowSubAgents:
+            typeof args.teamRuntime.allowSubAgents === "boolean"
+              ? args.teamRuntime.allowSubAgents
+              : launchAgentRuntime.allowSubAgents,
+          allowClaudeAgentTeams:
+            typeof args.teamRuntime.allowClaudeAgentTeams === "boolean"
+              ? args.teamRuntime.allowClaudeAgentTeams
+              : launchAgentRuntime.allowClaudeAgentTeams
+        };
+      })();
       const launchThinkingBudgets = (() => {
         if (!isRecord(args.thinkingBudgets)) return null;
         const out: Record<string, number> = {};
@@ -2345,7 +2367,7 @@ export function createMissionService({
         }
         return Object.keys(out).length > 0 ? out : null;
       })();
-      // Resolve execution policy from args (backward compat — still stored for old metadata readers)
+      // Resolve execution policy from args when provided by the caller.
       const executionPolicyArg = args.executionPolicy && typeof args.executionPolicy === "object"
         ? (args.executionPolicy as Partial<MissionExecutionPolicy>)
         : null;
@@ -2388,7 +2410,7 @@ export function createMissionService({
         throw new Error(`Invalid mission phase sequence: ${phaseErrors.join(" ")}`);
       }
 
-      const legacyPlan = buildDeterministicMissionPlan({
+      const deterministicSeedPlan = buildDeterministicMissionPlan({
         prompt,
         laneId
       });
@@ -2401,7 +2423,7 @@ export function createMissionService({
       const rawStepsToPersist: MissionPlanStepDraft[] =
         Array.isArray(args.plannedSteps) && args.plannedSteps.length
           ? [...args.plannedSteps].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title))
-          : legacyPlan.steps.map((step) => ({
+          : deterministicSeedPlan.steps.map((step) => ({
               index: step.index,
               title: step.title,
               detail: step.detail,
@@ -2430,11 +2452,12 @@ export function createMissionService({
           runMode: launchMode,
           autopilotExecutor,
           allowPlanningQuestions,
+          agentRuntime: launchAgentRuntime,
           ...(launchModel ? { orchestratorModel: launchModel } : {}),
           ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {}),
           ...(args.modelConfig ? { modelConfig: args.modelConfig } : {}),
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
-          ...(args.teamRuntime ? { teamRuntime: args.teamRuntime } : {}),
+          ...(launchTeamRuntime ? { teamRuntime: launchTeamRuntime } : {}),
           ...(args.permissionConfig ? { permissionConfig: args.permissionConfig } : {}),
           phaseProfileId: selectedProfile?.id ?? null,
           hasPhaseOverride: hasExplicitOverride
@@ -2595,10 +2618,10 @@ export function createMissionService({
           executionMode,
           targetMachineId,
           preview: summarizePrompt(prompt),
-          plannerVersion: plannerRun ? "ade.missionPlanner.v2" : legacyPlan.plannerVersion,
-          plannerStrategy: plannerPlan?.missionSummary.strategy ?? legacyPlan.strategy,
+          plannerVersion: plannerRun ? "ade.missionPlanner.v2" : deterministicSeedPlan.plannerVersion,
+          plannerStrategy: plannerPlan?.missionSummary.strategy ?? deterministicSeedPlan.strategy,
           plannerStepCount: stepsToPersist.length,
-          plannerKeywords: legacyPlan.keywords,
+          plannerKeywords: deterministicSeedPlan.keywords,
           plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
           plannerEngineResolved: plannerRun?.resolvedEngine ?? null,
           plannerDegraded: plannerRun?.degraded ?? false,

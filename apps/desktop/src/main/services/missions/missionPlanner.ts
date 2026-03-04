@@ -671,7 +671,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         }
       });
     } else {
-      // Unknown slash command: pass through as startupCommand (legacy behavior)
+      // Unknown slash command: pass through as startupCommand.
       rawSteps.push({
         title: cmd,
         detail: `Execute slash command: ${cmd}`,

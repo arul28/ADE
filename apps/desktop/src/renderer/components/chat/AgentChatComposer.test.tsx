@@ -169,11 +169,19 @@ describe("AgentChatComposer", () => {
     expect(screen.getByText("⏎ send")).toBeTruthy();
   });
 
-  it("switches model and reasoning effort from dropdowns", () => {
+  it("switches model and reasoning effort from dropdowns", async () => {
     const { onModelChange, onReasoningEffortChange } = renderComposer();
 
-    const modelSelect = screen.getByLabelText("Model") as HTMLSelectElement;
-    fireEvent.change(modelSelect, { target: { value: "anthropic/claude-sonnet-4-6" } });
+    // The model selector is now a custom dropdown triggered by a button
+    const modelButton = screen.getByLabelText("Select model");
+    fireEvent.click(modelButton);
+
+    // Wait for the listbox to appear, then click the desired model option
+    await waitFor(() => {
+      expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+    const option = screen.getByRole("option", { name: /Claude Sonnet 4\.6/ });
+    fireEvent.click(option);
 
     const reasoningSelect = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
     fireEvent.change(reasoningSelect, { target: { value: "high" } });

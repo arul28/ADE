@@ -1,6 +1,6 @@
 # Conflicts — Radar, Prediction & Resolution
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
 > Last updated: 2026-03-02
 
@@ -42,7 +42,7 @@ on a collision course.
 
 ### Roadmap Alignment (Final Plan)
 
-Per `docs/final-plan.md`, Conflicts owns merge-risk intelligence and resolution workflows, including integration-lane planning. Planned coordination points:
+Per `docs/final-plan/README.md`, Conflicts owns merge-risk intelligence and resolution workflows, including integration-lane planning. Planned coordination points:
 
 - Integration Sandbox handoff to Run/Play for combined-lane verification before merge.
 - Explicit links from conflict merge plans to PR readiness/landing gates.

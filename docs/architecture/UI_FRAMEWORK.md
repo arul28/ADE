@@ -1,6 +1,6 @@
 # UI Framework Architecture
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
 > Last updated: 2026-03-02
 
@@ -277,4 +277,4 @@ Renderer architecture is fully operational for the current desktop scope:
 - Shared utility layer established: `renderer/lib/` (format, shell, sessions), `renderer/hooks/` (useClickOutside, useThreadEventRefresh), `context/contextShared.ts`, `prs/shared/`, `lanes/laneDesignTokens.ts`.
 - Mission detail tabs: Chat (Slack-style MissionChatV2), Activity (category dropdown filter), Plan, Work, Details.
 
-Future UI surfaces for Machines are planned in `docs/final-plan.md`.
+Future UI surfaces for Machines are planned in `docs/final-plan/README.md`.

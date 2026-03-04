@@ -4,6 +4,7 @@ import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
 import { TabBackground } from "../ui/TabBackground";
+import { GenerateDocsModal } from "../context/GenerateDocsModal";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import type { ContextStatus, PackEvent, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
@@ -98,7 +99,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [aiRetrying, setAiRetrying] = useState(false);
   const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
-  const [contextGenerateBusy, setContextGenerateBusy] = useState<"codex" | "claude" | null>(null);
+  const [contextGenerateOpen, setContextGenerateOpen] = useState<boolean>(false);
   const [projectMissing, setProjectMissing] = useState(false);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
@@ -470,7 +471,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {project?.rootPath && !showWelcome && providerMode === "guest" ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          Running in Guest Mode - AI details disabled. <Link to="/settings?tab=github" className="underline">Set up provider</Link>
+          Running in Guest Mode - AI details disabled. <Link to="/settings?tab=providers" className="underline">Set up provider</Link>
         </div>
       ) : null}
 
@@ -483,33 +484,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               size="sm"
               variant="outline"
               className="h-6 px-2 text-[11px]"
-              disabled={contextGenerateBusy != null}
-              onClick={() => {
-                setContextGenerateBusy("codex");
-                void window.ade.context
-                  .generateDocs({ provider: "codex" })
-                  .then(() => window.ade.context.getStatus())
-                  .then((next) => setContextStatus(next))
-                  .finally(() => setContextGenerateBusy(null));
-              }}
+              onClick={() => setContextGenerateOpen(true)}
             >
-              {contextGenerateBusy === "codex" ? "Generating…" : "Generate (Codex)"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              disabled={contextGenerateBusy != null}
-              onClick={() => {
-                setContextGenerateBusy("claude");
-                void window.ade.context
-                  .generateDocs({ provider: "claude" })
-                  .then(() => window.ade.context.getStatus())
-                  .then((next) => setContextStatus(next))
-                  .finally(() => setContextGenerateBusy(null));
-              }}
-            >
-              {contextGenerateBusy === "claude" ? "Generating…" : "Generate (Claude)"}
+              Generate Docs
             </Button>
             <Link to="/settings?tab=context" className="underline">Open Settings</Link>
           </span>
@@ -676,6 +653,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      <GenerateDocsModal
+        open={contextGenerateOpen}
+        onOpenChange={setContextGenerateOpen}
+        onCompleted={() => {
+          void window.ade.context.getStatus().then(setContextStatus).catch(() => {});
+        }}
+      />
     </div>
   );
 }

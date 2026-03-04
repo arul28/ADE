@@ -20,7 +20,7 @@ Pull-forward rules:
 
 - Phase 5 (Play Runtime Isolation) may begin after Phase 3 starts if resources allow, as it depends on the deterministic runtime (already shipped) rather than the AI orchestrator specifically.
 - Phase 2 (MCP Server) and Phase 1 (Agent SDK Integration) may overlap in late Phase 1 for tool contract design work.
-- Phase 1.5 (Agent Chat Integration) runs in parallel with Phase 1. It depends only on Phase 1 W1 (package installation) being complete. All other Phase 1.5 work is independent of Phase 1's migration workstreams.
+- Phase 1.5 (Agent Chat Integration) runs in parallel with Phase 1. It depends only on Phase 1 W1 (package installation) being complete. All other Phase 1.5 work is independent of Phase 1 runtime integration workstreams.
 - Daytona SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration.
 - E2B SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration alongside Daytona.
 - Computer use tool prototyping may begin during Phase 3 since compute environments and completion behaviors inform computer use capabilities.
@@ -36,7 +36,7 @@ Each phase must satisfy:
 - Feature behavior validated by automated tests and manual smoke checks.
 - No unresolved P0/P1 regressions in lanes/terminals/git/conflicts paths.
 - Docs updated: affected feature docs + affected architecture docs + plan references.
-- Migration path documented for local DB/state changes.
+- DB/state change handling documented for local data shape changes (without adding legacy runtime compatibility branches).
 - Telemetry/audit events emitted for newly introduced execution surfaces.
 
 ---

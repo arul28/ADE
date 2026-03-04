@@ -40,10 +40,6 @@ function localBranchNameFromRemoteRef(ref: string): string {
   return slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized;
 }
 
-function isUnsupportedIgnoreOtherWorktreesError(message: string): boolean {
-  return /unknown option.*ignore-other-worktrees|usage:\s*git\s+checkout\b/i.test(message);
-}
-
 function ensureRelativeRepoPath(relPath: string): string {
   const normalized = relPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!normalized.length) throw new Error("File path is required");
@@ -757,24 +753,10 @@ export function createGitOperationsService({
         kind: "git_merge_continue",
         reason: "merge_continue",
         fn: async (lane) => {
-          const res = await runGit(["-c", "core.editor=true", "merge", "--continue"], {
+          await runGitOrThrow(["-c", "core.editor=true", "merge", "--continue"], {
             cwd: lane.worktreePath,
             timeoutMs: 300_000
           });
-          if (res.exitCode === 0) return;
-
-          const combined = `${res.stderr ?? ""}\n${res.stdout ?? ""}`.trim();
-          // Older git versions don't support `merge --continue`. In that case,
-          // finishing a merge is equivalent to committing the merge result.
-          if (/unknown option.*--continue|usage:\\s*git\\s+merge\\b/i.test(combined)) {
-            await runGitOrThrow(["-c", "core.editor=true", "commit", "--no-edit"], {
-              cwd: lane.worktreePath,
-              timeoutMs: 300_000
-            });
-            return;
-          }
-
-          throw new Error(combined || "Failed to continue merge");
         }
       });
       return action;
@@ -874,22 +856,10 @@ export function createGitOperationsService({
         reason: "checkout_branch",
         metadata: { branchName, trackRemoteBranch },
         fn: async (l) => {
-          const preferredCmd = trackRemoteBranch
+          const checkoutCmd = trackRemoteBranch
             ? ["checkout", "--track", "--ignore-other-worktrees", branchName]
             : ["checkout", "--ignore-other-worktrees", branchName];
-          const fallbackCmd = trackRemoteBranch
-            ? ["checkout", "--track", branchName]
-            : ["checkout", branchName];
-
-          const preferredRes = await runGit(preferredCmd, { cwd: l.worktreePath, timeoutMs: 60_000 });
-          if (preferredRes.exitCode !== 0) {
-            const combined = `${preferredRes.stderr ?? ""}\n${preferredRes.stdout ?? ""}`.trim();
-            if (isUnsupportedIgnoreOtherWorktreesError(combined)) {
-              await runGitOrThrow(fallbackCmd, { cwd: l.worktreePath, timeoutMs: 60_000 });
-            } else {
-              throw new Error(combined || `Failed to checkout branch '${branchName}'`);
-            }
-          }
+          await runGitOrThrow(checkoutCmd, { cwd: l.worktreePath, timeoutMs: 60_000 });
           laneService.updateBranchRef(args.laneId, resolvedBranchRef);
         }
       });

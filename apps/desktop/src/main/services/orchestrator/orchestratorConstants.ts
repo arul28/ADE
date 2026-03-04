@@ -3,7 +3,6 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  OrchestratorTaskStatus,
   RoleIsolationRule,
   RecoveryLoopPolicy,
   ContextViewPolicy,
@@ -12,19 +11,6 @@ import type {
   PrDepth,
   WorkerSandboxConfig,
 } from "../../../shared/types";
-
-/** Map legacy step statuses to task statuses for backward-compatible reads */
-export const LEGACY_STEP_TO_TASK_STATUS: Record<string, OrchestratorTaskStatus> = {
-  pending: "pending",
-  ready: "ready",
-  running: "running",
-  succeeded: "done",
-  failed: "blocked",
-  blocked: "blocked",
-  skipped: "done",
-  superseded: "done",
-  canceled: "canceled",
-};
 
 /**
  * The default set of role isolation rules.

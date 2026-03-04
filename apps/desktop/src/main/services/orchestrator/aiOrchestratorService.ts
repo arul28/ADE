@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import nodePath from "node:path";
 import type {
@@ -73,7 +73,7 @@ import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_INTEGRATION_PR_POLICY,
 } from "./orchestratorConstants";
-import { modelConfigToServiceModel, legacyToModelConfig } from "../../../shared/modelProfiles";
+import { modelConfigToServiceModel } from "../../../shared/modelProfiles";
 import { getModelById } from "../../../shared/modelRegistry";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -85,7 +85,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPrService } from "../prs/prService";
 import { createMemoryService } from "../memory/memoryService";
-import { planMissionOnce, plannerPlanToMissionSteps, MissionPlanningError, cleanupPlanTempFiles } from "../missions/missionPlanningService";
+import { planMissionOnce, plannerPlanToMissionSteps, MissionPlanningError } from "../missions/missionPlanningService";
 import { CoordinatorAgent } from "./coordinatorAgent";
 import { routeEventToCoordinator } from "./runtimeEventRouter";
 import {
@@ -94,6 +94,7 @@ import {
   readMissionStateDocument,
   updateMissionStateDocument,
 } from "./missionStateDoc";
+import { getErrorMessage } from "../shared/utils";
 
 // ── Module imports (extracted from this file) ────────────────────
 import type {
@@ -192,6 +193,7 @@ import {
   resolveAttemptOwnerIdFromRows,
   TERMINAL_PHASE_STEP_STATUSES,
   discoverProjectDocs as discoverProjectDocsCtx,
+  resolveActivePolicy as resolveActivePolicyCtx,
   resolveActivePhaseSettings as resolveActivePhaseSettingsCtx,
   resolveActiveRuntimeProfile as resolveActiveRuntimeProfileCtx,
   transitionMissionStatus as transitionMissionStatusCtx,
@@ -213,6 +215,7 @@ import {
 import {
   resolveMissionTeamRuntime as resolveMissionTeamRuntimeCtx,
   normalizeTeamRuntimeConfig as normalizeTeamRuntimeConfigFn,
+  normalizeAgentRuntimeFlags,
 } from "./teamRuntimeConfig";
 
 // Import from team runtime state module
@@ -240,7 +243,7 @@ import {
   sendThreadMessageCtx,
   sendChatCtx,
   getChatCtx,
-  parseMentionsCtx,
+  parseMentions,
   deliverMessageToAgentCtx,
   getGlobalChatCtx,
   getActiveAgentsCtx,
@@ -459,7 +462,7 @@ export function createAiOrchestratorService(args: {
   // Scalar mutable state wrapped for ctx
   const disposedRef = { current: false };
   const healthSweepTimerRef = { current: null as NodeJS.Timeout | null };
-  // Legacy compat: local `disposed` and `healthSweepTimer` aliases
+  // Local scalar mirrors for hot-path checks.
   let disposed = false;
   let healthSweepTimer: NodeJS.Timeout | null = null;
 
@@ -1886,7 +1889,7 @@ Check all worker statuses and continue managing the mission from here. Read work
   }): number => {
     const stepMeta = isRecord(args.step.metadata) ? args.step.metadata : {};
     const planStep = isRecord(stepMeta.planStep) ? stepMeta.planStep : null;
-    const aiStepTimeout = Number(stepMeta.aiTimeoutMs ?? stepMeta.ai_timeout_ms);
+    const aiStepTimeout = Number(stepMeta.aiTimeoutMs);
     const explicitStepTimeout = Number(stepMeta.timeoutMs);
     const planStepTimeout = Number(planStep?.timeoutMs ?? NaN);
     const runtimeProfile = runRuntimeProfiles.get(args.runId) ?? resolveActiveRuntimeProfile(args.missionId);
@@ -2657,6 +2660,81 @@ Check all worker statuses and continue managing the mission from here. Read work
     return null;
   };
 
+  const resolveMissionProjectId = (missionId: string): string => {
+    const row = db.get<{ project_id: string | null }>(
+      `select project_id from missions where id = ? limit 1`,
+      [missionId]
+    );
+    return row?.project_id ? String(row.project_id).trim() : "";
+  };
+
+  const inferPlannerProviderFromHint = (hint: string | null | undefined): "claude" | "codex" | null => {
+    const raw = String(hint ?? "").trim();
+    if (!raw.length) return null;
+    if (raw === "claude" || raw === "codex") return raw;
+    const desc = getModelById(raw);
+    if (desc?.family === "anthropic") return "claude";
+    if (desc?.family === "openai") return "codex";
+    const lower = raw.toLowerCase();
+    if (lower.includes("claude") || lower.includes("anthropic")) return "claude";
+    if (lower.includes("codex") || lower.includes("gpt")) return "codex";
+    return null;
+  };
+
+  const persistDiscoveredDocPathsToMemory = (args: { missionId: string; docPaths: string[]; sourceRunId?: string | null }): void => {
+    const missionProjectId = resolveMissionProjectId(args.missionId);
+    if (!missionProjectId.length || args.docPaths.length === 0) return;
+    const compactPaths = [...new Set(args.docPaths.map((entry) => String(entry ?? "").trim()).filter(Boolean))].slice(0, 40);
+    if (compactPaths.length === 0) return;
+    const content = `Project documentation paths: ${compactPaths.join(", ")}`;
+    try {
+      plannerMemoryService.addMemory({
+        projectId: missionProjectId,
+        scope: "project",
+        category: "fact",
+        content,
+        importance: "medium",
+        sourceRunId: args.sourceRunId ?? undefined
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.doc_inventory_memory_write_failed", {
+        missionId: args.missionId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  const buildProjectMemoryHighlights = (missionId: string): string[] => {
+    const missionProjectId = resolveMissionProjectId(missionId);
+    if (!missionProjectId.length) return [];
+    try {
+      return plannerMemoryService
+        .getMemoryBudget(missionProjectId, "standard", { includeCandidates: true })
+        .map((memory) => {
+          const category = String(memory.category ?? "fact").trim() || "fact";
+          const content = String(memory.content ?? "").replace(/\s+/g, " ").trim();
+          if (!content.length) return "";
+          return `[${category}] ${content.length > 240 ? `${content.slice(0, 237).trimEnd()}...` : content}`;
+        })
+        .filter(Boolean)
+        .slice(0, 12);
+    } catch {
+      return [];
+    }
+  };
+
+  const resolvePlannerProviderForMission = (args: {
+    missionId: string;
+    plannerProviderHint?: string | null;
+    runtimeProfile?: MissionRuntimeProfile | null;
+  }): "claude" | "codex" | null => {
+    const explicit = inferPlannerProviderFromHint(args.plannerProviderHint);
+    if (explicit) return explicit;
+    const runtimeHint = inferPlannerProviderFromHint(args.runtimeProfile?.planning.preferProvider ?? null);
+    if (runtimeHint) return runtimeHint;
+    return resolveChatProvider(args.missionId);
+  };
+
   // ── Team Runtime Manager ─────────────────────────────────────
   // Spawns and manages coordinator + teammates for a run.
 
@@ -3048,7 +3126,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     const missionId = chatArgs.missionId;
     const previous = chatTurnQueues.get(missionId) ?? Promise.resolve();
     const next = previous
-      .catch(() => undefined)
+      .catch((error) => { logger.warn("ai_orchestrator.chat_queue_previous_failed", { missionId, error: getErrorMessage(error) }); })
       .then(async () => {
         await respondToChatWithAI(chatArgs, recentChatContext);
       })
@@ -3186,7 +3264,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
 
         // Always start any newly-ready steps after evaluation
-        void startReadyAutopilotAttemptsWithMilestoneReadiness({ runId, reason: `coordinator_eval:${reason}` }).catch(() => {});
+        void startReadyAutopilotAttemptsWithMilestoneReadiness({ runId, reason: `coordinator_eval:${reason}` }).catch((error) => {
+          logger.warn("ai_orchestrator.start_ready_attempts_failed", { runId, reason: `coordinator_eval:${reason}`, error: getErrorMessage(error) });
+        });
 
         logger.debug("ai_orchestrator.coordinator_evaluation_triggered", { runId, missionId, reason });
       } catch (error) {
@@ -3246,6 +3326,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           laneId,
           provider: args.provider,
           model,
+          permissionMode: "plan",
           ...(planningReasoningEffort ? { reasoningEffort: planningReasoningEffort } : {})
         });
         const thread = upsertPlannerThread({
@@ -3429,11 +3510,35 @@ Check all worker statuses and continue managing the mission from here. Read work
       const teamRuntimeCfgRaw = resolveMissionTeamRuntime(args.missionId);
       const teamRuntimeCfg = teamRuntimeCfgRaw ? normalizeTeamRuntimeConfig(args.missionId, teamRuntimeCfgRaw) : null;
       const phaseConfig = missionService.getPhaseConfiguration(args.missionId);
-      const missionRow = db.get<{ project_id: string }>(
-        `select project_id from missions where id = ? limit 1`,
-        [args.missionId]
-      );
-      const missionProjectId = missionRow?.project_id ? String(missionRow.project_id).trim() : "";
+      const missionMetadata = getMissionMetadata(args.missionId);
+      const launchMetadata = isRecord(missionMetadata.launch) ? missionMetadata.launch : null;
+      const agentRuntime = isRecord(launchMetadata?.agentRuntime) ? launchMetadata.agentRuntime : null;
+      const missionProjectId = resolveMissionProjectId(args.missionId);
+      const projectDocsContext = discoverProjectDocs();
+      if (projectDocsContext.paths.length > 0) {
+        persistDiscoveredDocPathsToMemory({
+          missionId: args.missionId,
+          docPaths: projectDocsContext.paths
+        });
+      }
+      const docsDigest = projectDocsContext.docs.slice(0, 40).map((entry) => ({
+        path: entry.path,
+        sha256: entry.sha256,
+        bytes: entry.bytes
+      }));
+      const plannerConstraints = (() => {
+        const constraints: string[] = [];
+        if (agentRuntime?.allowParallelAgents === false) {
+          constraints.push("Parallel agents are disabled by mission settings. Use sequential strategy and set missionSummary.parallelismCap=1.");
+        }
+        if (agentRuntime?.allowSubAgents === false) {
+          constraints.push("Nested sub-agent delegation is disabled by mission settings. Keep steps self-contained for single-agent execution.");
+        }
+        if (agentRuntime?.allowClaudeAgentTeams === false) {
+          constraints.push("Claude native agent teams are disabled by mission settings.");
+        }
+        return constraints;
+      })();
       const planning = await planMissionOnce({
         missionId: args.missionId,
         title: mission.title,
@@ -3443,11 +3548,15 @@ Check all worker statuses and continue managing the mission from here. Read work
         model: args.model,
         projectRoot,
         allowPlanningQuestions: (() => {
-          const missionMetadata = getMissionMetadata(args.missionId);
-          const launch = isRecord(missionMetadata.launch) ? missionMetadata.launch : null;
-          return launch?.allowPlanningQuestions === true;
+          return launchMetadata?.allowPlanningQuestions === true;
         })(),
         phaseCards: phaseConfig?.selectedPhases,
+        contextBundle: docsDigest.length > 0 || plannerConstraints.length > 0
+          ? {
+              ...(docsDigest.length > 0 ? { docsDigest } : {}),
+              ...(plannerConstraints.length > 0 ? { constraints: plannerConstraints } : {})
+            }
+          : undefined,
         aiIntegrationService: planningIntegration,
         memoryService: missionProjectId.length > 0 ? plannerMemoryService : undefined,
         memoryProjectId: missionProjectId.length > 0 ? missionProjectId : undefined,
@@ -3613,13 +3722,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         [args.attemptId]
       )?.run_id ?? null;
       const missionIdForAttempt = runIdForAttempt ? getMissionIdForRun(runIdForAttempt) : null;
-      const runtimeProfile =
-        (runIdForAttempt ? runRuntimeProfiles.get(runIdForAttempt) : null)
-        ?? (missionIdForAttempt ? resolveActiveRuntimeProfile(missionIdForAttempt) : null);
-      const evaluationReasoningEffort = runtimeProfile?.evaluation.evaluationReasoningEffort ?? "medium";
       const configWorkerEval = missionIdForAttempt
         ? resolveOrchestratorModelConfig(missionIdForAttempt, "coordinator")
-        : legacyToModelConfig("sonnet", evaluationReasoningEffort);
+        : ({ provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" } as ModelConfig);
       const callTypeConfig = missionIdForAttempt
         ? resolveCallTypeConfig(missionIdForAttempt, "coordinator")
         : CALL_TYPE_DEFAULTS.coordinator;
@@ -3995,7 +4100,9 @@ Check all worker statuses and continue managing the mission from here. Read work
       void startReadyAutopilotAttemptsWithMilestoneReadiness({
         runId: adjustArgs.runId,
         reason: `ai_plan_adjustment:${adjustmentsApplied}_changes`
-      }).catch(() => {});
+      }).catch((error) => {
+        logger.warn("ai_orchestrator.start_ready_attempts_failed", { runId: adjustArgs.runId, reason: `ai_plan_adjustment:${adjustmentsApplied}_changes`, error: getErrorMessage(error) });
+      });
       logger.info("ai_orchestrator.ai_plan_adjustment_applied", {
         runId: adjustArgs.runId,
         adjustmentsApplied,
@@ -5356,6 +5463,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   // ── Project Docs Discovery ──────────────────────────────────
   const discoverProjectDocs = () => discoverProjectDocsCtx(ctx);
+  const resolveActivePolicy = (missionId: string) => resolveActivePolicyCtx(ctx, missionId);
 
   const startMissionRun = async (args: MissionRunStartArgs): Promise<MissionRunStartResult> => {
     const missionId = String(args.missionId ?? "").trim();
@@ -5430,6 +5538,57 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
     }
 
+    const runtimeProfile = resolveActiveRuntimeProfile(missionId);
+    const planningEnabled = runtimeProfile.planning.useAiPlanner;
+    const missionMetadata = getMissionMetadata(missionId);
+    const launchMetadata = isRecord(missionMetadata.launch) ? missionMetadata.launch : null;
+    const launchTeamRuntime = isRecord(launchMetadata?.teamRuntime) ? launchMetadata.teamRuntime : null;
+    const launchAgentRuntime = isRecord(launchMetadata?.agentRuntime)
+      ? launchMetadata.agentRuntime
+      : {
+          allowParallelAgents: true,
+          allowSubAgents: true,
+          allowClaudeAgentTeams: true
+        };
+    const replanOnStart = launchMetadata?.replanOnStart === true;
+    const shouldPlanBeforeCoordinator = planningEnabled && (initialMission.steps.length === 0 || replanOnStart);
+    if (shouldPlanBeforeCoordinator) {
+      const plannerProvider = resolvePlannerProviderForMission({
+        missionId,
+        plannerProviderHint: args.plannerProvider ?? null,
+        runtimeProfile
+      });
+      const plannerModelHint = runtimeProfile.planning.preferProvider;
+      const plannerModel =
+        typeof plannerModelHint === "string" && plannerModelHint.trim().length > 0 && getModelById(plannerModelHint)
+          ? plannerModelHint
+          : undefined;
+
+      if (!plannerProvider) {
+        logger.warn("ai_orchestrator.start_mission_planner_unavailable", {
+          missionId,
+          preferProvider: runtimeProfile.planning.preferProvider
+        });
+      } else {
+        transitionMissionStatus(missionId, "planning");
+        emitOrchestratorMessage(
+          missionId,
+          `Planner starting (${plannerProvider}${plannerModel ? ` · ${plannerModel}` : ""}). Coordinator activation will begin after planning completes.`
+        );
+        await planWithAI({
+          missionId,
+          provider: plannerProvider,
+          ...(plannerModel ? { model: plannerModel } : {}),
+          policy: resolveActivePolicy(missionId)
+        });
+      }
+    } else if (planningEnabled && initialMission.steps.length > 0) {
+      logger.info("ai_orchestrator.start_mission_reusing_existing_plan", {
+        missionId,
+        stepCount: initialMission.steps.length
+      });
+    }
+
     // ── Create run — just persistence, no planning ──
     const started = orchestratorService.startRun({
       missionId,
@@ -5438,6 +5597,13 @@ Check all worker statuses and continue managing the mission from here. Read work
         ...(args.metadata ?? {}),
         missionGoal,
         missionPrompt: initialMission.prompt ?? "",
+        teamRuntime: launchTeamRuntime
+          ? {
+              ...launchTeamRuntime,
+              ...normalizeAgentRuntimeFlags(launchTeamRuntime)
+            }
+          : undefined,
+        agentRuntime: normalizeAgentRuntimeFlags(launchAgentRuntime),
         aiFirst: true,
       }
     });
@@ -5526,6 +5692,16 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (typeof launch.providerPreference === "string") userRules.providerPreference = launch.providerPreference;
     if (typeof launch.costMode === "string") userRules.costMode = launch.costMode;
     if (typeof launch.maxParallelWorkers === "number") userRules.maxParallelWorkers = launch.maxParallelWorkers;
+    const agentRuntime = isRecord(launch.agentRuntime) ? launch.agentRuntime : null;
+    if (agentRuntime) {
+      const flags = normalizeAgentRuntimeFlags(agentRuntime as Partial<import("../../../shared/types").MissionAgentRuntimeConfig>);
+      userRules.allowParallelAgents = flags.allowParallelAgents;
+      userRules.allowSubAgents = flags.allowSubAgents;
+      userRules.allowClaudeAgentTeams = flags.allowClaudeAgentTeams;
+      if (agentRuntime.allowParallelAgents === false) {
+        userRules.maxParallelWorkers = 1;
+      }
+    }
     if (typeof launch.laneStrategy === "string") userRules.laneStrategy = launch.laneStrategy;
     if (typeof launch.customInstructions === "string") userRules.customInstructions = launch.customInstructions;
     if (args.defaultExecutorKind) userRules.providerPreference = args.defaultExecutorKind;
@@ -5545,9 +5721,29 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (typeof budgetConfig.maxCostUsd === "number") userRules.budgetLimitUsd = budgetConfig.maxCostUsd;
       if (typeof budgetConfig.maxTokens === "number") userRules.budgetLimitTokens = budgetConfig.maxTokens;
     }
+    const plannerPlanMeta = isRecord(missionMeta?.plannerPlan) ? missionMeta.plannerPlan : null;
+    const plannerSummaryHints = (() => {
+      if (!plannerPlanMeta || !isRecord(plannerPlanMeta.missionSummary)) return [] as string[];
+      const summary = plannerPlanMeta.missionSummary as Record<string, unknown>;
+      const objective = typeof summary.objective === "string" ? summary.objective.trim() : "";
+      const strategy = typeof summary.strategy === "string" ? summary.strategy.trim() : "";
+      const parallelismCap = Number(summary.parallelismCap ?? NaN);
+      const hints: string[] = [];
+      if (objective.length > 0) hints.push(`[planner] Objective: ${objective}`);
+      if (strategy.length > 0) hints.push(`[planner] Strategy: ${strategy}`);
+      if (Number.isFinite(parallelismCap) && parallelismCap > 0) hints.push(`[planner] Parallelism cap: ${Math.floor(parallelismCap)}`);
+      return hints;
+    })();
 
     // Discover project docs
     const projectDocsContext = discoverProjectDocs();
+    if (projectDocsContext.paths.length > 0) {
+      persistDiscoveredDocPathsToMemory({
+        missionId,
+        docPaths: projectDocsContext.paths
+      });
+    }
+    const projectMemoryHighlights = [...plannerSummaryHints, ...buildProjectMemoryHighlights(missionId)].slice(0, 12);
 
     // Build a shallow file tree for coordinator context
     let fileTree: string | undefined;
@@ -5570,7 +5766,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     const projectCtx: import("./coordinatorAgent").CoordinatorProjectContext | undefined =
       projectRoot ? {
         projectRoot,
-        projectDocs: projectDocsContext.found ? projectDocsContext.contents : undefined,
+        projectDocPaths: projectDocsContext.found ? projectDocsContext.paths : undefined,
+        projectKnowledge: projectMemoryHighlights.length > 0 ? projectMemoryHighlights : undefined,
         fileTree,
       } : undefined;
 
@@ -6117,7 +6314,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         void startReadyAutopilotAttemptsWithMilestoneReadiness({
           runId,
           reason: "question_answered_resume"
-        }).catch(() => {});
+        }).catch((error) => {
+          logger.warn("ai_orchestrator.start_ready_attempts_failed", { runId, reason: "question_answered_resume", error: getErrorMessage(error) });
+        });
       }
       emitOrchestratorMessage(
         missionId,
@@ -6306,8 +6505,6 @@ Check all worker statuses and continue managing the mission from here. Read work
   const getChat = (chatArgs: GetOrchestratorChatArgs) =>
     getChatCtx(ctx, chatArgs);
 
-  const parseMentions = (content: string) => parseMentionsCtx(content);
-
   const deliverMessageToAgent = (args: Parameters<typeof deliverMessageToAgentCtx>[1]) =>
     deliverMessageToAgentCtx(ctx, args, { sendWorkerMessageToSession });
 
@@ -6398,7 +6595,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
     const previous = sessionSignalQueues.get(sessionId) ?? Promise.resolve();
     const next = previous
-      .catch(() => undefined)
+      .catch((error) => { logger.warn("ai_orchestrator.session_signal_queue_previous_failed", { sessionId, error: getErrorMessage(error) }); })
       .then(async () => {
         if (disposed) return;
         await processSessionRuntimeSignal(normalizedSignal);
@@ -6558,7 +6755,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     const previous = sessionSignalQueues.get(sessionId) ?? Promise.resolve();
     const next = previous
-      .catch(() => undefined)
+      .catch((error) => { logger.warn("ai_orchestrator.session_signal_queue_previous_failed", { sessionId, error: getErrorMessage(error) }); })
       .then(async () => {
         if (disposed) return;
         await replayQueuedWorkerMessages({
@@ -6567,10 +6764,10 @@ Check all worker statuses and continue managing the mission from here. Read work
         });
       })
       .catch((error) => {
-        logger.debug("ai_orchestrator.agent_chat_replay_failed", {
+        logger.warn("ai_orchestrator.agent_chat_replay_failed", {
           sessionId,
           eventType: event.type,
-          error: error instanceof Error ? error.message : String(error)
+          error: getErrorMessage(error)
         });
       })
       .finally(() => {
@@ -6590,7 +6787,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (!mission) return null;
 
       const teamManifest = runTeamManifests.get(runId);
-      // Prefer phase-based settings; fall back to legacy policy
+      // Prefer mission phase settings, then use default runtime policy values.
       const { settings: previewPhaseSettings } = resolveActivePhaseSettings(graph.run.missionId);
       const recoveryPolicy: RecoveryLoopPolicy = previewPhaseSettings.recoveryLoop ?? DEFAULT_RECOVERY_LOOP_POLICY;
       const integrationPrPlan: IntegrationPrPolicy = previewPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
@@ -6714,21 +6911,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
       return null;
     }
-  };
-
-  // Quality gate evaluation and recovery loop coordination removed —
-  // these are the coordinator AI's responsibility. It evaluates quality
-  // through its persistent conversation and decides recovery actions.
-
-  // Stub kept for API compatibility — callers should migrate to coordinator tools.
-  const handleQualityGateFailure = async (_gateArgs: {
-    runId: string;
-    stepId: string;
-    phase: string;
-    reason: string;
-  }): Promise<{ triggered: boolean; exhausted: boolean; iteration: number }> => {
-    // No-op: quality gate recovery is now the coordinator AI's domain
-    return { triggered: false, exhausted: false, iteration: 0 };
   };
 
   // ── Aggregated Usage Stats (delegated to metricsAndUsage) ──
@@ -6962,7 +7144,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     getExecutionPlanPreview,
     getMissionStateDocument,
     getAggregatedUsage,
-    handleQualityGateFailure,
     getTeamManifest: (tmArgs: { runId: string }): TeamManifest | null => {
       return runTeamManifests.get(tmArgs.runId) ?? null;
     },
@@ -7012,8 +7193,6 @@ Check all worker statuses and continue managing the mission from here. Read work
         agent.shutdown();
         coordinatorAgents.delete(rid);
       }
-      // Clean up any leftover planner temp files
-      cleanupPlanTempFiles();
     }
   };
 }

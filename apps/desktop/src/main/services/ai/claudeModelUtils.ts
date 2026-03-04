@@ -46,7 +46,7 @@ export function resolveClaudeCliModel(model: string | null | undefined): string 
 
 /**
  * Normalize model identifiers for Codex CLI invocation. Supports registry IDs,
- * short aliases, and legacy "openai/<model>" strings.
+ * short aliases, and "openai/<model>" prefixed strings.
  */
 export function resolveCodexCliModel(model: string | null | undefined): string {
   const raw = String(model ?? "").trim();

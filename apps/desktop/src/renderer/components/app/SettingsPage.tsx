@@ -1,12 +1,11 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, Sparkle, SquaresFour, Plus, X } from "@phosphor-icons/react";
+import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Plus, X } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
 import { UsageDashboard } from "../missions/UsageDashboard";
-import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { AutomationsSection } from "../settings/AutomationsSection";
 import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
 import { KeybindingsSection } from "../settings/KeybindingsSection";
@@ -22,7 +21,6 @@ const SECTIONS = [
   { id: "automations", label: "Automations", icon: Robot },
   { id: "terminals", label: "Terminals", icon: Terminal },
   { id: "keybindings", label: "Keybindings", icon: Keyboard },
-  { id: "ai-features", label: "AI Features", icon: Sparkle },
   { id: "phase-profiles", label: "Phase Profiles", icon: SquaresFour },
   { id: "usage", label: "Usage", icon: Lightning },
 ] as const;
@@ -545,7 +543,6 @@ export function SettingsPage() {
         {section === "automations" && <AutomationsSection />}
         {section === "terminals" && <TerminalProfilesSection />}
         {section === "keybindings" && <KeybindingsSection />}
-        {section === "ai-features" && <AiFeaturesSection />}
         {section === "phase-profiles" && <PhaseProfilesSection />}
         {section === "usage" && <UsageDashboard missionId={null} />}
       </div>

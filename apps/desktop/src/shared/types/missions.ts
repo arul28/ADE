@@ -436,6 +436,15 @@ export type MissionDetail = MissionSummary & {
   phaseConfiguration?: MissionPhaseConfiguration | null;
 };
 
+export type MissionAgentRuntimeConfig = {
+  /** Allow coordinator/planner to use multiple workers in parallel. */
+  allowParallelAgents: boolean;
+  /** Allow workers to spawn nested/sub-agents where supported by provider runtime. */
+  allowSubAgents: boolean;
+  /** Allow Claude-native agent teams (for Claude CLI runtimes). */
+  allowClaudeAgentTeams: boolean;
+};
+
 export type ListMissionsArgs = {
   status?: MissionStatus | "active";
   laneId?: string;
@@ -464,6 +473,8 @@ export type CreateMissionArgs = {
   modelConfig?: MissionModelConfig;
   /** Team runtime configuration for agent-team orchestration */
   teamRuntime?: TeamRuntimeConfig;
+  /** Agent runtime capabilities/preferences passed to planner + coordinator. */
+  agentRuntime?: MissionAgentRuntimeConfig;
   /** Optional phase profile selection for launch */
   phaseProfileId?: string | null;
   /** Optional mission-scoped phase override sequence */

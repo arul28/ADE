@@ -220,7 +220,7 @@ export function loadChatMessagesFromMetadata(
     ? metadata[ORCHESTRATOR_CHAT_METADATA_KEY] as unknown[]
     : [];
   const parsed = stored
-    .map((entry, index) => parseChatMessage(entry, missionId, index))
+    .map((entry) => parseChatMessage(entry, missionId))
     .filter((msg): msg is OrchestratorChatMessage => msg !== null)
     .slice(-MAX_PERSISTED_CHAT_MESSAGES);
   if (parsed.length > 0) {
@@ -347,13 +347,13 @@ export function emitOrchestratorMessage(
 // ── Mention Parsing ──────────────────────────────────────────────
 
 export function parseMentions(content: string): { mentions: string[]; cleanContent: string } {
-  const mentionPattern = /@(\w+)/g;
+  const mentionPattern = /@([\w-]+)/g;
   const mentions: string[] = [];
   let match: RegExpExecArray | null;
   while ((match = mentionPattern.exec(content)) !== null) {
     mentions.push(match[1]);
   }
-  const cleanContent = content.replace(/@\w+/g, "").trim();
+  const cleanContent = content.replace(/@[\w-]+/g, "").trim();
   return { mentions, cleanContent };
 }
 
@@ -887,8 +887,8 @@ export function persistUpdatedChatMessage(
       const existing = Array.isArray(metadata[ORCHESTRATOR_CHAT_METADATA_KEY])
         ? (metadata[ORCHESTRATOR_CHAT_METADATA_KEY] as unknown[])
         : [];
-      metadata[ORCHESTRATOR_CHAT_METADATA_KEY] = existing.map((entry, index) => {
-        const parsed = parseChatMessage(entry, normalized.missionId, index);
+      metadata[ORCHESTRATOR_CHAT_METADATA_KEY] = existing.map((entry) => {
+        const parsed = parseChatMessage(entry, normalized.missionId);
         return parsed?.id === normalized.id ? normalized : entry;
       });
     });
@@ -1456,17 +1456,6 @@ export function sendAgentMessageCtx(
   return agentMsg;
 }
 
-// ── Inter-agent messaging: @mention parsing ──
-export function parseMentionsCtx(content: string): { mentions: string[]; cleanContent: string } {
-  const mentionRegex = /@([\w-]+)/g;
-  const mentions: string[] = [];
-  let match;
-  while ((match = mentionRegex.exec(content)) !== null) {
-    mentions.push(match[1]);
-  }
-  return { mentions, cleanContent: content };
-}
-
 // ── Inter-agent messaging: route message to mentioned agents ──
 export function routeMessageCtx(
   ctx: OrchestratorContext,
@@ -1632,7 +1621,7 @@ export function sendAgentMessageWithMentionsCtx(
   deps: { deliverMessageToAgent: (...args: any[]) => Promise<any> }
 ): OrchestratorChatMessage {
   const msg = sendAgentMessageCtx(ctx, agentMsgArgs);
-  const { mentions } = parseMentionsCtx(agentMsgArgs.content);
+  const { mentions } = parseMentions(agentMsgArgs.content);
   if (mentions.length > 0) {
     routeMessageCtx(ctx, msg, mentions, deps);
   }
@@ -1646,80 +1635,6 @@ export type ReconciliationDeps = {
   persistThreadWorkerLinks: (context: any) => void;
   replayQueuedWorkerMessages: (...args: any[]) => Promise<any>;
 };
-
-export function backfillLegacyThreadMessagesCtx(
-  ctx: OrchestratorContext,
-  missionId: string
-): number {
-  const missionIdentity = getMissionIdentity(ctx, missionId);
-  if (!missionIdentity) return 0;
-  const legacy = loadChatMessagesFromMetadata(ctx, missionId);
-  if (!legacy.length) return 0;
-  const existingIds = new Set(
-    ctx.db.all<{ id: string }>(
-      `
-        select id
-        from orchestrator_chat_messages
-        where mission_id = ?
-      `,
-      [missionId]
-    ).map((entry) => String(entry.id))
-  );
-  let inserted = 0;
-  for (const message of legacy) {
-    if (existingIds.has(message.id)) continue;
-    const thread = ensureThreadForTarget(ctx, {
-      missionId,
-      threadId: message.threadId ?? null,
-      target: message.target ?? null
-    });
-    ctx.db.run(
-      `
-        insert into orchestrator_chat_messages(
-          id,
-          project_id,
-          mission_id,
-          thread_id,
-          role,
-          content,
-          timestamp,
-          step_key,
-          target_json,
-          visibility,
-          delivery_state,
-          source_session_id,
-          attempt_id,
-          lane_id,
-          run_id,
-          metadata_json,
-          created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        message.id,
-        missionIdentity.projectId,
-        missionId,
-        thread.id,
-        message.role,
-        message.content,
-        message.timestamp,
-        message.stepKey ?? null,
-        message.target ? JSON.stringify(message.target) : null,
-        normalizeChatVisibility(message.visibility),
-        normalizeChatDeliveryState(message.deliveryState),
-        message.sourceSessionId ?? null,
-        message.attemptId ?? null,
-        message.laneId ?? null,
-        message.runId ?? null,
-        message.metadata ? JSON.stringify(message.metadata) : null,
-        message.timestamp
-      ]
-    );
-    existingIds.add(message.id);
-    inserted += 1;
-  }
-  return inserted;
-}
 
 export function reconcileMissingThreadRowsCtx(
   ctx: OrchestratorContext,
@@ -1878,7 +1793,6 @@ export async function reconcileThreadedMessagingStateCtx(
       order by created_at asc
     `
   );
-  let legacyBackfilled = 0;
   let missingThreadsRepaired = 0;
   let linksRepaired = 0;
   let unreadNormalized = 0;
@@ -1888,16 +1802,14 @@ export async function reconcileThreadedMessagingStateCtx(
     const missionId = toOptionalString(mission.id);
     if (!missionId) continue;
     ensureMissionThread(ctx, missionId);
-    legacyBackfilled += backfillLegacyThreadMessagesCtx(ctx, missionId);
     missingThreadsRepaired += reconcileMissingThreadRowsCtx(ctx, missionId);
     linksRepaired += reconcileWorkerThreadLinksCtx(ctx, missionId, deps);
     unreadNormalized += reconcileUnreadSanityCtx(ctx, missionId);
   }
 
-  if (legacyBackfilled > 0 || missingThreadsRepaired > 0 || linksRepaired > 0 || unreadNormalized > 0) {
+  if (missingThreadsRepaired > 0 || linksRepaired > 0 || unreadNormalized > 0) {
     ctx.logger.info("ai_orchestrator.chat_reconciliation_complete", {
       missions: missions.length,
-      legacyBackfilled,
       missingThreadsRepaired,
       linksRepaired,
       unreadNormalized

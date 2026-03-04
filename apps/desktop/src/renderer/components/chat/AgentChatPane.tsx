@@ -889,7 +889,14 @@ export function AgentChatPane({
       <div className="min-h-0 flex-1">
         {loading ? (
           <div className="flex h-full items-center justify-center">
-            <span className="font-mono text-[11px] text-muted-fg/25">Loading...</span>
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 animate-bounce bg-accent/50 rounded-full [animation-delay:0ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce bg-accent/50 rounded-full [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce bg-accent/50 rounded-full [animation-delay:300ms]" />
+              </div>
+              <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/25">Loading sessions...</span>
+            </div>
           </div>
         ) : selectedSessionId ? (
           <AgentChatMessageList
@@ -909,12 +916,49 @@ export function AgentChatPane({
             }}
           />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-4">
-            <div className="relative">
-              <ChatCircle size={36} weight="thin" className="text-accent/12" />
-              <div className="absolute inset-0 animate-pulse bg-accent/[0.03] blur-xl" />
+          <div className="flex h-full flex-col items-center justify-center gap-5 px-8">
+            {/* Icon with glow */}
+            <div className="relative flex items-center justify-center">
+              <div
+                className="absolute h-16 w-16 rounded-full blur-2xl"
+                style={{ backgroundColor: `${selectedModelDesc?.color ?? "#A78BFA"}18` }}
+              />
+              <div
+                className="relative flex h-12 w-12 items-center justify-center border"
+                style={{
+                  borderColor: `${selectedModelDesc?.color ?? "#A78BFA"}25`,
+                  backgroundColor: `${selectedModelDesc?.color ?? "#A78BFA"}0A`,
+                }}
+              >
+                <ChatCircle size={24} weight="thin" style={{ color: selectedModelDesc?.color ?? "#A78BFA", opacity: 0.5 }} />
+              </div>
             </div>
-            <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/20">Start a new chat</span>
+            {/* Model name */}
+            <div className="flex flex-col items-center gap-1">
+              <span className="font-sans text-[13px] font-medium text-fg/60">
+                {selectedModelDesc?.displayName ?? "Ready to chat"}
+              </span>
+              <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/30">
+                Start a conversation
+              </span>
+            </div>
+            {/* Starter prompts */}
+            <div className="flex flex-col items-stretch gap-1.5 w-full max-w-[260px]">
+              {[
+                "Explain the current project structure",
+                "Review the recent code changes",
+                "Help me plan the next feature",
+              ].map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="border border-border/15 bg-surface/30 px-3 py-2 text-left font-mono text-[10px] text-muted-fg/45 transition-colors hover:border-accent/20 hover:bg-accent/[0.05] hover:text-fg/60"
+                  onClick={() => setDraft(prompt)}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>

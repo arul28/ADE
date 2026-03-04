@@ -1,8 +1,8 @@
 # AI Integration Architecture
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-04
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -292,7 +292,7 @@ By default, the Claude Agent SDK does **NOT** load `.claude/settings.json` or `C
 | `sonnet` | `claude-sonnet-4-6` | Balanced -- review, conflict analysis, narratives |
 | `haiku` | `claude-haiku-4-5-20251001` | Fast, cheap -- terminal summaries, PR descriptions |
 
-Users select models by alias in Settings; ADE resolves to full IDs internally. The `supportedModels()` SDK method can be called at startup to populate the model picker with the latest available models.
+Settings and runtime routing are registry-ID first. ADE resolves models through the registry (`getModelById`) and the registry short-id index (`resolveModelAlias`) instead of maintaining a separate legacy alias remap compatibility layer. The `supportedModels()` SDK method can be called at startup to populate the model picker with the latest available models.
 
 **Migration note**: If Anthropic opens subscription access for the Agent SDK, `ClaudeExecutor` will switch to using `@anthropic-ai/claude-agent-sdk` directly, dropping the Vercel provider wrapper. The `AgentExecutor` interface contract does not change.
 
@@ -540,60 +540,59 @@ Provider preferences are configured in `.ade/local.yaml`:
 
 ```yaml
 ai:
-  # Global defaults
-  default_provider: auto        # auto | claude | codex
-  planning_timeout_ms: 45000
-  allow_planning_questions: false
+  # Provider mode and defaults
+  mode: "subscription"               # "guest" | "subscription"
+  defaultProvider: "auto"            # "auto" | "claude" | "codex"
 
   # Per-task-type overrides
-  tasks:
+  taskRouting:
     planning:
-      provider: claude
-      model: sonnet              # Model alias — resolved to full ID internally
-      timeout_ms: 45000
+      provider: "claude"
+      model: "anthropic/claude-sonnet-4-6-api"
+      timeoutMs: 45000
     implementation:
-      provider: codex
-      model: gpt-5.3-codex
-      timeout_ms: 120000
+      provider: "codex"
+      model: "openai/gpt-5.3-codex"
+      timeoutMs: 120000
     review:
-      provider: claude
-      model: sonnet
-      timeout_ms: 30000
+      provider: "claude"
+      model: "anthropic/claude-sonnet-4-6-api"
+      timeoutMs: 30000
     conflict_resolution:
-      provider: claude
-      model: sonnet
-      timeout_ms: 60000
+      provider: "claude"
+      model: "anthropic/claude-sonnet-4-6-api"
+      timeoutMs: 60000
     narrative:
-      provider: claude
-      model: haiku               # Fast, cheap model for one-shot summaries
-      timeout_ms: 15000
-      max_output_tokens: 900
+      provider: "claude"
+      model: "anthropic/claude-haiku-4-5-api"
+      timeoutMs: 15000
+      maxOutputTokens: 900
       temperature: 0.2
     pr_description:
-      provider: claude
-      model: haiku
-      timeout_ms: 15000
-      max_output_tokens: 1200
+      provider: "claude"
+      model: "anthropic/claude-haiku-4-5-api"
+      timeoutMs: 15000
+      maxOutputTokens: 1200
       temperature: 0.2
     terminal_summary:
-      provider: claude
-      model: haiku
-      timeout_ms: 10000
-      max_output_tokens: 500
+      provider: "claude"
+      model: "anthropic/claude-haiku-4-5-api"
+      timeoutMs: 10000
+      maxOutputTokens: 500
       temperature: 0.1
 
   # Permission and sandbox configuration
   permissions:
     claude:
-      permission_mode: plan          # default | acceptEdits | bypassPermissions | plan
-      settings_sources: []           # Empty = ADE controls everything. ["project"] = honor .claude/settings.json
-      max_budget_usd: 5.00           # Per-session budget cap
+      permissionMode: "plan"         # "default" | "acceptEdits" | "bypassPermissions" | "plan"
+      settingsSources: []            # [] = ADE-controlled; ["project"] = honor .claude/settings.json
+      maxBudgetUsd: 5.0              # Per-session budget cap
       sandbox: true                  # Enable sandbox mode
     codex:
-      approval_mode: on-request      # untrusted | on-request | never
-      sandbox_permissions: workspace-write  # read-only | workspace-write | danger-full-access
-      writable_paths: []             # Additional writable paths beyond cwd
-      command_allowlist: []          # Allowed shell commands (empty = default set)
+      approvalMode: "on-request"     # "untrusted" | "on-request" | "on-failure" | "never"
+      sandboxPermissions: "workspace-write"  # "read-only" | "workspace-write" | "danger-full-access"
+      writablePaths: []              # Additional writable paths beyond cwd
+      commandAllowlist: []           # Allowed shell commands (empty = default set)
 
   # Feature toggles
   features:
@@ -606,12 +605,12 @@ ai:
 
   # Budget controls
   budgets:
-    narratives: { daily_limit: 50 }
-    conflict_proposals: { daily_limit: 20 }
-    pr_descriptions: { daily_limit: 30 }
-    terminal_summaries: { daily_limit: 100 }
-    mission_planning: { daily_limit: 10 }
-    orchestrator: { daily_limit: 5 }
+    narratives: { dailyLimit: 50 }
+    conflict_proposals: { dailyLimit: 20 }
+    pr_descriptions: { dailyLimit: 30 }
+    terminal_summaries: { dailyLimit: 100 }
+    mission_planning: { dailyLimit: 10 }
+    orchestrator: { dailyLimit: 5 }
 ```
 
 When `provider` is set to `auto`, the service selects the best available provider based on task type defaults and CLI availability.
@@ -1069,6 +1068,8 @@ A structured messaging system enables communication between the orchestrator, ag
 - `deliverMessage`: Sends a message from the UI to a specific agent or channel.
 - `getActiveAgents`: Lists currently active agents in a mission run with their status.
 
+Threaded chat persistence is DB-first (`orchestrator_chat_threads` and `orchestrator_chat_messages`). Startup reconciliation normalizes thread/message linkage but does not run a legacy mission-metadata backfill job.
+
 ### Memory Tool Wiring
 
 Memory tools are now wired into the agent coding tool set via `createCodingToolSet()`, giving agents the ability to:
@@ -1450,34 +1451,38 @@ Per-task-type settings are stored in `.ade/local.yaml`:
 ```yaml
 ai:
   # Global defaults
-  default_provider: auto        # auto | claude | codex
-  planning_timeout_ms: 45000
-  allow_planning_questions: false
+  mode: "subscription"          # "guest" | "subscription"
+  defaultProvider: "auto"       # "auto" | "claude" | "codex"
 
   # Per-task-type overrides
-  tasks:
+  taskRouting:
     planning:
-      provider: claude
-      timeout_ms: 45000
+      provider: "claude"
+      model: "anthropic/claude-sonnet-4-6-api"
+      timeoutMs: 45000
     implementation:
-      provider: codex
-      sandbox: read-only        # read-only | network-off
-      timeout_ms: 120000
+      provider: "codex"
+      model: "openai/gpt-5.3-codex"
+      timeoutMs: 120000
     review:
-      provider: claude
-      timeout_ms: 30000
+      provider: "claude"
+      model: "anthropic/claude-sonnet-4-6-api"
+      timeoutMs: 30000
     conflict_resolution:
-      provider: claude
-      timeout_ms: 60000
+      provider: "claude"
+      model: "anthropic/claude-sonnet-4-6-api"
+      timeoutMs: 60000
     narrative:
-      provider: claude
-      timeout_ms: 15000
-      max_output_tokens: 900
+      provider: "claude"
+      model: "anthropic/claude-haiku-4-5-api"
+      timeoutMs: 15000
+      maxOutputTokens: 900
       temperature: 0.2
     pr_description:
-      provider: claude
-      timeout_ms: 15000
-      max_output_tokens: 1200
+      provider: "claude"
+      model: "anthropic/claude-haiku-4-5-api"
+      timeoutMs: 15000
+      maxOutputTokens: 1200
       temperature: 0.2
 ```
 
@@ -1486,9 +1491,9 @@ ai:
 When determining which provider to use for a task:
 
 1. Explicit per-step `executorHint` from the mission planner (highest priority).
-2. Per-task-type `provider` setting in `.ade/local.yaml`.
+2. Per-task-type `taskRouting.<task>.provider` setting in `.ade/local.yaml`.
 3. Mission-level `executorPolicy` (`codex`, `claude`, or `both`).
-4. Global `default_provider` setting.
+4. Global `defaultProvider` setting.
 5. Built-in default for the task type (as listed in the table above).
 6. First available CLI tool on the system (fallback).
 
@@ -1926,7 +1931,7 @@ interface LearningEntry {
 | Type system modularization | Complete | `src/shared/types/` -- 17 domain modules replacing monolithic `types.ts`; 16 dead types deleted; runtime constants moved to `orchestratorConstants.ts` |
 | Pack service decomposition | Complete | `packService.ts` (~3.2K) + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` -- 45% reduction from 5.7K monolith |
 | Shared utilities consolidation | Complete | Backend `utils.ts` (60+ duplicates removed), renderer `format.ts`/`shell.ts`/`sessions.ts`, shared React hooks (`useClickOutside`, `useThreadEventRefresh`) |
-| Agent-first runtime migration | In Progress | Non-interactive AI call paths are being normalized through runtime creation and policy enforcement |
+| Agent-first runtime baseline | Complete | Non-interactive AI call paths execute on runtime records with no legacy compatibility migration path |
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
 | Chat reasoning effort (Claude) | Complete | Reasoning effort forwarded to Claude provider when supported; validated for Codex |
@@ -1942,7 +1947,7 @@ interface LearningEntry {
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped; remaining Phase 3 work is reflection protocol + integration soak coverage. A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`. Phase 4 focuses on agent-first runtime unification: all non-interactive AI surfaces execute through standardized agent runtimes with consistent memory policy, context assembly, and audit lineage.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped; remaining Phase 3 work is reflection protocol + integration soak coverage. A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`. Phase 4 focuses on capability expansion on top of the unified runtime baseline.
 
 ---
 

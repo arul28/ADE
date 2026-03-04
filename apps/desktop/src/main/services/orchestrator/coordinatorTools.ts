@@ -29,6 +29,8 @@ import type {
   WorkerResultReport,
   ValidationContract,
   ValidationResultReport,
+  PhaseCard,
+  ValidationTierBehavior,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -36,6 +38,8 @@ import type { createMissionService } from "../missions/missionService";
 import { asRecord, nowIso, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
 import { readMissionStateDocument, updateMissionStateDocument } from "./missionStateDoc";
 import { isWithinDir } from "../shared/utils";
+import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
+import { registerTeamMember } from "./teamRuntimeState";
 
 const VALIDATION_CONTRACT_SCHEMA = z
   .object({
@@ -194,6 +198,7 @@ function resolveTeamRuntimeConfig(graph: OrchestratorRunGraph): TeamRuntimeConfi
     teammateCount: Number.isFinite(Number(teamRuntime.teammateCount))
       ? Math.max(0, Math.min(20, Math.floor(Number(teamRuntime.teammateCount))))
       : 2,
+    ...normalizeAgentRuntimeFlags(teamRuntime),
     template: teamRuntime.template as TeamRuntimeConfig["template"],
     toolProfiles: teamRuntime.toolProfiles as TeamRuntimeConfig["toolProfiles"],
     mcpServerAllowlist: Array.isArray(teamRuntime.mcpServerAllowlist)
@@ -363,6 +368,30 @@ function parseValidationFinding(value: unknown): ValidationResultReport["finding
   };
 }
 
+/**
+ * Maps a phase card validation gate tier string to the canonical coordinator behavior.
+ * - "none" → no validation needed
+ * - "self-check" → coordinator validates inline (no extra worker)
+ * - "spot-check" → spawn validator for a random subset of steps
+ * - "dedicated" → always spawn a validator worker after implementation
+ */
+export function resolveValidationTier(tier: string | undefined | null): ValidationTierBehavior {
+  if (!tier || typeof tier !== "string") return "none";
+  const normalized = tier.trim().toLowerCase().replace(/[\s_]+/g, "-");
+  switch (normalized) {
+    case "self":
+    case "self-check":
+      return "self-check";
+    case "spot-check":
+      return "spot-check";
+    case "dedicated":
+      return "dedicated";
+    case "none":
+    default:
+      return "none";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -414,6 +443,46 @@ export function createCoordinatorToolSet(deps: {
   /** Shorthand to get a fresh graph snapshot. */
   function graph(): OrchestratorRunGraph {
     return orchestratorService.getRunGraph({ runId });
+  }
+
+  /** Register a spawned worker/sub-agent as a team member for tracking. */
+  function trackTeamMember(args: {
+    workerId: string;
+    provider: "claude" | "codex";
+    role: string | null;
+    isSubAgent?: boolean;
+    parentWorkerId?: string | null;
+  }): void {
+    try {
+      const now = nowIso();
+      registerTeamMember(
+        { db, logger } as import("./orchestratorContext").OrchestratorContext,
+        {
+          id: args.workerId,
+          runId,
+          missionId,
+          provider: args.provider,
+          model: "",
+          role: args.isSubAgent ? "teammate" : "worker",
+          sessionId: null,
+          status: "spawning",
+          claimedTaskIds: [],
+          metadata: {
+            ...(args.role ? { teamRole: args.role } : {}),
+            ...(args.isSubAgent ? { isSubAgent: true } : {}),
+            ...(args.parentWorkerId ? { parentWorkerId: args.parentWorkerId } : {}),
+          },
+          createdAt: now,
+          updatedAt: now,
+        },
+      );
+    } catch (err) {
+      // Non-critical — team member tracking is best-effort
+      logger.debug("coordinator.track_team_member_failed", {
+        workerId: args.workerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   function isValidatorPassRequired(g: OrchestratorRunGraph): boolean {
@@ -475,7 +544,7 @@ export function createCoordinatorToolSet(deps: {
    */
   async function checkBudgetHardCaps(options?: {
     failClosedOnTelemetryError?: boolean;
-    operation?: "spawn_worker" | "request_specialist" | "revise_plan";
+    operation?: "spawn_worker" | "request_specialist" | "revise_plan" | "delegate_to_subagent";
   }): Promise<{
     blocked: boolean;
     detail?: string;
@@ -699,6 +768,139 @@ export function createCoordinatorToolSet(deps: {
     };
   };
 
+  // ─── Phase Ordering Helpers ─────────────────────────────────────
+
+  /**
+   * Resolve mission phase cards from the mission's metadata in the DB.
+   * Returns an empty array when no phases are configured.
+   */
+  function resolveMissionPhases(): PhaseCard[] {
+    try {
+      const missionRow = db.get<{ metadata_json: string | null }>(
+        `select metadata_json from missions where id = ? limit 1`,
+        [missionId],
+      );
+      if (!missionRow?.metadata_json) return [];
+      const meta = JSON.parse(missionRow.metadata_json);
+      const raw = asRecord(meta);
+      if (!raw) return [];
+      const phaseConfig = asRecord(raw.phaseConfiguration);
+      if (phaseConfig) {
+        if (Array.isArray(phaseConfig.selectedPhases)) return phaseConfig.selectedPhases as PhaseCard[];
+        if (Array.isArray(phaseConfig.phases)) return phaseConfig.phases as PhaseCard[];
+      }
+      if (Array.isArray(raw.phases)) return raw.phases as PhaseCard[];
+      return [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Validate that spawning a worker for the current phase respects ordering constraints.
+   *
+   * Checks:
+   * 1. `mustFollow` — named predecessor phases must have at least one terminal step.
+   * 2. Required earlier phases (by position) must have at least one terminal step.
+   * 3. `mustBeFirst` — that phase must complete before any other phase starts work.
+   * 4. `mustBeLast` — all earlier phases must be fully terminal before it can start.
+   */
+  function validatePhaseOrdering(
+    phases: PhaseCard[],
+    g: OrchestratorRunGraph,
+  ): { valid: true } | { valid: false; reason: string } {
+    if (phases.length === 0) return { valid: true };
+
+    // Resolve current phase from run metadata
+    const runMeta = asRecord(g.run.metadata);
+    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+    const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+
+    if (!currentPhaseKey && !currentPhaseName) {
+      // No phase context set — cannot enforce ordering, allow spawn
+      return { valid: true };
+    }
+
+    const sorted = [...phases].sort((a, b) => a.position - b.position);
+    const currentPhase = sorted.find(
+      (p) => p.phaseKey === currentPhaseKey || p.name === currentPhaseName,
+    );
+    if (!currentPhase) {
+      // Current phase not found in cards — cannot enforce, allow spawn
+      return { valid: true };
+    }
+
+    const currentIndex = sorted.indexOf(currentPhase);
+
+    // Collect steps belonging to a given phase (matched by phaseKey or name)
+    const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
+      g.steps.filter((step) => {
+        const stepMeta = asRecord(step.metadata);
+        const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
+        const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
+        return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+      });
+
+    const phaseHasTerminalStep = (phase: PhaseCard): boolean =>
+      stepsForPhase(phase).some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+
+    const phaseHasNonTerminalStep = (phase: PhaseCard): boolean =>
+      stepsForPhase(phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+
+    // Check mustFollow constraints
+    const mustFollow = currentPhase.orderingConstraints.mustFollow;
+    if (mustFollow && mustFollow.length > 0) {
+      for (const predecessor of mustFollow) {
+        const trimmed = predecessor.trim();
+        if (!trimmed.length) continue;
+        const predecessorPhase = sorted.find((p) => p.phaseKey === trimmed || p.name === trimmed);
+        if (predecessorPhase && !phaseHasTerminalStep(predecessorPhase)) {
+          return {
+            valid: false,
+            reason: `Phase "${currentPhase.name}" requires phase "${predecessorPhase.name}" to complete first (mustFollow constraint). No completed steps found for "${predecessorPhase.name}".`,
+          };
+        }
+      }
+    }
+
+    // Check that all required earlier phases have at least one terminal step
+    for (let i = 0; i < currentIndex; i++) {
+      const earlier = sorted[i];
+      if (!earlier.validationGate.required) continue;
+      if (!phaseHasTerminalStep(earlier)) {
+        return {
+          valid: false,
+          reason: `Required phase "${earlier.name}" (position ${earlier.position}) has no completed steps yet. It must finish before starting phase "${currentPhase.name}" (position ${currentPhase.position}).`,
+        };
+      }
+    }
+
+    // Check mustBeLast: all earlier phases must be fully terminal
+    if (currentPhase.orderingConstraints.mustBeLast) {
+      for (let i = 0; i < currentIndex; i++) {
+        const earlier = sorted[i];
+        if (phaseHasNonTerminalStep(earlier)) {
+          return {
+            valid: false,
+            reason: `Phase "${currentPhase.name}" is marked mustBeLast but phase "${earlier.name}" still has active (non-terminal) steps.`,
+          };
+        }
+      }
+    }
+
+    // Check mustBeFirst: if a phase is mustBeFirst, it must complete before others start
+    const firstPhase = sorted.find((p) => p.orderingConstraints.mustBeFirst);
+    if (firstPhase && firstPhase !== currentPhase && !phaseHasTerminalStep(firstPhase)) {
+      return {
+        valid: false,
+        reason: `Phase "${firstPhase.name}" is marked mustBeFirst and has not completed yet. Cannot start phase "${currentPhase.name}" until it finishes.`,
+      };
+    }
+
+    return { valid: true };
+  }
+
   const spawn_worker = tool({
     description:
       "Spawn a new agent worker session. The worker will execute the given prompt autonomously. Returns a worker ID (step key) you can use to track, message, or stop the worker.",
@@ -781,6 +983,31 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
+        // Parallel agent enforcement: if disabled, block when a worker is already running
+        const teamRuntimeForPolicy = resolveTeamRuntimeConfig(g);
+        if (teamRuntimeForPolicy?.allowParallelAgents === false) {
+          const hasRunningAttempt = g.attempts.some((a) => a.status === "running");
+          if (hasRunningAttempt) {
+            return {
+              ok: false,
+              error: "Parallel agents disabled — wait for current worker to complete before spawning another.",
+            };
+          }
+        }
+
+        // Phase ordering enforcement: validate the current phase respects constraints
+        const missionPhases = resolveMissionPhases();
+        if (missionPhases.length > 0) {
+          const phaseCheck = validatePhaseOrdering(missionPhases, g);
+          if (!phaseCheck.valid) {
+            logger.info("coordinator.spawn_worker.phase_ordering_blocked", {
+              name,
+              reason: phaseCheck.reason,
+            });
+            return { ok: false, error: phaseCheck.reason };
+          }
+        }
+
         const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
           name,
           provider: resolvedProvider,
@@ -836,6 +1063,8 @@ export function createCoordinatorToolSet(deps: {
           launchNote = "autopilot_start_timeout_step_queued";
           logger.warn("coordinator.spawn_worker.autopilot_timeout", { name, workerId });
         }
+
+        trackTeamMember({ workerId, provider: resolvedProvider, role: roleName });
 
         logger.info("coordinator.spawn_worker", {
           name,
@@ -3708,10 +3937,171 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
+  // ─── Sub-Agent Delegation ──────────────────────────────────────
+
+  const delegate_to_subagent = tool({
+    description:
+      "Delegate a subtask to a child agent under an existing worker. Creates a child step linked to the parent worker. Use this for nested decomposition when a worker's task naturally splits into sub-problems.",
+    inputSchema: z.object({
+      parentWorkerId: z.string().describe("Step key of the parent worker that owns this subtask"),
+      name: z.string().describe("Human-readable name for the sub-agent"),
+      prompt: z.string().describe("Full task prompt for the sub-agent"),
+      provider: z.enum(["claude", "codex"]).optional().describe("Which agent provider to use"),
+      role: z.string().optional().describe("Optional team role to bind (e.g. implementer, validator)"),
+    }),
+    execute: async ({ parentWorkerId, name, prompt, provider, role }) => {
+      try {
+        const g = graph();
+        const teamRuntime = resolveTeamRuntimeConfig(g);
+
+        // Hard constraint: allowSubAgents must be enabled
+        const subAgentsAllowed = teamRuntime?.allowSubAgents !== false;
+        if (!subAgentsAllowed) {
+          return { ok: false, error: "Sub-agent delegation is disabled (allowSubAgents=false). Use spawn_worker instead." };
+        }
+
+        // Verify parent worker exists and is not terminal
+        const parentStep = resolveStep(g, parentWorkerId);
+        if (!parentStep) {
+          return { ok: false, error: `Parent worker '${parentWorkerId}' not found.` };
+        }
+        if (TERMINAL_STEP_STATUSES.has(parentStep.status)) {
+          return {
+            ok: false,
+            error: `Parent worker '${parentWorkerId}' is already ${parentStep.status}. Cannot delegate to a completed worker.`,
+          };
+        }
+
+        // Hard constraint: allowClaudeAgentTeams must be enabled for claude provider sub-agents
+        const resolvedProvider: "claude" | "codex" = provider ?? "claude";
+        if (resolvedProvider === "claude" && teamRuntime?.allowClaudeAgentTeams === false) {
+          return {
+            ok: false,
+            error: "Claude agent teams are disabled (allowClaudeAgentTeams=false). Cannot delegate claude sub-agent.",
+          };
+        }
+
+        // Validate role if specified
+        const normalizedRole = typeof role === "string" ? role.trim() : "";
+        if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
+          return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
+        }
+
+        // Budget hard cap check
+        const budgetCheck = await checkBudgetHardCaps({
+          failClosedOnTelemetryError: true,
+          operation: "delegate_to_subagent",
+        });
+        if (budgetCheck.blocked) {
+          logger.warn("coordinator.delegate_to_subagent.hard_cap_blocked", { name, detail: budgetCheck.detail });
+          return {
+            ok: false,
+            error: `Cannot delegate sub-agent: ${budgetCheck.detail}. Mission pausing.`,
+            hardCapTriggered: true,
+            hardCaps: budgetCheck.hardCaps,
+          };
+        }
+
+        // Create child step via spawnWorkerStep with parent linkage
+        const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
+          name,
+          provider: resolvedProvider,
+          prompt,
+          dependsOn: [parentWorkerId],
+          roleName: normalizedRole.length > 0 ? normalizedRole : null,
+          laneId: parentStep.laneId ?? null,
+        });
+
+        // Attach parent linkage metadata to the new step
+        if (newStep) {
+          orchestratorService.updateStepMetadata({
+            runId,
+            stepId: newStep.id,
+            metadata: {
+              parentWorkerId,
+              parentStepId: parentStep.id,
+              isSubAgent: true,
+            },
+          });
+
+          onDagMutation({
+            runId,
+            mutation: { type: "step_added", step: newStep },
+            timestamp: nowIso(),
+            source: "coordinator",
+          });
+        }
+
+        // Trigger autopilot to pick up the new step
+        let launched = false;
+        let launchNote: string | undefined;
+        try {
+          const startedCount = await Promise.race([
+            orchestratorService.startReadyAutopilotAttempts({
+              runId,
+              reason: "coordinator_delegate_subagent",
+            }),
+            new Promise<number>((_, reject) =>
+              setTimeout(() => reject(new Error("autopilot_start_timeout")), 5000)
+            ),
+          ]);
+          if (newStep) {
+            const freshGraph = graph();
+            const runningAttempt = freshGraph.attempts.find(
+              (a) => a.stepId === newStep.id && a.status === "running",
+            );
+            launched = !!runningAttempt;
+            if (!launched && startedCount > 0) {
+              launchNote = "autopilot_started_other_steps";
+            } else if (!launched) {
+              launchNote = "step_queued_not_yet_started";
+            }
+          } else {
+            launched = startedCount > 0;
+          }
+        } catch {
+          launchNote = "autopilot_start_timeout_step_queued";
+          logger.warn("coordinator.delegate_to_subagent.autopilot_timeout", { name, workerId });
+        }
+
+        trackTeamMember({ workerId, provider: resolvedProvider, role: roleName, isSubAgent: true, parentWorkerId });
+
+        logger.info("coordinator.delegate_to_subagent", {
+          name,
+          workerId,
+          parentWorkerId,
+          provider: resolvedProvider,
+          role: roleName,
+          launched,
+          launchNote,
+        });
+
+        return {
+          ok: true,
+          workerId,
+          parentWorkerId,
+          launched,
+          ...(launchNote ? { launchNote } : {}),
+          stepId: newStep?.id ?? null,
+          status: newStep?.status ?? "unknown",
+          name,
+          provider: resolvedProvider,
+          role: roleName,
+          toolProfile,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.delegate_to_subagent.error", { name, parentWorkerId, error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
   return {
     spawn_worker,
     insert_milestone,
     request_specialist,
+    delegate_to_subagent,
     stop_worker,
     send_message,
     message_worker,

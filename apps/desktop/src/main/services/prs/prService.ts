@@ -5,8 +5,6 @@ import type {
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
-  CreateStackedPrsArgs,
-  CreateStackedPrsResult,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
   CreateIntegrationLaneForProposalArgs,
@@ -317,7 +315,7 @@ function parseMergeTreeConflictPaths(output: string): string[] {
     }
     // Exclude stage entries (handled by stageMatch)
     if (/^[0-7]{6}\s/.test(l)) return false;
-    // Exclude legacy "changed in both" markers
+    // Exclude "changed in both" markers.
     if (/^\s*(?:changed|added|removed|modified) in both\s*$/i.test(l)) return false;
     // Exclude bare OIDs
     if (/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(l)) return false;
@@ -403,7 +401,7 @@ function parseMergeTreeConflictPaths(output: string): string[] {
       continue;
     }
 
-    // Legacy merge-tree output: lines that look like file paths with conflict markers
+    // Merge-tree output: lines that look like file paths with conflict markers.
     // "changed in both" / "added in both" patterns from old merge-tree format
     const bothMatch = line.match(/^\s*(?:changed|added|removed|modified) in both\s*$/i);
     if (bothMatch) {
@@ -1459,9 +1457,6 @@ export function createPrService({
     return { groupId, prs, errors };
   };
 
-  /** @deprecated Use createQueuePrs */
-  const createStackedPrs = createQueuePrs;
-
   const createIntegrationPr = async (args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
     if (!args.sourceLaneIds.length) throw new Error("At least one source lane is required");
     const groupId = randomUUID();
@@ -1932,23 +1927,10 @@ export function createPrService({
           continue;
         }
 
-        // Use --merge-base to correctly specify the common ancestor (git 2.38+).
-        // Fallback to legacy 3-arg form for older git versions.
-        let mergeTreeResult = await runGit(
+        const mergeTreeResult = await runGit(
           ["merge-tree", "--write-tree", "--messages", `--merge-base=${baseSha}`, laneA.headSha, laneB.headSha],
           { cwd: projectRoot, timeoutMs: 30_000 }
         );
-        if (mergeTreeResult.exitCode !== 0 && (
-          mergeTreeResult.stderr.includes("unknown option") ||
-          mergeTreeResult.stderr.includes("unrecognized argument") ||
-          mergeTreeResult.stderr.includes("unknown switch")
-        )) {
-          // Older git without --write-tree/--messages/--merge-base support: use legacy 3-arg form
-          mergeTreeResult = await runGit(
-            ["merge-tree", baseSha, laneA.headSha, laneB.headSha],
-            { cwd: projectRoot, timeoutMs: 30_000 }
-          );
-        }
         // Exit code 128 indicates a fatal git error (e.g. invalid refs), not a merge conflict.
         // Skip this pair entirely so it doesn't pollute conflict analysis.
         if (mergeTreeResult.exitCode === 128) {
@@ -1979,24 +1961,6 @@ export function createPrService({
             parsedPathCount: conflictPaths.length,
             parsedPaths: conflictPaths.slice(0, 10)
           });
-          if (conflictPaths.length === 0) {
-            // Fallback: try legacy 3-arg form which may produce different output.
-            const fallbackTreeResult = await runGit(
-              ["merge-tree", baseSha, laneA.headSha, laneB.headSha],
-              { cwd: projectRoot, timeoutMs: 30_000 }
-            );
-            const fallbackCombined = `${fallbackTreeResult.stdout}\n${fallbackTreeResult.stderr}`;
-            conflictPaths = parseMergeTreeConflictPaths(fallbackCombined);
-            logger.info("prs.merge_tree_conflict_fallback_legacy", {
-              laneAId,
-              laneBId,
-              exitCode: fallbackTreeResult.exitCode,
-              stdoutLen: fallbackTreeResult.stdout.length,
-              stdoutPreview: fallbackTreeResult.stdout.replace(/\0/g, "\\0").slice(0, 500),
-              parsedPathCount: conflictPaths.length,
-              parsedPaths: conflictPaths.slice(0, 10)
-            });
-          }
           if (conflictPaths.length === 0) {
             // Heuristic fallback: overlap of files changed by both lanes from the same base.
             const [changedAResult, changedBResult] = await Promise.all([
@@ -2113,7 +2077,7 @@ export function createPrService({
       };
     });
 
-    // Keep legacy "steps" as a projection of lane summaries for backward compatibility.
+    // Keep `steps` as a projection of lane summaries for current consumers.
     const steps: IntegrationProposalStep[] = laneSummaries.map((laneSummary) => ({
       laneId: laneSummary.laneId,
       laneName: laneSummary.laneName,
@@ -2705,10 +2669,6 @@ export function createPrService({
       const row = getRow(prId);
       if (!row) throw new Error(`PR not found: ${prId}`);
       await openExternal(row.github_url);
-    },
-
-    async createStackedPrs(args: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> {
-      return await createStackedPrs(args);
     },
 
     async createQueuePrs(args: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> {

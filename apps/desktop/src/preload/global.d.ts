@@ -642,7 +642,6 @@ declare global {
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         openInGitHub: (prId: string) => Promise<void>;
-        createStacked: (args: import("../shared/types").CreateStackedPrsArgs) => Promise<import("../shared/types").CreateStackedPrsResult>;
         createQueue: (args: CreateQueuePrsArgs) => Promise<CreateQueuePrsResult>;
         createIntegration: (args: import("../shared/types").CreateIntegrationPrArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
         simulateIntegration: (args: SimulateIntegrationArgs) => Promise<IntegrationProposal>;

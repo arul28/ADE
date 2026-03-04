@@ -301,18 +301,59 @@ import fs from "node:fs";
 
 const docPathsCache = new Map<string, { paths: string[]; expiresAt: number }>();
 const DOC_PATHS_CACHE_TTL_MS = 60_000;
+const DOC_PRIORITY_REL_PATHS = [
+  ".ade/context/PRD.ade.md",
+  ".ade/context/ARCHITECTURE.ade.md",
+  "README.md",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "PRD.md",
+  "ARCHITECTURE.md",
+];
+const DOC_SCAN_MAX_DEPTH = 4;
+const DOC_SCAN_SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  ".nuxt",
+  "dist",
+  "build",
+  "coverage",
+  ".turbo",
+  ".cache",
+  ".idea",
+  ".vscode"
+]);
+const DOC_FILE_EXT_RE = /\.(md|mdx|txt|rst)$/i;
+const DOC_FILE_NAME_HINT_RE = /(readme|architecture|arch|prd|design|spec|requirement|guide|overview|plan|context|claude|agents)/i;
 
 export function readDocPaths(projectRoot: string): string[] {
   const cached = docPathsCache.get(projectRoot);
   if (cached && Date.now() < cached.expiresAt) return cached.paths;
 
-  const out: string[] = [];
-  const canonical = path.join(projectRoot, "docs", "PRD.md");
-  if (fs.existsSync(canonical)) out.push(canonical);
+  const priorityPaths: string[] = [];
+  const prioritySet = new Set<string>();
+  const scannedSet = new Set<string>();
 
-  const architectureRoot = path.join(projectRoot, "docs", "architecture");
-  const walk = (root: string) => {
-    if (!fs.existsSync(root)) return;
+  const addPriorityPath = (absPath: string) => {
+    try {
+      const stat = fs.statSync(absPath);
+      if (!stat.isFile()) return;
+      const normalized = path.normalize(absPath);
+      if (prioritySet.has(normalized)) return;
+      prioritySet.add(normalized);
+      priorityPaths.push(normalized);
+    } catch {
+      // ignore missing/unreadable files
+    }
+  };
+
+  for (const relPath of DOC_PRIORITY_REL_PATHS) {
+    addPriorityPath(path.join(projectRoot, relPath));
+  }
+
+  const walk = (root: string, depth: number) => {
+    if (depth < 0) return;
     let entries: fs.Dirent[] = [];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -320,19 +361,30 @@ export function readDocPaths(projectRoot: string): string[] {
       return;
     }
     for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
+      if (entry.name.startsWith(".") && entry.name !== ".ade") continue;
+      if (DOC_SCAN_SKIP_DIRS.has(entry.name)) continue;
       const abs = path.join(root, entry.name);
       if (entry.isDirectory()) {
-        walk(abs);
+        walk(abs, depth - 1);
         continue;
       }
       if (!entry.isFile()) continue;
-      if (!entry.name.toLowerCase().endsWith(".md")) continue;
-      out.push(abs);
+      if (!DOC_FILE_EXT_RE.test(entry.name)) continue;
+      const rel = path.relative(projectRoot, abs).replace(/\\/g, "/");
+      const inDocsDir = /(^|\/)docs\//i.test(rel);
+      const hinted =
+        DOC_FILE_NAME_HINT_RE.test(entry.name)
+        || inDocsDir
+        || rel.startsWith(".ade/context/");
+      if (!hinted) continue;
+      const normalized = path.normalize(abs);
+      if (!prioritySet.has(normalized)) scannedSet.add(normalized);
     }
   };
-  walk(architectureRoot);
-  const paths = out.sort((a, b) => a.localeCompare(b));
+  walk(projectRoot, DOC_SCAN_MAX_DEPTH);
+
+  const scannedPaths = [...scannedSet].sort((a, b) => a.localeCompare(b));
+  const paths = [...priorityPaths, ...scannedPaths];
   docPathsCache.set(projectRoot, { paths, expiresAt: Date.now() + DOC_PATHS_CACHE_TTL_MS });
   return paths;
 }

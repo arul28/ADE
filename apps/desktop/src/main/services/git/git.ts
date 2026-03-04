@@ -204,16 +204,6 @@ function parseMergeTreeConflicts(output: string): GitMergeTreeConflict[] {
   return Array.from(byPath.values());
 }
 
-function shouldFallbackFromWriteTree(stderr: string): boolean {
-  const text = stderr.toLowerCase();
-  return (
-    text.includes("unable to create temporary file") ||
-    text.includes("failure to merge") ||
-    text.includes("unknown option") ||
-    text.includes("usage: git merge-tree")
-  );
-}
-
 export async function runGitMergeTree(args: {
   cwd: string;
   mergeBase: string;
@@ -233,27 +223,13 @@ export async function runGitMergeTree(args: {
   ];
 
   const writeTree = await runGit(writeTreeCmd, { cwd: args.cwd, timeoutMs });
-  if (!(writeTree.exitCode !== 0 && shouldFallbackFromWriteTree(writeTree.stderr))) {
-    const combined = `${writeTree.stdout}\n${writeTree.stderr}`;
-    return {
-      ...writeTree,
-      mergeBase: args.mergeBase,
-      branchA: args.branchA,
-      branchB: args.branchB,
-      conflicts: parseMergeTreeConflicts(combined),
-      usedWriteTree: true
-    };
-  }
-
-  const fallbackCmd = ["merge-tree", args.mergeBase, args.branchA, args.branchB];
-  const fallback = await runGit(fallbackCmd, { cwd: args.cwd, timeoutMs });
-  const combined = `${fallback.stdout}\n${fallback.stderr}`;
+  const combined = `${writeTree.stdout}\n${writeTree.stderr}`;
   return {
-    ...fallback,
+    ...writeTree,
     mergeBase: args.mergeBase,
     branchA: args.branchA,
     branchB: args.branchB,
     conflicts: parseMergeTreeConflicts(combined),
-    usedWriteTree: false
+    usedWriteTree: true
   };
 }

@@ -660,22 +660,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   const providersRaw = isRecord((value as Record<string, unknown>).providers)
     ? { ...((value as Record<string, unknown>).providers as Record<string, unknown>) }
     : undefined;
-  const legacyAi = providersRaw ? coerceAiConfig(providersRaw.ai) : undefined;
-  const legacyModeRaw = asString(providersRaw?.mode)?.trim().toLowerCase() ?? "";
-  const legacyMode: AiConfig["mode"] | undefined =
-    legacyModeRaw === "guest"
-      ? "guest"
-      : legacyModeRaw === "subscription" || legacyModeRaw === "hosted" || legacyModeRaw === "byok"
-        ? "subscription"
-        : undefined;
-
-  let ai = coerceAiConfig((value as Record<string, unknown>).ai) ?? legacyAi;
-  if (legacyMode != null) {
-    ai = {
-      ...(ai ?? {}),
-      mode: ai?.mode ?? legacyMode
-    };
-  }
+  const ai = coerceAiConfig((value as Record<string, unknown>).ai);
 
   if (providersRaw) {
     delete providersRaw.mode;
@@ -914,12 +899,9 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
 
   const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
 
-  const legacyModeRaw = typeof mergedProviders?.mode === "string" ? String(mergedProviders.mode).trim().toLowerCase() : "";
   const aiModeRaw = typeof mergedAi?.mode === "string" ? String(mergedAi.mode).trim().toLowerCase() : "";
   const providerMode: ProviderMode = (() => {
-    const resolved = aiModeRaw || legacyModeRaw;
-    if (resolved === "guest") return "guest";
-    if (resolved === "subscription" || resolved === "hosted" || resolved === "byok") return "subscription";
+    if (aiModeRaw === "subscription") return "subscription";
     return "guest";
   })();
 

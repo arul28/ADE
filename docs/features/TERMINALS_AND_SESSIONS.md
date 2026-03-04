@@ -1,6 +1,6 @@
 # Terminals & Sessions — Command Center
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
 > Last updated: 2026-03-02
 

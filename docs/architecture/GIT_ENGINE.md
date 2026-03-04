@@ -1,8 +1,8 @@
 # Git Engine Architecture
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-03-04
 
 ---
 
@@ -16,6 +16,7 @@
    - [Git Operations Service](#git-operations-service)
    - [Operation Tracking](#operation-tracking)
    - [Sync Strategy](#sync-strategy)
+   - [Merge-Tree Conflict Simulation](#merge-tree-conflict-simulation)
    - [Path Validation](#path-validation)
 4. [Integration Points](#integration-points)
 5. [Implementation Status](#implementation-status)
@@ -250,6 +251,16 @@ The `push` operation handles both tracked and untracked branches:
 2. If upstream exists: `git push [--force-with-lease]`
 3. If no upstream: `git push -u origin <branch_ref> [--force-with-lease]`
 
+### Merge-Tree Conflict Simulation
+
+Conflict simulation paths call `runGitMergeTree()` from `git.ts`, which executes:
+
+```bash
+git merge-tree --write-tree --messages --merge-base <base> <branchA> <branchB>
+```
+
+The parser consumes the `--write-tree` output and normalized conflict messages to produce structured conflict entries. The runtime does not use an old-git merge-tree fallback command path.
+
 ### Path Validation
 
 The `ensureRelativeRepoPath()` function validates all file paths before passing them to git:
@@ -324,7 +335,7 @@ Renderer: user clicks "Commit"
 - Operation tracking wrapper with pre/post HEAD SHA capture
 - Path validation with traversal prevention
 - HEAD change event propagation to job engine
-- Conflict prediction via dry-merge simulation using `git merge-tree` (Phase 5)
+- Conflict prediction via dry-merge simulation using `git merge-tree --write-tree --messages` (Phase 5, no old merge-tree fallback path)
 - Pairwise lane conflict detection across all active lanes (Phase 5)
 - Stack operations: parent-child lane relationships with restack propagation (Phase 4)
 - Primary lane support: main repo directory represented as a lane (Phase 7)

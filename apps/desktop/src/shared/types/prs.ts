@@ -249,17 +249,11 @@ export type CreateQueuePrsArgs = {
   queueName?: string;
 };
 
-/** @deprecated Use CreateQueuePrsArgs */
-export type CreateStackedPrsArgs = CreateQueuePrsArgs;
-
 export type CreateQueuePrsResult = {
   groupId: string;
   prs: PrSummary[];
   errors: Array<{ laneId: string; error: string }>;
 };
-
-/** @deprecated Use CreateQueuePrsResult */
-export type CreateStackedPrsResult = CreateQueuePrsResult;
 
 export type CreateIntegrationPrArgs = {
   sourceLaneIds: string[];

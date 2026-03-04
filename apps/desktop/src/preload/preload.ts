@@ -189,8 +189,6 @@ import type {
   SuggestResolverTargetResult,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
-  CreateStackedPrsArgs,
-  CreateStackedPrsResult,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
   SimulateIntegrationArgs,
@@ -866,8 +864,6 @@ contextBridge.exposeInMainWorld("ade", {
     land: async (args: LandPrArgs): Promise<LandResult> => ipcRenderer.invoke(IPC.prsLand, args),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> => ipcRenderer.invoke(IPC.prsLandStack, args),
     openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
-    createStacked: (args: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> =>
-      ipcRenderer.invoke(IPC.prsCreateStacked, args),
     createQueue: (args: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> =>
       ipcRenderer.invoke(IPC.prsCreateQueue, args),
     createIntegration: (args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> =>

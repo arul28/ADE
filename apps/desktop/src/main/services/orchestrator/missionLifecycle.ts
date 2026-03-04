@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import path from "node:path";
 import type {
   OrchestratorContext,
   MissionRuntimeProfile,
@@ -50,6 +51,7 @@ import type {
 } from "../../../shared/types";
 import { resolveExecutionPolicy, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import { updateRunMetadata, getMissionMetadata, getMissionIdForRun } from "./chatMessageService";
+import { readDocPaths } from "./stepPolicyResolver";
 
 // ── Pure Step/Attempt Utility Functions ───────────────────────────
 
@@ -431,7 +433,6 @@ export function applyAIDecisionDirectives(
     if (completedStep) {
       const meta = isRecord(completedStep.metadata) ? { ...completedStep.metadata } : {};
       meta.aiTimeoutMs = directives.timeoutBudgetMs;
-      meta.ai_timeout_ms = directives.timeoutBudgetMs;
       ctx.db.run(
         `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
         [JSON.stringify(meta), nowIso(), completedStep.id, args.runId]
@@ -476,31 +477,36 @@ export function syncMissionStepsFromRun(ctx: OrchestratorContext, graph: Orchest
 export function discoverProjectDocs(ctx: OrchestratorContext): {
   found: boolean;
   paths: string[];
-  contents: Record<string, string>;
+  docs: Array<{ path: string; bytes: number; sha256: string }>;
 } {
-  if (!ctx.projectRoot) return { found: false, paths: [], contents: {} };
+  if (!ctx.projectRoot) return { found: false, paths: [], docs: [] };
+  const projectRoot = ctx.projectRoot;
   const candidatePaths = [
-    "docs/PRD.md",
-    "docs/prd.md",
-    "PRD.md",
-    "docs/architecture.md",
-    "docs/ARCHITECTURE.md",
-    "docs/architecture/README.md",
-    "docs/final-plan.md",
-    "docs/design.md",
-    "ARCHITECTURE.md"
+    ...new Set(
+      [
+        ".ade/context/PRD.ade.md",
+        ".ade/context/ARCHITECTURE.ade.md",
+        "README.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+        ...readDocPaths(projectRoot).map((absPath) => path.relative(projectRoot, absPath).replace(/\\/g, "/"))
+      ].map((value) => value.replace(/\\/g, "/"))
+    )
   ];
   const foundPaths: string[] = [];
-  const contents: Record<string, string> = {};
+  const docs: Array<{ path: string; bytes: number; sha256: string }> = [];
   for (const candidate of candidatePaths) {
-    const fullPath = `${ctx.projectRoot}/${candidate}`;
+    const fullPath = path.join(projectRoot, candidate.replace(/^\/+/, ""));
     try {
       if (fs.existsSync(fullPath)) {
-        const content = fs.readFileSync(fullPath, "utf-8");
-        if (content.trim().length > 0) {
+        const content = fs.readFileSync(fullPath);
+        if (content.byteLength > 0) {
           foundPaths.push(candidate);
-          // Cap at 8KB per doc to avoid bloating context
-          contents[candidate] = content.slice(0, 8_192);
+          docs.push({
+            path: candidate,
+            bytes: content.byteLength,
+            sha256: createHash("sha256").update(content).digest("hex")
+          });
         }
       }
     } catch {
@@ -513,7 +519,7 @@ export function discoverProjectDocs(ctx: OrchestratorContext): {
       paths: foundPaths
     });
   }
-  return { found: foundPaths.length > 0, paths: foundPaths, contents };
+  return { found: foundPaths.length > 0, paths: foundPaths, docs };
 }
 
 /**
@@ -695,26 +701,11 @@ export function resolveActivePhaseSettings(
       phases = config.phases as PhaseCard[];
     }
   }
-  // Fallback: check direct phaseOverride in metadata
-  if (phases.length === 0 && Array.isArray(metadata.phaseOverride)) {
-    phases = metadata.phaseOverride as PhaseCard[];
-  }
 
   // 2) Read mission-level settings
   let settings: MissionLevelSettings;
   if (isRecord(metadata.missionLevelSettings)) {
     settings = metadata.missionLevelSettings as MissionLevelSettings;
-  } else if (isRecord(metadata.executionPolicy)) {
-    // Backward compat: convert old executionPolicy to MissionLevelSettings
-    const oldPolicy = metadata.executionPolicy as Record<string, unknown>;
-    const completion = isRecord(oldPolicy.completion) ? (oldPolicy.completion as Record<string, unknown>) : {};
-    settings = {
-      allowCompletionWithRisk: completion.allowCompletionWithRisk !== false,
-      recoveryLoop: isRecord(oldPolicy.recoveryLoop) ? (oldPolicy.recoveryLoop as MissionLevelSettings["recoveryLoop"]) : undefined,
-      integrationPr: isRecord(oldPolicy.integrationPr) ? (oldPolicy.integrationPr as MissionLevelSettings["integrationPr"]) : undefined,
-      prStrategy: isRecord(oldPolicy.prStrategy) ? (oldPolicy.prStrategy as MissionLevelSettings["prStrategy"]) : undefined,
-      teamRuntime: isRecord(oldPolicy.teamRuntime) ? (oldPolicy.teamRuntime as MissionLevelSettings["teamRuntime"]) : undefined,
-    };
   } else {
     settings = { ...DEFAULT_MISSION_LEVEL_SETTINGS };
   }

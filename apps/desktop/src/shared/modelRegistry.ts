@@ -396,42 +396,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     outputPricePer1M: 0.6,
   },
 
-  // ---- Google (Gemini 2.x — deprecated, kept for backward compat) ----
-  {
-    id: "google/gemini-2.5-pro",
-    shortId: "gemini-2.5-pro",
-    displayName: "Gemini 2.5 Pro (Legacy)",
-    family: "google",
-    authTypes: ["api-key"],
-    contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
-    capabilities: ALL_CAPS,
-    color: "#F59E0B",
-    sdkProvider: "@ai-sdk/google",
-    sdkModelId: "gemini-2.5-pro",
-    isCliWrapped: false,
-    deprecated: true,
-    inputPricePer1M: 1.25,
-    outputPricePer1M: 5,
-  },
-  {
-    id: "google/gemini-2.5-flash",
-    shortId: "gemini-2.5-flash",
-    displayName: "Gemini 2.5 Flash (Legacy)",
-    family: "google",
-    authTypes: ["api-key"],
-    contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
-    capabilities: NO_REASONING,
-    color: "#FBBF24",
-    sdkProvider: "@ai-sdk/google",
-    sdkModelId: "gemini-2.5-flash",
-    isCliWrapped: false,
-    deprecated: true,
-    inputPricePer1M: 0.15,
-    outputPricePer1M: 0.6,
-  },
-
   // ---- DeepSeek ----
   {
     id: "deepseek/deepseek-r1",
@@ -589,31 +553,6 @@ export function getModelById(id: string): ModelDescriptor | undefined {
   return byId.get(id);
 }
 
-export function getModelsByFamily(family: ProviderFamily): ModelDescriptor[] {
-  return MODEL_REGISTRY.filter((m) => m.family === family);
-}
-
-export function getModelsByAuth(authType: AuthType): ModelDescriptor[] {
-  return MODEL_REGISTRY.filter((m) => m.authTypes.includes(authType));
-}
-
-export function getDefaultModel(authType: AuthType): ModelDescriptor {
-  const defaults: Partial<Record<AuthType, string>> = {
-    "cli-subscription": "anthropic/claude-sonnet-4-6",
-    "api-key": "anthropic/claude-sonnet-4-6-api",
-    openrouter: "openrouter/auto",
-    local: "ollama/llama-3.3",
-  };
-  const id = defaults[authType];
-  if (id) {
-    const model = byId.get(id);
-    if (model) return model;
-  }
-  const candidates = getModelsByAuth(authType);
-  if (candidates.length > 0) return candidates[0];
-  return MODEL_REGISTRY[0];
-}
-
 export function getAvailableModels(
   detectedAuth: Array<{ type: AuthType; cli?: string; provider?: string }>,
 ): ModelDescriptor[] {
@@ -663,31 +602,7 @@ export function getAvailableModels(
 
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
   const normalized = alias.trim().toLowerCase();
-  const direct = byId.get(normalized) ?? byShortId.get(normalized);
-  if (direct) return direct;
-
-  // Legacy unprefixed Claude IDs (kept for backward compatibility).
-  if (normalized.includes("claude-sonnet")) {
-    return byId.get("anthropic/claude-sonnet-4-6");
-  }
-  if (normalized.includes("claude-opus")) {
-    return byId.get("anthropic/claude-opus-4-6");
-  }
-  if (normalized.includes("claude-haiku")) {
-    return byId.get("anthropic/claude-haiku-4-5");
-  }
-
-  return undefined;
-}
-
-/**
- * Given a model ID, return all non-deprecated models in the same family.
- * Used to restrict mid-session model changes to compatible models only.
- */
-export function getCompatibleModels(currentModelId: string): ModelDescriptor[] {
-  const current = byId.get(currentModelId);
-  if (!current) return MODEL_REGISTRY.filter((m) => !m.deprecated);
-  return MODEL_REGISTRY.filter((m) => !m.deprecated && m.family === current.family);
+  return byId.get(normalized) ?? byShortId.get(normalized);
 }
 
 // ---------------------------------------------------------------------------
@@ -763,26 +678,3 @@ export function updateModelPricingInRegistry(updates: Record<string, { input: nu
   }
   return count;
 }
-
-// ---------------------------------------------------------------------------
-// MODEL_FAMILIES — UI grouping with display names and icons
-// ---------------------------------------------------------------------------
-
-export const MODEL_FAMILIES: Record<
-  ProviderFamily,
-  { displayName: string; icon: string }
-> = {
-  anthropic: { displayName: "Anthropic", icon: "anthropic" },
-  openai: { displayName: "OpenAI", icon: "openai" },
-  google: { displayName: "Google", icon: "google" },
-  mistral: { displayName: "Mistral", icon: "mistral" },
-  deepseek: { displayName: "DeepSeek", icon: "deepseek" },
-  xai: { displayName: "xAI", icon: "xai" },
-  meta: { displayName: "Meta", icon: "meta" },
-  openrouter: { displayName: "OpenRouter", icon: "openrouter" },
-  ollama: { displayName: "Ollama", icon: "ollama" },
-  lmstudio: { displayName: "LM Studio", icon: "lmstudio" },
-  vllm: { displayName: "vLLM", icon: "vllm" },
-  groq: { displayName: "Groq", icon: "groq" },
-  together: { displayName: "Together", icon: "together" },
-};

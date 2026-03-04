@@ -73,8 +73,6 @@ import type {
   GitSyncArgs,
   GitHubStatus,
   CreatePrFromLaneArgs,
-  CreateStackedPrsArgs,
-  CreateStackedPrsResult,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
   CreateQueuePrsArgs,
@@ -354,6 +352,7 @@ import type { createMissionBudgetService } from "../orchestrator/missionBudgetSe
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
+import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import type { createMemoryService } from "../memory/memoryService";
 import { getErrorMessage, isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
@@ -444,7 +443,7 @@ function sha256Utf8(value: string): string {
 }
 
 function buildMissionPlannerDocsDigest(projectRoot: string): Array<{ path: string; sha256: string; bytes: number }> {
-  const roots = [path.join(projectRoot, "docs", "PRD.md"), path.join(projectRoot, "docs", "architecture")];
+  const roots = readDocPaths(projectRoot);
   const docs: Array<{ path: string; sha256: string; bytes: number }> = [];
 
   const visit = (candidatePath: string) => {
@@ -888,6 +887,24 @@ export function registerIpc({
     }
   };
 
+  const triggerAutoContextDocs = (
+    ctx: AppContext,
+    args: { trigger: "per_mission" | "per_pr" | "per_lane_refresh"; reason: string }
+  ): void => {
+    void ctx.packService
+      .maybeAutoRefreshContextDocs({
+        trigger: args.trigger,
+        reason: args.reason
+      })
+      .catch((error: unknown) => {
+        ctx.logger.debug("ipc.context_docs_auto_refresh_failed", {
+          trigger: args.trigger,
+          reason: args.reason,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+  };
+
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
   ipcMain.handle(IPC.appGetProject, async () => {
@@ -1251,6 +1268,7 @@ export function registerIpc({
       features: { ...currentAi.features, ...partial.features },
       taskRouting: { ...currentAi.taskRouting, ...partial.taskRouting },
       budgets: { ...currentAi.budgets, ...partial.budgets },
+      featureModelOverrides: { ...currentAi.featureModelOverrides, ...partial.featureModelOverrides },
     };
     ctx.projectConfigService.save({
       shared: { ...snapshot.shared, ai: merged },
@@ -1503,6 +1521,10 @@ export function registerIpc({
 
       void (async () => {
         try {
+          triggerAutoContextDocs(ctx, {
+            trigger: "per_mission",
+            reason: `missions_create_autostart:${created.id}`
+          });
           const launch = await ctx.aiOrchestratorService.startMissionRun({
             missionId: created.id,
             runMode,
@@ -1663,6 +1685,10 @@ export function registerIpc({
     IPC.orchestratorStartRunFromMission,
     async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
       const ctx = getCtx();
+      triggerAutoContextDocs(ctx, {
+        trigger: "per_mission",
+        reason: `orchestrator_start_run_from_mission:${arg.missionId}`
+      });
       const started = await ctx.aiOrchestratorService.startMissionRun({
         missionId: arg.missionId,
         runMode: arg.runMode,
@@ -1683,6 +1709,10 @@ export function registerIpc({
     IPC.orchestratorApproveMissionPlan,
     async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
       const ctx = getCtx();
+      triggerAutoContextDocs(ctx, {
+        trigger: "per_mission",
+        reason: `orchestrator_approve_mission_plan:${arg.missionId}`
+      });
       const started = await ctx.aiOrchestratorService.approveMissionPlan({
         missionId: arg.missionId,
         runMode: arg.runMode,
@@ -1793,6 +1823,10 @@ export function registerIpc({
     IPC.orchestratorStartMissionRun,
     async (_event, arg: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> => {
       const ctx = getCtx();
+      triggerAutoContextDocs(ctx, {
+        trigger: "per_mission",
+        reason: `orchestrator_start_mission_run:${arg.missionId}`
+      });
       return ctx.aiOrchestratorService.startMissionRun(arg);
     }
   );
@@ -2668,6 +2702,10 @@ export function registerIpc({
       reason: "manual_refresh",
       laneId: arg.laneId
     });
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_lane_refresh",
+      reason: `packs_refresh_lane:${arg.laneId}:manual_refresh`
+    });
     return lanePack;
   });
 
@@ -2847,12 +2885,22 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    return await ctx.prService.createFromLane(arg);
+    const created = await ctx.prService.createFromLane(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_create_from_lane:${created.id}`
+    });
+    return created;
   });
 
   ipcMain.handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    return await ctx.prService.linkToLane(arg);
+    const linked = await ctx.prService.linkToLane(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_link_to_lane:${linked.id}`
+    });
+    return linked;
   });
 
   ipcMain.handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
@@ -2913,12 +2961,21 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
     const ctx = getCtx();
-    return await ctx.prService.updateDescription(arg);
+    await ctx.prService.updateDescription(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_update_description:${arg.prId}`
+    });
   });
 
   ipcMain.handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
     const ctx = getCtx();
-    return await ctx.prService.delete(arg);
+    const deleted = await ctx.prService.delete(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_delete:${arg.prId}`
+    });
+    return deleted;
   });
 
   ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: { laneId: string; model?: string }): Promise<{ title: string; body: string }> => {
@@ -2928,12 +2985,22 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    return await ctx.prService.land(arg);
+    const landed = await ctx.prService.land(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_land:${arg.prId}`
+    });
+    return landed;
   });
 
   ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    return await ctx.prService.landStack(arg);
+    const landed = await ctx.prService.landStack(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_land_stack:${arg.rootLaneId}`
+    });
+    return landed;
   });
 
   ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
@@ -2941,11 +3008,25 @@ export function registerIpc({
     return await ctx.prService.openInGitHub(arg.prId);
   });
 
-  ipcMain.handle(IPC.prsCreateStacked, async (_event, arg: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> => getCtx().prService.createStackedPrs(arg));
+  ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
+    const ctx = getCtx();
+    const created = await ctx.prService.createIntegrationPr(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_create_integration:${arg.integrationLaneName}:${arg.baseBranch}`
+    });
+    return created;
+  });
 
-  ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => getCtx().prService.createIntegrationPr(arg));
-
-  ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => getCtx().prService.landStackEnhanced(arg));
+  ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => {
+    const ctx = getCtx();
+    const landed = await ctx.prService.landStackEnhanced(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_land_stack_enhanced:${arg.rootLaneId}`
+    });
+    return landed;
+  });
 
   ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => getCtx().prService.getConflictAnalysis(arg.prId));
 
@@ -2953,11 +3034,27 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsListWithConflicts, async () => getCtx().prService.listWithConflicts());
 
-  ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => getCtx().prService.createQueuePrs(arg));
+  ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
+    const ctx = getCtx();
+    const created = await ctx.prService.createQueuePrs(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_create_queue:${arg.targetBranch ?? "queue"}`
+    });
+    return created;
+  });
 
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> => getCtx().prService.simulateIntegration(arg));
 
-  ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => getCtx().prService.commitIntegration(arg));
+  ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => {
+    const ctx = getCtx();
+    const committed = await ctx.prService.commitIntegration(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_commit_integration:${arg.proposalId}:${arg.integrationLaneName}`
+    });
+    return committed;
+  });
 
   ipcMain.handle(IPC.prsListProposals, async (): Promise<IntegrationProposal[]> =>
     getCtx().prService.listIntegrationProposals(),
@@ -2971,7 +3068,15 @@ export function registerIpc({
     getCtx().prService.deleteIntegrationProposal(proposalId),
   );
 
-  ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => getCtx().prService.landQueueNext(arg));
+  ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {
+    const ctx = getCtx();
+    const landed = await ctx.prService.landQueueNext(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_land_queue_next:${arg.groupId}`
+    });
+    return landed;
+  });
 
   ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));
 

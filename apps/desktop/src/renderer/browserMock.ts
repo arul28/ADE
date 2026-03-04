@@ -767,7 +767,6 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
       landStack: resolvedArg([]),
       openInGitHub: resolvedArg(undefined),
-      createStacked: resolvedArg({}),
       createQueue: resolvedArg({}),
       createIntegration: resolvedArg({}),
       simulateIntegration: resolvedArg(MOCK_INTEGRATION_SIMULATION),

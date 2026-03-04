@@ -93,63 +93,53 @@ type RuntimeTaskDefaults = {
   provider: AgentProvider;
   model: string;
   timeoutMs: number;
-  permissionMode: ExecutorOpts["permissions"]["mode"];
 };
 
 const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   planning: {
     provider: "claude",
     model: "sonnet",
-    timeoutMs: 45_000,
-    permissionMode: "read-only"
+    timeoutMs: 45_000
   },
   implementation: {
     provider: "codex",
     model: "gpt-5.3-codex",
-    timeoutMs: 120_000,
-    permissionMode: "edit"
+    timeoutMs: 120_000
   },
   review: {
     provider: "claude",
     model: "sonnet",
-    timeoutMs: 30_000,
-    permissionMode: "read-only"
+    timeoutMs: 30_000
   },
   conflict_resolution: {
     provider: "claude",
     model: "sonnet",
-    timeoutMs: 60_000,
-    permissionMode: "read-only"
+    timeoutMs: 60_000
   },
   narrative: {
     provider: "claude",
     model: "haiku",
-    timeoutMs: 45_000,
-    permissionMode: "read-only"
+    timeoutMs: 45_000
   },
   pr_description: {
     provider: "claude",
     model: "haiku",
-    timeoutMs: 30_000,
-    permissionMode: "read-only"
+    timeoutMs: 30_000
   },
   terminal_summary: {
     provider: "claude",
     model: "haiku",
-    timeoutMs: 20_000,
-    permissionMode: "read-only"
+    timeoutMs: 20_000
   },
   mission_planning: {
     provider: "claude",
     model: "sonnet",
-    timeoutMs: 300_000,
-    permissionMode: "read-only"
+    timeoutMs: 300_000
   },
   initial_context: {
     provider: "claude",
     model: "sonnet",
-    timeoutMs: 45_000,
-    permissionMode: "read-only"
+    timeoutMs: 45_000
   }
 };
 
@@ -163,18 +153,6 @@ const CODEX_FALLBACK_MODELS: AgentModelDescriptor[] = [
   { id: "o3", label: "o3" }
 ];
 
-// Known Claude model aliases — if the resolved provider is codex and the model
-// matches one of these, it means we fell back to a wrong-provider default.
-const CLAUDE_MODEL_ALIASES = new Set([
-  "sonnet", "opus", "haiku",
-  "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5",
-  "claude-haiku-4-5-20251001"
-]);
-const CODEX_MODEL_ALIASES = new Set([
-  "gpt-5.3-codex", "gpt-5.3-codex-spark",
-  "gpt-5.2-codex", "gpt-5.1-codex-max",
-  "codex-mini-latest", "o4-mini", "o3"
-]);
 const PROVIDER_DEFAULT_MODEL: Record<AgentProvider, string> = {
   claude: "sonnet",
   codex: "gpt-5.3-codex"
@@ -219,25 +197,12 @@ function startOfDayIso(now = new Date()): string {
 }
 
 function extractTaskRouting(snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>): Record<string, unknown> {
-  if (isRecord(snapshot.effective.ai) && isRecord(snapshot.effective.ai.taskRouting)) {
-    return snapshot.effective.ai.taskRouting;
-  }
-
-  // Backward compatibility for older config shape.
-  const providers = isRecord(snapshot.effective.providers) ? snapshot.effective.providers : {};
-  const legacyAi = isRecord(providers.ai) ? providers.ai : {};
-  if (isRecord(legacyAi.taskRouting)) {
-    return legacyAi.taskRouting;
-  }
-
-  return {};
+  const ai = snapshot.effective.ai;
+  return isRecord(ai) && isRecord(ai.taskRouting) ? ai.taskRouting : {};
 }
 
 function extractAiConfig(snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>): Record<string, unknown> {
-  if (isRecord(snapshot.effective.ai)) return snapshot.effective.ai;
-  const providers = isRecord(snapshot.effective.providers) ? snapshot.effective.providers : {};
-  const legacyAi = isRecord(providers.ai) ? providers.ai : {};
-  return legacyAi;
+  return isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
 }
 
 function extractTaskOverride(snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>, taskType: AiTaskType): Record<string, unknown> {
@@ -572,7 +537,7 @@ export function createAiIntegrationService(args: {
       if (resolved) return resolved.id;
     }
 
-    // Check task defaults for legacy provider, map to model ID
+    // Check task defaults and map provider family to model ID.
     const defaults = TASK_DEFAULTS[taskType];
     const auth = await detectAuth();
     const available = getAvailableModels(auth);
@@ -581,11 +546,11 @@ export function createAiIntegrationService(args: {
       throw new Error("No AI providers detected. Install Claude Code CLI, Codex CLI, or configure an API key.");
     }
 
-    // Try to match the legacy default provider
-    const legacyProvider = defaults.provider;
+    // Try to match the configured default provider family.
+    const preferredProvider = defaults.provider;
     const familyMatch = available.find(m =>
-      (legacyProvider === "claude" && m.family === "anthropic") ||
-      (legacyProvider === "codex" && m.family === "openai")
+      (preferredProvider === "claude" && m.family === "anthropic") ||
+      (preferredProvider === "codex" && m.family === "openai")
     );
     if (familyMatch) return familyMatch.id;
 
@@ -713,7 +678,7 @@ export function createAiIntegrationService(args: {
           }
           return rawModel;
         }
-        if (CLAUDE_MODEL_ALIASES.has(normalizedRawModel) || namespacedFamily === "anthropic") {
+        if (namespacedFamily === "anthropic") {
           return PROVIDER_DEFAULT_MODEL.codex;
         }
         return rawModel;
@@ -726,7 +691,7 @@ export function createAiIntegrationService(args: {
           }
           return rawModel;
         }
-        if (CODEX_MODEL_ALIASES.has(normalizedRawModel) || namespacedFamily === "openai") {
+        if (namespacedFamily === "openai") {
           return PROVIDER_DEFAULT_MODEL.claude;
         }
         return rawModel;
@@ -1206,6 +1171,7 @@ export function createAiIntegrationService(args: {
       timeoutMs?: number;
       model?: string;
       provider?: AgentProvider;
+      reasoningEffort?: string | null;
       jsonSchema?: unknown;
     }): Promise<ExecuteAiTaskResult> {
       return await executeTask({
@@ -1216,6 +1182,7 @@ export function createAiIntegrationService(args: {
         provider: args.provider,
         timeoutMs: args.timeoutMs,
         model: args.model,
+        ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
         jsonSchema: args.jsonSchema,
         permissionMode: "read-only",
         oneShot: true

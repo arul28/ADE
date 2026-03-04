@@ -1,6 +1,6 @@
 # Run — Command Center
 
-> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+> Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
 > Last updated: 2026-02-16
 
@@ -50,7 +50,7 @@ This feature matters because modern projects depend on a constellation of backgr
 
 ### Roadmap Alignment (Final Plan)
 
-Per `docs/final-plan.md`, the Run/Play surface is the owner for execution-focused future work:
+Per `docs/final-plan/README.md`, the Run/Play surface is the owner for execution-focused future work:
 
 - Per-lane runtime isolation (deterministic ports, host routing, preview launch).
 - Integration Sandbox flows for pre-merge combined-lane testing.

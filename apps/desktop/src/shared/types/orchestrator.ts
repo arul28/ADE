@@ -372,6 +372,12 @@ export type TeamRuntimeConfig = {
   enabled: boolean;
   targetProvider: "claude" | "codex" | "auto";
   teammateCount: number;
+  /** Coordinator may use parallel workers/teammates when true. */
+  allowParallelAgents?: boolean;
+  /** Coordinator/workers may delegate to nested sub-agents when true. */
+  allowSubAgents?: boolean;
+  /** Enable Claude-native agent teams bridge when running Claude CLI workers. */
+  allowClaudeAgentTeams?: boolean;
   template?: TeamTemplate;
   toolProfiles?: Record<string, RoleToolProfile>;
   mcpServerAllowlist?: string[];
@@ -485,6 +491,18 @@ export type WorkerResultReport = {
   laneId?: string | null;
   reportedAt: string;
 };
+
+/** Request payload for delegating a subtask to a child agent under an existing worker. */
+export type SubAgentDelegationRequest = {
+  parentWorkerId: string;
+  name: string;
+  prompt: string;
+  provider?: "claude" | "codex";
+  role?: string;
+};
+
+/** Maps phase card validation gate tiers to coordinator behavior. */
+export type ValidationTierBehavior = "none" | "self-check" | "spot-check" | "dedicated";
 
 export type MissionStateProgress = {
   currentPhase: string;
