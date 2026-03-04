@@ -48,9 +48,7 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
     ["whoami"],
   ],
   codex: [
-    ["auth", "status", "--json"],
-    ["auth", "status"],
-    ["whoami"],
+    ["login", "status"],
   ],
   gemini: [
     ["auth", "status"],
@@ -143,6 +141,16 @@ async function inspectCliAuthentication(cli: CliName): Promise<Pick<CliAuthStatu
       const result = await spawnAsync(cli, args, 8_000);
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
+
+      // Try JSON parsing first (e.g. `claude auth status --json` returns {"loggedIn": true, ...})
+      try {
+        const json = JSON.parse(result.stdout?.trim() || "");
+        if (typeof json === "object" && json !== null && "loggedIn" in json) {
+          return { authenticated: Boolean(json.loggedIn), verified: true };
+        }
+      } catch {
+        // Not JSON — fall through to regex matching.
+      }
 
       if (hasPattern(normalized, UNAUTH_INDICATORS)) {
         return { authenticated: false, verified: true };

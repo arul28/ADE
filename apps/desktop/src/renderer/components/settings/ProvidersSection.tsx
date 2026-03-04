@@ -29,10 +29,10 @@ import {
 type CliName = "claude" | "codex" | "gemini";
 type ApiKeySource = "config" | "env" | "store";
 
-const CLI_TOOLS: Array<{ cli: CliName; label: string; description: string }> = [
-  { cli: "claude", label: "Claude Code", description: "Anthropic CLI subscription" },
-  { cli: "codex", label: "Codex", description: "OpenAI Codex subscription" },
-  { cli: "gemini", label: "Gemini CLI", description: "Google Gemini CLI subscription" },
+const CLI_TOOLS: Array<{ cli: CliName; label: string; description: string; loginCmd: string; installHint: string }> = [
+  { cli: "claude", label: "Claude Code", description: "Anthropic CLI subscription", loginCmd: "claude auth login", installHint: "npm install -g @anthropic-ai/claude-code" },
+  { cli: "codex", label: "Codex", description: "OpenAI Codex subscription", loginCmd: "codex login", installHint: "npm install -g @openai/codex" },
+  { cli: "gemini", label: "Gemini CLI", description: "Google Gemini CLI subscription", loginCmd: "gemini auth login", installHint: "npm install -g @anthropic-ai/gemini-cli" },
 ];
 
 const API_KEY_PROVIDERS: Array<{
@@ -462,14 +462,13 @@ export function ProvidersSection() {
             const connected = Boolean(auth?.authenticated);
             const warning = Boolean(auth && !auth.authenticated);
             const tone = getStatusTone({ connected, warning });
-            const verificationText =
-              auth?.verified === false
-                ? "CLI detected, but auth status check is unavailable."
-                : connected
-                  ? "Connection verified."
-                  : warning
-                    ? "CLI detected. Sign in from terminal."
-                    : "CLI not detected.";
+            const verificationText = connected
+              ? "Connection verified."
+              : auth?.verified === false
+                ? `CLI detected but could not verify auth. Try: ${tool.loginCmd}`
+                : warning
+                  ? `CLI detected but not signed in. Run: ${tool.loginCmd}`
+                  : `CLI not found. Install: ${tool.installHint}`;
 
             return (
               <div
