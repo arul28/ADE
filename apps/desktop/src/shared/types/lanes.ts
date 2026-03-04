@@ -68,6 +68,10 @@ export type AttachLaneArgs = {
   description?: string;
 };
 
+export type AdoptAttachedLaneArgs = {
+  laneId: string;
+};
+
 export type RenameLaneArgs = {
   laneId: string;
   name: string;

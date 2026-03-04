@@ -607,6 +607,69 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("persists a run-level autopilot cap from planner summary metadata in AI-first startup", async () => {
+    const fixture = await createFixture();
+    try {
+      const plannerPlan = JSON.parse(VALID_PLANNER_PLAN) as Record<string, unknown>;
+      const missionSummary = plannerPlan.missionSummary as Record<string, unknown>;
+      missionSummary.parallelismCap = 6;
+
+      const mission = fixture.missionService.create({
+        prompt: "Implement orchestration updates with planner-provided cap.",
+        laneId: fixture.laneId,
+        plannerPlan: plannerPlan as any,
+      });
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+
+      expect(launched.started).toBeTruthy();
+      const run = launched.started?.run;
+      expect(run).toBeTruthy();
+      const metadata = (run?.metadata ?? {}) as Record<string, unknown>;
+      const autopilot = (metadata.autopilot ?? {}) as Record<string, unknown>;
+
+      expect(metadata.maxParallelWorkers).toBe(6);
+      expect(autopilot.enabled).toBe(true);
+      expect(autopilot.executorKind).toBe("unified");
+      expect(autopilot.parallelismCap).toBe(6);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("persists disabled autopilot metadata for manual AI-first runs", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Run mission manually and verify autopilot metadata.",
+        laneId: fixture.laneId,
+      });
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual",
+      });
+
+      expect(launched.started).toBeTruthy();
+      const run = launched.started?.run;
+      expect(run).toBeTruthy();
+      const metadata = (run?.metadata ?? {}) as Record<string, unknown>;
+      const autopilot = (metadata.autopilot ?? {}) as Record<string, unknown>;
+
+      expect(metadata.maxParallelWorkers).toBe(4);
+      expect(autopilot.enabled).toBe(false);
+      expect(autopilot.executorKind).toBe("manual");
+      expect(autopilot.parallelismCap).toBe(4);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("does not activate runs when coordinator startup fails", async () => {
     const fixture = await createFixture();
     let noRootService: ReturnType<typeof createAiOrchestratorService> | null = null;
@@ -850,6 +913,220 @@ describe("aiOrchestratorService", () => {
       expect(completedStates[0].completedAt).toBeTruthy();
     } finally {
       fixture.aiOrchestratorService.dispose();
+    }
+  });
+
+  it("pushes terminal sub-agent completion summaries to the parent attempt thread", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Validate sub-agent completion rollups.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "parent-worker",
+            title: "Parent Worker",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            laneId: fixture.laneId,
+            executorKind: "manual",
+            metadata: { instructions: "Own the parent task." }
+          },
+          {
+            stepKey: "child-worker",
+            title: "Child Worker",
+            stepIndex: 1,
+            dependencyStepKeys: [],
+            laneId: fixture.laneId,
+            executorKind: "manual",
+            metadata: {
+              instructions: "Sub-agent child task.",
+              isSubAgent: true,
+              parentWorkerId: "parent-worker"
+            }
+          }
+        ]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const parentStep = graph.steps.find((step) => step.stepKey === "parent-worker");
+      const childStep = graph.steps.find((step) => step.stepKey === "child-worker");
+      if (!parentStep || !childStep) throw new Error("Expected parent/child steps");
+
+      const parentAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: parentStep.id,
+        ownerId: "parent-owner",
+        executorKind: "manual"
+      });
+      const childAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: childStep.id,
+        ownerId: "child-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: childAttempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Implemented child task.",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: true
+        }
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-step-updated",
+        runId,
+        stepId: childStep.id,
+        attemptId: childAttempt.id,
+        at: new Date().toISOString(),
+        reason: "attempt_completed"
+      });
+
+      const parentThread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((thread) => thread.attemptId === parentAttempt.id);
+      expect(parentThread).toBeTruthy();
+      if (!parentThread) throw new Error("Expected parent thread");
+
+      const messages = fixture.aiOrchestratorService.getThreadMessages({
+        missionId: mission.id,
+        threadId: parentThread.id,
+        limit: 200
+      });
+      const rollups = messages.filter((entry) =>
+        entry.role === "agent"
+        && String(entry.metadata?.source ?? "") === "subagent_result_rollup"
+        && entry.content.includes("Sub-agent 'Child Worker' completed (succeeded): Implemented child task.")
+      );
+      expect(rollups).toHaveLength(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("deduplicates sub-agent completion rollups when completion events are replayed", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Ensure sub-agent completion rollups are deduplicated.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "parent-worker",
+            title: "Parent Worker",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            laneId: fixture.laneId,
+            executorKind: "manual",
+            metadata: { instructions: "Parent." }
+          },
+          {
+            stepKey: "child-worker",
+            title: "Child Worker",
+            stepIndex: 1,
+            dependencyStepKeys: [],
+            laneId: fixture.laneId,
+            executorKind: "manual",
+            metadata: {
+              instructions: "Child.",
+              isSubAgent: true,
+              parentWorkerId: "parent-worker"
+            }
+          }
+        ]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const parentStep = graph.steps.find((step) => step.stepKey === "parent-worker");
+      const childStep = graph.steps.find((step) => step.stepKey === "child-worker");
+      if (!parentStep || !childStep) throw new Error("Expected parent/child steps");
+
+      const parentAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: parentStep.id,
+        ownerId: "parent-owner",
+        executorKind: "manual"
+      });
+      const childAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: childStep.id,
+        ownerId: "child-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: childAttempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Child complete.",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: true
+        }
+      });
+
+      const completionEvent = {
+        type: "orchestrator-attempt-updated" as const,
+        runId,
+        stepId: childStep.id,
+        attemptId: childAttempt.id,
+        at: new Date().toISOString(),
+        reason: "completed" as const
+      };
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent(completionEvent);
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent(completionEvent);
+
+      const parentThread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((thread) => thread.attemptId === parentAttempt.id);
+      expect(parentThread).toBeTruthy();
+      if (!parentThread) throw new Error("Expected parent thread");
+
+      const messages = fixture.aiOrchestratorService.getThreadMessages({
+        missionId: mission.id,
+        threadId: parentThread.id,
+        limit: 200
+      });
+      const rollups = messages.filter((entry) =>
+        entry.role === "agent"
+        && String(entry.metadata?.source ?? "") === "subagent_result_rollup"
+        && entry.content.includes("Sub-agent 'Child Worker' completed (succeeded): Child complete.")
+      );
+      expect(rollups).toHaveLength(1);
+    } finally {
+      fixture.dispose();
     }
   });
 

@@ -21,12 +21,14 @@ export function LaneContextMenu({
   laneContextMenu,
   lanesById,
   onClose,
+  onAdoptAttached,
   onManage,
   selectLane
 }: {
   laneContextMenu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
   onClose: () => void;
+  onAdoptAttached: (laneId: string) => void;
   onManage: (laneId: string) => void;
   selectLane: (id: string) => void;
 }) {
@@ -75,6 +77,21 @@ export function LaneContextMenu({
       {ctxLane && ctxLane.laneType !== "primary" ? (
         <>
           <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+          {ctxLane.laneType === "attached" ? (
+            <button
+              style={menuItemStyle}
+              onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.border; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              onClick={() => {
+                const ctxLaneId = laneContextMenu.laneId;
+                onClose();
+                selectLane(ctxLaneId);
+                onAdoptAttached(ctxLaneId);
+              }}
+            >
+              Move To .ade/worktrees
+            </button>
+          ) : null}
           <button
             style={menuItemStyle}
             onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.border; }}

@@ -50,6 +50,7 @@ export const DEFAULT_TEAM_TEMPLATE: TeamTemplate = {
       toolProfile: {
         allowedTools: [
           "spawn_worker",
+          "delegate_parallel",
           "request_specialist",
           "revise_plan",
           "retry_step",

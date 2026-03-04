@@ -509,6 +509,304 @@ describe("coordinatorTools budget hard-cap guards", () => {
   });
 });
 
+describe("coordinatorTools delegate_parallel", () => {
+  it("creates a batch of sub-agents under one parent with dependency and lane inheritance", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [
+        {
+          id: "step-parent",
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: "lane-parent",
+          status: "running",
+          dependencyStepIds: [],
+          retryLimit: 2,
+          retryCount: 0,
+          metadata: { modelId: "anthropic/claude-sonnet-4-6" },
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.delegate_parallel as any).execute({
+      parentWorkerId: "parent-worker",
+      tasks: [
+        { name: "child-a", prompt: "Implement API changes." },
+        { name: "child-b", prompt: "Write tests for API changes." },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      parentWorkerId: "parent-worker",
+      total: 2,
+      children: [
+        expect.objectContaining({ name: "child-a" }),
+        expect.objectContaining({ name: "child-b" }),
+      ],
+    });
+    expect(orchestratorService.addSteps).toHaveBeenCalledTimes(2);
+    for (const call of orchestratorService.addSteps.mock.calls) {
+      expect(call[0]).toMatchObject({
+        runId: "run-1",
+        steps: [
+          expect.objectContaining({
+            laneId: "lane-parent",
+            dependencyStepKeys: ["parent-worker"],
+          }),
+        ],
+      });
+    }
+    expect(orchestratorService.updateStepMetadata).toHaveBeenCalledTimes(2);
+    for (const call of orchestratorService.updateStepMetadata.mock.calls) {
+      expect(call[0]).toMatchObject({
+        runId: "run-1",
+        metadata: expect.objectContaining({
+          parentWorkerId: "parent-worker",
+          parentStepId: "step-parent",
+          isSubAgent: true,
+        }),
+      });
+    }
+    expect(orchestratorService.startReadyAutopilotAttempts).toHaveBeenCalledTimes(1);
+    expect(orchestratorService.startReadyAutopilotAttempts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        reason: "coordinator_delegate_parallel",
+      })
+    );
+  });
+
+  it("rejects batch delegation when allowSubAgents=false", async () => {
+    const graph = {
+      run: {
+        metadata: {
+          teamRuntime: {
+            enabled: true,
+            allowSubAgents: false,
+          },
+        },
+      },
+      steps: [
+        {
+          id: "step-parent",
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: null,
+          status: "running",
+          dependencyStepIds: [],
+          retryLimit: 2,
+          retryCount: 0,
+          metadata: {},
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.delegate_parallel as any).execute({
+      parentWorkerId: "parent-worker",
+      tasks: [{ name: "child-a", prompt: "Do work." }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("allowSubAgents=false"),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(orchestratorService.startReadyAutopilotAttempts).not.toHaveBeenCalled();
+  });
+
+  it("rejects batch delegation when allowParallelAgents=false", async () => {
+    const graph = {
+      run: {
+        metadata: {
+          teamRuntime: {
+            enabled: true,
+            allowParallelAgents: false,
+          },
+        },
+      },
+      steps: [
+        {
+          id: "step-parent",
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: null,
+          status: "running",
+          dependencyStepIds: [],
+          retryLimit: 2,
+          retryCount: 0,
+          metadata: {},
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.delegate_parallel as any).execute({
+      parentWorkerId: "parent-worker",
+      tasks: [{ name: "child-a", prompt: "Do work." }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("allowParallelAgents=false"),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(orchestratorService.startReadyAutopilotAttempts).not.toHaveBeenCalled();
+  });
+
+  it("applies model cascade per task (explicit -> role default -> parent -> phase)", async () => {
+    const graph = {
+      run: {
+        metadata: {
+          teamRuntime: {
+            enabled: true,
+            template: {
+              roles: [
+                {
+                  name: "validator",
+                  capabilities: ["validation"],
+                  defaultModel: { provider: "openai", modelId: "openai/gpt-5.3-codex" }
+                }
+              ]
+            }
+          },
+          phaseRuntime: {
+            currentPhaseModel: {
+              modelId: "openai/gpt-4.1",
+              provider: "openai",
+            },
+          },
+        },
+      },
+      steps: [
+        {
+          id: "step-parent-model",
+          stepKey: "parent-model",
+          stepIndex: 0,
+          title: "Parent With Model",
+          laneId: null,
+          status: "running",
+          dependencyStepIds: [],
+          retryLimit: 2,
+          retryCount: 0,
+          metadata: { modelId: "anthropic/claude-sonnet-4-6" },
+        },
+        {
+          id: "step-parent-phase",
+          stepKey: "parent-phase",
+          stepIndex: 1,
+          title: "Parent Without Model",
+          laneId: null,
+          status: "running",
+          dependencyStepIds: [],
+          retryLimit: 2,
+          retryCount: 0,
+          metadata: {},
+        },
+      ],
+      attempts: [],
+    };
+    const { tools } = createCoordinatorHarness({ graph });
+
+    const firstBatch = await (tools.delegate_parallel as any).execute({
+      parentWorkerId: "parent-model",
+      tasks: [
+        { name: "explicit-model", prompt: "Task A", modelId: "openai/gpt-5.3-codex" },
+        { name: "role-default", prompt: "Task B", role: "validator" },
+        { name: "parent-fallback", prompt: "Task C" },
+      ],
+    });
+
+    expect(firstBatch).toMatchObject({
+      ok: true,
+      children: [
+        expect.objectContaining({ name: "explicit-model", modelId: "openai/gpt-5.3-codex" }),
+        expect.objectContaining({ name: "role-default", modelId: "openai/gpt-5.3-codex" }),
+        expect.objectContaining({ name: "parent-fallback", modelId: "anthropic/claude-sonnet-4-6" }),
+      ],
+    });
+
+    const secondBatch = await (tools.delegate_parallel as any).execute({
+      parentWorkerId: "parent-phase",
+      tasks: [{ name: "phase-fallback", prompt: "Task D" }],
+    });
+
+    expect(secondBatch).toMatchObject({
+      ok: true,
+      children: [
+        expect.objectContaining({ name: "phase-fallback", modelId: "openai/gpt-4.1" }),
+      ],
+    });
+  });
+
+  it("blocks delegate_parallel on hard caps before mutating the DAG", async () => {
+    const getMissionBudgetStatus = vi.fn(async () => ({
+      perProvider: [
+        {
+          provider: "claude",
+          fiveHour: { usedPct: 98 },
+          weekly: { usedPct: 35 },
+        },
+      ],
+      hardCaps: {
+        fiveHourTriggered: true,
+        weeklyTriggered: false,
+        apiKeyTriggered: false,
+        fiveHourHardStopPercent: 95,
+        weeklyHardStopPercent: 90,
+        apiKeySpentUsd: 0,
+        apiKeyMaxSpendUsd: null,
+      },
+    }));
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: { metadata: {} },
+        steps: [
+          {
+            id: "step-parent",
+            stepKey: "parent-worker",
+            stepIndex: 0,
+            title: "Parent Worker",
+            laneId: null,
+            status: "running",
+            dependencyStepIds: [],
+            retryLimit: 2,
+            retryCount: 0,
+            metadata: {},
+          },
+        ],
+        attempts: [],
+      },
+      getMissionBudgetStatus,
+    });
+
+    const result = await (tools.delegate_parallel as any).execute({
+      parentWorkerId: "parent-worker",
+      tasks: [
+        { name: "child-a", prompt: "Task A" },
+        { name: "child-b", prompt: "Task B" },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      hardCapTriggered: true,
+    });
+    expect(String(result.error)).toContain("Cannot delegate sub-agents:");
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(orchestratorService.updateStepMetadata).not.toHaveBeenCalled();
+    expect(orchestratorService.startReadyAutopilotAttempts).not.toHaveBeenCalled();
+  });
+});
+
 describe("coordinatorTools revise_plan failure atomicity", () => {
   it("returns validation errors before applying supersede or dependency mutations", async () => {
     const { tools, orchestratorService, onDagMutation, graph } = createCoordinatorHarness({

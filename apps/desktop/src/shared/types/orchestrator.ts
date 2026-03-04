@@ -332,6 +332,11 @@ export type OrchestratorTeamMemberStatus =
   | "terminated"
   | "failed";
 
+export type OrchestratorTeamMemberSource =
+  | "ade-worker"
+  | "ade-subagent"
+  | "claude-native";
+
 export type OrchestratorTeamMember = {
   id: string;
   runId: string;
@@ -339,6 +344,8 @@ export type OrchestratorTeamMember = {
   provider: string;
   model: string;
   role: OrchestratorTeamMemberRole;
+  source: OrchestratorTeamMemberSource;
+  parentWorkerId?: string | null;
   sessionId: string | null;
   status: OrchestratorTeamMemberStatus;
   claimedTaskIds: string[];
@@ -877,7 +884,6 @@ export type GetOrchestratorWorkerStatesArgs = {
 
 export type GetTeamMembersArgs = {
   runId: string;
-  missionId?: string;
 };
 
 export type GetTeamRuntimeStateArgs = {

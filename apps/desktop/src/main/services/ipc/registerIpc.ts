@@ -9,6 +9,7 @@ import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
   AttachLaneArgs,
+  AdoptAttachedLaneArgs,
   AppInfo,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -2011,7 +2012,7 @@ export function registerIpc({
     IPC.orchestratorGetTeamMembers,
     async (_event, arg: GetTeamMembersArgs): Promise<OrchestratorTeamMember[]> => {
       const ctx = getCtx();
-      return ctx.orchestratorService.getTeamMembers(arg.runId);
+      return ctx.aiOrchestratorService.getTeamMembers({ runId: arg.runId });
     }
   );
 
@@ -2271,6 +2272,11 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
     return await ctx.laneService.attach(arg);
+  });
+
+  ipcMain.handle(IPC.lanesAdoptAttached, async (_event, arg: AdoptAttachedLaneArgs): Promise<LaneSummary> => {
+    const ctx = getCtx();
+    return await ctx.laneService.adoptAttached(arg);
   });
 
   ipcMain.handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {

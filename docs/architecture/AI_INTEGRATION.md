@@ -156,7 +156,7 @@ All AI task dispatching flows through the unified executor (`unifiedExecutor.ts`
 > **Note**: The legacy `ClaudeExecutor` and `CodexExecutor` classes have been deleted. All AI worker execution now routes through a single `unified` executor kind. See `docs/ORCHESTRATOR_OVERHAUL.md` for the current runtime contract.
 
 The unified runtime supports three model classes:
-- **CLI-wrapped** (Claude CLI, Codex CLI): Spawned as subprocesses. Authentication inherits from user's existing CLI login (`claude login`, Codex subscription). MCP server injected via `--mcp-config` flag.
+- **CLI-wrapped** (Claude CLI, Codex CLI): Spawned as subprocesses. Authentication inherits from user's existing CLI login (`claude login`, Codex subscription). MCP server injected via `--mcp-config` flag, with worker-local MCP config mirrored into each worker CWD to support native teammate inheritance paths.
 - **API/key models** (Anthropic API, OpenAI, Google, Mistral, DeepSeek, xAI, OpenRouter): In-process execution via Vercel AI SDK `streamText()`. Authentication via configured API keys.
 - **Local models** (Ollama, LM Studio, vLLM): In-process execution via OpenAI-compatible endpoints.
 
@@ -605,6 +605,13 @@ The orchestrator manages workers through several coordination patterns:
 | **Plan-Then-Implement** | Worker plans in read-only mode, orchestrator approves, worker implements | Complex/risky steps where the approach should be validated first |
 | **Review-and-Revise** | One worker implements, another reviews, orchestrator decides on revision | Quality-critical code paths |
 | **Speculative Parallel** | Multiple workers attempt the same step with different approaches, best result wins | Ambiguous tasks where the optimal approach is unclear |
+| **Atomic Batch Delegation** | Coordinator delegates N children in one validated transaction via `delegate_parallel` | When a parent worker needs multiple independent sub-tasks launched together |
+
+**Phase 4 runtime delegation contract**:
+- Parent awareness is push-based: terminal child completions auto-roll up to parent pending messages, and `report_status` updates are forwarded with `[sub-agent:<name>]` context.
+- `stream_events` now includes normalized `worker_status_reported` payloads for forwarded child progress.
+- `get_worker_output` remains the detailed artifact path; parent rollups intentionally stay concise.
+- Native (Claude-side) teammates are auto-registered as `source: "claude-native"` when they report from a valid run/worker context, and are bounded by parent allocation caps.
 
 #### File Conflict Prevention
 
@@ -781,6 +788,12 @@ A structured messaging system enables communication between the orchestrator, ag
 - `routeMessage()` determines which agents should receive a message based on mentions, channel context, and routing rules.
 
 **Team Message Tool** (`teamMessageTool.ts`): An MCP tool available to agents that allows them to send messages to other agents or the orchestrator. This enables agent-initiated communication (e.g., "I found a dependency issue that affects @testing-agent's work").
+
+**Phase 4 push rollups and native teammate guardrails**:
+- Sub-agent completion summaries are delivered automatically to parent pending messages (no polling loop required for awareness).
+- Sub-agent `report_status` updates are forwarded to parent threads with a normalized prefix and emitted to the runtime event buffer.
+- Unknown native callers in `report_status`/`report_result` are auto-registered as team members with `source: "claude-native"` and surfaced lineage (`parentWorkerId`) when context is resolvable.
+- Native auto-registration enforces parent allocation caps (derived from run parallelism; fallback `4`) before accepting updates.
 
 **IPC Endpoints**:
 - `getGlobalChat`: Retrieves the global mission chat channel messages.
@@ -1626,6 +1639,7 @@ interface LearningEntry {
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
 | AI orchestrator (Claude + MCP) | In Progress | Tasks 1-6 shipped; codebase decomposed (core ~7.7K + 8 modules). Remaining Phase 3 scope is Tasks 7-8 (reflection + integration soak) |
+| Phase 4 orchestrator delegation/team runtime | Complete | `delegate_parallel`, push sub-agent progress/completion rollups, native teammate auto-registration + allocation cap guardrails, single team-member data path |
 | Mission phase engine + profiles (Task 3) | Complete | `phase_cards`/`phase_profiles`/`mission_phase_overrides`, profile CRUD/import/export, phase transition telemetry |
 | Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
 | Pre-flight + intervention/HITL (Task 5) | Complete | Launch-gate checklist, granular worker-level interventions, coordinator `ask_user`/`request_user_input` escalation wiring |
@@ -1654,7 +1668,7 @@ interface LearningEntry {
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped; remaining Phase 3 work is reflection protocol + integration soak coverage. A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`. Phase 4 focuses on capability expansion on top of the unified runtime baseline.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped, and Phase 4 delegation/team-runtime hard-cut work is complete (`delegate_parallel`, push rollups, native teammate guardrails, and dead-path removal). Remaining orchestrator roadmap work is Phase 3 Tasks 7-8 (reflection + integration soak) plus subsequent validation/UI/reflection tracks documented in `docs/ORCHESTRATOR_OVERHAUL.md`. A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 
@@ -1749,7 +1763,7 @@ The MCP server supports a complete **create, start, stream, evaluate** loop for 
    ```
    stream_events({ missionId: "<id>", cursor: 0 })
    ```
-   Returns events like `step_started`, `step_completed`, `agent_spawned`, `intervention_requested`, etc. The cursor advances with each poll.
+   Returns events like `step_started`, `step_completed`, `agent_spawned`, `worker_status_reported`, `intervention_requested`, etc. The cursor advances with each poll.
 
 5. **Inspect with observation tools**: Use `get_worker_states`, `get_step_output`, `get_timeline`, and `get_mission_metrics` to inspect mission state at any point.
 

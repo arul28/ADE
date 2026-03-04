@@ -76,6 +76,24 @@ const TOOL_META: Record<string, ToolMeta> = {
   exec_command: { label: "Shell",      icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300",  category: "codex", getTarget: a => String(a.command ?? a.cmd ?? "") || null },
   apply_patch:  { label: "Patch",      icon: Scissors,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "codex" },
   update_plan:  { label: "Plan",       icon: ListChecks,       color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "codex" },
+  // ── ADE orchestrator coordinator tools ────────────────────────
+  spawn_worker:         { label: "Spawn",           icon: Robot,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.name ?? a.workerId ?? "") || null },
+  request_specialist:   { label: "Specialist",      icon: User,        color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.role ?? a.name ?? "") || null },
+  delegate_to_subagent: { label: "Delegate",        icon: User,        color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.name ?? a.parentWorkerId ?? "") || null },
+  delegate_parallel:    { label: "Delegate Batch",  icon: User,        color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => `${Array.isArray(a.tasks) ? a.tasks.length : 0} task(s)` },
+  read_mission_status:  { label: "Mission Status",  icon: MagnifyingGlass, color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan" },
+  get_worker_output:    { label: "Worker Output",   icon: FileCode,    color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan", getTarget: a => String(a.workerId ?? "") || null },
+  revise_plan:          { label: "Revise Plan",     icon: ListChecks,  color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan" },
+  retry_step:           { label: "Retry",           icon: ArrowSquareOut, color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
+  skip_step:            { label: "Skip",            icon: StopCircle,   color: "#F87171", badgeCls: "border-red-400/25 bg-red-400/10 text-red-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
+  mark_step_complete:   { label: "Mark Complete",   icon: CheckCircle,  color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
+  mark_step_failed:     { label: "Mark Failed",     icon: XCircle,      color: "#F87171", badgeCls: "border-red-400/25 bg-red-400/10 text-red-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
+  message_worker:       { label: "Message",         icon: Note,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.workerId ?? a.to ?? "") || null },
+  send_message:         { label: "Message",         icon: Note,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.to ?? a.workerId ?? "") || null },
+  broadcast:            { label: "Broadcast",       icon: Note,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta" },
+  report_status:        { label: "Status",          icon: Circle,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
+  report_result:        { label: "Result",          icon: CheckCircle,  color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
+  report_validation:    { label: "Validation",      icon: Checks,       color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.workerId ?? a.targetWorkerId ?? "") || null },
 };
 
 function getToolMeta(toolName: string): ToolMeta {

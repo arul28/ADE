@@ -11,6 +11,33 @@ function createRuntime() {
   const operationFinish = vi.fn();
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-test-"));
   fs.mkdirSync(path.join(projectRoot, ".ade", "orchestrator"), { recursive: true });
+  const teamMembers: Array<Record<string, unknown>> = [];
+  const threadRows: Array<Record<string, unknown>> = [];
+  const threadMessages = new Map<string, Array<Record<string, unknown>>>();
+  let messageCounter = 0;
+
+  const ensureThread = (input: { missionId: string; attemptId: string; runId?: string | null }): Record<string, unknown> => {
+    const existing = threadRows.find(
+      (thread) => thread.missionId === input.missionId && thread.attemptId === input.attemptId
+    );
+    if (existing) return existing;
+    const thread = {
+      id: `thread-${input.attemptId}`,
+      missionId: input.missionId,
+      threadType: "worker",
+      runId: input.runId ?? "run-1",
+      attemptId: input.attemptId
+    };
+    threadRows.push(thread);
+    threadMessages.set(thread.id, []);
+    return thread;
+  };
+
+  const appendThreadMessage = (threadId: string, entry: Record<string, unknown>): void => {
+    const existing = threadMessages.get(threadId) ?? [];
+    existing.push(entry);
+    threadMessages.set(threadId, existing);
+  };
 
   const laneRows = [
     {
@@ -76,7 +103,31 @@ function createRuntime() {
         }];
         return [];
       }),
-      run: vi.fn()
+      run: vi.fn((sql: string, params?: unknown[]) => {
+        if (
+          sql.toLowerCase().includes("insert into orchestrator_team_members")
+          && Array.isArray(params)
+          && params.length >= 12
+        ) {
+          const metadataRaw = params[9];
+          const metadata = typeof metadataRaw === "string" && metadataRaw.length > 0
+            ? JSON.parse(metadataRaw)
+            : {};
+          teamMembers.push({
+            id: params[0],
+            runId: params[1],
+            missionId: params[2],
+            provider: params[3],
+            model: params[4],
+            role: params[5],
+            sessionId: params[6],
+            status: params[7],
+            source: typeof metadata.source === "string" ? metadata.source : "claude-native",
+            parentWorkerId: typeof metadata.parentWorkerId === "string" ? metadata.parentWorkerId : null,
+            metadata
+          });
+        }
+      })
     },
     laneService: {
       list: vi.fn(async () => laneRows),
@@ -249,6 +300,43 @@ function createRuntime() {
         { attemptId: "a-1", stepId: "s-1", runId, state: "running" }
       ]),
       getMissionMetrics: vi.fn(({ missionId }: any) => ({ missionId, samples: [] })),
+      getTeamMembers: vi.fn(() => teamMembers),
+      listChatThreads: vi.fn(({ missionId }: any) =>
+        threadRows.filter((thread) => thread.missionId === missionId)
+      ),
+      getThreadMessages: vi.fn(({ threadId, limit }: any) => {
+        const entries = threadMessages.get(String(threadId)) ?? [];
+        const max = typeof limit === "number" ? Math.max(1, Math.floor(limit)) : entries.length;
+        return entries.slice(-max);
+      }),
+      sendAgentMessage: vi.fn(({ missionId, fromAttemptId, toAttemptId, content, metadata }: any) => {
+        const sourceThread = ensureThread({ missionId, attemptId: String(fromAttemptId), runId: "run-1" });
+        const targetThread = ensureThread({ missionId, attemptId: String(toAttemptId), runId: "run-1" });
+        const timestamp = new Date().toISOString();
+        const sourceEntry = {
+          id: `msg-${++messageCounter}`,
+          role: "agent",
+          content,
+          timestamp,
+          threadId: sourceThread.id,
+          attemptId: fromAttemptId,
+          target: { targetAttemptId: toAttemptId },
+          metadata: metadata ?? null
+        };
+        const deliveryEntry = {
+          id: `msg-${++messageCounter}`,
+          role: "agent",
+          content,
+          timestamp,
+          threadId: targetThread.id,
+          attemptId: fromAttemptId,
+          target: { targetAttemptId: toAttemptId },
+          metadata: { ...(metadata ?? {}), interAgentDelivery: true }
+        };
+        appendThreadMessage(String(sourceThread.id), sourceEntry);
+        appendThreadMessage(String(targetThread.id), deliveryEntry);
+        return sourceEntry;
+      }),
       dispose: vi.fn()
     } as any,
     eventBuffer: {
@@ -340,6 +428,7 @@ describe("mcpServer", () => {
         "list_evaluations",
         "get_evaluation_report",
         "spawn_worker",
+        "delegate_parallel",
         "read_mission_status",
         "revise_plan",
         "retry_step",
@@ -463,6 +552,447 @@ describe("mcpServer", () => {
     expect(response.structuredContent.ok).toBe(true);
     expect(fixture.runtime.orchestratorService.updateStepMetadata).toHaveBeenCalled();
     expect(fixture.runtime.orchestratorService.appendRuntimeEvent).toHaveBeenCalled();
+  });
+
+  it("forwards sub-agent report_status updates to parent and emits worker_status_reported runtime events", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        {
+          id: "step-parent",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-parent",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        },
+        {
+          id: "step-child",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "child-worker",
+          stepIndex: 1,
+          title: "Child Worker",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-child",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {
+            isSubAgent: true,
+            parentWorkerId: "parent-worker"
+          }
+        }
+      ],
+      attempts: [
+        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() },
+        { id: "attempt-child", stepId: "step-child", status: "running", createdAt: new Date().toISOString() }
+      ],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "attempt-child",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-child",
+      attemptId: "attempt-child"
+    });
+    const response = await callTool(handler, "report_status", {
+      workerId: "child-worker",
+      progressPct: 45,
+      blockers: [],
+      confidence: 0.8,
+      nextAction: "Continue implementation",
+      laneId: "lane-1"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.ok).toBe(true);
+    expect(fixture.runtime.eventBuffer.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "runtime",
+        payload: expect.objectContaining({
+          type: "worker_status_reported",
+          runId: "run-1",
+          reason: "report_status"
+        })
+      })
+    );
+    expect(fixture.runtime.aiOrchestratorService.sendAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-1",
+        fromAttemptId: "attempt-child",
+        toAttemptId: "attempt-parent",
+        content: expect.stringContaining("[sub-agent:Child Worker]"),
+        metadata: expect.objectContaining({
+          source: "subagent_status_rollup",
+          parentWorkerId: "parent-worker"
+        })
+      })
+    );
+  });
+
+  it("auto-registers unknown native callers as claude-native teammates under the parent worker", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        status: "running",
+        metadata: { autopilot: { parallelismCap: 6 } }
+      },
+      steps: [
+        {
+          id: "step-parent",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-parent",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: { modelId: "anthropic/claude-sonnet-4-6" }
+        }
+      ],
+      attempts: [
+        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
+      ],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "native-worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-parent",
+      attemptId: "attempt-parent"
+    });
+    const response = await callTool(handler, "report_status", {
+      workerId: "parent-worker",
+      progressPct: 10,
+      blockers: [],
+      confidence: 0.7,
+      nextAction: "Running native sub-task"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.ok).toBe(true);
+    const insertCall = fixture.runtime.db.run.mock.calls.find((call: any[]) =>
+      String(call[0] ?? "").toLowerCase().includes("insert into orchestrator_team_members")
+    );
+    expect(insertCall).toBeTruthy();
+    const metadataJson = String(insertCall?.[1]?.[9] ?? "{}");
+    const metadata = JSON.parse(metadataJson);
+    expect(metadata).toMatchObject({
+      source: "claude-native",
+      parentWorkerId: "parent-worker",
+      parentStepId: "step-parent",
+      nativeCallerId: "native-worker-1"
+    });
+  });
+
+  it("blocks unknown native reports when parent allocation cap is exceeded", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.aiOrchestratorService.getTeamMembers = vi.fn(() => [
+      { id: "native-1", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
+      { id: "native-2", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
+      { id: "native-3", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
+      { id: "native-4", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } }
+    ]);
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        {
+          id: "step-parent",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-parent",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        }
+      ],
+      attempts: [
+        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
+      ],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "native-worker-over-cap",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-parent",
+      attemptId: "attempt-parent"
+    });
+    const response = await callTool(handler, "report_status", {
+      workerId: "parent-worker",
+      progressPct: 30,
+      blockers: [],
+      confidence: 0.6,
+      nextAction: "Still running"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("allocation cap exceeded");
+    const insertCalls = fixture.runtime.db.run.mock.calls.filter((call: any[]) =>
+      String(call[0] ?? "").toLowerCase().includes("insert into orchestrator_team_members")
+    );
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it("surfaces forwarded status rollups through get_pending_messages for parent workers", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        {
+          id: "step-parent",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-parent",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        },
+        {
+          id: "step-child",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "child-worker",
+          stepIndex: 1,
+          title: "Child Worker",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-child",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {
+            isSubAgent: true,
+            parentWorkerId: "parent-worker"
+          }
+        }
+      ],
+      attempts: [
+        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() },
+        { id: "attempt-child", stepId: "step-child", status: "running", createdAt: new Date().toISOString() }
+      ],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+
+    const childHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(childHandler, {
+      callerId: "attempt-child",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-child",
+      attemptId: "attempt-child"
+    });
+    const statusResponse = await callTool(childHandler, "report_status", {
+      workerId: "child-worker",
+      progressPct: 60,
+      blockers: [],
+      confidence: 0.84,
+      nextAction: "Finalize patch set"
+    });
+    expect(statusResponse?.isError).toBeUndefined();
+
+    const parentHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(parentHandler, {
+      callerId: "attempt-parent",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-parent",
+      attemptId: "attempt-parent"
+    });
+    const pending = await callTool(parentHandler, "get_pending_messages", {});
+
+    expect(pending?.isError).toBeUndefined();
+    expect(pending.structuredContent.workerAttemptId).toBe("attempt-parent");
+    expect(pending.structuredContent.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "agent",
+          content: expect.stringContaining("[sub-agent:Child Worker]"),
+          metadata: expect.objectContaining({
+            source: "subagent_status_rollup"
+          })
+        })
+      ])
+    );
+  });
+
+  it("surfaces native terminal rollups through get_pending_messages after report_result", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        {
+          id: "step-parent",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-parent",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        }
+      ],
+      attempts: [
+        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
+      ],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+
+    const nativeHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(nativeHandler, {
+      callerId: "native-worker-result",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-parent",
+      attemptId: "attempt-parent"
+    });
+    const resultResponse = await callTool(nativeHandler, "report_result", {
+      workerId: "parent-worker",
+      outcome: "succeeded",
+      summary: "Native child done.",
+      artifacts: [],
+      filesChanged: [],
+      testsRun: null
+    });
+    expect(resultResponse?.isError).toBeUndefined();
+
+    const parentHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(parentHandler, {
+      callerId: "attempt-parent",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-parent",
+      attemptId: "attempt-parent"
+    });
+    const pending = await callTool(parentHandler, "get_pending_messages", {});
+
+    expect(pending?.isError).toBeUndefined();
+    expect(pending.structuredContent.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "agent",
+          content: expect.stringContaining("completed (succeeded): Native child done."),
+          metadata: expect.objectContaining({
+            source: "subagent_result_rollup"
+          })
+        })
+      ])
+    );
   });
 
   it("uses initialize identity context for shared-fact writes (proxy-mode identity forwarding path)", async () => {

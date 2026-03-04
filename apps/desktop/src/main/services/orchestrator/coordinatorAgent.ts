@@ -679,6 +679,8 @@ Each phase may specify a validation gate tier. Follow these rules strictly:
 
 ### Sub-Agent Delegation
 Use delegate_to_subagent when a parent worker's task naturally decomposes into child subtasks that benefit from parallel execution under the same parent context. Use spawn_worker for independent top-level work. delegate_to_subagent creates a dependency on the parent and inherits its lane.
+Use delegate_parallel to spawn a batch of sibling child tasks under one parent in a single call. Use it when N subtasks are known upfront and can run concurrently.
+Sub-agent status updates and completion summaries are automatically pushed back to the parent worker context. Do not poll get_worker_output just to check heartbeat/progress.
 
 ### Hard Constraints
 These flags are enforced deterministically by the tools — violations are rejected, not warned:
@@ -882,6 +884,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Insert milestone | insert_milestone |
 | Request specialist | request_specialist |
 | Delegate subtask to child agent | delegate_to_subagent |
+| Delegate a parallel child-task batch | delegate_parallel |
 | Stop a worker | stop_worker |
 | Check budget pressure | get_budget_status |
 | Need human input | request_user_input |

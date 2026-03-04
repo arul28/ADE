@@ -2,6 +2,7 @@ import type {
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AttachLaneArgs,
+  AdoptAttachedLaneArgs,
   AppInfo,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -475,6 +476,7 @@ declare global {
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
         importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
+        adoptAttached: (args: AdoptAttachedLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
         reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
         updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;

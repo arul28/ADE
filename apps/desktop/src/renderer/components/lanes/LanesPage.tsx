@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
@@ -69,6 +69,8 @@ type RebasePushReviewState = {
   resolve: (laneIds: string[] | null) => void;
 };
 
+const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
+
 /* ---- Component ---- */
 
 export function LanesPage() {
@@ -97,7 +99,20 @@ export function LanesPage() {
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
   const [attachPath, setAttachPath] = useState("");
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const canCreateLane = Boolean(project?.rootPath);
+  const [adoptBusy, setAdoptBusy] = useState(false);
+  const [adoptError, setAdoptError] = useState<string | null>(null);
+  const [adoptConfirmOpen, setAdoptConfirmOpen] = useState(false);
+  const [adoptTargetLaneId, setAdoptTargetLaneId] = useState<string | null>(null);
+  const [adoptHintDismissed, setAdoptHintDismissed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(ADOPT_HINT_DISMISSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [deleteMode, setDeleteMode] = useState<"worktree" | "local_branch" | "remote_branch">("worktree");
   const [deleteRemoteName, setDeleteRemoteName] = useState("origin");
   const [deleteForce, setDeleteForce] = useState(false);
@@ -247,6 +262,9 @@ export function LanesPage() {
 
   const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
   const deletePhrase = managedLane ? `delete ${managedLane.name}` : "";
+  const selectedAttachedLane = managedLane?.laneType === "attached" ? managedLane : null;
+  const shouldShowAdoptHint = Boolean(selectedAttachedLane && !adoptHintDismissed);
+  const adoptTargetLane = adoptTargetLaneId ? lanesById.get(adoptTargetLaneId) ?? null : null;
 
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
@@ -466,6 +484,14 @@ export function LanesPage() {
   }, [laneContextMenu]);
 
   useEffect(() => {
+    if (!adoptTargetLaneId) return;
+    if (lanesById.has(adoptTargetLaneId)) return;
+    setAdoptConfirmOpen(false);
+    setAdoptTargetLaneId(null);
+    setAdoptError(null);
+  }, [adoptTargetLaneId, lanesById]);
+
+  useEffect(() => {
     setPinnedLaneIds((prev) => {
       const next = new Set<string>();
       for (const laneId of prev) {
@@ -609,6 +635,48 @@ export function LanesPage() {
       setLaneActionBusy(false);
     }
   };
+
+  const dismissAdoptHint = useCallback(() => {
+    setAdoptHintDismissed(true);
+    try {
+      window.localStorage.setItem(ADOPT_HINT_DISMISSED_KEY, "1");
+    } catch {
+      // ignore persistence failures
+    }
+  }, []);
+
+  const reopenAdoptHint = useCallback(() => {
+    setAdoptHintDismissed(false);
+    try {
+      window.localStorage.removeItem(ADOPT_HINT_DISMISSED_KEY);
+    } catch {
+      // ignore persistence failures
+    }
+  }, []);
+
+  const requestAdoptAttachedLane = useCallback((laneId: string) => {
+    setAdoptError(null);
+    setAdoptTargetLaneId(laneId);
+    setAdoptConfirmOpen(true);
+  }, []);
+
+  const confirmAdoptAttachedLane = useCallback(async () => {
+    const laneId = adoptTargetLaneId;
+    if (!laneId) return;
+    setAdoptBusy(true);
+    setAdoptError(null);
+    try {
+      const lane = await window.ade.lanes.adoptAttached({ laneId });
+      await refreshLanes();
+      selectLane(lane.id);
+      setAdoptConfirmOpen(false);
+      setAdoptTargetLaneId(null);
+    } catch (err) {
+      setAdoptError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAdoptBusy(false);
+    }
+  }, [adoptTargetLaneId, refreshLanes, selectLane]);
 
   const checkoutPrimaryBranch = useCallback(async (branchName: string) => {
     if (!primaryLane) return;
@@ -856,21 +924,31 @@ export function LanesPage() {
     }
   }, [createLaneName, createAsChild, createParentLaneId, lanes, refreshLanes, navigate]);
 
-  const handleAttachSubmit = useCallback(() => {
+  const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
     const attachedPath = attachPath.trim();
-    window.ade.lanes.attach({ name, attachedPath }).then(async (lane) => {
+    if (!name || !attachedPath || attachBusy) return;
+    setAttachBusy(true);
+    setAttachError(null);
+    try {
+      const lane = await window.ade.lanes.attach({ name, attachedPath });
       await refreshLanes();
       setAttachOpen(false);
       setAttachName("");
       setAttachPath("");
+      setAttachError(null);
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
-    }).catch(() => {});
-  }, [attachName, attachPath, refreshLanes, navigate]);
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAttachBusy(false);
+    }
+  }, [attachName, attachPath, attachBusy, refreshLanes, navigate]);
 
   const openManageDialog = useCallback((laneId: string) => {
     selectLane(laneId);
     setLaneActionError(null);
+    setAdoptError(null);
     setDeleteForce(false);
     setDeleteMode("worktree");
     setDeleteRemoteName("origin");
@@ -1181,6 +1259,8 @@ export function LanesPage() {
                   setAddLaneDropdownOpen(false);
                   setAttachName("");
                   setAttachPath("");
+                  setAttachBusy(false);
+                  setAttachError(null);
                   setAttachOpen(true);
                 }}
               >
@@ -1190,6 +1270,54 @@ export function LanesPage() {
             </div>
           ) : null}
         </div>
+
+        {shouldShowAdoptHint && selectedAttachedLane ? (
+          <div
+            className="shrink-0 flex items-center gap-2 rounded border px-2 py-1"
+            style={{ borderColor: `${COLORS.info}55`, background: `${COLORS.info}15` }}
+          >
+            <button
+              type="button"
+              className="inline-flex items-center gap-1"
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                letterSpacing: "0.8px",
+                color: COLORS.info,
+                background: "transparent",
+                border: "none",
+                cursor: "pointer"
+              }}
+              title={`Move '${selectedAttachedLane.name}' to .ade/worktrees`}
+              onClick={() => requestAdoptAttachedLane(selectedAttachedLane.id)}
+            >
+              <ArrowSquareOut size={12} />
+              MOVE TO .ADE
+            </button>
+            <div className="relative group">
+              <Info size={12} style={{ color: COLORS.info }} />
+              <div
+                className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded border px-2 py-1 text-[10px] opacity-0 transition-opacity group-hover:opacity-100"
+                style={{
+                  borderColor: `${COLORS.border}`,
+                  background: COLORS.cardBg,
+                  color: COLORS.textSecondary
+                }}
+              >
+                Uses git worktree move. Branch/history stay the same.
+              </div>
+            </div>
+            <button
+              type="button"
+              className="inline-flex items-center justify-center"
+              style={{ width: 16, height: 16, border: "none", background: "transparent", color: COLORS.textMuted, cursor: "pointer" }}
+              onClick={dismissAdoptHint}
+              title="Dismiss this hint"
+            >
+              <X size={10} />
+            </button>
+          </div>
+        ) : null}
 
         {/* Spacer */}
         <div style={{ flex: 1, height: 1 }} />
@@ -1526,6 +1654,10 @@ export function LanesPage() {
           laneContextMenu={laneContextMenu}
           lanesById={lanesById}
           onClose={() => setLaneContextMenu(null)}
+          onAdoptAttached={(laneId) => {
+            reopenAdoptHint();
+            requestAdoptAttachedLane(laneId);
+          }}
           onManage={openManageDialog}
           selectLane={selectLane}
         />
@@ -1547,6 +1679,11 @@ export function LanesPage() {
         deletePhrase={deletePhrase}
         laneActionBusy={laneActionBusy}
         laneActionError={laneActionError}
+        onAdoptAttached={() => {
+          if (!managedLane || managedLane.laneType !== "attached") return;
+          reopenAdoptHint();
+          requestAdoptAttachedLane(managedLane.id);
+        }}
         onArchive={() => { archiveManagedLane().catch(() => {}); }}
         onDelete={() => { deleteManagedLane().catch(() => {}); }}
       />
@@ -1571,13 +1708,70 @@ export function LanesPage() {
       {/* Attach Lane dialog */}
       <AttachLaneDialog
         open={attachOpen}
-        onOpenChange={setAttachOpen}
+        onOpenChange={(open) => {
+          setAttachOpen(open);
+          if (!open) {
+            setAttachBusy(false);
+            setAttachError(null);
+          }
+        }}
         attachName={attachName}
         setAttachName={setAttachName}
         attachPath={attachPath}
         setAttachPath={setAttachPath}
+        busy={attachBusy}
+        error={attachError}
         onSubmit={handleAttachSubmit}
       />
+
+      {adoptConfirmOpen ? (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div style={{ width: "min(620px, 100%)", background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+            <div style={{ ...LABEL_STYLE, color: COLORS.info }}>MOVE ATTACHED LANE</div>
+            <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
+              Move <strong>{adoptTargetLane?.name ?? "this lane"}</strong> into <code>.ade/worktrees</code>.
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.5 }}>
+              ADE uses <code>git worktree move</code>, so branch history and commits stay exactly the same.
+            </div>
+            {adoptTargetLane ? (
+              <div style={{ marginTop: 10, padding: "8px 10px", background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontSize: 11, color: COLORS.textSecondary }}>Current path</div>
+                <div className="truncate" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary }}>
+                  {adoptTargetLane.worktreePath}
+                </div>
+              </div>
+            ) : null}
+            {adoptError ? (
+              <div style={{ marginTop: 10, padding: "8px 10px", background: `${COLORS.danger}12`, border: `1px solid ${COLORS.danger}40`, color: "#FCA5A5", fontSize: 12 }}>
+                {adoptError}
+              </div>
+            ) : null}
+            <div className="flex justify-end gap-2" style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 10 })}
+                disabled={adoptBusy}
+                onClick={() => {
+                  setAdoptConfirmOpen(false);
+                  setAdoptTargetLaneId(null);
+                  setAdoptError(null);
+                }}
+              >
+                CANCEL
+              </button>
+              <button
+                type="button"
+                style={primaryButton({ height: 30, padding: "0 10px", fontSize: 10 })}
+                disabled={adoptBusy || !adoptTargetLane}
+                onClick={() => { void confirmAdoptAttachedLane(); }}
+              >
+                {adoptBusy ? "MOVING..." : "MOVE TO .ADE"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {rebaseScopePrompt ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>

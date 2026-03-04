@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Tool } from "ai";
 import { createCoordinatorToolSet } from "../../desktop/src/main/services/orchestrator/coordinatorTools";
+import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { ContextExportLevel, MergeMethod } from "../../desktop/src/shared/types";
 import type { AdeMcpRuntime } from "./bootstrap";
@@ -689,6 +690,7 @@ const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
   { name: "insert_milestone", description: "Coordinator: insert a milestone gate into the DAG.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "request_specialist", description: "Coordinator: request a specialist worker role.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "delegate_to_subagent", description: "Coordinator: delegate a subtask from a parent worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "delegate_parallel", description: "Coordinator: delegate multiple child subtasks from one parent in a single call.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "stop_worker", description: "Coordinator: stop a running worker attempt.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "send_message", description: "Coordinator: send a direct message to a worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "message_worker", description: "Coordinator: relay a message between two workers.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
@@ -1071,6 +1073,8 @@ function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> 
  * set in their environment. These provide automatic identity and context defaults.
  */
 type CallerContext = {
+  callerId: string | null;
+  role: SessionIdentity["role"] | null;
   missionId: string | null;
   runId: string | null;
   stepId: string | null;
@@ -1078,7 +1082,14 @@ type CallerContext = {
 };
 
 function resolveEnvCallerContext(): CallerContext {
+  const envRoleRaw = process.env.ADE_DEFAULT_ROLE?.trim() ?? "";
+  const envRole: SessionIdentity["role"] | null =
+    envRoleRaw === "orchestrator" || envRoleRaw === "agent" || envRoleRaw === "external" || envRoleRaw === "evaluator"
+      ? envRoleRaw
+      : null;
   return {
+    callerId: process.env.ADE_ATTEMPT_ID?.trim() || null,
+    role: envRole,
     missionId: process.env.ADE_MISSION_ID?.trim() || null,
     runId: process.env.ADE_RUN_ID?.trim() || null,
     stepId: process.env.ADE_STEP_ID?.trim() || null,
@@ -1090,6 +1101,8 @@ function resolveCallerContext(session?: SessionState): CallerContext {
   const envContext = resolveEnvCallerContext();
   if (!session) return envContext;
   return {
+    callerId: asOptionalTrimmedString(session.identity.callerId),
+    role: session.identity.role ?? envContext.role,
     missionId: session.identity.missionId ?? envContext.missionId,
     runId: session.identity.runId ?? envContext.runId,
     stepId: session.identity.stepId ?? envContext.stepId,
@@ -1504,6 +1517,328 @@ function getCoordinatorToolSet(args: {
   return toolSet;
 }
 
+type NativeCallerRegistration = {
+  memberId: string;
+  parentWorkerId: string;
+  parentStepId: string;
+  sourceAttemptId: string;
+};
+
+function getTeamRuntimeContext(runtime: AdeMcpRuntime): import("../../desktop/src/main/services/orchestrator/orchestratorContext").OrchestratorContext {
+  return {
+    db: runtime.db,
+    logger: runtime.logger,
+  } as import("../../desktop/src/main/services/orchestrator/orchestratorContext").OrchestratorContext;
+}
+
+function getRunGraphSafe(runtime: AdeMcpRuntime, runId: string): Record<string, unknown> | null {
+  try {
+    return runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 }) as unknown as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function getTeamMembersForRunSafe(runtime: AdeMcpRuntime, runId: string): Array<Record<string, unknown>> {
+  const aiService = runtime.aiOrchestratorService as unknown as { getTeamMembers?: (args: { runId: string }) => unknown };
+  if (typeof aiService.getTeamMembers === "function") {
+    try {
+      const members = aiService.getTeamMembers({ runId });
+      if (Array.isArray(members)) return members as Array<Record<string, unknown>>;
+    } catch {
+      // Fall through to DB-backed path.
+    }
+  }
+  return getTeamMembersForRun(getTeamRuntimeContext(runtime), runId) as unknown as Array<Record<string, unknown>>;
+}
+
+function resolveStepFromGraph(graph: Record<string, unknown>, stepId: string | null, stepKey: string | null): Record<string, unknown> | null {
+  const steps = Array.isArray(graph.steps) ? (graph.steps as Array<Record<string, unknown>>) : [];
+  if (stepId) {
+    const byId = steps.find((step) => asOptionalTrimmedString(step.id) === stepId);
+    if (byId) return byId;
+  }
+  if (stepKey) {
+    const byKey = steps.find((step) => asOptionalTrimmedString(step.stepKey) === stepKey);
+    if (byKey) return byKey;
+  }
+  return null;
+}
+
+function resolveParentAttemptIdFromGraph(graph: Record<string, unknown>, parentWorkerId: string): string | null {
+  const steps = Array.isArray(graph.steps) ? (graph.steps as Array<Record<string, unknown>>) : [];
+  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
+  const parentStep = steps.find((step) => asOptionalTrimmedString(step.stepKey) === parentWorkerId);
+  const parentStepId = asOptionalTrimmedString(parentStep?.id);
+  if (!parentStepId) return null;
+  const parentAttempts = attempts.filter((attempt) => asOptionalTrimmedString(attempt.stepId) === parentStepId);
+  if (!parentAttempts.length) return null;
+  const running = parentAttempts.find((attempt) => asOptionalTrimmedString(attempt.status) === "running");
+  if (running) return asOptionalTrimmedString(running.id);
+  const sorted = [...parentAttempts].sort((left, right) => {
+    const leftTs = Date.parse(asOptionalTrimmedString(left.completedAt) ?? asOptionalTrimmedString(left.createdAt) ?? "");
+    const rightTs = Date.parse(asOptionalTrimmedString(right.completedAt) ?? asOptionalTrimmedString(right.createdAt) ?? "");
+    return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
+  });
+  return asOptionalTrimmedString(sorted[0]?.id);
+}
+
+function inferParallelismCap(graph: Record<string, unknown>): number {
+  const run = safeObject(graph.run);
+  const runMetadata = safeObject(run.metadata);
+  const autopilot = safeObject(runMetadata.autopilot);
+  const raw = Number(autopilot.parallelismCap ?? runMetadata.maxParallelWorkers ?? Number.NaN);
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.max(1, Math.min(32, Math.floor(raw)));
+  }
+  return 4;
+}
+
+function ensureNativeTeammateRegistration(args: {
+  runtime: AdeMcpRuntime;
+  runId: string;
+  missionId: string;
+  callerCtx: CallerContext;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+}): NativeCallerRegistration | null {
+  if (args.toolName !== "report_status" && args.toolName !== "report_result") return null;
+  if (args.callerCtx.role !== "agent") return null;
+  const graph = getRunGraphSafe(args.runtime, args.runId);
+  if (!graph) return null;
+
+  const callerId = asOptionalTrimmedString(args.callerCtx.callerId) ?? asOptionalTrimmedString(args.callerCtx.attemptId);
+  if (!callerId || callerId === "unknown") return null;
+
+  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
+  const steps = Array.isArray(graph.steps) ? (graph.steps as Array<Record<string, unknown>>) : [];
+  const knownAttemptIds = new Set(
+    attempts
+      .map((attempt) => asOptionalTrimmedString(attempt.id))
+      .filter((entry): entry is string => Boolean(entry))
+  );
+  const knownStepKeys = new Set(
+    steps
+      .map((step) => asOptionalTrimmedString(step.stepKey))
+      .filter((entry): entry is string => Boolean(entry))
+  );
+  const existingMembers = getTeamMembersForRunSafe(args.runtime, args.runId);
+  const knownTeamMemberIds = new Set(
+    existingMembers
+      .map((member) => asOptionalTrimmedString(member.id))
+      .filter((entry): entry is string => Boolean(entry))
+  );
+  if (knownAttemptIds.has(callerId) || knownStepKeys.has(callerId) || knownTeamMemberIds.has(callerId)) {
+    return null;
+  }
+
+  let parentStep: Record<string, unknown> | null = null;
+  if (args.callerCtx.stepId) {
+    parentStep = resolveStepFromGraph(graph, args.callerCtx.stepId, null);
+  }
+  if (!parentStep && args.callerCtx.attemptId) {
+    const parentAttempt = attempts.find((attempt) => asOptionalTrimmedString(attempt.id) === args.callerCtx.attemptId);
+    const parentStepId = asOptionalTrimmedString(parentAttempt?.stepId);
+    if (parentStepId) {
+      parentStep = resolveStepFromGraph(graph, parentStepId, null);
+    }
+  }
+  if (!parentStep) {
+    const fallbackWorkerId = asOptionalTrimmedString(args.toolArgs.workerId);
+    if (fallbackWorkerId) {
+      parentStep = resolveStepFromGraph(graph, null, fallbackWorkerId);
+    }
+  }
+  if (!parentStep) return null;
+
+  const parentWorkerId = asOptionalTrimmedString(parentStep.stepKey);
+  const parentStepId = asOptionalTrimmedString(parentStep.id);
+  if (!parentWorkerId || !parentStepId) return null;
+
+  const nativeMemberId = `claude-native:${args.runId}:${createHash("sha1").update(callerId).digest("hex").slice(0, 16)}`;
+  const existing = existingMembers.find((member) => asOptionalTrimmedString(member.id) === nativeMemberId) ?? null;
+  const cap = inferParallelismCap(graph);
+  const activeForParent = existingMembers.filter((member) => {
+    const metadata = safeObject(member.metadata);
+    const source = asOptionalTrimmedString(member.source) ?? asOptionalTrimmedString(metadata.source);
+    const memberParent = asOptionalTrimmedString(member.parentWorkerId) ?? asOptionalTrimmedString(metadata.parentWorkerId);
+    const status = asOptionalTrimmedString(member.status) ?? "unknown";
+    return source === "claude-native"
+      && memberParent === parentWorkerId
+      && status !== "terminated"
+      && status !== "failed";
+  }).length;
+  if (!existing && activeForParent >= cap) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Native teammate allocation cap exceeded for parent '${parentWorkerId}' (${activeForParent}/${cap}).`
+    );
+  }
+
+  const parentMetadata = safeObject(parentStep.metadata);
+  const inferredModel = asOptionalTrimmedString(parentMetadata.modelId) ?? "claude-native";
+  const now = nowIso();
+  if (existing) {
+    updateTeamMemberStatus(getTeamRuntimeContext(args.runtime), nativeMemberId, {
+      status: "active"
+    });
+  } else {
+    registerTeamMember(getTeamRuntimeContext(args.runtime), {
+      id: nativeMemberId,
+      runId: args.runId,
+      missionId: args.missionId,
+      provider: "claude",
+      model: inferredModel,
+      role: "teammate",
+      source: "claude-native",
+      parentWorkerId,
+      sessionId: null,
+      status: "active",
+      claimedTaskIds: [],
+      metadata: {
+        source: "claude-native",
+        parentWorkerId,
+        parentStepId,
+        parentAttemptId: args.callerCtx.attemptId ?? null,
+        nativeCallerId: callerId,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  if (!asOptionalTrimmedString(args.toolArgs.workerId)) {
+    args.toolArgs.workerId = parentWorkerId;
+  }
+
+  return {
+    memberId: nativeMemberId,
+    parentWorkerId,
+    parentStepId,
+    sourceAttemptId: nativeMemberId,
+  };
+}
+
+async function maybeSendInterAgentMessage(args: {
+  runtime: AdeMcpRuntime;
+  missionId: string;
+  fromAttemptId: string;
+  toAttemptId: string;
+  content: string;
+  metadata: Record<string, unknown>;
+}): Promise<void> {
+  const sender = (args.runtime.aiOrchestratorService as unknown as {
+    sendAgentMessage?: (msg: {
+      missionId: string;
+      fromAttemptId: string;
+      toAttemptId: string;
+      content: string;
+      metadata?: Record<string, unknown> | null;
+    }) => unknown;
+  }).sendAgentMessage;
+  if (typeof sender !== "function") return;
+  await Promise.resolve(sender({
+    missionId: args.missionId,
+    fromAttemptId: args.fromAttemptId,
+    toAttemptId: args.toAttemptId,
+    content: args.content,
+    metadata: args.metadata,
+  }));
+}
+
+async function postProcessCoordinatorToolResult(args: {
+  runtime: AdeMcpRuntime;
+  toolName: string;
+  runId: string;
+  missionId: string;
+  callerCtx: CallerContext;
+  result: Record<string, unknown>;
+  nativeRegistration: NativeCallerRegistration | null;
+}): Promise<void> {
+  if (args.toolName === "report_status") {
+    const report = safeObject(args.result.report);
+    const workerId = asOptionalTrimmedString(report.workerId);
+    const stepId = asOptionalTrimmedString(report.stepId);
+    const progressPct = Number(report.progressPct ?? Number.NaN);
+    const nextAction = asOptionalTrimmedString(report.nextAction) ?? "status update";
+    const blockers = Array.isArray(report.blockers)
+      ? report.blockers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+      : [];
+
+    args.runtime.eventBuffer.push({
+      timestamp: nowIso(),
+      category: "runtime",
+      payload: {
+        type: "worker_status_reported",
+        runId: args.runId,
+        stepId,
+        attemptId: args.callerCtx.attemptId ?? null,
+        reason: "report_status",
+        detail: report,
+      }
+    });
+
+    const graph = getRunGraphSafe(args.runtime, args.runId);
+    if (!graph) return;
+    const step = resolveStepFromGraph(graph, stepId, workerId);
+    const stepMetadata = safeObject(step?.metadata);
+    const parentWorkerId =
+      args.nativeRegistration?.parentWorkerId
+      ?? asOptionalTrimmedString(stepMetadata.parentWorkerId);
+    if (!parentWorkerId) return;
+    const parentAttemptId = resolveParentAttemptIdFromGraph(graph, parentWorkerId);
+    if (!parentAttemptId) return;
+    const fromAttemptId =
+      args.nativeRegistration?.sourceAttemptId
+      ?? asOptionalTrimmedString(args.callerCtx.attemptId)
+      ?? workerId;
+    if (!fromAttemptId || fromAttemptId === parentAttemptId) return;
+
+    const workerLabel = asOptionalTrimmedString(step?.title) ?? workerId ?? "sub-agent";
+    const progressLabel = Number.isFinite(progressPct) ? `${Math.max(0, Math.min(100, Math.round(progressPct)))}%` : "progress";
+    const blockerSuffix = blockers.length > 0 ? ` Blockers: ${blockers.join("; ")}` : "";
+    const content = `[sub-agent:${workerLabel}] ${progressLabel} — ${nextAction}.${blockerSuffix}`;
+
+    await maybeSendInterAgentMessage({
+      runtime: args.runtime,
+      missionId: args.missionId,
+      fromAttemptId,
+      toAttemptId: parentAttemptId,
+      content,
+      metadata: {
+        source: "subagent_status_rollup",
+        parentWorkerId,
+        workerId: workerId ?? null,
+        isNative: Boolean(args.nativeRegistration),
+      },
+    });
+    return;
+  }
+
+  if (args.toolName === "report_result" && args.nativeRegistration) {
+    const report = safeObject(args.result.report);
+    const graph = getRunGraphSafe(args.runtime, args.runId);
+    if (!graph) return;
+    const parentAttemptId = resolveParentAttemptIdFromGraph(graph, args.nativeRegistration.parentWorkerId);
+    if (!parentAttemptId) return;
+    const outcome = asOptionalTrimmedString(report.outcome) ?? "completed";
+    const summary = asOptionalTrimmedString(report.summary) ?? "No summary provided.";
+    const content = `Sub-agent '${args.nativeRegistration.memberId}' completed (${outcome}): ${summary}`;
+    await maybeSendInterAgentMessage({
+      runtime: args.runtime,
+      missionId: args.missionId,
+      fromAttemptId: args.nativeRegistration.sourceAttemptId,
+      toAttemptId: parentAttemptId,
+      content,
+      metadata: {
+        source: "subagent_result_rollup",
+        parentWorkerId: args.nativeRegistration.parentWorkerId,
+        isNative: true,
+      },
+    });
+  }
+}
+
 async function runCoordinatorTool(args: {
   runtime: AdeMcpRuntime;
   name: string;
@@ -1537,8 +1872,28 @@ async function runCoordinatorTool(args: {
   if (!toolEntry?.execute) {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
   }
-  const output = await toolEntry.execute(args.toolArgs);
+  const effectiveToolArgs = { ...args.toolArgs };
+  const nativeRegistration = ensureNativeTeammateRegistration({
+    runtime: args.runtime,
+    runId,
+    missionId,
+    callerCtx: args.callerCtx,
+    toolName: args.name,
+    toolArgs: effectiveToolArgs,
+  });
+  const output = await toolEntry.execute(effectiveToolArgs);
   if (isRecord(output)) {
+    if (output.ok === true && (args.name === "report_status" || args.name === "report_result")) {
+      await postProcessCoordinatorToolResult({
+        runtime: args.runtime,
+        toolName: args.name,
+        runId,
+        missionId,
+        callerCtx: args.callerCtx,
+        result: output,
+        nativeRegistration,
+      });
+    }
     return output;
   }
   return {

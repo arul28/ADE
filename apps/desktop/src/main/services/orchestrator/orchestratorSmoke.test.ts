@@ -939,40 +939,46 @@ describe("orchestrator smoke", () => {
       };
       db.run(`update missions set metadata_json = ? where id = ?`, [JSON.stringify(mMeta), mission.id]);
 
+      const workerModelId = "anthropic/claude-sonnet-4-6";
+
       // Add steps from the complex plan, assigning lanes
       orchestratorService.addSteps({
         runId,
         steps: [
-          { stepKey: "api-health-route", title: "Build health API route", stepIndex: 0, dependencyStepKeys: [], executorKind: "unified", laneId, metadata: { instructions: "Implement GET /api/health" } },
-          { stepKey: "runtime-watchdog-hardening", title: "Harden watchdog recovery", stepIndex: 1, dependencyStepKeys: [], executorKind: "unified", laneId: childLane1.id, metadata: { instructions: "Improve stall detection" } },
-          { stepKey: "ui-telemetry-panel", title: "Add mission telemetry panel UI", stepIndex: 2, dependencyStepKeys: [], executorKind: "unified", laneId: childLane2.id, metadata: { instructions: "Expose telemetry in UI" } },
-          { stepKey: "integration-contract-check", title: "Integrate contracts and orchestration data model", stepIndex: 3, dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"], executorKind: "unified", laneId, metadata: { instructions: "Validate interface compatibility" } },
-          { stepKey: "docs-and-readme", title: "Update docs and README", stepIndex: 4, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Document changes" } },
-          { stepKey: "test-matrix", title: "Execute endpoint and orchestration test matrix", stepIndex: 5, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Run tests" } },
-          { stepKey: "rollback-and-risk-check", title: "Perform rollback and risk sanity check", stepIndex: 6, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Verify rollback path" } },
-          { stepKey: "final-review-gate", title: "Finalize review gate", stepIndex: 7, dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"], executorKind: "unified", laneId, metadata: { instructions: "Final review" } }
+          { stepKey: "api-health-route", title: "Build health API route", stepIndex: 0, dependencyStepKeys: [], executorKind: "unified", laneId, metadata: { instructions: "Implement GET /api/health", modelId: workerModelId } },
+          { stepKey: "runtime-watchdog-hardening", title: "Harden watchdog recovery", stepIndex: 1, dependencyStepKeys: [], executorKind: "unified", laneId: childLane1.id, metadata: { instructions: "Improve stall detection", modelId: workerModelId } },
+          { stepKey: "ui-telemetry-panel", title: "Add mission telemetry panel UI", stepIndex: 2, dependencyStepKeys: [], executorKind: "unified", laneId: childLane2.id, metadata: { instructions: "Expose telemetry in UI", modelId: workerModelId } },
+          { stepKey: "integration-contract-check", title: "Integrate contracts and orchestration data model", stepIndex: 3, dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"], executorKind: "unified", laneId, metadata: { instructions: "Validate interface compatibility", modelId: workerModelId } },
+          { stepKey: "docs-and-readme", title: "Update docs and README", stepIndex: 4, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Document changes", modelId: workerModelId } },
+          { stepKey: "test-matrix", title: "Execute endpoint and orchestration test matrix", stepIndex: 5, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Run tests", modelId: workerModelId } },
+          { stepKey: "rollback-and-risk-check", title: "Perform rollback and risk sanity check", stepIndex: 6, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Verify rollback path", modelId: workerModelId } },
+          { stepKey: "final-review-gate", title: "Finalize review gate", stepIndex: 7, dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"], executorKind: "unified", laneId, metadata: { instructions: "Final review", modelId: workerModelId } }
         ]
       });
 
-      // Inject autopilot config into the run metadata so startReadyAutopilotAttempts works.
-      // The aiOrchestratorService.startMissionRun does not set autopilot metadata on the run
-      // created via orchestratorService.startRun — this must be done explicitly.
-      const existingRunRow = db.get<{ metadata_json: string | null }>(
+      // Force a wider cap for this specific smoke scenario so parallel lane
+      // execution remains deterministic under test timing constraints.
+      const runRow = db.get<{ metadata_json: string | null }>(
         `select metadata_json from orchestrator_runs where id = ?`,
         [runId]
       );
-      const existingMeta = existingRunRow?.metadata_json
-        ? JSON.parse(existingRunRow.metadata_json) as Record<string, unknown>
+      const runMeta = runRow?.metadata_json
+        ? (JSON.parse(runRow.metadata_json) as Record<string, unknown>)
         : {};
-      existingMeta.autopilot = {
+      const autopilot = runMeta.autopilot && typeof runMeta.autopilot === "object" && !Array.isArray(runMeta.autopilot)
+        ? { ...(runMeta.autopilot as Record<string, unknown>) }
+        : {};
+      runMeta.maxParallelWorkers = 4;
+      runMeta.autopilot = {
+        ...autopilot,
         enabled: true,
         executorKind: "unified",
-        ownerId: "orchestrator-autopilot",
+        ownerId: typeof autopilot.ownerId === "string" ? autopilot.ownerId : "orchestrator-autopilot",
         parallelismCap: 4
       };
       db.run(
         `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ?`,
-        [JSON.stringify(existingMeta), new Date().toISOString(), runId]
+        [JSON.stringify(runMeta), new Date().toISOString(), runId]
       );
 
       // Drive execution: tick to refresh readiness then dispatch autopilot attempts

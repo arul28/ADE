@@ -34,9 +34,6 @@ import type {
   OrchestratorStepStatus,
   OrchestratorRuntimeBusEvent,
   OrchestratorRuntimeEventType,
-  OrchestratorTeamMember,
-  OrchestratorTeamMemberRole,
-  OrchestratorTeamMemberStatus,
   OrchestratorTeamRuntimeState,
   OrchestratorTimelineEvent,
   PackDeltaDigestV1,
@@ -5898,8 +5895,17 @@ export function createOrchestratorService({
         state: status === "failed" ? "released" : "released"
       });
 
-      // Clean up temporary MCP config file for this worker
-      cleanupMcpConfigFile(projectRoot, args.attemptId);
+      // Clean up temporary MCP config files for this worker.
+      const laneWorktreeRow = step.laneId
+        ? db.get<{ worktree_path: string | null }>(
+            `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+            [step.laneId, projectId]
+          )
+        : null;
+      const laneWorktreePath = typeof laneWorktreeRow?.worktree_path === "string" && laneWorktreeRow.worktree_path.trim().length > 0
+        ? laneWorktreeRow.worktree_path.trim()
+        : null;
+      cleanupMcpConfigFile(projectRoot, args.attemptId, laneWorktreePath);
 
       // Sync worker checkpoint file to DB for all completion states
       if (step.laneId) {
@@ -8657,111 +8663,5 @@ export function createOrchestratorService({
       };
     },
 
-    // ─── Team Member CRUD (orchestrator_team_members) ────────────────
-
-    insertTeamMember(member: {
-      runId: string;
-      missionId: string;
-      provider: string;
-      model: string;
-      role: OrchestratorTeamMemberRole;
-      sessionId?: string | null;
-      status?: OrchestratorTeamMemberStatus;
-      metadata?: Record<string, unknown> | null;
-    }): OrchestratorTeamMember {
-      const id = randomUUID();
-      const now = nowIso();
-      const status = member.status ?? "spawning";
-      db.run(
-        `
-          insert into orchestrator_team_members(
-            id, run_id, mission_id, provider, model, role,
-            session_id, status, claimed_task_ids_json, metadata_json,
-            created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)
-        `,
-        [
-          id,
-          member.runId,
-          member.missionId,
-          member.provider,
-          member.model,
-          member.role,
-          member.sessionId ?? null,
-          status,
-          member.metadata ? JSON.stringify(member.metadata) : null,
-          now,
-          now
-        ]
-      );
-      return {
-        id,
-        runId: member.runId,
-        missionId: member.missionId,
-        provider: member.provider,
-        model: member.model,
-        role: member.role,
-        sessionId: member.sessionId ?? null,
-        status,
-        claimedTaskIds: [],
-        metadata: member.metadata ?? null,
-        createdAt: now,
-        updatedAt: now
-      };
-    },
-
-    updateTeamMemberStatus(id: string, status: OrchestratorTeamMemberStatus): void {
-      const now = nowIso();
-      db.run(
-        `
-          update orchestrator_team_members
-          set status = ?,
-              updated_at = ?
-          where id = ?
-        `,
-        [status, now, id]
-      );
-    },
-
-    getTeamMembers(runId: string): OrchestratorTeamMember[] {
-      const rows = db.all<{
-        id: string;
-        run_id: string;
-        mission_id: string;
-        provider: string;
-        model: string;
-        role: string;
-        session_id: string | null;
-        status: string;
-        claimed_task_ids_json: string;
-        metadata_json: string | null;
-        created_at: string;
-        updated_at: string;
-      }>(
-        `
-          select id, run_id, mission_id, provider, model, role,
-                 session_id, status, claimed_task_ids_json, metadata_json,
-                 created_at, updated_at
-          from orchestrator_team_members
-          where run_id = ?
-          order by created_at asc
-        `,
-        [runId]
-      );
-      return rows.map((row) => ({
-        id: row.id,
-        runId: row.run_id,
-        missionId: row.mission_id,
-        provider: row.provider,
-        model: row.model,
-        role: row.role as OrchestratorTeamMemberRole,
-        sessionId: row.session_id,
-        status: row.status as OrchestratorTeamMemberStatus,
-        claimedTaskIds: parseArray(row.claimed_task_ids_json),
-        metadata: parseJsonRecord(row.metadata_json),
-        createdAt: row.created_at,
-        updatedAt: row.updated_at
-      }));
-    }
   };
 }

@@ -109,75 +109,54 @@ Passing total in this suite: 268 tests.
 
 ### Phase 4: Subagent Delegation & Agent Teams
 
-**Status**: Not started
+**Status**: Complete (2026-03-04)
 
-**What exists today**:
-- `delegate_to_subagent` MCP tool exists (mcpServer.ts:691, coordinatorTools.ts:4029-4206) with parent-child linkage, model cascade resolution (explicit → role → parent → phase), lane inheritance, and budget enforcement.
-- `spawn_worker` supports `dependsOn` arrays for DAG dependencies.
-- `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var is injected for Claude CLI workers (unifiedOrchestratorAdapter.ts:262-268).
-- `allowSubAgents`, `allowClaudeAgentTeams`, `allowParallelAgents` config flags exist in teamRuntimeConfig.ts and are surfaced in CreateMissionDialog.tsx.
+Implemented outcomes:
+1. **Single authoritative team-member data path**: team-member persistence/read normalization now flows through `teamRuntimeState.ts`; IPC `orchestratorGetTeamMembers` now reads from `aiOrchestratorService.getTeamMembers(...)`.
+2. **Push-based child completion rollups**: terminal sub-agent attempts automatically push summary messages into the parent worker thread (`Sub-agent '<name>' completed (<status>): <summary>`), with run/attempt dedupe to prevent double delivery.
+3. **Push-based child progress rollups + event-stream visibility**: successful `report_status` calls now emit normalized `worker_status_reported` runtime events and forward `[sub-agent:<name>]` progress messages to parent workers.
+4. **Atomic batch delegation**: new coordinator tool `delegate_parallel` creates N validated child workers under one parent in a single call path, applies parent linkage metadata, enforces runtime guardrails, and starts autopilot once after batch creation.
+5. **Claude-native teammate guardrails**:
+   - Claude worker startup now mirrors ADE MCP config into worker CWD so native teammates can inherit MCP access.
+   - MCP `report_status`/`report_result` paths auto-register unknown native callers as `source: "claude-native"` teammates when parent context is resolvable.
+   - Native teammate registration enforces parent allocation caps (derived from run parallelism cap, fallback `4`).
+6. **Tooling/prompt surface updates**: `delegate_parallel` is exposed in MCP tool specs, coordinator tool set, default team tool allowlist, and coordinator system prompt guidance.
+7. **Type contract hard-cut**: `OrchestratorTeamMember` now surfaces `source` (`ade-worker` | `ade-subagent` | `claude-native`) and optional `parentWorkerId`.
 
-**What's broken or missing**:
+Dead code removed in Phase 4:
+- Duplicate team-member CRUD path removed from `apps/desktop/src/main/services/orchestrator/orchestratorService.ts`:
+  - `insertTeamMember(...)`
+  - `updateTeamMemberStatus(...)`
+  - `getTeamMembers(...)`
+- IPC/team-member reads no longer go through the removed orchestratorService path; `registerIpc.ts` now uses `aiOrchestratorService.getTeamMembers(...)` directly.
+- Legacy “Phase 4 is additive/no dead code removal” plan text removed from this document.
 
-#### 4.1 Push-based result rollup for subagents
+Additional hard-cut correctness fix completed during Phase 4:
+- Inter-agent `agent` role messages are now parsed from persisted chat rows (`chatMessageService.ts`), enabling parent `get_pending_messages` visibility for forwarded sub-agent rollups.
 
-**Issue**: When a child subagent completes, the parent worker must manually call `get_worker_output` to retrieve the child's result (pull model). There is no automatic injection of the child's output into the parent's context. This means the parent can miss results, forget to check, or waste turns polling.
+Phase 4 verification (executed 2026-03-04):
+- `npm --prefix apps/desktop run typecheck` ✅
+- `npm --prefix apps/mcp-server run typecheck` ✅
+- `npm --prefix apps/desktop run test -- src/main/services/orchestrator/coordinatorTools.test.ts src/main/services/orchestrator/aiOrchestratorService.test.ts` ✅ (100 tests)
+- `npm --prefix apps/mcp-server run test -- src/mcpServer.test.ts` ✅ (58 tests)
 
-**Why it matters**: The Vercel AI SDK subagent pattern uses `toModelOutput` to automatically return subagent results into the parent's context. Every competing orchestrator (Cursor, Windsurf, Devin) auto-rolls up subagent results. The pull model forces the coordinator to micromanage result retrieval instead of focusing on high-level planning.
+Phase 1-4 audit pass (executed 2026-03-04, post Phase 4 implementation):
+- No additional runtime regressions found in Phase 1-3 contracts:
+  - No legacy orchestrator executor kinds (`claude`/`codex`) in active dispatch paths.
+  - No provider-bucket permission schema paths (`permissionConfig.claude|codex|api`) in orchestrator runtime flow.
+- Gaps found and addressed:
+  - Added coordinator-tool metadata rendering in `AgentChatMessageList.tsx` for orchestration tools (`spawn_worker`, `delegate_to_subagent`, `delegate_parallel`, `report_*`, recovery tools).
+  - Added live Team Members roster to `WorkTab.tsx` (polling `getTeamMembers`) with status, model, role, `source`, and parent-child lineage display.
+  - Team Members UI location decision applied: keep it in `Work` tab (no extra panel/tab added).
+  - Long-mission roster hygiene decision applied: terminated members auto-collapse after timeout with explicit Show/Hide toggle.
+  - Updated browser mock `getTeamMembers` to return realistic mixed-source data (`ade-worker`, `ade-subagent`, `claude-native`) for dev rendering parity.
+  - Removed unused `missionId` field from `GetTeamMembersArgs` (dead IPC interface surface).
+  - AI-first run bootstrap now persists explicit `autopilot.parallelismCap` at run creation (planner summary -> launch maxParallelWorkers -> fallback `4`), removing fallback-only startup ambiguity.
 
-**Fix**: When a child step reaches terminal status (`succeeded`/`failed`), the orchestrator runtime should automatically push the result summary into the parent worker's pending messages (via the `get_pending_messages` MCP tool's message queue). The parent receives a system message like `"Sub-agent '{name}' completed: {summary}"` on its next turn without needing to call `get_worker_output`. The full output remains available via `get_worker_output` for detailed inspection.
-
-**Source files**:
-- `src/main/services/orchestrator/coordinatorTools.ts` — `delegate_to_subagent` at 4029, `get_worker_output` at 1739, `report_result` at 1919
-- `src/main/services/orchestrator/workerDeliveryService.ts` — worker output delivery, result envelope handling
-- `apps/mcp-server/src/mcpServer.ts` — `get_pending_messages` tool (line ~710+), message queue mechanism
-
-#### 4.2 Streaming progress from child to parent
-
-**Issue**: A parent worker delegates a subtask and then receives zero feedback until the child terminates. For long-running children (20+ minutes), the parent has no idea whether the child is progressing, stuck, or failing. The only signal is terminal completion.
-
-**Why it matters**: The AI SDK subagent pattern uses `async function*` generators that yield streaming progress. Even without generators, intermediate status should flow from child to parent so the parent (or coordinator) can intervene early if a child is off-track.
-
-**Fix**: When a child worker calls `report_status` via MCP, the status message should also be forwarded to the parent worker's pending messages with a `[sub-agent:{name}]` prefix. This gives the parent periodic heartbeat-like updates. The coordinator also receives these via the existing `stream_events` event buffer (event type `worker_status_reported`), maintaining its overview.
-
-**Source files**:
-- `apps/mcp-server/src/mcpServer.ts` — `report_status` tool handler, `get_pending_messages` handler
-- `src/main/services/orchestrator/coordinatorTools.ts` — `report_status` at ~1850, status event emission
-
-#### 4.3 Batch parallel delegation
-
-**Issue**: To delegate 3 subtasks in parallel, the coordinator must make 3 sequential `delegate_to_subagent` calls. Each call creates a step, triggers autopilot, and returns. The coordinator cannot atomically express "run these 3 things in parallel and tell me when all finish."
-
-**Why it matters**: The AI SDK uses `Promise.all` for parallel subagent execution. Sequential delegation is slower (3 round-trips) and doesn't let the coordinator express intent clearly. It also makes it harder to implement "wait for all N children" logic.
-
-**Fix**: Add a `delegate_parallel` MCP tool that accepts an array of subtask specs (each with `name`, `prompt`, `modelId`, `role`). The handler calls `spawnWorkerStep` for each, links all children to the same parent, and returns all step keys in one response. The coordinator can then use `read_mission_status` to check if all children have completed. Optionally add a `dependsOnAll` field so downstream steps can depend on the entire batch completing.
-
-**Source files**:
-- `apps/mcp-server/src/mcpServer.ts` — tool registration for new `delegate_parallel` tool
-- `src/main/services/orchestrator/coordinatorTools.ts` — `spawnWorkerStep` at 608 (reuse for batch), `delegate_to_subagent` at 4029 (pattern to follow)
-
-#### 4.4 Claude native team coordination with ADE guardrails
-
-**Issue**: When `allowClaudeAgentTeams=true` and a Claude CLI worker uses native `TeamCreate`/`Task`/`SendMessage` tools, those native teammates are invisible to ADE's orchestrator. They don't appear in `getTeamMembers`, they don't respect budget caps, they don't report via MCP, and they have no ADE MCP server injected. The Claude native team runs completely outside ADE's control.
-
-**Why it matters**: From the Kargar article — Claude's native teams support powerful peer-to-peer messaging and parallel task execution that ADE shouldn't re-implement. But without guardrails, a single Claude worker could spawn unbounded native teammates that burn through the budget. ADE needs to observe and constrain native teams, not ignore them.
-
-**Fix**: Two-part solution:
-1. **MCP injection for native teammates**: When a Claude CLI worker spawns with `allowClaudeAgentTeams=true`, the MCP config file (written by `writeMcpConfigFile`) should be placed in the worker's CWD so native teammates auto-inherit it. This gives native teammates access to `report_status` and `report_result` for progress tracking. The ADE MCP server can then observe native teammate activity through its standard audit trail.
-2. **Budget-aware teammate detection**: The ADE MCP server's `report_status` handler should detect when a call comes from an unknown `callerId` (a native teammate not registered via `spawn_worker`). When detected, auto-register a team member record with `source: "claude-native"` so the orchestrator knows about it. Apply budget checks against the parent worker's allocation.
-
-**Source files**:
-- `src/main/services/orchestrator/unifiedOrchestratorAdapter.ts` — `writeMcpConfigFile` at 36, Claude CLI startup command at 232-271, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var at 262-268
-- `apps/mcp-server/src/mcpServer.ts` — session identity resolution, `report_status` handler, `report_result` handler
-- `src/main/services/orchestrator/teamRuntimeConfig.ts` — `DEFAULT_TEAM_TEMPLATE`, `normalizeAgentRuntimeFlags`
-- `src/main/services/orchestrator/coordinatorTools.ts` — `trackTeamMember` at ~449, budget enforcement logic
-
-**Dead code to remove in Phase 4**: None — Phase 4 is additive (new capabilities on top of existing infrastructure).
-
-**External references**:
-- https://ai-sdk.dev/docs/agents/subagents — `toModelOutput`, `Promise.all` for parallel, abort signal propagation
-- https://code.claude.com/docs/en/agent-teams — Native team tools, teammate lifecycle, shutdown dance
-- Medium article (Kargar, 2025) — Agent team lifecycle: TeamCreate → Task → SendMessage → TeamDelete; lead polls via sleep+ls; peer-to-peer messaging is lateral
+Owner decisions resolved (2026-03-04):
+1. Team Members UI remains in `Work` tab (Option A).
+2. Terminated members auto-collapse with a Show/Hide toggle (Option B).
+3. Parent allocation fallback cap remains hardcoded at `4` for current phases.
 
 ---
 
@@ -192,6 +171,11 @@ Passing total in this suite: 268 tests.
 - Phase ordering gates (`mustFollow`, `mustBeFirst`, `mustBeLast`) are **hard constraints** — `spawn_worker` rejects violations.
 - `evaluateRunCompletionFromPhases()` (executionPolicy.ts) checks validation contracts at run completion, but blocking is conditional on `allowCompletionWithRisk`.
 - Validator role exists in `DEFAULT_TEAM_TEMPLATE` with `capabilities: ["validator", "review", "testing"]` and `maxInstances: 4`.
+- Phase 4 delegation/runtime substrate is complete:
+  - `delegate_parallel` is available and enforced by team-runtime guardrails.
+  - Parent workers receive automatic child progress + completion rollups via pending messages.
+  - MCP runtime streams normalized `worker_status_reported` events.
+  - Claude-native teammates are auto-registered/audited and capped per parent allocation.
 
 **What's broken or missing**:
 
@@ -261,7 +245,7 @@ For `"spot-check"`, the runtime randomly selects a subset of completed steps (e.
 
 ### Phase 6: UI & Observability
 
-**Status**: Not started
+**Status**: In progress (bootstrap wiring landed during Phase 1-4 audit)
 
 **What exists today**:
 - `OrchestratorActivityFeed.tsx` — 50+ event types, real-time timeline streaming, category/severity filtering. ✅
@@ -272,48 +256,26 @@ For `"spot-check"`, the runtime randomly selects a subset of completed steps (e.
 - Per-phase model selection in `CreateMissionDialog.tsx` via `ModelProfileSelector` and `PhaseProfileCard`. ✅
 - `OrchestratorDAG.tsx` — visual graph of steps and dependencies. ✅
 - IPC plumbing for `getTeamMembers` exists (ipc.ts:307, preload.ts:511, registerIpc.ts:1850). ✅
+- `AgentChatMessageList.tsx` now has coordinator TOOL_META coverage for core orchestration tools (`spawn_worker`, `delegate_*`, `report_*`, recovery actions). ✅
+- `WorkTab.tsx` now surfaces a live Team Members roster (role/model/status/source + parent-child lineage), including `claude-native` teammates. ✅
+- `browserMock.ts` now returns realistic team member mock data for renderer-only browser sessions. ✅
 
 **What's broken or missing**:
 
-#### 6.1 Add TOOL_META entries for orchestrator MCP tools
+#### 6.1 Coordinator tool metadata in chat (Completed)
 
-**Issue**: `TOOL_META` in `AgentChatMessageList.tsx` has entries for Claude Code tools (Read, Write, Bash, etc.) and Codex tools (exec_command, apply_patch) but no entries for orchestrator coordination tools. When the coordinator calls `spawn_worker`, `delegate_to_subagent`, `read_mission_status`, `revise_plan`, `retry_step`, `skip_step`, `message_worker`, or `report_validation`, they show as generic wrench icons with raw tool names and unformatted JSON arguments.
+Implemented in audit pass:
+- Added explicit TOOL_META entries for coordinator orchestration/planning/recovery/communication tools.
+- Coordinator operations now render with contextual labels and cleaner targets instead of generic wrench output.
 
-**Why it matters**: The coordinator chat is the primary window into what the orchestrator is doing. Without proper tool metadata, users see opaque JSON blobs instead of "Spawning worker 'implement-auth' on claude-sonnet-4-6" or "Delegating subtask to validator."
+#### 6.2 Team member roster visibility (Completed)
 
-**Fix**: Add entries to `TOOL_META` for all coordinator tools. Follow the existing pattern of `{ label, icon, color, category, getTarget }`. Suggested groupings:
-- **Orchestration** (cyan): `spawn_worker`, `delegate_to_subagent`, `delegate_parallel`, `request_specialist`
-- **Planning** (purple): `revise_plan`, `read_mission_status`, `get_worker_output`
-- **Recovery** (amber): `retry_step`, `skip_step`, `mark_step_complete`
-- **Communication** (green): `message_worker`, `report_status`, `report_result`, `report_validation`
+Implemented in audit pass:
+- Added Team Members roster rendering in `WorkTab.tsx`, polling `getTeamMembers` on a 5s cadence.
+- Roster includes status, role, model, source badge (`ade-worker` / `ade-subagent` / `claude-native`), claimed task count, and parent-child indentation.
+- Browser mock now returns mixed-source team members so this UI path is testable in non-Electron renderer sessions.
 
-**Source files**:
-- `src/renderer/components/chat/AgentChatMessageList.tsx` — `TOOL_META` at line 51, `getToolMeta()` at 81, tool rendering at 633-695
-
-#### 6.2 Team member roster panel
-
-**Issue**: The IPC handler `getTeamMembers` exists, the preload bridge exists, the types exist, `registerTeamMember()` is called when workers spawn. But no renderer component ever calls `getTeamMembers` or displays the data. During a running mission, users have zero visibility into the team composition — who's active, what roles they have, what models they're running, or their lifecycle status.
-
-**Why it matters**: The orchestrator's power is in multi-agent coordination. If users can't see the team, they can't understand whether the orchestrator is using resources wisely, whether workers are stuck, or whether the right models are assigned to the right tasks.
-
-**Fix**: Add a `TeamMembersPanel` component to the mission detail view. Poll `getTeamMembers` via the existing IPC bridge on a 3-5s interval. Display each member with:
-- Name and role badge (coordinator/implementer/validator/specialist)
-- Model tag (e.g., "claude-sonnet-4-6", "gpt-5.3")
-- Status indicator (color-coded: green=active, yellow=idle, red=failed, gray=terminated)
-- Claimed task count and current step key
-- Parent-child relationships: indent sub-agents under their parent worker
-- For `source: "claude-native"` members (Phase 4.4), show a native team badge
-
-**Source files**:
-- `src/shared/ipc.ts` — `orchestratorGetTeamMembers` channel at 307
-- `src/preload/preload.ts` — `getTeamMembers` bridge at 511-512
-- `src/main/services/ipc/registerIpc.ts` — handler at 1850-1856
-- `src/shared/types/orchestrator.ts` — `OrchestratorTeamMember` type definition
-- `src/renderer/components/lanes/LaneTerminalsPanel.tsx` — pattern to follow for live status panel
-- `src/renderer/state/appStore.ts` — Zustand store for polling/caching team member state
-- `src/renderer/browserMock.ts` — update mock to return realistic team member data
-
-#### 6.3 Worker coordination event visibility
+#### 6.3 Worker coordination event visibility (Remaining)
 
 **Issue**: `AgentChatMessageList` shows tool calls in the coordinator's chat thread but doesn't surface team coordination events: when a worker spawns, when a subagent is delegated, when a worker sends a message to another worker, when a native Claude teammate joins. The `OrchestratorActivityFeed` shows events but in a timeline format separate from the chat — users have to context-switch between the chat and the timeline to understand what's happening.
 
@@ -348,9 +310,8 @@ These are already in the event buffer — just render them inline in the chat fe
 
 **Dead code to remove in Phase 6**:
 
-| What | Where | Why Remove |
-|------|-------|-----------|
-| `getTeamMembers` mock returning empty array | `browserMock.ts` | Replace with realistic mock data matching `OrchestratorTeamMember` shape for dev/test rendering |
+- Completed during audit pass:
+  - Removed empty `getTeamMembers` mock path in `browserMock.ts`; replaced with realistic `OrchestratorTeamMember` fixtures.
 
 **External references**:
 - https://ai-sdk.dev/docs/agents/subagents — UI rendering: tool part states (`input-streaming`, `input-available`, `output-available`, `output-error`), detecting streaming vs complete
@@ -363,35 +324,29 @@ These are already in the event buffer — just render them inline in the chat fe
 Phase 1 ✅ ─┐
 Phase 2 ✅ ─┤
 Phase 3 ✅ ─┤
-            ├─→ Phase 4 (Subagent Delegation & Teams)
+            ├─→ Phase 4 ✅ (Subagent Delegation & Teams)
             │       ↓
-            ├─→ Phase 5 (Validation Enforcement)     ← can run parallel with Phase 4
+            ├─→ Phase 5 (Validation Enforcement)      ← active critical path
             │       ↓
-            └─→ Phase 6 (UI & Observability)          ← can start after Phase 4 begins
+            └─→ Phase 6 (UI & Observability)           ← can run in parallel once Phase 5 contracts stabilize
 ```
 
-Phases 4 and 5 are independent and can be implemented in parallel.
-Phase 6 can start as soon as Phase 4.1 (result rollup) lands — TOOL_META entries don't depend on validation enforcement.
+Phase 4 is fully delivered and no longer a planning dependency.
+Phase 5 is the next mandatory implementation track; Phase 6 can proceed in parallel with late Phase 5 work once validation event contracts are stable.
 
-## Updated File Impact Summary (Phases 4-6)
+## Updated File Impact Summary (Remaining Phase 5-6 Work)
 
 | File | Phases | Action |
 |------|--------|--------|
-| `apps/mcp-server/src/mcpServer.ts` | 4, 5 | Add `delegate_parallel` tool, result-push to pending messages, auto-spawn validators, native team detection |
-| `coordinatorTools.ts` | 4, 5 | Result rollup forwarding, status forwarding, validation gate in `spawn_worker`, batch delegation |
+| `apps/mcp-server/src/mcpServer.ts` | 5 | Auto-spawn validator orchestration hooks, phase-gate/validation event emission |
+| `coordinatorTools.ts` | 5 | Validation gate blocking in `spawn_worker`, `report_validation` execution-path enforcement |
 | `coordinatorAgent.ts` | 5 | Simplify validation tier system prompt (runtime enforces now) |
 | `executionPolicy.ts` | 5 | Separate `allowCompletionWithRisk` from phase-gate blocking, validation contract mid-run checks |
 | `orchestratorService.ts` | 5 | Step completion hook for auto-spawning validators, validation contract checks |
-| `workerDeliveryService.ts` | 4 | Push child results to parent pending messages |
-| `unifiedOrchestratorAdapter.ts` | 4 | MCP config placement for native teammate inheritance |
-| `teamRuntimeConfig.ts` | 4, 6 | Native team source tracking, roleModelOverrides |
-| `AgentChatMessageList.tsx` | 6 | Add TOOL_META entries for all orchestrator tools |
+| `teamRuntimeConfig.ts` | 6 | Role model override wiring and runtime defaults |
 | `MissionChatV2.tsx` | 6 | Inline coordination events in chat thread |
 | `CreateMissionDialog.tsx` | 6 | Per-role model selection UI |
-| `MissionsPage.tsx` | 6 | Add TeamMembersPanel component |
-| `appStore.ts` | 6 | Zustand state for team member polling |
-| `browserMock.ts` | 6 | Realistic team member mock data |
-| `orchestrator.ts` (types) | 4, 5, 6 | `source` field on team member, `roleModelOverrides` type |
+| `orchestrator.ts` (types) | 5, 6 | Validation contract/gate surface + `roleModelOverrides` typing |
 
 ---
 
@@ -536,37 +491,31 @@ Test infrastructure already exists:
 Phase 1 ✅ ─┐
 Phase 2 ✅ ─┤
 Phase 3 ✅ ─┤
-            ├─→ Phase 4 (Subagent Delegation & Teams)
+            ├─→ Phase 4 ✅ (Subagent Delegation & Teams)
             │       ↓
-            ├─→ Phase 5 (Validation Enforcement)     ← can run parallel with Phase 4
+            ├─→ Phase 5 (Validation Enforcement)      ← next mandatory gate
             │       ↓
-            ├─→ Phase 6 (UI & Observability)          ← can start after Phase 4 begins
+            ├─→ Phase 6 (UI & Observability)           ← parallelizable with late Phase 5 work
             │       ↓
-            └─→ Phase 7 (Reflection Protocol)         ← can start after Phase 5
+            └─→ Phase 7 (Reflection Protocol)          ← starts after Phase 5 contract enforcement lands
 ```
 
 ## Updated File Impact Summary (All Remaining Phases)
 
 | File | Phases | Action |
 |------|--------|--------|
-| `apps/mcp-server/src/mcpServer.ts` | 4, 5, 7 | Add `delegate_parallel` tool, result-push, auto-spawn validators, native team detection, `reflection_add` tool |
-| `coordinatorTools.ts` | 4, 5 | Result rollup forwarding, status forwarding, validation gate in `spawn_worker`, batch delegation |
+| `apps/mcp-server/src/mcpServer.ts` | 5, 7 | Auto-spawn validator/event contracts, gate enforcement wiring, `reflection_add` tool |
+| `coordinatorTools.ts` | 5 | Validation gate blocking in `spawn_worker`, `report_validation` orchestration |
 | `coordinatorAgent.ts` | 5, 7 | Simplify validation tier prompt, add reflection guidance |
 | `executionPolicy.ts` | 5 | Separate `allowCompletionWithRisk` from phase-gate blocking, validation contract mid-run checks |
 | `orchestratorService.ts` | 5, 7 | Step completion hook for auto-spawning validators, post-mission reflection synthesis hook |
-| `workerDeliveryService.ts` | 4 | Push child results to parent pending messages |
-| `unifiedOrchestratorAdapter.ts` | 4 | MCP config placement for native teammate inheritance |
 | `baseOrchestratorAdapter.ts` | 7 | Add reflection guidance to worker prompts |
-| `teamRuntimeConfig.ts` | 4, 6 | Native team source tracking, roleModelOverrides |
+| `teamRuntimeConfig.ts` | 6 | Role model override defaults and parsing |
 | `memoryService.ts` | 7 | Add reflection entry storage, or create `reflectionService.ts` |
 | New: `reflectionSynthesisEngine.ts` | 7 | Post-mission retrospective synthesis, changelog tracking, pattern promotion |
-| `AgentChatMessageList.tsx` | 6 | Add TOOL_META entries for all orchestrator tools |
 | `MissionChatV2.tsx` | 6 | Inline coordination events in chat thread |
 | `CreateMissionDialog.tsx` | 6 | Per-role model selection UI |
-| `MissionsPage.tsx` | 6 | Add TeamMembersPanel component |
-| `appStore.ts` | 6 | Zustand state for team member polling |
-| `browserMock.ts` | 6 | Realistic team member mock data |
-| `orchestrator.ts` (types) | 4, 5, 6, 7 | `source` field on team member, `roleModelOverrides`, `ReflectionEntry`, `MissionRetrospective` types |
+| `orchestrator.ts` (types) | 5, 6, 7 | Validation contract surfaces, `roleModelOverrides`, `ReflectionEntry`, `MissionRetrospective` types |
 
 ## Documentation Reality Check
 - This file is the canonical source for all remaining Phase 3 work (orchestrator runtime, subagents, validation, UI, reflection).

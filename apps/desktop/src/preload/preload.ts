@@ -4,6 +4,7 @@ import type {
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AttachLaneArgs,
+  AdoptAttachedLaneArgs,
   AppInfo,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -586,6 +587,7 @@ contextBridge.exposeInMainWorld("ade", {
     createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreateChild, args),
     importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesImportBranch, args),
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAttach, args),
+    adoptAttached: async (args: AdoptAttachedLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAdoptAttached, args),
     rename: async (args: RenameLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesRename, args),
     reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => ipcRenderer.invoke(IPC.lanesReparent, args),
     updateAppearance: async (args: UpdateLaneAppearanceArgs): Promise<void> =>

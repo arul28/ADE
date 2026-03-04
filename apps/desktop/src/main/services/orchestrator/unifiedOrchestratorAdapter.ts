@@ -124,6 +124,11 @@ function writeMcpConfigFile(args: {
   return configPath;
 }
 
+function workerLocalMcpConfigFileName(attemptId: string): string {
+  const sanitized = attemptId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `.ade-worker-mcp-${sanitized}.json`;
+}
+
 /**
  * Resolve the project root from the current working directory.
  * Walks up from cwd looking for package.json with the monorepo marker.
@@ -185,12 +190,20 @@ function buildCodexMcpConfigFlags(args: {
 /**
  * Remove a single worker MCP config file created by writeMcpConfigFile.
  */
-export function cleanupMcpConfigFile(projectRoot: string, attemptId: string): void {
+export function cleanupMcpConfigFile(projectRoot: string, attemptId: string, laneWorktreePath?: string | null): void {
   const configPath = path.join(projectRoot, ".ade", "orchestrator", "mcp-configs", `worker-${attemptId}.json`);
   try {
     fs.unlinkSync(configPath);
   } catch {
     // Ignore — file may already be removed or never created
+  }
+  const localConfigName = workerLocalMcpConfigFileName(attemptId);
+  if (laneWorktreePath && laneWorktreePath.trim().length > 0) {
+    try {
+      fs.unlinkSync(path.join(laneWorktreePath, localConfigName));
+    } catch {
+      // Ignore — lane-local config may not exist.
+    }
   }
 }
 
@@ -289,9 +302,11 @@ export function createUnifiedOrchestratorAdapter(options?: {
           if (tool.trim().length) parts.push("--allowedTools", shellEscapeArg(tool.trim()));
         }
 
-        // Bind ADE MCP server to worker via --mcp-config
+        // Bind ADE MCP server to worker via --mcp-config. Mirror config into worker CWD
+        // so Claude native teammates inherit an MCP config path available from that directory.
         const mcpConfigPath = writeMcpConfigFile(mcpIdentity);
-        parts.push("--mcp-config", shellEscapeArg(mcpConfigPath));
+        const localMcpConfigName = workerLocalMcpConfigFileName(attempt.id);
+        parts.push("--mcp-config", shellEscapeArg(localMcpConfigName));
 
         parts.push("-p", shellEscapeArg(prompt));
 
@@ -305,7 +320,9 @@ export function createUnifiedOrchestratorAdapter(options?: {
         }
 
         const cmd = parts.join(" ");
-        return envParts.length > 0 ? `${envParts.join(" ")} exec ${cmd}` : `exec ${cmd}`;
+        const copyMcpIntoCwd = `cp ${shellEscapeArg(mcpConfigPath)} ${shellEscapeArg(localMcpConfigName)}`;
+        const startup = `${copyMcpIntoCwd} && exec ${cmd}`;
+        return envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
       }
 
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {

@@ -4,7 +4,8 @@
  * Team runtime state management: register/update/query team members,
  * initialize/update/get team runtime state.
  *
- * Extracted from aiOrchestratorService.ts — pure refactor, no behavior changes.
+ * Extracted from aiOrchestratorService.ts and now the single authoritative
+ * read/write path for orchestrator team-member runtime state.
  */
 
 import type {
@@ -20,9 +21,42 @@ import type {
   OrchestratorTeamRuntimeState,
 } from "../../../shared/types";
 
+function normalizeTeamMemberSource(
+  member: Pick<OrchestratorTeamMember, "source" | "role" | "metadata">
+): OrchestratorTeamMember["source"] {
+  if (member.source === "ade-worker" || member.source === "ade-subagent" || member.source === "claude-native") {
+    return member.source;
+  }
+  const metadata = member.metadata ?? {};
+  const metadataSource = typeof metadata.source === "string" ? metadata.source.trim() : "";
+  if (metadataSource === "ade-worker" || metadataSource === "ade-subagent" || metadataSource === "claude-native") {
+    return metadataSource;
+  }
+  const isSubAgent = metadata.isSubAgent === true || metadata.parentWorkerId != null;
+  return isSubAgent || member.role === "teammate" ? "ade-subagent" : "ade-worker";
+}
+
+function normalizeParentWorkerId(member: Pick<OrchestratorTeamMember, "parentWorkerId" | "metadata">): string | null {
+  if (typeof member.parentWorkerId === "string" && member.parentWorkerId.trim().length > 0) {
+    return member.parentWorkerId.trim();
+  }
+  const metadata = member.metadata ?? {};
+  if (typeof metadata.parentWorkerId === "string" && metadata.parentWorkerId.trim().length > 0) {
+    return metadata.parentWorkerId.trim();
+  }
+  return null;
+}
+
 // ── Team Member Functions ────────────────────────────────────────
 
 export function registerTeamMember(ctx: OrchestratorContext, member: OrchestratorTeamMember): void {
+  const source = normalizeTeamMemberSource(member);
+  const parentWorkerId = normalizeParentWorkerId(member);
+  const metadata: Record<string, unknown> = {
+    ...(member.metadata ?? {}),
+    source,
+    ...(parentWorkerId ? { parentWorkerId } : {}),
+  };
   ctx.db.run(
     `insert into orchestrator_team_members(
       id, run_id, mission_id, provider, model, role, session_id, status,
@@ -31,7 +65,7 @@ export function registerTeamMember(ctx: OrchestratorContext, member: Orchestrato
     [
       member.id, member.runId, member.missionId, member.provider, member.model,
       member.role, member.sessionId, member.status,
-      JSON.stringify(member.claimedTaskIds), member.metadata ? JSON.stringify(member.metadata) : null,
+      JSON.stringify(member.claimedTaskIds), JSON.stringify(metadata),
       member.createdAt, member.updatedAt
     ]
   );
@@ -77,20 +111,36 @@ export function getTeamMembersForRun(ctx: OrchestratorContext, runId: string): O
     `select * from orchestrator_team_members where run_id = ? order by created_at asc`,
     [runId]
   );
-  return rows.map((row) => ({
-    id: row.id,
-    runId: row.run_id,
-    missionId: row.mission_id,
-    provider: row.provider,
-    model: row.model,
-    role: row.role as OrchestratorTeamMember["role"],
-    sessionId: row.session_id,
-    status: row.status as OrchestratorTeamMember["status"],
-    claimedTaskIds: parseJsonArray(row.claimed_task_ids_json) as string[],
-    metadata: parseJsonRecord(row.metadata_json),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }));
+  return rows.map((row) => {
+    const metadata = parseJsonRecord(row.metadata_json) ?? {};
+    const sourceRaw = typeof metadata.source === "string" ? metadata.source.trim() : "";
+    const source: OrchestratorTeamMember["source"] =
+      sourceRaw === "ade-worker" || sourceRaw === "ade-subagent" || sourceRaw === "claude-native"
+        ? sourceRaw
+        : (metadata.isSubAgent === true || typeof metadata.parentWorkerId === "string" || row.role === "teammate")
+          ? "ade-subagent"
+          : "ade-worker";
+    const parentWorkerId =
+      typeof metadata.parentWorkerId === "string" && metadata.parentWorkerId.trim().length > 0
+        ? metadata.parentWorkerId.trim()
+        : null;
+    return {
+      id: row.id,
+      runId: row.run_id,
+      missionId: row.mission_id,
+      provider: row.provider,
+      model: row.model,
+      role: row.role as OrchestratorTeamMember["role"],
+      source,
+      parentWorkerId,
+      sessionId: row.session_id,
+      status: row.status as OrchestratorTeamMember["status"],
+      claimedTaskIds: parseJsonArray(row.claimed_task_ids_json) as string[],
+      metadata,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  });
 }
 
 // ── Team Runtime State Functions ─────────────────────────────────

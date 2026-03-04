@@ -448,6 +448,7 @@ export function createAiOrchestratorService(args: {
   const pendingCoordinatorEvals = new Map<string, NodeJS.Timeout>();
   const milestoneReadyNotificationSignatures = new Map<string, string>();
   const runWatchdogTimers = new Map<string, Set<NodeJS.Timeout>>();
+  const subagentCompletionRollupSent = new Set<string>();
 
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
@@ -534,6 +535,11 @@ export function createAiOrchestratorService(args: {
     if (watchdogTimers) {
       for (const timer of watchdogTimers) clearTimeout(timer);
       runWatchdogTimers.delete(runId);
+    }
+    for (const key of subagentCompletionRollupSent) {
+      if (key.startsWith(`${runId}:`)) {
+        subagentCompletionRollupSent.delete(key);
+      }
     }
   };
 
@@ -5590,6 +5596,45 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }
 
+    const missionAfterPlanning = missionService.get(missionId);
+    const missionMetadataAfterPlanning = getMissionMetadata(missionId);
+    const plannerPlanMeta = isRecord(missionMetadataAfterPlanning.plannerPlan)
+      ? missionMetadataAfterPlanning.plannerPlan
+      : null;
+    const plannerSummary = plannerPlanMeta && isRecord(plannerPlanMeta.missionSummary)
+      ? plannerPlanMeta.missionSummary
+      : null;
+    const plannerParallelismRaw = Number(plannerSummary?.parallelismCap ?? Number.NaN);
+    const plannerParallelismCap = Number.isFinite(plannerParallelismRaw) && plannerParallelismRaw > 0
+      ? Math.floor(plannerParallelismRaw)
+      : null;
+    const launchMaxParallelRaw = Number(launchMetadata?.maxParallelWorkers ?? Number.NaN);
+    const launchMaxParallel = Number.isFinite(launchMaxParallelRaw) && launchMaxParallelRaw > 0
+      ? Math.floor(launchMaxParallelRaw)
+      : null;
+    const requestedRunMode = args.runMode === "manual" ? "manual" : "autopilot";
+    const requestedExecutorKind: OrchestratorExecutorKind =
+      args.defaultExecutorKind === "manual" || args.defaultExecutorKind === "shell" || args.defaultExecutorKind === "unified"
+        ? args.defaultExecutorKind
+        : "unified";
+    const autopilotExecutorKind: OrchestratorExecutorKind =
+      requestedRunMode === "manual"
+        ? "manual"
+        : requestedExecutorKind === "manual"
+          ? "unified"
+          : requestedExecutorKind;
+    const autopilotEnabled = requestedRunMode === "autopilot" && autopilotExecutorKind !== "manual";
+    const autopilotOwnerId = String(args.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
+    const runParallelismCap = Math.max(
+      1,
+      Math.min(
+        32,
+        launchAgentRuntime.allowParallelAgents === false
+          ? 1
+          : plannerParallelismCap ?? launchMaxParallel ?? 4
+      )
+    );
+
     // ── Create run — just persistence, no planning ──
     const started = orchestratorService.startRun({
       missionId,
@@ -5598,6 +5643,20 @@ Check all worker statuses and continue managing the mission from here. Read work
         ...(args.metadata ?? {}),
         missionGoal,
         missionPrompt: initialMission.prompt ?? "",
+        runMode: requestedRunMode,
+        maxParallelWorkers: runParallelismCap,
+        planner: {
+          source: "mission_planner",
+          stepCount: missionAfterPlanning?.steps.length ?? 0,
+          strategy: typeof plannerSummary?.strategy === "string" ? plannerSummary.strategy : null,
+          parallelismCap: runParallelismCap,
+        },
+        autopilot: {
+          enabled: autopilotEnabled,
+          executorKind: autopilotEnabled ? autopilotExecutorKind : "manual",
+          ownerId: autopilotOwnerId,
+          parallelismCap: runParallelismCap,
+        },
         teamRuntime: launchTeamRuntime
           ? {
               ...launchTeamRuntime,
@@ -6518,6 +6577,68 @@ Check all worker statuses and continue managing the mission from here. Read work
   const sendAgentMessageWithMentions = (agentMsgArgs: import("../../../shared/types").SendAgentMessageArgs) =>
     sendAgentMessageWithMentionsCtx(ctx, agentMsgArgs, { deliverMessageToAgent });
 
+  const maybeForwardSubagentCompletionRollup = (args: {
+    event: OrchestratorRuntimeEvent;
+    graph: OrchestratorRunGraph;
+  }): void => {
+    const { event, graph } = args;
+    if (!event.attemptId) return;
+    if (event.reason !== "attempt_completed" && event.reason !== "completed") return;
+    const dedupeKey = `${event.runId}:${event.attemptId}`;
+    if (subagentCompletionRollupSent.has(dedupeKey)) return;
+
+    const attempt = graph.attempts.find((candidate) => candidate.id === event.attemptId);
+    if (!attempt) return;
+    if (attempt.status !== "succeeded" && attempt.status !== "failed") return;
+
+    const childStep = graph.steps.find((step) => step.id === attempt.stepId);
+    const childMeta = isRecord(childStep?.metadata) ? childStep.metadata : null;
+    if (!childStep || childMeta?.isSubAgent !== true) return;
+    const parentWorkerId = typeof childMeta.parentWorkerId === "string" ? childMeta.parentWorkerId.trim() : "";
+    if (!parentWorkerId.length) return;
+
+    const parentStep = graph.steps.find((step) => step.stepKey === parentWorkerId);
+    if (!parentStep) return;
+    const parentAttempts = graph.attempts.filter((candidate) => candidate.stepId === parentStep.id);
+    if (!parentAttempts.length) return;
+    const runningParentAttempt = parentAttempts.find((candidate) => candidate.status === "running");
+    const parentAttempt = runningParentAttempt
+      ?? [...parentAttempts].sort((left, right) => {
+        const leftTs = Date.parse(left.completedAt ?? left.createdAt);
+        const rightTs = Date.parse(right.completedAt ?? right.createdAt);
+        return rightTs - leftTs;
+      })[0];
+    if (!parentAttempt?.id || parentAttempt.id === attempt.id) return;
+
+    const childLabel = childStep.title?.trim().length ? childStep.title.trim() : childStep.stepKey;
+    const summary = attempt.resultEnvelope?.summary?.trim() || attempt.errorMessage?.trim() || "No summary provided.";
+    const content = `Sub-agent '${childLabel}' completed (${attempt.status}): ${summary}`;
+
+    try {
+      sendAgentMessageWithMentions({
+        missionId: graph.run.missionId,
+        fromAttemptId: attempt.id,
+        toAttemptId: parentAttempt.id,
+        content,
+        metadata: {
+          source: "subagent_result_rollup",
+          parentWorkerId,
+          childWorkerId: childStep.stepKey,
+          childStepId: childStep.id,
+          childAttemptId: attempt.id,
+        }
+      });
+      subagentCompletionRollupSent.add(dedupeKey);
+    } catch (error) {
+      logger.debug("ai_orchestrator.subagent_completion_rollup_failed", {
+        runId: event.runId,
+        childAttemptId: attempt.id,
+        parentAttemptId: parentAttempt.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const listWorkerDigests = (digestArgs: ListOrchestratorWorkerDigestsArgs) => listWorkerDigestsCtx(ctx, digestArgs);
   const getWorkerDigest = (digestArgs: GetOrchestratorWorkerDigestArgs) => getWorkerDigestCtx(ctx, digestArgs);
   const getContextCheckpoint = (checkpointArgs: GetOrchestratorContextCheckpointArgs) => getContextCheckpointCtx(ctx, checkpointArgs);
@@ -7038,6 +7159,21 @@ Check all worker statuses and continue managing the mission from here. Read work
       // ── Token consumption: always propagate (bookkeeping, not decisions) ──
       if (isAttemptCompletionEvent && event.attemptId) {
         propagateAttemptTokenUsage(event.runId, event.attemptId);
+      }
+
+      if (isAttemptCompletionEvent) {
+        try {
+          maybeForwardSubagentCompletionRollup({
+            event,
+            graph: getEventGraph(),
+          });
+        } catch (error) {
+          logger.debug("ai_orchestrator.subagent_completion_rollup_unhandled", {
+            runId: event.runId,
+            attemptId: event.attemptId ?? null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       // ── Safety check: always run (guardrail, not decision) ──

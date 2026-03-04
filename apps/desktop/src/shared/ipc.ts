@@ -27,6 +27,7 @@ export const IPC = {
   lanesCreateChild: "ade.lanes.createChild",
   lanesImportBranch: "ade.lanes.importBranch",
   lanesAttach: "ade.lanes.attach",
+  lanesAdoptAttached: "ade.lanes.adoptAttached",
   lanesRename: "ade.lanes.rename",
   lanesReparent: "ade.lanes.reparent",
   lanesUpdateAppearance: "ade.lanes.updateAppearance",

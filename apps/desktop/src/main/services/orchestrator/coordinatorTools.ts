@@ -460,7 +460,9 @@ export function createCoordinatorToolSet(deps: {
   function trackTeamMember(args: {
     workerId: string;
     provider: string;
+    modelId: string;
     role: string | null;
+    source: "ade-worker" | "ade-subagent";
     isSubAgent?: boolean;
     parentWorkerId?: string | null;
   }): void {
@@ -473,12 +475,15 @@ export function createCoordinatorToolSet(deps: {
           runId,
           missionId,
           provider: args.provider,
-          model: "",
+          model: args.modelId,
           role: args.isSubAgent ? "teammate" : "worker",
+          source: args.source,
+          parentWorkerId: args.parentWorkerId ?? null,
           sessionId: null,
           status: "spawning",
           claimedTaskIds: [],
           metadata: {
+            source: args.source,
             ...(args.role ? { teamRole: args.role } : {}),
             ...(args.isSubAgent ? { isSubAgent: true } : {}),
             ...(args.parentWorkerId ? { parentWorkerId: args.parentWorkerId } : {}),
@@ -555,7 +560,7 @@ export function createCoordinatorToolSet(deps: {
    */
   async function checkBudgetHardCaps(options?: {
     failClosedOnTelemetryError?: boolean;
-    operation?: "spawn_worker" | "request_specialist" | "revise_plan" | "delegate_to_subagent";
+    operation?: "spawn_worker" | "request_specialist" | "revise_plan" | "delegate_to_subagent" | "delegate_parallel";
   }): Promise<{
     blocked: boolean;
     detail?: string;
@@ -661,6 +666,7 @@ export function createCoordinatorToolSet(deps: {
     workerId: string;
     step: OrchestratorStep | null;
     roleName: string | null;
+    modelId: string;
     toolProfile: Record<string, unknown> | null;
   } => {
     const g = graph();
@@ -815,6 +821,7 @@ export function createCoordinatorToolSet(deps: {
       workerId: stepKey,
       step: created[0] ?? null,
       roleName,
+      modelId: resolvedModelId,
       toolProfile
     };
   };
@@ -1069,7 +1076,7 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
-        const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
+        const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name,
           modelId: resolvedModelId,
           prompt,
@@ -1125,7 +1132,13 @@ export function createCoordinatorToolSet(deps: {
           logger.warn("coordinator.spawn_worker.autopilot_timeout", { name, workerId });
         }
 
-        trackTeamMember({ workerId, provider: resolvedProvider, role: roleName });
+        trackTeamMember({
+          workerId,
+          provider: resolvedProvider,
+          modelId: spawnedModelId,
+          role: roleName,
+          source: "ade-worker",
+        });
 
         logger.info("coordinator.spawn_worker", {
           name,
@@ -1143,7 +1156,7 @@ export function createCoordinatorToolSet(deps: {
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
           name,
-          modelId: resolvedModelId,
+          modelId: spawnedModelId,
           provider: resolvedProvider,
           role: roleName,
           toolProfile,
@@ -1383,7 +1396,7 @@ export function createCoordinatorToolSet(deps: {
           return { ok: false, error: "Unable to resolve specialist model ID from role default or active phase model." };
         }
 
-        const { workerId, step, roleName, toolProfile } = spawnWorkerStep({
+        const { workerId, step, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: workerName,
           modelId: specialistModelId,
           prompt: objective,
@@ -1396,6 +1409,21 @@ export function createCoordinatorToolSet(deps: {
             requestedBy: requestedByWorkerId?.trim() || null,
             reason: reason.trim()
           }
+        });
+
+        const specialistDescriptor = resolveModelDescriptor(spawnedModelId);
+        const specialistProvider = specialistDescriptor?.family === "anthropic"
+          ? "claude"
+          : specialistDescriptor?.family === "openai"
+            ? "codex"
+            : specialistDescriptor?.family ?? roleDef.defaultModel.provider ?? "unknown";
+
+        trackTeamMember({
+          workerId,
+          provider: specialistProvider,
+          modelId: spawnedModelId,
+          role: roleName,
+          source: "ade-worker",
         });
 
         if (step) {
@@ -4110,7 +4138,7 @@ export function createCoordinatorToolSet(deps: {
         }
 
         // Create child step via spawnWorkerStep with parent linkage
-        const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
+        const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name,
           modelId: resolvedDescriptor.id,
           prompt,
@@ -4171,7 +4199,15 @@ export function createCoordinatorToolSet(deps: {
           logger.warn("coordinator.delegate_to_subagent.autopilot_timeout", { name, workerId });
         }
 
-        trackTeamMember({ workerId, provider: resolvedProvider, role: roleName, isSubAgent: true, parentWorkerId });
+        trackTeamMember({
+          workerId,
+          provider: resolvedProvider,
+          modelId: spawnedModelId,
+          role: roleName,
+          source: "ade-subagent",
+          isSubAgent: true,
+          parentWorkerId
+        });
 
         logger.info("coordinator.delegate_to_subagent", {
           name,
@@ -4192,7 +4228,7 @@ export function createCoordinatorToolSet(deps: {
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
           name,
-          modelId: resolvedDescriptor.id,
+          modelId: spawnedModelId,
           provider: resolvedProvider,
           role: roleName,
           toolProfile,
@@ -4205,11 +4241,253 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
+  const delegate_parallel = tool({
+    description:
+      "Delegate multiple subtasks to child agents in a single atomic batch under one parent worker.",
+    inputSchema: z.object({
+      parentWorkerId: z.string().describe("Step key of the parent worker that owns this subtask batch"),
+      tasks: z.array(
+        z.object({
+          name: z.string().describe("Human-readable name for the sub-agent"),
+          prompt: z.string().describe("Full task prompt for the sub-agent"),
+          modelId: z.string().optional().describe("Optional model ID override for this sub-agent"),
+          role: z.string().optional().describe("Optional team role to bind (e.g. implementer, validator)"),
+        })
+      ).min(1).max(32).describe("Batch of child tasks to spawn under the same parent worker"),
+    }),
+    execute: async ({ parentWorkerId, tasks }) => {
+      try {
+        const g = graph();
+        const teamRuntime = resolveTeamRuntimeConfig(g);
+
+        if (teamRuntime?.allowSubAgents === false) {
+          return { ok: false, error: "Sub-agent delegation is disabled (allowSubAgents=false). Use spawn_worker instead." };
+        }
+        if (teamRuntime?.allowParallelAgents === false) {
+          return { ok: false, error: "Parallel agents disabled (allowParallelAgents=false). Batch delegation is not allowed." };
+        }
+
+        const parentStep = resolveStep(g, parentWorkerId);
+        if (!parentStep) {
+          return { ok: false, error: `Parent worker '${parentWorkerId}' not found.` };
+        }
+        if (TERMINAL_STEP_STATUSES.has(parentStep.status)) {
+          return {
+            ok: false,
+            error: `Parent worker '${parentWorkerId}' is already ${parentStep.status}. Cannot delegate from a completed worker.`,
+          };
+        }
+
+        const budgetCheck = await checkBudgetHardCaps({
+          failClosedOnTelemetryError: true,
+          operation: "delegate_parallel",
+        });
+        if (budgetCheck.blocked) {
+          logger.warn("coordinator.delegate_parallel.hard_cap_blocked", {
+            parentWorkerId,
+            detail: budgetCheck.detail,
+            taskCount: tasks.length,
+          });
+          return {
+            ok: false,
+            error: `Cannot delegate sub-agents: ${budgetCheck.detail}. Mission pausing.`,
+            hardCapTriggered: true,
+            hardCaps: budgetCheck.hardCaps,
+          };
+        }
+
+        const phaseModelResolution = resolveModelFromPhaseModel(g);
+        const parentMeta = asRecord(parentStep.metadata);
+        const parentModel = typeof parentMeta?.modelId === "string" ? parentMeta.modelId.trim() : "";
+
+        const validatedTasks: Array<{
+          name: string;
+          prompt: string;
+          normalizedRole: string | null;
+          roleName: string | null;
+          resolvedModelId: string;
+          provider: string;
+          toolProfile: Record<string, unknown> | null;
+        }> = [];
+
+        for (let i = 0; i < tasks.length; i += 1) {
+          const rawTask = tasks[i]!;
+          const taskName = rawTask.name.trim();
+          const taskPrompt = rawTask.prompt.trim();
+          if (!taskName.length) {
+            return { ok: false, error: `tasks[${i}].name is required.` };
+          }
+          if (!taskPrompt.length) {
+            return { ok: false, error: `tasks[${i}].prompt is required.` };
+          }
+          const normalizedRole = typeof rawTask.role === "string" && rawTask.role.trim().length > 0
+            ? rawTask.role.trim()
+            : null;
+          const roleDef = normalizedRole ? resolveRoleDefinition(teamRuntime, normalizedRole) : null;
+          if (normalizedRole && !roleDef) {
+            return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
+          }
+          const requestedModelId = typeof rawTask.modelId === "string" ? rawTask.modelId.trim() : "";
+          const resolvedModelId = requestedModelId
+            || resolveModelIdFromConfig(roleDef?.defaultModel)
+            || parentModel
+            || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
+          if (!resolvedModelId.length) {
+            return {
+              ok: false,
+              error: `Unable to resolve modelId for task '${taskName}' from override, role default, parent worker, or phase model.`,
+            };
+          }
+          const descriptor = resolveModelDescriptor(resolvedModelId);
+          if (!descriptor) {
+            return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
+          }
+          const provider =
+            descriptor.family === "anthropic"
+              ? "claude"
+              : descriptor.family === "openai"
+                ? "codex"
+                : descriptor.family;
+
+          if (provider === "claude" && descriptor.isCliWrapped && teamRuntime?.allowClaudeAgentTeams === false) {
+            return {
+              ok: false,
+              error: `Claude agent teams are disabled (allowClaudeAgentTeams=false). Cannot delegate claude sub-agent '${taskName}'.`,
+            };
+          }
+
+          validatedTasks.push({
+            name: taskName,
+            prompt: taskPrompt,
+            normalizedRole,
+            roleName: roleDef?.name ?? normalizedRole,
+            resolvedModelId: descriptor.id,
+            provider,
+            toolProfile: normalizedRole ? resolveRoleToolProfile(teamRuntime, normalizedRole) : null,
+          });
+        }
+
+        const createdChildren: Array<{
+          workerId: string;
+          stepId: string | null;
+          status: string;
+          name: string;
+          modelId: string;
+          provider: string;
+          role: string | null;
+          toolProfile: Record<string, unknown> | null;
+        }> = [];
+
+        for (const task of validatedTasks) {
+          const { workerId, step: childStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
+            name: task.name,
+            modelId: task.resolvedModelId,
+            prompt: task.prompt,
+            dependsOn: [parentWorkerId],
+            roleName: task.normalizedRole,
+            laneId: parentStep.laneId ?? null,
+          });
+
+          if (childStep) {
+            orchestratorService.updateStepMetadata({
+              runId,
+              stepId: childStep.id,
+              metadata: {
+                parentWorkerId,
+                parentStepId: parentStep.id,
+                isSubAgent: true,
+              },
+            });
+
+            onDagMutation({
+              runId,
+              mutation: { type: "step_added", step: childStep },
+              timestamp: nowIso(),
+              source: "coordinator",
+            });
+          }
+
+          trackTeamMember({
+            workerId,
+            provider: task.provider,
+            modelId: spawnedModelId,
+            role: roleName,
+            source: "ade-subagent",
+            isSubAgent: true,
+            parentWorkerId,
+          });
+
+          createdChildren.push({
+            workerId,
+            stepId: childStep?.id ?? null,
+            status: childStep?.status ?? "unknown",
+            name: task.name,
+            modelId: spawnedModelId,
+            provider: task.provider,
+            role: roleName,
+            toolProfile: toolProfile ?? task.toolProfile,
+          });
+        }
+
+        let launchNote: string | undefined;
+        try {
+          await Promise.race([
+            orchestratorService.startReadyAutopilotAttempts({
+              runId,
+              reason: "coordinator_delegate_parallel",
+            }),
+            new Promise<number>((_, reject) =>
+              setTimeout(() => reject(new Error("autopilot_start_timeout")), 5000)
+            ),
+          ]);
+        } catch {
+          launchNote = "autopilot_start_timeout_steps_queued";
+          logger.warn("coordinator.delegate_parallel.autopilot_timeout", {
+            parentWorkerId,
+            taskCount: tasks.length,
+          });
+        }
+
+        const freshGraph = graph();
+        const launchedCount = createdChildren.reduce((count, child) => {
+          if (!child.stepId) return count;
+          const hasRunningAttempt = freshGraph.attempts.some((attempt) => attempt.stepId === child.stepId && attempt.status === "running");
+          return count + (hasRunningAttempt ? 1 : 0);
+        }, 0);
+
+        const batchId = `delegation_batch_${Date.now()}`;
+        logger.info("coordinator.delegate_parallel", {
+          batchId,
+          parentWorkerId,
+          taskCount: createdChildren.length,
+          launchedCount,
+          launchNote,
+        });
+
+        return {
+          ok: true,
+          batchId,
+          parentWorkerId,
+          total: createdChildren.length,
+          launchedCount,
+          pendingCount: Math.max(0, createdChildren.length - launchedCount),
+          ...(launchNote ? { launchNote } : {}),
+          children: createdChildren,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.delegate_parallel.error", { parentWorkerId, error: msg });
+        return { ok: false, error: msg };
+      }
+    }
+  });
+
   return {
     spawn_worker,
     insert_milestone,
     request_specialist,
     delegate_to_subagent,
+    delegate_parallel,
     stop_worker,
     send_message,
     message_worker,

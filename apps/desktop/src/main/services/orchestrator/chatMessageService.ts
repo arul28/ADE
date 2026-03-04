@@ -686,7 +686,10 @@ export type ChatMessageRow = {
 };
 
 export function parseChatMessageRow(row: ChatMessageRow): OrchestratorChatMessage | null {
-  const role = row.role === "user" || row.role === "worker" || row.role === "orchestrator" ? row.role : null;
+  const role =
+    row.role === "user" || row.role === "worker" || row.role === "orchestrator" || row.role === "agent"
+      ? row.role
+      : null;
   if (!role) return null;
   return {
     id: row.id,

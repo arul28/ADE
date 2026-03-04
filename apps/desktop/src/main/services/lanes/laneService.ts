@@ -5,6 +5,7 @@ import type { AdeDb } from "../state/kvDb";
 import { runGit, runGitOrThrow } from "../git/git";
 import type { createOperationService } from "../history/operationService";
 import type {
+  AdoptAttachedLaneArgs,
   AttachLaneArgs,
   CreateChildLaneArgs,
   CreateLaneArgs,
@@ -83,6 +84,11 @@ function slugify(input: string): string {
 
 function normAbs(p: string): string {
   return path.resolve(p);
+}
+
+function isWithinDir(dir: string, candidate: string): boolean {
+  const rel = path.relative(dir, candidate);
+  return rel.length === 0 || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 function parseLaneIcon(value: string | null): LaneIcon {
@@ -354,10 +360,36 @@ export function createLaneService({
     return run;
   };
 
-  const ensureSameRepo = async (candidatePath: string) => {
-    const resolvedProject = normAbs(projectRoot);
-    const repoTop = (await runGitOrThrow(["rev-parse", "--show-toplevel"], { cwd: candidatePath, timeoutMs: 10_000 })).trim();
-    if (normAbs(repoTop) !== resolvedProject) {
+  const normalizedProjectRoot = normAbs(projectRoot);
+
+  const getGitTopLevel = async (cwd: string): Promise<string> => {
+    const top = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, timeoutMs: 10_000 });
+    return normAbs(top.trim());
+  };
+
+  const getGitCommonDir = async (cwd: string): Promise<string> => {
+    const commonDir = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, timeoutMs: 10_000 });
+    return normAbs(commonDir.trim());
+  };
+
+  const ensureAttachableWorktreeRoot = async (candidatePath: string): Promise<void> => {
+    const resolvedPath = normAbs(candidatePath);
+    let worktreeRoot = "";
+    let candidateCommonDir = "";
+    try {
+      worktreeRoot = await getGitTopLevel(resolvedPath);
+      candidateCommonDir = await getGitCommonDir(resolvedPath);
+    } catch {
+      throw new Error("Attached lane path must be a valid git worktree root");
+    }
+    if (worktreeRoot !== resolvedPath) {
+      throw new Error("Attached lane path must point to the root of a worktree (not a subdirectory)");
+    }
+    if (resolvedPath === normalizedProjectRoot) {
+      throw new Error("Primary repository root is already tracked as the Primary lane");
+    }
+    const projectCommonDir = await getGitCommonDir(normalizedProjectRoot);
+    if (candidateCommonDir !== projectCommonDir) {
       throw new Error("Attached lane path must belong to the current project repository");
     }
   };
@@ -1546,15 +1578,40 @@ export function createLaneService({
     },
 
     async attach(args: AttachLaneArgs): Promise<LaneSummary> {
+      const laneName = (args.name ?? "").trim();
+      if (!laneName) throw new Error("Lane name is required");
+
       const attachedPath = normAbs(args.attachedPath);
       if (!fs.existsSync(attachedPath) || !fs.statSync(attachedPath).isDirectory()) {
         throw new Error("Attached lane path must be an existing directory");
       }
-      await ensureSameRepo(attachedPath);
+      await ensureAttachableWorktreeRoot(attachedPath);
+
+      const branchRef = await detectBranchRef(attachedPath, defaultBaseRef);
+      const existingPath = db.get<{ id: string; name: string; status: string }>(
+        "select id, name, status from lanes where project_id = ? and worktree_path = ? limit 1",
+        [projectId, attachedPath]
+      );
+      if (existingPath?.id) {
+        if (existingPath.status === "archived") {
+          throw new Error(`This worktree is already linked as archived lane '${existingPath.name}'. Unarchive it instead.`);
+        }
+        throw new Error(`This worktree is already linked as lane '${existingPath.name}'.`);
+      }
+
+      const existingBranch = db.get<{ id: string; name: string; status: string; worktree_path: string }>(
+        "select id, name, status, worktree_path from lanes where project_id = ? and branch_ref = ? limit 1",
+        [projectId, branchRef]
+      );
+      if (existingBranch?.id && normAbs(existingBranch.worktree_path) !== attachedPath) {
+        if (existingBranch.status === "archived") {
+          throw new Error(`Branch '${branchRef}' is already linked to archived lane '${existingBranch.name}'. Unarchive it instead.`);
+        }
+        throw new Error(`Branch '${branchRef}' is already linked to lane '${existingBranch.name}'.`);
+      }
 
       const laneId = randomUUID();
       const now = new Date().toISOString();
-      const branchRef = await detectBranchRef(attachedPath, defaultBaseRef);
       const baseRef = defaultBaseRef;
 
       db.run(
@@ -1565,7 +1622,7 @@ export function createLaneService({
         )
         values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, null, null, null, null, 'active', ?, null)
       `,
-        [laneId, projectId, args.name, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
+        [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
       );
       invalidateLaneListCache();
 
@@ -1579,6 +1636,84 @@ export function createLaneService({
         childCount: 0,
         stackDepth: 0
       });
-    }
+    },
+
+    async adoptAttached(args: AdoptAttachedLaneArgs): Promise<LaneSummary> {
+      const laneId = (args.laneId ?? "").trim();
+      if (!laneId) throw new Error("laneId is required");
+
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      if (row.lane_type !== "attached") {
+        throw new Error("Only attached lanes can be moved into .ade/worktrees");
+      }
+      if (row.status === "archived") {
+        throw new Error("Archived lanes cannot be moved. Unarchive first.");
+      }
+
+      const currentPath = normAbs(row.worktree_path);
+      if (!fs.existsSync(currentPath) || !fs.statSync(currentPath).isDirectory()) {
+        throw new Error("Attached worktree path no longer exists on disk");
+      }
+      await ensureAttachableWorktreeRoot(currentPath);
+
+      const slug = slugify(row.name);
+      const defaultTarget = path.join(worktreesDir, `${slug}-${laneId.slice(0, 8)}`);
+      const normalizedWorktreesDir = normAbs(worktreesDir);
+      let targetPath = normAbs(defaultTarget);
+
+      if (!isWithinDir(normalizedWorktreesDir, targetPath)) {
+        throw new Error("Failed to resolve destination under .ade/worktrees");
+      }
+
+      if (currentPath !== targetPath) {
+        if (fs.existsSync(targetPath)) {
+          targetPath = normAbs(path.join(worktreesDir, `${slug}-${randomUUID().slice(0, 8)}`));
+        }
+        const existingTarget = db.get<{ id: string; name: string }>(
+          "select id, name from lanes where project_id = ? and worktree_path = ? and id != ? limit 1",
+          [projectId, targetPath, laneId]
+        );
+        if (existingTarget?.id) {
+          throw new Error(`Destination path is already in use by lane '${existingTarget.name}'.`);
+        }
+
+        await runGitOrThrow(["worktree", "move", currentPath, targetPath], {
+          cwd: projectRoot,
+          timeoutMs: 120_000
+        });
+      }
+
+      db.run(
+        `
+          update lanes
+          set lane_type = 'worktree',
+              worktree_path = ?,
+              attached_root_path = null
+          where id = ? and project_id = ?
+        `,
+        [targetPath, laneId, projectId]
+      );
+      invalidateLaneListCache();
+
+      const updated = getLaneRow(laneId);
+      if (!updated) throw new Error(`Failed to update lane: ${laneId}`);
+
+      const rowsById = getRowsById(true);
+      const parent = updated.parent_lane_id ? rowsById.get(updated.parent_lane_id) ?? null : null;
+      const status = await computeLaneStatus(updated.worktree_path, updated.base_ref, updated.branch_ref);
+      const parentStatus = parent
+        ? await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref)
+        : null;
+
+      return toLaneSummary({
+        row: updated,
+        status,
+        parentStatus,
+        childCount: getChildrenRows(updated.id, false).length,
+        stackDepth: computeStackDepth({ laneId: updated.id, rowsById, memo: new Map() })
+      });
+    },
+
   };
 }
