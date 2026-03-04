@@ -46,7 +46,6 @@ export type CreateDraft = {
   laneId: string;
   priority: import("../../../shared/types").MissionPriority;
   allowPlanningQuestions: boolean;
-  allowCompletionWithRisk: boolean;
   prStrategy: PrStrategy;
   modelConfig: MissionModelConfig;
   phaseProfileId: string | null;
@@ -124,7 +123,6 @@ export function buildCreateMissionDraft(
     laneId: "",
     priority: "normal",
     allowPlanningQuestions: true,
-    allowCompletionWithRisk: true,
     prStrategy: { kind: "integration", targetBranch: "main", draft: true },
     modelConfig: buildDefaultModelConfig(defaults, builtInProfiles),
     phaseProfileId: null,
@@ -404,7 +402,6 @@ function CreateMissionDialogInner({
         laneId: resolvedLaneId || undefined,
         priority: draft.priority,
         allowPlanningQuestions: draft.allowPlanningQuestions,
-        allowCompletionWithRisk: draft.allowCompletionWithRisk,
         teamRuntime: draft.teamRuntime,
         executionPolicy: {
           prStrategy: draft.prStrategy,
@@ -1238,7 +1235,6 @@ function CreateMissionDialogInner({
                                     >
                                       <option value="none">None</option>
                                       <option value="self">Self</option>
-                                      <option value="spot-check">Spot-check</option>
                                       <option value="dedicated">Dedicated</option>
                                     </select>
                                   </label>
@@ -1408,15 +1404,6 @@ function CreateMissionDialogInner({
                     onChange={(e) => setDraft((p) => ({ ...p, allowPlanningQuestions: e.target.checked }))}
                   />
                   ALLOW PLANNING CLARIFICATION QUESTIONS
-                </label>
-
-                <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                  <input
-                    type="checkbox"
-                    checked={draft.allowCompletionWithRisk}
-                    onChange={(e) => setDraft((p) => ({ ...p, allowCompletionWithRisk: e.target.checked }))}
-                  />
-                  ALLOW COMPLETION WITH RISK
                 </label>
 
                 <div className="space-y-1.5">

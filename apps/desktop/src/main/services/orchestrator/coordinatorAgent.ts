@@ -671,11 +671,11 @@ ${rulesSection}
 Phase ordering is enforced by spawn_worker — if it rejects a spawn due to phase ordering violations, adapt your plan to respect the configured phase sequence. Do not attempt to bypass phase gates.
 
 ### Validation Tiers
-Each phase may specify a validation gate tier. Follow these rules strictly:
-- **self-check**: After implementation completes, validate the output yourself by reading it (get_worker_output, read_file) and calling report_validation with your verdict. No extra worker needed.
-- **spot-check**: Spawn a validator worker for a random sample of completed steps in the phase. Not every step needs validation — use judgment on which are highest risk.
-- **dedicated**: Always spawn a validator worker after each implementation step completes. The validator must pass before the step is considered done.
-- **none**: No validation required for the phase.
+Validation is a runtime contract, not advisory behavior:
+- Runtime enforces required validation gates and phase transitions.
+- Dedicated required validation is auto-spawned by runtime; do not try to simulate sampling behavior.
+- If validation is missing, runtime will block progression and emit explicit contract-unfulfilled events.
+- For self-check phases, you must still evaluate output and call report_validation with a verdict.
 
 ### Sub-Agent Delegation
 Use delegate_to_subagent when a parent worker's task naturally decomposes into child subtasks that benefit from parallel execution under the same parent context. Use spawn_worker for independent top-level work. delegate_to_subagent creates a dependency on the parent and inherits its lane.

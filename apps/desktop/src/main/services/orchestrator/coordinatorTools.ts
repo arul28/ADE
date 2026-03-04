@@ -30,7 +30,6 @@ import type {
   ValidationContract,
   ValidationResultReport,
   PhaseCard,
-  ValidationTierBehavior,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -48,7 +47,7 @@ import {
 const VALIDATION_CONTRACT_SCHEMA = z
   .object({
     level: z.enum(["step", "milestone", "mission"]),
-    tier: z.enum(["self", "spot-check", "dedicated"]),
+    tier: z.enum(["self", "dedicated"]),
     required: z.boolean(),
     criteria: z.string(),
     evidence: z.array(z.string()).default([]),
@@ -260,7 +259,6 @@ function parseValidationContract(value: unknown): ValidationContract | null {
   }
   if (
     raw.tier !== "self" &&
-    raw.tier !== "spot-check" &&
     raw.tier !== "dedicated"
   ) {
     return null;
@@ -294,33 +292,6 @@ function resolveValidationStateFromStepMetadata(metadata: Record<string, unknown
     return reportVerdict;
   }
   return "pending";
-}
-
-function resolveRequireValidatorPassFlag(metadata: Record<string, unknown> | null): boolean | null {
-  if (!metadata) return null;
-  const candidates = [
-    metadata,
-    asRecord(metadata.policyOverrides),
-    asRecord(metadata.missionPolicyFlags),
-    asRecord(metadata.executionPolicy),
-    asRecord(metadata.teamRuntime),
-    asRecord(asRecord(metadata.teamRuntime)?.policyOverrides),
-    asRecord(asRecord(metadata.executionPolicy)?.teamRuntime),
-    asRecord(asRecord(asRecord(metadata.executionPolicy)?.teamRuntime)?.policyOverrides),
-    asRecord(metadata.launch),
-    asRecord(asRecord(metadata.launch)?.teamRuntime),
-    asRecord(asRecord(asRecord(metadata.launch)?.teamRuntime)?.policyOverrides),
-    asRecord(asRecord(metadata.launch)?.executionPolicy),
-    asRecord(asRecord(asRecord(metadata.launch)?.executionPolicy)?.teamRuntime),
-    asRecord(asRecord(asRecord(asRecord(metadata.launch)?.executionPolicy)?.teamRuntime)?.policyOverrides),
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    if (typeof candidate.requireValidatorPass === "boolean") {
-      return candidate.requireValidatorPass;
-    }
-  }
-  return null;
 }
 
 function buildStalenessSignals(graph: OrchestratorRunGraph): string[] {
@@ -377,30 +348,6 @@ function parseValidationFinding(value: unknown): ValidationResultReport["finding
     remediation: typeof raw.remediation === "string" && raw.remediation.trim().length > 0 ? raw.remediation.trim() : undefined,
     ...(references && references.length > 0 ? { references } : {})
   };
-}
-
-/**
- * Maps a phase card validation gate tier string to the canonical coordinator behavior.
- * - "none" → no validation needed
- * - "self-check" → coordinator validates inline (no extra worker)
- * - "spot-check" → spawn validator for a random subset of steps
- * - "dedicated" → always spawn a validator worker after implementation
- */
-export function resolveValidationTier(tier: string | undefined | null): ValidationTierBehavior {
-  if (!tier || typeof tier !== "string") return "none";
-  const normalized = tier.trim().toLowerCase().replace(/[\s_]+/g, "-");
-  switch (normalized) {
-    case "self":
-    case "self-check":
-      return "self-check";
-    case "spot-check":
-      return "spot-check";
-    case "dedicated":
-      return "dedicated";
-    case "none":
-    default:
-      return "none";
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -499,29 +446,6 @@ export function createCoordinatorToolSet(deps: {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  }
-
-  function isValidatorPassRequired(g: OrchestratorRunGraph): boolean {
-    const runMeta = asRecord(g.run.metadata);
-    const fromRun = resolveRequireValidatorPassFlag(runMeta);
-    if (typeof fromRun === "boolean") return fromRun;
-
-    try {
-      const missionRow = db.get<{ metadata_json: string | null }>(
-        `select metadata_json from missions where id = ? limit 1`,
-        [missionId]
-      );
-      if (missionRow?.metadata_json) {
-        const missionMetaRaw = JSON.parse(missionRow.metadata_json);
-        const missionMeta = asRecord(missionMetaRaw);
-        const fromMission = resolveRequireValidatorPassFlag(missionMeta);
-        if (typeof fromMission === "boolean") return fromMission;
-      }
-    } catch {
-      // Non-blocking — default policy remains enabled.
-    }
-
-    return true;
   }
 
   function resolveMissionGoal(): string {
@@ -959,6 +883,58 @@ export function createCoordinatorToolSet(deps: {
     return { valid: true };
   }
 
+  function stepHasPassingRequiredValidation(step: OrchestratorStep): boolean {
+    const stepMeta = asRecord(step.metadata) ?? {};
+    const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
+    if (!validationContract?.required) return true;
+    if (resolveValidationStateFromStepMetadata(stepMeta) === "pass") return true;
+    const validationPassedAt = typeof stepMeta.validationPassedAt === "string" ? stepMeta.validationPassedAt.trim() : "";
+    return validationPassedAt.length > 0;
+  }
+
+  function validateRequiredValidationGates(
+    phases: PhaseCard[],
+    g: OrchestratorRunGraph,
+  ): { valid: true } | { valid: false; reason: string } {
+    if (phases.length === 0) return { valid: true };
+    const runMeta = asRecord(g.run.metadata);
+    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+    const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    if (!currentPhaseKey && !currentPhaseName) return { valid: true };
+
+    const sorted = [...phases].sort((a, b) => a.position - b.position);
+    const currentPhase = sorted.find(
+      (phase) => phase.phaseKey === currentPhaseKey || phase.name === currentPhaseName,
+    );
+    if (!currentPhase) return { valid: true };
+    const currentIndex = sorted.indexOf(currentPhase);
+
+    const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
+      g.steps.filter((step) => {
+        const stepMeta = asRecord(step.metadata);
+        const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
+        const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
+        return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+      });
+
+    for (let i = 0; i < currentIndex; i += 1) {
+      const earlier = sorted[i]!;
+      if (!earlier.validationGate.required) continue;
+      const missingRequiredValidation = stepsForPhase(earlier)
+        .filter((step) => step.status === "succeeded")
+        .filter((step) => !stepHasPassingRequiredValidation(step));
+      if (missingRequiredValidation.length > 0) {
+        return {
+          valid: false,
+          reason: `Phase "${earlier.name}" validation gate has not passed. ${missingRequiredValidation.length} step(s) are missing required validation.`,
+        };
+      }
+    }
+
+    return { valid: true };
+  }
+
   const spawn_worker = tool({
     description:
       "Spawn a new agent worker session. The worker will execute the given prompt autonomously. Returns a worker ID (step key) you can use to track, message, or stop the worker.",
@@ -1073,6 +1049,14 @@ export function createCoordinatorToolSet(deps: {
               reason: phaseCheck.reason,
             });
             return { ok: false, error: phaseCheck.reason };
+          }
+          const validationGateCheck = validateRequiredValidationGates(missionPhases, g);
+          if (!validationGateCheck.valid) {
+            logger.info("coordinator.spawn_worker.validation_gate_blocked", {
+              name,
+              reason: validationGateCheck.reason,
+            });
+            return { ok: false, error: validationGateCheck.reason };
           }
         }
 
@@ -3240,13 +3224,11 @@ export function createCoordinatorToolSet(deps: {
         const stepMeta = asRecord(step.metadata) ?? {};
         const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
         const validationState = resolveValidationStateFromStepMetadata(stepMeta);
-        const requireValidatorPass = isValidatorPassRequired(g);
-        if (validationContract?.required && validationState !== "pass" && requireValidatorPass) {
+        if (validationContract?.required && validationState !== "pass") {
           return {
             ok: false,
             error: `Step '${workerId}' requires validator pass before completion (current validation state: ${validationState}).`,
-            hint: "Run report_validation with verdict='pass' for this step, or disable the mission policy flag requireValidatorPass to bypass.",
-            policy: { requireValidatorPass },
+            hint: "Run report_validation with verdict='pass' for this step before marking it complete.",
             validation: {
               required: true,
               state: validationState,
@@ -3434,33 +3416,29 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ summary }) => {
       try {
         const g = graph();
-        const requireValidatorPass = isValidatorPassRequired(g);
-        if (requireValidatorPass) {
-          const blockers = g.steps
-            .filter((step) => step.status === "succeeded")
-            .flatMap((step) => {
-              const stepMeta = asRecord(step.metadata) ?? {};
-              const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
-              if (!validationContract?.required) return [];
-              const validationState = resolveValidationStateFromStepMetadata(stepMeta);
-              if (validationState === "pass") return [];
-              return [{
-                stepKey: step.stepKey,
-                status: step.status,
-                validationState,
-                tier: validationContract.tier,
-                criteria: validationContract.criteria
-              }];
-            });
-          if (blockers.length > 0) {
-            return {
-              ok: false,
-              error: `Mission cannot be completed: ${blockers.length} step(s) require validator pass before completion.`,
-              hint: "Submit passing validation reports for blocked steps, or disable requireValidatorPass in mission policy to bypass.",
-              policy: { requireValidatorPass },
-              blockers
-            };
-          }
+        const blockers = g.steps
+          .filter((step) => step.status === "succeeded")
+          .flatMap((step) => {
+            const stepMeta = asRecord(step.metadata) ?? {};
+            const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
+            if (!validationContract?.required) return [];
+            const validationState = resolveValidationStateFromStepMetadata(stepMeta);
+            if (validationState === "pass") return [];
+            return [{
+              stepKey: step.stepKey,
+              status: step.status,
+              validationState,
+              tier: validationContract.tier,
+              criteria: validationContract.criteria
+            }];
+          });
+        if (blockers.length > 0) {
+          return {
+            ok: false,
+            error: `Mission cannot be completed: ${blockers.length} step(s) require validator pass before completion.`,
+            hint: "Submit passing validation reports for blocked steps before completing the mission.",
+            blockers
+          };
         }
 
         orchestratorService.appendRuntimeEvent({

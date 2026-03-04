@@ -1,4 +1,3 @@
-.ade/
 .DS_Store
 *.pem
 infra/node_modules/
@@ -9,3 +8,9 @@ infra/.pulumi/
 /apps/mcp-server/node_modules
 /apps/desktop/release-stable
 /apps/desktop/.cache
+
+# ADE local-only state (too large / machine-specific)
+.ade/worktrees/
+.ade/ade.db
+.ade/logs/
+.ade/transcripts/

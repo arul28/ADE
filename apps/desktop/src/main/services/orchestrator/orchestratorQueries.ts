@@ -355,6 +355,7 @@ export function normalizeRuntimeEventType(value: string): OrchestratorRuntimeEve
     value === "plan_revised" ||
     value === "lane_transfer" ||
     value === "validation_report" ||
+    value === "validation_contract_unfulfilled" ||
     value === "tool_profiles_updated"
   ) {
     return value;
@@ -386,7 +387,7 @@ export function parseArray(raw: string | null): string[] {
 export function isExecutionPolicyRecord(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const rec = value as Record<string, unknown>;
-  return "planning" in rec && "implementation" in rec && "completion" in rec;
+  return "planning" in rec && "implementation" in rec;
 }
 
 export function asBool(value: unknown, fallback: boolean): boolean {

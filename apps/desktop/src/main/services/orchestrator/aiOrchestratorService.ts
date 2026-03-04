@@ -1412,6 +1412,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       | "plan_revised"
       | "lane_transfer"
       | "validation_report"
+      | "validation_contract_unfulfilled"
       | "tool_profiles_updated";
     eventKey?: string | null;
     occurredAt?: string | null;
@@ -1477,6 +1478,23 @@ Check all worker statuses and continue managing the mission from here. Read work
             },
           }, { graph });
         }
+      } else if (args.eventType === "validation_contract_unfulfilled") {
+        const payload = isRecord(args.payload) ? args.payload : {};
+        const stepKey = typeof payload.stepKey === "string" ? payload.stepKey.trim() : "";
+        const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
+        const description =
+          detail.length > 0
+            ? detail
+            : "A required validation contract was not fulfilled for a completed step.";
+        updateMissionStateDoc(args.runId, {
+          addIssue: {
+            id: `validation-contract-${randomUUID()}`,
+            severity: "high",
+            description,
+            affectedSteps: stepKey.length > 0 ? [stepKey] : [],
+            status: "open",
+          },
+        });
       } else if (args.eventType === "plan_revised") {
         const payload = isRecord(args.payload) ? args.payload : {};
         const reason = typeof payload.reason === "string" ? payload.reason.trim() : "Coordinator revised the plan.";

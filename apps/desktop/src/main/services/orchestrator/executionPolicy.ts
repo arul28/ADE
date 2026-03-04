@@ -47,7 +47,6 @@ export const DEFAULT_EXECUTION_POLICY: MissionExecutionPolicy = {
   testReview: { mode: "off" },
   prReview: { mode: "off" },
   merge: { mode: "off" },
-  completion: { allowCompletionWithRisk: true },
   prStrategy: { kind: "manual" }
 };
 
@@ -84,7 +83,6 @@ export function resolveExecutionPolicy(sources: {
       testReview: mergePhase(p.testReview, base.testReview),
       prReview: mergePhase(p.prReview, base.prReview),
       merge: base.merge,
-      completion: mergePhase(p.completion, base.completion),
       prStrategy: p.prStrategy ?? base.prStrategy,
       integrationPr: p.integrationPr ?? base.integrationPr,
       teamRuntime: p.teamRuntime ?? base.teamRuntime
@@ -100,7 +98,6 @@ export function resolveExecutionPolicy(sources: {
       testReview: mergePhase(p.testReview, base.testReview),
       prReview: mergePhase(p.prReview, base.prReview),
       merge: base.merge,
-      completion: mergePhase(p.completion, base.completion),
       prStrategy: p.prStrategy ?? base.prStrategy,
       integrationPr: p.integrationPr ?? base.integrationPr,
       teamRuntime: p.teamRuntime ?? base.teamRuntime
@@ -195,12 +192,11 @@ export function evaluateRunCompletion(
 
     if (stepsInPhase.length === 0) {
       if (required) {
-        // When allowCompletionWithRisk, phase requirements are advisory — never block
         diagnostics.push({
           phase,
           code: "phase_required_missing",
           message: `Required phase "${phase}" has no steps`,
-          blocking: false
+          blocking: true
         });
         riskFactors.push(`${phase}_required_but_missing`);
       } else {
@@ -229,8 +225,7 @@ export function evaluateRunCompletion(
         blocking: false
       });
     } else if (anyFailed && allTerminal) {
-      // When allowCompletionWithRisk, failed phases are advisory — coordinator decides
-      const blocking = required && !policy.completion.allowCompletionWithRisk;
+      const blocking = required;
       diagnostics.push({
         phase,
         code: "phase_failed",
@@ -274,12 +269,11 @@ export function evaluateRunCompletion(
     .map((step) => step.stepKey);
 
   if (requiredValidationMissingStepKeys.length > 0) {
-    const blocking = policy.validation.mode === "required";
     diagnostics.push({
       phase: "validation",
       code: "required_validation_missing",
       message: "Succeeded steps are missing a passing required validation contract.",
-      blocking,
+      blocking: true,
       details: { stepKeys: requiredValidationMissingStepKeys }
     });
     riskFactors.push(
@@ -317,9 +311,6 @@ export function evaluateRunCompletion(
     const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
     status = allSucceeded ? "succeeded" : "failed";
     completionReady = true;
-  } else if (hasBlockingDiagnostics && !policy.completion.allowCompletionWithRisk) {
-    status = "active"; // not ready to complete
-    completionReady = false;
   } else {
     status = "active";
     completionReady = false;
@@ -842,7 +833,7 @@ export function evaluateRunCompletionFromPhases(
           phase,
           code: "phase_required_missing",
           message: `Required phase "${phase}" has no steps`,
-          blocking: false
+          blocking: true
         });
         riskFactors.push(`${phase}_required_but_missing`);
       } else if (!enabled) {
@@ -871,7 +862,7 @@ export function evaluateRunCompletionFromPhases(
         blocking: false
       });
     } else if (anyFailed && allTerminal) {
-      const blocking = required && !settings.allowCompletionWithRisk;
+      const blocking = required;
       diagnostics.push({
         phase,
         code: "phase_failed",
@@ -892,9 +883,6 @@ export function evaluateRunCompletionFromPhases(
   }
 
   // Check validation contracts
-  const validationCard = phases.find((c) => phaseKeyToExecutionPhase(c.phaseKey) === "validation");
-  const validationRequired = validationCard?.validationGate.required ?? false;
-
   const requiredValidationMissingStepKeys = steps
     .filter((step) => step.status === "succeeded")
     .filter((step) => {
@@ -920,7 +908,7 @@ export function evaluateRunCompletionFromPhases(
       phase: "validation",
       code: "required_validation_missing",
       message: "Succeeded steps are missing a passing required validation contract.",
-      blocking: validationRequired,
+      blocking: true,
       details: { stepKeys: requiredValidationMissingStepKeys }
     });
     riskFactors.push(`required_validation_missing: ${requiredValidationMissingStepKeys.join(", ")}`);
@@ -955,9 +943,6 @@ export function evaluateRunCompletionFromPhases(
     const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
     status = allSucceeded ? "succeeded" : "failed";
     completionReady = true;
-  } else if (hasBlockingDiagnostics && !settings.allowCompletionWithRisk) {
-    status = "active";
-    completionReady = false;
   } else {
     status = "active";
     completionReady = false;

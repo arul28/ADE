@@ -535,7 +535,6 @@ export default function MissionsPage() {
         laneId: resolvedLaneId || undefined,
         priority: draft.priority,
         allowPlanningQuestions: draft.allowPlanningQuestions,
-        allowCompletionWithRisk: draft.allowCompletionWithRisk,
         agentRuntime: draft.agentRuntime,
         teamRuntime: draft.teamRuntime,
         executionPolicy: {

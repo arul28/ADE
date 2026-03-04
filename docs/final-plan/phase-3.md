@@ -70,7 +70,7 @@ Major structural cleanup targeting long-term maintainability and extraction read
 ### What's Still Missing
 
 1. **Strategic autonomy hardening**: Coordinator autonomy primitives are in place, but broader multi-hour soak coverage and regression gates are still pending.
-2. **Tiered validation**: No full self-check / spot-check / dedicated validator loop system is shipped yet.
+2. **Tiered validation**: Superseded by `docs/ORCHESTRATOR_OVERHAUL.md` — Phase 5 shipped strict runtime-enforced validation (`self` + `dedicated`, no sampled `spot-check`, no risk-bypass completion).
 3. **Reflection protocol**: Agents do not yet capture structured observations for system self-improvement (Task 7).
 4. **Full integration soak coverage**: Task 8 multi-hour autonomy/overhaul validation is not complete yet.
 
@@ -234,7 +234,7 @@ interface PhaseCard {
     maxQuestions?: number;
   };
   validationGate: {
-    tier: 'none' | 'self' | 'spot-check' | 'dedicated';
+    tier: 'none' | 'self' | 'dedicated';
     required: boolean;              // Must pass to proceed
     criteria?: string;              // Custom validation criteria
   };
@@ -313,15 +313,15 @@ Custom phases use the same template as built-in phases. Before launch, the pre-f
 
 ## Tiered Validation System
 
-Validation is configurable per phase card. Three tiers, increasing in cost and thoroughness:
+Validation is configurable per phase card. Current authoritative tiers are in `docs/ORCHESTRATOR_OVERHAUL.md`:
+- `self` (coordinator must validate and report)
+- `dedicated` (runtime auto-spawns validator)
+- `none` (no contract)
 
 ### Tier 1 — Self-Validation (Free)
 Workers self-validate against embedded checklists in their phase instructions. The phase card's `instructions` can include validation criteria the worker checks before marking a task complete. Example: "Before completing, verify: (1) all new functions have JSDoc comments, (2) no `any` types remain, (3) all imports are used." No additional AI calls.
 
-### Tier 2 — Orchestrator Spot-Check (Cheap)
-The orchestrator reviews worker output selectively. It uses heuristics (task complexity, worker error rate, importance) to decide what to spot-check. Configurable probability per phase (e.g., 30% of Development tasks, 100% of Validation tasks). One additional orchestrator turn per spot-check.
-
-### Tier 3 — Dedicated Validator (Expensive)
+### Tier 2 — Dedicated Validator (Expensive)
 A lightweight validator agent is spawned at milestone boundaries or phase transitions. The validator receives the original requirements, the plan, and the worker's output. It produces a structured pass/fail report with specific findings. If it fails a milestone, the mission can retry, loop back, or pause for human intervention. Validator agents use a separate model context to avoid confirmation bias.
 
 ### QA Loop Phase
@@ -481,7 +481,7 @@ Introduce `ValidationContract` at step/milestone/mission levels:
 ```typescript
 interface ValidationContract {
   level: 'step' | 'milestone' | 'mission';
-  tier: 'self' | 'spot-check' | 'dedicated';
+  tier: 'self' | 'dedicated';
   required: boolean;
   criteria: string;           // What must be true for validation to pass
   evidence: string[];         // What artifacts the validator should examine
@@ -1002,7 +1002,7 @@ Expose budget state to the coordinator via `get_budget_status` tool:
 |---|---|---|
 | `normal` | < 60% budget consumed | No restrictions |
 | `warning` | 60-85% budget consumed | Reduce parallelism, defer optional validation, prefer cheaper models for remaining work |
-| `critical` | > 85% budget consumed | Single worker only, skip spot-checks, finish current milestone then stop |
+| `critical` | > 85% budget consumed | Single worker only, finish required validation for active milestone, then stop |
 
 Budget pressure is an input to coordinator decisions, not a hard override — the AI decides what to do with the information.
 
@@ -1116,7 +1116,7 @@ Not in Phase 3, but the architecture supports it:
 - **Plan tab tests**: hierarchical rendering (milestones → tasks → subtasks), real-time update handling, status indicator accuracy.
 - **Work tab tests**: worker selector, live output streaming, file list updates, tool call tracking.
 - **Pre-flight tests**: model detection per phase (multiple providers), permission validation, structural/ordering/semantic validation, budget check, UI rendering (pass/warning/fail).
-- **Tiered validation tests**: self-validation (checklist), spot-check (configurable probability), dedicated validator (spawn, review, report), QA Loop (loop back, max iterations).
+- **Tiered validation tests**: self-validation (checklist), dedicated validator (spawn, review, report), required gate blocking, QA Loop (loop back, max iterations).
 - **Intervention tests**: single worker pause (mission continues), dependency cascade, mission-level pause, rate limit auto-recovery.
 - **Budget tests**: subscription mode (estimation, weekly aggregation), API key mode (hard caps, immediate stop), rate limit accounting.
 - **Reflection tests**: log write/read, retrospective synthesis, changelog tracking.
@@ -1178,7 +1178,7 @@ Phase 3 is complete when:
 - Pre-flight checklist validates models, permissions, worktrees, phase config, and budget — all checks required
 - Plan tab shows hierarchical task list with real-time updates
 - Work tab shows live worker output with follow mode
-- Tiered validation operates at self-check, spot-check, and dedicated levels per phase card
+- Tiered validation operates at `self` and `dedicated` levels per phase card, enforced by runtime contracts
 - Intervention pauses only stuck workers, not entire missions (unless blocking dependency)
 - Escalation chain is formalized: worker → orchestrator → human
 - Rate limits are handled automatically (pause → wait → retry)

@@ -1164,8 +1164,7 @@ export function deriveRuntimeProfileFromPolicy(
   const strictGates =
     policy.validation.mode === "required"
     || policy.codeReview.mode === "required"
-    || policy.testReview.mode === "required"
-    || policy.completion.allowCompletionWithRisk === false;
+    || policy.testReview.mode === "required";
 
   let maxParallelWorkers = 2;
   if (testingEnabled) maxParallelWorkers += 1;
@@ -1239,7 +1238,7 @@ export function deriveRuntimeProfileFromPhases(
     || phaseKeys.has("test_review") || phaseKeys.has("testreview");
   const hasStrictGates = phases.some(
     (p) => p.validationGate.required && p.validationGate.tier !== "none"
-  ) || !settings.allowCompletionWithRisk;
+  );
   const hasTdd = phases.some(
     (p) => (p.phaseKey.toLowerCase() === "testing" || p.phaseKey.toLowerCase() === "test")
       && p.instructions.toLowerCase().includes("tdd")

@@ -683,8 +683,7 @@ describe("missionPlanningService planner contract", () => {
       codeReview: { mode: "off" },
       testReview: { mode: "off" },
       prReview: { mode: "off" },
-      merge: { mode: "off" },
-      completion: { allowCompletionWithRisk: true }
+      merge: { mode: "off" }
     };
 
     const { plan } = await planMissionOnce({
@@ -713,8 +712,7 @@ describe("policy-driven planner DAG", () => {
     codeReview: { mode: "off" },
     testReview: { mode: "off" },
     prReview: { mode: "off" },
-    merge: { mode: "off" },
-    completion: { allowCompletionWithRisk: true }
+    merge: { mode: "off" }
   };
 
   it("testing.mode=none omits validation step", () => {

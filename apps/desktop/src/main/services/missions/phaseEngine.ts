@@ -73,7 +73,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
         maxQuestions: 3,
       },
       validationGate: {
-        tier: "spot-check",
+        tier: "self",
         required: false,
       },
       isBuiltIn: true,

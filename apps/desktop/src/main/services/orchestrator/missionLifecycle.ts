@@ -677,7 +677,6 @@ export function resolveActiveRuntimeProfile(
 // ── Phase-based Settings Resolution ──────────────────────────────
 
 const DEFAULT_MISSION_LEVEL_SETTINGS: MissionLevelSettings = {
-  allowCompletionWithRisk: true,
   prStrategy: { kind: "manual" }
 };
 

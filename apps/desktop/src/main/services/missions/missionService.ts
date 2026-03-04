@@ -374,7 +374,6 @@ function toPhaseCard(value: unknown, fallbackPosition = 0): PhaseCard | null {
   const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : nowIso();
   const tier = validationGate.tier === "none"
     || validationGate.tier === "self"
-    || validationGate.tier === "spot-check"
     || validationGate.tier === "dedicated"
     ? validationGate.tier
     : "self";
@@ -2368,7 +2367,6 @@ export function createMissionService({
 
       // Build mission-level settings from new args fields
       const missionLevelSettings: import("../../../shared/types").MissionLevelSettings = {
-        allowCompletionWithRisk: args.allowCompletionWithRisk !== false,
         ...(args.recoveryLoop ? { recoveryLoop: args.recoveryLoop } : {}),
         ...(executionPolicyArg?.prStrategy ? { prStrategy: executionPolicyArg.prStrategy } : {}),
         ...(executionPolicyArg?.integrationPr ? { integrationPr: executionPolicyArg.integrationPr } : {}),

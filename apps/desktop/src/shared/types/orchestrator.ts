@@ -429,7 +429,7 @@ export type TeamTemplate = {
 
 export type ValidationContract = {
   level: "step" | "milestone" | "mission";
-  tier: "self" | "spot-check" | "dedicated";
+  tier: "self" | "dedicated";
   required: boolean;
   criteria: string;
   evidence: string[];
@@ -509,7 +509,7 @@ export type SubAgentDelegationRequest = {
 };
 
 /** Maps phase card validation gate tiers to coordinator behavior. */
-export type ValidationTierBehavior = "none" | "self-check" | "spot-check" | "dedicated";
+export type ValidationTierBehavior = "none" | "self-check" | "dedicated";
 
 export type MissionStateProgress = {
   currentPhase: string;
@@ -650,6 +650,7 @@ export type OrchestratorRuntimeEventType =
   | "plan_revised"
   | "lane_transfer"
   | "validation_report"
+  | "validation_contract_unfulfilled"
   | "tool_profiles_updated";
 
 export type OrchestratorRuntimeQuestionLink = {

@@ -27798,6 +27798,10 @@ function slugify(input) {
 function normAbs(p) {
   return import_node_path5.default.resolve(p);
 }
+function isWithinDir2(dir, candidate) {
+  const rel = import_node_path5.default.relative(dir, candidate);
+  return rel.length === 0 || !rel.startsWith("..") && !import_node_path5.default.isAbsolute(rel);
+}
 function parseLaneIcon(value) {
   if (!value) return null;
   if (value === "star" || value === "flag" || value === "bolt" || value === "shield" || value === "tag") {
@@ -27998,10 +28002,33 @@ function createLaneService({
     if (!run) throw new Error(`Rebase run not found: ${runId}`);
     return run;
   };
-  const ensureSameRepo = async (candidatePath) => {
-    const resolvedProject = normAbs(projectRoot);
-    const repoTop = (await runGitOrThrow(["rev-parse", "--show-toplevel"], { cwd: candidatePath, timeoutMs: 1e4 })).trim();
-    if (normAbs(repoTop) !== resolvedProject) {
+  const normalizedProjectRoot = normAbs(projectRoot);
+  const getGitTopLevel = async (cwd) => {
+    const top = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, timeoutMs: 1e4 });
+    return normAbs(top.trim());
+  };
+  const getGitCommonDir = async (cwd) => {
+    const commonDir = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, timeoutMs: 1e4 });
+    return normAbs(commonDir.trim());
+  };
+  const ensureAttachableWorktreeRoot = async (candidatePath) => {
+    const resolvedPath = normAbs(candidatePath);
+    let worktreeRoot = "";
+    let candidateCommonDir = "";
+    try {
+      worktreeRoot = await getGitTopLevel(resolvedPath);
+      candidateCommonDir = await getGitCommonDir(resolvedPath);
+    } catch {
+      throw new Error("Attached lane path must be a valid git worktree root");
+    }
+    if (worktreeRoot !== resolvedPath) {
+      throw new Error("Attached lane path must point to the root of a worktree (not a subdirectory)");
+    }
+    if (resolvedPath === normalizedProjectRoot) {
+      throw new Error("Primary repository root is already tracked as the Primary lane");
+    }
+    const projectCommonDir = await getGitCommonDir(normalizedProjectRoot);
+    if (candidateCommonDir !== projectCommonDir) {
       throw new Error("Attached lane path must belong to the current project repository");
     }
   };
@@ -29003,14 +29030,36 @@ function createLaneService({
       };
     },
     async attach(args) {
+      const laneName = (args.name ?? "").trim();
+      if (!laneName) throw new Error("Lane name is required");
       const attachedPath = normAbs(args.attachedPath);
       if (!import_node_fs4.default.existsSync(attachedPath) || !import_node_fs4.default.statSync(attachedPath).isDirectory()) {
         throw new Error("Attached lane path must be an existing directory");
       }
-      await ensureSameRepo(attachedPath);
+      await ensureAttachableWorktreeRoot(attachedPath);
+      const branchRef = await detectBranchRef(attachedPath, defaultBaseRef);
+      const existingPath = db.get(
+        "select id, name, status from lanes where project_id = ? and worktree_path = ? limit 1",
+        [projectId, attachedPath]
+      );
+      if (existingPath?.id) {
+        if (existingPath.status === "archived") {
+          throw new Error(`This worktree is already linked as archived lane '${existingPath.name}'. Unarchive it instead.`);
+        }
+        throw new Error(`This worktree is already linked as lane '${existingPath.name}'.`);
+      }
+      const existingBranch = db.get(
+        "select id, name, status, worktree_path from lanes where project_id = ? and branch_ref = ? limit 1",
+        [projectId, branchRef]
+      );
+      if (existingBranch?.id && normAbs(existingBranch.worktree_path) !== attachedPath) {
+        if (existingBranch.status === "archived") {
+          throw new Error(`Branch '${branchRef}' is already linked to archived lane '${existingBranch.name}'. Unarchive it instead.`);
+        }
+        throw new Error(`Branch '${branchRef}' is already linked to lane '${existingBranch.name}'.`);
+      }
       const laneId = (0, import_node_crypto3.randomUUID)();
       const now = (/* @__PURE__ */ new Date()).toISOString();
-      const branchRef = await detectBranchRef(attachedPath, defaultBaseRef);
       const baseRef = defaultBaseRef;
       db.run(
         `
@@ -29020,7 +29069,7 @@ function createLaneService({
         )
         values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, null, null, null, null, 'active', ?, null)
       `,
-        [laneId, projectId, args.name, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
+        [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
       );
       invalidateLaneListCache();
       const row = getLaneRow(laneId);
@@ -29032,6 +29081,70 @@ function createLaneService({
         parentStatus: null,
         childCount: 0,
         stackDepth: 0
+      });
+    },
+    async adoptAttached(args) {
+      const laneId = (args.laneId ?? "").trim();
+      if (!laneId) throw new Error("laneId is required");
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      if (row.lane_type !== "attached") {
+        throw new Error("Only attached lanes can be moved into .ade/worktrees");
+      }
+      if (row.status === "archived") {
+        throw new Error("Archived lanes cannot be moved. Unarchive first.");
+      }
+      const currentPath = normAbs(row.worktree_path);
+      if (!import_node_fs4.default.existsSync(currentPath) || !import_node_fs4.default.statSync(currentPath).isDirectory()) {
+        throw new Error("Attached worktree path no longer exists on disk");
+      }
+      await ensureAttachableWorktreeRoot(currentPath);
+      const slug = slugify(row.name);
+      const defaultTarget = import_node_path5.default.join(worktreesDir, `${slug}-${laneId.slice(0, 8)}`);
+      const normalizedWorktreesDir = normAbs(worktreesDir);
+      let targetPath = normAbs(defaultTarget);
+      if (!isWithinDir2(normalizedWorktreesDir, targetPath)) {
+        throw new Error("Failed to resolve destination under .ade/worktrees");
+      }
+      if (currentPath !== targetPath) {
+        if (import_node_fs4.default.existsSync(targetPath)) {
+          targetPath = normAbs(import_node_path5.default.join(worktreesDir, `${slug}-${(0, import_node_crypto3.randomUUID)().slice(0, 8)}`));
+        }
+        const existingTarget = db.get(
+          "select id, name from lanes where project_id = ? and worktree_path = ? and id != ? limit 1",
+          [projectId, targetPath, laneId]
+        );
+        if (existingTarget?.id) {
+          throw new Error(`Destination path is already in use by lane '${existingTarget.name}'.`);
+        }
+        await runGitOrThrow(["worktree", "move", currentPath, targetPath], {
+          cwd: projectRoot,
+          timeoutMs: 12e4
+        });
+      }
+      db.run(
+        `
+          update lanes
+          set lane_type = 'worktree',
+              worktree_path = ?,
+              attached_root_path = null
+          where id = ? and project_id = ?
+        `,
+        [targetPath, laneId, projectId]
+      );
+      invalidateLaneListCache();
+      const updated = getLaneRow(laneId);
+      if (!updated) throw new Error(`Failed to update lane: ${laneId}`);
+      const rowsById = getRowsById(true);
+      const parent = updated.parent_lane_id ? rowsById.get(updated.parent_lane_id) ?? null : null;
+      const status = await computeLaneStatus(updated.worktree_path, updated.base_ref, updated.branch_ref);
+      const parentStatus = parent ? await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref) : null;
+      return toLaneSummary({
+        row: updated,
+        status,
+        parentStatus,
+        childCount: getChildrenRows(updated.id, false).length,
+        stackDepth: computeStackDepth({ laneId: updated.id, rowsById, memo: /* @__PURE__ */ new Map() })
       });
     }
   };
@@ -33066,7 +33179,7 @@ var runOrchestratorHookCommand = async (args) => {
 function deriveRuntimeProfileFromPolicy(policy, config2) {
   const testingEnabled = policy.testing.mode !== "none";
   const reviewEnabled = policy.codeReview.mode !== "off" || policy.testReview.mode !== "off";
-  const strictGates = policy.validation.mode === "required" || policy.codeReview.mode === "required" || policy.testReview.mode === "required" || policy.completion.allowCompletionWithRisk === false;
+  const strictGates = policy.validation.mode === "required" || policy.codeReview.mode === "required" || policy.testReview.mode === "required";
   let maxParallelWorkers = 2;
   if (testingEnabled) maxParallelWorkers += 1;
   if (reviewEnabled) maxParallelWorkers += 1;
@@ -33126,7 +33239,7 @@ function deriveRuntimeProfileFromPhases(phases, settings, config2) {
   const reviewEnabled = phaseKeys.has("code_review") || phaseKeys.has("codereview") || phaseKeys.has("review") || phaseKeys.has("test_review") || phaseKeys.has("testreview");
   const hasStrictGates = phases.some(
     (p) => p.validationGate.required && p.validationGate.tier !== "none"
-  ) || !settings.allowCompletionWithRisk;
+  );
   const hasTdd = phases.some(
     (p) => (p.phaseKey.toLowerCase() === "testing" || p.phaseKey.toLowerCase() === "test") && p.instructions.toLowerCase().includes("tdd")
   );
@@ -33395,7 +33508,7 @@ function normalizeClaimState(value) {
   return "active";
 }
 function normalizeRuntimeEventType(value) {
-  if (value === "progress" || value === "heartbeat" || value === "question" || value === "blocked" || value === "done" || value === "retry_scheduled" || value === "retry_exhausted" || value === "claim_conflict" || value === "session_ended" || value === "intervention_opened" || value === "intervention_resolved" || value === "coordinator_steering" || value === "coordinator_broadcast" || value === "coordinator_skip" || value === "coordinator_add_step" || value === "coordinator_pause" || value === "coordinator_parallelize" || value === "coordinator_consolidate" || value === "coordinator_shutdown" || value === "step_dependencies_updated" || value === "step_metadata_updated" || value === "fan_out_dispatched" || value === "fan_out_complete" || value === "worker_status_report" || value === "worker_result_report" || value === "worker_message" || value === "plan_revised" || value === "lane_transfer" || value === "validation_report" || value === "tool_profiles_updated") {
+  if (value === "progress" || value === "heartbeat" || value === "question" || value === "blocked" || value === "done" || value === "retry_scheduled" || value === "retry_exhausted" || value === "claim_conflict" || value === "session_ended" || value === "intervention_opened" || value === "intervention_resolved" || value === "coordinator_steering" || value === "coordinator_broadcast" || value === "coordinator_skip" || value === "coordinator_add_step" || value === "coordinator_pause" || value === "coordinator_parallelize" || value === "coordinator_consolidate" || value === "coordinator_shutdown" || value === "step_dependencies_updated" || value === "step_metadata_updated" || value === "fan_out_dispatched" || value === "fan_out_complete" || value === "worker_status_report" || value === "worker_result_report" || value === "worker_message" || value === "plan_revised" || value === "lane_transfer" || value === "validation_report" || value === "validation_contract_unfulfilled" || value === "tool_profiles_updated") {
     return value;
   }
   return "progress";
@@ -33417,7 +33530,7 @@ function parseArray(raw) {
 function isExecutionPolicyRecord(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const rec = value;
-  return "planning" in rec && "implementation" in rec && "completion" in rec;
+  return "planning" in rec && "implementation" in rec;
 }
 function asBool3(value, fallback) {
   return typeof value === "boolean" ? value : fallback;
@@ -42682,7 +42795,6 @@ var DEFAULT_EXECUTION_POLICY = {
   testReview: { mode: "off" },
   prReview: { mode: "off" },
   merge: { mode: "off" },
-  completion: { allowCompletionWithRisk: true },
   prStrategy: { kind: "manual" }
 };
 function mergePhase(partial2, defaults) {
@@ -42703,7 +42815,6 @@ function resolveExecutionPolicy(sources) {
       testReview: mergePhase(p.testReview, base.testReview),
       prReview: mergePhase(p.prReview, base.prReview),
       merge: base.merge,
-      completion: mergePhase(p.completion, base.completion),
       prStrategy: p.prStrategy ?? base.prStrategy,
       integrationPr: p.integrationPr ?? base.integrationPr,
       teamRuntime: p.teamRuntime ?? base.teamRuntime
@@ -42719,7 +42830,6 @@ function resolveExecutionPolicy(sources) {
       testReview: mergePhase(p.testReview, base.testReview),
       prReview: mergePhase(p.prReview, base.prReview),
       merge: base.merge,
-      completion: mergePhase(p.completion, base.completion),
       prStrategy: p.prStrategy ?? base.prStrategy,
       integrationPr: p.integrationPr ?? base.integrationPr,
       teamRuntime: p.teamRuntime ?? base.teamRuntime
@@ -42788,7 +42898,7 @@ function evaluateRunCompletion(steps, policy) {
           phase,
           code: "phase_required_missing",
           message: `Required phase "${phase}" has no steps`,
-          blocking: false
+          blocking: true
         });
         riskFactors.push(`${phase}_required_but_missing`);
       } else {
@@ -42815,7 +42925,7 @@ function evaluateRunCompletion(steps, policy) {
         blocking: false
       });
     } else if (anyFailed && allTerminal) {
-      const blocking = required2 && !policy.completion.allowCompletionWithRisk;
+      const blocking = required2;
       diagnostics.push({
         phase,
         code: "phase_failed",
@@ -42842,16 +42952,15 @@ function evaluateRunCompletion(steps, policy) {
     const lastVerdict = typeof lastValidationReport?.verdict === "string" ? lastValidationReport.verdict.toLowerCase() : "";
     const validationState = typeof meta3.validationState === "string" ? meta3.validationState.toLowerCase() : "";
     const validationPassedAt = typeof meta3.validationPassedAt === "string" ? meta3.validationPassedAt.trim() : "";
-    const hasPassingValidation = lastVerdict === "pass" || validationState === "pass" || validationPassedAt.length > 0;
-    return !hasPassingValidation;
+    const hasPassingValidation2 = lastVerdict === "pass" || validationState === "pass" || validationPassedAt.length > 0;
+    return !hasPassingValidation2;
   }).map((step) => step.stepKey);
   if (requiredValidationMissingStepKeys.length > 0) {
-    const blocking = policy.validation.mode === "required";
     diagnostics.push({
       phase: "validation",
       code: "required_validation_missing",
       message: "Succeeded steps are missing a passing required validation contract.",
-      blocking,
+      blocking: true,
       details: { stepKeys: requiredValidationMissingStepKeys }
     });
     riskFactors.push(
@@ -42883,9 +42992,6 @@ function evaluateRunCompletion(steps, policy) {
     const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
     status = allSucceeded ? "succeeded" : "failed";
     completionReady = true;
-  } else if (hasBlockingDiagnostics && !policy.completion.allowCompletionWithRisk) {
-    status = "active";
-    completionReady = false;
   } else {
     status = "active";
     completionReady = false;
@@ -43007,7 +43113,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
           phase,
           code: "phase_required_missing",
           message: `Required phase "${phase}" has no steps`,
-          blocking: false
+          blocking: true
         });
         riskFactors.push(`${phase}_required_but_missing`);
       } else if (!enabled) {
@@ -43034,7 +43140,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
         blocking: false
       });
     } else if (anyFailed && allTerminal) {
-      const blocking = required2 && !settings.allowCompletionWithRisk;
+      const blocking = required2;
       diagnostics.push({
         phase,
         code: "phase_failed",
@@ -43053,8 +43159,6 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
       });
     }
   }
-  const validationCard = phases.find((c) => phaseKeyToExecutionPhase(c.phaseKey) === "validation");
-  const validationRequired = validationCard?.validationGate.required ?? false;
   const requiredValidationMissingStepKeys = steps.filter((step) => step.status === "succeeded").filter((step) => {
     const meta3 = step.metadata ?? {};
     const validationContract = typeof meta3.validationContract === "object" && meta3.validationContract ? meta3.validationContract : null;
@@ -43070,7 +43174,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
       phase: "validation",
       code: "required_validation_missing",
       message: "Succeeded steps are missing a passing required validation contract.",
-      blocking: validationRequired,
+      blocking: true,
       details: { stepKeys: requiredValidationMissingStepKeys }
     });
     riskFactors.push(`required_validation_missing: ${requiredValidationMissingStepKeys.join(", ")}`);
@@ -43100,9 +43204,6 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
     const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
     status = allSucceeded ? "succeeded" : "failed";
     completionReady = true;
-  } else if (hasBlockingDiagnostics && !settings.allowCompletionWithRisk) {
-    status = "active";
-    completionReady = false;
   } else {
     status = "active";
     completionReady = false;
@@ -43693,7 +43794,7 @@ function createBuiltInPhaseCards(at = nowIso()) {
         maxQuestions: 3
       },
       validationGate: {
-        tier: "spot-check",
+        tier: "self",
         required: false
       },
       isBuiltIn: true,
@@ -44016,6 +44117,7 @@ var DEFAULT_TEAM_TEMPLATE = {
       toolProfile: {
         allowedTools: [
           "spawn_worker",
+          "delegate_parallel",
           "request_specialist",
           "revise_plan",
           "retry_step",
@@ -44355,7 +44457,7 @@ function toPhaseCard(value, fallbackPosition = 0) {
   const validationGate = isRecord(value.validationGate) ? value.validationGate : {};
   const createdAt = typeof value.createdAt === "string" ? value.createdAt : nowIso();
   const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : nowIso();
-  const tier = validationGate.tier === "none" || validationGate.tier === "self" || validationGate.tier === "spot-check" || validationGate.tier === "dedicated" ? validationGate.tier : "self";
+  const tier = validationGate.tier === "none" || validationGate.tier === "self" || validationGate.tier === "dedicated" ? validationGate.tier : "self";
   return {
     id,
     phaseKey,
@@ -46032,7 +46134,6 @@ function createMissionService({
       })();
       const executionPolicyArg = args.executionPolicy && typeof args.executionPolicy === "object" ? args.executionPolicy : null;
       const missionLevelSettings = {
-        allowCompletionWithRisk: args.allowCompletionWithRisk !== false,
         ...args.recoveryLoop ? { recoveryLoop: args.recoveryLoop } : {},
         ...executionPolicyArg?.prStrategy ? { prStrategy: executionPolicyArg.prStrategy } : {},
         ...executionPolicyArg?.integrationPr ? { integrationPr: executionPolicyArg.integrationPr } : {},
@@ -49261,6 +49362,10 @@ function writeMcpConfigFile(args) {
   import_node_fs18.default.writeFileSync(configPath, JSON.stringify(config2, null, 2), "utf8");
   return configPath;
 }
+function workerLocalMcpConfigFileName(attemptId) {
+  const sanitized = attemptId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `.ade-worker-mcp-${sanitized}.json`;
+}
 function resolveUnifiedRuntimeRoot() {
   let dir = process.cwd();
   for (let i = 0; i < 10; i++) {
@@ -49304,11 +49409,18 @@ function buildCodexMcpConfigFlags(args) {
   ];
   return flags;
 }
-function cleanupMcpConfigFile(projectRoot, attemptId) {
+function cleanupMcpConfigFile(projectRoot, attemptId, laneWorktreePath) {
   const configPath = import_node_path19.default.join(projectRoot, ".ade", "orchestrator", "mcp-configs", `worker-${attemptId}.json`);
   try {
     import_node_fs18.default.unlinkSync(configPath);
   } catch {
+  }
+  const localConfigName = workerLocalMcpConfigFileName(attemptId);
+  if (laneWorktreePath && laneWorktreePath.trim().length > 0) {
+    try {
+      import_node_fs18.default.unlinkSync(import_node_path19.default.join(laneWorktreePath, localConfigName));
+    } catch {
+    }
   }
 }
 function cleanupStaleMcpConfigFiles(projectRoot) {
@@ -49373,14 +49485,17 @@ function createUnifiedOrchestratorAdapter(options) {
           if (tool11.trim().length) parts.push("--allowedTools", shellEscapeArg(tool11.trim()));
         }
         const mcpConfigPath = writeMcpConfigFile(mcpIdentity);
-        parts.push("--mcp-config", shellEscapeArg(mcpConfigPath));
+        const localMcpConfigName = workerLocalMcpConfigFileName(attempt.id);
+        parts.push("--mcp-config", shellEscapeArg(localMcpConfigName));
         parts.push("-p", shellEscapeArg(prompt));
         const envParts = [...workerEnv];
         if (teamRuntime?.enabled && teamRuntime.allowClaudeAgentTeams !== false && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")) {
           envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
         }
         const cmd = parts.join(" ");
-        return envParts.length > 0 ? `${envParts.join(" ")} exec ${cmd}` : `exec ${cmd}`;
+        const copyMcpIntoCwd = `cp ${shellEscapeArg(mcpConfigPath)} ${shellEscapeArg(localMcpConfigName)}`;
+        const startup = `${copyMcpIntoCwd} && exec ${cmd}`;
+        return envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
       }
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
         const cliMode = resolveCliMode(permissionConfig);
@@ -49853,7 +49968,7 @@ function ensureThreadForTarget(ctx, args) {
   });
 }
 function parseChatMessageRow(row) {
-  const role = row.role === "user" || row.role === "worker" || row.role === "orchestrator" ? row.role : null;
+  const role = row.role === "user" || row.role === "worker" || row.role === "orchestrator" || row.role === "agent" ? row.role : null;
   if (!role) return null;
   return {
     id: row.id,
@@ -50899,7 +51014,6 @@ function resolveActiveRuntimeProfile(ctx, missionId) {
   return deriveRuntimeProfileFromPolicy(policy, config2);
 }
 var DEFAULT_MISSION_LEVEL_SETTINGS = {
-  allowCompletionWithRisk: true,
   prStrategy: { kind: "manual" }
 };
 function resolveActivePhaseSettings(ctx, missionId) {
@@ -51131,6 +51245,43 @@ function sha2562(data) {
 function getWorkerCheckpointPath(worktreePath, stepKey) {
   const sanitizedStepKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
   return import_node_path21.default.join(worktreePath, ".ade", "checkpoints", `${sanitizedStepKey}.md`);
+}
+function normalizeValidationTier(value) {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "dedicated") return "dedicated";
+  if (raw === "self" || raw === "self-check") return "self";
+  return "none";
+}
+function parseValidationContract(value) {
+  const record2 = asRecord(value);
+  if (!record2) return null;
+  const levelRaw = typeof record2.level === "string" ? record2.level.trim().toLowerCase() : "";
+  const level = levelRaw === "step" || levelRaw === "milestone" || levelRaw === "mission" ? levelRaw : "step";
+  const tier = normalizeValidationTier(record2.tier);
+  if (tier === "none") return null;
+  const criteria = typeof record2.criteria === "string" ? record2.criteria.trim() : "";
+  if (!criteria.length) return null;
+  const evidence = Array.isArray(record2.evidence) ? record2.evidence.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
+  const maxRetriesRaw = Number(record2.maxRetries);
+  const maxRetries = Number.isFinite(maxRetriesRaw) ? Math.max(0, Math.min(10, Math.floor(maxRetriesRaw))) : 2;
+  return {
+    level,
+    tier,
+    required: record2.required !== false,
+    criteria,
+    evidence,
+    maxRetries
+  };
+}
+function hasPassingValidation(metadata) {
+  if (!metadata) return false;
+  const validationState = typeof metadata.validationState === "string" ? metadata.validationState.trim().toLowerCase() : "";
+  if (validationState === "pass") return true;
+  const lastValidationReport = asRecord(metadata.lastValidationReport);
+  const reportVerdict = typeof lastValidationReport?.verdict === "string" ? lastValidationReport.verdict.trim().toLowerCase() : "";
+  if (reportVerdict === "pass") return true;
+  const validationPassedAt = typeof metadata.validationPassedAt === "string" ? metadata.validationPassedAt.trim() : "";
+  return validationPassedAt.length > 0;
 }
 function createOrchestratorService({
   db,
@@ -55913,6 +56064,8 @@ function createOrchestratorService({
         envelope.warnings.push(fileReservationMessage);
       }
       const workerState = status === "succeeded" ? "idle" : "disposed";
+      let validationContractUnfulfilledSignal = false;
+      let validationSelfCheckReminder = false;
       db.run(
         `
           update orchestrator_attempts
@@ -55955,7 +56108,12 @@ function createOrchestratorService({
         attemptId: args.attemptId,
         state: status === "failed" ? "released" : "released"
       });
-      cleanupMcpConfigFile(projectRoot, args.attemptId);
+      const laneWorktreeRow = step.laneId ? db.get(
+        `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+        [step.laneId, projectId]
+      ) : null;
+      const laneWorktreePath = typeof laneWorktreeRow?.worktree_path === "string" && laneWorktreeRow.worktree_path.trim().length > 0 ? laneWorktreeRow.worktree_path.trim() : null;
+      cleanupMcpConfigFile(projectRoot, args.attemptId, laneWorktreePath);
       if (step.laneId) {
         const ckLaneRow = db.get(
           `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
@@ -56006,6 +56164,249 @@ function createOrchestratorService({
             try {
               import_node_fs20.default.unlinkSync(checkpointPath);
             } catch {
+            }
+          }
+        }
+        const latestStepRow = getStepRow(step.id);
+        const latestStep = latestStepRow ? toStep(latestStepRow) : step;
+        const latestStepMeta = asRecord(latestStep.metadata) ?? {};
+        const isAutoSpawnedValidationStep = latestStepMeta.autoSpawnedValidation === true;
+        if (!isAutoSpawnedValidationStep) {
+          const runMetadata = asRecord(run.metadata);
+          const phaseConfig = asRecord(runMetadata?.phaseConfiguration);
+          const phaseCards = Array.isArray(phaseConfig?.selectedPhases) ? phaseConfig.selectedPhases : Array.isArray(phaseConfig?.phases) ? phaseConfig.phases : [];
+          const stepPhaseKey = typeof latestStepMeta.phaseKey === "string" ? latestStepMeta.phaseKey.trim() : "";
+          const stepPhaseName = typeof latestStepMeta.phaseName === "string" ? latestStepMeta.phaseName.trim() : "";
+          const phaseCard = phaseCards.find((phase) => phase.phaseKey === stepPhaseKey) ?? phaseCards.find((phase) => phase.name === stepPhaseName) ?? null;
+          const phaseTier = normalizeValidationTier(phaseCard?.validationGate?.tier);
+          const phaseRequiresValidation = phaseCard?.validationGate?.required === true && phaseTier !== "none";
+          const existingContract = parseValidationContract(latestStepMeta.validationContract ?? null);
+          const requiresValidation = existingContract?.required === true || phaseRequiresValidation;
+          if (requiresValidation) {
+            const normalizedContract = {
+              level: existingContract?.level ?? "step",
+              tier: existingContract?.tier ?? (phaseTier === "dedicated" ? "dedicated" : "self"),
+              required: true,
+              criteria: existingContract?.criteria ?? (typeof phaseCard?.validationGate?.criteria === "string" && phaseCard.validationGate.criteria.trim().length > 0 ? phaseCard.validationGate.criteria.trim() : `Validate completed output for step "${latestStep.stepKey}".`),
+              evidence: existingContract?.evidence ?? [],
+              maxRetries: existingContract?.maxRetries ?? 2
+            };
+            const validationStateRaw = typeof latestStepMeta.validationState === "string" ? latestStepMeta.validationState.trim().toLowerCase() : "";
+            const nextValidationState = validationStateRaw === "pass" || validationStateRaw === "fail" ? validationStateRaw : "pending";
+            const nextStepMetadata = {
+              ...latestStepMeta,
+              validationContract: normalizedContract,
+              validationState: nextValidationState
+            };
+            db.run(
+              `
+                update orchestrator_steps
+                set metadata_json = ?,
+                    updated_at = ?
+                where id = ?
+                  and run_id = ?
+                  and project_id = ?
+              `,
+              [JSON.stringify(nextStepMetadata), completedAt, latestStep.id, run.id, projectId]
+            );
+            if (!hasPassingValidation(nextStepMetadata)) {
+              const detail = `Step "${latestStep.stepKey}" completed without required validation pass (${normalizedContract.tier} tier).`;
+              appendTimelineEvent({
+                runId: run.id,
+                stepId: latestStep.id,
+                attemptId: args.attemptId,
+                eventType: "validation_contract_unfulfilled",
+                reason: "required_validation_missing",
+                detail: {
+                  stepKey: latestStep.stepKey,
+                  phaseKey: stepPhaseKey || null,
+                  phaseName: stepPhaseName || null,
+                  tier: normalizedContract.tier,
+                  criteria: normalizedContract.criteria,
+                  autoSpawnedValidation: normalizedContract.tier === "dedicated"
+                }
+              });
+              persistRuntimeEvent({
+                runId: run.id,
+                stepId: latestStep.id,
+                attemptId: args.attemptId,
+                sessionId: attemptRow.executor_session_id,
+                eventType: "validation_contract_unfulfilled",
+                eventKey: `validation_contract_unfulfilled:${run.id}:${latestStep.id}:${args.attemptId}:${completedAt}`,
+                occurredAt: completedAt,
+                payload: {
+                  stepId: latestStep.id,
+                  stepKey: latestStep.stepKey,
+                  phaseKey: stepPhaseKey || null,
+                  phaseName: stepPhaseName || null,
+                  tier: normalizedContract.tier,
+                  required: true,
+                  detail
+                }
+              });
+              emit({
+                type: "orchestrator-step-updated",
+                runId: run.id,
+                stepId: latestStep.id,
+                reason: "validation_contract_unfulfilled"
+              });
+              validationContractUnfulfilledSignal = true;
+              if (normalizedContract.tier === "dedicated") {
+                const existingSteps = listStepRows(run.id).map(toStep);
+                const existingValidator = existingSteps.find((candidate) => {
+                  const candidateMeta = asRecord(candidate.metadata);
+                  const targetStepId = typeof candidateMeta?.targetStepId === "string" ? candidateMeta.targetStepId.trim() : "";
+                  return candidateMeta?.autoSpawnedValidation === true && targetStepId === latestStep.id;
+                });
+                if (!existingValidator) {
+                  const templateRoles = Array.isArray(asRecord(asRecord(runMetadata?.teamRuntime)?.template)?.roles) ? asRecord(asRecord(runMetadata?.teamRuntime)?.template)?.roles : [];
+                  const validatorRole = templateRoles.find((role) => {
+                    const roleName = typeof role.name === "string" ? role.name.trim().toLowerCase() : "";
+                    if (roleName.includes("validator")) return true;
+                    const capabilities = Array.isArray(role.capabilities) ? role.capabilities.map((entry) => String(entry ?? "").trim().toLowerCase()) : [];
+                    return capabilities.some((entry) => entry.includes("validation") || entry.includes("review"));
+                  }) ?? null;
+                  const validatorRoleName = typeof validatorRole?.name === "string" && validatorRole.name.trim().length > 0 ? validatorRole.name.trim() : "validator";
+                  const roleDefaultModel = asRecord(validatorRole?.defaultModel);
+                  const roleModelId = typeof roleDefaultModel?.modelId === "string" ? roleDefaultModel.modelId.trim() : "";
+                  const phaseModel = asRecord(latestStepMeta.phaseModel);
+                  const phaseModelId = typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";
+                  const runtimePhaseModel = asRecord(asRecord(runMetadata?.phaseRuntime)?.currentPhaseModel);
+                  const runtimePhaseModelId = typeof runtimePhaseModel?.modelId === "string" ? runtimePhaseModel.modelId.trim() : "";
+                  const stepModelId = typeof latestStepMeta.modelId === "string" ? latestStepMeta.modelId.trim() : "";
+                  const defaultValidationModel = typeof DEFAULT_EXECUTION_POLICY.validation.model === "string" ? DEFAULT_EXECUTION_POLICY.validation.model.trim() : "";
+                  const candidateModelIds = [
+                    roleModelId,
+                    phaseModelId,
+                    runtimePhaseModelId,
+                    stepModelId,
+                    defaultValidationModel,
+                    "openai/gpt-5.3-codex"
+                  ].filter((entry) => entry.length > 0);
+                  const validatorModelId = candidateModelIds.find((entry) => Boolean(resolveModelDescriptor(entry))) ?? candidateModelIds[0] ?? "openai/gpt-5.3-codex";
+                  const outputs = asRecord(envelope.outputs);
+                  const collectStringList = (value) => {
+                    if (!Array.isArray(value)) return [];
+                    return value.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+                  };
+                  const filesChanged = [
+                    ...collectStringList(outputs?.filesChanged),
+                    ...collectStringList(outputs?.changedFiles),
+                    ...collectStringList(outputs?.modifiedFiles),
+                    ...collectStringList(outputs?.files_changed),
+                    ...collectStringList(outputs?.changed_files),
+                    ...collectStringList(outputs?.modified_files)
+                  ].filter((entry, index, all) => all.indexOf(entry) === index);
+                  const testsRun = asRecord(outputs?.testsRun ?? outputs?.tests_run);
+                  const testsSummary = testsRun ? [
+                    `passed=${Number(testsRun.passed ?? 0)}`,
+                    `failed=${Number(testsRun.failed ?? 0)}`,
+                    `skipped=${Number(testsRun.skipped ?? 0)}`
+                  ].join(", ") : "not reported";
+                  const validatorPrompt = [
+                    `Validate completed worker output for step "${latestStep.stepKey}" (${latestStep.title}).`,
+                    `Validation criteria: ${normalizedContract.criteria}`,
+                    `Worker summary: ${envelope.summary}`,
+                    filesChanged.length > 0 ? `Files changed:
+- ${filesChanged.join("\n- ")}` : "Files changed: none reported.",
+                    `Tests summary: ${testsSummary}`,
+                    `Use report_validation with targetWorkerId="${latestStep.stepKey}" and verdict "pass" or "fail".`,
+                    "When failing, include findings with concrete remediation steps."
+                  ].join("\n\n");
+                  const existingStepKeys = new Set(existingSteps.map((candidate) => candidate.stepKey));
+                  const baseValidatorKey = `validate_${latestStep.stepKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+                  let validatorStepKey = baseValidatorKey;
+                  let keyCounter = 1;
+                  while (existingStepKeys.has(validatorStepKey)) {
+                    validatorStepKey = `${baseValidatorKey}_${keyCounter}`;
+                    keyCounter += 1;
+                  }
+                  const maxStepIndex = existingSteps.reduce((max, candidate) => Math.max(max, candidate.stepIndex), -1);
+                  const spawned = this.addSteps({
+                    runId: run.id,
+                    steps: [
+                      {
+                        stepKey: validatorStepKey,
+                        title: `Validate: ${latestStep.title}`,
+                        stepIndex: maxStepIndex + 1,
+                        laneId: latestStep.laneId,
+                        dependencyStepKeys: [latestStep.stepKey],
+                        executorKind: "unified",
+                        metadata: {
+                          stepType: "validation",
+                          taskType: "validation",
+                          instructions: validatorPrompt,
+                          modelId: validatorModelId,
+                          role: validatorRoleName,
+                          autoSpawnedValidation: true,
+                          targetStepId: latestStep.id,
+                          targetStepKey: latestStep.stepKey,
+                          targetAttemptId: args.attemptId,
+                          targetStepSummary: envelope.summary,
+                          phaseKey: stepPhaseKey || phaseCard?.phaseKey || null,
+                          phaseName: stepPhaseName || phaseCard?.name || null,
+                          phasePosition: typeof latestStepMeta.phasePosition === "number" ? latestStepMeta.phasePosition : phaseCard?.position ?? null,
+                          validationContract: normalizedContract
+                        }
+                      }
+                    ]
+                  });
+                  if (spawned.length > 0) {
+                    appendTimelineEvent({
+                      runId: run.id,
+                      stepId: spawned[0].id,
+                      eventType: "validation_auto_spawned",
+                      reason: "dedicated_required_validation",
+                      detail: {
+                        targetStepId: latestStep.id,
+                        targetStepKey: latestStep.stepKey,
+                        validatorStepKey: spawned[0].stepKey,
+                        validatorModelId
+                      }
+                    });
+                    void this.startReadyAutopilotAttempts({
+                      runId: run.id,
+                      reason: "validation_auto_spawned"
+                    }).catch(() => {
+                    });
+                  }
+                }
+              } else {
+                const reminder = `Step "${latestStep.stepKey}" requires self-validation. Review output and call report_validation with verdict pass/fail.`;
+                appendTimelineEvent({
+                  runId: run.id,
+                  stepId: latestStep.id,
+                  attemptId: args.attemptId,
+                  eventType: "validation_self_check_reminder",
+                  reason: "required_validation_missing",
+                  detail: {
+                    stepKey: latestStep.stepKey,
+                    reminder
+                  }
+                });
+                persistRuntimeEvent({
+                  runId: run.id,
+                  stepId: latestStep.id,
+                  attemptId: args.attemptId,
+                  sessionId: attemptRow.executor_session_id,
+                  eventType: "worker_message",
+                  eventKey: `validation_self_check_reminder:${run.id}:${latestStep.id}:${completedAt}`,
+                  occurredAt: completedAt,
+                  payload: {
+                    audience: "coordinator",
+                    stepId: latestStep.id,
+                    stepKey: latestStep.stepKey,
+                    message: reminder
+                  }
+                });
+                emit({
+                  type: "orchestrator-step-updated",
+                  runId: run.id,
+                  stepId: latestStep.id,
+                  reason: "validation_self_check_reminder"
+                });
+                validationSelfCheckReminder = true;
+              }
             }
           }
         }
@@ -56194,6 +56595,19 @@ function createOrchestratorService({
             summary: envelope.summary
           }
         });
+        if (validationContractUnfulfilledSignal) {
+          emit({
+            type: "orchestrator-run-updated",
+            runId: run.id,
+            reason: "validation_contract_unfulfilled"
+          });
+        } else if (validationSelfCheckReminder) {
+          emit({
+            type: "orchestrator-run-updated",
+            runId: run.id,
+            reason: "validation_self_check_reminder"
+          });
+        }
       } else if (status === "blocked") {
         persistRuntimeEvent({
           runId: run.id,
@@ -58250,87 +58664,6 @@ ${st.instructions}`).join("\n\n");
         createdAt: row.created_at,
         updatedAt: row.updated_at
       };
-    },
-    // ─── Team Member CRUD (orchestrator_team_members) ────────────────
-    insertTeamMember(member) {
-      const id = (0, import_node_crypto15.randomUUID)();
-      const now = nowIso2();
-      const status = member.status ?? "spawning";
-      db.run(
-        `
-          insert into orchestrator_team_members(
-            id, run_id, mission_id, provider, model, role,
-            session_id, status, claimed_task_ids_json, metadata_json,
-            created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)
-        `,
-        [
-          id,
-          member.runId,
-          member.missionId,
-          member.provider,
-          member.model,
-          member.role,
-          member.sessionId ?? null,
-          status,
-          member.metadata ? JSON.stringify(member.metadata) : null,
-          now,
-          now
-        ]
-      );
-      return {
-        id,
-        runId: member.runId,
-        missionId: member.missionId,
-        provider: member.provider,
-        model: member.model,
-        role: member.role,
-        sessionId: member.sessionId ?? null,
-        status,
-        claimedTaskIds: [],
-        metadata: member.metadata ?? null,
-        createdAt: now,
-        updatedAt: now
-      };
-    },
-    updateTeamMemberStatus(id, status) {
-      const now = nowIso2();
-      db.run(
-        `
-          update orchestrator_team_members
-          set status = ?,
-              updated_at = ?
-          where id = ?
-        `,
-        [status, now, id]
-      );
-    },
-    getTeamMembers(runId) {
-      const rows = db.all(
-        `
-          select id, run_id, mission_id, provider, model, role,
-                 session_id, status, claimed_task_ids_json, metadata_json,
-                 created_at, updated_at
-          from orchestrator_team_members
-          where run_id = ?
-          order by created_at asc
-        `,
-        [runId]
-      );
-      return rows.map((row) => ({
-        id: row.id,
-        runId: row.run_id,
-        missionId: row.mission_id,
-        provider: row.provider,
-        model: row.model,
-        role: row.role,
-        sessionId: row.session_id,
-        status: row.status,
-        claimedTaskIds: parseArray(row.claimed_task_ids_json),
-        metadata: parseJsonRecord(row.metadata_json),
-        createdAt: row.created_at,
-        updatedAt: row.updated_at
-      }));
     }
   };
 }
@@ -60099,7 +60432,36 @@ async function deleteCoordinatorCheckpoint(projectRoot, runId) {
 }
 
 // ../desktop/src/main/services/orchestrator/teamRuntimeState.ts
+function normalizeTeamMemberSource(member) {
+  if (member.source === "ade-worker" || member.source === "ade-subagent" || member.source === "claude-native") {
+    return member.source;
+  }
+  const metadata = member.metadata ?? {};
+  const metadataSource = typeof metadata.source === "string" ? metadata.source.trim() : "";
+  if (metadataSource === "ade-worker" || metadataSource === "ade-subagent" || metadataSource === "claude-native") {
+    return metadataSource;
+  }
+  const isSubAgent = metadata.isSubAgent === true || metadata.parentWorkerId != null;
+  return isSubAgent || member.role === "teammate" ? "ade-subagent" : "ade-worker";
+}
+function normalizeParentWorkerId(member) {
+  if (typeof member.parentWorkerId === "string" && member.parentWorkerId.trim().length > 0) {
+    return member.parentWorkerId.trim();
+  }
+  const metadata = member.metadata ?? {};
+  if (typeof metadata.parentWorkerId === "string" && metadata.parentWorkerId.trim().length > 0) {
+    return metadata.parentWorkerId.trim();
+  }
+  return null;
+}
 function registerTeamMember(ctx, member) {
+  const source = normalizeTeamMemberSource(member);
+  const parentWorkerId = normalizeParentWorkerId(member);
+  const metadata = {
+    ...member.metadata ?? {},
+    source,
+    ...parentWorkerId ? { parentWorkerId } : {}
+  };
   ctx.db.run(
     `insert into orchestrator_team_members(
       id, run_id, mission_id, provider, model, role, session_id, status,
@@ -60115,31 +60477,60 @@ function registerTeamMember(ctx, member) {
       member.sessionId,
       member.status,
       JSON.stringify(member.claimedTaskIds),
-      member.metadata ? JSON.stringify(member.metadata) : null,
+      JSON.stringify(metadata),
       member.createdAt,
       member.updatedAt
     ]
   );
+}
+function updateTeamMemberStatus(ctx, memberId, updates) {
+  const now = nowIso2();
+  if (updates.status) {
+    ctx.db.run(
+      `update orchestrator_team_members set status = ?, updated_at = ? where id = ?`,
+      [updates.status, now, memberId]
+    );
+  }
+  if (updates.sessionId !== void 0) {
+    ctx.db.run(
+      `update orchestrator_team_members set session_id = ?, updated_at = ? where id = ?`,
+      [updates.sessionId, now, memberId]
+    );
+  }
+  if (updates.claimedTaskIds) {
+    ctx.db.run(
+      `update orchestrator_team_members set claimed_task_ids_json = ?, updated_at = ? where id = ?`,
+      [JSON.stringify(updates.claimedTaskIds), now, memberId]
+    );
+  }
 }
 function getTeamMembersForRun(ctx, runId) {
   const rows = ctx.db.all(
     `select * from orchestrator_team_members where run_id = ? order by created_at asc`,
     [runId]
   );
-  return rows.map((row) => ({
-    id: row.id,
-    runId: row.run_id,
-    missionId: row.mission_id,
-    provider: row.provider,
-    model: row.model,
-    role: row.role,
-    sessionId: row.session_id,
-    status: row.status,
-    claimedTaskIds: parseJsonArray(row.claimed_task_ids_json),
-    metadata: parseJsonRecord(row.metadata_json),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  }));
+  return rows.map((row) => {
+    const metadata = parseJsonRecord(row.metadata_json) ?? {};
+    const sourceRaw = typeof metadata.source === "string" ? metadata.source.trim() : "";
+    const source = sourceRaw === "ade-worker" || sourceRaw === "ade-subagent" || sourceRaw === "claude-native" ? sourceRaw : metadata.isSubAgent === true || typeof metadata.parentWorkerId === "string" || row.role === "teammate" ? "ade-subagent" : "ade-worker";
+    const parentWorkerId = typeof metadata.parentWorkerId === "string" && metadata.parentWorkerId.trim().length > 0 ? metadata.parentWorkerId.trim() : null;
+    return {
+      id: row.id,
+      runId: row.run_id,
+      missionId: row.mission_id,
+      provider: row.provider,
+      model: row.model,
+      role: row.role,
+      source,
+      parentWorkerId,
+      sessionId: row.session_id,
+      status: row.status,
+      claimedTaskIds: parseJsonArray(row.claimed_task_ids_json),
+      metadata,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  });
 }
 function updateTeamRuntimePhase(ctx, runId, phase, extra) {
   const now = nowIso2();
@@ -60214,7 +60605,7 @@ function getTeamRuntimeStateForRun(ctx, runId) {
 // ../desktop/src/main/services/orchestrator/coordinatorTools.ts
 var VALIDATION_CONTRACT_SCHEMA = external_exports.object({
   level: external_exports.enum(["step", "milestone", "mission"]),
-  tier: external_exports.enum(["self", "spot-check", "dedicated"]),
+  tier: external_exports.enum(["self", "dedicated"]),
   required: external_exports.boolean(),
   criteria: external_exports.string(),
   evidence: external_exports.array(external_exports.string()).default([]),
@@ -60356,13 +60747,13 @@ function resolveModelIdFromConfig(config2) {
   const modelId = typeof record2.modelId === "string" ? record2.modelId.trim() : "";
   return modelId.length > 0 ? modelId : "";
 }
-function parseValidationContract(value) {
+function parseValidationContract2(value) {
   const raw = asRecord(value);
   if (!raw) return null;
   if (raw.level !== "step" && raw.level !== "milestone" && raw.level !== "mission") {
     return null;
   }
-  if (raw.tier !== "self" && raw.tier !== "spot-check" && raw.tier !== "dedicated") {
+  if (raw.tier !== "self" && raw.tier !== "dedicated") {
     return null;
   }
   const criteria = typeof raw.criteria === "string" ? raw.criteria.trim() : "";
@@ -60387,32 +60778,6 @@ function resolveValidationStateFromStepMetadata(metadata) {
     return reportVerdict;
   }
   return "pending";
-}
-function resolveRequireValidatorPassFlag(metadata) {
-  if (!metadata) return null;
-  const candidates = [
-    metadata,
-    asRecord(metadata.policyOverrides),
-    asRecord(metadata.missionPolicyFlags),
-    asRecord(metadata.executionPolicy),
-    asRecord(metadata.teamRuntime),
-    asRecord(asRecord(metadata.teamRuntime)?.policyOverrides),
-    asRecord(asRecord(metadata.executionPolicy)?.teamRuntime),
-    asRecord(asRecord(asRecord(metadata.executionPolicy)?.teamRuntime)?.policyOverrides),
-    asRecord(metadata.launch),
-    asRecord(asRecord(metadata.launch)?.teamRuntime),
-    asRecord(asRecord(asRecord(metadata.launch)?.teamRuntime)?.policyOverrides),
-    asRecord(asRecord(metadata.launch)?.executionPolicy),
-    asRecord(asRecord(asRecord(metadata.launch)?.executionPolicy)?.teamRuntime),
-    asRecord(asRecord(asRecord(asRecord(metadata.launch)?.executionPolicy)?.teamRuntime)?.policyOverrides)
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    if (typeof candidate.requireValidatorPass === "boolean") {
-      return candidate.requireValidatorPass;
-    }
-  }
-  return null;
 }
 function buildStalenessSignals(graph) {
   const signals = [];
@@ -60491,12 +60856,15 @@ function createCoordinatorToolSet(deps) {
           runId,
           missionId,
           provider: args.provider,
-          model: "",
+          model: args.modelId,
           role: args.isSubAgent ? "teammate" : "worker",
+          source: args.source,
+          parentWorkerId: args.parentWorkerId ?? null,
           sessionId: null,
           status: "spawning",
           claimedTaskIds: [],
           metadata: {
+            source: args.source,
             ...args.role ? { teamRole: args.role } : {},
             ...args.isSubAgent ? { isSubAgent: true } : {},
             ...args.parentWorkerId ? { parentWorkerId: args.parentWorkerId } : {}
@@ -60511,25 +60879,6 @@ function createCoordinatorToolSet(deps) {
         error: err instanceof Error ? err.message : String(err)
       });
     }
-  }
-  function isValidatorPassRequired(g) {
-    const runMeta = asRecord(g.run.metadata);
-    const fromRun = resolveRequireValidatorPassFlag(runMeta);
-    if (typeof fromRun === "boolean") return fromRun;
-    try {
-      const missionRow = db.get(
-        `select metadata_json from missions where id = ? limit 1`,
-        [missionId]
-      );
-      if (missionRow?.metadata_json) {
-        const missionMetaRaw = JSON.parse(missionRow.metadata_json);
-        const missionMeta = asRecord(missionMetaRaw);
-        const fromMission = resolveRequireValidatorPassFlag(missionMeta);
-        if (typeof fromMission === "boolean") return fromMission;
-      }
-    } catch {
-    }
-    return true;
   }
   function resolveMissionGoal() {
     const mission = missionService.get(missionId);
@@ -60740,6 +61089,7 @@ function createCoordinatorToolSet(deps) {
       workerId: stepKey,
       step: created[0] ?? null,
       roleName,
+      modelId: resolvedModelId,
       toolProfile
     };
   };
@@ -60833,6 +61183,46 @@ function createCoordinatorToolSet(deps) {
     }
     return { valid: true };
   }
+  function stepHasPassingRequiredValidation(step) {
+    const stepMeta = asRecord(step.metadata) ?? {};
+    const validationContract = parseValidationContract2(stepMeta.validationContract ?? null);
+    if (!validationContract?.required) return true;
+    if (resolveValidationStateFromStepMetadata(stepMeta) === "pass") return true;
+    const validationPassedAt = typeof stepMeta.validationPassedAt === "string" ? stepMeta.validationPassedAt.trim() : "";
+    return validationPassedAt.length > 0;
+  }
+  function validateRequiredValidationGates(phases, g) {
+    if (phases.length === 0) return { valid: true };
+    const runMeta = asRecord(g.run.metadata);
+    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+    const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    if (!currentPhaseKey && !currentPhaseName) return { valid: true };
+    const sorted = [...phases].sort((a, b) => a.position - b.position);
+    const currentPhase = sorted.find(
+      (phase) => phase.phaseKey === currentPhaseKey || phase.name === currentPhaseName
+    );
+    if (!currentPhase) return { valid: true };
+    const currentIndex = sorted.indexOf(currentPhase);
+    const stepsForPhase = (phase) => g.steps.filter((step) => {
+      const stepMeta = asRecord(step.metadata);
+      const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
+      const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
+      return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+    });
+    for (let i = 0; i < currentIndex; i += 1) {
+      const earlier = sorted[i];
+      if (!earlier.validationGate.required) continue;
+      const missingRequiredValidation = stepsForPhase(earlier).filter((step) => step.status === "succeeded").filter((step) => !stepHasPassingRequiredValidation(step));
+      if (missingRequiredValidation.length > 0) {
+        return {
+          valid: false,
+          reason: `Phase "${earlier.name}" validation gate has not passed. ${missingRequiredValidation.length} step(s) are missing required validation.`
+        };
+      }
+    }
+    return { valid: true };
+  }
   const spawn_worker = (0, import_ai.tool)({
     description: "Spawn a new agent worker session. The worker will execute the given prompt autonomously. Returns a worker ID (step key) you can use to track, message, or stop the worker.",
     inputSchema: external_exports.object({
@@ -60858,7 +61248,7 @@ function createCoordinatorToolSet(deps) {
         if (replacementSourceWorkerId.length > 0 && !resolveStep(g, replacementSourceWorkerId)) {
           return { ok: false, error: `Replacement source worker '${replacementSourceWorkerId}' was not found.` };
         }
-        const parsedContract = parseValidationContract(validationContract ?? null);
+        const parsedContract = parseValidationContract2(validationContract ?? null);
         if (validationContract && !parsedContract) {
           return { ok: false, error: "Invalid validationContract payload." };
         }
@@ -60920,8 +61310,16 @@ function createCoordinatorToolSet(deps) {
             });
             return { ok: false, error: phaseCheck.reason };
           }
+          const validationGateCheck = validateRequiredValidationGates(missionPhases, g);
+          if (!validationGateCheck.valid) {
+            logger.info("coordinator.spawn_worker.validation_gate_blocked", {
+              name: name15,
+              reason: validationGateCheck.reason
+            });
+            return { ok: false, error: validationGateCheck.reason };
+          }
         }
-        const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
+        const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: name15,
           modelId: resolvedModelId,
           prompt,
@@ -60970,7 +61368,13 @@ function createCoordinatorToolSet(deps) {
           launchNote = "autopilot_start_timeout_step_queued";
           logger.warn("coordinator.spawn_worker.autopilot_timeout", { name: name15, workerId });
         }
-        trackTeamMember({ workerId, provider: resolvedProvider, role: roleName });
+        trackTeamMember({
+          workerId,
+          provider: resolvedProvider,
+          modelId: spawnedModelId,
+          role: roleName,
+          source: "ade-worker"
+        });
         logger.info("coordinator.spawn_worker", {
           name: name15,
           workerId,
@@ -60987,7 +61391,7 @@ function createCoordinatorToolSet(deps) {
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
           name: name15,
-          modelId: resolvedModelId,
+          modelId: spawnedModelId,
           provider: resolvedProvider,
           role: roleName,
           toolProfile,
@@ -61199,7 +61603,7 @@ function createCoordinatorToolSet(deps) {
         if (!specialistModelId) {
           return { ok: false, error: "Unable to resolve specialist model ID from role default or active phase model." };
         }
-        const { workerId, step, roleName, toolProfile } = spawnWorkerStep({
+        const { workerId, step, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: workerName,
           modelId: specialistModelId,
           prompt: objective,
@@ -61212,6 +61616,15 @@ function createCoordinatorToolSet(deps) {
             requestedBy: requestedByWorkerId?.trim() || null,
             reason: reason.trim()
           }
+        });
+        const specialistDescriptor = resolveModelDescriptor(spawnedModelId);
+        const specialistProvider = specialistDescriptor?.family === "anthropic" ? "claude" : specialistDescriptor?.family === "openai" ? "codex" : specialistDescriptor?.family ?? roleDef.defaultModel.provider ?? "unknown";
+        trackTeamMember({
+          workerId,
+          provider: specialistProvider,
+          modelId: spawnedModelId,
+          role: roleName,
+          source: "ade-worker"
         });
         if (step) {
           onDagMutation({
@@ -61829,7 +62242,7 @@ function createCoordinatorToolSet(deps) {
           return { ok: false, error: `Validator worker not found: ${validatorWorkerId}` };
         }
         const existingMeta = asRecord(targetStep?.metadata) ?? {};
-        const resolvedContract = parseValidationContract(contract ?? null) ?? parseValidationContract(existingMeta.validationContract ?? null) ?? {
+        const resolvedContract = parseValidationContract2(contract ?? null) ?? parseValidationContract2(existingMeta.validationContract ?? null) ?? {
           level: "step",
           tier: "self",
           required: false,
@@ -62006,7 +62419,7 @@ function createCoordinatorToolSet(deps) {
           const lastStatusReport = asRecord(stepMeta.lastStatusReport);
           const lastResultReport = asRecord(stepMeta.lastResultReport);
           const lastValidationReport = asRecord(stepMeta.lastValidationReport);
-          const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
+          const validationContract = parseValidationContract2(stepMeta.validationContract ?? null);
           const runningAttempt = g.attempts.some((attempt) => attempt.stepId === step.id && attempt.status === "running");
           const obligations = [];
           if (runningAttempt && !lastStatusReport) {
@@ -62059,7 +62472,7 @@ function createCoordinatorToolSet(deps) {
           lastStatusReport: asRecord(step.metadata)?.lastStatusReport ?? null,
           lastResultReport: asRecord(step.metadata)?.lastResultReport ?? null,
           lastValidationReport: asRecord(step.metadata)?.lastValidationReport ?? null,
-          validationContract: parseValidationContract(asRecord(step.metadata)?.validationContract ?? null)
+          validationContract: parseValidationContract2(asRecord(step.metadata)?.validationContract ?? null)
         }));
         return {
           ok: true,
@@ -62273,7 +62686,7 @@ function createCoordinatorToolSet(deps) {
           if (normalizedRole.length > 0 && !roleDef) {
             return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
           }
-          const parsedContract = parseValidationContract(entry.validationContract ?? null);
+          const parsedContract = parseValidationContract2(entry.validationContract ?? null);
           if (entry.validationContract && !parsedContract) {
             return { ok: false, error: `Invalid validation contract for step '${entry.key}'.` };
           }
@@ -62834,15 +63247,13 @@ function createCoordinatorToolSet(deps) {
           return { ok: false, error: `Step '${workerId}' is already terminal (${step.status})` };
         }
         const stepMeta = asRecord(step.metadata) ?? {};
-        const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
+        const validationContract = parseValidationContract2(stepMeta.validationContract ?? null);
         const validationState = resolveValidationStateFromStepMetadata(stepMeta);
-        const requireValidatorPass = isValidatorPassRequired(g);
-        if (validationContract?.required && validationState !== "pass" && requireValidatorPass) {
+        if (validationContract?.required && validationState !== "pass") {
           return {
             ok: false,
             error: `Step '${workerId}' requires validator pass before completion (current validation state: ${validationState}).`,
-            hint: "Run report_validation with verdict='pass' for this step, or disable the mission policy flag requireValidatorPass to bypass.",
-            policy: { requireValidatorPass },
+            hint: "Run report_validation with verdict='pass' for this step before marking it complete.",
             validation: {
               required: true,
               state: validationState,
@@ -63016,31 +63427,27 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ summary }) => {
       try {
         const g = graph();
-        const requireValidatorPass = isValidatorPassRequired(g);
-        if (requireValidatorPass) {
-          const blockers = g.steps.filter((step) => step.status === "succeeded").flatMap((step) => {
-            const stepMeta = asRecord(step.metadata) ?? {};
-            const validationContract = parseValidationContract(stepMeta.validationContract ?? null);
-            if (!validationContract?.required) return [];
-            const validationState = resolveValidationStateFromStepMetadata(stepMeta);
-            if (validationState === "pass") return [];
-            return [{
-              stepKey: step.stepKey,
-              status: step.status,
-              validationState,
-              tier: validationContract.tier,
-              criteria: validationContract.criteria
-            }];
-          });
-          if (blockers.length > 0) {
-            return {
-              ok: false,
-              error: `Mission cannot be completed: ${blockers.length} step(s) require validator pass before completion.`,
-              hint: "Submit passing validation reports for blocked steps, or disable requireValidatorPass in mission policy to bypass.",
-              policy: { requireValidatorPass },
-              blockers
-            };
-          }
+        const blockers = g.steps.filter((step) => step.status === "succeeded").flatMap((step) => {
+          const stepMeta = asRecord(step.metadata) ?? {};
+          const validationContract = parseValidationContract2(stepMeta.validationContract ?? null);
+          if (!validationContract?.required) return [];
+          const validationState = resolveValidationStateFromStepMetadata(stepMeta);
+          if (validationState === "pass") return [];
+          return [{
+            stepKey: step.stepKey,
+            status: step.status,
+            validationState,
+            tier: validationContract.tier,
+            criteria: validationContract.criteria
+          }];
+        });
+        if (blockers.length > 0) {
+          return {
+            ok: false,
+            error: `Mission cannot be completed: ${blockers.length} step(s) require validator pass before completion.`,
+            hint: "Submit passing validation reports for blocked steps before completing the mission.",
+            blockers
+          };
         }
         orchestratorService.appendRuntimeEvent({
           runId,
@@ -63606,7 +64013,7 @@ ${context}` : question;
             hardCaps: budgetCheck.hardCaps
           };
         }
-        const { workerId, step: newStep, roleName, toolProfile } = spawnWorkerStep({
+        const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: name15,
           modelId: resolvedDescriptor.id,
           prompt,
@@ -63661,7 +64068,15 @@ ${context}` : question;
           launchNote = "autopilot_start_timeout_step_queued";
           logger.warn("coordinator.delegate_to_subagent.autopilot_timeout", { name: name15, workerId });
         }
-        trackTeamMember({ workerId, provider: resolvedProvider, role: roleName, isSubAgent: true, parentWorkerId });
+        trackTeamMember({
+          workerId,
+          provider: resolvedProvider,
+          modelId: spawnedModelId,
+          role: roleName,
+          source: "ade-subagent",
+          isSubAgent: true,
+          parentWorkerId
+        });
         logger.info("coordinator.delegate_to_subagent", {
           name: name15,
           workerId,
@@ -63680,7 +64095,7 @@ ${context}` : question;
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
           name: name15,
-          modelId: resolvedDescriptor.id,
+          modelId: spawnedModelId,
           provider: resolvedProvider,
           role: roleName,
           toolProfile
@@ -63692,11 +64107,206 @@ ${context}` : question;
       }
     }
   });
+  const delegate_parallel = (0, import_ai.tool)({
+    description: "Delegate multiple subtasks to child agents in a single atomic batch under one parent worker.",
+    inputSchema: external_exports.object({
+      parentWorkerId: external_exports.string().describe("Step key of the parent worker that owns this subtask batch"),
+      tasks: external_exports.array(
+        external_exports.object({
+          name: external_exports.string().describe("Human-readable name for the sub-agent"),
+          prompt: external_exports.string().describe("Full task prompt for the sub-agent"),
+          modelId: external_exports.string().optional().describe("Optional model ID override for this sub-agent"),
+          role: external_exports.string().optional().describe("Optional team role to bind (e.g. implementer, validator)")
+        })
+      ).min(1).max(32).describe("Batch of child tasks to spawn under the same parent worker")
+    }),
+    execute: async ({ parentWorkerId, tasks }) => {
+      try {
+        const g = graph();
+        const teamRuntime = resolveTeamRuntimeConfig(g);
+        if (teamRuntime?.allowSubAgents === false) {
+          return { ok: false, error: "Sub-agent delegation is disabled (allowSubAgents=false). Use spawn_worker instead." };
+        }
+        if (teamRuntime?.allowParallelAgents === false) {
+          return { ok: false, error: "Parallel agents disabled (allowParallelAgents=false). Batch delegation is not allowed." };
+        }
+        const parentStep = resolveStep(g, parentWorkerId);
+        if (!parentStep) {
+          return { ok: false, error: `Parent worker '${parentWorkerId}' not found.` };
+        }
+        if (TERMINAL_STEP_STATUSES.has(parentStep.status)) {
+          return {
+            ok: false,
+            error: `Parent worker '${parentWorkerId}' is already ${parentStep.status}. Cannot delegate from a completed worker.`
+          };
+        }
+        const budgetCheck = await checkBudgetHardCaps({
+          failClosedOnTelemetryError: true,
+          operation: "delegate_parallel"
+        });
+        if (budgetCheck.blocked) {
+          logger.warn("coordinator.delegate_parallel.hard_cap_blocked", {
+            parentWorkerId,
+            detail: budgetCheck.detail,
+            taskCount: tasks.length
+          });
+          return {
+            ok: false,
+            error: `Cannot delegate sub-agents: ${budgetCheck.detail}. Mission pausing.`,
+            hardCapTriggered: true,
+            hardCaps: budgetCheck.hardCaps
+          };
+        }
+        const phaseModelResolution = resolveModelFromPhaseModel(g);
+        const parentMeta = asRecord(parentStep.metadata);
+        const parentModel = typeof parentMeta?.modelId === "string" ? parentMeta.modelId.trim() : "";
+        const validatedTasks = [];
+        for (let i = 0; i < tasks.length; i += 1) {
+          const rawTask = tasks[i];
+          const taskName = rawTask.name.trim();
+          const taskPrompt = rawTask.prompt.trim();
+          if (!taskName.length) {
+            return { ok: false, error: `tasks[${i}].name is required.` };
+          }
+          if (!taskPrompt.length) {
+            return { ok: false, error: `tasks[${i}].prompt is required.` };
+          }
+          const normalizedRole = typeof rawTask.role === "string" && rawTask.role.trim().length > 0 ? rawTask.role.trim() : null;
+          const roleDef = normalizedRole ? resolveRoleDefinition(teamRuntime, normalizedRole) : null;
+          if (normalizedRole && !roleDef) {
+            return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
+          }
+          const requestedModelId = typeof rawTask.modelId === "string" ? rawTask.modelId.trim() : "";
+          const resolvedModelId = requestedModelId || resolveModelIdFromConfig(roleDef?.defaultModel) || parentModel || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
+          if (!resolvedModelId.length) {
+            return {
+              ok: false,
+              error: `Unable to resolve modelId for task '${taskName}' from override, role default, parent worker, or phase model.`
+            };
+          }
+          const descriptor = resolveModelDescriptor(resolvedModelId);
+          if (!descriptor) {
+            return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
+          }
+          const provider = descriptor.family === "anthropic" ? "claude" : descriptor.family === "openai" ? "codex" : descriptor.family;
+          if (provider === "claude" && descriptor.isCliWrapped && teamRuntime?.allowClaudeAgentTeams === false) {
+            return {
+              ok: false,
+              error: `Claude agent teams are disabled (allowClaudeAgentTeams=false). Cannot delegate claude sub-agent '${taskName}'.`
+            };
+          }
+          validatedTasks.push({
+            name: taskName,
+            prompt: taskPrompt,
+            normalizedRole,
+            roleName: roleDef?.name ?? normalizedRole,
+            resolvedModelId: descriptor.id,
+            provider,
+            toolProfile: normalizedRole ? resolveRoleToolProfile(teamRuntime, normalizedRole) : null
+          });
+        }
+        const createdChildren = [];
+        for (const task of validatedTasks) {
+          const { workerId, step: childStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
+            name: task.name,
+            modelId: task.resolvedModelId,
+            prompt: task.prompt,
+            dependsOn: [parentWorkerId],
+            roleName: task.normalizedRole,
+            laneId: parentStep.laneId ?? null
+          });
+          if (childStep) {
+            orchestratorService.updateStepMetadata({
+              runId,
+              stepId: childStep.id,
+              metadata: {
+                parentWorkerId,
+                parentStepId: parentStep.id,
+                isSubAgent: true
+              }
+            });
+            onDagMutation({
+              runId,
+              mutation: { type: "step_added", step: childStep },
+              timestamp: nowIso2(),
+              source: "coordinator"
+            });
+          }
+          trackTeamMember({
+            workerId,
+            provider: task.provider,
+            modelId: spawnedModelId,
+            role: roleName,
+            source: "ade-subagent",
+            isSubAgent: true,
+            parentWorkerId
+          });
+          createdChildren.push({
+            workerId,
+            stepId: childStep?.id ?? null,
+            status: childStep?.status ?? "unknown",
+            name: task.name,
+            modelId: spawnedModelId,
+            provider: task.provider,
+            role: roleName,
+            toolProfile: toolProfile ?? task.toolProfile
+          });
+        }
+        let launchNote;
+        try {
+          await Promise.race([
+            orchestratorService.startReadyAutopilotAttempts({
+              runId,
+              reason: "coordinator_delegate_parallel"
+            }),
+            new Promise(
+              (_, reject) => setTimeout(() => reject(new Error("autopilot_start_timeout")), 5e3)
+            )
+          ]);
+        } catch {
+          launchNote = "autopilot_start_timeout_steps_queued";
+          logger.warn("coordinator.delegate_parallel.autopilot_timeout", {
+            parentWorkerId,
+            taskCount: tasks.length
+          });
+        }
+        const freshGraph = graph();
+        const launchedCount = createdChildren.reduce((count, child) => {
+          if (!child.stepId) return count;
+          const hasRunningAttempt = freshGraph.attempts.some((attempt) => attempt.stepId === child.stepId && attempt.status === "running");
+          return count + (hasRunningAttempt ? 1 : 0);
+        }, 0);
+        const batchId = `delegation_batch_${Date.now()}`;
+        logger.info("coordinator.delegate_parallel", {
+          batchId,
+          parentWorkerId,
+          taskCount: createdChildren.length,
+          launchedCount,
+          launchNote
+        });
+        return {
+          ok: true,
+          batchId,
+          parentWorkerId,
+          total: createdChildren.length,
+          launchedCount,
+          pendingCount: Math.max(0, createdChildren.length - launchedCount),
+          ...launchNote ? { launchNote } : {},
+          children: createdChildren
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.delegate_parallel.error", { parentWorkerId, error: msg });
+        return { ok: false, error: msg };
+      }
+    }
+  });
   return {
     spawn_worker,
     insert_milestone,
     request_specialist,
     delegate_to_subagent,
+    delegate_parallel,
     stop_worker,
     send_message,
     message_worker,
@@ -65297,14 +65907,16 @@ ${rulesSection}
 Phase ordering is enforced by spawn_worker \u2014 if it rejects a spawn due to phase ordering violations, adapt your plan to respect the configured phase sequence. Do not attempt to bypass phase gates.
 
 ### Validation Tiers
-Each phase may specify a validation gate tier. Follow these rules strictly:
-- **self-check**: After implementation completes, validate the output yourself by reading it (get_worker_output, read_file) and calling report_validation with your verdict. No extra worker needed.
-- **spot-check**: Spawn a validator worker for a random sample of completed steps in the phase. Not every step needs validation \u2014 use judgment on which are highest risk.
-- **dedicated**: Always spawn a validator worker after each implementation step completes. The validator must pass before the step is considered done.
-- **none**: No validation required for the phase.
+Validation is a runtime contract, not advisory behavior:
+- Runtime enforces required validation gates and phase transitions.
+- Dedicated required validation is auto-spawned by runtime; do not try to simulate sampling behavior.
+- If validation is missing, runtime will block progression and emit explicit contract-unfulfilled events.
+- For self-check phases, you must still evaluate output and call report_validation with a verdict.
 
 ### Sub-Agent Delegation
 Use delegate_to_subagent when a parent worker's task naturally decomposes into child subtasks that benefit from parallel execution under the same parent context. Use spawn_worker for independent top-level work. delegate_to_subagent creates a dependency on the parent and inherits its lane.
+Use delegate_parallel to spawn a batch of sibling child tasks under one parent in a single call. Use it when N subtasks are known upfront and can run concurrently.
+Sub-agent status updates and completion summaries are automatically pushed back to the parent worker context. Do not poll get_worker_output just to check heartbeat/progress.
 
 ### Hard Constraints
 These flags are enforced deterministically by the tools \u2014 violations are rejected, not warned:
@@ -65508,6 +66120,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Insert milestone | insert_milestone |
 | Request specialist | request_specialist |
 | Delegate subtask to child agent | delegate_to_subagent |
+| Delegate a parallel child-task batch | delegate_parallel |
 | Stop a worker | stop_worker |
 | Check budget pressure | get_budget_status |
 | Need human input | request_user_input |
@@ -68219,6 +68832,7 @@ function createAiOrchestratorService(args) {
   const pendingCoordinatorEvals = /* @__PURE__ */ new Map();
   const milestoneReadyNotificationSignatures = /* @__PURE__ */ new Map();
   const runWatchdogTimers = /* @__PURE__ */ new Map();
+  const subagentCompletionRollupSent = /* @__PURE__ */ new Set();
   const coordinatorAgents = /* @__PURE__ */ new Map();
   const coordinatorRecoveryAttempts = /* @__PURE__ */ new Map();
   const teamRuntimeStates = /* @__PURE__ */ new Map();
@@ -68292,6 +68906,11 @@ function createAiOrchestratorService(args) {
     if (watchdogTimers) {
       for (const timer of watchdogTimers) clearTimeout(timer);
       runWatchdogTimers.delete(runId);
+    }
+    for (const key of subagentCompletionRollupSent) {
+      if (key.startsWith(`${runId}:`)) {
+        subagentCompletionRollupSent.delete(key);
+      }
     }
   };
   const getMaxCoordinatorRecoveries2 = (missionId) => getMaxCoordinatorRecoveries(ctx, missionId);
@@ -68988,6 +69607,20 @@ Check all worker statuses and continue managing the mission from here. Read work
             }
           }, { graph });
         }
+      } else if (args2.eventType === "validation_contract_unfulfilled") {
+        const payload = isRecord3(args2.payload) ? args2.payload : {};
+        const stepKey = typeof payload.stepKey === "string" ? payload.stepKey.trim() : "";
+        const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
+        const description = detail.length > 0 ? detail : "A required validation contract was not fulfilled for a completed step.";
+        updateMissionStateDoc(args2.runId, {
+          addIssue: {
+            id: `validation-contract-${(0, import_node_crypto21.randomUUID)()}`,
+            severity: "high",
+            description,
+            affectedSteps: stepKey.length > 0 ? [stepKey] : [],
+            status: "open"
+          }
+        });
       } else if (args2.eventType === "plan_revised") {
         const payload = isRecord3(args2.payload) ? args2.payload : {};
         const reason = typeof payload.reason === "string" ? payload.reason.trim() : "Coordinator revised the plan.";
@@ -72342,7 +72975,7 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
           });
         }
         const steps = orchestratorService.listSteps(activeRun.id);
-        const existingGraph = getRunGraphSafe(activeRun.id);
+        const existingGraph = getRunGraphSafe2(activeRun.id);
         updateMissionStateDoc(
           activeRun.id,
           {
@@ -72405,6 +73038,26 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
         stepCount: initialMission.steps.length
       });
     }
+    const missionAfterPlanning = missionService.get(missionId);
+    const missionMetadataAfterPlanning = getMissionMetadata2(missionId);
+    const plannerPlanMeta = isRecord3(missionMetadataAfterPlanning.plannerPlan) ? missionMetadataAfterPlanning.plannerPlan : null;
+    const plannerSummary = plannerPlanMeta && isRecord3(plannerPlanMeta.missionSummary) ? plannerPlanMeta.missionSummary : null;
+    const plannerParallelismRaw = Number(plannerSummary?.parallelismCap ?? Number.NaN);
+    const plannerParallelismCap = Number.isFinite(plannerParallelismRaw) && plannerParallelismRaw > 0 ? Math.floor(plannerParallelismRaw) : null;
+    const launchMaxParallelRaw = Number(launchMetadata?.maxParallelWorkers ?? Number.NaN);
+    const launchMaxParallel = Number.isFinite(launchMaxParallelRaw) && launchMaxParallelRaw > 0 ? Math.floor(launchMaxParallelRaw) : null;
+    const requestedRunMode = args2.runMode === "manual" ? "manual" : "autopilot";
+    const requestedExecutorKind = args2.defaultExecutorKind === "manual" || args2.defaultExecutorKind === "shell" || args2.defaultExecutorKind === "unified" ? args2.defaultExecutorKind : "unified";
+    const autopilotExecutorKind = requestedRunMode === "manual" ? "manual" : requestedExecutorKind === "manual" ? "unified" : requestedExecutorKind;
+    const autopilotEnabled = requestedRunMode === "autopilot" && autopilotExecutorKind !== "manual";
+    const autopilotOwnerId = String(args2.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
+    const runParallelismCap = Math.max(
+      1,
+      Math.min(
+        32,
+        launchAgentRuntime.allowParallelAgents === false ? 1 : plannerParallelismCap ?? launchMaxParallel ?? 4
+      )
+    );
     const started = orchestratorService.startRun({
       missionId,
       steps: [],
@@ -72412,6 +73065,20 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
         ...args2.metadata ?? {},
         missionGoal,
         missionPrompt: initialMission.prompt ?? "",
+        runMode: requestedRunMode,
+        maxParallelWorkers: runParallelismCap,
+        planner: {
+          source: "mission_planner",
+          stepCount: missionAfterPlanning?.steps.length ?? 0,
+          strategy: typeof plannerSummary?.strategy === "string" ? plannerSummary.strategy : null,
+          parallelismCap: runParallelismCap
+        },
+        autopilot: {
+          enabled: autopilotEnabled,
+          executorKind: autopilotEnabled ? autopilotExecutorKind : "manual",
+          ownerId: autopilotOwnerId,
+          parallelismCap: runParallelismCap
+        },
         teamRuntime: launchTeamRuntime ? {
           ...launchTeamRuntime,
           ...normalizeAgentRuntimeFlags(launchTeamRuntime)
@@ -72467,7 +73134,7 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
       missionId,
       "Mission started. The AI orchestrator is now in control."
     );
-    const initialGraph = getRunGraphSafe(started.run.id);
+    const initialGraph = getRunGraphSafe2(started.run.id);
     updateMissionStateDoc(
       started.run.id,
       {
@@ -72601,7 +73268,7 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
       forcePlanReviewBypass: true
     });
   };
-  const getRunGraphSafe = (runId) => {
+  const getRunGraphSafe2 = (runId) => {
     try {
       return orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
     } catch {
@@ -72609,7 +73276,7 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
     }
   };
   const collectGracefulShutdownTargets = (runId) => {
-    const graph = getRunGraphSafe(runId);
+    const graph = getRunGraphSafe2(runId);
     const stepById = /* @__PURE__ */ new Map();
     const targetsBySession = /* @__PURE__ */ new Map();
     if (graph) {
@@ -72649,7 +73316,7 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
   const waitForRunAttemptDrain = async (runId, timeoutMs = GRACEFUL_CANCEL_DRAIN_WAIT_MS) => {
     const deadline = Date.now() + Math.max(0, Math.floor(timeoutMs));
     while (Date.now() <= deadline) {
-      const graph = getRunGraphSafe(runId);
+      const graph = getRunGraphSafe2(runId);
       if (!graph) return true;
       const hasActiveAttempts = graph.attempts.some((attempt) => ACTIVE_ATTEMPT_STATUSES.has(attempt.status));
       if (!hasActiveAttempts) return true;
@@ -72787,7 +73454,7 @@ Stop work and wrap up any in-flight operations.`;
       const missionRuns = [...orchestratorService.listRuns({ missionId, limit: 200 })].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
       resolvedRunId = missionRuns[0]?.id ?? null;
     }
-    const graph = resolvedRunId ? getRunGraphSafe(resolvedRunId) : null;
+    const graph = resolvedRunId ? getRunGraphSafe2(resolvedRunId) : null;
     const laneIds = graph ? [...new Set(graph.steps.map((step) => toOptionalString2(step.laneId)).filter((value) => Boolean(value)))] : [];
     const result = {
       missionId,
@@ -73156,6 +73823,58 @@ Stop work and wrap up any in-flight operations.`;
   const getGlobalChat = (args2) => getGlobalChatCtx(ctx, args2);
   const getActiveAgents = (args2) => getActiveAgentsCtx(ctx, args2);
   const sendAgentMessageWithMentions = (agentMsgArgs) => sendAgentMessageWithMentionsCtx(ctx, agentMsgArgs, { deliverMessageToAgent });
+  const maybeForwardSubagentCompletionRollup = (args2) => {
+    const { event, graph } = args2;
+    if (!event.attemptId) return;
+    if (event.reason !== "attempt_completed" && event.reason !== "completed") return;
+    const dedupeKey = `${event.runId}:${event.attemptId}`;
+    if (subagentCompletionRollupSent.has(dedupeKey)) return;
+    const attempt = graph.attempts.find((candidate) => candidate.id === event.attemptId);
+    if (!attempt) return;
+    if (attempt.status !== "succeeded" && attempt.status !== "failed") return;
+    const childStep = graph.steps.find((step) => step.id === attempt.stepId);
+    const childMeta = isRecord3(childStep?.metadata) ? childStep.metadata : null;
+    if (!childStep || childMeta?.isSubAgent !== true) return;
+    const parentWorkerId = typeof childMeta.parentWorkerId === "string" ? childMeta.parentWorkerId.trim() : "";
+    if (!parentWorkerId.length) return;
+    const parentStep = graph.steps.find((step) => step.stepKey === parentWorkerId);
+    if (!parentStep) return;
+    const parentAttempts = graph.attempts.filter((candidate) => candidate.stepId === parentStep.id);
+    if (!parentAttempts.length) return;
+    const runningParentAttempt = parentAttempts.find((candidate) => candidate.status === "running");
+    const parentAttempt = runningParentAttempt ?? [...parentAttempts].sort((left, right) => {
+      const leftTs = Date.parse(left.completedAt ?? left.createdAt);
+      const rightTs = Date.parse(right.completedAt ?? right.createdAt);
+      return rightTs - leftTs;
+    })[0];
+    if (!parentAttempt?.id || parentAttempt.id === attempt.id) return;
+    const childLabel = childStep.title?.trim().length ? childStep.title.trim() : childStep.stepKey;
+    const summary = attempt.resultEnvelope?.summary?.trim() || attempt.errorMessage?.trim() || "No summary provided.";
+    const content = `Sub-agent '${childLabel}' completed (${attempt.status}): ${summary}`;
+    try {
+      sendAgentMessageWithMentions({
+        missionId: graph.run.missionId,
+        fromAttemptId: attempt.id,
+        toAttemptId: parentAttempt.id,
+        content,
+        metadata: {
+          source: "subagent_result_rollup",
+          parentWorkerId,
+          childWorkerId: childStep.stepKey,
+          childStepId: childStep.id,
+          childAttemptId: attempt.id
+        }
+      });
+      subagentCompletionRollupSent.add(dedupeKey);
+    } catch (error48) {
+      logger.debug("ai_orchestrator.subagent_completion_rollup_failed", {
+        runId: event.runId,
+        childAttemptId: attempt.id,
+        parentAttemptId: parentAttempt.id,
+        error: error48 instanceof Error ? error48.message : String(error48)
+      });
+    }
+  };
   const listWorkerDigests2 = (digestArgs) => listWorkerDigests(ctx, digestArgs);
   const getWorkerDigest2 = (digestArgs) => getWorkerDigest(ctx, digestArgs);
   const getContextCheckpoint2 = (checkpointArgs) => getContextCheckpoint(ctx, checkpointArgs);
@@ -73565,6 +74284,20 @@ Stop work and wrap up any in-flight operations.`;
       }
       if (isAttemptCompletionEvent && event.attemptId) {
         propagateAttemptTokenUsage2(event.runId, event.attemptId);
+      }
+      if (isAttemptCompletionEvent) {
+        try {
+          maybeForwardSubagentCompletionRollup({
+            event,
+            graph: getEventGraph()
+          });
+        } catch (error48) {
+          logger.debug("ai_orchestrator.subagent_completion_rollup_unhandled", {
+            runId: event.runId,
+            attemptId: event.attemptId ?? null,
+            error: error48 instanceof Error ? error48.message : String(error48)
+          });
+        }
       }
       if (isAttemptCompletionEvent && event.stepId && event.runId) {
         try {
@@ -75869,6 +76602,18 @@ async function createAdeMcpRuntime(projectRootInput) {
         category: "orchestrator",
         payload: e
       });
+      if (e.reason === "validation_contract_unfulfilled" || e.reason === "validation_self_check_reminder") {
+        eventBuffer.push({
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+          category: "runtime",
+          payload: {
+            type: e.reason,
+            runId: e.runId ?? null,
+            stepId: e.stepId ?? null,
+            attemptId: e.attemptId ?? null
+          }
+        });
+      }
     }
   });
   const aiOrchestratorService = createAiOrchestratorService({
@@ -76890,6 +77635,7 @@ var COORDINATOR_TOOL_SPECS = [
   { name: "insert_milestone", description: "Coordinator: insert a milestone gate into the DAG.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "request_specialist", description: "Coordinator: request a specialist worker role.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "delegate_to_subagent", description: "Coordinator: delegate a subtask from a parent worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "delegate_parallel", description: "Coordinator: delegate multiple child subtasks from one parent in a single call.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "stop_worker", description: "Coordinator: stop a running worker attempt.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "send_message", description: "Coordinator: send a direct message to a worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "message_worker", description: "Coordinator: relay a message between two workers.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
@@ -77208,7 +77954,11 @@ function mapLaneSummary(lane) {
   };
 }
 function resolveEnvCallerContext() {
+  const envRoleRaw = process.env.ADE_DEFAULT_ROLE?.trim() ?? "";
+  const envRole = envRoleRaw === "orchestrator" || envRoleRaw === "agent" || envRoleRaw === "external" || envRoleRaw === "evaluator" ? envRoleRaw : null;
   return {
+    callerId: process.env.ADE_ATTEMPT_ID?.trim() || null,
+    role: envRole,
     missionId: process.env.ADE_MISSION_ID?.trim() || null,
     runId: process.env.ADE_RUN_ID?.trim() || null,
     stepId: process.env.ADE_STEP_ID?.trim() || null,
@@ -77219,6 +77969,8 @@ function resolveCallerContext(session) {
   const envContext = resolveEnvCallerContext();
   if (!session) return envContext;
   return {
+    callerId: asOptionalTrimmedString(session.identity.callerId),
+    role: session.identity.role ?? envContext.role,
     missionId: session.identity.missionId ?? envContext.missionId,
     runId: session.identity.runId ?? envContext.runId,
     stepId: session.identity.stepId ?? envContext.stepId,
@@ -77544,6 +78296,252 @@ function getCoordinatorToolSet(args) {
   });
   return toolSet;
 }
+function getTeamRuntimeContext(runtime) {
+  return {
+    db: runtime.db,
+    logger: runtime.logger
+  };
+}
+function getRunGraphSafe(runtime, runId) {
+  try {
+    return runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+  } catch {
+    return null;
+  }
+}
+function getTeamMembersForRunSafe(runtime, runId) {
+  const aiService = runtime.aiOrchestratorService;
+  if (typeof aiService.getTeamMembers === "function") {
+    try {
+      const members = aiService.getTeamMembers({ runId });
+      if (Array.isArray(members)) return members;
+    } catch {
+    }
+  }
+  return getTeamMembersForRun(getTeamRuntimeContext(runtime), runId);
+}
+function resolveStepFromGraph(graph, stepId, stepKey) {
+  const steps = Array.isArray(graph.steps) ? graph.steps : [];
+  if (stepId) {
+    const byId2 = steps.find((step) => asOptionalTrimmedString(step.id) === stepId);
+    if (byId2) return byId2;
+  }
+  if (stepKey) {
+    const byKey = steps.find((step) => asOptionalTrimmedString(step.stepKey) === stepKey);
+    if (byKey) return byKey;
+  }
+  return null;
+}
+function resolveParentAttemptIdFromGraph(graph, parentWorkerId) {
+  const steps = Array.isArray(graph.steps) ? graph.steps : [];
+  const attempts = Array.isArray(graph.attempts) ? graph.attempts : [];
+  const parentStep = steps.find((step) => asOptionalTrimmedString(step.stepKey) === parentWorkerId);
+  const parentStepId = asOptionalTrimmedString(parentStep?.id);
+  if (!parentStepId) return null;
+  const parentAttempts = attempts.filter((attempt) => asOptionalTrimmedString(attempt.stepId) === parentStepId);
+  if (!parentAttempts.length) return null;
+  const running = parentAttempts.find((attempt) => asOptionalTrimmedString(attempt.status) === "running");
+  if (running) return asOptionalTrimmedString(running.id);
+  const sorted = [...parentAttempts].sort((left, right) => {
+    const leftTs = Date.parse(asOptionalTrimmedString(left.completedAt) ?? asOptionalTrimmedString(left.createdAt) ?? "");
+    const rightTs = Date.parse(asOptionalTrimmedString(right.completedAt) ?? asOptionalTrimmedString(right.createdAt) ?? "");
+    return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
+  });
+  return asOptionalTrimmedString(sorted[0]?.id);
+}
+function inferParallelismCap(graph) {
+  const run = safeObject(graph.run);
+  const runMetadata = safeObject(run.metadata);
+  const autopilot = safeObject(runMetadata.autopilot);
+  const raw = Number(autopilot.parallelismCap ?? runMetadata.maxParallelWorkers ?? Number.NaN);
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.max(1, Math.min(32, Math.floor(raw)));
+  }
+  return 4;
+}
+function ensureNativeTeammateRegistration(args) {
+  if (args.toolName !== "report_status" && args.toolName !== "report_result") return null;
+  if (args.callerCtx.role !== "agent") return null;
+  const graph = getRunGraphSafe(args.runtime, args.runId);
+  if (!graph) return null;
+  const callerId = asOptionalTrimmedString(args.callerCtx.callerId) ?? asOptionalTrimmedString(args.callerCtx.attemptId);
+  if (!callerId || callerId === "unknown") return null;
+  const attempts = Array.isArray(graph.attempts) ? graph.attempts : [];
+  const steps = Array.isArray(graph.steps) ? graph.steps : [];
+  const knownAttemptIds = new Set(
+    attempts.map((attempt) => asOptionalTrimmedString(attempt.id)).filter((entry) => Boolean(entry))
+  );
+  const knownStepKeys = new Set(
+    steps.map((step) => asOptionalTrimmedString(step.stepKey)).filter((entry) => Boolean(entry))
+  );
+  const existingMembers = getTeamMembersForRunSafe(args.runtime, args.runId);
+  const knownTeamMemberIds = new Set(
+    existingMembers.map((member) => asOptionalTrimmedString(member.id)).filter((entry) => Boolean(entry))
+  );
+  if (knownAttemptIds.has(callerId) || knownStepKeys.has(callerId) || knownTeamMemberIds.has(callerId)) {
+    return null;
+  }
+  let parentStep = null;
+  if (args.callerCtx.stepId) {
+    parentStep = resolveStepFromGraph(graph, args.callerCtx.stepId, null);
+  }
+  if (!parentStep && args.callerCtx.attemptId) {
+    const parentAttempt = attempts.find((attempt) => asOptionalTrimmedString(attempt.id) === args.callerCtx.attemptId);
+    const parentStepId2 = asOptionalTrimmedString(parentAttempt?.stepId);
+    if (parentStepId2) {
+      parentStep = resolveStepFromGraph(graph, parentStepId2, null);
+    }
+  }
+  if (!parentStep) {
+    const fallbackWorkerId = asOptionalTrimmedString(args.toolArgs.workerId);
+    if (fallbackWorkerId) {
+      parentStep = resolveStepFromGraph(graph, null, fallbackWorkerId);
+    }
+  }
+  if (!parentStep) return null;
+  const parentWorkerId = asOptionalTrimmedString(parentStep.stepKey);
+  const parentStepId = asOptionalTrimmedString(parentStep.id);
+  if (!parentWorkerId || !parentStepId) return null;
+  const nativeMemberId = `claude-native:${args.runId}:${(0, import_node_crypto23.createHash)("sha1").update(callerId).digest("hex").slice(0, 16)}`;
+  const existing = existingMembers.find((member) => asOptionalTrimmedString(member.id) === nativeMemberId) ?? null;
+  const cap = inferParallelismCap(graph);
+  const activeForParent = existingMembers.filter((member) => {
+    const metadata = safeObject(member.metadata);
+    const source = asOptionalTrimmedString(member.source) ?? asOptionalTrimmedString(metadata.source);
+    const memberParent = asOptionalTrimmedString(member.parentWorkerId) ?? asOptionalTrimmedString(metadata.parentWorkerId);
+    const status = asOptionalTrimmedString(member.status) ?? "unknown";
+    return source === "claude-native" && memberParent === parentWorkerId && status !== "terminated" && status !== "failed";
+  }).length;
+  if (!existing && activeForParent >= cap) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Native teammate allocation cap exceeded for parent '${parentWorkerId}' (${activeForParent}/${cap}).`
+    );
+  }
+  const parentMetadata = safeObject(parentStep.metadata);
+  const inferredModel = asOptionalTrimmedString(parentMetadata.modelId) ?? "claude-native";
+  const now = nowIso4();
+  if (existing) {
+    updateTeamMemberStatus(getTeamRuntimeContext(args.runtime), nativeMemberId, {
+      status: "active"
+    });
+  } else {
+    registerTeamMember(getTeamRuntimeContext(args.runtime), {
+      id: nativeMemberId,
+      runId: args.runId,
+      missionId: args.missionId,
+      provider: "claude",
+      model: inferredModel,
+      role: "teammate",
+      source: "claude-native",
+      parentWorkerId,
+      sessionId: null,
+      status: "active",
+      claimedTaskIds: [],
+      metadata: {
+        source: "claude-native",
+        parentWorkerId,
+        parentStepId,
+        parentAttemptId: args.callerCtx.attemptId ?? null,
+        nativeCallerId: callerId
+      },
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+  if (!asOptionalTrimmedString(args.toolArgs.workerId)) {
+    args.toolArgs.workerId = parentWorkerId;
+  }
+  return {
+    memberId: nativeMemberId,
+    parentWorkerId,
+    parentStepId,
+    sourceAttemptId: nativeMemberId
+  };
+}
+async function maybeSendInterAgentMessage(args) {
+  const sender = args.runtime.aiOrchestratorService.sendAgentMessage;
+  if (typeof sender !== "function") return;
+  await Promise.resolve(sender({
+    missionId: args.missionId,
+    fromAttemptId: args.fromAttemptId,
+    toAttemptId: args.toAttemptId,
+    content: args.content,
+    metadata: args.metadata
+  }));
+}
+async function postProcessCoordinatorToolResult(args) {
+  if (args.toolName === "report_status") {
+    const report = safeObject(args.result.report);
+    const workerId = asOptionalTrimmedString(report.workerId);
+    const stepId = asOptionalTrimmedString(report.stepId);
+    const progressPct = Number(report.progressPct ?? Number.NaN);
+    const nextAction = asOptionalTrimmedString(report.nextAction) ?? "status update";
+    const blockers = Array.isArray(report.blockers) ? report.blockers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
+    args.runtime.eventBuffer.push({
+      timestamp: nowIso4(),
+      category: "runtime",
+      payload: {
+        type: "worker_status_reported",
+        runId: args.runId,
+        stepId,
+        attemptId: args.callerCtx.attemptId ?? null,
+        reason: "report_status",
+        detail: report
+      }
+    });
+    const graph = getRunGraphSafe(args.runtime, args.runId);
+    if (!graph) return;
+    const step = resolveStepFromGraph(graph, stepId, workerId);
+    const stepMetadata = safeObject(step?.metadata);
+    const parentWorkerId = args.nativeRegistration?.parentWorkerId ?? asOptionalTrimmedString(stepMetadata.parentWorkerId);
+    if (!parentWorkerId) return;
+    const parentAttemptId = resolveParentAttemptIdFromGraph(graph, parentWorkerId);
+    if (!parentAttemptId) return;
+    const fromAttemptId = args.nativeRegistration?.sourceAttemptId ?? asOptionalTrimmedString(args.callerCtx.attemptId) ?? workerId;
+    if (!fromAttemptId || fromAttemptId === parentAttemptId) return;
+    const workerLabel = asOptionalTrimmedString(step?.title) ?? workerId ?? "sub-agent";
+    const progressLabel = Number.isFinite(progressPct) ? `${Math.max(0, Math.min(100, Math.round(progressPct)))}%` : "progress";
+    const blockerSuffix = blockers.length > 0 ? ` Blockers: ${blockers.join("; ")}` : "";
+    const content = `[sub-agent:${workerLabel}] ${progressLabel} \u2014 ${nextAction}.${blockerSuffix}`;
+    await maybeSendInterAgentMessage({
+      runtime: args.runtime,
+      missionId: args.missionId,
+      fromAttemptId,
+      toAttemptId: parentAttemptId,
+      content,
+      metadata: {
+        source: "subagent_status_rollup",
+        parentWorkerId,
+        workerId: workerId ?? null,
+        isNative: Boolean(args.nativeRegistration)
+      }
+    });
+    return;
+  }
+  if (args.toolName === "report_result" && args.nativeRegistration) {
+    const report = safeObject(args.result.report);
+    const graph = getRunGraphSafe(args.runtime, args.runId);
+    if (!graph) return;
+    const parentAttemptId = resolveParentAttemptIdFromGraph(graph, args.nativeRegistration.parentWorkerId);
+    if (!parentAttemptId) return;
+    const outcome = asOptionalTrimmedString(report.outcome) ?? "completed";
+    const summary = asOptionalTrimmedString(report.summary) ?? "No summary provided.";
+    const content = `Sub-agent '${args.nativeRegistration.memberId}' completed (${outcome}): ${summary}`;
+    await maybeSendInterAgentMessage({
+      runtime: args.runtime,
+      missionId: args.missionId,
+      fromAttemptId: args.nativeRegistration.sourceAttemptId,
+      toAttemptId: parentAttemptId,
+      content,
+      metadata: {
+        source: "subagent_result_rollup",
+        parentWorkerId: args.nativeRegistration.parentWorkerId,
+        isNative: true
+      }
+    });
+  }
+}
 async function runCoordinatorTool(args) {
   const runId = args.callerCtx.runId ?? asOptionalTrimmedString(args.toolArgs.runId);
   if (!runId) {
@@ -77568,8 +78566,28 @@ async function runCoordinatorTool(args) {
   if (!toolEntry?.execute) {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
   }
-  const output = await toolEntry.execute(args.toolArgs);
+  const effectiveToolArgs = { ...args.toolArgs };
+  const nativeRegistration = ensureNativeTeammateRegistration({
+    runtime: args.runtime,
+    runId,
+    missionId,
+    callerCtx: args.callerCtx,
+    toolName: args.name,
+    toolArgs: effectiveToolArgs
+  });
+  const output = await toolEntry.execute(effectiveToolArgs);
   if (isRecord4(output)) {
+    if (output.ok === true && (args.name === "report_status" || args.name === "report_result")) {
+      await postProcessCoordinatorToolResult({
+        runtime: args.runtime,
+        toolName: args.name,
+        runId,
+        missionId,
+        callerCtx: args.callerCtx,
+        result: output,
+        nativeRegistration
+      });
+    }
     return output;
   }
   return {

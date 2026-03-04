@@ -204,7 +204,7 @@ export type MissionPlannerRun = {
   attempts: MissionPlannerAttempt[];
 };
 
-export type MissionPhaseValidationTier = "none" | "self" | "spot-check" | "dedicated";
+export type MissionPhaseValidationTier = "none" | "self" | "dedicated";
 
 export type PhaseCardOrderingConstraints = {
   mustBeFirst?: boolean;
@@ -460,8 +460,7 @@ export type CreateMissionArgs = {
   launchMode?: "autopilot" | "manual";
   autopilotExecutor?: OrchestratorExecutorKind;
   executionPolicy?: Partial<MissionExecutionPolicy>;
-  /** Mission-level completion/recovery settings (replaces executionPolicy fields) */
-  allowCompletionWithRisk?: boolean;
+  /** Mission-level recovery settings (replaces executionPolicy fields) */
   recoveryLoop?: RecoveryLoopPolicy;
   modelConfig?: MissionModelConfig;
   /** Team runtime configuration for agent-team orchestration */
@@ -657,7 +656,6 @@ export type GatePhaseMode = "required" | "optional" | "off";
 export type PhaseModelChoice = string;
 
 export type MissionLevelSettings = {
-  allowCompletionWithRisk: boolean;
   recoveryLoop?: RecoveryLoopPolicy;
   integrationPr?: IntegrationPrPolicy;
   prStrategy?: PrStrategy;
@@ -673,7 +671,6 @@ export type MissionExecutionPolicy = {
   testReview: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
   prReview: { mode: "off" | "auto"; model?: PhaseModelChoice; reasoningEffort?: string };
   merge: { mode: "off" };
-  completion: { allowCompletionWithRisk: boolean };
   recoveryLoop?: RecoveryLoopPolicy;
   integrationPr?: IntegrationPrPolicy;
   prStrategy?: PrStrategy;

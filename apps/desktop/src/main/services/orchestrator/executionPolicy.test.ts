@@ -127,8 +127,7 @@ describe("executionPolicy", () => {
         codeReview: { mode: "off" },
         testReview: { mode: "off" },
         prReview: { mode: "off" },
-        merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: false }
+        merge: { mode: "off" }
       };
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "analysis" } }),
@@ -140,7 +139,7 @@ describe("executionPolicy", () => {
       expect(result.completionReady).toBe(true);
     });
 
-    it("returns succeeded_with_risk when tests disabled by policy and risk allowed", () => {
+    it("returns succeeded when tests are disabled by policy", () => {
       const policy: MissionExecutionPolicy = {
         planning: { mode: "auto" },
         implementation: { model: "codex" },
@@ -149,8 +148,7 @@ describe("executionPolicy", () => {
         codeReview: { mode: "off" },
         testReview: { mode: "off" },
         prReview: { mode: "off" },
-        merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: true }
+        merge: { mode: "off" }
       };
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "analysis" } }),
@@ -170,8 +168,7 @@ describe("executionPolicy", () => {
         codeReview: { mode: "required" },
         testReview: { mode: "off" },
         prReview: { mode: "off" },
-        merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: false }
+        merge: { mode: "off" }
       };
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
@@ -182,7 +179,7 @@ describe("executionPolicy", () => {
       expect(result.riskFactors.length).toBeGreaterThan(0);
     });
 
-    it("returns succeeded_with_risk when required phase missing but risk allowed", () => {
+    it("returns active when a required phase is missing", () => {
       const policy: MissionExecutionPolicy = {
         planning: { mode: "off" },
         implementation: { model: "codex" },
@@ -191,16 +188,15 @@ describe("executionPolicy", () => {
         codeReview: { mode: "off" },
         testReview: { mode: "off" },
         prReview: { mode: "off" },
-        merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: true }
+        merge: { mode: "off" }
       };
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
       ];
       const result = evaluateRunCompletion(steps, policy);
-      expect(result.status).toBe("succeeded_with_risk");
+      expect(result.status).toBe("active");
       expect(result.riskFactors).toContain("testing_required_but_missing");
-      expect(result.completionReady).toBe(true);
+      expect(result.completionReady).toBe(false);
     });
 
     it("merge phase is not evaluated (removed from execution phases)", () => {
@@ -209,7 +205,9 @@ describe("executionPolicy", () => {
         merge: { mode: "off" }
       };
       const steps = [
-        makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
+        makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "analysis" } }),
+        makeStep({ id: "s2", status: "succeeded", metadata: { stepType: "code" } }),
+        makeStep({ id: "s3", status: "succeeded", metadata: { stepType: "test" } })
       ];
       const result = evaluateRunCompletion(steps, policy);
       // Merge is no longer an execution phase — no diagnostic emitted for it
@@ -220,8 +218,7 @@ describe("executionPolicy", () => {
     it("returns failed when required phase has failed steps", () => {
       const policy: MissionExecutionPolicy = {
         ...DEFAULT_EXECUTION_POLICY,
-        testing: { mode: "post_implementation" },
-        completion: { allowCompletionWithRisk: false }
+        testing: { mode: "post_implementation" }
       };
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } }),
@@ -271,7 +268,6 @@ function makePhaseCard(overrides: Partial<Omit<PhaseCard, "phaseKey">> & { phase
 
 describe("evaluateRunCompletionFromPhases", () => {
   const defaultSettings: MissionLevelSettings = {
-    allowCompletionWithRisk: true,
     prStrategy: { kind: "manual" }
   };
 
@@ -291,7 +287,7 @@ describe("evaluateRunCompletionFromPhases", () => {
     expect(result.completionReady).toBe(true);
   });
 
-  it("returns succeeded_with_risk when required phase missing but risk allowed", () => {
+  it("returns active when a required phase is missing", () => {
     const phases = [
       makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
       makePhaseCard({ phaseKey: "testing", validationGate: { tier: "self", required: true } })
@@ -300,22 +296,21 @@ describe("evaluateRunCompletionFromPhases", () => {
       makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
     ];
     const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
-    expect(result.status).toBe("succeeded_with_risk");
+    expect(result.status).toBe("active");
     expect(result.riskFactors).toContain("testing_required_but_missing");
-    expect(result.completionReady).toBe(true);
+    expect(result.completionReady).toBe(false);
   });
 
-  it("reports failed when required phase has failed steps and risk not allowed", () => {
+  it("reports failed when required phase has failed steps", () => {
     const phases = [
       makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
       makePhaseCard({ phaseKey: "testing", validationGate: { tier: "dedicated", required: true } })
     ];
-    const settings: MissionLevelSettings = { ...defaultSettings, allowCompletionWithRisk: false };
     const steps = [
       makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } }),
       makeStep({ id: "s2", status: "failed", metadata: { stepType: "test" } })
     ];
-    const result = evaluateRunCompletionFromPhases(steps, phases, settings);
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
     expect(result.status).toBe("failed");
     expect(result.completionReady).toBe(true);
   });

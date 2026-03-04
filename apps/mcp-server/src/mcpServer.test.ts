@@ -1960,6 +1960,57 @@ describe("mcpServer", () => {
     expect(response.structuredContent.events.every((e: any) => e.category === "orchestrator")).toBe(true);
   });
 
+  it("stream_events returns runtime validation contract events when requested", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+      events: [
+        {
+          id: cursor + 1,
+          timestamp: new Date().toISOString(),
+          category: "runtime",
+          payload: {
+            type: "validation_contract_unfulfilled",
+            runId: "run-1",
+            stepId: "step-1"
+          }
+        },
+        {
+          id: cursor + 2,
+          timestamp: new Date().toISOString(),
+          category: "runtime",
+          payload: {
+            type: "validation_self_check_reminder",
+            runId: "run-1",
+            stepId: "step-2"
+          }
+        },
+        {
+          id: cursor + 3,
+          timestamp: new Date().toISOString(),
+          category: "mission",
+          payload: { type: "mission_created" }
+        }
+      ],
+      nextCursor: cursor + 3,
+      hasMore: false
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "stream_events", {
+      cursor: 0,
+      limit: 100,
+      category: "runtime"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.events).toHaveLength(2);
+    expect(response.structuredContent.events.every((e: any) => e.category === "runtime")).toBe(true);
+    const eventTypes = response.structuredContent.events.map((event: any) => event.payload?.type);
+    expect(eventTypes).toContain("validation_contract_unfulfilled");
+    expect(eventTypes).toContain("validation_self_check_reminder");
+  });
+
   it("stream_events defaults cursor to 0 and limit to 100", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });

@@ -139,6 +139,12 @@ The AI Orchestrator is a coordinator agent that plans execution strategy, spawns
 
 Autonomy boundary: the coordinator owns strategic decisions (spawn, replan, validation routing, lane transfer, escalation). The deterministic runtime only enforces state integrity and policy constraints.
 
+Validation baseline (strict, runtime-enforced):
+- Required validation contracts are enforced by runtime, not prompt advice.
+- Dedicated required validation auto-spawns validator steps per completed target step.
+- Missing required validation blocks downstream phase transitions and emits explicit runtime signals (`validation_contract_unfulfilled`).
+- No sampled `spot-check` tier and no `allowCompletionWithRisk` bypass in active orchestrator behavior.
+
 This is distinct from the orchestrator service (`orchestratorService.ts`), which is the deterministic state machine that tracks runs, steps, attempts, and claims. The AI Orchestrator is the intelligent layer on top that decides *what* to do next; the orchestrator service is the durable layer underneath that records *what happened*.
 
 > For current orchestrator runtime contracts, execution architecture, and remaining work, see `docs/ORCHESTRATOR_OVERHAUL.md`.

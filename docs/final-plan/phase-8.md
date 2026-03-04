@@ -1,80 +1,124 @@
-# Phase 8: Relay + Machines
+# Phase 8: Core Extraction + SpacetimeDB Evaluation (Deferred)
 
-## Phase 8 -- Relay + Machines (6-8 weeks)
+## Phase 8 -- Core Extraction + SpacetimeDB Evaluation (7-10 weeks)
 
-Goal: Remote machine execution with explicit routing and ownership. Git IS the sync layer -- ADE stores state in `.ade/` which is committable to the repo. No full hub/relay/state-sync system needed.
+> **Status: DEFERRED** — This phase activates ONLY if cr-sqlite (Phase 6) proves insufficient for multi-device sync. It is not on the default execution path.
 
-### Reference docs
+Goal: If cr-sqlite encounters fundamental issues (sync reliability, conflict resolution, performance at scale), extract ADE's core services from the Electron shell and evaluate SpacetimeDB as an alternative real-time database with built-in sync.
 
-- [architecture/SYSTEM_OVERVIEW.md](../architecture/SYSTEM_OVERVIEW.md) — component overview (relay as future component)
-- [architecture/DESKTOP_APP.md](../architecture/DESKTOP_APP.md) — project switching model (basis for machine context switching)
-- [features/MISSIONS.md](../features/MISSIONS.md) — execution target metadata (`targetMachineId`), mission lifecycle (shared across machines)
-- [architecture/SECURITY_AND_PRIVACY.md](../architecture/SECURITY_AND_PRIVACY.md) — trust model extension for relay connections
-- [architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md) — AgentExecutor interface (must work identically on VPS headless)
+### Trigger Conditions
+
+This phase activates if Phase 6 reveals any of these issues:
+- cr-sqlite changeset merge produces data corruption or silent conflicts.
+- Sync latency exceeds acceptable thresholds (>500ms for interactive state).
+- cr-sqlite WASM build is unstable or has memory issues in Electron.
+- CRR marking causes performance regression on existing SQL operations.
+- The cr-sqlite project becomes unmaintained or incompatible with sql.js updates.
+
+If cr-sqlite works well, this phase is skipped entirely.
 
 ### Dependencies
 
-- Phase 7 complete.
-- Phase 3 complete (orchestrator autonomy + missions overhaul — see `phase-3.md`).
+- Phase 6 attempted (cr-sqlite evaluation complete with identified issues).
+- Phase 5 complete.
 
-### Key Insight: Git-Based State Sync
+### Part A: Core Extraction (`packages/core`)
 
-Git IS the sync layer. ADE stores state in `.ade/` which is committable to the repo. No cloud backend or complex state sync protocol needed.
+#### Why Extraction is Needed
+- cr-sqlite works as a SQLite extension — no extraction needed for that approach.
+- SpacetimeDB is a completely different database — services can't use raw SQL against it.
+- Extraction creates an abstraction layer between services and database, allowing the database implementation to be swapped.
 
-Cross-Machine State Flow:
-1. Mac Mini runs a mission overnight
-2. Agent commits code + pushes to remote
-3. `.ade/` directory updated with mission history, new memories, learning entries
-4. `.ade/` changes pushed (same branch or dedicated `ade/state` branch)
-5. You open laptop, `git fetch`, ADE reads `.ade/` — full state available
-6. Real-time: if laptop is connected to Mac Mini via relay, you see progress live
+#### Workstreams
 
-### Workstreams
+##### W1: Repository Interface Layer
+- Define a `Repository` interface for each domain: `LaneRepository`, `MissionRepository`, `TerminalRepository`, etc.
+- Each repository encapsulates all SQL operations for its domain.
+- Services call repository methods instead of raw SQL.
+- Initial implementation: `SqliteRepository` that wraps existing raw SQL (no behavior change).
 
-- Remote execution routing:
-  - Machine registry: register machines that can run ADE agents (Mac Mini, VPS, etc.).
-  - Remote execution: from your laptop, launch a mission that runs on your Mac Mini.
-  - The relay is essentially SSH/WebSocket tunnel to trigger ADE on a remote machine.
-  - Results are pushed to git by the remote machine, your laptop pulls them.
-- Machine registry:
-  - Simple registry of known machines with their capabilities (CPU, RAM, available models).
-  - Health checks via heartbeat.
-  - Machine selection: manual ("run this on Mac Mini") or automatic (pick best available).
-- WebSocket relay (real-time progress, NOT state sync):
-  - WebSocket server runs on VPS/desktop. Both desktop and iOS connect as clients.
-  - Real-time mission progress streaming (see your mission running on Mac Mini from your laptop).
-  - Remote mission launch (trigger from laptop/phone).
-  - Remote intervention handling (approve/reject from phone).
-  - Live agent transcript tailing.
-  - Persistent connection with auto-reconnect and exponential backoff.
-- Pairing model:
-  - One-time QR code or manual address entry for initial pairing.
-  - Pairing token stored in OS keychain (macOS Keychain on desktop, iOS Keychain on phone).
-  - No login/password/auth screen after initial pairing.
-- VPS deployment:
-  - ADE core runs headless on VPS alongside MCP server, CLI tools, git repos, and relay server.
-  - Desktop and phone connect via WebSocket relay for real-time progress.
-- Notification relay skeleton:
-  - Minimal APNs relay component for push notifications when phone is backgrounded.
-  - Options: tiny Lambda, Firebase Cloud Messaging, or third-party service (OneSignal, Pusher).
-  - Keep `infra/` directory skeleton for this component.
-- Renderer:
-  - Add `Machines` tab (health, assignment, sync diagnostics).
-  - Add local vs relay execution mode controls.
-- Validation:
-  - Reconnect and failover tests.
-  - Ownership/race-condition tests.
-  - Pairing flow tests (QR code, manual entry, token persistence).
-  - Git-based state sync round-trip tests (`.ade/` identical after push/pull).
-  - Remote mission launch end-to-end tests.
+##### W2: Service Extraction
+- Extract core services to `packages/core`:
+  - Lane service, git service, conflict service, pack service
+  - Mission service, orchestrator service, AI integration service
+  - Memory service, terminal session service, automation service
+- Each service depends on repository interfaces, not concrete database implementations.
+- MCP server operates through core service contracts.
+
+##### W3: IPC Adapter Split
+- Break `registerIpc.ts` (234 channels) into domain-specific adapters.
+- Each adapter maps IPC channels to core service methods.
+- Desktop Electron shell becomes a thin transport layer over core.
+
+##### W4: Parity Validation
+- Full parity test suite: every IPC channel produces identical results through new adapters.
+- Regression coverage for hot paths (lanes, PTY, git, conflicts, packs, missions).
+- Performance benchmarks: extraction must not degrade response times.
+
+### Part B: SpacetimeDB Evaluation
+
+#### What SpacetimeDB Offers
+- Real-time database with built-in subscription queries — clients subscribe to queries, get automatic updates when data changes.
+- "Reducers" — server-side functions (like stored procedures) written in Rust/C# that run inside the database.
+- All data in-memory with WAL persistence — extremely fast reads/writes.
+- Built-in multi-client sync — no need for cr-sqlite, WebSocket sync, or changeset management.
+- Self-hostable binary — can be bundled into Electron as a child process.
+- Auto-generated client SDKs (TypeScript, Swift, C#) from table/reducer definitions.
+
+#### Workstreams
+
+##### W5: SpacetimeDB Schema Design
+- Translate all 63 SQLite tables to SpacetimeDB table definitions.
+- Design reducers for all write operations (mission lifecycle, lane management, agent state, etc.).
+- Design subscription queries for each UI view (mission list, lane list, activity feed, etc.).
+- Handle schema differences: SpacetimeDB uses different type system, no foreign keys (application-level enforcement).
+
+##### W6: SpacetimeDB Repository Implementation
+- Implement `SpacetimeDbRepository` for each domain, behind the same repository interfaces from Part A.
+- Map repository methods to SpacetimeDB reducer calls (writes) and subscription queries (reads).
+- Auto-generated TypeScript client SDK provides type-safe access.
+
+##### W7: SpacetimeDB Runtime Integration
+- Bundle SpacetimeDB server binary into Electron app as a child process.
+- Start SpacetimeDB on app launch, connect via localhost.
+- Handle process lifecycle: start, health check, graceful shutdown, crash recovery.
+- Data migration: one-time migration tool to move data from SQLite to SpacetimeDB.
+
+##### W8: Multi-Device with SpacetimeDB
+- SpacetimeDB natively supports multiple connected clients with real-time sync.
+- Brain runs the SpacetimeDB instance; other devices connect as clients.
+- Subscription queries automatically push updates to all connected clients.
+- No need for cr-sqlite, changeset extraction, or custom sync protocol.
+- iOS client uses SpacetimeDB's auto-generated Swift SDK.
+
+##### W9: Comparative Evaluation
+- Run both approaches (cr-sqlite and SpacetimeDB) side by side using the repository abstraction.
+- Measure: sync latency, conflict resolution accuracy, memory usage, developer experience.
+- Evaluate: migration complexity, ongoing maintenance burden, community/support health.
+- Decision gate: choose one approach and decommission the other.
+
+##### W10: Validation
+- Repository interface parity tests (both implementations produce same results).
+- SpacetimeDB reducer tests for all write operations.
+- Subscription query tests (correct data, timely updates).
+- Multi-client sync tests (2-3 clients, concurrent writes, verify consistency).
+- Migration tool tests (SQLite → SpacetimeDB data fidelity).
+- Performance benchmarks (SpacetimeDB vs SQLite for ADE's workload patterns).
+
+### Migration Scope Reference
+
+For planning purposes, the current database footprint:
+- **63 tables**, 149 foreign keys, 137 indexes
+- **~926 SQL operations** across 40 service files
+- **No ORM** — all raw SQL via `db.run()`, `db.get()`, `db.all()`
+- **Single access point**: `kvDb.ts` with `AdeDb` interface
+- **Estimated migration effort**: 7-10 weeks human, 1-2 weeks with agent swarm
 
 ### Exit criteria
 
-- Desktop can target local or relay machines predictably.
-- Machine health and assignment are visible and actionable.
-- Remote mission launch works: trigger from laptop, execute on Mac Mini, results pushed to git.
-- `.ade/` directory syncs correctly across machines via git (mission history, memories, learning entries).
-- Real-time relay shows live mission progress from remote machines.
-- QR code / manual pairing completes in a single step with no re-auth required.
-- VPS headless deployment runs ADE core, MCP server, and relay with no desktop dependency.
-- Notification relay skeleton is in place with documented deployment options.
+- Core services extracted to `packages/core` with repository interface abstraction.
+- Desktop behavior remains functionally equivalent through domain adapters.
+- SpacetimeDB prototype demonstrates multi-device sync with ADE's full schema.
+- Comparative evaluation produces clear recommendation with data.
+- If SpacetimeDB is chosen: migration path is validated and cr-sqlite is decommissioned.
+- If cr-sqlite is confirmed: SpacetimeDB evaluation is documented and Phase 6 approach is ratified.

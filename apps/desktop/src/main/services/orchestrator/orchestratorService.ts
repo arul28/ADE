@@ -224,6 +224,68 @@ function getWorkerCheckpointPath(worktreePath: string, stepKey: string): string 
   return path.join(worktreePath, ".ade", "checkpoints", `${sanitizedStepKey}.md`);
 }
 
+type NormalizedValidationContract = {
+  level: "step" | "milestone" | "mission";
+  tier: "self" | "dedicated";
+  required: boolean;
+  criteria: string;
+  evidence: string[];
+  maxRetries: number;
+};
+
+function normalizeValidationTier(value: unknown): "none" | "self" | "dedicated" {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "dedicated") return "dedicated";
+  if (raw === "self" || raw === "self-check") return "self";
+  return "none";
+}
+
+function parseValidationContract(value: unknown): NormalizedValidationContract | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const levelRaw = typeof record.level === "string" ? record.level.trim().toLowerCase() : "";
+  const level =
+    levelRaw === "step" || levelRaw === "milestone" || levelRaw === "mission"
+      ? levelRaw
+      : "step";
+  const tier = normalizeValidationTier(record.tier);
+  if (tier === "none") return null;
+  const criteria = typeof record.criteria === "string" ? record.criteria.trim() : "";
+  if (!criteria.length) return null;
+  const evidence = Array.isArray(record.evidence)
+    ? record.evidence
+        .map((entry) => String(entry ?? "").trim())
+        .filter((entry) => entry.length > 0)
+    : [];
+  const maxRetriesRaw = Number(record.maxRetries);
+  const maxRetries = Number.isFinite(maxRetriesRaw)
+    ? Math.max(0, Math.min(10, Math.floor(maxRetriesRaw)))
+    : 2;
+  return {
+    level,
+    tier,
+    required: record.required !== false,
+    criteria,
+    evidence,
+    maxRetries,
+  };
+}
+
+function hasPassingValidation(metadata: Record<string, unknown> | null): boolean {
+  if (!metadata) return false;
+  const validationState = typeof metadata.validationState === "string"
+    ? metadata.validationState.trim().toLowerCase()
+    : "";
+  if (validationState === "pass") return true;
+  const lastValidationReport = asRecord(metadata.lastValidationReport);
+  const reportVerdict = typeof lastValidationReport?.verdict === "string"
+    ? lastValidationReport.verdict.trim().toLowerCase()
+    : "";
+  if (reportVerdict === "pass") return true;
+  const validationPassedAt = typeof metadata.validationPassedAt === "string" ? metadata.validationPassedAt.trim() : "";
+  return validationPassedAt.length > 0;
+}
+
 export function createOrchestratorService({
   db,
   projectId,
@@ -5848,6 +5910,8 @@ export function createOrchestratorService({
 	        envelope.warnings.push(fileReservationMessage);
 	      }
 	      const workerState = status === "succeeded" ? "idle" : "disposed";
+      let validationContractUnfulfilledSignal = false;
+      let validationSelfCheckReminder = false;
 
       db.run(
         `
@@ -5967,6 +6031,287 @@ export function createOrchestratorService({
               fs.unlinkSync(checkpointPath);
             } catch {
               // File may not exist — expected when no checkpoint was written.
+            }
+          }
+        }
+
+        const latestStepRow = getStepRow(step.id);
+        const latestStep = latestStepRow ? toStep(latestStepRow) : step;
+        const latestStepMeta = asRecord(latestStep.metadata) ?? {};
+        const isAutoSpawnedValidationStep = latestStepMeta.autoSpawnedValidation === true;
+        if (!isAutoSpawnedValidationStep) {
+          const runMetadata = asRecord(run.metadata);
+          const phaseConfig = asRecord(runMetadata?.phaseConfiguration);
+          const phaseCards = Array.isArray(phaseConfig?.selectedPhases)
+            ? (phaseConfig.selectedPhases as PhaseCard[])
+            : Array.isArray(phaseConfig?.phases)
+              ? (phaseConfig.phases as PhaseCard[])
+              : [];
+          const stepPhaseKey = typeof latestStepMeta.phaseKey === "string" ? latestStepMeta.phaseKey.trim() : "";
+          const stepPhaseName = typeof latestStepMeta.phaseName === "string" ? latestStepMeta.phaseName.trim() : "";
+          const phaseCard =
+            phaseCards.find((phase) => phase.phaseKey === stepPhaseKey)
+            ?? phaseCards.find((phase) => phase.name === stepPhaseName)
+            ?? null;
+          const phaseTier = normalizeValidationTier(phaseCard?.validationGate?.tier);
+          const phaseRequiresValidation = phaseCard?.validationGate?.required === true && phaseTier !== "none";
+          const existingContract = parseValidationContract(latestStepMeta.validationContract ?? null);
+          const requiresValidation = existingContract?.required === true || phaseRequiresValidation;
+          if (requiresValidation) {
+            const normalizedContract: NormalizedValidationContract = {
+              level: existingContract?.level ?? "step",
+              tier: existingContract?.tier ?? (phaseTier === "dedicated" ? "dedicated" : "self"),
+              required: true,
+              criteria:
+                existingContract?.criteria
+                ?? (typeof phaseCard?.validationGate?.criteria === "string" && phaseCard.validationGate.criteria.trim().length > 0
+                  ? phaseCard.validationGate.criteria.trim()
+                  : `Validate completed output for step "${latestStep.stepKey}".`),
+              evidence: existingContract?.evidence ?? [],
+              maxRetries: existingContract?.maxRetries ?? 2,
+            };
+            const validationStateRaw = typeof latestStepMeta.validationState === "string"
+              ? latestStepMeta.validationState.trim().toLowerCase()
+              : "";
+            const nextValidationState =
+              validationStateRaw === "pass" || validationStateRaw === "fail"
+                ? validationStateRaw
+                : "pending";
+            const nextStepMetadata = {
+              ...latestStepMeta,
+              validationContract: normalizedContract,
+              validationState: nextValidationState,
+            };
+            db.run(
+              `
+                update orchestrator_steps
+                set metadata_json = ?,
+                    updated_at = ?
+                where id = ?
+                  and run_id = ?
+                  and project_id = ?
+              `,
+              [JSON.stringify(nextStepMetadata), completedAt, latestStep.id, run.id, projectId]
+            );
+
+            if (!hasPassingValidation(nextStepMetadata)) {
+              const detail = `Step "${latestStep.stepKey}" completed without required validation pass (${normalizedContract.tier} tier).`;
+              appendTimelineEvent({
+                runId: run.id,
+                stepId: latestStep.id,
+                attemptId: args.attemptId,
+                eventType: "validation_contract_unfulfilled",
+                reason: "required_validation_missing",
+                detail: {
+                  stepKey: latestStep.stepKey,
+                  phaseKey: stepPhaseKey || null,
+                  phaseName: stepPhaseName || null,
+                  tier: normalizedContract.tier,
+                  criteria: normalizedContract.criteria,
+                  autoSpawnedValidation: normalizedContract.tier === "dedicated"
+                }
+              });
+              persistRuntimeEvent({
+                runId: run.id,
+                stepId: latestStep.id,
+                attemptId: args.attemptId,
+                sessionId: attemptRow.executor_session_id,
+                eventType: "validation_contract_unfulfilled",
+                eventKey: `validation_contract_unfulfilled:${run.id}:${latestStep.id}:${args.attemptId}:${completedAt}`,
+                occurredAt: completedAt,
+                payload: {
+                  stepId: latestStep.id,
+                  stepKey: latestStep.stepKey,
+                  phaseKey: stepPhaseKey || null,
+                  phaseName: stepPhaseName || null,
+                  tier: normalizedContract.tier,
+                  required: true,
+                  detail
+                }
+              });
+              emit({
+                type: "orchestrator-step-updated",
+                runId: run.id,
+                stepId: latestStep.id,
+                reason: "validation_contract_unfulfilled"
+              });
+              validationContractUnfulfilledSignal = true;
+
+              if (normalizedContract.tier === "dedicated") {
+                const existingSteps = listStepRows(run.id).map(toStep);
+                const existingValidator = existingSteps.find((candidate) => {
+                  const candidateMeta = asRecord(candidate.metadata);
+                  const targetStepId = typeof candidateMeta?.targetStepId === "string" ? candidateMeta.targetStepId.trim() : "";
+                  return candidateMeta?.autoSpawnedValidation === true && targetStepId === latestStep.id;
+                });
+
+                if (!existingValidator) {
+                  const templateRoles = Array.isArray(asRecord(asRecord(runMetadata?.teamRuntime)?.template)?.roles)
+                    ? (asRecord(asRecord(runMetadata?.teamRuntime)?.template)?.roles as Array<Record<string, unknown>>)
+                    : [];
+                  const validatorRole =
+                    templateRoles.find((role) => {
+                      const roleName = typeof role.name === "string" ? role.name.trim().toLowerCase() : "";
+                      if (roleName.includes("validator")) return true;
+                      const capabilities = Array.isArray(role.capabilities)
+                        ? role.capabilities.map((entry) => String(entry ?? "").trim().toLowerCase())
+                        : [];
+                      return capabilities.some((entry) => entry.includes("validation") || entry.includes("review"));
+                    }) ?? null;
+                  const validatorRoleName =
+                    typeof validatorRole?.name === "string" && validatorRole.name.trim().length > 0
+                      ? validatorRole.name.trim()
+                      : "validator";
+
+                  const roleDefaultModel = asRecord(validatorRole?.defaultModel);
+                  const roleModelId = typeof roleDefaultModel?.modelId === "string" ? roleDefaultModel.modelId.trim() : "";
+                  const phaseModel = asRecord(latestStepMeta.phaseModel);
+                  const phaseModelId = typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";
+                  const runtimePhaseModel = asRecord(asRecord(runMetadata?.phaseRuntime)?.currentPhaseModel);
+                  const runtimePhaseModelId = typeof runtimePhaseModel?.modelId === "string" ? runtimePhaseModel.modelId.trim() : "";
+                  const stepModelId = typeof latestStepMeta.modelId === "string" ? latestStepMeta.modelId.trim() : "";
+                  const defaultValidationModel = typeof DEFAULT_EXECUTION_POLICY.validation.model === "string"
+                    ? DEFAULT_EXECUTION_POLICY.validation.model.trim()
+                    : "";
+                  const candidateModelIds = [
+                    roleModelId,
+                    phaseModelId,
+                    runtimePhaseModelId,
+                    stepModelId,
+                    defaultValidationModel,
+                    "openai/gpt-5.3-codex",
+                  ].filter((entry) => entry.length > 0);
+                  const validatorModelId =
+                    candidateModelIds.find((entry) => Boolean(resolveModelDescriptor(entry))) ?? candidateModelIds[0] ?? "openai/gpt-5.3-codex";
+
+                  const outputs = asRecord(envelope.outputs);
+                  const collectStringList = (value: unknown): string[] => {
+                    if (!Array.isArray(value)) return [];
+                    return value
+                      .map((entry) => String(entry ?? "").trim())
+                      .filter((entry) => entry.length > 0);
+                  };
+                  const filesChanged = [
+                    ...collectStringList(outputs?.filesChanged),
+                    ...collectStringList(outputs?.changedFiles),
+                    ...collectStringList(outputs?.modifiedFiles),
+                    ...collectStringList(outputs?.files_changed),
+                    ...collectStringList(outputs?.changed_files),
+                    ...collectStringList(outputs?.modified_files),
+                  ].filter((entry, index, all) => all.indexOf(entry) === index);
+                  const testsRun = asRecord(outputs?.testsRun ?? outputs?.tests_run);
+                  const testsSummary = testsRun
+                    ? [
+                        `passed=${Number(testsRun.passed ?? 0)}`,
+                        `failed=${Number(testsRun.failed ?? 0)}`,
+                        `skipped=${Number(testsRun.skipped ?? 0)}`
+                      ].join(", ")
+                    : "not reported";
+                  const validatorPrompt = [
+                    `Validate completed worker output for step "${latestStep.stepKey}" (${latestStep.title}).`,
+                    `Validation criteria: ${normalizedContract.criteria}`,
+                    `Worker summary: ${envelope.summary}`,
+                    filesChanged.length > 0 ? `Files changed:\n- ${filesChanged.join("\n- ")}` : "Files changed: none reported.",
+                    `Tests summary: ${testsSummary}`,
+                    `Use report_validation with targetWorkerId="${latestStep.stepKey}" and verdict "pass" or "fail".`,
+                    "When failing, include findings with concrete remediation steps."
+                  ].join("\n\n");
+
+                  const existingStepKeys = new Set(existingSteps.map((candidate) => candidate.stepKey));
+                  const baseValidatorKey = `validate_${latestStep.stepKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+                  let validatorStepKey = baseValidatorKey;
+                  let keyCounter = 1;
+                  while (existingStepKeys.has(validatorStepKey)) {
+                    validatorStepKey = `${baseValidatorKey}_${keyCounter}`;
+                    keyCounter += 1;
+                  }
+                  const maxStepIndex = existingSteps.reduce((max, candidate) => Math.max(max, candidate.stepIndex), -1);
+                  const spawned = this.addSteps({
+                    runId: run.id,
+                    steps: [
+                      {
+                        stepKey: validatorStepKey,
+                        title: `Validate: ${latestStep.title}`,
+                        stepIndex: maxStepIndex + 1,
+                        laneId: latestStep.laneId,
+                        dependencyStepKeys: [latestStep.stepKey],
+                        executorKind: "unified",
+                        metadata: {
+                          stepType: "validation",
+                          taskType: "validation",
+                          instructions: validatorPrompt,
+                          modelId: validatorModelId,
+                          role: validatorRoleName,
+                          autoSpawnedValidation: true,
+                          targetStepId: latestStep.id,
+                          targetStepKey: latestStep.stepKey,
+                          targetAttemptId: args.attemptId,
+                          targetStepSummary: envelope.summary,
+                          phaseKey: stepPhaseKey || phaseCard?.phaseKey || null,
+                          phaseName: stepPhaseName || phaseCard?.name || null,
+                          phasePosition: typeof latestStepMeta.phasePosition === "number"
+                            ? latestStepMeta.phasePosition
+                            : phaseCard?.position ?? null,
+                          validationContract: normalizedContract
+                        }
+                      }
+                    ]
+                  });
+                  if (spawned.length > 0) {
+                    appendTimelineEvent({
+                      runId: run.id,
+                      stepId: spawned[0]!.id,
+                      eventType: "validation_auto_spawned",
+                      reason: "dedicated_required_validation",
+                      detail: {
+                        targetStepId: latestStep.id,
+                        targetStepKey: latestStep.stepKey,
+                        validatorStepKey: spawned[0]!.stepKey,
+                        validatorModelId
+                      }
+                    });
+                    void this.startReadyAutopilotAttempts({
+                      runId: run.id,
+                      reason: "validation_auto_spawned"
+                    }).catch(() => {});
+                  }
+                }
+              } else {
+                const reminder = `Step "${latestStep.stepKey}" requires self-validation. Review output and call report_validation with verdict pass/fail.`;
+                appendTimelineEvent({
+                  runId: run.id,
+                  stepId: latestStep.id,
+                  attemptId: args.attemptId,
+                  eventType: "validation_self_check_reminder",
+                  reason: "required_validation_missing",
+                  detail: {
+                    stepKey: latestStep.stepKey,
+                    reminder
+                  }
+                });
+                persistRuntimeEvent({
+                  runId: run.id,
+                  stepId: latestStep.id,
+                  attemptId: args.attemptId,
+                  sessionId: attemptRow.executor_session_id,
+                  eventType: "worker_message",
+                  eventKey: `validation_self_check_reminder:${run.id}:${latestStep.id}:${completedAt}`,
+                  occurredAt: completedAt,
+                  payload: {
+                    audience: "coordinator",
+                    stepId: latestStep.id,
+                    stepKey: latestStep.stepKey,
+                    message: reminder
+                  }
+                });
+                emit({
+                  type: "orchestrator-step-updated",
+                  runId: run.id,
+                  stepId: latestStep.id,
+                  reason: "validation_self_check_reminder"
+                });
+                validationSelfCheckReminder = true;
+              }
             }
           }
         }
@@ -6164,6 +6509,19 @@ export function createOrchestratorService({
             summary: envelope.summary
           }
         });
+        if (validationContractUnfulfilledSignal) {
+          emit({
+            type: "orchestrator-run-updated",
+            runId: run.id,
+            reason: "validation_contract_unfulfilled"
+          });
+        } else if (validationSelfCheckReminder) {
+          emit({
+            type: "orchestrator-run-updated",
+            runId: run.id,
+            reason: "validation_self_check_reminder"
+          });
+        }
       } else if (status === "blocked") {
         persistRuntimeEvent({
           runId: run.id,

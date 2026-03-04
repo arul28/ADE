@@ -3258,4 +3258,300 @@ describe("orchestratorService", () => {
       fixture.dispose();
     }
   });
+
+  it("auto-spawns one dedicated validator and emits validation_contract_unfulfilled on required step success", async () => {
+    const fixture = await createFixture();
+    try {
+      const phaseCard = {
+        id: "phase-implementation",
+        phaseKey: "implementation",
+        name: "Implementation",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: true, criteria: "Validator must pass before moving on" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      };
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [phaseCard] },
+          phaseRuntime: { currentPhaseKey: "implementation", currentPhaseName: "Implementation" }
+        },
+        steps: [
+          {
+            stepKey: "impl_auth",
+            title: "Implement auth flow",
+            stepIndex: 0,
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation",
+              phaseName: "Implementation",
+              phasePosition: 1,
+              validationContract: {
+                level: "step",
+                tier: "dedicated",
+                required: true,
+                criteria: "Validator must pass before moving on",
+                evidence: [],
+                maxRetries: 2
+              }
+            }
+          }
+        ]
+      });
+      const implStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "impl_auth");
+      if (!implStep) throw new Error("Missing implementation step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: implStep.id,
+        ownerId: "owner"
+      });
+
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Auth flow implemented.",
+          outputs: {
+            filesChanged: ["src/auth.ts"],
+            testsRun: { passed: 4, failed: 0, skipped: 1 }
+          },
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      const steps = fixture.service.listSteps(started.run.id);
+      const validators = steps.filter((step) => {
+        const meta = (step.metadata ?? {}) as Record<string, unknown>;
+        return meta.autoSpawnedValidation === true && meta.targetStepId === implStep.id;
+      });
+      expect(validators).toHaveLength(1);
+      expect(validators[0]?.dependencyStepIds).toContain(implStep.id);
+      const validatorMeta = (validators[0]?.metadata ?? {}) as Record<string, unknown>;
+      const validatorContract = (validatorMeta.validationContract ?? {}) as Record<string, unknown>;
+      expect(validatorMeta.targetStepKey).toBe("impl_auth");
+      expect(validatorMeta.phaseKey).toBe("implementation");
+      expect(validatorMeta.phaseName).toBe("Implementation");
+      expect(validatorContract.required).toBe(true);
+      expect(validatorContract.tier).toBe("dedicated");
+
+      const runtimeEvents = fixture.service.listRuntimeEvents({ runId: started.run.id, limit: 100 });
+      expect(runtimeEvents.some((event) => {
+        if (event.eventType !== "validation_contract_unfulfilled") return false;
+        const payload = (event.payload ?? {}) as Record<string, unknown>;
+        return payload.stepKey === "impl_auth";
+      })).toBe(true);
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
+      expect(timeline.some((event) => event.eventType === "validation_auto_spawned")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not create duplicate auto-spawned validator for the same target step", async () => {
+    const fixture = await createFixture();
+    try {
+      const phaseCard = {
+        id: "phase-implementation",
+        phaseKey: "implementation",
+        name: "Implementation",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: true, criteria: "Validator must pass before moving on" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      };
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [phaseCard] },
+          phaseRuntime: { currentPhaseKey: "implementation", currentPhaseName: "Implementation" }
+        },
+        steps: [
+          {
+            stepKey: "impl_auth",
+            title: "Implement auth flow",
+            stepIndex: 0,
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation",
+              phaseName: "Implementation",
+              phasePosition: 1,
+              validationContract: {
+                level: "step",
+                tier: "dedicated",
+                required: true,
+                criteria: "Validator must pass before moving on",
+                evidence: [],
+                maxRetries: 2
+              }
+            }
+          }
+        ]
+      });
+      const implStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "impl_auth");
+      if (!implStep) throw new Error("Missing implementation step");
+      fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          {
+            stepKey: "validate_impl_auth",
+            title: "Validate existing impl step",
+            stepIndex: 1,
+            dependencyStepKeys: ["impl_auth"],
+            metadata: {
+              stepType: "validation",
+              autoSpawnedValidation: true,
+              targetStepId: implStep.id,
+              targetStepKey: "impl_auth",
+              phaseKey: "implementation",
+              phaseName: "Implementation",
+              validationContract: {
+                level: "step",
+                tier: "dedicated",
+                required: true,
+                criteria: "Validator must pass before moving on",
+                evidence: [],
+                maxRetries: 2
+              }
+            }
+          }
+        ]
+      });
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: implStep.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Auth flow implemented.",
+          outputs: {},
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      const steps = fixture.service.listSteps(started.run.id);
+      const validators = steps.filter((step) => {
+        const meta = (step.metadata ?? {}) as Record<string, unknown>;
+        return meta.autoSpawnedValidation === true && meta.targetStepId === implStep.id;
+      });
+      expect(validators).toHaveLength(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("emits self-check reminder message for required self-tier validation when pass is missing", async () => {
+    const fixture = await createFixture();
+    try {
+      const phaseCard = {
+        id: "phase-testing",
+        phaseKey: "testing",
+        name: "Testing",
+        description: "Test",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "self", required: true, criteria: "Coordinator must validate test results" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 2,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      };
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [phaseCard] },
+          phaseRuntime: { currentPhaseKey: "testing", currentPhaseName: "Testing" }
+        },
+        steps: [
+          {
+            stepKey: "test_auth",
+            title: "Run auth tests",
+            stepIndex: 0,
+            metadata: {
+              stepType: "test",
+              taskType: "test",
+              phaseKey: "testing",
+              phaseName: "Testing",
+              phasePosition: 2,
+              validationContract: {
+                level: "step",
+                tier: "self",
+                required: true,
+                criteria: "Coordinator must validate test results",
+                evidence: [],
+                maxRetries: 2
+              }
+            }
+          }
+        ]
+      });
+      const testStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "test_auth");
+      if (!testStep) throw new Error("Missing test step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: testStep.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Auth tests completed.",
+          outputs: {
+            testsRun: { passed: 10, failed: 0, skipped: 0 }
+          },
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      const runtimeEvents = fixture.service.listRuntimeEvents({ runId: started.run.id, limit: 100 });
+      expect(runtimeEvents.some((event) => {
+        if (event.eventType !== "worker_message") return false;
+        const payload = (event.payload ?? {}) as Record<string, unknown>;
+        return payload.audience === "coordinator" && String(payload.message ?? "").includes("requires self-validation");
+      })).toBe(true);
+      expect(runtimeEvents.some((event) => event.eventType === "validation_contract_unfulfilled")).toBe(true);
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
+      expect(timeline.some((event) => event.eventType === "validation_self_check_reminder")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
 });

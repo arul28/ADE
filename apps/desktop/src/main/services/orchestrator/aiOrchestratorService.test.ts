@@ -4788,7 +4788,6 @@ describe("aiOrchestratorService", () => {
         integrationPr: { enabled: true, draft: true, autoResolveConflicts: false }
       };
       existingMeta.missionLevelSettings = {
-        allowCompletionWithRisk: true,
         prStrategy: { kind: "integration" },
         integrationPr: { enabled: true, createIntegrationLane: false, prDepth: "shallow", draft: true }
       };

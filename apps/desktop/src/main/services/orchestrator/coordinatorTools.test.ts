@@ -1065,7 +1065,7 @@ describe("coordinatorTools validation enforcement", () => {
     expect(orchestratorService.completeAttempt).not.toHaveBeenCalled();
   });
 
-  it("mark_step_complete allows bypass when requireValidatorPass is false", async () => {
+  it("mark_step_complete remains blocked when validation state is fail", async () => {
     const graph = {
       run: { metadata: { teamRuntime: { policyOverrides: { requireValidatorPass: false } } } },
       steps: [
@@ -1101,11 +1101,13 @@ describe("coordinatorTools validation enforcement", () => {
     });
 
     expect(result).toMatchObject({
-      ok: true,
-      workerId: "worker-1",
-      newStatus: "succeeded"
+      ok: false,
+      validation: {
+        state: "fail"
+      }
     });
-    expect(db.run).toHaveBeenCalled();
+    expect(String(result.error)).toContain("requires validator pass");
+    expect(db.run).not.toHaveBeenCalled();
   });
 
   it("complete_mission blocks when required validation is not pass on succeeded/non-terminal steps", async () => {
@@ -1177,7 +1179,7 @@ describe("coordinatorTools validation enforcement", () => {
     expect(orchestratorService.appendRuntimeEvent).not.toHaveBeenCalled();
   });
 
-  it("complete_mission allows bypass when requireValidatorPass is false", async () => {
+  it("complete_mission remains blocked when required validation is missing", async () => {
     const onRunFinalize = vi.fn();
     const graph = {
       run: { metadata: { teamRuntime: { policyOverrides: { requireValidatorPass: false } } } },
@@ -1214,16 +1216,114 @@ describe("coordinatorTools validation enforcement", () => {
     });
 
     expect(result).toMatchObject({
-      ok: true,
-      runId: "run-1",
-      summary: "Done"
+      ok: false,
+      blockers: [
+        expect.objectContaining({ stepKey: "impl", validationState: "fail" })
+      ]
     });
-    expect(onRunFinalize).toHaveBeenCalledWith({
-      runId: "run-1",
-      succeeded: true,
-      summary: "Done"
+    expect(String(result.error)).toContain("cannot be completed");
+    expect(onRunFinalize).not.toHaveBeenCalled();
+    expect(orchestratorService.appendRuntimeEvent).not.toHaveBeenCalled();
+  });
+
+  it("spawn_worker blocks phase transition when earlier required phase validation is missing", async () => {
+    const phaseCards = [
+      {
+        id: "phase-build",
+        phaseKey: "implementation",
+        name: "Implementation",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: true, criteria: "Validator must pass" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      },
+      {
+        id: "phase-test",
+        phaseKey: "testing",
+        name: "Testing",
+        description: "Test",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustFollow: ["implementation"] },
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "self", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 2,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      },
+    ];
+    const graph = {
+      run: {
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "testing",
+            currentPhaseName: "Testing",
+            currentPhaseModel: {
+              provider: "openai",
+              modelId: "openai/gpt-5.3-codex",
+            },
+          }
+        }
+      },
+      steps: [
+        {
+          id: "step-build",
+          stepKey: "build-api",
+          stepIndex: 0,
+          title: "Build API",
+          laneId: null,
+          status: "succeeded",
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          metadata: {
+            phaseKey: "implementation",
+            phaseName: "Implementation",
+            validationContract: {
+              level: "step",
+              tier: "dedicated",
+              required: true,
+              criteria: "Validator must pass",
+              evidence: [],
+              maxRetries: 2,
+            },
+            validationState: "pending",
+          },
+        }
+      ],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph,
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: phaseCards,
+        }
+      }
     });
-    expect(orchestratorService.appendRuntimeEvent).toHaveBeenCalled();
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "test-followup",
+      prompt: "Run the testing phase follow-up",
+      dependsOn: ["build-api"],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'Phase "Implementation" validation gate has not passed. 1 step(s) are missing required validation.',
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
 });
 

@@ -439,11 +439,11 @@ Mission detail uses a sub-tab layout for different views into the running missio
 
 #### Validation During Development (Tiered)
 
-Validation is structured into three tiers to balance thoroughness with cost:
+Validation is structured as runtime-enforced contracts:
 
 - **Tier 1 -- Self-validation** (free): Workers self-validate their output against embedded checklists derived from phase instructions and acceptance criteria. This runs automatically within each worker's context window at no additional cost.
-- **Tier 2 -- Orchestrator spot-check** (cheap): The orchestrator selectively reviews worker output at key decision points. Not every output is reviewed -- the orchestrator uses judgment to spot-check based on task complexity, worker confidence signals, and phase configuration.
-- **Tier 3 -- Dedicated validator** (expensive, gates only): At milestone boundaries and phase transitions with validation gates enabled, the orchestrator spawns a lightweight validator worker to perform thorough review. This is the most expensive tier and is only triggered at explicit gate points configured in the phase cards.
+- **Tier 2 -- Dedicated validator** (expensive, gates only): At milestone boundaries and phase transitions with required validation gates enabled, runtime auto-spawns a validator worker to perform thorough review.
+- **Strict enforcement**: Required validation cannot be bypassed. Missing required validation blocks phase advancement and emits explicit runtime events.
 
 #### Intervention and Permission Handling
 
@@ -727,7 +727,7 @@ ADE supports three complementary modes of work:
 **Missions** (orchestrated, multi-worker):
 - Configurable phase-based workflows with parallel workers in isolated lanes
 - Real-time monitoring via Plan, DAG, Chat, Work, Activity, and Details sub-tabs
-- Tiered validation (self-check, spot-check, dedicated validator at gates)
+- Tiered validation (self-check and dedicated validator at gates, runtime-enforced)
 - Orchestrator intelligence that scales from simple to complex missions
 
 **Background Automations** (fire-and-forget, configured in Settings):

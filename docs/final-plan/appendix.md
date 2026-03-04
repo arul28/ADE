@@ -10,22 +10,20 @@ Base build order:
 3. Phase 3 (AI Orchestrator + Missions Overhaul) — **In Progress** (Waves 1-4 shipped including Project Hivemind and codebase refactoring; Tasks 7-8 remaining — see `phase-3.md`)
 4. Phase 4 (CTO + Ecosystem)
 5. Phase 5 (Play Runtime Isolation)
-5.5. Phase 5.5 (Compute Backend Abstraction)
-6. Phase 6 (Integration Sandbox + Merge Readiness)
-7. Phase 7 (Core Extraction)
-8. Phase 8 (Relay + Machines)
-9. Phase 9 (iOS Control App)
+6. Phase 6 (Multi-Device Sync Foundation) — **NEW**
+7. Phase 7 (Mobile + Remote Access) — **NEW**
+8. Phase 8 (Core Extraction + SpacetimeDB Evaluation) — **DEFERRED/OPTIONAL**
 
 Pull-forward rules:
 
 - Phase 5 (Play Runtime Isolation) may begin after Phase 3 starts if resources allow, as it depends on the deterministic runtime (already shipped) rather than the AI orchestrator specifically.
 - Phase 2 (MCP Server) and Phase 1 (Agent SDK Integration) may overlap in late Phase 1 for tool contract design work.
 - Phase 1.5 (Agent Chat Integration) runs in parallel with Phase 1. It depends only on Phase 1 W1 (package installation) being complete. All other Phase 1.5 work is independent of Phase 1 runtime integration workstreams.
-- Daytona SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration.
-- E2B SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration alongside Daytona.
-- Computer use tool prototyping may begin during Phase 3 since compute environments and completion behaviors inform computer use capabilities.
 - Phase 3 mission phases UI work runs alongside the Phase 3 completion package since it depends on orchestrator runtime, not specific P3 workstreams.
 - Phase 3 remaining tasks (Tasks 1-8) are a hard prerequisite for full autonomous mission quality. Phase 4 CTO and ecosystem work should not bypass these runtime foundations.
+- Phase 6 cr-sqlite prototyping may begin during Phase 5 to derisk sync integration.
+- Phase 7 iOS app shell may begin during Phase 6 once the sync protocol stabilizes.
+- Phase 8 activates ONLY if Phase 6 cr-sqlite reveals fundamental sync issues.
 
 ---
 
@@ -49,17 +47,14 @@ Each phase must satisfy:
 | CLI tool stability and breaking changes | Two different SDKs (`ai-sdk-provider-claude-code` and `@openai/codex-sdk`) are in play; provider SDK or CLI updates may break execution paths | Pin provider package versions; `AgentExecutor` interface isolates the orchestrator from SDK-level changes; executor implementations are the only code that touches SDK internals |
 | Claude subscription auth policy uncertainty | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; `AgentExecutor` interface enables quick switch to official SDK if policy changes |
 | Context window limits under large missions | Orchestrator may lose coherence on complex multi-step missions | Progressive context loading; context pressure management; pack compression; **compaction engine (Hivemind HW6) triggers at 70% threshold with durable resume** |
-| Monolithic IPC concentration | Slows core extraction and relay work | Domain adapter split in Phase 7 with parity test gates |
+| Monolithic IPC concentration | Slows core extraction and relay work | Domain adapter split in Phase 8 with parity test gates |
 | Unsafe unattended execution | High blast radius in Night Shift mode (Automations) | Hard budgets, explicit policy gates, intervention states, per-automation guardrail constraints |
 | Runtime isolation brittleness | Play instability | Deterministic lease model + diagnostics + fallback mode |
-| Cross-device race conditions | Inconsistent mission outcomes | Ownership model + optimistic locking + event sequencing |
+| Cross-device race conditions | Inconsistent mission outcomes | cr-sqlite CRDTs + optimistic locking + event sequencing |
 | MCP tool permission model gaps | Orchestrator may invoke unsafe operations | Permission/policy layer with deny-by-default; audit logging for all tool calls |
 | Codex App Server protocol stability | App Server is relatively new; protocol changes may break integration | Pin `codex` CLI version; generate TypeScript schemas from installed version; adapter pattern isolates protocol changes |
 | Claude multi-turn session quality vs Codex | Claude via community provider may have rougher multi-turn UX than Codex's purpose-built App Server | `AgentChatService` interface allows per-provider UX tuning; feature parity is a goal but not a hard requirement |
 | localhost subdomain browser compatibility | Safari/Firefox may not resolve `*.localhost` subdomains | Feature detection at startup; fallback to port-based isolation; document browser requirements |
-| Daytona SDK stability | Pre-1.0 SDK, API may change between versions | Pin SDK version; `ComputeBackend` interface isolates callers; Daytona is always opt-in |
-| E2B SDK stability | E2B API may change; Desktop Sandbox availability may vary | Pin SDK version; `ComputeBackend` interface isolates callers; E2B is always opt-in; terminal-only fallback if desktop sandbox unavailable |
-| Computer use reliability | GUI interaction is inherently less deterministic than CLI operations | Screenshot verification loop; agent retry with different strategy on failure; human intervention fallback; time limits on computer use loops |
 | Port exhaustion on machines with many lanes | Machines with 20+ lanes may exhaust ephemeral port ranges | Configurable port range size per lane; lease release on lane archive; diagnostics for port pressure |
 | Docker dependency for lane environment init | Lane env init features require Docker for service startup | Docker is optional; env file copying and dependency install work without Docker; clear error messages when Docker is unavailable |
 | .ade/ directory size growth | Large repos with extensive mission history | Pruning policy for old mission logs; archive cold memory; .gitignore for embeddings cache |
@@ -69,6 +64,14 @@ Each phase must satisfy:
 | Custom phase instructions too vague for orchestrator | Orchestrator can't execute phase properly | Semantic validation during pre-flight; require minimum instruction detail |
 | Subscription budget estimation inaccuracy | User unexpectedly hits rate limits | Best-effort estimation with clear 'approximate' labeling; graceful rate-limit handling (pause/wait/retry) |
 | Phase ordering constraint conflicts | Circular dependencies in custom phases | Structural validation catches cycles during pre-flight |
+| cr-sqlite WASM compatibility | cr-sqlite extension may not load cleanly in sql.js WASM runtime | Test early in Phase 6; fallback to native SQLite binding if WASM fails; Phase 8 SpacetimeDB as ultimate fallback |
+| cr-sqlite project maturity | cr-sqlite is pre-1.0; API or merge behavior may change | Pin version; maintain fork if needed; Phase 8 provides alternative path |
+| Tailscale adoption friction | Users may resist installing a VPN tool for device sync | Tailscale is optional; LAN-only mode works without it; clear docs on privacy (peer-to-peer, no cloud relay) |
+| Brain single-point-of-failure | If brain machine goes offline, no agents run | Brain transfer protocol allows quick failover; VPS brain option for always-on; offline cached state on all devices |
+| WebSocket sync reliability | Sync connection drops may cause stale state on viewer devices | Version-based catch-up on reconnect; offline queue replay; cr-sqlite CRDTs handle eventual consistency |
+| SpacetimeDB migration scope | 63 tables, ~926 SQL operations across 40 files is a significant migration | Only triggered if cr-sqlite fails; agent swarm can accelerate; repository abstraction limits blast radius |
+| iOS App Store review | Apple may reject or delay the iOS app | Submit early; follow Apple guidelines strictly; plan for review cycles in timeline |
+| Push notification infrastructure | APNs requires some server-side infrastructure | Multiple options (self-hosted, FCM, no-push fallback); minimal infra requirements |
 
 ---
 
@@ -80,7 +83,6 @@ Each phase must satisfy:
 - Mission completion rate without manual recovery
 - AI orchestrator plan quality (step relevance, minimal unnecessary steps)
 - Pre-merge issue discovery rate before merge attempt
-- Integration sandbox pass rate before land
 - Mobile intervention completion rate
 
 ### Orchestrator Intelligence KPIs (Project Hivemind)
@@ -101,29 +103,44 @@ Each phase must satisfy:
 - Pre-compaction flush success rate (memories persisted before compaction)
 - Memory consolidation accuracy (user confirmation rate for merged memories)
 - Episodic memory extraction completeness (key facts captured vs missed)
-- .ade/ sync round-trip accuracy (state identical across machines after git sync)
+- cr-sqlite sync round-trip accuracy (state identical across devices after sync)
 
 ### CTO & Ecosystem KPIs
 
 - CTO response relevance and task completion rate
 - External MCP connection success rate
-- Cross-machine mission launch success rate (via relay)
+- Remote mission launch success rate (from viewer device to brain)
 
 ### Reliability KPIs
 
 - Orchestrator failure classification coverage
 - AI session context window utilization efficiency
 - Runtime isolation collision rate
-- Relay reconnect success rate
+- WebSocket sync reconnect success rate
 - Conflict prediction false-positive/false-negative trend
 - MCP tool call success rate and latency
 - Lane setup time: <5s (env init + port allocation + proxy registration)
 - Port collision rate: 0%
 - Proxy latency overhead: <5ms per request
-- Daytona workspace creation latency: <15s
-- E2B sandbox cold start latency: <150ms
-- Computer use screenshot-to-action loop latency: <2s per cycle
 - Provider parity stability (normalized permission/tool errors resolved with same intervention UX across Claude/Codex)
+
+### Multi-Device Sync KPIs
+
+- cr-sqlite changeset sync latency (target: <100ms on LAN, <500ms over Tailscale)
+- Sync convergence accuracy (all devices reach identical state after concurrent writes)
+- Brain transfer completion time (target: <10s including agent stop/start)
+- Device pairing success rate (QR code scan to connected state)
+- WebSocket reconnection time after network interruption
+- Offline queue replay success rate
+- VPS headless brain uptime
+
+### Mobile KPIs
+
+- iOS mission launch success rate from phone
+- Push notification delivery latency (event to phone notification)
+- Agent chat response display latency on mobile
+- Offline cached state availability (phone shows data without connection)
+- VPS provider provisioning success rate (one-click brain setup)
 
 ### Adoption KPIs
 
@@ -137,7 +154,6 @@ Each phase must satisfy:
 - CTO agent activation rate
 - Pre-flight checklist pass rate (first attempt vs requiring fixes)
 - Learning pack entry confirmation rate (auto-generated entries confirmed by users vs. deleted)
-- .ade/ git sync adoption rate (users committing .ade/ vs keeping local-only)
 - External MCP server configuration rate (users connecting external tools)
 
 ### Mission Phases KPIs (Phase 3)
@@ -228,7 +244,7 @@ Protocols evaluated during research for inter-agent and agent-to-human communica
 
 **A2A Protocol (Google)**: Agent-to-agent discovery and communication protocol. Provides standardized agent capability advertisement and structured message exchange between agents from different platforms. Relevant for future scenarios where ADE agents need to discover and communicate with agents running on other platforms (not just via MCP tool calls, but via structured protocol). Not adopted in Phase 4 — MCP provides sufficient inter-platform communication for current needs. Candidate for Phase 8+ if multi-platform agent orchestration demand emerges.
 
-**A2H Protocol (Twilio)**: Agent-to-human communication across channels (SMS, voice, chat, email). Provides standardized patterns for agents to reach humans through their preferred channel. Relevant for Phase 9 (iOS) and for agents that need to notify users when interventions are needed. Currently, ADE uses IPC push events and (Phase 9) APNs for human communication. A2H patterns could inform a future multi-channel notification system.
+**A2H Protocol (Twilio)**: Agent-to-human communication across channels (SMS, voice, chat, email). Provides standardized patterns for agents to reach humans through their preferred channel. Relevant for Phase 7 (Mobile + Remote Access) and for agents that need to notify users when interventions are needed. Currently, ADE uses IPC push events and (Phase 7) APNs for human communication. A2H patterns could inform a future multi-channel notification system.
 
 **MCP Async Tasks**: Experimental MCP primitive for long-running agent work. Allows an MCP tool call to return immediately with a task ID, and the caller polls or subscribes for completion. Relevant for ADE's MCP server when external agents launch missions — missions are long-running and the current MCP request/response model blocks until completion. When the MCP async task spec stabilizes, ADE should adopt it for mission-launch and task-agent-launch tools.
 
@@ -242,7 +258,7 @@ ADE's orchestrator achieves similar properties through:
 - **Compaction summaries**: When context is compacted, the summary is stored as a resumable checkpoint.
 - **Step-level retry**: Each step has configurable `maxRetries` with the orchestrator managing retry state.
 
-ADE does not use Temporal or Inngest directly because: (1) adding a separate durable execution runtime increases deployment complexity for a desktop app, (2) SQLite + the orchestrator state machine already provides sufficient durability for the single-machine case, and (3) the orchestrator's resume capability (`resumeUnified()`) handles the most common crash-recovery scenario (app restart during mission). For the multi-machine case (Phase 8), the relay connection handles remote execution management, and git-based state sync provides cross-machine durability.
+ADE does not use Temporal or Inngest directly because: (1) adding a separate durable execution runtime increases deployment complexity for a desktop app, (2) SQLite + the orchestrator state machine already provides sufficient durability for the single-machine case, and (3) the orchestrator's resume capability (`resumeUnified()`) handles the most common crash-recovery scenario (app restart during mission). For the multi-machine case (Phase 6+), cr-sqlite sync handles cross-device state replication, and the brain/viewer architecture provides execution management.
 
 ### 11.7 Memory System Research Summary
 
@@ -280,18 +296,18 @@ The program is complete when:
 - Smart fan-out dynamically parallelizes work when meta-reasoner detects opportunities.
 - Context compaction prevents overflow and supports durable session resume.
 - Memory system tracks agent identities and promotes validated knowledge with confidence scoring.
-- Play supports deterministic lane isolation and integration sandbox verification.
+- Play supports deterministic lane isolation.
 - Missions use configurable phase pipelines with pre-flight validation and tiered quality gates.
 - CTO agent provides persistent project-aware assistance with full memory and context.
 - Night Shift mode in Automations executes overnight tasks with guardrails and produces morning briefings.
 - Morning Briefing (in Automations Night Shift) provides rapid review of overnight results.
-- Desktop and iOS can operate against local and relay machine targets.
+- Desktop, VPS, and iOS sync state in real-time via cr-sqlite. Any device can view and control; the brain runs agents.
 - MCP server safely exposes ADE capabilities to the AI orchestrator and external agent ecosystems.
-- Compute backend abstraction enables lanes to execute on Local, VPS, Daytona (opt-in), or E2B (opt-in) backends.
-- Computer use MCP tools enable agents to interact with running applications visually across supported compute environments.
-- Lane-level artifacts provide polymorphic attachment of screenshots, videos, and test results to lanes, missions, and agent runs.
+- VPS deployment enables always-on brain machines for unattended agent execution.
+- cr-sqlite enables zero-cloud-dependency multi-device sync with CRDT conflict resolution.
+- iOS companion app provides full participation in ADE workflows from mobile.
+- Device pairing is one-time, and state is available offline on all devices.
 - Learning packs automatically accumulate project-specific knowledge from agent interactions with confidence-based injection.
 - Chat-to-mission escalation bridges interactive chat sessions with full mission orchestration.
-- Preview URLs work across all compute backends with unified generation and access.
 - Lane isolation (env, ports, hostname, cookies) prevents cross-lane interference.
 - All core features work in `guest` mode without any subscriptions.

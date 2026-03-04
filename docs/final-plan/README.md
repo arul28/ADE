@@ -8,12 +8,20 @@ This plan has been split into individual phase files for maintainability. Each p
 - [Phase 3: AI Orchestrator + Missions Overhaul](phase-3.md)
 - [Phase 4: CTO + Ecosystem](phase-4.md)
 - [Phase 5: Play Runtime Isolation](phase-5.md)
-- [Phase 5.5: Compute Backend Abstraction](phase-5.5.md)
-- [Phase 6: Integration Sandbox](phase-6.md)
-- [Phase 7: Core Extraction](phase-7.md)
-- [Phase 8: Relay + Machines](phase-8.md)
-- [Phase 9: iOS Control App](phase-9.md)
+- [Phase 6: Multi-Device Sync Foundation](phase-6.md)
+- [Phase 7: Mobile + Remote Access](phase-7.md)
+- [Phase 8: Core Extraction + SpacetimeDB Evaluation (Deferred/Optional)](phase-8.md)
 - [Appendix: Rules, Risks, KPIs](appendix.md)
+
+### Removed / Superseded Phase Files
+
+The following phase files are superseded by the new roadmap and should be considered archived:
+
+- `phase-5.5.md` — **Dropped.** Compute Backend Abstraction is no longer a phase. VPS is just another machine running ADE. Computer use is agent-level (extensions), not ADE-level. Sandboxing dropped.
+- `phase-6.md` (Integration Sandbox) — **Dropped.** Existing conflict detection is sufficient. Replaced by Phase 6: Multi-Device Sync Foundation.
+- `phase-7.md` (Core Extraction) — **Deferred** to Phase 8 (only if cr-sqlite fails). Replaced by Phase 7: Mobile + Remote Access.
+- `phase-8.md` (Relay + Machines) — **Replaced** by Phase 6: Multi-Device Sync via cr-sqlite.
+- `phase-9.md` (iOS Control App) — **Replaced** by Phase 7: Mobile + Remote Access.
 
 ---
 
@@ -84,7 +92,7 @@ Baseline derived from code in `apps/desktop`.
 - Model selection per-mission with per-model thinking budgets
 - Activity feed with category dropdown (replaces 12+ filter buttons)
 - Mission workspace with missionId-filtered queries
-- **MCP Server Overhaul (shipped 2026-02-26):** MCP server expanded to 35 tools as full headless orchestration API — mission lifecycle (8), observation (8), evaluation (3), plus 16 existing tools. Enables external evaluators and Claude Code integration.
+- **MCP Server Overhaul (shipped 2026-02-26):** MCP server expanded to 35 tools as full headless orchestration API -- mission lifecycle (8), observation (8), evaluation (3), plus 16 existing tools. Enables external evaluators and Claude Code integration.
 - **MCP Dual-Mode Architecture (shipped 2026-02-26):** Transport abstraction (WS8), headless AI integration (WS9), desktop socket embedding at `.ade/mcp.sock` (WS10), smart entry point auto-detection (WS11). Same 35 tools in headless (stdio) and embedded (socket) modes.
 - **Project Hivemind features (shipped 2026-02-25):**
   - Slack-like mission chat with sidebar channels, global view, @mentions, real-time updates (`MissionChatV2.tsx`, `MentionInput.tsx`)
@@ -101,45 +109,45 @@ Baseline derived from code in `apps/desktop`.
 
 - Main process is already service-oriented and extraction-friendly.
 - IPC surface is broad (`234` channels in `apps/desktop/src/shared/ipc.ts`).
-- `registerIpc.ts` concentration remains a known extraction bottleneck (targeted for Phase 7).
+- `registerIpc.ts` concentration remains a known extraction bottleneck (targeted for Phase 8 core extraction if needed).
 - Core product behavior is local-first and fully operational without any cloud backend.
 - Orchestrator runtime (deterministic kernel) is shipped infrastructure; AI orchestration sits on top.
 - Runtime execution flow is single-path (`aiIntegrationService` -> executor/unified runtime); no legacy hosted/BYOK migration branch remains in call flow.
 - Developer baseline assumes modern Git CLI semantics (worktrees, `restore`, `merge-tree --write-tree`, `--ignore-other-worktrees`).
-- **Codebase modularized (2026-03-02)**: AI orchestrator decomposed into 9 domain modules (42% size reduction), pack service decomposed into 4 builder modules (45% reduction), type system split into 17 domain files, frontend components decomposed (MissionsPage 60% reduction). Shared utilities consolidated. This decomposition directly enables Phase 7 core extraction.
+- **Codebase modularized (2026-03-02)**: AI orchestrator decomposed into 9 domain modules (42% size reduction), pack service decomposed into 4 builder modules (45% reduction), type system split into 17 domain files, frontend components decomposed (MissionsPage 60% reduction). Shared utilities consolidated. This decomposition directly enables Phase 8 core extraction if needed.
+- **cr-sqlite compatibility**: Multi-device sync (Phase 6) targets sql.js WASM + cr-sqlite extension for CRDT-based state replication. The existing SQLite-backed local state layer is compatible with cr-sqlite's merge semantics. If cr-sqlite proves insufficient, Phase 8 evaluates SpacetimeDB as an alternative.
 
 ### 2.4 Confirmed gaps
 
 Not implemented yet:
 
-- Remaining Phase 3 work (subagent delegation, validation enforcement, UI observability, reflection protocol — see `docs/ORCHESTRATOR_OVERHAUL.md` Phases 4-7)
+- Remaining Phase 3 work (subagent delegation, validation enforcement, UI observability, reflection protocol -- see `docs/ORCHESTRATOR_OVERHAUL.md` Phases 4-7)
 - CTO agent (persistent project-aware assistant, replaces Concierge)
 - Night Shift mode in Automations (overnight execution with morning briefing)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
-- Compute backend abstraction (local/VPS/Daytona)
-- Integration sandbox for lane-set verification
-- `packages/core` extraction
-- Relay and machine registry/routing
-- iOS control app
+- Multi-device sync (cr-sqlite + WebSocket real-time replication)
+- Device registry and brain management (which machine runs agents)
+- iOS companion app (remote control, push notifications, mission monitoring)
+- VPS headless deployment (headless ADE on remote machines)
 - Mission Introspection (reflection protocol for system self-improvement)
 - Provider usage telemetry parity (CLI/API/local) and budget UX refinements
 
 ### 2.5 Phase 3 Status Snapshot (2026-03-02 update)
 
-Phase 3 encompasses both orchestrator autonomy and the missions overhaul. The codebase was significantly refactored in Wave 4 (2026-03-02), decomposing the orchestrator, pack service, type system, and frontend into modular architectures to improve maintainability and prepare for Phase 7 core extraction.
+Phase 3 encompasses both orchestrator autonomy and the missions overhaul. The codebase was significantly refactored in Wave 4 (2026-03-02), decomposing the orchestrator, pack service, type system, and frontend into modular architectures to improve maintainability and prepare for future core extraction.
 
 Implemented in baseline:
 
-1. **Task 1: Orchestrator Autonomy Core** — team runtime schema/capability enforcement, structured reporting tools, autonomous `revise_plan` with supersede semantics, role tool profiles, `partially_completed` + recovery handoff
-2. **Task 2: Validation & Lane Continuity** — validation contract/reporting primitives, open-obligation surfacing, lane continuity for replacement/rework, explicit lane transfer audit trail
+1. **Task 1: Orchestrator Autonomy Core** -- team runtime schema/capability enforcement, structured reporting tools, autonomous `revise_plan` with supersede semantics, role tool profiles, `partially_completed` + recovery handoff
+2. **Task 2: Validation & Lane Continuity** -- validation contract/reporting primitives, open-obligation surfacing, lane continuity for replacement/rework, explicit lane transfer audit trail
 
 Remaining execution tracks (see `ORCHESTRATOR_OVERHAUL.md` for current plan):
 
-3. **Task 3: Mission Phases Engine & Profiles** — implemented (Task 3)
-4. **Task 4: Mission UI Overhaul** — implemented (Task 4)
-5. **Task 5: Pre-Flight, Intervention & HITL** — implemented (Task 5)
-6. **Task 6: Budget & Usage Tracking** — implemented (Task 6)
-7. **Tasks 7-8** — superseded by ORCHESTRATOR_OVERHAUL.md Phases 4-7 (subagent delegation, validation enforcement, UI observability, reflection protocol)
+3. **Task 3: Mission Phases Engine & Profiles** -- implemented (Task 3)
+4. **Task 4: Mission UI Overhaul** -- implemented (Task 4)
+5. **Task 5: Pre-Flight, Intervention & HITL** -- implemented (Task 5)
+6. **Task 6: Budget & Usage Tracking** -- implemented (Task 6)
+7. **Tasks 7-8** -- superseded by ORCHESTRATOR_OVERHAUL.md Phases 4-7 (subagent delegation, validation enforcement, UI observability, reflection protocol)
 
 Tasks 1-6 are baseline. Remaining work is tracked in `docs/ORCHESTRATOR_OVERHAUL.md`.
 
@@ -153,10 +161,11 @@ ADE becomes the execution control plane for parallel agentic development:
 2. ADE's `AgentExecutor` interface unifies agent SDKs -- `ai-sdk-provider-claude-code` for Claude and `@openai/codex-sdk` for Codex -- spawning CLIs against user subscriptions.
 3. The AI orchestrator coordinates missions via MCP tools exposed by the ADE MCP server; the same server provides a full headless orchestration API for external agents, evaluators, and CI/CD integration.
 4. Missions, lanes, packs, conflicts, and PRs share one coherent execution model.
-5. Desktop, relay machines, and iOS share one mission/audit state model.
+5. Desktop, VPS, and iOS share one mission/audit state model via cr-sqlite real-time sync.
 6. All core features work in `guest` mode (no AI) -- AI orchestration is additive, never mandatory.
-7. ADE state (memory, agents, history) is portable across machines via `.ade/` in git -- no cloud backend needed for sync.
+7. ADE state syncs across devices in real-time via cr-sqlite CRDTs -- no cloud backend needed. Git tracks code, cr-sqlite syncs app state.
 8. CTO agent provides persistent project-aware assistance with full memory and context; external agent systems connect via MCP server.
+9. Any machine (except phones) can be the "brain" that runs agents; all other devices are real-time viewers/controllers.
 
 ---
 
@@ -167,7 +176,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Feature | Primary Phase | Depends On | Status |
 |---|---|---|---|
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
-| Agent Chat integration (Codex App Server, Claude SDK, unified API/local runtime) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
+| Agent Chat integration (Codex App Server, Claude SDK, unified API/local runtime) | Phase 1.5 | Phase 1 (partial -- SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
 | AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Tasks 1-6 shipped; remaining work in `ORCHESTRATOR_OVERHAUL.md` Phases 4-7) |
 | Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
@@ -180,33 +189,38 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Mission Plan Tab (hierarchical task list, real-time) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Mission Work Tab (follow-mode worker output) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Pre-Mission Launch System (pre-flight checklist) | Phase 3 | Phase 3 | Implemented (Task 5) |
-| Tiered Validation System (self/spot-check/gate) | Phase 3 | Phase 3 | Implemented (Task 5) |
+| Tiered Validation System (strict self/dedicated runtime contracts) | Phase 3 | Phase 3 | Implemented (Task 5 + Orchestrator Overhaul Phase 5) |
 | Intervention Granularity (per-worker pause) | Phase 3 | Phase 3 | Implemented (Task 5) |
+| Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Planned (ORCHESTRATOR_OVERHAUL.md Phase 7) |
+| Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Planned |
+| Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
+| Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Planned |
 | Night Shift Mode (in Automations) | Phase 4 | Phase 3 | Planned |
-| Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
-| Play runtime isolation | Phase 5 | Phase 3 | Planned |
-| Compute backend abstraction | Phase 5.5 | Phase 5 | Planned |
-| Computer Use (agent GUI interaction) | Phase 5.5 | Phase 5 | Planned |
-| E2B compute backend | Phase 5.5 | Phase 5 | Planned |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
-| Integration sandbox + readiness gates | Phase 6 | Phase 5 | Planned |
-| Core extraction (`packages/core`) | Phase 7 | Phases 3, 5, 6 | Planned |
-| Relay + Machines | Phase 8 | Phase 7 | Planned |
-| iOS app | Phase 9 | Phase 8 | Planned |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Planned |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Planned (covered in Phase 4 W3) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
 | Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Planned (covered in Phase 4 W4) |
-| .ade/ Portable State | Phase 4 | Phase 3 | Planned |
+| .ade/ Portable State (git-tracked configs) | Phase 4 | Phase 3 | Planned |
+| .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 5 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned |
 | OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) | Planned |
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Planned |
 | Memory Consolidation | Phase 4 | Phase 3 | Planned |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |
-| Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Planned (ORCHESTRATOR_OVERHAUL.md Phase 7) |
-| Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Planned |
-| Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
+| Play runtime isolation | Phase 5 | Phase 3 | Planned |
+| cr-sqlite multi-device sync | Phase 6 | Phase 5 | Planned |
+| Device registry & brain management | Phase 6 | Phase 5 | Planned |
+| Tailscale integration | Phase 6 | Phase 5 | Planned |
+| WebSocket sync server | Phase 6 | Phase 5 | Planned |
+| Device pairing | Phase 6 | Phase 5 | Planned |
+| File access protocol | Phase 6 | Phase 5 | Planned |
+| VPS headless deployment | Phase 6 | Phase 5 | Planned |
+| iOS companion app | Phase 7 | Phase 6 | Planned |
+| Push notifications | Phase 7 | Phase 6 | Planned |
+| VPS provider integrations | Phase 7 | Phase 6 | Planned |
+| Core extraction + SpacetimeDB evaluation | Phase 8 | Phase 6 | Deferred (only if cr-sqlite fails) |
 
 ---
 
