@@ -305,7 +305,7 @@ export function evaluateRunCompletion(
     status = "failed";
     completionReady = true;
   } else if (allStepsTerminal && !hasBlockingDiagnostics && riskFactors.length > 0) {
-    status = "succeeded_with_risk";
+    status = "succeeded";
     completionReady = true;
   } else if (allStepsTerminal && !hasBlockingDiagnostics) {
     const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
@@ -544,14 +544,12 @@ export function validateRoleIsolation(
  * - code_review → "review"
  * - test_review → "review"
  * - testing → "implementation"
- * - merge → "implementation" (vestigial; merge phase is always off)
  */
 export function contextViewForRole(role: OrchestratorWorkerRole): OrchestratorContextView {
   switch (role) {
     case "implementation":
     case "planning":
     case "integration":
-    case "merge":
     case "testing":
       return "implementation";
     case "code_review":
@@ -937,7 +935,7 @@ export function evaluateRunCompletionFromPhases(
     status = "failed";
     completionReady = true;
   } else if (allStepsTerminal && !hasBlockingDiagnostics && riskFactors.length > 0) {
-    status = "succeeded_with_risk";
+    status = "succeeded";
     completionReady = true;
   } else if (allStepsTerminal && !hasBlockingDiagnostics) {
     const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");

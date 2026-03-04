@@ -64,7 +64,7 @@ import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "../orchestrator/teamRuntimeConfig";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 
-const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "partially_completed", "failed", "canceled"]);
+const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
 
 const ACTIVE_MISSION_STATUSES = new Set<MissionStatus>(["in_progress", "planning", "plan_review", "intervention_required"]);
 
@@ -84,10 +84,9 @@ const MISSION_TRANSITIONS: Record<MissionStatus, Set<MissionStatus>> = {
   queued: new Set(["queued", "planning", "in_progress", "canceled"]),
   planning: new Set(["planning", "plan_review", "in_progress", "intervention_required", "failed", "canceled", "queued"]),
   plan_review: new Set(["plan_review", "in_progress", "queued", "failed", "canceled", "intervention_required"]),
-  in_progress: new Set(["in_progress", "intervention_required", "completed", "partially_completed", "failed", "canceled", "plan_review"]),
+  in_progress: new Set(["in_progress", "intervention_required", "completed", "failed", "canceled", "plan_review"]),
   intervention_required: new Set(["intervention_required", "in_progress", "failed", "canceled", "plan_review"]),
   completed: new Set(["completed", "queued"]),
-  partially_completed: new Set(["partially_completed", "queued"]),
   failed: new Set(["failed", "queued", "planning", "in_progress", "canceled"]),
   canceled: new Set(["canceled", "queued", "planning", "in_progress"])
 };
@@ -477,7 +476,6 @@ export function normalizeMissionStatus(value: string): MissionStatus {
     value === "in_progress" ||
     value === "intervention_required" ||
     value === "completed" ||
-    value === "partially_completed" ||
     value === "failed" ||
     value === "canceled"
   ) {
@@ -1736,10 +1734,9 @@ export function createMissionService({
     return seenAny ? Number(total.toFixed(4)) : null;
   };
 
-  const mapMissionQuickAction = (status: MissionStatus): "view" | "rerun" | "retry" | "resume" => {
+  const mapMissionQuickAction = (status: MissionStatus): "view" | "rerun" | "retry" => {
     if (status === "completed") return "rerun";
     if (status === "failed") return "retry";
-    if (status === "partially_completed") return "resume";
     return "view";
   };
 
@@ -1775,8 +1772,7 @@ export function createMissionService({
              when 'queued' then 4
              when 'failed' then 5
              when 'completed' then 6
-             when 'partially_completed' then 7
-             else 8
+             else 7
            end,
            m.updated_at desc,
            m.created_at desc
@@ -2234,7 +2230,7 @@ export function createMissionService({
 
       const recentRows = db.all<MissionRow>(
         `${baseMissionSelect}
-         and m.status in ('completed', 'partially_completed', 'failed', 'canceled')
+         and m.status in ('completed', 'failed', 'canceled')
          order by coalesce(m.completed_at, m.updated_at) desc
          limit 12`,
         [projectId]
@@ -2264,7 +2260,7 @@ export function createMissionService({
       );
       const weeklyMissions = weeklyRows.map(toMissionSummary);
       const terminal = weeklyMissions.filter((mission) => TERMINAL_MISSION_STATUSES.has(mission.status));
-      const successCount = terminal.filter((mission) => mission.status === "completed" || mission.status === "partially_completed").length;
+      const successCount = terminal.filter((mission) => mission.status === "completed").length;
       const durationValues = terminal
         .map((mission) => {
           const started = mission.startedAt ? Date.parse(mission.startedAt) : NaN;

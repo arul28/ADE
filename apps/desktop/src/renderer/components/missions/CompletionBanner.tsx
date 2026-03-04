@@ -20,11 +20,6 @@ const BANNER_STYLES: Partial<Record<OrchestratorRunStatus, {
     textColor: COLORS.success,
     label: "MISSION COMPLETED SUCCESSFULLY"
   },
-  succeeded_with_risk: {
-    containerStyle: { background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30` },
-    textColor: COLORS.warning,
-    label: "MISSION COMPLETED WITH RISK"
-  },
   failed: {
     containerStyle: { background: `${COLORS.danger}18`, border: `1px solid ${COLORS.danger}30` },
     textColor: COLORS.danger,
@@ -34,12 +29,16 @@ const BANNER_STYLES: Partial<Record<OrchestratorRunStatus, {
     containerStyle: { background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30` },
     textColor: COLORS.warning,
     label: "MISSION PAUSED"
+  },
+  canceled: {
+    containerStyle: { background: "#71717A18", border: "1px solid #71717A30" },
+    textColor: "#71717A",
+    label: "MISSION CANCELED"
   }
 };
 
 const STRUCTURED_SUMMARY_STATUSES = new Set<OrchestratorRunStatus>([
   "succeeded",
-  "succeeded_with_risk",
   "failed",
 ]);
 

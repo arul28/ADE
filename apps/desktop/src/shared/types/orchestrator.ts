@@ -61,7 +61,6 @@ export type OrchestratorRunStatus =
   | "paused"
   | "completing"
   | "succeeded"
-  | "succeeded_with_risk"
   | "failed"
   | "canceled";
 
@@ -411,7 +410,6 @@ export type RoleDefinition = {
   name: string;
   description: string;
   capabilities: string[];
-  defaultModel: ModelConfig;
   maxInstances?: number;
   toolProfile?: RoleToolProfile;
 };
@@ -651,6 +649,9 @@ export type OrchestratorRuntimeEventType =
   | "lane_transfer"
   | "validation_report"
   | "validation_contract_unfulfilled"
+  | "validation_self_check_reminder"
+  | "validation_auto_spawned"
+  | "validation_gate_blocked"
   | "tool_profiles_updated";
 
 export type OrchestratorRuntimeQuestionLink = {
@@ -973,8 +974,7 @@ export type OrchestratorWorkerRole =
   | "testing"
   | "code_review"
   | "test_review"
-  | "integration"
-  | "merge";
+  | "integration";
 
 export type RoleIsolationRule = {
   /** Roles that cannot coexist in the same worker session */

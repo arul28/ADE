@@ -35,6 +35,9 @@ Status: Active
 
 For all remaining Phase 3 orchestrator work, see `docs/ORCHESTRATOR_OVERHAUL.md` (canonical source of truth). The `final-plan/phase-3.md` file is superseded.
 
+Historical compatibility note:
+- Legacy statuses `partially_completed` and `succeeded_with_risk` were removed in the orchestrator overhaul (Phases 5-6). Any mention of them in archived sections below is non-authoritative.
+
 ---
 
 ## 1. Purpose
@@ -121,7 +124,7 @@ Baseline derived from code in `apps/desktop`.
 
 Not implemented yet:
 
-- Remaining Phase 3 work (subagent delegation, validation enforcement, UI observability, reflection protocol -- see `docs/ORCHESTRATOR_OVERHAUL.md` Phases 4-7)
+- Remaining Phase 3 work (reflection protocol -- see `docs/ORCHESTRATOR_OVERHAUL.md` Phase 7; Overhaul Phases 1-6 complete)
 - CTO agent (persistent project-aware assistant, replaces Concierge)
 - Night Shift mode in Automations (overnight execution with morning briefing)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
@@ -138,7 +141,7 @@ Phase 3 encompasses both orchestrator autonomy and the missions overhaul. The co
 
 Implemented in baseline:
 
-1. **Task 1: Orchestrator Autonomy Core** -- team runtime schema/capability enforcement, structured reporting tools, autonomous `revise_plan` with supersede semantics, role tool profiles, `partially_completed` + recovery handoff
+1. **Task 1: Orchestrator Autonomy Core** -- team runtime schema/capability enforcement, structured reporting tools, autonomous `revise_plan` with supersede semantics, role tool profiles, historical `partially_completed` + recovery handoff design (status now removed; see ORCHESTRATOR_OVERHAUL.md)
 2. **Task 2: Validation & Lane Continuity** -- validation contract/reporting primitives, open-obligation surfacing, lane continuity for replacement/rework, explicit lane transfer audit trail
 
 Remaining execution tracks (see `ORCHESTRATOR_OVERHAUL.md` for current plan):
@@ -178,7 +181,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server, Claude SDK, unified API/local runtime) | Phase 1.5 | Phase 1 (partial -- SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Tasks 1-6 shipped; remaining work in `ORCHESTRATOR_OVERHAUL.md` Phases 4-7) |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Tasks 1-6 shipped; Overhaul Phases 1-6 complete; remaining: Phase 7 reflection protocol) |
 | Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
 | Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Implemented (Task 2 baseline, coordinator-driven loop) |
 | Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |

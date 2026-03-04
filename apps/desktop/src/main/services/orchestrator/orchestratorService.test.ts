@@ -3283,7 +3283,14 @@ describe("orchestratorService", () => {
         missionId: fixture.missionId,
         metadata: {
           phaseConfiguration: { selectedPhases: [phaseCard] },
-          phaseRuntime: { currentPhaseKey: "implementation", currentPhaseName: "Implementation" }
+          phaseRuntime: {
+            currentPhaseKey: "implementation",
+            currentPhaseName: "Implementation",
+            currentPhaseModel: {
+              provider: "openai",
+              modelId: "openai/gpt-5.3-codex",
+            }
+          }
         },
         steps: [
           {
@@ -3542,7 +3549,7 @@ describe("orchestratorService", () => {
 
       const runtimeEvents = fixture.service.listRuntimeEvents({ runId: started.run.id, limit: 100 });
       expect(runtimeEvents.some((event) => {
-        if (event.eventType !== "worker_message") return false;
+        if (event.eventType !== "validation_self_check_reminder") return false;
         const payload = (event.payload ?? {}) as Record<string, unknown>;
         return payload.audience === "coordinator" && String(payload.message ?? "").includes("requires self-validation");
       })).toBe(true);

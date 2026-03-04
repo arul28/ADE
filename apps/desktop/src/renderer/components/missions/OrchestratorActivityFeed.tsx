@@ -30,8 +30,10 @@ const EVENT_CONFIG: Record<string, { icon: string; color: string; label: string;
   context_snapshot_created: { icon: "\u25C6", color: "text-cyan-400", label: "Snapshot", category: "Quality" },
   context_pressure_warning: { icon: "\u26A0", color: "text-red-400", label: "Pressure", category: "Quality" },
   context_pack_bootstrap: { icon: "\u25C6", color: "text-cyan-300", label: "Bootstrap", category: "Quality" },
-  completion_diagnostic: { icon: "\u2611", color: "text-emerald-400", label: "Completion", category: "Quality" },
-  completion_risk: { icon: "\u26A0", color: "text-amber-400", label: "Risk", category: "Quality" },
+  validation_contract_unfulfilled: { icon: "\u26A0", color: "text-red-400", label: "Validation", category: "Quality" },
+  validation_self_check_reminder: { icon: "\u2611", color: "text-amber-300", label: "Validation", category: "Quality" },
+  validation_auto_spawned: { icon: "\u2699", color: "text-cyan-300", label: "Validation", category: "Quality" },
+  validation_gate_blocked: { icon: "\u26D4", color: "text-amber-400", label: "Validation", category: "Quality" },
   validation_reported: { icon: "\u2714", color: "text-emerald-300", label: "Validation", category: "Quality" },
   validation_escalated: { icon: "\u26A0", color: "text-amber-400", label: "Validation", category: "Quality" },
   integration_chain_started: { icon: "\u2295", color: "text-emerald-400", label: "Merge", category: "Integration" },
@@ -47,6 +49,26 @@ const EVENT_CONFIG: Record<string, { icon: string; color: string; label: string;
   budget_hard_cap_triggered: { icon: "\u26D4", color: "text-red-400", label: "Budget Hard Cap", category: "Quality" },
   mission_paused: { icon: "\u23F8", color: "text-amber-400", label: "Mission Paused", category: "Steps" },
   mission_resumed: { icon: "\u25B6", color: "text-emerald-400", label: "Mission Resumed", category: "Steps" },
+  intervention_opened: { icon: "\u26A0", color: "text-red-400", label: "Intervention Opened", category: "Quality" },
+  intervention_resolved: { icon: "\u2714", color: "text-emerald-400", label: "Intervention Resolved", category: "Quality" },
+  recovery_loop_started: { icon: "\u21BB", color: "text-amber-400", label: "Recovery Started", category: "Quality" },
+  recovery_loop_exhausted: { icon: "\u26D4", color: "text-red-400", label: "Recovery Exhausted", category: "Quality" },
+  fan_out_dispatched: { icon: "\u25B6", color: "text-violet-400", label: "Fan-Out Dispatched", category: "Workers" },
+  fan_out_complete: { icon: "\u2713", color: "text-emerald-300", label: "Fan-Out Complete", category: "Workers" },
+  run_completing: { icon: "\u25C9", color: "text-green-400", label: "Run Completing", category: "Steps" },
+  run_finalized: { icon: "\u25C9", color: "text-green-400", label: "Run Finalized", category: "Steps" },
+  run_completion_requested: { icon: "\u25C9", color: "text-green-400", label: "Completion Requested", category: "Steps" },
+  run_completion_blocked: { icon: "\u25C9", color: "text-amber-400", label: "Completion Blocked", category: "Steps" },
+  run_activated: { icon: "\u25C9", color: "text-green-400", label: "Run Activated", category: "Steps" },
+  run_reopened: { icon: "\u25C9", color: "text-green-400", label: "Run Reopened", category: "Steps" },
+  integration_chain_stage: { icon: "\u2295", color: "text-emerald-400", label: "Integration Stage", category: "Integration" },
+  coordinator_steering: { icon: "\u2709", color: "text-cyan-300", label: "User Steering", category: "Steps" },
+  coordinator_broadcast: { icon: "\u2709", color: "text-cyan-300", label: "Coordinator Broadcast", category: "Workers" },
+  budget_exceeded: { icon: "\u26D4", color: "text-red-400", label: "Budget Exceeded", category: "Quality" },
+  budget_updated: { icon: "\u2699", color: "text-amber-300", label: "Budget Updated", category: "Quality" },
+  worker_started: { icon: "\u25B6", color: "text-violet-400", label: "Worker Started", category: "Workers" },
+  worker_failed: { icon: "\u2717", color: "text-red-400", label: "Worker Failed", category: "Workers" },
+  integration_pr_step_inserted: { icon: "\u2295", color: "text-emerald-400", label: "PR Step Inserted", category: "Integration" },
 };
 
 const DEFAULT_CONFIG = { icon: "\u25CB", color: "text-muted-fg", label: "Event", category: "All Events" };
@@ -80,8 +102,23 @@ function formatTimestamp(iso: string): string {
 
 function eventSeverity(ev: OrchestratorTimelineEvent): "error" | "warning" | "info" {
   const r = ev.reason.toLowerCase();
-  if (r.includes("failed") || r.includes("error") || ev.eventType === "context_pressure_warning") return "error";
-  if (r.includes("warning") || r.includes("blocked") || r.includes("paused") || ev.eventType === "completion_risk") return "warning";
+  if (
+    r.includes("failed") ||
+    r.includes("error") ||
+    ev.eventType === "context_pressure_warning" ||
+    ev.eventType === "validation_contract_unfulfilled"
+  ) {
+    return "error";
+  }
+  if (
+    r.includes("warning") ||
+    r.includes("blocked") ||
+    r.includes("paused") ||
+    ev.eventType === "validation_self_check_reminder" ||
+    ev.eventType === "validation_gate_blocked"
+  ) {
+    return "warning";
+  }
   return "info";
 }
 

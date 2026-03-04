@@ -240,13 +240,6 @@ function resolveRoleToolProfile(teamRuntime: TeamRuntimeConfig | null, roleName:
   return (roleDef?.toolProfile as unknown as Record<string, unknown>) ?? null;
 }
 
-function resolveModelIdFromConfig(config: unknown): string {
-  const record = asRecord(config);
-  if (!record) return "";
-  const modelId = typeof record.modelId === "string" ? record.modelId.trim() : "";
-  return modelId.length > 0 ? modelId : "";
-}
-
 function parseValidationContract(value: unknown): ValidationContract | null {
   const raw = asRecord(value);
   if (!raw) return null;
@@ -598,15 +591,16 @@ export function createCoordinatorToolSet(deps: {
     const roleDef = args.roleName ? resolveRoleDefinition(teamRuntime, args.roleName) : null;
     const roleName = roleDef?.name ?? (args.roleName?.trim().length ? args.roleName.trim() : null);
     const toolProfile = roleName ? resolveRoleToolProfile(teamRuntime, roleName) : null;
-    const roleDefaultModelId = resolveModelIdFromConfig(roleDef?.defaultModel);
-    const resolvedModelId = roleDefaultModelId || args.modelId.trim();
+    const resolvedModelId = args.modelId.trim();
+    if (!resolvedModelId.length) {
+      throw new Error("spawnWorkerStep requires a non-empty modelId.");
+    }
     const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
-    const resolvedProvider = roleDef?.defaultModel.provider
-      ?? (resolvedDescriptor?.family === "anthropic"
-        ? "claude"
-        : resolvedDescriptor?.family === "openai"
-          ? "codex"
-          : resolvedDescriptor?.family ?? "unknown");
+    const resolvedProvider = resolvedDescriptor?.family === "anthropic"
+      ? "claude"
+      : resolvedDescriptor?.family === "openai"
+        ? "codex"
+        : resolvedDescriptor?.family ?? "unknown";
     const replacementForWorkerId = args.replacementForWorkerId?.trim() || null;
     const replacementSourceStep = replacementForWorkerId ? resolveStep(g, replacementForWorkerId) : null;
     if (replacementForWorkerId && !replacementSourceStep) {
@@ -648,7 +642,6 @@ export function createCoordinatorToolSet(deps: {
             modelExecutionPath: resolvedDescriptor ? classifyWorkerExecutionPath(resolvedDescriptor) : "api",
             role: roleName,
             roleCapabilities: roleDef?.capabilities ?? [],
-            roleDefaultModel: roleDef?.defaultModel ?? null,
             toolProfile: toolProfile ?? null,
             mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
             ...(args.validationContract ? { validationContract: args.validationContract } : {}),
@@ -973,7 +966,7 @@ export function createCoordinatorToolSet(deps: {
           return { ok: false, error: "Invalid validationContract payload." };
         }
 
-        // Resolve worker model from explicit input -> role default -> active phase model.
+        // Resolve worker model from explicit input -> active phase model.
         const explicitModelId = typeof modelId === "string" ? modelId.trim() : "";
         let resolvedModelId = explicitModelId;
         if (!resolvedModelId.length) {
@@ -1055,6 +1048,37 @@ export function createCoordinatorToolSet(deps: {
             logger.info("coordinator.spawn_worker.validation_gate_blocked", {
               name,
               reason: validationGateCheck.reason,
+            });
+            const gateBlockedAt = nowIso();
+            const graphStep = resolveStep(g, replacementSourceWorkerId.length > 0 ? replacementSourceWorkerId : dependsOn[dependsOn.length - 1] ?? "");
+            const gateBlockedDetail = {
+              workerName: name,
+              requestedRole: normalizedRole.length > 0 ? normalizedRole : null,
+              phase: resolveCurrentPhase(g),
+              reason: validationGateCheck.reason,
+              blockedByValidationGate: true,
+              laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
+              stepKey: graphStep?.stepKey ?? null
+            };
+            orchestratorService.appendTimelineEvent({
+              runId,
+              stepId: graphStep?.id ?? null,
+              eventType: "validation_gate_blocked",
+              reason: "required_validation_gate_blocked",
+              detail: gateBlockedDetail
+            });
+            orchestratorService.appendRuntimeEvent({
+              runId,
+              stepId: graphStep?.id ?? null,
+              eventType: "validation_gate_blocked",
+              eventKey: `validation_gate_blocked:${runId}:${name}:${normalizedRole}:${gateBlockedAt}`,
+              occurredAt: gateBlockedAt,
+              payload: gateBlockedDetail
+            });
+            orchestratorService.emitRuntimeUpdate({
+              runId,
+              stepId: graphStep?.id ?? null,
+              reason: "validation_gate_blocked"
             });
             return { ok: false, error: validationGateCheck.reason };
           }
@@ -1373,12 +1397,11 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        const roleDefaultModelId = resolveModelIdFromConfig(roleDef.defaultModel);
         const phaseModelResolution = resolveModelFromPhaseModel(g);
-        const specialistModelId = roleDefaultModelId || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
-        if (!specialistModelId) {
-          return { ok: false, error: "Unable to resolve specialist model ID from role default or active phase model." };
+        if (!phaseModelResolution.ok) {
+          return { ok: false, error: phaseModelResolution.error };
         }
+        const specialistModelId = phaseModelResolution.modelId;
 
         const { workerId, step, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: workerName,
@@ -1400,7 +1423,7 @@ export function createCoordinatorToolSet(deps: {
           ? "claude"
           : specialistDescriptor?.family === "openai"
             ? "codex"
-            : specialistDescriptor?.family ?? roleDef.defaultModel.provider ?? "unknown";
+            : specialistDescriptor?.family ?? "unknown";
 
         trackTeamMember({
           workerId,
@@ -2616,8 +2639,7 @@ export function createCoordinatorToolSet(deps: {
           const resolvedModel =
             modelOverride.length > 0
               ? modelOverride
-              : resolveModelIdFromConfig(roleDef?.defaultModel)
-                || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
+              : (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
           if (!resolvedModel.length) {
             return {
               ok: false,
@@ -4065,15 +4087,18 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        // Resolve model for sub-agent: explicit override -> role default -> parent worker modelId -> phase modelId.
+        // Resolve model for sub-agent: explicit override -> phase modelId.
         const roleDef = role?.trim().length ? resolveRoleDefinition(teamRuntime, role.trim()) : null;
-        const parentMeta = asRecord(parentStep.metadata);
-        const parentModel = typeof parentMeta?.modelId === "string" ? parentMeta.modelId.trim() : "";
         const phaseModelResolution = resolveModelFromPhaseModel(g);
         const requestedModelId = typeof modelId === "string" ? modelId.trim() : "";
-        const resolvedModelId = requestedModelId || resolveModelIdFromConfig(roleDef?.defaultModel) || parentModel || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
+        const resolvedModelId = requestedModelId || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
         if (!resolvedModelId.length) {
-          return { ok: false, error: "Unable to resolve sub-agent modelId from override, role default, parent worker, or current phase." };
+          return {
+            ok: false,
+            error: phaseModelResolution.ok
+              ? "Unable to resolve sub-agent modelId from override or current phase."
+              : phaseModelResolution.error
+          };
         }
         const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
         if (!resolvedDescriptor) {
@@ -4275,8 +4300,6 @@ export function createCoordinatorToolSet(deps: {
         }
 
         const phaseModelResolution = resolveModelFromPhaseModel(g);
-        const parentMeta = asRecord(parentStep.metadata);
-        const parentModel = typeof parentMeta?.modelId === "string" ? parentMeta.modelId.trim() : "";
 
         const validatedTasks: Array<{
           name: string;
@@ -4307,13 +4330,13 @@ export function createCoordinatorToolSet(deps: {
           }
           const requestedModelId = typeof rawTask.modelId === "string" ? rawTask.modelId.trim() : "";
           const resolvedModelId = requestedModelId
-            || resolveModelIdFromConfig(roleDef?.defaultModel)
-            || parentModel
             || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
           if (!resolvedModelId.length) {
             return {
               ok: false,
-              error: `Unable to resolve modelId for task '${taskName}' from override, role default, parent worker, or phase model.`,
+              error: phaseModelResolution.ok
+                ? `Unable to resolve modelId for task '${taskName}' from override or phase model.`
+                : phaseModelResolution.error,
             };
           }
           const descriptor = resolveModelDescriptor(resolvedModelId);

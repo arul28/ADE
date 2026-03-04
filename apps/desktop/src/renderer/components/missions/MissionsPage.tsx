@@ -83,7 +83,7 @@ import { PlanReviewInterventions } from "./PlanReviewInterventions";
 /* Re-export helpers used by tests */
 export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./missionHelpers";
 
-const TERMINAL_RUN_STATUSES = new Set(["succeeded", "succeeded_with_risk", "failed", "canceled"]);
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 
 type OrchestratorCheckpointStatus = {
   savedAt: string;

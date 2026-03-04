@@ -134,7 +134,6 @@ export function inferRoleFromStepMetadata(metadata: Record<string, unknown>, kin
   if (combined.includes("test") || combined.includes("validation")) return "testing";
   if (combined.includes("plan")) return "planning";
   if (combined.includes("integration") || combined.includes("merge")) return "integration";
-  if (combined.includes("merge")) return "merge";
   return "implementation";
 }
 
@@ -249,7 +248,6 @@ export function isAllowedStepCompletionMissionStatus(value: string): value is Mi
     value === "in_progress" ||
     value === "intervention_required" ||
     value === "completed" ||
-    value === "partially_completed" ||
     value === "failed" ||
     value === "canceled"
   );
@@ -266,14 +264,9 @@ export function validateTransitionDecisionSafety(
   const hasFailures = graph.steps.some((step) => step.status === "failed" || step.status === "blocked");
 
   if (runStatus === "succeeded") {
-    return missionStatus === "completed" || missionStatus === "partially_completed"
+    return missionStatus === "completed"
       ? { ok: true, reason: "terminal_success" }
-      : { ok: false, reason: `Run is succeeded; mission status must be completed or partially_completed.` };
-  }
-  if (runStatus === "succeeded_with_risk") {
-    return missionStatus === "partially_completed" || missionStatus === "completed"
-      ? { ok: true, reason: "terminal_success_with_risk" }
-      : { ok: false, reason: "Run is succeeded_with_risk; mission status must be partially_completed." };
+      : { ok: false, reason: "Run is succeeded; mission status must be completed." };
   }
   if (runStatus === "failed") {
     return missionStatus === "failed" || missionStatus === "intervention_required"
@@ -291,12 +284,10 @@ export function validateTransitionDecisionSafety(
       : { ok: false, reason: "Run is paused; mission status must be intervention_required." };
   }
 
-  if (missionStatus === "completed" || missionStatus === "partially_completed") {
+  if (missionStatus === "completed") {
     return allTerminal && !hasFailures
       ? { ok: true, reason: "all_steps_terminal_success" }
-      : missionStatus === "partially_completed" && allTerminal
-        ? { ok: true, reason: "all_steps_terminal_partial" }
-        : { ok: false, reason: "Mission cannot be completed while run is still active or contains failures." };
+      : { ok: false, reason: "Mission cannot be completed while run is still active or contains failures." };
   }
   if (missionStatus === "failed") {
     return allTerminal && hasFailures

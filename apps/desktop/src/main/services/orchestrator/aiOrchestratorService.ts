@@ -449,6 +449,7 @@ export function createAiOrchestratorService(args: {
   const milestoneReadyNotificationSignatures = new Map<string, string>();
   const runWatchdogTimers = new Map<string, Set<NodeJS.Timeout>>();
   const subagentCompletionRollupSent = new Set<string>();
+  const validationSystemSignalDedupe = new Set<string>();
 
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
@@ -861,6 +862,71 @@ Check all worker statuses and continue managing the mission from here. Read work
     stepKey?: string | null,
     metadata?: Record<string, unknown> | null
   ): OrchestratorChatMessage => emitOrchestratorMessageCtx(ctx, missionId, content, stepKey, metadata, { appendChatMessage });
+
+  const emitValidationSystemSignal = (args: {
+    event: OrchestratorRuntimeEvent;
+    graph: OrchestratorRunGraph;
+  }): void => {
+    const signalType =
+      args.event.reason === "validation_contract_unfulfilled" ||
+      args.event.reason === "validation_self_check_reminder" ||
+      args.event.reason === "validation_auto_spawned" ||
+      args.event.reason === "validation_gate_blocked"
+        ? args.event.reason
+        : null;
+    if (!signalType || !args.event.runId) return;
+    const missionId = getMissionIdForRun(args.event.runId);
+    if (!missionId) return;
+
+    const dedupeKey = `${signalType}:${args.event.runId}:${args.event.stepId ?? "none"}:${args.event.attemptId ?? "none"}`;
+    if (validationSystemSignalDedupe.has(dedupeKey)) return;
+    validationSystemSignalDedupe.add(dedupeKey);
+    if (validationSystemSignalDedupe.size > 4_000) {
+      validationSystemSignalDedupe.clear();
+    }
+
+    const step = args.event.stepId
+      ? args.graph.steps.find((entry) => entry.id === args.event.stepId) ?? null
+      : null;
+    const stepLabel = step?.title?.trim().length ? step.title.trim() : (step?.stepKey ?? "unknown step");
+    let message = "Validation system event received.";
+    const metadata: Record<string, unknown> = {
+      systemSignal: signalType,
+      runId: args.event.runId,
+      stepId: args.event.stepId ?? null,
+      attemptId: args.event.attemptId ?? null
+    };
+    if (step?.stepKey) {
+      metadata.stepKey = step.stepKey;
+    }
+
+    if (signalType === "validation_contract_unfulfilled") {
+      message = `Validation System: Required validation is missing for "${stepLabel}". A validator pass is required before this step can be treated as complete.`;
+    } else if (signalType === "validation_self_check_reminder") {
+      message = `Validation System: "${stepLabel}" requires self-validation. Call report_validation with verdict pass/fail to unblock downstream work.`;
+    } else if (signalType === "validation_gate_blocked") {
+      const gateEvent = args.graph.timeline.find((entry) => {
+        if (entry.eventType !== "validation_gate_blocked") return false;
+        if (args.event.stepId && entry.stepId) return entry.stepId === args.event.stepId;
+        return true;
+      });
+      const detail = isRecord(gateEvent?.detail) ? gateEvent.detail : {};
+      const reasonText = typeof detail.reason === "string" ? detail.reason.trim() : "";
+      const phaseText = typeof detail.phase === "string" ? detail.phase.trim() : "";
+      if (reasonText.length > 0) metadata.reason = reasonText;
+      if (phaseText.length > 0) metadata.phase = phaseText;
+      message = reasonText.length > 0
+        ? `Validation System: Worker spawn blocked by required validation gate. ${reasonText}`
+        : "Validation System: Worker spawn blocked by required validation gate.";
+    }
+
+    emitOrchestratorMessage(
+      missionId,
+      message,
+      step?.stepKey ?? null,
+      metadata
+    );
+  };
 
   const MISSION_STATE_TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>([
     "succeeded",
@@ -1413,6 +1479,8 @@ Check all worker statuses and continue managing the mission from here. Read work
       | "lane_transfer"
       | "validation_report"
       | "validation_contract_unfulfilled"
+      | "validation_self_check_reminder"
+      | "validation_gate_blocked"
       | "tool_profiles_updated";
     eventKey?: string | null;
     occurredAt?: string | null;
@@ -1491,6 +1559,19 @@ Check all worker statuses and continue managing the mission from here. Read work
             id: `validation-contract-${randomUUID()}`,
             severity: "high",
             description,
+            affectedSteps: stepKey.length > 0 ? [stepKey] : [],
+            status: "open",
+          },
+        });
+      } else if (args.eventType === "validation_gate_blocked") {
+        const payload = isRecord(args.payload) ? args.payload : {};
+        const detail = typeof payload.reason === "string" ? payload.reason.trim() : "";
+        const stepKey = typeof payload.stepKey === "string" ? payload.stepKey.trim() : "";
+        updateMissionStateDoc(args.runId, {
+          addIssue: {
+            id: `validation-gate-blocked-${randomUUID()}`,
+            severity: "medium",
+            description: detail.length > 0 ? detail : "Validation gate blocked worker creation until required upstream validation passes.",
             affectedSteps: stepKey.length > 0 ? [stepKey] : [],
             status: "open",
           },
@@ -2832,7 +2913,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (allSucceededOrSkipped) {
       finalStatus = "succeeded";
     } else if (failedSteps.length > 0 && failedSteps.length < graph.steps.length) {
-      finalStatus = "succeeded_with_risk";
+      finalStatus = "failed";
     } else {
       finalStatus = "failed";
     }
@@ -2901,7 +2982,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       };
     };
 
-    const persistRecoveryHandoff = (handoffType: "partial_completion_handoff" | "recovery_handoff") => {
+    const persistRecoveryHandoff = (handoffType: "recovery_handoff") => {
       const payload = buildRecoveryHandoffPayload();
       try {
         orchestratorService.createHandoff({
@@ -2925,11 +3006,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     // Transition mission status
     if (finalStatus === "succeeded") {
       transitionMissionStatus(missionId, "completed");
-    } else if (finalStatus === "succeeded_with_risk") {
-      const payload = persistRecoveryHandoff("partial_completion_handoff");
-      transitionMissionStatus(missionId, "partially_completed", {
-        outcomeSummary: `Done ${payload.doneSteps.length}, remaining ${payload.remainingSteps.length}.`
-      });
     } else {
       persistRecoveryHandoff("recovery_handoff");
       transitionMissionStatus(missionId, "failed");
@@ -5418,7 +5494,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
       const runCompleted =
         graph.run.status === "succeeded" ||
-        graph.run.status === "succeeded_with_risk" ||
         graph.run.status === "failed" ||
         graph.run.status === "canceled";
       if (runCompleted) {
@@ -5455,7 +5530,6 @@ Check all worker statuses and continue managing the mission from here. Read work
         // Clean up mission-keyed in-memory maps when mission reaches a terminal state.
         const missionTerminal =
           nextMissionStatus === "completed" ||
-          nextMissionStatus === "partially_completed" ||
           nextMissionStatus === "failed" ||
           nextMissionStatus === "canceled";
         if (missionTerminal) {
@@ -7110,6 +7184,27 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
         return cachedEventGraph;
       };
+
+      if (
+        event.reason === "validation_contract_unfulfilled" ||
+        event.reason === "validation_self_check_reminder" ||
+        event.reason === "validation_gate_blocked"
+      ) {
+        try {
+          emitValidationSystemSignal({
+            event,
+            graph: getEventGraph(),
+          });
+        } catch (signalError) {
+          logger.debug("ai_orchestrator.validation_system_signal_emit_failed", {
+            runId,
+            reason: event.reason,
+            stepId: event.stepId ?? null,
+            attemptId: event.attemptId ?? null,
+            error: signalError instanceof Error ? signalError.message : String(signalError)
+          });
+        }
+      }
 
       // ── Strict coordinator ownership gate ──
       const existingCoordinator = coordinatorAgents.get(runId) ?? null;

@@ -206,7 +206,7 @@ export const CONTEXT_PROFILES: Record<OrchestratorContextProfileId, Orchestrator
   }
 };
 
-export const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "succeeded_with_risk", "failed", "canceled"]);
+export const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "failed", "canceled"]);
 export const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
   "transient",
   "executor_failure",
@@ -248,7 +248,6 @@ export function normalizeRunStatus(value: string): OrchestratorRunStatus {
     value === "paused" ||
     value === "completing" ||
     value === "succeeded" ||
-    value === "succeeded_with_risk" ||
     value === "failed" ||
     value === "canceled"
   ) {
@@ -356,6 +355,9 @@ export function normalizeRuntimeEventType(value: string): OrchestratorRuntimeEve
     value === "lane_transfer" ||
     value === "validation_report" ||
     value === "validation_contract_unfulfilled" ||
+    value === "validation_self_check_reminder" ||
+    value === "validation_auto_spawned" ||
+    value === "validation_gate_blocked" ||
     value === "tool_profiles_updated"
   ) {
     return value;

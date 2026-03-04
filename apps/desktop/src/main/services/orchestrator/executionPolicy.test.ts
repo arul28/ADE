@@ -749,9 +749,6 @@ describe("contextViewForRole", () => {
     expect(contextViewForRole("integration")).toBe("implementation");
   });
 
-  it('returns "implementation" for merge role', () => {
-    expect(contextViewForRole("merge")).toBe("implementation");
-  });
 });
 
 // ─────────────────────────────────────────────────────

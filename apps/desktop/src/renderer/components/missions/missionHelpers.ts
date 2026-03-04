@@ -35,7 +35,6 @@ export const STATUS_BADGE_STYLES: Record<MissionStatus, { background: string; co
   in_progress: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
   intervention_required: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
   completed: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
-  partially_completed: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
   failed: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" },
   canceled: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
 };
@@ -47,7 +46,6 @@ export const STATUS_DOT_HEX: Record<MissionStatus, string> = {
   in_progress: "#22C55E",
   intervention_required: "#F59E0B",
   completed: "#22C55E",
-  partially_completed: "#F59E0B",
   failed: "#EF4444",
   canceled: "#71717A",
 };
@@ -59,7 +57,6 @@ export const STATUS_LABELS: Record<MissionStatus, string> = {
   in_progress: "Running",
   intervention_required: "Action",
   completed: "Done",
-  partially_completed: "Partial",
   failed: "Failed",
   canceled: "Canceled"
 };
@@ -73,6 +70,7 @@ export const PRIORITY_STYLES: Record<MissionPriority, { background: string; colo
 
 export const STEP_STATUS_HEX: Record<string, string> = {
   pending: "#3B82F6",
+  ready: "#3B82F6",
   running: "#A78BFA",
   succeeded: "#22C55E",
   failed: "#EF4444",
@@ -160,7 +158,6 @@ export const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; h
   { key: "in_progress", label: "RUNNING", hex: "#22C55E" },
   { key: "intervention_required", label: "ACTION", hex: "#F59E0B" },
   { key: "completed", label: "DONE", hex: "#22C55E" },
-  { key: "partially_completed", label: "PARTIAL", hex: "#F59E0B" },
   { key: "failed", label: "FAILED", hex: "#EF4444" },
   { key: "canceled", label: "CANCELED", hex: "#71717A" },
 ];
@@ -405,15 +402,35 @@ export function narrativeForEvent(ev: { eventType: string; reason: string; stepI
   if (ev.eventType === "autopilot_advance") return `Autopilot advanced: ${ev.reason}`;
   if (ev.eventType === "autopilot_attempt_start_failed") return `Autopilot failed to start attempt: ${ev.reason}`;
 
-  if (ev.eventType === "merge_conflict_detected") return `Merge conflict detected for step ${stepLabel}`;
-  if (ev.eventType === "code_review_passed") return `Code review passed for step ${stepLabel}`;
-  if (ev.eventType === "tests_passed") return `Tests passed for step ${stepLabel}`;
-  if (ev.eventType === "integration_started") return `Integration started for step ${stepLabel}`;
-
   if (ev.eventType === "context_snapshot_created") return "Context snapshot saved for future reference";
   if (ev.eventType === "context_pressure_warning") return "Context window pressure detected \u2014 may need to compact";
   if (ev.eventType === "context_pack_bootstrap") return "Context pack bootstrapped for worker";
   if (ev.eventType === "integration_chain_started") return "Integration merge chain started";
+
+  if (ev.eventType === "validation_contract_unfulfilled") return "Validation contract unfulfilled";
+  if (ev.eventType === "validation_self_check_reminder") return "Self-check reminder issued";
+  if (ev.eventType === "validation_auto_spawned") return "Validator auto-spawned";
+  if (ev.eventType === "validation_gate_blocked") return "Spawn blocked by validation gate";
+  if (ev.eventType === "validation_reported") return "Validation result reported";
+  if (ev.eventType === "validation_escalated") return "Validation escalated";
+
+  if (ev.eventType === "intervention_opened") return "Intervention opened";
+  if (ev.eventType === "intervention_resolved") return "Intervention resolved";
+
+  if (ev.eventType === "budget_warning") return "Budget warning issued";
+  if (ev.eventType === "budget_exceeded") return "Budget exceeded";
+  if (ev.eventType === "budget_updated") return "Budget updated";
+  if (ev.eventType === "budget_hard_cap_triggered") return "Budget hard cap triggered";
+
+  if (ev.eventType === "recovery_loop_started") return "Recovery loop started";
+  if (ev.eventType === "recovery_loop_exhausted") return "Recovery retries exhausted";
+
+  if (ev.eventType === "fan_out_dispatched") return "Fan-out dispatched";
+  if (ev.eventType === "fan_out_complete") return "Fan-out complete";
+
+  if (ev.eventType === "phase_transition") return "Phase transitioned";
+  if (ev.eventType === "coordinator_steering") return "User steering directive";
+  if (ev.eventType === "coordinator_broadcast") return "Coordinator broadcast";
 
   return ev.reason || "Event recorded";
 }
@@ -426,6 +443,15 @@ export function iconForEventType(eventType: string): React.ElementType {
   if (eventType.startsWith("claim_")) return Shield;
   if (eventType.startsWith("autopilot")) return Lightning;
   if (eventType.startsWith("context_")) return GitBranch;
+  if (eventType.startsWith("validation_")) return Shield;
+  if (eventType.startsWith("intervention_")) return Lightning;
+  if (eventType.startsWith("budget_")) return Pulse;
+  if (eventType.startsWith("recovery_")) return Robot;
+  if (eventType.startsWith("phase_")) return CircleHalf;
+  if (eventType.startsWith("fan_out_")) return Robot;
+  if (eventType.startsWith("coordinator_")) return ChatCircle;
+  if (eventType.startsWith("worker_")) return Robot;
+  if (eventType.startsWith("integration_")) return GitBranch;
   if (eventType === "user_directive") return ChatCircle;
   return Pulse;
 }

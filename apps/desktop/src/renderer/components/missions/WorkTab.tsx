@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import type { OrchestratorRunGraph, OrchestratorTeamMember } from "../../../shared/types";
+import type { OrchestratorRunGraph, OrchestratorTeamMember, OrchestratorStepStatus } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { isRecord } from "./missionHelpers";
 import { useMissionPolling } from "./useMissionPolling";
@@ -19,6 +19,19 @@ const TEAM_SOURCE_LABEL: Record<OrchestratorTeamMember["source"], string> = {
   "claude-native": "NATIVE",
 };
 const TERMINATED_AUTO_COLLAPSE_MS = 2 * 60 * 1000;
+
+type ValidatorLineageEntry = {
+  stepId: string;
+  stepKey: string;
+  title: string;
+  status: OrchestratorStepStatus;
+  role: string;
+  model: string;
+  autoSpawnedValidation: boolean;
+  targetStepId: string | null;
+  targetStepKey: string | null;
+  targetStepStatus: OrchestratorStepStatus | null;
+};
 
 function teamStatusLabel(status: OrchestratorTeamMember["status"]): string {
   return status.replace(/_/g, " ").toUpperCase();
@@ -208,6 +221,46 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
     };
   }, [flattenedTeamMembers, showCollapsedTerminated]);
 
+  const validatorLineage = useMemo(() => {
+    if (!runGraph) return [] as ValidatorLineageEntry[];
+    const stepById = new Map(runGraph.steps.map((step) => [step.id, step] as const));
+    const stepIndexById = new Map(runGraph.steps.map((step) => [step.id, step.stepIndex] as const));
+    const entries: ValidatorLineageEntry[] = [];
+    for (const step of runGraph.steps) {
+      const metadata = isRecord(step.metadata) ? step.metadata : {};
+      const autoSpawnedValidation = metadata.autoSpawnedValidation === true;
+      const stepType = typeof metadata.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
+      const taskType = typeof metadata.taskType === "string" ? metadata.taskType.trim().toLowerCase() : "";
+      const isValidationStep = autoSpawnedValidation || stepType === "validation" || taskType === "validation";
+      if (!isValidationStep) continue;
+      const targetStepId = typeof metadata.targetStepId === "string" ? metadata.targetStepId.trim() : "";
+      const targetStepKey = typeof metadata.targetStepKey === "string" ? metadata.targetStepKey.trim() : "";
+      const targetStep = targetStepId.length > 0 ? stepById.get(targetStepId) ?? null : null;
+      const role =
+        typeof metadata.role === "string" && metadata.role.trim().length > 0
+          ? metadata.role.trim()
+          : "validator";
+      const model =
+        typeof metadata.modelId === "string" && metadata.modelId.trim().length > 0
+          ? metadata.modelId.trim()
+          : "unknown";
+      entries.push({
+        stepId: step.id,
+        stepKey: step.stepKey,
+        title: step.title,
+        status: step.status,
+        role,
+        model,
+        autoSpawnedValidation,
+        targetStepId: targetStep?.id ?? (targetStepId.length > 0 ? targetStepId : null),
+        targetStepKey: targetStep?.stepKey ?? (targetStepKey.length > 0 ? targetStepKey : null),
+        targetStepStatus: targetStep?.status ?? null,
+      });
+    }
+    entries.sort((a, b) => (stepIndexById.get(a.stepId) ?? 0) - (stepIndexById.get(b.stepId) ?? 0));
+    return entries;
+  }, [runGraph]);
+
   if (!runGraph) {
     return (
       <div className="flex h-full items-center justify-center text-xs" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
@@ -340,6 +393,57 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+              Validator Lineage
+            </div>
+            <div className="mt-2 space-y-1">
+              {validatorLineage.length === 0 ? (
+                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                  No validator steps detected.
+                </div>
+              ) : validatorLineage.map((entry) => (
+                <div
+                  key={entry.stepId}
+                  className="rounded-none border px-2 py-1.5"
+                  style={{
+                    borderColor: "#F59E0B55",
+                    background: "#F59E0B08",
+                  }}
+                >
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9px] font-bold uppercase tracking-[0.5px]" style={{ color: "#F59E0B", fontFamily: MONO_FONT }}>
+                      Validation
+                    </span>
+                    <span className="truncate text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
+                      {entry.stepKey}
+                    </span>
+                    <span className="ml-auto text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      {entry.status}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1 text-[9px]" style={{ fontFamily: MONO_FONT }}>
+                    {entry.autoSpawnedValidation ? (
+                      <span className="border px-1 py-0.5" style={{ borderColor: "#F59E0B66", color: "#FCD34D" }}>
+                        auto-spawned
+                      </span>
+                    ) : null}
+                    <span className="border px-1 py-0.5" style={{ borderColor: COLORS.border, color: COLORS.textSecondary }}>
+                      role:{entry.role}
+                    </span>
+                    <span className="border px-1 py-0.5" style={{ borderColor: COLORS.border, color: COLORS.textMuted }}>
+                      model:{entry.model}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    target:{entry.targetStepKey ?? "unlinked"}
+                    {entry.targetStepStatus ? ` (${entry.targetStepStatus})` : ""}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 

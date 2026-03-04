@@ -574,6 +574,56 @@ The existing `laneOverlayMatcher.ts` system provides a foundation for lane-speci
 
 ---
 
+## Multi-Device Lane Availability (Phase 6)
+
+When multiple devices are connected, lanes gain a per-device **availability state** that governs what actions are possible on each machine. This is the primary UX layer for multi-device lane management.
+
+### Availability States
+
+| State | Icon | Meaning | User Actions |
+|-------|------|---------|--------------|
+| **Local** | ✓ | Branch synced, worktree exists locally, no remote agents running | Full local dev |
+| **Behind** | ⚠ | Brain has commits not yet pulled to this device | "Sync to this Mac" (one-click) |
+| **Live on [device]** | 🔵 | Agent actively running on this lane on the brain | View remotely, chat with agent, auto-sync when done |
+| **Remote only** | ☁ | Lane exists on brain, never been pulled here | "Bring to this machine" (one-click) |
+| **Push pending** | ⏳ | Brain has commits but hasn't pushed to remote yet | "Request push" or wait |
+| **Offline** | ○ | Brain unreachable, code state unknown | View cached metadata only |
+
+On the brain device itself, all lanes are inherently "local" — standard dirty/ahead/behind indicators apply.
+
+### Auto-Push Policy
+
+Brain auto-pushes lane branches to the remote so other devices can access code without manual intervention:
+
+- `on-commit` (default): Push after every commit. Code available on other devices within seconds.
+- `on-agent-complete`: Push when agent finishes work on the lane.
+- `manual`: User must explicitly push.
+
+Configurable per-project in Settings → Sync → Auto-push policy.
+
+### One-Click Sync
+
+"Sync to this Mac" orchestrates: remote push (if needed) → local fetch → worktree creation. One button, three steps, lane becomes Local.
+
+### Agent-Running Guard
+
+While an agent is actively running on a lane on the brain, other devices **cannot create a local worktree** for that lane. This prevents divergent writes to the same branch. Users can:
+
+- View agent work remotely (file contents via File Access Protocol, agent chat via cr-sqlite)
+- Send messages to the agent from the viewer device
+- Register "Auto-sync when done" — ADE auto-syncs the lane when the agent finishes
+- Register "Notify me" — lighter, just a notification when done
+
+**Reverse guard**: If a lane is checked out locally and the user tries to launch an agent on the brain for that lane, ADE warns about divergent changes and offers to push local changes first.
+
+### Device Sync Summary
+
+On first connection to a brain (e.g., opening laptop at a coffee shop), ADE shows a summary overlay listing all lanes with their availability states, offering bulk sync for all ready lanes. Also accessible from the status bar.
+
+Full design details: `docs/final-plan/phase-6.md` → W10.
+
+---
+
 ## 2026-02-16 Addendum — Integration Lane Rule
 
 ADE now applies an explicit external-resolver integration rule:

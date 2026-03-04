@@ -6,6 +6,7 @@
 > - Executor/provider implementation (now unified, legacy adapters deleted)
 > - Orchestrator runtime contracts (now `modelId`-first, class-based permissions)
 > - Remaining work items (Phases 4-7 in ORCHESTRATOR_OVERHAUL.md supersede Tasks 7-8 here)
+> - Legacy status semantics (`partially_completed`, `succeeded_with_risk`) that were removed in ORCHESTRATOR_OVERHAUL Phases 5-6
 >
 > Tasks 1-6 below accurately reflect what shipped. Tasks 7-8 are superseded by ORCHESTRATOR_OVERHAUL.md Phases 4-7.
 
@@ -119,9 +120,9 @@ Task 1 and Task 2 are implemented in the runtime baseline. This section records 
   - **Important autonomy boundary**: runtime does not auto-infer dependency rewires; coordinator must provide explicit `dependencyPatches`.
 - **Tool profile runtime**:
   - Role-scoped tool profiles are mutable mid-run via `update_tool_profiles`.
-- **Partial completion and recovery**:
-  - Mission status `partially_completed` is live.
-  - Recovery/partial-completion handoff artifacts are persisted for restart or follow-on missions.
+- **Partial completion and recovery (historical design; superseded)**:
+  - Mission status `partially_completed` was proposed in this phase plan but is now removed from active runtime contracts.
+  - Recovery handoff artifacts remain relevant; status semantics were simplified in ORCHESTRATOR_OVERHAUL.
 
 ### Delivered in Task 2 (Validation & Lane Continuity)
 
@@ -460,9 +461,9 @@ Add coordinator tool `revise_plan` for full or partial plan replacement:
 - Optional mission-level MCP profile injection: specify which external MCP servers (Phase 4) are available to workers.
 - Mid-run updates: coordinator can update tool profiles if mission conditions change.
 
-#### 1E: Partial Completion & Recovery
+#### 1E: Partial Completion & Recovery (historical design; superseded)
 
-- Add `partially_completed` mission outcome with structured "done vs remaining" report.
+- Historical note: `partially_completed` mission outcome was proposed here and is now removed from active runtime contracts.
 - On coordinator unrecoverable failure, persist a recovery handoff artifact: last stable plan, completed validations, open work, lane map.
 - Recovery handoff enables a new mission to pick up where the failed one left off.
 
@@ -1105,7 +1106,7 @@ Not in Phase 3, but the architecture supports it:
 - **Validation loop tests**: pass/fail cycle, rework routing, max retries, human escalation.
 - **Lane continuity tests**: step-lane ownership, worker replacement inheritance, explicit transfer.
 - **Budget pressure tests**: normal → warning → critical behavior changes, parallelism reduction.
-- **Partial completion tests**: `partially_completed` outcome, recovery handoff artifact structure.
+- **Historical partial-completion tests (superseded)**: `partially_completed` outcome, recovery handoff artifact structure.
 - **Long-horizon soak tests**: multi-hour simulated missions covering replans, retries, budget pressure, and validation loops.
 - **Provider parity tests**: normalized permission/tool error behavior across Claude and Codex.
 
@@ -1168,7 +1169,7 @@ Phase 3 is complete when:
 - Every milestone and final mission gate passes validator contracts
 - Rework routing preserves lane continuity by default
 - Budget pressure actively changes orchestration behavior (reduced parallelism, deferred optional work)
-- Missions can complete with `partially_completed` outcome and structured recovery handoff
+- Historical/superseded: mission `partially_completed` outcome proposal (removed in ORCHESTRATOR_OVERHAUL Phases 5-6); recovery handoff remains part of historical design context.
 - Provider differences are normalized behind one runtime error/approval contract
 
 **Missions Overhaul:**

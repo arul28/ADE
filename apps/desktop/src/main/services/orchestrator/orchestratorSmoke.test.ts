@@ -405,7 +405,7 @@ describe("orchestrator smoke", () => {
 
       for (let i = 0; i < 40; i += 1) {
         const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-        if (graph.run.status === "succeeded" || graph.run.status === "succeeded_with_risk" || graph.run.status === "failed" || graph.run.status === "canceled") {
+        if (graph.run.status === "succeeded" || graph.run.status === "failed" || graph.run.status === "canceled") {
           break;
         }
         const ready = graph.steps.filter((step) => step.status === "ready");
@@ -450,9 +450,7 @@ describe("orchestrator smoke", () => {
       fixture.aiOrchestratorService.syncMissionFromRun(runId, "smoke_finalize");
       const finalGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
       const refreshedMission = fixture.missionService.get(mission.id);
-      // With policy-aware evaluation, runs without step-type metadata resolve to
-      // succeeded_with_risk because the evaluator cannot confirm required phases.
-      expect(["succeeded", "succeeded_with_risk"]).toContain(finalGraph.run.status);
+      expect(finalGraph.run.status).toBe("succeeded");
       expect(finalGraph.steps.every((step) => step.status === "succeeded")).toBe(true);
       expect(refreshedMission?.status).toBe("completed");
       expect(refreshedMission?.openInterventions ?? 0).toBe(0);
@@ -986,7 +984,7 @@ describe("orchestrator smoke", () => {
       for (let i = 0; i < 120; i += 1) {
         const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
         const status = graph.run.status;
-        if (status === "succeeded" || status === "succeeded_with_risk" || status === "failed" || status === "canceled") {
+        if (status === "succeeded" || status === "failed" || status === "canceled") {
           terminalReached = true;
           break;
         }
@@ -1002,7 +1000,7 @@ describe("orchestrator smoke", () => {
         if (allStepsDone && (status === "active" || status === "completing" || status === "bootstrapping")) {
           aiOrchestratorService.finalizeRun({ runId, force: true });
           const afterFinalize = orchestratorService.getRunGraph({ runId, timelineLimit: 0 }).run.status;
-          if (afterFinalize === "succeeded" || afterFinalize === "succeeded_with_risk" || afterFinalize === "failed" || afterFinalize === "canceled") {
+          if (afterFinalize === "succeeded" || afterFinalize === "failed" || afterFinalize === "canceled") {
             terminalReached = true;
             break;
           }
@@ -1036,9 +1034,7 @@ describe("orchestrator smoke", () => {
 
       const finalGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 1_000 });
       const refreshedMission = missionService.get(mission.id);
-      // With policy-aware evaluation, runs without step-type metadata resolve to
-      // succeeded_with_risk because the evaluator cannot confirm required phases.
-      expect(["succeeded", "succeeded_with_risk"]).toContain(finalGraph.run.status);
+      expect(finalGraph.run.status).toBe("succeeded");
       expect(refreshedMission?.status).toBe("completed");
 
       const stepById = new Map(finalGraph.steps.map((step) => [step.id, step] as const));

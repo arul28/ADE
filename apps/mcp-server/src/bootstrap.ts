@@ -286,7 +286,12 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
         category: "orchestrator",
         payload: e as unknown as Record<string, unknown>
       });
-      if (e.reason === "validation_contract_unfulfilled" || e.reason === "validation_self_check_reminder") {
+      if (
+        e.reason === "validation_contract_unfulfilled" ||
+        e.reason === "validation_self_check_reminder" ||
+        e.reason === "validation_auto_spawned" ||
+        e.reason === "validation_gate_blocked"
+      ) {
         eventBuffer.push({
           timestamp: new Date().toISOString(),
           category: "runtime",

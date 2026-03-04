@@ -142,7 +142,17 @@ Autonomy boundary: the coordinator owns strategic decisions (spawn, replan, vali
 Validation baseline (strict, runtime-enforced):
 - Required validation contracts are enforced by runtime, not prompt advice.
 - Dedicated required validation auto-spawns validator steps per completed target step.
-- Missing required validation blocks downstream phase transitions and emits explicit runtime signals (`validation_contract_unfulfilled`).
+- Missing required validation blocks downstream phase transitions and emits explicit runtime/timeline signals.
+- Validation signal vocabulary:
+  - `validation_contract_unfulfilled`
+  - `validation_self_check_reminder`
+  - `validation_auto_spawned`
+  - `validation_gate_blocked`
+- Validation chat system messages are emitted with normalized `metadata.systemSignal = \"validation_*\"`.
+- Runtime live-update reasons include `validation_contract_unfulfilled`, `validation_self_check_reminder`, and `validation_gate_blocked`.
+- Status model is strict:
+  - Run status `succeeded_with_risk` is removed.
+  - Mission status `partially_completed` is removed.
 - No sampled `spot-check` tier and no `allowCompletionWithRisk` bypass in active orchestrator behavior.
 
 This is distinct from the orchestrator service (`orchestratorService.ts`), which is the deterministic state machine that tracks runs, steps, attempts, and claims. The AI Orchestrator is the intelligent layer on top that decides *what* to do next; the orchestrator service is the durable layer underneath that records *what happened*.
@@ -167,6 +177,10 @@ The unified runtime supports three model classes:
 - **Local models** (Ollama, LM Studio, vLLM): In-process execution via OpenAI-compatible endpoints.
 
 Model resolution is `modelId`-first: the registry (`modelRegistry.ts`) resolves model descriptors with `isCliWrapped` classification, and the runtime routes accordingly. Permission schema is class-based (`cli` + `inProcess`) rather than provider-bucketed.
+
+Coordinator runtime routing is strict phase-authoritative for worker spawning/delegation:
+- Resolution order: `explicit model override -> current phase model`.
+- Role-level default model fallback is removed from active orchestrator routing behavior.
 
 **Key SDK dependencies**:
 - `ai-sdk-provider-claude-code` — Vercel AI SDK provider wrapping Claude CLI (community, Ben Vargas)
@@ -518,7 +532,8 @@ Mission prompt + context packs
 │        │                                           │
 │        ▼                                           │
 │  ┌──────────────────┐                              │
-│  │  Result Merger   │ ──> merge worker lanes back  │
+│  │   PR Strategy    │ ──> integration/per-lane/    │
+│  │                  │     queue/manual PR flow      │
 │  └──────────────────┘                              │
 │        │                                           │
 │        ▼                                           │
@@ -1084,14 +1099,9 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 - Pack service decomposed: `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` extracted
 - Shared utilities consolidated: backend `utils.ts` (60+ duplicate removals), renderer `format.ts`/`shell.ts`/`sessions.ts`, shared React hooks
 
-**Remaining (~10%)**:
-- Next execution focus: Task 5 (pre-flight/intervention/HITL) and Task 6 (budget/usage), then Tasks 7-8.
-- Live multi-agent orchestration (concurrent agent coordination)
-- Real-time coordination patterns
-- File conflict prevention at merge time
-- Pre-flight checks, tiered validation, and intervention granularity (Task 5)
-- Budget pressure orchestration and subscription usage accounting (Task 6)
-- Reflection protocol and deeper integration soak coverage (Tasks 7-8)
+**Remaining (~3%)**:
+- Orchestrator Overhaul Phases 1-6 are complete (subagent delegation, validation enforcement, UI observability all shipped).
+- Only Phase 7 (reflection protocol for system self-improvement) remains -- see `docs/ORCHESTRATOR_OVERHAUL.md`.
 
 ### Compute Backends for Agent Execution
 
@@ -1535,7 +1545,7 @@ This lifecycle mirrors the PTY session lifecycle exactly, ensuring that chat ses
 ### Desktop Application
 
 - **AI integration service**: `apps/desktop/src/main/services/ai/aiIntegrationService.ts` -- provider detection, task routing, executor dispatch via `AgentExecutor`, streaming response handling.
-- **Mission planning service**: `apps/desktop/src/main/services/missions/missionPlanningService.ts` -- builds planner prompts, dispatches to `ClaudeExecutor` or `CodexExecutor` for AI planning, normalizes plan output.
+- **Mission planning service**: `apps/desktop/src/main/services/missions/missionPlanningService.ts` -- builds planner prompts, dispatches to the unified executor runtime for AI planning, normalizes plan output.
 - **Orchestrator service**: `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- run/step/attempt state machine, claim management, context snapshots, gate reports.
 - **AI orchestrator service**: `apps/desktop/src/main/services/orchestrator/aiOrchestratorService.ts` (~7.7K lines) + 8 extracted modules (`chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`, `orchestratorConstants.ts`) -- AI coordination layer: autopilot, worker management, messaging, recovery.
 - **Agent chat service**: `apps/desktop/src/main/services/chat/agentChatService.ts` -- manages chat session lifecycle, spawns Codex app-server processes and Claude multi-turn sessions, maps provider events to ChatEvent streams, integrates with session tracking.
@@ -1560,7 +1570,7 @@ The job engine does **not** coordinate orchestrator step transitions. The orches
 The mission service (`missionService.ts`) provides the user-facing lifecycle for AI-driven work:
 
 - **Mission creation**: Accepts a plain-English prompt, title, lane assignment, planner engine preference, and executor policy.
-- **Planning dispatch**: Delegates to `missionPlanningService` which dispatches to the configured executor (`ClaudeExecutor` or `CodexExecutor`) for AI planning and surfaces structured planning failures instead of silently replacing strategy.
+- **Planning dispatch**: Delegates to `missionPlanningService` which dispatches to the unified executor runtime for AI planning and surfaces structured planning failures instead of silently replacing strategy.
 - **Step tracking**: Converts planner output into mission steps with independent status transitions.
 - **Phase pipeline contracts (Task 3)**: Resolves mission phase profile/override, persists phase configuration, and annotates mission steps with phase identity metadata.
 - **Phase transition audit (Task 3)**: Runtime phase changes emit durable `phase_transition` mission/timeline events and update run metadata (`phaseRuntime`) for operator inspection.
@@ -1633,7 +1643,7 @@ interface LearningEntry {
 | Context snapshot system | Complete | Profile-based export assembly (deterministic, narrative-opt-in) |
 | Bounded pack exports | Complete | Lite/Standard/Deep export tiers in `packExports.ts` |
 | AgentExecutor interface | Complete | `apps/desktop/src/main/services/ai/agentExecutor.ts` |
-| Agent SDK integration (dual-SDK) | Complete | `ClaudeExecutor` + `CodexExecutor` implemented |
+| Agent SDK integration (dual-SDK) | Complete | Unified executor runtime (formerly `ClaudeExecutor` + `CodexExecutor`) |
 | AI integration service | Complete | `apps/desktop/src/main/services/ai/aiIntegrationService.ts` |
 | Per-task-type configuration | Complete | Configurable in `.ade/local.yaml` |
 | Streaming AI responses to UI | Complete | IPC push events via `webContents.send` |
@@ -1644,7 +1654,7 @@ interface LearningEntry {
 | Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
-| AI orchestrator (Claude + MCP) | In Progress | Tasks 1-6 shipped; codebase decomposed (core ~7.7K + 8 modules). Remaining Phase 3 scope is Tasks 7-8 (reflection + integration soak) |
+| AI orchestrator (Claude + MCP) | In Progress | Tasks 1-6 shipped; Orchestrator Overhaul Phases 1-6 complete; codebase decomposed (core ~7.7K + 8 modules). Remaining: Phase 7 (reflection protocol) |
 | Phase 4 orchestrator delegation/team runtime | Complete | `delegate_parallel`, push sub-agent progress/completion rollups, native teammate auto-registration + allocation cap guardrails, single team-member data path |
 | Mission phase engine + profiles (Task 3) | Complete | `phase_cards`/`phase_profiles`/`mission_phase_overrides`, profile CRUD/import/export, phase transition telemetry |
 | Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
@@ -1674,7 +1684,7 @@ interface LearningEntry {
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped, and Phase 4 delegation/team-runtime hard-cut work is complete (`delegate_parallel`, push rollups, native teammate guardrails, and dead-path removal). Remaining orchestrator roadmap work is Phase 3 Tasks 7-8 (reflection + integration soak) plus subsequent validation/UI/reflection tracks documented in `docs/ORCHESTRATOR_OVERHAUL.md`. A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped, and Orchestrator Overhaul Phases 1-6 are complete (subagent delegation, validation enforcement, UI observability, team runtime, PR strategy, inter-agent comms all shipped). Only Overhaul Phase 7 (reflection protocol) remains. Phase 4 delegation/team-runtime hard-cut work is complete (`delegate_parallel`, push rollups, native teammate guardrails, and dead-path removal). A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 

@@ -12,6 +12,7 @@ function createTestDeps(args: {
     getRunGraph: vi.fn(() => args.graph),
     appendRuntimeEvent: vi.fn(),
     appendTimelineEvent: vi.fn(),
+    emitRuntimeUpdate: vi.fn(),
   } as any;
 
   const logger = {
@@ -93,6 +94,7 @@ function createCoordinatorHarness(args: {
     getRunGraph: vi.fn(() => graph),
     appendRuntimeEvent: vi.fn(),
     appendTimelineEvent: vi.fn(),
+    emitRuntimeUpdate: vi.fn(),
     createHandoff: vi.fn(),
     startReadyAutopilotAttempts: vi.fn(async () => 0),
     completeAttempt: vi.fn(),
@@ -262,7 +264,6 @@ describe("coordinatorTools mission lane fallback", () => {
                 {
                   name: "validator",
                   capabilities: ["validation"],
-                  defaultModel: { provider: "openai", modelId: "openai/gpt-5.3-codex" }
                 }
               ]
             }
@@ -413,7 +414,6 @@ describe("coordinatorTools budget hard-cap guards", () => {
                   {
                     name: "validator",
                     capabilities: ["validation"],
-                    defaultModel: { provider: "openai", modelId: "openai/gpt-5.3-codex" }
                   }
                 ]
               }
@@ -662,7 +662,7 @@ describe("coordinatorTools delegate_parallel", () => {
     expect(orchestratorService.startReadyAutopilotAttempts).not.toHaveBeenCalled();
   });
 
-  it("applies model cascade per task (explicit -> role default -> parent -> phase)", async () => {
+  it("applies model cascade per task (explicit -> phase model)", async () => {
     const graph = {
       run: {
         metadata: {
@@ -673,7 +673,6 @@ describe("coordinatorTools delegate_parallel", () => {
                 {
                   name: "validator",
                   capabilities: ["validation"],
-                  defaultModel: { provider: "openai", modelId: "openai/gpt-5.3-codex" }
                 }
               ]
             }
@@ -729,8 +728,8 @@ describe("coordinatorTools delegate_parallel", () => {
       ok: true,
       children: [
         expect.objectContaining({ name: "explicit-model", modelId: "openai/gpt-5.3-codex" }),
-        expect.objectContaining({ name: "role-default", modelId: "openai/gpt-5.3-codex" }),
-        expect.objectContaining({ name: "parent-fallback", modelId: "anthropic/claude-sonnet-4-6" }),
+        expect.objectContaining({ name: "role-default", modelId: "openai/gpt-4.1" }),
+        expect.objectContaining({ name: "parent-fallback", modelId: "openai/gpt-4.1" }),
       ],
     });
 
@@ -1324,6 +1323,25 @@ describe("coordinatorTools validation enforcement", () => {
       error: 'Phase "Implementation" validation gate has not passed. 1 step(s) are missing required validation.',
     });
     expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+    expect(orchestratorService.appendTimelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        eventType: "validation_gate_blocked",
+        reason: "required_validation_gate_blocked",
+      })
+    );
+    expect(orchestratorService.appendRuntimeEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        eventType: "validation_gate_blocked",
+      })
+    );
+    expect(orchestratorService.emitRuntimeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        reason: "validation_gate_blocked",
+      })
+    );
   });
 });
 

@@ -1015,6 +1015,13 @@ const MessageBubble = React.memo(function MessageBubble({
   const isToolCall = msg.content.startsWith("Tool call:") || msg.content.startsWith("tool_use:");
   const isFileEdit = msg.content.includes("--- a/") || msg.content.includes("+++ b/");
   const isBudgetWarning = /MISSION PAUSED|budget|hard cap|Budget pressure/i.test(msg.content);
+  const metadata = useMemo(() => (
+    msg.metadata && typeof msg.metadata === "object" && !Array.isArray(msg.metadata)
+      ? (msg.metadata as Record<string, unknown>)
+      : {}
+  ), [msg.metadata]);
+  const systemSignal = typeof metadata.systemSignal === "string" ? metadata.systemSignal.trim() : "";
+  const isValidationSystemSignal = systemSignal.startsWith("validation_");
   const [expanded, setExpanded] = useState(false);
 
   const timestampStyle: React.CSSProperties = {
@@ -1089,6 +1096,37 @@ const MessageBubble = React.memo(function MessageBubble({
           <div className="whitespace-pre-wrap" style={{ color: TEXT_SECONDARY }}>
             {msg.content}
           </div>
+          <div className="mt-1" style={timestampStyle}>
+            {new Date(msg.timestamp).toLocaleTimeString()}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Orchestrator broadcast in global view — system pill
+  if (isValidationSystemSignal) {
+    const signalLabel = systemSignal
+      .replace("validation_", "")
+      .replace(/_/g, " ")
+      .toUpperCase();
+    return (
+      <div className="flex justify-center">
+        <div
+          className="max-w-[88%] px-3 py-2 text-center text-[11px]"
+          style={{
+            background: "#F59E0B12",
+            border: "1px solid #F59E0B40",
+            borderLeft: "3px solid #F59E0B",
+            color: TEXT_SECONDARY,
+          }}
+        >
+          <div className="mb-1 flex items-center justify-center gap-1 text-[9px]" style={{ color: "#F59E0B" }}>
+            <Robot size={10} weight="regular" />
+            <span className="font-bold uppercase tracking-wider">VALIDATION SYSTEM</span>
+            {signalLabel.length > 0 ? <span className="opacity-70">· {signalLabel}</span> : null}
+          </div>
+          <div className="whitespace-pre-wrap">{msg.content}</div>
           <div className="mt-1" style={timestampStyle}>
             {new Date(msg.timestamp).toLocaleTimeString()}
           </div>

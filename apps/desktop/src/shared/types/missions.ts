@@ -34,7 +34,6 @@ export type MissionStatus =
   | "in_progress"
   | "intervention_required"
   | "completed"
-  | "partially_completed"
   | "failed"
   | "canceled";
 

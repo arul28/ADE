@@ -1987,11 +1987,21 @@ describe("mcpServer", () => {
         {
           id: cursor + 3,
           timestamp: new Date().toISOString(),
+          category: "runtime",
+          payload: {
+            type: "validation_gate_blocked",
+            runId: "run-1",
+            stepId: null
+          }
+        },
+        {
+          id: cursor + 4,
+          timestamp: new Date().toISOString(),
           category: "mission",
           payload: { type: "mission_created" }
         }
       ],
-      nextCursor: cursor + 3,
+      nextCursor: cursor + 4,
       hasMore: false
     }));
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -2004,11 +2014,12 @@ describe("mcpServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.events).toHaveLength(2);
+    expect(response.structuredContent.events).toHaveLength(3);
     expect(response.structuredContent.events.every((e: any) => e.category === "runtime")).toBe(true);
     const eventTypes = response.structuredContent.events.map((event: any) => event.payload?.type);
     expect(eventTypes).toContain("validation_contract_unfulfilled");
     expect(eventTypes).toContain("validation_self_check_reminder");
+    expect(eventTypes).toContain("validation_gate_blocked");
   });
 
   it("stream_events defaults cursor to 0 and limit to 100", async () => {

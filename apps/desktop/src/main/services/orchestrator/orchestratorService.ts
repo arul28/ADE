@@ -3357,6 +3357,15 @@ export function createOrchestratorService({
       return persistRuntimeEvent(args);
     },
 
+    emitRuntimeUpdate(args: { runId: string; stepId?: string | null; reason: string }): void {
+      emit({
+        type: "orchestrator-step-updated",
+        runId: args.runId,
+        ...(args.stepId ? { stepId: args.stepId } : {}),
+        reason: args.reason
+      });
+    },
+
     listRuntimeEvents(args: {
       runId?: string;
       attemptId?: string;
@@ -6163,117 +6172,128 @@ export function createOrchestratorService({
                       ? validatorRole.name.trim()
                       : "validator";
 
-                  const roleDefaultModel = asRecord(validatorRole?.defaultModel);
-                  const roleModelId = typeof roleDefaultModel?.modelId === "string" ? roleDefaultModel.modelId.trim() : "";
                   const phaseModel = asRecord(latestStepMeta.phaseModel);
                   const phaseModelId = typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";
                   const runtimePhaseModel = asRecord(asRecord(runMetadata?.phaseRuntime)?.currentPhaseModel);
                   const runtimePhaseModelId = typeof runtimePhaseModel?.modelId === "string" ? runtimePhaseModel.modelId.trim() : "";
-                  const stepModelId = typeof latestStepMeta.modelId === "string" ? latestStepMeta.modelId.trim() : "";
-                  const defaultValidationModel = typeof DEFAULT_EXECUTION_POLICY.validation.model === "string"
-                    ? DEFAULT_EXECUTION_POLICY.validation.model.trim()
-                    : "";
                   const candidateModelIds = [
-                    roleModelId,
                     phaseModelId,
                     runtimePhaseModelId,
-                    stepModelId,
-                    defaultValidationModel,
-                    "openai/gpt-5.3-codex",
                   ].filter((entry) => entry.length > 0);
-                  const validatorModelId =
-                    candidateModelIds.find((entry) => Boolean(resolveModelDescriptor(entry))) ?? candidateModelIds[0] ?? "openai/gpt-5.3-codex";
-
-                  const outputs = asRecord(envelope.outputs);
-                  const collectStringList = (value: unknown): string[] => {
-                    if (!Array.isArray(value)) return [];
-                    return value
-                      .map((entry) => String(entry ?? "").trim())
-                      .filter((entry) => entry.length > 0);
-                  };
-                  const filesChanged = [
-                    ...collectStringList(outputs?.filesChanged),
-                    ...collectStringList(outputs?.changedFiles),
-                    ...collectStringList(outputs?.modifiedFiles),
-                    ...collectStringList(outputs?.files_changed),
-                    ...collectStringList(outputs?.changed_files),
-                    ...collectStringList(outputs?.modified_files),
-                  ].filter((entry, index, all) => all.indexOf(entry) === index);
-                  const testsRun = asRecord(outputs?.testsRun ?? outputs?.tests_run);
-                  const testsSummary = testsRun
-                    ? [
-                        `passed=${Number(testsRun.passed ?? 0)}`,
-                        `failed=${Number(testsRun.failed ?? 0)}`,
-                        `skipped=${Number(testsRun.skipped ?? 0)}`
-                      ].join(", ")
-                    : "not reported";
-                  const validatorPrompt = [
-                    `Validate completed worker output for step "${latestStep.stepKey}" (${latestStep.title}).`,
-                    `Validation criteria: ${normalizedContract.criteria}`,
-                    `Worker summary: ${envelope.summary}`,
-                    filesChanged.length > 0 ? `Files changed:\n- ${filesChanged.join("\n- ")}` : "Files changed: none reported.",
-                    `Tests summary: ${testsSummary}`,
-                    `Use report_validation with targetWorkerId="${latestStep.stepKey}" and verdict "pass" or "fail".`,
-                    "When failing, include findings with concrete remediation steps."
-                  ].join("\n\n");
-
-                  const existingStepKeys = new Set(existingSteps.map((candidate) => candidate.stepKey));
-                  const baseValidatorKey = `validate_${latestStep.stepKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
-                  let validatorStepKey = baseValidatorKey;
-                  let keyCounter = 1;
-                  while (existingStepKeys.has(validatorStepKey)) {
-                    validatorStepKey = `${baseValidatorKey}_${keyCounter}`;
-                    keyCounter += 1;
-                  }
-                  const maxStepIndex = existingSteps.reduce((max, candidate) => Math.max(max, candidate.stepIndex), -1);
-                  const spawned = this.addSteps({
-                    runId: run.id,
-                    steps: [
-                      {
-                        stepKey: validatorStepKey,
-                        title: `Validate: ${latestStep.title}`,
-                        stepIndex: maxStepIndex + 1,
-                        laneId: latestStep.laneId,
-                        dependencyStepKeys: [latestStep.stepKey],
-                        executorKind: "unified",
-                        metadata: {
-                          stepType: "validation",
-                          taskType: "validation",
-                          instructions: validatorPrompt,
-                          modelId: validatorModelId,
-                          role: validatorRoleName,
-                          autoSpawnedValidation: true,
-                          targetStepId: latestStep.id,
-                          targetStepKey: latestStep.stepKey,
-                          targetAttemptId: args.attemptId,
-                          targetStepSummary: envelope.summary,
-                          phaseKey: stepPhaseKey || phaseCard?.phaseKey || null,
-                          phaseName: stepPhaseName || phaseCard?.name || null,
-                          phasePosition: typeof latestStepMeta.phasePosition === "number"
-                            ? latestStepMeta.phasePosition
-                            : phaseCard?.position ?? null,
-                          validationContract: normalizedContract
-                        }
-                      }
-                    ]
-                  });
-                  if (spawned.length > 0) {
+                  const validatorModelId = candidateModelIds.find((entry) => Boolean(resolveModelDescriptor(entry))) ?? "";
+                  if (!validatorModelId.length) {
                     appendTimelineEvent({
                       runId: run.id,
-                      stepId: spawned[0]!.id,
+                      stepId: latestStep.id,
+                      attemptId: args.attemptId,
                       eventType: "validation_auto_spawned",
-                      reason: "dedicated_required_validation",
+                      reason: "phase_model_missing",
                       detail: {
                         targetStepId: latestStep.id,
                         targetStepKey: latestStep.stepKey,
-                        validatorStepKey: spawned[0]!.stepKey,
-                        validatorModelId
+                        phaseModelId: phaseModelId || null,
+                        runtimePhaseModelId: runtimePhaseModelId || null,
+                        message: "Dedicated validator could not be auto-spawned because the active phase model is missing or unregistered."
                       }
                     });
-                    void this.startReadyAutopilotAttempts({
+                    emit({
+                      type: "orchestrator-step-updated",
                       runId: run.id,
+                      stepId: latestStep.id,
                       reason: "validation_auto_spawned"
-                    }).catch(() => {});
+                    });
+                  } else {
+                    const outputs = asRecord(envelope.outputs);
+                    const collectStringList = (value: unknown): string[] => {
+                      if (!Array.isArray(value)) return [];
+                      return value
+                        .map((entry) => String(entry ?? "").trim())
+                        .filter((entry) => entry.length > 0);
+                    };
+                    const filesChanged = [
+                      ...collectStringList(outputs?.filesChanged),
+                      ...collectStringList(outputs?.changedFiles),
+                      ...collectStringList(outputs?.modifiedFiles),
+                      ...collectStringList(outputs?.files_changed),
+                      ...collectStringList(outputs?.changed_files),
+                      ...collectStringList(outputs?.modified_files),
+                    ].filter((entry, index, all) => all.indexOf(entry) === index);
+                    const testsRun = asRecord(outputs?.testsRun ?? outputs?.tests_run);
+                    const testsSummary = testsRun
+                      ? [
+                          `passed=${Number(testsRun.passed ?? 0)}`,
+                          `failed=${Number(testsRun.failed ?? 0)}`,
+                          `skipped=${Number(testsRun.skipped ?? 0)}`
+                        ].join(", ")
+                      : "not reported";
+                    const validatorPrompt = [
+                      `Validate completed worker output for step "${latestStep.stepKey}" (${latestStep.title}).`,
+                      `Validation criteria: ${normalizedContract.criteria}`,
+                      `Worker summary: ${envelope.summary}`,
+                      filesChanged.length > 0 ? `Files changed:\n- ${filesChanged.join("\n- ")}` : "Files changed: none reported.",
+                      `Tests summary: ${testsSummary}`,
+                      `Use report_validation with targetWorkerId="${latestStep.stepKey}" and verdict "pass" or "fail".`,
+                      "When failing, include findings with concrete remediation steps."
+                    ].join("\n\n");
+
+                    const existingStepKeys = new Set(existingSteps.map((candidate) => candidate.stepKey));
+                    const baseValidatorKey = `validate_${latestStep.stepKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+                    let validatorStepKey = baseValidatorKey;
+                    let keyCounter = 1;
+                    while (existingStepKeys.has(validatorStepKey)) {
+                      validatorStepKey = `${baseValidatorKey}_${keyCounter}`;
+                      keyCounter += 1;
+                    }
+                    const maxStepIndex = existingSteps.reduce((max, candidate) => Math.max(max, candidate.stepIndex), -1);
+                    const spawned = this.addSteps({
+                      runId: run.id,
+                      steps: [
+                        {
+                          stepKey: validatorStepKey,
+                          title: `Validate: ${latestStep.title}`,
+                          stepIndex: maxStepIndex + 1,
+                          laneId: latestStep.laneId,
+                          dependencyStepKeys: [latestStep.stepKey],
+                          executorKind: "unified",
+                          metadata: {
+                            stepType: "validation",
+                            taskType: "validation",
+                            instructions: validatorPrompt,
+                            modelId: validatorModelId,
+                            role: validatorRoleName,
+                            autoSpawnedValidation: true,
+                            targetStepId: latestStep.id,
+                            targetStepKey: latestStep.stepKey,
+                            targetAttemptId: args.attemptId,
+                            targetStepSummary: envelope.summary,
+                            phaseKey: stepPhaseKey || phaseCard?.phaseKey || null,
+                            phaseName: stepPhaseName || phaseCard?.name || null,
+                            phasePosition: typeof latestStepMeta.phasePosition === "number"
+                              ? latestStepMeta.phasePosition
+                              : phaseCard?.position ?? null,
+                            validationContract: normalizedContract
+                          }
+                        }
+                      ]
+                    });
+                    if (spawned.length > 0) {
+                      appendTimelineEvent({
+                        runId: run.id,
+                        stepId: spawned[0]!.id,
+                        eventType: "validation_auto_spawned",
+                        reason: "dedicated_required_validation",
+                        detail: {
+                          targetStepId: latestStep.id,
+                          targetStepKey: latestStep.stepKey,
+                          validatorStepKey: spawned[0]!.stepKey,
+                          validatorModelId
+                        }
+                      });
+                      void this.startReadyAutopilotAttempts({
+                        runId: run.id,
+                        reason: "validation_auto_spawned"
+                      }).catch(() => {});
+                    }
                   }
                 }
               } else {
@@ -6294,7 +6314,7 @@ export function createOrchestratorService({
                   stepId: latestStep.id,
                   attemptId: args.attemptId,
                   sessionId: attemptRow.executor_session_id,
-                  eventType: "worker_message",
+                  eventType: "validation_self_check_reminder",
                   eventKey: `validation_self_check_reminder:${run.id}:${latestStep.id}:${completedAt}`,
                   occurredAt: completedAt,
                   payload: {
@@ -8183,7 +8203,6 @@ export function createOrchestratorService({
         case "implementation":
         case "planning":
         case "integration":
-        case "merge":
           viewKey = "implementation";
           break;
         case "code_review":
@@ -8790,8 +8809,8 @@ export function createOrchestratorService({
       } else if (allSucceeded) {
         finalStatus = "succeeded";
       } else if (args.force) {
-        // Force-completing with mixed results → succeeded_with_risk
-        finalStatus = "succeeded_with_risk";
+        // Force-completing with mixed non-failure results still resolves to succeeded.
+        finalStatus = "succeeded";
       } else {
         finalStatus = "succeeded";
       }
@@ -8820,7 +8839,7 @@ export function createOrchestratorService({
       }
 
       // Auto-promote shared facts to memory on success
-      if (finalStatus === "succeeded" || finalStatus === "succeeded_with_risk") {
+      if (finalStatus === "succeeded") {
         try {
           promoteRunFactsToMemory(runId, projectId);
         } catch {

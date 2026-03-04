@@ -982,12 +982,8 @@ export function mapOrchestratorStepStatus(status: OrchestratorStepStatus): Missi
 export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission: MissionDetail): MissionStatus {
   if (graph.run.status === "active" || graph.run.status === "bootstrapping" || graph.run.status === "queued" || graph.run.status === "completing") return "in_progress";
   if (graph.run.status === "paused") return "intervention_required";
-  const hasFailedSteps = graph.steps.some((step) => step.status === "failed");
-  if (graph.run.status === "succeeded_with_risk") {
-    return "partially_completed";
-  }
   if (graph.run.status === "succeeded") {
-    return hasFailedSteps ? "partially_completed" : "completed";
+    return "completed";
   }
   if (graph.run.status === "failed") return "failed";
   return mission.status;

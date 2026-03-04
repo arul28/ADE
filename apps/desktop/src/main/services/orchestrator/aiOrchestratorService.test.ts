@@ -4895,9 +4895,9 @@ describe("aiOrchestratorService", () => {
       fixture.orchestratorService.tick({ runId });
       aiOrchestratorWithPr.finalizeRun({ runId, force: true });
 
-      // Verify run is actually completed (may be "succeeded" or "succeeded_with_risk")
+      // Verify run is actually completed
       const finalGraph = fixture.orchestratorService.getRunGraph({ runId });
-      expect(["succeeded", "succeeded_with_risk"]).toContain(finalGraph.run.status);
+      expect(finalGraph.run.status).toBe("succeeded");
 
       // Verify steps have different lane IDs
       const uniqueLaneIds = new Set(finalGraph.steps.map((s) => s.laneId).filter(Boolean));
