@@ -431,9 +431,10 @@ The identity persistence pattern using versioned Markdown files to define agent 
 └── embeddings.db              # sqlite-vec embeddings cache
 ```
 
-- Committable to the repo for cross-machine sync.
-- **Git IS the sync layer** — no hub, no cloud sync service needed. Any machine with the repo has full ADE state.
-- `.ade/local.yaml` (gitignored) holds machine-specific overrides (API keys, local paths, external MCP server configs).
+- Tiny config files (agents, identities, context docs, `local.yaml`) are committable to the repo for version tracking.
+- **App state syncs via cr-sqlite** (Phase 6) — the database (`ade.db`) replicates across devices in real-time. Git tracks code and config, cr-sqlite syncs app state.
+- `.ade/local.yaml` (git-tracked) holds project-level config (lane templates, phase profiles, feature flags — no secrets).
+- `.ade/local.secret.yaml` (gitignored) holds machine-specific secrets (API keys, local paths, external MCP server configs).
 
 #### W4: Learning Packs (Auto-Curated Project Knowledge)
 
@@ -481,7 +482,7 @@ To absorb the remaining skill-library gap into Phase 4, W4 includes a staged bri
 
 ADE agents (mission workers and the CTO agent) can consume external MCP servers, extending their capabilities beyond what ADE provides natively.
 
-- **Configuration**: External MCP servers are declared in `.ade/local.yaml` under an `externalMcp` key:
+- **Configuration**: External MCP servers are declared in `.ade/local.secret.yaml` (gitignored, contains API keys) under an `externalMcp` key:
   ```yaml
   externalMcp:
     - name: web-browser
@@ -548,7 +549,7 @@ Connect ADE's CTO agent to OpenClaw (or similar external agent gateways), enabli
   - `cto:forward-to-openclaw` — outbound message from CTO to an OpenClaw agent.
   - `openclaw:connection-status` — bridge connection state for UI indicator.
 
-- **Configuration** (in `.ade/local.yaml`, gitignored — contains secrets):
+- **Configuration** (in `.ade/local.secret.yaml`, gitignored — contains secrets):
   ```yaml
   openclaw:
     enabled: false
@@ -588,7 +589,7 @@ Comprehensive test coverage for all Phase 4 workstreams.
   - Procedural memory extraction (pattern detection from repeated episodic memories).
   - Composite scoring (recency decay with 30-day half-life, importance weighting, access boost capping).
   - Memory tier promotion/demotion (Tier 2 → Tier 3 decay, Tier 2 → Tier 1 pinning).
-  - `.ade/` portability (state round-trip across machines, git-based sync, local.yaml isolation).
+  - `.ade/` portability (config files round-trip via git, app state round-trip via cr-sqlite in Phase 6, local.secret.yaml isolation).
 
 - **Learning pack tests** (W4):
   - Entry accumulation (auto-capture from failures, interventions, repeated issues).
