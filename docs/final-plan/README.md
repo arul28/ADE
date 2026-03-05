@@ -125,7 +125,7 @@ Baseline derived from code in `apps/desktop`.
 Not implemented yet:
 
 - Remaining Phase 3 work (reflection protocol -- see `docs/ORCHESTRATOR_OVERHAUL.md` Phase 7; Overhaul Phases 1-6 complete)
-- CTO agent (persistent project-aware assistant, replaces Concierge)
+- CTO agent + org chart (persistent project-aware org with worker agents, Linear sync, auto-dispatch)
 - Night Shift mode in Automations (overnight execution with morning briefing)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
 - Multi-device sync (cr-sqlite + WebSocket real-time replication)
@@ -167,7 +167,7 @@ ADE becomes the execution control plane for parallel agentic development:
 5. Desktop, VPS, and iOS share one mission/audit state model via cr-sqlite real-time sync.
 6. All core features work in `guest` mode (no AI) -- AI orchestration is additive, never mandatory.
 7. ADE state syncs across devices in real-time via cr-sqlite CRDTs -- no cloud backend needed. Git tracks code, cr-sqlite syncs app state.
-8. CTO agent provides persistent project-aware assistance with full memory and context; external agent systems connect via MCP server.
+8. CTO agent leads a configurable org of worker agents (Backend Dev, QA, etc.), each with persistent memory and identity. Bidirectional Linear sync enables autonomous work intake. External agent systems connect via MCP server and OpenClaw bridge.
 9. Any machine (except phones) can be the "brain" that runs agents; all other devices are real-time viewers/controllers.
 
 ---
@@ -206,20 +206,29 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
 | Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Planned (covered in Phase 4 W4) |
 | .ade/ Portable State (git-tracked configs) | Phase 4 | Phase 3 | Planned |
-| .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 5 | Planned |
+| .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned |
 | OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) | Planned |
+| Worker Agents & Org Chart | Phase 4 | Phase 3 | Planned |
+| Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 3 | Planned |
+| Bidirectional Linear Sync (polling, auto-dispatch, reconciliation) | Phase 4 | Phase 4 W1 | Planned |
+| Mission Templates (reusable archetypes in .ade/templates/) | Phase 4 | Phase 4 W1 | Planned |
+| Per-Agent Monthly Budgets (auto-pause enforcement) | Phase 4 | Phase 4 W1 | Planned |
+| Multi-Adapter Pattern (claude-local, codex-local, openclaw, process) | Phase 4 | Phase 4 W1 | Planned |
+| Agent Config Versioning (revision tracking, rollback) | Phase 4 | Phase 4 W1 | Planned |
+| Task Session Persistence (per-task context across invocations) | Phase 4 | Phase 4 W1 | Planned |
+| Issue Tracker Abstraction (Linear first, GitHub Issues planned) | Phase 4 | Phase 4 W5 | Planned |
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Planned |
 | Memory Consolidation | Phase 4 | Phase 3 | Planned |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |
-| Play runtime isolation | Phase 5 | Phase 3 | Planned |
-| cr-sqlite multi-device sync | Phase 6 | Phase 5 | Planned |
-| Device registry & brain management | Phase 6 | Phase 5 | Planned |
-| Tailscale integration | Phase 6 | Phase 5 | Planned |
-| WebSocket sync server | Phase 6 | Phase 5 | Planned |
-| Device pairing | Phase 6 | Phase 5 | Planned |
-| File access protocol | Phase 6 | Phase 5 | Planned |
-| VPS headless deployment | Phase 6 | Phase 5 | Planned |
+| Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Planned |
+| cr-sqlite multi-device sync | Phase 6 | Phase 4 | Planned |
+| Device registry & brain management | Phase 6 | Phase 4 | Planned |
+| Tailscale integration | Phase 6 | Phase 4 | Planned |
+| WebSocket sync server | Phase 6 | Phase 4 | Planned |
+| Device pairing | Phase 6 | Phase 4 | Planned |
+| File access protocol | Phase 6 | Phase 4 | Planned |
+| VPS headless deployment | Phase 6 | Phase 4 | Planned |
 | iOS companion app | Phase 7 | Phase 6 | Planned |
 | Push notifications | Phase 7 | Phase 6 | Planned |
 | VPS provider integrations | Phase 7 | Phase 6 | Planned |
@@ -227,7 +236,25 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 
 ---
 
-## 5. Delivery Rules (All Phases)
+## 5. Cross-Phase Parallelism
+
+Phases 4 and 5 are **fully independent** — they share no code, no database tables, and no runtime surfaces. Both depend only on Phase 3. Run them in parallel with separate agents.
+
+```
+Phase 3 ──┬──→ Phase 4 (CTO + Ecosystem) ──→ Phase 6 (Multi-Device Sync) ──→ Phase 7 (Mobile)
+           │
+           └──→ Phase 5 (Play Runtime)  ← OFF CRITICAL PATH, runs anytime after Phase 3
+```
+
+**Critical path**: Phase 3 → 4 → 6 → 7. Phase 5 is off the critical path and can complete at any point.
+
+**Timeline compression**: Sequential execution would be ~28-34 weeks. With Phase 4/5 parallelism, the critical path is ~17 weeks.
+
+Each phase doc includes an **Execution Order** section showing which workstreams can run in parallel and which must be sequential.
+
+---
+
+## 6. Delivery Rules (All Phases)
 
 - No phase ships with undocumented safety bypass defaults.
 - Every new execution path emits durable event/audit records.

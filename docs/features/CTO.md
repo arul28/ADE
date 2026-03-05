@@ -13,6 +13,24 @@
 - [Overview](#overview)
   - [Why a CTO Agent](#why-a-cto-agent)
   - [Design Philosophy](#design-philosophy)
+- [Org Chart & Worker Agents](#org-chart--worker-agents)
+  - [The Org Model](#the-org-model)
+  - [Agent Identity Schema](#agent-identity-schema)
+  - [Worker Lifecycle](#worker-lifecycle)
+  - [Multi-Adapter Pattern](#multi-adapter-pattern)
+  - [Config Versioning](#config-versioning)
+- [Heartbeat & Activation](#heartbeat--activation)
+  - [Heartbeat Policy](#heartbeat-policy)
+  - [Two-Tier Execution](#two-tier-execution)
+  - [Wakeup Coalescing & Deferred Promotion](#wakeup-coalescing--deferred-promotion)
+  - [Issue Execution Locking](#issue-execution-locking)
+- [Bidirectional Linear Sync](#bidirectional-linear-sync)
+  - [Inbound: Linear to ADE](#inbound-linear-to-ade)
+  - [Outbound: ADE to Linear](#outbound-ade-to-linear)
+  - [Reconciliation](#reconciliation)
+  - [Auto-Dispatch Policies](#auto-dispatch-policies)
+  - [Mission Templates](#mission-templates)
+- [Per-Agent Budget Management](#per-agent-budget-management)
 - [Core Capabilities](#core-capabilities)
   - [Mission Creation & Management](#mission-creation--management)
   - [Lane Management](#lane-management)
@@ -25,7 +43,7 @@
   - [Temporal Decay & Composite Scoring](#temporal-decay--composite-scoring)
   - [Knowledge Accumulation](#knowledge-accumulation)
 - [Identity & State](#identity--state)
-  - [.ade/cto/ Directory](#adecto-directory)
+  - [.ade/ Agent Directories](#ade-agent-directories)
   - [Identity Persistence](#identity-persistence)
   - [State Portability](#state-portability)
 - [Interaction Model](#interaction-model)
@@ -39,6 +57,8 @@
 - [Relationship to Missions](#relationship-to-missions)
   - [Strategic vs Tactical](#strategic-vs-tactical)
   - [CTO to Mission Flow](#cto-to-mission-flow)
+- [Multi-Device Reachability](#multi-device-reachability)
+- [Prior Art](#prior-art)
 - [Deferred Design](#deferred-design)
 
 ---
@@ -75,6 +95,267 @@ The CTO is modeled after a real-world Chief Technical Officer — someone who:
 - **Delegates effectively** — creates missions and spins up lanes for tactical work rather than doing everything inline.
 - **Communicates proactively** — surfaces issues, progress, and recommendations without being asked.
 - **Learns continuously** — every interaction makes it more effective.
+
+---
+
+## Org Chart & Worker Agents
+
+The CTO is not a solo agent — it's the head of a configurable **technical org chart**. Users create specialized worker agents (Backend Dev, Mobile Dev, QA Engineer, etc.) that report to the CTO. All agents share the same three-tier memory model, have full ADE knowledge via MCP tools, and can be talked to directly.
+
+> **Prior art**: Org model from [Paperclip](https://github.com/paperclipai/paperclip). Heartbeat from Paperclip + [OpenClaw](https://github.com/openclaw/openclaw). Linear integration from [Symphony](https://github.com/openai/symphony).
+
+### The Org Model
+
+```
+User (Board of Directors)
+ │
+ ├── talks to ──→ CTO Agent (persistent, memory tiers, project-aware)
+ │                   │
+ │                   ├── manages ──→ Worker: "Backend Dev"
+ │                   │                 ├── adapterType: claude-local
+ │                   │                 ├── heartbeat: wakeOnDemand
+ │                   │                 ├── budget: $50/mo
+ │                   │                 └── capabilities: ["api", "db", "tests"]
+ │                   │
+ │                   ├── manages ──→ Worker: "Mobile Dev"
+ │                   │                 ├── adapterType: openclaw-webhook
+ │                   │                 ├── heartbeat: wakeOnDemand
+ │                   │                 ├── budget: $30/mo
+ │                   │                 └── capabilities: ["react-native", "ios"]
+ │                   │
+ │                   └── manages ──→ Worker: "QA Engineer"
+ │                                    ├── adapterType: claude-local
+ │                                    ├── heartbeat: 600s (slow check)
+ │                                    └── capabilities: ["testing", "e2e", "accessibility"]
+ │
+ └── talks to ──→ Any Worker directly (bypass CTO for quick asks)
+```
+
+- The CTO is always the root node (`reportsTo: null`). Workers report to CTO by default.
+- Users can create sub-hierarchies (e.g., a "Lead Backend Dev" with junior workers under it).
+- Cycle detection prevents circular reporting chains (max 50 hops).
+- Chain-of-command traversal: any worker can escalate to its manager, up to CTO.
+- When an agent is removed, its direct reports are unlinked (set to `reportsTo: null`), not deleted.
+
+### Agent Identity Schema
+
+Every agent (CTO and workers) has a persistent identity record:
+
+```typescript
+interface AgentIdentity {
+  id: string;                    // UUID
+  name: string;                  // "Backend Dev", "Mobile Dev", "QA Engineer"
+  role: AgentRole;               // 'cto' | 'engineer' | 'qa' | 'designer' | 'devops' | 'researcher' | 'general'
+  title?: string;                // Optional display title
+  reportsTo: string | null;      // Parent agent ID (null = root CTO)
+  capabilities: string[];        // ["api", "db", "tests", "react-native", "ios"]
+  status: AgentStatus;           // 'idle' | 'active' | 'paused' | 'running'
+
+  // Adapter: how the agent executes
+  adapterType: AdapterType;      // 'claude-local' | 'codex-local' | 'openclaw-webhook' | 'process'
+  adapterConfig: Record<string, unknown>;
+
+  // Runtime
+  runtimeConfig: {
+    heartbeat?: HeartbeatPolicy;
+    maxConcurrentRuns?: number;  // 1-10, default 1
+  };
+
+  // Budget
+  budgetMonthlyCents: number;    // 0 = unlimited
+  spentMonthlyCents: number;     // Auto-tracked, resets monthly
+
+  // Metadata
+  lastHeartbeatAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+### Worker Lifecycle
+
+1. **Creation**: User creates a worker via CTO tab → "Add Worker" button, or CTO proposes hiring a worker (with user approval).
+2. **Configuration**: Set name, role, capabilities, adapter type, heartbeat policy, budget.
+3. **Activation**: Worker becomes `idle` and listens for wakeups (heartbeat timer or on-demand).
+4. **Execution**: When woken (by CTO dispatch, user message, or heartbeat), worker activates and processes work.
+5. **Pausing**: Manual pause, budget exhaustion, or CTO decision. Worker stops accepting new work.
+6. **Termination**: Worker is deactivated. Identity and memory are preserved for audit but agent no longer runs.
+
+### Multi-Adapter Pattern
+
+Same agent interface, different execution backends:
+
+| Adapter | Use Case | Execution Model |
+|---------|----------|-----------------|
+| `claude-local` | Code-focused workers | Spawns Claude Code CLI with model/cwd/instructions |
+| `codex-local` | OpenAI-native workflows | Spawns Codex CLI via app-server protocol |
+| `openclaw-webhook` | Remote workers on external infrastructure | HTTP POST to OpenClaw agent endpoint |
+| `process` | Specialized tools, custom scripts | Generic subprocess with custom command |
+
+Workers are hot-swappable — change adapter type without losing identity or memory. Adapter config holds backend-specific settings (model, CLI args, webhook URL, timeout, etc.).
+
+### Config Versioning
+
+Every change to an agent's config creates a revision with before/after snapshots:
+
+- **Tracked fields**: name, role, title, reportsTo, capabilities, adapterType, adapterConfig, runtimeConfig, budgetMonthlyCents.
+- **Changed-keys detection**: Only records which fields actually changed.
+- **Rollback**: Revert to any previous revision. Redacted-secret protection prevents rollback to revisions where secrets were scrubbed.
+- **Audit trail**: "Changed QA Engineer's prompt on March 3 to include accessibility checks → test pass rate improved 15%."
+
+---
+
+## Heartbeat & Activation
+
+The heartbeat system determines when and how agents wake up. It combines scheduled activation (checking for work), event-driven triggers (task assigned), and intelligent deduplication.
+
+### Heartbeat Policy
+
+```typescript
+interface HeartbeatPolicy {
+  enabled: boolean;              // Whether timer-based wakeups fire
+  intervalSec: number;           // Seconds between automatic checks (0 = no timer)
+  wakeOnDemand: boolean;         // Allow event-driven wakeups
+  activeHours?: {                // Optional time window
+    start: string;               // "09:00"
+    end: string;                 // "22:00"
+    timezone: string;            // IANA timezone or "local"
+  };
+}
+```
+
+| Agent | Default intervalSec | wakeOnDemand | Notes |
+|-------|-------------------|--------------|-------|
+| CTO | 300 (5 min) | yes | Periodic Linear check + mission monitoring |
+| Workers | 0 (no timer) | yes | Wake only when CTO assigns work or user messages |
+
+### Two-Tier Execution
+
+On each heartbeat activation, the system avoids unnecessary LLM calls:
+
+1. **Cheap deterministic checks** (zero tokens): Query Linear for new issues, check mission status changes, scan for pending interventions. If nothing changed → skip.
+2. **LLM escalation** (only when needed): If there's meaningful new work, invoke the agent's model. CTO classifies issues, decides dispatch strategy.
+3. **HEARTBEAT_OK suppression**: If the agent determines nothing needs attention, it returns `HEARTBEAT_OK`. No notification to the user.
+
+### Wakeup Coalescing & Deferred Promotion
+
+- **Coalescing**: If a wakeup arrives while the agent is already running on the same task, merge the new context into the active run instead of spawning a duplicate. Example: 3 Linear updates to the same issue → 1 agent invocation with all 3 updates merged.
+- **Deferred promotion**: If the agent is busy on a different task, the wakeup is queued as `deferred`. When the current run finishes, the oldest deferred wakeup auto-promotes.
+- **Orphan reaping**: On app restart, detect runs that are "queued" or "running" but have no process. Mark failed, release locks, promote deferred wakeups.
+
+### Issue Execution Locking
+
+Only one agent run per issue at a time:
+
+- **Atomic lock**: When a worker claims an issue, it sets `executionRunId` + `executionLockedAt`. No other agent can work on it simultaneously.
+- **Stale adoption**: If a run crashes, a new run can adopt the orphaned issue instead of it being stuck.
+- **Lock release**: On run completion, the lock is released and deferred wakeups are promoted within a single transaction.
+
+---
+
+## Bidirectional Linear Sync
+
+The CTO agent watches a Linear project board and autonomously dispatches missions from issues. Results flow back to Linear as state updates, comments, and proof of work.
+
+### Inbound: Linear to ADE
+
+```
+Linear Board                    CTO Agent                      ADE Missions
+┌─────────────┐   heartbeat     ┌──────────────┐  creates     ┌──────────────┐
+│ Todo        │ ──────────────> │              │ ──────────> │ Mission A    │
+│ In Progress │ <────────────── │  Classifies  │             │  └─ Lane 1   │
+│ Done        │   updates state │  Routes      │  creates    │ Mission B    │
+│             │                 │  Dispatches  │ ──────────> │  └─ Lane 1   │
+│ New Issue!  │ ──────────────> │              │             │  └─ Lane 2   │
+└─────────────┘                 │  "Smart PM"  │  escalates  ┌──────────────┐
+                                └──────────────┘ ──────────> │ User Review  │
+```
+
+1. **CTO heartbeat fires** → cheap check: query Linear for issues in active states.
+2. **Candidate filtering**: Sort by priority → created_at → identifier. Skip blocked issues.
+3. **Classification**: CTO uses memory + project knowledge to classify: bug? feature? refactor? Which worker?
+4. **Concurrency check**: Respect per-state limits.
+5. **Auto-dispatch or escalate**: Based on policy, create mission automatically or surface for approval.
+6. **Atomic checkout**: Lock the issue, move to `In Progress` in Linear.
+
+### Outbound: ADE to Linear
+
+- Mission starts → move issue to `In Progress`, post workpad comment with planned approach.
+- During execution → update workpad comment with progress checklist (single persistent comment, not multiple).
+- PR created → post PR link, add `ade` label.
+- Mission completes → move to `Done` or `In Review`, post summary with diff stats + test results.
+- Mission fails → post failure context, move to `Blocked` or keep `In Progress` for retry.
+
+### Reconciliation
+
+On every CTO heartbeat, validate running missions against Linear state:
+
+| Linear Change | ADE Action |
+|--------------|------------|
+| Issue moved to `Done` externally | Cancel ADE mission, clean up |
+| Issue moved to `Cancelled` | Cancel mission, clean up workspace |
+| Issue reassigned to someone else | Release worker, update mission |
+| Issue still active | Refresh snapshot, continue |
+
+### Auto-Dispatch Policies
+
+User-configurable rules in `.ade/local.yaml`:
+
+```yaml
+linearSync:
+  enabled: true
+  projectSlug: my-project
+  pollingIntervalSec: 300
+  autoDispatch:
+    rules:
+      - match: { labels: ["bug"], priority: ["urgent", "high"] }
+        action: auto
+        worker: backend-dev
+        template: bug-fix
+      - match: { labels: ["feature"] }
+        action: escalate
+      - match: { labels: ["refactor"] }
+        action: queue-night-shift
+    default: escalate
+  concurrency:
+    global: 5
+    byState:
+      todo: 3
+      in_progress: 5
+```
+
+### Mission Templates
+
+Reusable mission archetypes in `.ade/templates/`:
+
+```yaml
+# .ade/templates/bug-fix.yaml
+name: Bug Fix
+phases: [development, testing, validation, pr]
+prStrategy: per-lane
+defaultWorker: backend-dev
+budgetCents: 500
+promptTemplate: |
+  Fix the following bug:
+  Title: {{ issue.title }}
+  Description: {{ issue.description }}
+```
+
+CTO selects template based on issue classification. Users create custom templates in Settings.
+
+---
+
+## Per-Agent Budget Management
+
+Each agent has a monthly token/cost budget that is enforced automatically:
+
+- **Per-agent budget**: `budgetMonthlyCents` ceiling. When `spentMonthlyCents >= budget`, agent auto-pauses.
+- **Company-level cap**: Total monthly spend across all agents.
+- **Cost event recording**: Every run records provider, model, input/output tokens, cost in cents.
+- **Auto-pause**: When budget is hit, agent status → `paused`. New wakeups are rejected.
+- **CTO notification**: CTO proactively tells user: "QA Engineer hit its $30 budget. Paused. Increase?"
+- **Monthly reset**: `spentMonthlyCents` resets to 0 on the 1st of each month.
+- **Billing type awareness**: Distinguishes `api` (pay-per-token) from `subscription` (flat rate). Subscription runs show usage but not dollar costs.
 
 ---
 
@@ -180,18 +461,35 @@ This accumulation is what makes the CTO fundamentally different from a session-s
 
 ## Identity & State
 
-### .ade/cto/ Directory
+### .ade/ Agent Directories
 
-The CTO's persistent state lives in the `.ade/cto/` directory at the project root:
+All agent state lives under the `.ade/` directory at the project root:
 
 ```
-.ade/cto/
-├── identity.yaml           # CTO persona, model preferences, policy config
-├── core-memory.json        # Tier 1 core memory (always loaded into context)
-├── memory/
-│   ├── hot.json            # Tier 2 hot memory entries (source data)
-│   └── archive/            # Tier 3 cold storage
-└── state.json              # Current operational state (active missions, pending items)
+.ade/
+├── cto/
+│   ├── identity.yaml        # CTO persona, model preferences, heartbeat policy
+│   ├── core-memory.json     # Tier 1 core memory (always loaded into context)
+│   ├── memory/
+│   │   ├── hot.json         # Tier 2 hot memory entries
+│   │   └── archive/         # Tier 3 cold storage
+│   ├── state.json           # Current operational state
+│   └── sessions.jsonl       # Session history log (append-only)
+├── agents/
+│   ├── backend-dev/
+│   │   ├── identity.yaml    # Worker persona, adapter config, heartbeat policy
+│   │   ├── core-memory.json # Worker's Tier 1 core memory
+│   │   ├── memory/          # Worker's Tier 2 + archive
+│   │   └── sessions.jsonl   # Worker session log
+│   ├── mobile-dev/
+│   │   └── ...
+│   └── qa-engineer/
+│       └── ...
+├── templates/
+│   ├── bug-fix.yaml         # Mission template: bug fixes
+│   ├── feature.yaml         # Mission template: features
+│   └── refactor.yaml        # Mission template: refactors
+└── ...
 ```
 
 ### Identity Persistence
@@ -467,6 +765,31 @@ When the CTO determines that a request requires a mission:
 3. **Plan review**: The mission orchestrator generates a phased plan. The CTO can review and steer if needed.
 4. **Execution monitoring**: While the mission executes, the CTO tracks progress and can relay status to the user or external agent.
 5. **Outcome integration**: After the mission completes, the CTO absorbs the outcome into its memory — what worked, what failed, what was learned.
+
+---
+
+## Multi-Device Reachability
+
+The CTO and all workers must be reachable from any device in the ADE ecosystem (Phase 6+):
+
+- **Brain model**: CTO and workers run only on the brain machine. All other devices are viewers/controllers.
+- **State sync**: Agent identity, memory, config, and run state sync via cr-sqlite. Any device sees the full org chart and agent status in real-time.
+- **Command routing**: When a user talks to the CTO or a worker from a non-brain device, the message routes over WebSocket to the brain, the agent processes it, and state changes sync back via cr-sqlite.
+- **iOS access** (Phase 7): Full CTO chat from the iOS companion app. View org chart, worker status, send messages, approve interventions. Push notifications for mission completion, budget alerts, and CTO escalations.
+- **VPS brain** (Phase 6 W9): CTO runs headlessly on a VPS brain via `xvfb-run electron .`. Heartbeats fire on schedule, Linear sync runs continuously, workers process issues — all without a desktop being open.
+- **Linear sync portability**: Linear API credentials are in `.ade/local.secret.yaml` (machine-specific, gitignored). The brain machine's secret file provides the Linear token. Other devices don't need it — they see the results via cr-sqlite sync.
+
+---
+
+## Prior Art
+
+This design draws from three open-source projects:
+
+| System | What We Adopted | What We Skipped |
+|--------|----------------|-----------------|
+| **[Paperclip](https://github.com/paperclipai/paperclip)** | Org chart with reportsTo hierarchy, heartbeat system (coalescing, deferred promotion, issue execution locking), multi-adapter pattern, config versioning with rollback, budget auto-pause, task session persistence, agent identity schema | Multi-company isolation (ADE is single-user), approval gates for hiring (too heavy), PostgreSQL dependency |
+| **[Symphony](https://github.com/openai/symphony)** | Linear polling loop, per-state concurrency limits, reconciliation against tracker state, stall detection, workpad comment pattern, dependency resolution (blocked-by checks), issue re-validation before dispatch, tracker abstraction interface | WORKFLOW.md (CTO memory is richer), no-DB state recovery (ADE has persistence), dumb dispatch (CTO classifies intelligently), workspace isolation per issue (ADE has lanes) |
+| **[OpenClaw](https://github.com/openclaw/openclaw)** | Three-tier memory (MEMORY.md + daily logs), pre-compaction flush (silent agentic turn), two-tier heartbeat execution (cheap checks first), HEARTBEAT_OK suppression, SOUL.md identity separation, hybrid BM25+vector search, temporal decay with evergreen exemptions | Channel adapters (ADE is desktop-native), Docker sandboxing (not needed for local), node device system (ADE has its own multi-device sync) |
 
 ---
 

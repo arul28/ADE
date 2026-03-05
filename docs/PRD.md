@@ -378,17 +378,18 @@ The Missions tab is the AI orchestrator control center. Missions use a **configu
 
 #### Configurable Phases Model
 
-Missions ship with pre-built phases that cover the standard development lifecycle:
+Before execution, a **pre-mission planner** performs deep research on the codebase (reading files, searching code, tracing dependencies) and generates a structured step graph. This is NOT a phase — it runs before any phase cards are processed.
 
-- **Planning**: Mission decomposition, task breakdown, dependency analysis
+Missions ship with pre-built execution phases that cover the standard development lifecycle:
+
 - **Development**: Code implementation across isolated lanes
 - **Testing**: Test execution, coverage analysis, regression detection
 - **Validation**: Output review, acceptance criteria verification
 - **PR & Conflict Resolution**: Pull request creation, conflict detection and resolution
 
 **Ordering Rules**: Phases follow hard and flexible ordering constraints:
-- *Hard rules*: Planning always runs first. Development runs after Planning. Validation runs after Development.
-- *Flexible rules*: Testing can be configured as TDD (after Planning, before Development) or traditional (after Development, before Validation).
+- *Hard rules*: Development runs first among execution phases. Validation runs after Development.
+- *Flexible rules*: Testing can be configured as TDD (before Development) or traditional (after Development, before Validation).
 
 **Custom Phases**: Users can create custom phases for specialized workflows. Examples include "UI Planning" (design review before implementation), "Documentation Update" (auto-generate docs after code changes), "Security Audit" (run security scans at milestone boundaries), or any project-specific workflow step. Custom phases use the same template and card structure as built-in phases -- there is no distinction at the execution level. Custom phases are validated for structural correctness, semantic coherence, and ordering constraint compatibility.
 
@@ -397,7 +398,7 @@ Missions ship with pre-built phases that cover the standard development lifecycl
 **Phase Cards**: Each phase is configured as a card with the following properties:
 - **Name and description**: Human-readable phase identity and purpose
 - **Instructions**: Natural language instructions for the orchestrator describing what this phase should accomplish
-- **Model selection**: Which AI model workers use for this phase (e.g., Claude for planning, Codex for implementation). This is the worker model, not the orchestrator model -- the orchestrator runs on its own pre-selected model for the entire mission
+- **Model selection**: Which AI model workers use for this phase (e.g., Claude for testing, Codex for implementation). This is the worker model, not the orchestrator model -- the orchestrator runs on its own pre-selected model for the entire mission
 - **Budget cap**: Maximum token/cost budget for this phase (enforced for API key users, informational for subscription users)
 - **Position constraints**: Where this phase can appear in the sequence (before/after dependencies)
 - **Ask-questions toggle**: Whether the orchestrator should pause for user input during this phase
@@ -465,7 +466,7 @@ The orchestrator scales its approach based on mission complexity:
 
 **Flat orchestrator model**: There are no sub-orchestrators. One orchestrator manages the entire mission. Workers can spawn sub-workers internally if needed, but orchestration authority is centralized.
 
-**Smart prompting**: The orchestrator understands phase context and adjusts its approach accordingly. A planning phase gets high-reasoning prompts with architectural context; a testing phase gets focused, execution-oriented prompts with test specifications.
+**Smart prompting**: The orchestrator understands phase context and adjusts its approach accordingly. A development phase gets implementation-focused prompts with architectural context; a testing phase gets focused, execution-oriented prompts with test specifications.
 
 #### Inter-Worker Communication
 

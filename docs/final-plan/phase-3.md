@@ -209,7 +209,7 @@ Mission Pipeline = PhaseCard[] + Profile + ValidationGates + BudgetEnvelope
 ```typescript
 interface PhaseCard {
   id: string;
-  name: string;                     // e.g., "Planning", "Development", "Testing"
+  name: string;                     // e.g., "Development", "Testing", "Validation"
   description: string;              // Human-readable description
   instructions: string;             // Prompt instructions injected into agent context
   model: {
@@ -223,7 +223,7 @@ interface PhaseCard {
     maxSteps?: number;              // Max mission steps in this phase
   };
   orderingConstraints: {
-    mustBeFirst?: boolean;          // e.g., Planning
+    mustBeFirst?: boolean;          // e.g., Development
     mustFollow?: string[];          // Phase IDs that must precede this
     mustPrecede?: string[];         // Phase IDs that must follow this
     canLoop?: boolean;              // Can loop back to a previous phase
@@ -247,14 +247,17 @@ interface PhaseCard {
 }
 ```
 
+### Pre-Mission Planning
+
+Before any execution phases run, a dedicated **pre-mission planner** performs deep research on the codebase (reading files, searching code, tracing dependencies) and generates a structured step graph. This is NOT a phase card — it runs before the phase pipeline starts. The planner gets a full agent session with read-only tools to thoroughly understand the codebase.
+
 ### Built-In Phases
 
 These ship with ADE. Users can configure but not delete them.
 
 | Phase | Description | Constraints | Default Model | Default Validation |
 |---|---|---|---|---|
-| **Planning** | Analyze prompt, decompose into milestones/tasks/subtasks, produce structured plan | Must be first | Claude Sonnet | Self |
-| **Development** | Execute the plan — spawn workers, write code, run tools | Must follow Planning | Claude Sonnet | Spot-check |
+| **Development** | Execute the plan — spawn workers, write code, run tools | Must be first | Codex | Spot-check |
 | **Testing** | Run test suites, validate code quality | Flexible (before or after Dev) | Claude Sonnet | Dedicated |
 | **Validation** | Review completed work against original requirements and plan | Must follow Development | Claude Sonnet | Dedicated |
 | **PR & Conflict Resolution** | Create PRs, handle merge conflicts, rebase | Must be last | Claude Sonnet | Self |
@@ -282,7 +285,7 @@ interface PhaseProfile {
 }
 ```
 
-**Built-in profiles**: Default (Planning → Development → Testing → Validation → PR), TDD (Planning → Testing → Development → Validation → PR).
+**Built-in profiles**: Default (Development → Testing → Validation → PR), TDD (Testing → Development → Validation → PR).
 
 **Profile management** lives in Settings → Missions → Phase Profiles. Create/edit/clone/delete. Set default. Import/export as JSON. Profiles can also be stored in `.ade/profiles/` for version-controlled sharing.
 
@@ -565,27 +568,22 @@ The mission launch flow includes a phase configuration step:
 |                                                                    |
 | PHASE CONFIGURATION                      Profile: [Default  v]   |
 |                                                                    |
-| ┌─ 1. Planning ─────────────────────────────────────────────────┐ |
-| │  Model: Claude Sonnet  │  Validation: Self  │  Budget: auto   │ |
+| ┌─ 1. Development ──────────────────────────────────────────────┐ |
+| │  Model: Codex          │  Validation: Spot-check │  Budget: auto│ |
 | │  [Configure]                                                   │ |
 | └────────────────────────────────────────────────────────────────┘ |
 |   ↕ drag to reorder                                                |
-| ┌─ 2. Development ──────────────────────────────────────────────┐ |
-| │  Model: Claude Opus   │  Validation: Spot-check │  Budget: auto│ |
-| │  [Configure]                                                   │ |
-| └────────────────────────────────────────────────────────────────┘ |
-|   ↕ drag to reorder                                                |
-| ┌─ 3. Testing ──────────────────────────────────────────────────┐ |
+| ┌─ 2. Testing ──────────────────────────────────────────────────┐ |
 | │  Model: Claude Sonnet  │  Validation: Dedicated │  Budget: auto│ |
 | │  [Configure]                                                   │ |
 | └────────────────────────────────────────────────────────────────┘ |
 |   ↕ drag to reorder                                                |
-| ┌─ 4. Validation ───────────────────────────────────────────────┐ |
+| ┌─ 3. Validation ───────────────────────────────────────────────┐ |
 | │  Model: Claude Sonnet  │  Validation: Dedicated │  Budget: auto│ |
 | │  [Configure]                                                   │ |
 | └────────────────────────────────────────────────────────────────┘ |
 |   ↕ drag to reorder                                                |
-| ┌─ 5. PR & Conflict Resolution ─────────────────────────────────┐ |
+| ┌─ 4. PR & Conflict Resolution ─────────────────────────────────┐ |
 | │  Model: Claude Sonnet  │  Validation: Self  │  Budget: auto   │ |
 | │  [Configure]                                                   │ |
 | └────────────────────────────────────────────────────────────────┘ |
@@ -601,7 +599,7 @@ The mission launch flow includes a phase configuration step:
 
 - Each phase card is a collapsible/expandable row showing model, validation tier, and budget at a glance.
 - Click **[Configure]** to expand inline: edit instructions, model, budget caps, validation criteria, ask-questions settings.
-- **Drag-and-drop reordering**: cards can be dragged to new positions. Invalid positions (violating ordering constraints) show a red indicator with tooltip ("Planning must be first", "Validation must follow Development").
+- **Drag-and-drop reordering**: cards can be dragged to new positions. Invalid positions (violating ordering constraints) show a red indicator with tooltip ("Development must be first", "Validation must follow Development").
 - **Profile selector**: dropdown at top. Changing profile reloads the phase card list. Modifications create a per-mission override (don't change the saved profile).
 - **[+ Add Custom Phase]**: opens an inline form with the same fields as a built-in phase. Custom phases are validated before save.
 - **Orchestrator Model**: separate selector for the coordinator model (stays constant across all phases).
@@ -616,14 +614,14 @@ In Settings → Missions → Phase Profiles:
 +------------------------------------------------------------------+
 | Profile List                                          [+ CREATE]  |
 |                                                                    |
-| ● Default (5 phases)                              [Edit] [Clone] |
-|   Planning → Development → Testing → Validation → PR              |
+| ● Default (4 phases)                              [Edit] [Clone] |
+|   Development → Testing → Validation → PR                         |
 |                                                                    |
-|   TDD (5 phases)                                  [Edit] [Clone] |
-|   Planning → Testing → Development → Validation → PR              |
+|   TDD (4 phases)                                  [Edit] [Clone] |
+|   Testing → Development → Validation → PR                         |
 |                                                                    |
-|   Security-Focused (6 phases)          [Edit] [Clone] [Delete]   |
-|   Planning → Development → Security Audit → Testing → Val → PR   |
+|   Security-Focused (5 phases)          [Edit] [Clone] [Delete]   |
+|   Development → Security Audit → Testing → Val → PR               |
 |                                                                    |
 | [Import Profile]                        [Export Selected]         |
 +------------------------------------------------------------------+
@@ -822,8 +820,8 @@ Shown in the mission launch flow after phase configuration, before the Launch bu
 | PRE-FLIGHT CHECKLIST                                               |
 +------------------------------------------------------------------+
 | ✓ Models detected & authenticated                                 |
-|   Claude Sonnet (Planning, Testing, Validation) — authenticated   |
-|   Claude Opus (Development, Orchestrator) — authenticated         |
+|   Claude Sonnet (Testing, Validation, Orchestrator) — authenticated|
+|   Codex (Development) — authenticated                              |
 |                                                                    |
 | ✓ Permissions                                                      |
 |   Mode: Full Auto (bypass permissions)                             |
@@ -832,13 +830,13 @@ Shown in the mission launch flow after phase configuration, before the Launch bu
 |   3 lanes available for worker assignment                          |
 |                                                                    |
 | ✓ Phase configuration valid                                        |
-|   Profile: Default (5 phases)                                      |
+|   Profile: Default (4 phases)                                      |
 |   Ordering constraints: satisfied                                  |
 |   Custom phases: 0                                                 |
 |                                                                    |
 | ⚠ Budget estimation                                                |
 |   Estimated: ~$4.20 / ~45 min                                     |
-|   Per-phase: Planning $0.30, Dev $2.80, Test $0.60, Val $0.30,    |
+|   Per-phase: Dev $2.80, Test $0.60, Val $0.30,                     |
 |              PR $0.20                                               |
 |   Mode: Subscription (best-effort estimate)                        |
 |                                                                    |
@@ -1112,7 +1110,7 @@ Not in Phase 3, but the architecture supports it:
 
 #### 8B: Missions Overhaul Tests
 
-- **Phase engine tests**: card CRUD, ordering constraint enforcement (Planning first, Validation after Dev, PR last, Testing flexible), drag-and-drop position updates, phase transition execution, validation gate invocation.
+- **Phase engine tests**: card CRUD, ordering constraint enforcement (Development first, Validation after Dev, PR last, Testing flexible), drag-and-drop position updates, phase transition execution, validation gate invocation.
 - **Profile tests**: CRUD, built-in integrity, custom creation with constraint validation, per-mission override, import/export roundtrip, `.ade/profiles/` JSON serialization.
 - **Plan tab tests**: hierarchical rendering (milestones → tasks → subtasks), real-time update handling, status indicator accuracy.
 - **Work tab tests**: worker selector, live output streaming, file list updates, tool call tracking.

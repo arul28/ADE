@@ -15,38 +15,92 @@ Goal: Concurrent lane runtimes without collisions. Full lane environment initial
 ### Dependencies
 
 - Phase 3 complete (orchestrator autonomy + missions overhaul — see `phase-3.md`).
+- Phase 5 has **zero dependency on Phase 4** (CTO + Ecosystem). Both phases depend only on Phase 3 and run fully in parallel with separate agents.
+
+### Execution Order
+
+Workstreams are numbered in dependency order. Hand them to agents sequentially — or in parallel where noted.
+
+```
+Wave 1 (start day 1):
+  W1: Lane Environment Init & Overlay Policy   ← foundation
+
+Wave 2 (parallel, after W1):
+  W2: Lane Template System                     ← needs W1 only
+  W3: Port Allocation & Lease                  ← needs W1
+
+Wave 3 (after W3):
+  W4: Per-Lane Hostname Isolation & Preview    ← needs W3
+
+Wave 4 (parallel, after W4):
+  W5: Auth Redirect Handling                   ← needs W4
+  W6: Runtime Diagnostics                      ← needs W1, W3, W4
+```
+
+Dependency graph:
+```
+W1 (Lane Init + Overlay) ──→ W2 (Templates)
+         │
+         └──→ W3 (Port Allocation) ──→ W4 (Hostname + Preview) ──→ W5 (Auth Redirect)
+                                              │
+                                              └──→ W6 (Diagnostics)
+```
+
+Each workstream includes its own renderer/UI changes and validation tests (no standalone workstreams for these).
 
 ### Workstreams
 
-#### W1: Lane Environment Init
+#### W1: Lane Environment Init & Overlay Policy
 - BranchBox-style environment initialization on lane creation.
 - Environment file copying/templating with lane-specific values (ports, hostnames, API keys).
 - Docker service startup for lane-specific Docker Compose services (databases, caches, queues).
 - Dependency installation (`npm install`, `pip install`, etc.).
 - Standardized runtime mount points for agent profile/context files.
+- **Overlay policy**: Extend existing `laneOverlayMatcher.ts` for env/port/proxy overlays. Per-lane overrides for environment variables, port mappings, proxy settings, and compute backend selection.
+- **Renderer**: Lane creation dialog shows environment init progress. Overlay config visible in lane settings.
 
-#### W2: Port Allocation & Lease
-- Dynamic port range per lane (e.g., 3000-3099 for lane 1, 3100-3199 for lane 2).
-- Lease/release lifecycle with crash recovery.
-- Port conflict detection and resolution.
+**Tests:**
+- Multi-lane collision tests for env init.
+- Overlay policy application tests.
+- Lane creation end-to-end with env setup.
 
-#### W3: Per-Lane Hostname Isolation
-- `*.localhost` reverse proxy with a single proxy port routing by Host header.
-- Hostname pattern: `<lane-slug>.localhost`.
-- Cookie/auth isolation via unique hostname per lane — no cross-lane session leakage.
-
-#### W4: Preview Launch Service
-- Generate preview URLs per lane.
-- Open in browser with one click.
-- Share preview links for quick visual review.
-
-#### W5: Lane Template System
+#### W2: Lane Template System
 - Templates stored in `local.yaml` defining reusable initialization recipes.
 - Template selection available in the Create Lane dialog.
 - Templates specify env files, port ranges, Docker compose paths, and install commands.
 - Project-level default template in Settings.
+- **Renderer**: Template selector dropdown in Create Lane dialog. Template management in Settings.
 
-#### W6: Auth Redirect Handling
+**Tests:**
+- Template loading and application tests.
+- Default template selection.
+- Template with all fields populated.
+
+#### W3: Port Allocation & Lease
+- Dynamic port range per lane (e.g., 3000-3099 for lane 1, 3100-3199 for lane 2).
+- Lease/release lifecycle with crash recovery.
+- Port conflict detection and resolution.
+- **Renderer**: Port allocation visible in lane detail view.
+
+**Tests:**
+- Lease recovery tests on crash/restart.
+- Port exhaustion tests.
+- Port conflict detection tests.
+
+#### W4: Per-Lane Hostname Isolation & Preview
+- `*.localhost` reverse proxy with a single proxy port routing by Host header.
+- Hostname pattern: `<lane-slug>.localhost`.
+- Cookie/auth isolation via unique hostname per lane — no cross-lane session leakage.
+- Generate preview URLs per lane. Open in browser with one click. Share preview links for quick visual review.
+- **Renderer**: Preview URL button in lane list. Proxy & preview status indicators in lane detail. Copy preview URL action.
+
+**Tests:**
+- Hostname routing tests.
+- Cookie isolation tests.
+- Preview URL generation.
+- E2E proxy routing tests.
+
+#### W5: Auth Redirect Handling
 - Redirect URI rewriting per-lane hostname.
 - OAuth callback routing to correct lane dev server.
 - **State-parameter routing** (recommended approach):
@@ -61,28 +115,24 @@ Goal: Concurrent lane runtimes without collisions. Full lane environment initial
   - Each lane gets its own hostname: `lane-1.localhost:8080`, `lane-2.localhost:8080`
   - Proxy routes by Host header to the correct lane's dev server
 - **Setup assistant**: Settings → Proxy & Preview shows a "Copy Redirect URIs" helper that generates the exact URIs to register with your OAuth provider based on your proxy configuration.
+- **Renderer**: Setup assistant in Settings → Proxy & Preview shows redirect URI helper.
 
-#### W7: LaneOverlayPolicy Extension
-- Extend existing `laneOverlayMatcher.ts` for env/port/proxy overlays.
-- Per-lane overrides for environment variables, port mappings, proxy settings, and compute backend selection.
+**Tests:**
+- OAuth callback routing tests per lane.
+- State parameter encoding/decoding.
+- Multi-lane concurrent OAuth flow tests.
 
-#### W8: Runtime Diagnostics
+#### W6: Runtime Diagnostics
 - Lane health checks (process alive, port responding, proxy route active).
 - Port conflict detection across lanes.
 - Proxy status dashboard.
 - Fallback mode when isolation fails.
+- **Renderer**: Runtime diagnostics panel accessible from lane detail. Proxy status dashboard in Settings. Health check indicators in lane list.
 
-#### W9: Renderer Updates
-- Play controls for isolated preview launch/stop and diagnostics.
-- Lane template selection in Create Lane dialog.
-- Proxy & preview status indicators in lane list.
-- Runtime diagnostics panel.
-
-#### W10: Validation
-- Multi-lane collision tests.
-- Lease recovery tests on crash/restart.
-- E2E tests for lane isolation, proxy routing, env init.
-- Port exhaustion and conflict detection tests.
+**Tests:**
+- Health check detection (process alive, port responding).
+- Proxy status reporting.
+- Fallback mode activation on isolation failure.
 
 ### Exit criteria
 

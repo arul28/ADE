@@ -547,14 +547,17 @@ Orchestrator service (deterministic state machine)
 Mission service (user-facing lifecycle)
 ```
 
-#### Planning Phase
+#### Pre-Mission Planning
 
-When a mission is created, the orchestrator's planning phase:
+Planning is handled by a dedicated **pre-mission planner** that runs before the orchestrator starts execution. This is NOT an execution phase — it completes before any phase cards are processed.
+
+When a mission is created, the pre-mission planner:
 
 1. Receives the mission prompt, title, and any attached context.
 2. Assembles a context bundle: project pack (Standard), docs digest, active lane summaries, operation history, and any user-attached files.
-3. Builds a structured planner prompt and invokes the configured planning `modelId` via unified runtime routing.
-4. The planner returns a JSON plan conforming to the mission plan schema:
+3. Performs **deep research** — the planner gets a full agent session with read-only tools (file reading, code search, grep) to thoroughly understand the codebase before generating a plan.
+4. Builds a structured planner prompt (including phase pipeline info from phase cards) and invokes the configured planning `modelId` via unified runtime routing.
+5. The planner returns a JSON plan conforming to the mission plan schema:
    ```typescript
    interface MissionPlan {
      summary: {
@@ -566,7 +569,6 @@ When a mission is created, the orchestrator's planning phase:
      assumptions: string[];
      risks: Array<{ description: string; mitigation: string }>;
      steps: MissionStep[];
-     mergePolicy: "sequential" | "batch-at-end" | "per-step";
      conflictHandoff: "auto-resolve" | "ask-user" | "orchestrator-decides";
    }
 
@@ -593,10 +595,12 @@ When a mission is created, the orchestrator's planning phase:
      joinPolicy: "all-succeed" | "any-succeed" | "majority"; // for steps with multiple dependencies
    }
    ```
-5. The plan is validated against claim collision rules (no two steps claim overlapping file patterns in the same phase), normalized, and converted into orchestrator run steps.
-6. Optionally: the plan is presented to the user for review before execution begins (configurable via `ai.orchestrator.require_plan_review` in `.ade/local.yaml`).
+6. The plan is validated against claim collision rules (no two steps claim overlapping file patterns in the same phase), normalized, and converted into orchestrator run steps.
+7. Optionally: the plan is presented to the user for review before execution begins (configurable via `ai.orchestrator.require_plan_review` in `.ade/local.yaml`).
 
 If the AI planner fails (CLI unavailable, timeout, invalid output), planning fails fast with structured `MissionPlanningError` output and mission launch does not silently switch to deterministic strategy handlers.
+
+Once planning completes, the **coordinator** takes over and executes the plan through the configured phase cards (Development, Testing, Validation, PR, etc.).
 
 #### Worker Agent Spawning
 

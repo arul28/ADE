@@ -12,8 +12,9 @@ Goal: Enable real-time state synchronization across all user devices without clo
 
 ### Dependencies
 
-- Phase 5 complete (lane runtime isolation).
+- Phase 4 complete (CTO + org system — agent identities, memory, heartbeat, and Linear sync all create database tables and state that must be CRR-marked for sync).
 - Phase 3 complete (orchestrator autonomy — see `ORCHESTRATOR_OVERHAUL.md`).
+- Phase 5 is **NOT** a dependency. Play runtime isolation (ports, proxies, lane environments) is local-only infrastructure — nothing in Phase 6 requires it. Phase 5 can run fully in parallel with Phase 4 and complete before, during, or after Phase 6.
 
 ### Architecture Overview
 
@@ -51,6 +52,16 @@ Goal: Enable real-time state synchronization across all user devices without clo
   - Transcript files on disk (`.ade/transcripts/`)
   - Cache directories, embeddings
   - Running process state
+
+#### CTO & Worker Agent Reachability
+
+The CTO agent and all worker agents (Phase 4) run exclusively on the brain machine. Multi-device access works as follows:
+
+- **Agent state syncs via cr-sqlite**: Agent identities, memory entries, config revisions, run status, chat messages, and org chart structure all sync as regular database state. Any device sees the full org in real-time.
+- **Agent execution is brain-only**: CTO heartbeats, Linear polling, worker activations, and mission orchestration all run on the brain. Non-brain devices never spawn agent processes.
+- **Command routing for agent chat**: When a user talks to the CTO or any worker from a non-brain device, the message is written locally (cr-sqlite syncs to brain) and a WebSocket command routes to the brain to trigger agent processing. The agent's response syncs back via cr-sqlite.
+- **Heartbeat on VPS brain**: When ADE runs headlessly on a VPS (W9), the CTO heartbeat fires on schedule, Linear sync runs continuously, and workers process issues — all without a desktop being open.
+- **Linear credentials are brain-only**: Linear API token lives in `.ade/local.secret.yaml` (gitignored, machine-specific). Only the brain needs it. Other devices see mission results via cr-sqlite sync.
 
 #### `.ade/` Folder Structure (Revised)
 ```

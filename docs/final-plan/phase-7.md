@@ -32,6 +32,9 @@ Goal: Deliver an iOS companion app that provides full participation in ADE workf
 - Browse mission history, activity feed, and agent output.
 - Receive push notifications for mission completion, interventions, and errors.
 - View morning briefings from Night Shift runs.
+- Chat with the CTO agent or any worker agent in the org (messages route to brain for processing).
+- View the org chart: CTO, workers, their status (idle/running/paused), budget utilization.
+- Receive push notifications from CTO: mission auto-dispatched from Linear, worker hit budget limit, escalation needed.
 
 ### Workstreams
 
