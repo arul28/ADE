@@ -3,19 +3,20 @@ import {
   GearSix,
   X,
   Warning,
+  Plus,
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
-import type { PhaseProfile } from "../../../shared/types";
+import type { PhaseProfile, PhaseCard, MissionPermissionConfig } from "../../../shared/types";
+import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import {
   type MissionSettingsDraft,
-  type PlannerProvider,
-  toCliMode,
-  toCliSandboxPermissions,
-  toInProcessMode,
   toTeammatePlanMode,
 } from "./missionHelpers";
+import { PhaseCardEditor } from "./PhaseCardEditor";
+import { WorkerPermissionsEditor } from "./WorkerPermissionsEditor";
+import { ModelSelector } from "./ModelSelector";
 
 function PhaseProfileCard({
   profile,
@@ -35,12 +36,15 @@ function PhaseProfileCard({
   const [expanded, setExpanded] = useState(false);
   const [editName, setEditName] = useState(profile.name);
   const [editDescription, setEditDescription] = useState(profile.description);
-  const [editPhases, setEditPhases] = useState<import("../../../shared/types").PhaseCard[]>(profile.phases);
+  const [editPhases, setEditPhases] = useState<PhaseCard[]>(profile.phases);
   const [dirty, setDirty] = useState(false);
+  const [expandedPhaseIds, setExpandedPhaseIds] = useState<Record<string, boolean>>({});
   const deleteConfirm = useConfirmDialog();
 
   const settingsInputStyle: React.CSSProperties = { height: 28, width: "100%", background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, padding: "0 8px", fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0, outline: "none" };
   const settingsLabelStyle: React.CSSProperties = { fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
+
+  const isReadOnly = profile.isBuiltIn;
 
   return (
     <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
@@ -59,23 +63,22 @@ function PhaseProfileCard({
             {profile.phases.length} phase{profile.phases.length !== 1 ? "s" : ""} · {profile.isBuiltIn ? "Built-in" : "Custom"}
           </div>
         </div>
-        {!profile.isBuiltIn && (
-          <button
-            style={outlineButton()}
-            disabled={phaseBusy}
-            onClick={() => {
-              if (!expanded) {
-                setEditName(profile.name);
-                setEditDescription(profile.description);
-                setEditPhases(profile.phases);
-                setDirty(false);
-              }
-              setExpanded(!expanded);
-            }}
-          >
-            {expanded ? "HIDE" : "EDIT"}
-          </button>
-        )}
+        <button
+          style={outlineButton()}
+          disabled={phaseBusy}
+          onClick={() => {
+            if (!expanded) {
+              setEditName(profile.name);
+              setEditDescription(profile.description);
+              setEditPhases(profile.phases);
+              setDirty(false);
+              setExpandedPhaseIds({});
+            }
+            setExpanded(!expanded);
+          }}
+        >
+          {expanded ? "HIDE" : isReadOnly ? "VIEW" : "EDIT"}
+        </button>
         <button
           style={outlineButton()}
           disabled={phaseBusy}
@@ -140,129 +143,111 @@ function PhaseProfileCard({
         ) : null}
       </div>
 
-      {expanded && !profile.isBuiltIn && (
+      {expanded && (
         <div className="mt-3 space-y-3 pt-2" style={{ borderTop: `1px solid ${COLORS.border}` }}>
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-            <label className="space-y-0.5">
-              <span style={settingsLabelStyle}>PROFILE NAME</span>
-              <input
-                value={editName}
-                onChange={(e) => { setEditName(e.target.value); setDirty(true); }}
-                style={settingsInputStyle}
-              />
-            </label>
-            <label className="space-y-0.5">
-              <span style={settingsLabelStyle}>DESCRIPTION</span>
-              <input
-                value={editDescription}
-                onChange={(e) => { setEditDescription(e.target.value); setDirty(true); }}
-                placeholder="Describe this profile"
-                style={settingsInputStyle}
-              />
-            </label>
-          </div>
+          {!isReadOnly && (
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <label className="space-y-0.5">
+                <span style={settingsLabelStyle}>PROFILE NAME</span>
+                <input
+                  value={editName}
+                  onChange={(e) => { setEditName(e.target.value); setDirty(true); }}
+                  style={settingsInputStyle}
+                />
+              </label>
+              <label className="space-y-0.5">
+                <span style={settingsLabelStyle}>DESCRIPTION</span>
+                <input
+                  value={editDescription}
+                  onChange={(e) => { setEditDescription(e.target.value); setDirty(true); }}
+                  placeholder="Describe this profile"
+                  style={settingsInputStyle}
+                />
+              </label>
+            </div>
+          )}
 
           <div className="space-y-1">
             <span style={settingsLabelStyle}>PHASES ({editPhases.length})</span>
             {editPhases.map((phase, idx) => (
-              <div key={phase.id} className="flex items-center gap-2 py-1 px-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-                <span className="text-[10px] font-bold" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, minWidth: 16 }}>{idx + 1}.</span>
-                <input
-                  value={phase.name}
-                  onChange={(e) => {
-                    const name = e.target.value;
-                    setEditPhases((prev) => prev.map((p) => p.id === phase.id ? { ...p, name } : p));
-                    setDirty(true);
-                  }}
-                  className="h-6 flex-1 px-1 text-[11px] outline-none"
-                  style={{ background: "transparent", border: "none", color: COLORS.textPrimary, fontFamily: MONO_FONT }}
-                />
-                <span className="text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>{phase.model.modelId}</span>
-                <button
-                  type="button"
-                  className="px-1 text-[10px]"
-                  style={{ color: COLORS.textMuted }}
-                  disabled={idx === 0}
-                  onClick={() => {
-                    setEditPhases((prev) => {
-                      const next = [...prev];
-                      const moved = next[idx]!;
-                      next.splice(idx, 1);
-                      next.splice(idx - 1, 0, moved);
-                      return next.map((p, i) => ({ ...p, position: i }));
-                    });
-                    setDirty(true);
-                  }}
-                >
-                  {"\u2191"}
-                </button>
-                <button
-                  type="button"
-                  className="px-1 text-[10px]"
-                  style={{ color: COLORS.textMuted }}
-                  disabled={idx === editPhases.length - 1}
-                  onClick={() => {
-                    setEditPhases((prev) => {
-                      const next = [...prev];
-                      const moved = next[idx]!;
-                      next.splice(idx, 1);
-                      next.splice(idx + 1, 0, moved);
-                      return next.map((p, i) => ({ ...p, position: i }));
-                    });
-                    setDirty(true);
-                  }}
-                >
-                  {"\u2193"}
-                </button>
-                {phase.isCustom && (
-                  <button
-                    type="button"
-                    className="px-1"
-                    style={{ color: COLORS.danger, background: "none", border: "none", cursor: "pointer" }}
-                    onClick={() => {
-                      setEditPhases((prev) => prev.filter((p) => p.id !== phase.id).map((p, i) => ({ ...p, position: i })));
-                      setDirty(true);
-                    }}
-                  >
-                    <X size={10} weight="bold" />
-                  </button>
-                )}
-              </div>
+              <PhaseCardEditor
+                key={phase.id}
+                phase={phase}
+                index={idx}
+                totalCount={editPhases.length}
+                expanded={expandedPhaseIds[phase.id] === true}
+                readOnly={isReadOnly}
+                onToggleExpand={() => setExpandedPhaseIds((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
+                onUpdate={(updated) => {
+                  setEditPhases((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+                  setDirty(true);
+                }}
+                onMoveUp={() => {
+                  if (idx === 0) return;
+                  setEditPhases((prev) => {
+                    const next = [...prev];
+                    const moved = next[idx]!;
+                    next.splice(idx, 1);
+                    next.splice(idx - 1, 0, moved);
+                    return next.map((p, i) => ({ ...p, position: i }));
+                  });
+                  setDirty(true);
+                }}
+                onMoveDown={() => {
+                  setEditPhases((prev) => {
+                    if (idx >= prev.length - 1) return prev;
+                    const next = [...prev];
+                    const moved = next[idx]!;
+                    next.splice(idx, 1);
+                    next.splice(idx + 1, 0, moved);
+                    return next.map((p, i) => ({ ...p, position: i }));
+                  });
+                  setDirty(true);
+                }}
+                onRemove={phase.isCustom && !isReadOnly ? () => {
+                  setEditPhases((prev) => prev.filter((p) => p.id !== phase.id).map((p, i) => ({ ...p, position: i })));
+                  setDirty(true);
+                } : undefined}
+                labelStyle={settingsLabelStyle}
+                inputStyle={settingsInputStyle}
+              />
             ))}
 
-            <button
-              type="button"
-              style={outlineButton()}
-              onClick={() => {
-                const now = new Date().toISOString();
-                setEditPhases((prev) => [
-                  ...prev,
-                  {
-                    id: `custom:${Date.now()}`,
-                    phaseKey: `custom_${prev.length + 1}`,
-                    name: `Custom Phase ${prev.length + 1}`,
-                    description: "",
-                    instructions: "",
-                    model: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
-                    budget: {},
-                    orderingConstraints: {},
-                    askQuestions: { enabled: false, mode: "never" },
-                    validationGate: { tier: "self", required: false },
-                    isBuiltIn: false,
-                    isCustom: true,
-                    position: prev.length,
-                    createdAt: now,
-                    updatedAt: now,
-                  }
-                ]);
-                setDirty(true);
-              }}
-            >
-              + ADD PHASE
-            </button>
+            {!isReadOnly && (
+              <button
+                type="button"
+                style={outlineButton()}
+                onClick={() => {
+                  const now = new Date().toISOString();
+                  setEditPhases((prev) => [
+                    ...prev,
+                    {
+                      id: `custom:${Date.now()}`,
+                      phaseKey: `custom_${prev.length + 1}`,
+                      name: `Custom Phase ${prev.length + 1}`,
+                      description: "",
+                      instructions: "",
+                      model: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+                      budget: {},
+                      orderingConstraints: {},
+                      askQuestions: { enabled: false, mode: "never" },
+                      validationGate: { tier: "self", required: false },
+                      isBuiltIn: false,
+                      isCustom: true,
+                      position: prev.length,
+                      createdAt: now,
+                      updatedAt: now,
+                    }
+                  ]);
+                  setDirty(true);
+                }}
+              >
+                + ADD PHASE
+              </button>
+            )}
           </div>
 
-          {dirty && (
+          {dirty && !isReadOnly && (
             <div className="flex items-center gap-2 pt-1">
               <button
                 style={primaryButton()}
@@ -352,6 +337,8 @@ export function MissionSettingsDialog({
     void refreshPhaseProfiles();
   }, [open, refreshPhaseProfiles]);
 
+  const defaultProfile = phaseProfiles.find((p) => p.isDefault) ?? phaseProfiles[0] ?? null;
+
   if (!open) return null;
 
   const settingsInputStyle: React.CSSProperties = { height: 32, width: "100%", background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, padding: "0 8px", fontSize: 12, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0, outline: "none" };
@@ -390,20 +377,16 @@ export function MissionSettingsDialog({
               </div>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-              <label className="text-xs">
-                <div style={settingsLabelStyle}>DEFAULT PLANNER PROVIDER</div>
+              <div className="text-xs">
+                <div style={settingsLabelStyle}>DEFAULT ORCHESTRATOR MODEL</div>
                 <div className="mt-1">
-                  <select
-                    style={settingsInputStyle}
-                    value={draft.defaultPlannerProvider}
-                    onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value as PlannerProvider })}
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="claude">Claude</option>
-                    <option value="codex">Codex</option>
-                  </select>
+                  <ModelSelector
+                    value={draft.defaultOrchestratorModel}
+                    onChange={(config) => onDraftChange({ defaultOrchestratorModel: config })}
+                    compact
+                  />
                 </div>
-              </label>
+              </div>
               <label className="text-xs">
                 <div style={settingsLabelStyle}>TEAMMATE PLAN MODE</div>
                 <select
@@ -428,70 +411,12 @@ export function MissionSettingsDialog({
           </div>
 
           <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-            <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>WORKER PERMISSIONS</div>
-            <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>CLI WORKERS</div>
-                <label className="text-xs block">
-                  <div style={settingsLabelStyle}>MODE</div>
-                  <select
-                    style={settingsInputStyle}
-                    value={draft.cliMode}
-                    onChange={(e) => onDraftChange({ cliMode: toCliMode(e.target.value) })}
-                  >
-                    <option value="read-only">Read-only</option>
-                    <option value="edit">Edit</option>
-                    <option value="full-auto">Full-auto</option>
-                  </select>
-                </label>
-                <label className="text-xs block">
-                  <div style={settingsLabelStyle}>SANDBOX MODE</div>
-                  <select
-                    style={settingsInputStyle}
-                    value={draft.cliSandboxPermissions}
-                    onChange={(e) => onDraftChange({ cliSandboxPermissions: toCliSandboxPermissions(e.target.value) })}
-                  >
-                    <option value="read-only">Read-only</option>
-                    <option value="workspace-write">Workspace write</option>
-                    <option value="danger-full-access">Full access (dangerous)</option>
-                  </select>
-                </label>
-                <div className="text-[11px]" style={{ color: COLORS.textMuted }}>
-                  Applies to CLI-wrapped workers regardless of provider.
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>IN-PROCESS WORKERS</div>
-                <label className="text-xs block">
-                  <div style={settingsLabelStyle}>MODE</div>
-                  <select
-                    style={settingsInputStyle}
-                    value={draft.inProcessMode}
-                    onChange={(e) => onDraftChange({ inProcessMode: toInProcessMode(e.target.value) })}
-                  >
-                    <option value="plan">Plan (read-only)</option>
-                    <option value="edit">Edit (no shell)</option>
-                    <option value="full-auto">Full-Auto</option>
-                  </select>
-                </label>
-                <div className="text-[11px]" style={{ color: COLORS.textMuted }}>
-                  API/local models use ADE&apos;s built-in sandbox for bash command filtering.
-                </div>
-              </div>
-            </div>
-            {(
-              draft.cliMode !== "full-auto" ||
-              draft.inProcessMode !== "full-auto"
-            ) && (
-              <div
-                className="mt-2 flex items-center gap-1"
-                style={{ fontSize: 10, color: "#F59E0B", fontFamily: MONO_FONT }}
-              >
-                <Warning size={12} weight="bold" />
-                Workers using restricted permissions may pause for approval during autonomous execution.
-              </div>
-            )}
+            <WorkerPermissionsEditor
+              orchestratorModelId={draft.defaultOrchestratorModel?.modelId}
+              phases={defaultProfile?.phases ?? []}
+              permissionConfig={draft.permissionConfig}
+              onPermissionChange={(next) => onDraftChange({ permissionConfig: next })}
+            />
           </div>
 
           <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>

@@ -26,6 +26,8 @@ import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react"
 import type {
   MissionDetail,
   MissionSummary,
+  MissionPermissionConfig,
+  ModelConfig,
   OrchestratorAttempt,
   OrchestratorChatTarget,
   OrchestratorExecutorKind,
@@ -56,10 +58,14 @@ import {
   TERMINAL_MISSION_STATUSES,
   MISSION_BOARD_COLUMNS,
   DEFAULT_MISSION_SETTINGS_DRAFT,
+  DEFAULT_ORCHESTRATOR_MODEL,
+  DEFAULT_PERMISSION_CONFIG,
   isRecord,
   readBool,
   readString,
   toPlannerProvider,
+  plannerProviderToModelConfig,
+  modelConfigToPlannerProvider,
   toTeammatePlanMode,
   toCliMode,
   toCliSandboxPermissions,
@@ -189,9 +195,8 @@ export default function MissionsPage() {
   );
   const createMissionDefaults = useMemo<CreateMissionDefaults>(() => ({
     plannerProvider: missionSettingsDraft.defaultPlannerProvider,
-    cliMode: missionSettingsDraft.cliMode,
-    cliSandboxPermissions: missionSettingsDraft.cliSandboxPermissions,
-    inProcessMode: missionSettingsDraft.inProcessMode,
+    orchestratorModel: missionSettingsDraft.defaultOrchestratorModel,
+    permissionConfig: missionSettingsDraft.permissionConfig,
   }), [missionSettingsDraft]);
 
   const applyMissionSettingsSnapshot = useCallback((snapshot: ProjectConfigSnapshot) => {
@@ -207,29 +212,55 @@ export default function MissionsPage() {
     const effectiveCli = isRecord(effectivePermissions.cli) ? effectivePermissions.cli : {};
     const localInProcess = isRecord(localPermissions.inProcess) ? localPermissions.inProcess : {};
     const effectiveInProcess = isRecord(effectivePermissions.inProcess) ? effectivePermissions.inProcess : {};
+    const localProviders = isRecord(localPermissions.providers) ? localPermissions.providers : {};
+    const effectiveProviders = isRecord(effectivePermissions.providers) ? effectivePermissions.providers : {};
+
+    // Read orchestrator model — new shape first, fallback to legacy plannerProvider
+    const rawPlannerProvider = readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto");
+    const plannerProvider = toPlannerProvider(rawPlannerProvider);
+
+    const localOrcModel = isRecord(localOrchestrator.defaultOrchestratorModel) ? localOrchestrator.defaultOrchestratorModel : null;
+    const effectiveOrcModel = isRecord(effectiveOrchestrator.defaultOrchestratorModel) ? effectiveOrchestrator.defaultOrchestratorModel : null;
+
+    let orchestratorModel: ModelConfig;
+    if (localOrcModel && typeof localOrcModel.modelId === "string") {
+      orchestratorModel = {
+        modelId: localOrcModel.modelId as string,
+        provider: (localOrcModel.provider as import("../../../shared/types").ModelProvider) ?? undefined,
+        thinkingLevel: (localOrcModel.thinkingLevel as import("../../../shared/types").ThinkingLevel) ?? undefined,
+      };
+    } else if (effectiveOrcModel && typeof effectiveOrcModel.modelId === "string") {
+      orchestratorModel = {
+        modelId: effectiveOrcModel.modelId as string,
+        provider: (effectiveOrcModel.provider as import("../../../shared/types").ModelProvider) ?? undefined,
+        thinkingLevel: (effectiveOrcModel.thinkingLevel as import("../../../shared/types").ThinkingLevel) ?? undefined,
+      };
+    } else {
+      orchestratorModel = plannerProviderToModelConfig(plannerProvider);
+    }
+
+    // Read permission config — new providers shape first, fallback to legacy cli/inProcess
+    const permissionConfig: MissionPermissionConfig = {
+      providers: {
+        claude: (readString(localProviders.claude, effectiveProviders.claude, "full-auto") as import("../../../shared/types").AgentChatPermissionMode),
+        codex: (readString(localProviders.codex, effectiveProviders.codex, "full-auto") as import("../../../shared/types").AgentChatPermissionMode),
+        unified: (readString(localProviders.unified, effectiveProviders.unified, "full-auto") as import("../../../shared/types").AgentChatPermissionMode),
+        codexSandbox: (readString(localProviders.codexSandbox, effectiveProviders.codexSandbox, "workspace-write") as "read-only" | "workspace-write" | "danger-full-access"),
+      },
+    };
 
     setMissionSettingsSnapshot(snapshot);
     setMissionSettingsDraft({
-      defaultPlannerProvider: toPlannerProvider(
-        readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto")
-      ),
+      defaultOrchestratorModel: orchestratorModel,
+      permissionConfig,
+      defaultPlannerProvider: plannerProvider,
       teammatePlanMode: toTeammatePlanMode(
-        readString(
-          localOrchestrator.teammatePlanMode,
-          effectiveOrchestrator.teammatePlanMode,
-          "auto"
-        )
+        readString(localOrchestrator.teammatePlanMode, effectiveOrchestrator.teammatePlanMode, "auto")
       ),
       requirePlanReview: readBool(localOrchestrator.requirePlanReview, effectiveOrchestrator.requirePlanReview, false),
-      cliMode: toCliMode(
-        readString(localCli.mode, effectiveCli.mode, "full-auto")
-      ),
-      cliSandboxPermissions: toCliSandboxPermissions(
-        readString(localCli.sandboxPermissions, effectiveCli.sandboxPermissions, "workspace-write")
-      ),
-      inProcessMode: toInProcessMode(
-        readString(localInProcess.mode, effectiveInProcess.mode, "full-auto")
-      ),
+      cliMode: toCliMode(readString(localCli.mode, effectiveCli.mode, "full-auto")),
+      cliSandboxPermissions: toCliSandboxPermissions(readString(localCli.sandboxPermissions, effectiveCli.sandboxPermissions, "workspace-write")),
+      inProcessMode: toInProcessMode(readString(localInProcess.mode, effectiveInProcess.mode, "full-auto")),
     });
   }, []);
 
@@ -255,13 +286,15 @@ export default function MissionsPage() {
       const localCli = isRecord(localPermissions.cli) ? localPermissions.cli : {};
       const localInProcess = isRecord(localPermissions.inProcess) ? localPermissions.inProcess : {};
 
-      const normalizedPlannerProvider = toPlannerProvider(missionSettingsDraft.defaultPlannerProvider);
+      const normalizedOrchestratorModel = missionSettingsDraft.defaultOrchestratorModel ?? DEFAULT_ORCHESTRATOR_MODEL;
+      const normalizedPlannerProvider = modelConfigToPlannerProvider(normalizedOrchestratorModel);
       const normalizedCliMode = toCliMode(missionSettingsDraft.cliMode);
       const normalizedCliSandbox = toCliSandboxPermissions(missionSettingsDraft.cliSandboxPermissions);
       const normalizedInProcessMode = toInProcessMode(missionSettingsDraft.inProcessMode);
 
       const nextOrchestrator: Record<string, unknown> = {
         ...localOrchestrator,
+        defaultOrchestratorModel: normalizedOrchestratorModel,
         defaultPlannerProvider: normalizedPlannerProvider,
         teammatePlanMode: toTeammatePlanMode(missionSettingsDraft.teammatePlanMode),
         requirePlanReview: missionSettingsDraft.requirePlanReview
@@ -290,7 +323,8 @@ export default function MissionsPage() {
             permissions: {
               ...localPermissions,
               cli: nextCli,
-              inProcess: nextInProcess
+              inProcess: nextInProcess,
+              providers: missionSettingsDraft.permissionConfig?.providers ?? DEFAULT_PERMISSION_CONFIG.providers,
             }
           }
         }

@@ -12,6 +12,7 @@ import { KeybindingsSection } from "../settings/KeybindingsSection";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
+import { PhaseCardEditor } from "../missions/PhaseCardEditor";
 
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
@@ -75,6 +76,9 @@ function PhaseProfileSettingsCard({
   const [editDescription, setEditDescription] = useState(profile.description);
   const [editPhases, setEditPhases] = useState<PhaseCard[]>(profile.phases);
   const [dirty, setDirty] = useState(false);
+  const [expandedPhaseIds, setExpandedPhaseIds] = useState<Record<string, boolean>>({});
+
+  const isReadOnly = profile.isBuiltIn;
 
   return (
     <div style={{ ...cardStyle({ padding: 12 }), marginBottom: 8 }}>
@@ -92,23 +96,22 @@ function PhaseProfileSettingsCard({
             {profile.phases.length} phase{profile.phases.length !== 1 ? "s" : ""} · {profile.isBuiltIn ? "Built-in (read-only)" : "Custom"}
           </div>
         </div>
-        {!profile.isBuiltIn && (
-          <button
-            style={outlineButton()}
-            disabled={busy}
-            onClick={() => {
-              if (!expanded) {
-                setEditName(profile.name);
-                setEditDescription(profile.description);
-                setEditPhases(profile.phases);
-                setDirty(false);
-              }
-              setExpanded(!expanded);
-            }}
-          >
-            {expanded ? "HIDE" : "EDIT"}
-          </button>
-        )}
+        <button
+          style={outlineButton()}
+          disabled={busy}
+          onClick={() => {
+            if (!expanded) {
+              setEditName(profile.name);
+              setEditDescription(profile.description);
+              setEditPhases(profile.phases);
+              setDirty(false);
+              setExpandedPhaseIds({});
+            }
+            setExpanded(!expanded);
+          }}
+        >
+          {expanded ? "HIDE" : isReadOnly ? "VIEW" : "EDIT"}
+        </button>
         <button style={outlineButton()} disabled={busy} onClick={() => onAction("clone")}>CLONE</button>
         <button style={outlineButton()} disabled={busy} onClick={() => onAction("export")}>EXPORT</button>
         {!profile.isBuiltIn && (
@@ -116,54 +119,40 @@ function PhaseProfileSettingsCard({
         )}
       </div>
 
-      {expanded && !profile.isBuiltIn && (
+      {expanded && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-            <label>
-              <div style={FIELD_LABEL}>PROFILE NAME</div>
-              <input value={editName} onChange={(e) => { setEditName(e.target.value); setDirty(true); }} style={{ ...SETTINGS_INPUT, marginTop: 2 }} />
-            </label>
-            <label>
-              <div style={FIELD_LABEL}>DESCRIPTION</div>
-              <input value={editDescription} onChange={(e) => { setEditDescription(e.target.value); setDirty(true); }} placeholder="Describe this profile" style={{ ...SETTINGS_INPUT, marginTop: 2 }} />
-            </label>
-          </div>
+          {!isReadOnly && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+              <label>
+                <div style={FIELD_LABEL}>PROFILE NAME</div>
+                <input value={editName} onChange={(e) => { setEditName(e.target.value); setDirty(true); }} style={{ ...SETTINGS_INPUT, marginTop: 2 }} />
+              </label>
+              <label>
+                <div style={FIELD_LABEL}>DESCRIPTION</div>
+                <input value={editDescription} onChange={(e) => { setEditDescription(e.target.value); setDirty(true); }} placeholder="Describe this profile" style={{ ...SETTINGS_INPUT, marginTop: 2 }} />
+              </label>
+            </div>
+          )}
 
           <div style={{ marginBottom: 4 }}>
             <div style={FIELD_LABEL}>PHASES ({editPhases.length})</div>
           </div>
 
           {editPhases.map((phase, idx) => (
-            <div
-              key={phase.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "4px 8px",
-                marginBottom: 4,
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.border}`,
-              }}
-            >
-              <span style={{ fontSize: 10, fontWeight: 700, color: COLORS.textMuted, fontFamily: MONO_FONT, minWidth: 16 }}>{idx + 1}.</span>
-              <input
-                value={phase.name}
-                onChange={(e) => {
-                  const name = e.target.value;
-                  setEditPhases((prev) => prev.map((p) => p.id === phase.id ? { ...p, name } : p));
+            <div key={phase.id} style={{ marginBottom: 4 }}>
+              <PhaseCardEditor
+                phase={phase}
+                index={idx}
+                totalCount={editPhases.length}
+                expanded={expandedPhaseIds[phase.id] === true}
+                readOnly={isReadOnly}
+                onToggleExpand={() => setExpandedPhaseIds((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
+                onUpdate={(updated) => {
+                  setEditPhases((prev) => prev.map((p) => p.id === updated.id ? updated : p));
                   setDirty(true);
                 }}
-                style={{ flex: 1, height: 24, padding: "0 4px", fontSize: 11, background: "transparent", border: "none", color: COLORS.textPrimary, fontFamily: MONO_FONT, outline: "none" }}
-              />
-              <span style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, whiteSpace: "nowrap" as const }}>{phase.model.modelId}</span>
-              {phase.isCustom && (
-                <span style={{ fontSize: 8, fontWeight: 600, color: "#F59E0B", fontFamily: MONO_FONT }}>CUSTOM</span>
-              )}
-              <button
-                type="button"
-                disabled={idx === 0}
-                onClick={() => {
+                onMoveUp={() => {
+                  if (idx === 0) return;
                   setEditPhases((prev) => {
                     const next = [...prev];
                     const moved = next[idx]!;
@@ -173,15 +162,9 @@ function PhaseProfileSettingsCard({
                   });
                   setDirty(true);
                 }}
-                style={{ padding: "0 2px", fontSize: 10, color: COLORS.textMuted, background: "none", border: "none", cursor: idx === 0 ? "default" : "pointer", opacity: idx === 0 ? 0.3 : 1 }}
-              >
-                {"\u2191"}
-              </button>
-              <button
-                type="button"
-                disabled={idx === editPhases.length - 1}
-                onClick={() => {
+                onMoveDown={() => {
                   setEditPhases((prev) => {
+                    if (idx >= prev.length - 1) return prev;
                     const next = [...prev];
                     const moved = next[idx]!;
                     next.splice(idx, 1);
@@ -190,57 +173,50 @@ function PhaseProfileSettingsCard({
                   });
                   setDirty(true);
                 }}
-                style={{ padding: "0 2px", fontSize: 10, color: COLORS.textMuted, background: "none", border: "none", cursor: idx === editPhases.length - 1 ? "default" : "pointer", opacity: idx === editPhases.length - 1 ? 0.3 : 1 }}
-              >
-                {"\u2193"}
-              </button>
-              {phase.isCustom && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditPhases((prev) => prev.filter((p) => p.id !== phase.id).map((p, i) => ({ ...p, position: i })));
-                    setDirty(true);
-                  }}
-                  style={{ color: COLORS.danger, background: "none", border: "none", cursor: "pointer", padding: "0 2px" }}
-                >
-                  <X size={10} weight="bold" />
-                </button>
-              )}
+                onRemove={phase.isCustom && !isReadOnly ? () => {
+                  setEditPhases((prev) => prev.filter((p) => p.id !== phase.id).map((p, i) => ({ ...p, position: i })));
+                  setDirty(true);
+                } : undefined}
+                labelStyle={FIELD_LABEL}
+                inputStyle={SETTINGS_INPUT}
+              />
             </div>
           ))}
 
-          <button
-            type="button"
-            style={outlineButton({ marginTop: 4 })}
-            onClick={() => {
-              const now = new Date().toISOString();
-              setEditPhases((prev) => [
-                ...prev,
-                {
-                  id: `custom:${Date.now()}`,
-                  phaseKey: `custom_${prev.length + 1}`,
-                  name: `Custom Phase ${prev.length + 1}`,
-                  description: "",
-                  instructions: "",
-                  model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
-                  budget: {},
-                  orderingConstraints: {},
-                  askQuestions: { enabled: false, mode: "never" },
-                  validationGate: { tier: "self", required: false },
-                  isBuiltIn: false,
-                  isCustom: true,
-                  position: prev.length,
-                  createdAt: now,
-                  updatedAt: now,
-                }
-              ]);
-              setDirty(true);
-            }}
-          >
-            <Plus size={10} weight="bold" /> ADD PHASE
-          </button>
+          {!isReadOnly && (
+            <button
+              type="button"
+              style={outlineButton({ marginTop: 4 })}
+              onClick={() => {
+                const now = new Date().toISOString();
+                setEditPhases((prev) => [
+                  ...prev,
+                  {
+                    id: `custom:${Date.now()}`,
+                    phaseKey: `custom_${prev.length + 1}`,
+                    name: `Custom Phase ${prev.length + 1}`,
+                    description: "",
+                    instructions: "",
+                    model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+                    budget: {},
+                    orderingConstraints: {},
+                    askQuestions: { enabled: false, mode: "never" },
+                    validationGate: { tier: "self", required: false },
+                    isBuiltIn: false,
+                    isCustom: true,
+                    position: prev.length,
+                    createdAt: now,
+                    updatedAt: now,
+                  }
+                ]);
+                setDirty(true);
+              }}
+            >
+              <Plus size={10} weight="bold" /> ADD PHASE
+            </button>
+          )}
 
-          {dirty && (
+          {dirty && !isReadOnly && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
               <button
                 style={primaryButton()}
@@ -358,7 +334,7 @@ function PhaseProfilesSection() {
       <div style={SECTION_LABEL}>PHASE PROFILES</div>
 
       <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 12 }}>
-        Phase profiles define the sequence of work phases for missions (planning, implementation, testing, etc.). Built-in profiles are read-only. Clone or create custom profiles to customize.
+        Phase profiles define the sequence of work phases for missions (development, testing, validation, PR). Built-in profiles can be viewed but not edited. Clone or create custom profiles to customize phase descriptions, instructions, models, validation gates, and clarification settings.
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>

@@ -202,22 +202,22 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Night Shift Mode (in Automations) | Phase 4 | Phase 3 | Planned |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Planned |
-| Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Planned (covered in Phase 4 W3) |
+| Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Planned (covered in Phase 4 W6) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
-| Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Planned (covered in Phase 4 W4) |
+| Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Planned (covered in Phase 4 W7) |
 | .ade/ Portable State (git-tracked configs) | Phase 4 | Phase 3 | Planned |
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned |
-| OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) | Planned |
-| Worker Agents & Org Chart | Phase 4 | Phase 3 | Planned |
-| Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 3 | Planned |
-| Bidirectional Linear Sync (polling, auto-dispatch, reconciliation) | Phase 4 | Phase 4 W1 | Planned |
-| Mission Templates (reusable archetypes in .ade/templates/) | Phase 4 | Phase 4 W1 | Planned |
-| Per-Agent Monthly Budgets (auto-pause enforcement) | Phase 4 | Phase 4 W1 | Planned |
-| Multi-Adapter Pattern (claude-local, codex-local, openclaw, process) | Phase 4 | Phase 4 W1 | Planned |
-| Agent Config Versioning (revision tracking, rollback) | Phase 4 | Phase 4 W1 | Planned |
-| Task Session Persistence (per-task context across invocations) | Phase 4 | Phase 4 W1 | Planned |
-| Issue Tracker Abstraction (Linear first, GitHub Issues planned) | Phase 4 | Phase 4 W5 | Planned |
+| OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) + W8 (External MCP) | Planned |
+| Worker Agents & Org Chart | Phase 4 | Phase 4 W1 | Planned |
+| Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 4 W1 | Planned |
+| Bidirectional Linear Sync (polling, auto-dispatch, reconciliation) | Phase 4 | Phase 4 W2 + W3 | Planned |
+| Mission Templates (reusable archetypes in .ade/templates/) | Phase 4 | Phase 4 W4 | Planned |
+| Per-Agent Monthly Budgets (auto-pause enforcement) | Phase 4 | Phase 4 W2 | Planned |
+| Multi-Adapter Pattern (claude-local, codex-local, openclaw, process) | Phase 4 | Phase 4 W2 | Planned |
+| Agent Config Versioning (revision tracking, rollback) | Phase 4 | Phase 4 W2 | Planned |
+| Task Session Persistence (per-task context across invocations) | Phase 4 | Phase 4 W2 | Planned |
+| Issue Tracker Abstraction (Linear first, GitHub Issues planned) | Phase 4 | Phase 4 W4 | Planned |
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Planned |
 | Memory Consolidation | Phase 4 | Phase 3 | Planned |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |

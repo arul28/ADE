@@ -28,23 +28,16 @@ import type {
   AggregatedUsageStats,
   TeamRuntimeConfig,
   MissionPermissionConfig,
-  AgentChatPermissionMode,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
-import { MODEL_REGISTRY, getModelById } from "../../../shared/modelRegistry";
-import {
-  getPermissionOptions,
-  safetyBadgeLabel,
-  safetyColorHex,
-  familyToPermissionKey,
-  permissionFamilyLabel,
-  type PermissionOption,
-} from "../shared/permissionOptions";
+import { MODEL_REGISTRY } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
 import { ModelProfileSelector } from "./ModelProfileSelector";
 import { SmartBudgetPanel } from "./SmartBudgetPanel";
 import { MissionPromptInput } from "./MissionPromptInput";
+import { PhaseCardEditor } from "./PhaseCardEditor";
+import { WorkerPermissionsEditor } from "./WorkerPermissionsEditor";
 
 export type CreateDraft = {
   title: string;
@@ -63,6 +56,8 @@ export type CreateDraft = {
 
 export type CreateMissionDefaults = {
   plannerProvider?: "auto" | "claude" | "codex";
+  orchestratorModel?: import("../../../shared/types").ModelConfig;
+  permissionConfig?: MissionPermissionConfig;
 };
 
 const DEFAULT_AGENT_RUNTIME: MissionAgentRuntimeConfig = {
@@ -86,10 +81,13 @@ function buildDefaultModelConfig(
 ): MissionModelConfig {
   const firstProfile = builtInProfiles[0];
   const plannerProvider = defaults?.plannerProvider ?? "auto";
-  const orchestratorModel =
-    plannerProvider === "claude" || plannerProvider === "codex"
+
+  // Prefer explicit orchestratorModel from settings, fall back to provider-based default
+  const orchestratorModel = defaults?.orchestratorModel
+    ?? (plannerProvider === "claude" || plannerProvider === "codex"
       ? DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER[plannerProvider]
-      : DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER.claude;
+      : DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER.claude);
+
   return {
     profileId: plannerProvider === "auto" ? (firstProfile?.id ?? undefined) : undefined,
     orchestratorModel,
@@ -99,7 +97,10 @@ function buildDefaultModelConfig(
   };
 }
 
-function createDefaultPermissionConfig(_defaults: CreateMissionDefaults | null | undefined): MissionPermissionConfig {
+function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | undefined): MissionPermissionConfig {
+  if (defaults?.permissionConfig?.providers) {
+    return { ...defaults.permissionConfig };
+  }
   return {
     providers: {
       claude: "full-auto",
@@ -187,33 +188,8 @@ const DLG_INPUT_STYLE: React.CSSProperties = { background: COLORS.recessedBg, bo
 const DLG_LABEL_STYLE: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
 
 // ---------------------------------------------------------------------------
-// Worker Permissions — per-model-family sub-component
+// Worker Permissions — thin wrapper around extracted WorkerPermissionsEditor
 // ---------------------------------------------------------------------------
-
-type PermFamilyKey = "claude" | "codex" | "unified";
-
-/** Derive unique model families in use from orchestrator + phase card models */
-function deriveActivePermFamilies(
-  orchestratorModelId: string | undefined,
-  phases: PhaseCard[],
-): PermFamilyKey[] {
-  const seen = new Set<PermFamilyKey>();
-  const modelIds = new Set<string>();
-  if (orchestratorModelId) modelIds.add(orchestratorModelId);
-  for (const phase of phases) {
-    if (phase.model?.modelId) modelIds.add(phase.model.modelId);
-  }
-  for (const id of modelIds) {
-    const desc = getModelById(id);
-    if (desc) {
-      seen.add(familyToPermissionKey(desc.family, desc.isCliWrapped));
-    }
-    // Unknown models are ignored — they won't run anyway
-  }
-  // No fallback: only show permission sections for families actually in use
-  const order: PermFamilyKey[] = ["claude", "codex", "unified"];
-  return order.filter((k) => seen.has(k));
-}
 
 function WorkerPermissionsSection({
   draft,
@@ -228,176 +204,15 @@ function WorkerPermissionsSection({
   dlgLabelStyle: React.CSSProperties;
   dlgInputStyle: React.CSSProperties;
 }) {
-  const families = useMemo(
-    () => deriveActivePermFamilies(draft.modelConfig.orchestratorModel?.modelId, activePhases),
-    [draft.modelConfig.orchestratorModel?.modelId, activePhases],
-  );
-
-  const provPerms = draft.permissionConfig?.providers;
-
-  // Build option lists per active family
-  const familyOptions = useMemo(() => {
-    const map = new Map<PermFamilyKey, PermissionOption[]>();
-    for (const fam of families) {
-      const modelFamily = fam === "claude" ? "anthropic" : fam === "codex" ? "openai" : "unified";
-      const isCliWrapped = fam === "claude" || fam === "codex";
-      map.set(fam, getPermissionOptions({ family: modelFamily, isCliWrapped }));
-    }
-    return map;
-  }, [families]);
-
-  const updateProviderPerm = (key: PermFamilyKey, value: AgentChatPermissionMode) => {
-    setDraft((p) => ({
-      ...p,
-      permissionConfig: {
-        ...p.permissionConfig,
-        providers: { ...p.permissionConfig?.providers, [key]: value },
-      },
-    }));
-  };
-
-  const updateCodexSandbox = (value: "read-only" | "workspace-write" | "danger-full-access") => {
-    setDraft((p) => ({
-      ...p,
-      permissionConfig: {
-        ...p.permissionConfig,
-        providers: { ...p.permissionConfig?.providers, codexSandbox: value },
-      },
-    }));
-  };
-
-  const hasRestricted = families.some((f) => {
-    const mode = provPerms?.[f] ?? "full-auto";
-    return mode !== "full-auto";
-  });
-
   return (
-    <div className="space-y-2">
-      <span style={dlgLabelStyle}>
-        <Shield size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-        WORKER PERMISSIONS
-      </span>
-
-      <div className="space-y-2">
-        {families.length === 0 && (
-          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, padding: "8px 0" }}>
-            Select an orchestrator model and phase models above to configure permissions.
-          </div>
-        )}
-        {families.map((fam) => {
-          const opts = familyOptions.get(fam) ?? [];
-          const current = provPerms?.[fam] ?? "full-auto";
-          const selected = opts.find((o) => o.value === current) ?? opts[opts.length - 1];
-
-          return (
-            <div
-              key={fam}
-              style={{
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.border}`,
-                padding: "10px 12px",
-              }}
-            >
-              {/* Family header */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textPrimary }}>
-                  {permissionFamilyLabel(fam)}
-                </span>
-                {selected && (
-                  <span
-                    style={{
-                      fontSize: 9,
-                      fontWeight: 700,
-                      fontFamily: MONO_FONT,
-                      textTransform: "uppercase" as const,
-                      letterSpacing: "1px",
-                      color: safetyColorHex(selected.safety),
-                      marginLeft: "auto",
-                    }}
-                  >
-                    {safetyBadgeLabel(selected.safety)}
-                  </span>
-                )}
-              </div>
-
-              {/* Permission dropdown */}
-              <select
-                value={current}
-                onChange={(e) => updateProviderPerm(fam, e.target.value as AgentChatPermissionMode)}
-                className="h-7 w-full px-2 outline-none"
-                style={dlgInputStyle}
-              >
-                {opts.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label} — {opt.shortDesc}
-                  </option>
-                ))}
-              </select>
-
-              {/* Description of selected mode */}
-              {selected && (
-                <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6, lineHeight: "1.5" }}>
-                  {selected.detail}
-                </div>
-              )}
-
-              {/* Codex sandbox sub-dropdown */}
-              {fam === "codex" && (
-                <div style={{ marginTop: 8 }}>
-                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
-                    SANDBOX
-                  </span>
-                  <select
-                    value={provPerms?.codexSandbox ?? "workspace-write"}
-                    onChange={(e) => updateCodexSandbox(e.target.value as "read-only" | "workspace-write" | "danger-full-access")}
-                    className="mt-1 h-7 w-full px-2 outline-none"
-                    style={dlgInputStyle}
-                  >
-                    <option value="read-only">Read-only</option>
-                    <option value="workspace-write">Workspace write</option>
-                    <option value="danger-full-access">Danger full-access</option>
-                  </select>
-                </div>
-              )}
-
-              {/* Warning for selected mode */}
-              {selected?.warning && (
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: COLORS.danger,
-                    fontFamily: MONO_FONT,
-                    marginTop: 6,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                  }}
-                >
-                  <Warning size={12} weight="bold" />
-                  {selected.warning}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {hasRestricted && (
-        <div
-          style={{
-            fontSize: 10,
-            color: COLORS.warning,
-            fontFamily: MONO_FONT,
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-          }}
-        >
-          <Warning size={12} weight="bold" />
-          Workers using restricted permissions may pause for approval during autonomous execution.
-        </div>
-      )}
-    </div>
+    <WorkerPermissionsEditor
+      orchestratorModelId={draft.modelConfig.orchestratorModel?.modelId}
+      phases={activePhases}
+      permissionConfig={draft.permissionConfig}
+      onPermissionChange={(next) => setDraft((p) => ({ ...p, permissionConfig: next }))}
+      labelStyle={dlgLabelStyle}
+      inputStyle={dlgInputStyle}
+    />
   );
 }
 
@@ -1122,369 +937,63 @@ function CreateMissionDialogInner({
                     </div>
                   ) : null}
                   <div className="space-y-1.5">
-                    {draft.phaseOverride.map((phase, index) => {
-                      const expanded = expandedPhases[phase.id] === true;
-                      const isDisabled = disabledPhases[phase.id] === true;
-                      return (
-                        <div
-                          key={phase.id}
-                          className="p-2"
-                          style={{
-                            background: isDisabled ? `${COLORS.recessedBg}80` : COLORS.recessedBg,
-                            border: `1px solid ${isDisabled ? COLORS.border + "60" : COLORS.border}`,
-                            opacity: isDisabled ? 0.5 : 1,
-                            transition: "opacity 0.15s ease",
-                          }}
-                        >
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setDisabledPhases((prev) => ({ ...prev, [phase.id]: !isDisabled }))}
-                              title={isDisabled ? "Enable phase" : "Disable phase"}
-                              style={{
-                                width: 28,
-                                height: 14,
-                                background: isDisabled ? COLORS.border : "#22C55E",
-                                border: "none",
-                                borderRadius: 0,
-                                cursor: "pointer",
-                                position: "relative",
-                                flexShrink: 0,
-                                transition: "background 0.2s ease",
-                              }}
-                            >
-                              <div
-                                style={{
-                                  position: "absolute",
-                                  top: 2,
-                                  left: isDisabled ? 2 : 14,
-                                  width: 10,
-                                  height: 10,
-                                  background: isDisabled ? COLORS.textDim : COLORS.textPrimary,
-                                  borderRadius: 0,
-                                  transition: "left 0.2s ease",
-                                }}
-                              />
-                            </button>
-                            <span className="text-[10px] font-bold" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                              {index + 1}.
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-[11px] font-semibold" style={{ color: isDisabled ? COLORS.textDim : COLORS.textPrimary }}>
-                                {phase.name}
-                                {phase.isCustom ? (
-                                  <span style={{ fontSize: 9, fontWeight: 600, color: "#F59E0B", marginLeft: 4, fontFamily: MONO_FONT }}>CUSTOM</span>
-                                ) : null}
-                                {isDisabled ? <span style={{ color: COLORS.textDim, fontWeight: 400 }}> (disabled)</span> : null}
-                              </div>
-                              {phase.description ? (
-                                <div className="truncate text-[10px]" style={{ color: COLORS.textDim }}>
-                                  {phase.description}
-                                </div>
-                              ) : null}
-                              <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                {phase.model.modelId} · {phase.validationGate.tier}
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              className="px-1 text-[10px]"
-                              style={{ color: COLORS.textMuted }}
-                              disabled={index === 0}
-                              onClick={() => {
-                                if (index === 0) return;
-                                setDraft((prev) => {
-                                  const next = [...prev.phaseOverride];
-                                  const moved = next[index];
-                                  if (!moved) return prev;
-                                  next.splice(index, 1);
-                                  next.splice(index - 1, 0, moved);
-                                  return {
-                                    ...prev,
-                                    phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos }))
-                                  };
-                                });
-                              }}
-                              title="Move up"
-                            >
-                              {"\u2191"}
-                            </button>
-                            <button
-                              type="button"
-                              className="px-1 text-[10px]"
-                              style={{ color: COLORS.textMuted }}
-                              disabled={index === draft.phaseOverride.length - 1}
-                              onClick={() => {
-                                if (index >= draft.phaseOverride.length - 1) return;
-                                setDraft((prev) => {
-                                  const next = [...prev.phaseOverride];
-                                  const moved = next[index];
-                                  if (!moved) return prev;
-                                  next.splice(index, 1);
-                                  next.splice(index + 1, 0, moved);
-                                  return {
-                                    ...prev,
-                                    phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos }))
-                                  };
-                                });
-                              }}
-                              title="Move down"
-                            >
-                              {"\u2193"}
-                            </button>
-                            <button
-                              type="button"
-                              className="px-2 text-[10px] font-bold uppercase tracking-[1px]"
-                              style={outlineButton()}
-                              onClick={() => setExpandedPhases((prev) => ({ ...prev, [phase.id]: !expanded }))}
-                              disabled={isDisabled}
-                            >
-                              {expanded ? "HIDE" : "CONFIGURE"}
-                            </button>
-                            {phase.isCustom ? (
-                              <button
-                                type="button"
-                                className="px-1"
-                                style={{ color: COLORS.danger, background: "none", border: "none", cursor: "pointer" }}
-                                onClick={() => {
-                                  setDraft((prev) => ({
-                                    ...prev,
-                                    phaseOverride: prev.phaseOverride
-                                      .filter((entry) => entry.id !== phase.id)
-                                      .map((entry, pos) => ({ ...entry, position: pos }))
-                                  }));
-                                  setExpandedPhases((prev) => { const n = { ...prev }; delete n[phase.id]; return n; });
-                                  setDisabledPhases((prev) => { const n = { ...prev }; delete n[phase.id]; return n; });
-                                }}
-                                title="Remove custom phase"
-                              >
-                                <X size={12} weight="bold" />
-                              </button>
-                            ) : null}
-                          </div>
-                          {expanded && !isDisabled ? (
-                            <div className="mt-2 space-y-2">
-                              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                                <label className="space-y-1 text-[10px]">
-                                  <span style={dlgLabelStyle}>PHASE NAME</span>
-                                  <input
-                                    value={phase.name}
-                                    onChange={(e) => {
-                                      const value = e.target.value;
-                                      setDraft((prev) => ({
-                                        ...prev,
-                                        phaseOverride: prev.phaseOverride.map((entry) =>
-                                          entry.id === phase.id ? { ...entry, name: value } : entry
-                                        )
-                                      }));
-                                    }}
-                                    className="h-7 w-full px-2 outline-none"
-                                    style={dlgInputStyle}
-                                  />
-                                </label>
-                                <div className="space-y-1 text-[10px]">
-                                  <span style={dlgLabelStyle}>WORKER MODEL</span>
-                                  <ModelSelector
-                                    value={phase.model}
-                                    onChange={(config) => {
-                                      setDraft((prev) => ({
-                                        ...prev,
-                                        phaseOverride: prev.phaseOverride.map((entry) =>
-                                          entry.id === phase.id ? { ...entry, model: config } : entry
-                                        )
-                                      }));
-                                    }}
-                                    compact
-                                    availableModelIds={availableModelIds}
-                                  />
-                                </div>
-                              </div>
-                              <label className="space-y-1 text-[10px]">
-                                <span style={dlgLabelStyle}>DESCRIPTION</span>
-                                <input
-                                  value={phase.description}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setDraft((prev) => ({
-                                      ...prev,
-                                      phaseOverride: prev.phaseOverride.map((entry) =>
-                                        entry.id === phase.id ? { ...entry, description: value } : entry
-                                      )
-                                    }));
-                                  }}
-                                  placeholder="Brief description of what this phase does"
-                                  className="h-7 w-full px-2 outline-none"
-                                  style={dlgInputStyle}
-                                />
-                              </label>
-                              <label className="space-y-1 text-[10px]">
-                                <span style={dlgLabelStyle}>INSTRUCTIONS</span>
-                                <textarea
-                                  value={phase.instructions}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setDraft((prev) => ({
-                                      ...prev,
-                                      phaseOverride: prev.phaseOverride.map((entry) =>
-                                        entry.id === phase.id ? { ...entry, instructions: value } : entry
-                                      )
-                                    }));
-                                  }}
-                                  className="w-full px-2 py-1.5 outline-none"
-                                  rows={3}
-                                  style={dlgInputStyle}
-                                />
-                              </label>
-
-                              <div className="space-y-1">
-                                <span style={dlgLabelStyle}>VALIDATION GATE</span>
-                                <div className="flex items-center gap-3">
-                                  <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                    <span style={{ fontSize: 9 }}>Tier</span>
-                                    <select
-                                      value={phase.validationGate.tier}
-                                      onChange={(e) => {
-                                        const tier = e.target.value as import("../../../shared/types").MissionPhaseValidationTier;
-                                        setDraft((prev) => ({
-                                          ...prev,
-                                          phaseOverride: prev.phaseOverride.map((entry) =>
-                                            entry.id === phase.id ? { ...entry, validationGate: { ...entry.validationGate, tier } } : entry
-                                          )
-                                        }));
-                                      }}
-                                      className="h-6 px-1 outline-none"
-                                      style={{ ...dlgInputStyle, width: "auto", minWidth: 90 }}
-                                    >
-                                      <option value="none">None</option>
-                                      <option value="self">Self</option>
-                                      <option value="dedicated">Dedicated</option>
-                                    </select>
-                                  </label>
-                                  <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                    <input
-                                      type="checkbox"
-                                      checked={phase.validationGate.required}
-                                      onChange={(e) => {
-                                        const required = e.target.checked;
-                                        setDraft((prev) => ({
-                                          ...prev,
-                                          phaseOverride: prev.phaseOverride.map((entry) =>
-                                            entry.id === phase.id ? { ...entry, validationGate: { ...entry.validationGate, required } } : entry
-                                          )
-                                        }));
-                                      }}
-                                    />
-                                    Required
-                                  </label>
-                                </div>
-                                {phase.validationGate.tier !== "none" && (
-                                  <input
-                                    value={phase.validationGate.criteria ?? ""}
-                                    onChange={(e) => {
-                                      const criteria = e.target.value || undefined;
-                                      setDraft((prev) => ({
-                                        ...prev,
-                                        phaseOverride: prev.phaseOverride.map((entry) =>
-                                          entry.id === phase.id ? { ...entry, validationGate: { ...entry.validationGate, criteria } } : entry
-                                        )
-                                      }));
-                                    }}
-                                    placeholder="Validation criteria (e.g. all tests pass, no lint errors)"
-                                    className="h-6 w-full px-2 outline-none text-[10px]"
-                                    style={dlgInputStyle}
-                                  />
-                                )}
-                              </div>
-
-                              <div className="space-y-1">
-                                <span style={dlgLabelStyle}>CLARIFICATION</span>
-                                <div className="flex flex-wrap items-center gap-3">
-                                  <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                    <input
-                                      type="checkbox"
-                                      checked={phase.askQuestions.enabled}
-                                      onChange={(e) => {
-                                        const enabled = e.target.checked;
-                                        setDraft((prev) => ({
-                                          ...prev,
-                                          phaseOverride: prev.phaseOverride.map((entry) =>
-                                            entry.id === phase.id
-                                              ? {
-                                                  ...entry,
-                                                  askQuestions: {
-                                                    ...entry.askQuestions,
-                                                    enabled,
-                                                    mode: enabled
-                                                      ? (entry.askQuestions.mode === "never" ? "auto_if_uncertain" : entry.askQuestions.mode)
-                                                      : "never"
-                                                  }
-                                                }
-                                              : entry
-                                          )
-                                        }));
-                                      }}
-                                    />
-                                    Enabled
-                                  </label>
-                                  <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                    <span style={{ fontSize: 9 }}>Mode</span>
-                                    <select
-                                      value={phase.askQuestions.mode}
-                                      onChange={(e) => {
-                                        const mode = e.target.value as "always" | "auto_if_uncertain" | "never";
-                                        setDraft((prev) => ({
-                                          ...prev,
-                                          phaseOverride: prev.phaseOverride.map((entry) =>
-                                            entry.id === phase.id
-                                              ? {
-                                                  ...entry,
-                                                  askQuestions: {
-                                                    ...entry.askQuestions,
-                                                    mode,
-                                                    enabled: mode === "never" ? false : entry.askQuestions.enabled
-                                                  }
-                                                }
-                                              : entry
-                                          )
-                                        }));
-                                      }}
-                                      className="h-6 px-1 outline-none"
-                                      style={{ ...dlgInputStyle, width: "auto", minWidth: 130 }}
-                                    >
-                                      <option value="auto_if_uncertain">Auto (if uncertain)</option>
-                                      <option value="always">Always</option>
-                                      <option value="never">Never</option>
-                                    </select>
-                                  </label>
-                                  <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                    <span style={{ fontSize: 9 }}>Max questions</span>
-                                    <input
-                                      type="number"
-                                      min={1}
-                                      max={10}
-                                      value={Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))}
-                                      onChange={(e) => {
-                                        const maxQuestions = Math.max(1, Math.min(10, Number(e.target.value) || 5));
-                                        setDraft((prev) => ({
-                                          ...prev,
-                                          phaseOverride: prev.phaseOverride.map((entry) =>
-                                            entry.id === phase.id
-                                              ? { ...entry, askQuestions: { ...entry.askQuestions, maxQuestions } }
-                                              : entry
-                                          )
-                                        }));
-                                      }}
-                                      className="h-6 w-16 px-1 text-[10px] text-center outline-none"
-                                      style={dlgInputStyle}
-                                    />
-                                  </label>
-                                </div>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
+                    {draft.phaseOverride.map((phase, index) => (
+                      <PhaseCardEditor
+                        key={phase.id}
+                        phase={phase}
+                        index={index}
+                        totalCount={draft.phaseOverride.length}
+                        expanded={expandedPhases[phase.id] === true}
+                        readOnly={false}
+                        showToggle
+                        disabled={disabledPhases[phase.id] === true}
+                        onToggleDisabled={() => setDisabledPhases((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
+                        onToggleExpand={() => setExpandedPhases((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
+                        onUpdate={(updated) => {
+                          setDraft((prev) => ({
+                            ...prev,
+                            phaseOverride: prev.phaseOverride.map((entry) =>
+                              entry.id === updated.id ? updated : entry
+                            ),
+                          }));
+                        }}
+                        onMoveUp={() => {
+                          if (index === 0) return;
+                          setDraft((prev) => {
+                            const next = [...prev.phaseOverride];
+                            const moved = next[index];
+                            if (!moved) return prev;
+                            next.splice(index, 1);
+                            next.splice(index - 1, 0, moved);
+                            return { ...prev, phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos })) };
+                          });
+                        }}
+                        onMoveDown={() => {
+                          setDraft((prev) => {
+                            if (index >= prev.phaseOverride.length - 1) return prev;
+                            const next = [...prev.phaseOverride];
+                            const moved = next[index];
+                            if (!moved) return prev;
+                            next.splice(index, 1);
+                            next.splice(index + 1, 0, moved);
+                            return { ...prev, phaseOverride: next.map((entry, pos) => ({ ...entry, position: pos })) };
+                          });
+                        }}
+                        onRemove={phase.isCustom ? () => {
+                          setDraft((prev) => ({
+                            ...prev,
+                            phaseOverride: prev.phaseOverride
+                              .filter((entry) => entry.id !== phase.id)
+                              .map((entry, pos) => ({ ...entry, position: pos })),
+                          }));
+                          setExpandedPhases((prev) => { const n = { ...prev }; delete n[phase.id]; return n; });
+                          setDisabledPhases((prev) => { const n = { ...prev }; delete n[phase.id]; return n; });
+                        } : undefined}
+                        availableModelIds={availableModelIds}
+                        labelStyle={dlgLabelStyle}
+                        inputStyle={dlgInputStyle}
+                      />
+                    ))}
                   </div>
                   {phaseValidationErrors.length > 0 ? (
                     <div className="space-y-1 px-2 py-1.5" style={{ background: `${COLORS.warning}15`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}>

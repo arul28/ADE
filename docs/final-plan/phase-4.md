@@ -2,7 +2,7 @@
 
 ## Phase 4 -- CTO + Ecosystem (4-5 weeks)
 
-Goal: Add the CTO agent as a persistent project-aware assistant. Absorb Night Shift into Automations. Complete the memory architecture upgrade. Expand external ecosystem integration.
+Goal: Add the CTO agent as a persistent project-aware assistant with a configurable org chart of worker agents. Absorb Night Shift into Automations. Complete the memory architecture upgrade. Expand external ecosystem integration.
 
 ### Reference docs
 
@@ -17,76 +17,97 @@ Goal: Add the CTO agent as a persistent project-aware assistant. Absorb Night Sh
 
 - Phase 3 complete (orchestrator autonomy + missions overhaul).
 - Existing orchestrator infrastructure: planner, worker spawning, inter-agent messaging, context compaction, phase engine, validation, intervention — all consumed and extended.
+- Phase 4 has **zero dependency on Phase 5** (Play Runtime Isolation). Both phases depend only on Phase 3 and run fully in parallel.
+
+### Prior Art
+
+This phase draws heavily from three open-source projects. Each workstream credits its source patterns inline.
+
+| Source | What ADE Adopts | What ADE Skips |
+|--------|----------------|----------------|
+| **[Paperclip](https://github.com/paperclipai/paperclip)** — `doc/SPEC.md`, `doc/SPEC-implementation.md` | Org chart with `reportsTo` hierarchy and cycle detection (§3 Org Structure), heartbeat system with coalescing and deferred promotion (§4 Heartbeat System), multi-adapter pattern with `process`/`http` interfaces (§4 Execution Adapters), config versioning with rollback (§2 Agent Model), budget auto-pause with monthly reset (§6 Cost Tracking), task session persistence keyed by `(agentId, adapterType, taskKey)` (§2), agent identity schema (§7.2 `agents` table), atomic issue checkout (§8 Concurrency Model) | Multi-company model (ADE is single-project), PostgreSQL dependency (ADE uses SQLite), approval gates for hiring (too heavy for single-user), Board governance layer (user IS the board), billing codes / cost attribution hierarchy |
+| **[Symphony](https://github.com/openai/symphony)** — `SPEC.md` | Linear polling loop with candidate filtering (§8.2), per-state concurrency limits via `max_concurrent_agents_by_state` (§8.3), active-run reconciliation — terminal→cancel, reassign→release (§8.5), stall detection with configurable `stall_timeout_ms` (§8.5 Part A), workpad comment pattern — single persistent comment, not multiple (§10), blocker resolution — skip `Todo` with non-terminal blockers (§8.2), dispatch sort order — priority→created_at→identifier (§8.2), `IssueTracker` abstraction for pluggable backends (§3.1 Component 3), mission templates from WORKFLOW.md concept (§5), exponential retry with configurable max backoff (§8.4) | WORKFLOW.md file-driven config (CTO memory is richer), no-DB stateless recovery (ADE has SQLite persistence), workspace-per-issue isolation (ADE has lanes), coding-agent-only focus (ADE has multi-tool agents), Codex-specific app-server protocol (ADE is adapter-agnostic) |
+| **[OpenClaw](https://github.com/openclaw/openclaw)** | Three-tier memory (MEMORY.md + daily logs → Tier 1/2/3), pre-compaction flush (silent agentic turn before context eviction), two-tier heartbeat execution (cheap deterministic checks before LLM), HEARTBEAT_OK suppression (no notification when nothing needs attention), SOUL.md identity pattern (→ `identity.yaml`), hybrid BM25+vector search with configurable weights, temporal decay with evergreen exemptions | Channel adapters (ADE is desktop-native), Docker sandboxing, node device system (ADE has its own multi-device sync in Phase 6) |
+
+### Execution Order
+
+Workstreams are numbered in dependency order. Hand them to agents sequentially — or in parallel where noted.
+
+```
+Wave 1 (start day 1, parallel):
+  W1: CTO Agent Core                  ← org foundation
+  W6: Memory Architecture Upgrade     ← knowledge foundation
+  W8: External MCP Consumption        ← independent infra
+
+Wave 2 (parallel, after W1):
+  W2: Worker Agents & Org Chart       ← needs W1
+  W3: Heartbeat & Activation          ← needs W1
+  W5: Night Shift Mode                ← needs W1
+
+Wave 3 (parallel, after their deps):
+  W4: Bidirectional Linear Sync       ← needs W2, W3
+  W7: Learning Packs                  ← needs W6
+  W9: OpenClaw Bridge                 ← needs W1, W8
+  W10: .ade/ Portable State           ← needs W1, W6
+```
+
+Dependency graph:
+```
+W1 (CTO Core) ──→ W2 (Workers) ──┐
+     │                             ├──→ W4 (Linear Sync)
+     ├──→ W3 (Heartbeat) ─────────┘
+     │
+     ├──→ W5 (Night Shift)
+     │
+     └──→ W9 (OpenClaw) ←── W8 (External MCP)
+
+W6 (Memory) ──→ W7 (Learning Packs)
+     │
+     └──→ W10 (.ade/ State) ←── W1
+```
+
+Each workstream includes its own renderer/UI changes and tests (no standalone workstreams for these).
 
 ### Workstreams
 
-#### W1: CTO Agent + Org System
+#### W1: CTO Agent Core
 
-A new tab providing a persistent, project-aware AI org chart — the CTO agent sits at the top, with configurable worker agents underneath (Backend Dev, Mobile Dev, QA, etc.). Users can talk directly to the CTO or any worker. All agents share the three-tier memory model, have full ADE knowledge, and can be configured to autonomously process work from external issue trackers.
+> Source: Agent identity model from [Paperclip §2 Agent Model](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md). Identity persistence from [OpenClaw SOUL.md](https://github.com/openclaw/openclaw).
 
-> **Prior art**: This design draws from [Paperclip](https://github.com/paperclipai/paperclip) (org chart, heartbeat, task sessions, budget auto-pause, multi-adapter, config versioning), [Symphony](https://github.com/openai/symphony) (Linear polling, per-state concurrency, reconciliation, stall detection, WORKFLOW.md), and [OpenClaw](https://github.com/openclaw/openclaw) (three-tier memory, HEARTBEAT.md, SOUL.md identity, pre-compaction flush, two-tier execution).
+New **CTO** tab added to the main tab bar. Icon: `brain` (Lucide). The tab provides a persistent chat interface with a sidebar showing the org chart and worker list. Clicking the CTO or any worker in the sidebar opens a direct chat with that agent.
 
-##### W1a: CTO Agent (Core)
+- **Core concept**: The CTO is a persistent entity that remembers the project, its history, its patterns, and the user's preferences across sessions. It has access to all ADE capabilities via MCP tools: create missions, spin up lanes, check project state, review PR status, query mission history, examine code. It can take autonomous action when appropriate ("I noticed the auth tests are flaky — I'll create a mission to investigate"), with user confirmation.
 
-- **New tab: CTO** (may rename to "Org" based on UX testing):
-  - Added to the main tab bar alongside existing tabs (Lanes, Missions, PRs, etc.).
-  - Icon: `brain` (Lucide icon) or similar representing strategic/technical intelligence.
-  - The tab provides a persistent chat interface with a sidebar showing the org chart and worker list.
-  - Clicking the CTO or any worker in the sidebar opens a direct chat with that agent.
-
-- **Core concept**:
-  - The CTO is not a one-shot Q&A bot — it is a persistent entity that remembers the project, its history, its patterns, and the user's preferences across sessions.
-  - It has access to all ADE capabilities via MCP tools: create missions, spin up lanes, check project state, review PR status, query mission history, examine code.
-  - It provides strategic guidance: architecture decisions, code review, refactoring suggestions, dependency management, security considerations.
-  - It can take autonomous action when appropriate: "I noticed the auth module tests are flaky — I'll create a mission to investigate" (with user confirmation).
-  - It manages worker agents: creates them, assigns work, monitors their progress, adjusts their configurations over time.
-
-- **Three-tier memory model** (shared with W3, applies to CTO and all workers):
+- **Three-tier memory model** (shared with W6, applies to CTO and all workers):
   - **Tier 1 — Core Memory**: Always in context (~2-4K tokens). Agent persona, current project context, critical conventions, user preferences. Self-editable via `memoryUpdateCore` tool.
   - **Tier 2 — Hot Memory**: Retrieved on demand via hybrid search. Recent conversations, relevant project facts, mission outcomes, decision history.
   - **Tier 3 — Cold Memory**: Archival. Old conversations, historical decisions, deprecated patterns.
   - Auto-compaction with temporal decay (30-day half-life) moves memories from hot to cold.
 
 - **Identity persistence**:
-  - CTO state is stored in `.ade/cto/` directory; worker state in `.ade/agents/<name>/`:
-    ```
-    .ade/
-    ├── cto/
-    │   ├── identity.yaml        # CTO persona, model preferences, policy config
-    │   ├── core-memory.json     # Tier 1: always-in-context persona and project context
-    │   ├── memory/              # Tier 2: hot memories + archive/
-    │   └── sessions.jsonl       # Session history log (append-only)
-    ├── agents/
-    │   ├── backend-dev/
-    │   │   ├── identity.yaml    # Worker persona, adapter config, heartbeat policy
-    │   │   ├── core-memory.json # Worker's Tier 1 core memory
-    │   │   ├── memory/          # Worker's Tier 2 + archive
-    │   │   └── sessions.jsonl   # Worker session log
-    │   ├── mobile-dev/
-    │   │   └── ...
-    │   └── qa-engineer/
-    │       └── ...
-    ```
-  - Core memory persists across sessions — when the user opens any agent chat, the agent reconstructs context from stored memory rather than starting fresh.
+  - CTO state stored in `.ade/cto/`; worker state in `.ade/agents/<name>/` (see W10 for full structure).
+  - Core memory persists across sessions — agent reconstructs context from stored memory on session start.
   - Session history log tracks conversation summaries for long-term continuity.
 
-- **ADE capabilities via MCP tools**:
-  - CTO and all workers have access to the full ADE MCP tool set (same tools exposed by `apps/mcp-server`).
-  - They can: create missions, query mission status, list lanes, check PR health, read files, search code, check conflict status, query usage metrics.
-  - They can also use external MCP tools (W5) if configured.
-  - Tool access is governed by the same permission model as mission workers.
+- **ADE capabilities via MCP tools**: CTO and all workers have access to the full ADE MCP tool set (same tools exposed by `apps/mcp-server`). They can create missions, query status, list lanes, check PR health, read files, search code, check conflicts, query usage metrics. External MCP tools (W8) also available if configured. Tool access governed by the same permission model as mission workers.
 
-- **"Always-on" feel**:
-  - Smart memory tracking: agents remember what was discussed, what decisions were made, what the user's preferences are.
-  - Context compaction: when conversation grows long, agents use pre-compaction flush (W3) to persist important context before compaction.
-  - Auto-refactoring of memory: agents periodically consolidate memories (W3 consolidation) to keep knowledge base clean and non-redundant.
-  - Agents are not continuously running model processes — they reconstruct context from stored memory on each session start or heartbeat activation.
+- **"Always-on" feel**: Smart memory tracking, context compaction with pre-compaction flush (W6), auto-refactoring of memory via consolidation (W6). Agents are not continuously running model processes — they reconstruct context from stored memory on each session start or heartbeat activation.
 
-##### W1b: Worker Agents & Org Chart
+- **Renderer**: CTO tab with persistent chat interface, org chart sidebar, worker list. Direct chat with any agent via sidebar click.
+
+**Tests:**
+- Core memory persistence across sessions (CTO and workers).
+- Memory reconstruction on session start.
+- Session history log integrity.
+- MCP tool access from CTO and worker contexts.
+
+#### W2: Worker Agents & Org Chart
+
+> Source: Org hierarchy from [Paperclip §3 Org Structure](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) — strict tree, `reportsTo` chain, full visibility across org. Multi-adapter pattern from [Paperclip §4 Execution Adapters](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md). Config versioning from [Paperclip §2 Agent Model](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md). Budget auto-pause from [Paperclip §6 Cost Tracking](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md).
 
 Configurable worker agents that sit under the CTO in an org hierarchy. Each worker is a persistent agent with its own identity, memory, capabilities, and budget.
 
-- **Agent identity schema** (inspired by Paperclip's agent model):
+- **Agent identity schema**:
   ```typescript
   interface AgentIdentity {
     id: string;                    // UUID
@@ -103,7 +124,7 @@ Configurable worker agents that sit under the CTO in an org hierarchy. Each work
 
     // Runtime
     runtimeConfig: {
-      heartbeat?: HeartbeatPolicy;   // Activation schedule (see W1c)
+      heartbeat?: HeartbeatPolicy;   // Activation schedule (see W3)
       maxConcurrentRuns?: number;    // 1-10, default 1
     };
 
@@ -121,7 +142,7 @@ Configurable worker agents that sit under the CTO in an org hierarchy. Each work
 - **Org chart**:
   - CTO is always the root node (`reportsTo: null`).
   - Workers report to CTO by default; users can create sub-hierarchies (e.g., "Lead Backend Dev" with junior workers reporting to it).
-  - Cycle detection prevents circular reporting chains (max 50 hops, same as Paperclip).
+  - Cycle detection prevents circular reporting chains (max 50 hops, consistent with Paperclip's validation).
   - Visual org chart in the sidebar:
     ```
     CTO (brain)
@@ -130,43 +151,52 @@ Configurable worker agents that sit under the CTO in an org hierarchy. Each work
     └── QA Engineer (claude-local, paused - budget)
     ```
   - Chain-of-command traversal: any worker can escalate to its manager, up to CTO.
+  - When an agent is removed, its direct reports are unlinked (`reportsTo: null`), not deleted.
 
-- **Multi-adapter pattern** (from Paperclip):
+- **Multi-adapter pattern** (adapted from Paperclip's `process`/`http` adapters):
   - Same `AgentIdentity` interface, different execution backends:
-    - `claude-local`: Spawns Claude Code CLI with model/cwd/instructions. Best for code-focused workers.
-    - `codex-local`: Spawns Codex CLI via app-server protocol. Best for OpenAI-native workflows.
-    - `openclaw-webhook`: HTTP POST to a remote OpenClaw agent endpoint. For workers running on external infrastructure.
-    - `process`: Generic subprocess with custom command. For specialized tools.
+    - `claude-local`: Spawns Claude Code CLI with model/cwd/instructions.
+    - `codex-local`: Spawns Codex CLI via app-server protocol.
+    - `openclaw-webhook`: HTTP POST to a remote OpenClaw agent endpoint.
+    - `process`: Generic subprocess with custom command.
   - Adapter config holds backend-specific settings (model, CLI args, webhook URL, timeout, etc.).
-  - Workers are hot-swappable — change a worker's adapter type without losing its identity or memory.
+  - Workers are hot-swappable — change adapter type without losing identity or memory.
 
-- **Config versioning** (from Paperclip):
+- **Config versioning** (adapted from Paperclip):
   - Every change to an agent's identity/config creates a revision with before/after snapshots.
   - Changed fields tracked explicitly (name, role, adapterType, capabilities, budget, etc.).
   - Rollback: revert to a previous revision. Redacted-secret protection prevents rollback to revisions where secrets were scrubbed.
-  - Useful for learning: "I changed the QA engineer's prompt on March 3 because it missed accessibility checks — and it worked."
 
-- **Budget auto-pause** (from Paperclip):
+- **Budget auto-pause** (adapted from Paperclip §6 — monthly period, hard ceiling):
   - Each worker has a `budgetMonthlyCents` ceiling. When `spentMonthlyCents >= budgetMonthlyCents`, the worker auto-pauses.
   - CTO notifies the user: "QA Engineer hit its $30 monthly budget. Paused. Want me to increase it?"
   - Company-level budget cap across all workers.
   - Cost events recorded per-run with provider/model/token attribution.
+  - Monthly reset: `spentMonthlyCents` → 0 on the 1st of each month (UTC).
 
-- **Task session persistence** (from Paperclip):
+- **Task session persistence** (adapted from Paperclip):
   - Per-task session state survives across agent invocations, keyed by `(agentId, adapterType, taskKey)`.
   - When a worker stops and restarts on the same issue, it resumes with session context (thread ID, conversation state, workspace path).
-  - Bridges the gap between stateless agent runs and persistent memory — session state is hot context for a specific task, memory is long-term knowledge.
-  - Sessions are stored in the agent's `.ade/agents/<name>/sessions.jsonl`.
+  - Sessions stored in the agent's `.ade/agents/<name>/sessions.jsonl`.
 
-- **Direct conversation**:
-  - Users can chat with any worker directly from the CTO tab sidebar.
-  - Workers have full project context via their memory tiers + ADE MCP tools.
-  - CTO is not a bottleneck — users bypass it for quick asks to specific workers.
-  - Inter-agent messaging (already shipped in Phase 3) enables CTO ↔ worker communication during missions.
+- **Direct conversation**: Users can chat with any worker directly from the CTO tab sidebar. Workers have full project context via their memory tiers + ADE MCP tools. CTO is not a bottleneck — users bypass it for quick asks. Inter-agent messaging (shipped in Phase 3) enables CTO ↔ worker communication during missions.
 
-##### W1c: Heartbeat & Activation System
+- **Renderer**: Org chart sidebar with live status indicators (idle/active/paused/running). Agent creation dialog. Config editor with revision history. Budget display per agent.
 
-A configurable activation system that determines when and how agents wake up. Combines Paperclip's heartbeat scheduling with OpenClaw's two-tier execution model.
+**Tests:**
+- Agent creation, `reportsTo` hierarchy, cycle detection (max 50 hops).
+- Chain-of-command traversal, org tree reconstruction from flat list.
+- Agent removal (unlink direct reports, preserve identity for audit).
+- Multi-adapter: Claude-local adapter spawns CLI correctly, OpenClaw webhook adapter sends HTTP POST, process adapter spawns subprocess, adapter hot-swap preserves identity/memory.
+- Config versioning: revision creation on config change, before/after snapshot accuracy, changed-keys detection, rollback, redacted-secret rollback prevention.
+- Budget auto-pause: cost event recording, monthly spend increment, auto-pause at budget ceiling, CTO notification on pause, monthly reset.
+- Task session persistence: session save on run completion, session resume on re-invocation, session keyed by `(agentId, adapterType, taskKey)`, session clear signal.
+
+#### W3: Heartbeat & Activation System
+
+> Source: Heartbeat scheduling from [Paperclip §4 Heartbeat System](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) — adapter-based invocation, pause/resume, grace period. Two-tier execution from [OpenClaw](https://github.com/openclaw/openclaw) — cheap checks before LLM, HEARTBEAT_OK suppression. Wakeup coalescing from Paperclip. Issue execution locking from [Paperclip §8 Concurrency Model](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC-implementation.md) — atomic checkout, single-assignee.
+
+A configurable activation system that determines when and how agents wake up.
 
 - **Heartbeat policy** (per-agent, in `runtimeConfig.heartbeat`):
   ```typescript
@@ -182,56 +212,68 @@ A configurable activation system that determines when and how agents wake up. Co
   }
   ```
 
-- **Two-tier execution model** (from OpenClaw):
-  - **Cheap checks first**: On each heartbeat, run fast deterministic checks — is there new work in the issue tracker? Did a mission finish? Are there pending interventions? This costs zero LLM tokens.
-  - **LLM escalation**: Only invoke the agent's model when something meaningful needs attention. "5 new Linear issues since last check" triggers the CTO to classify and dispatch. "No changes" → skip.
-  - **HEARTBEAT_OK suppression** (from OpenClaw): If the agent determines nothing needs attention, it returns a `HEARTBEAT_OK` signal. No notification is sent to the user. Prevents notification spam.
-
-- **Wakeup coalescing** (from Paperclip):
-  - If a wakeup arrives while the agent is already running on the same task, merge the new context into the active run instead of spawning a duplicate.
-  - Example: 3 Linear updates to the same issue within 30 seconds → only 1 agent invocation with all 3 updates merged.
-  - **Deferred promotion**: If the agent is busy on a different task, the wakeup is queued as `deferred`. When the current run finishes, the oldest deferred wakeup auto-promotes to the front of the queue.
-
-- **Issue execution locking** (from Paperclip):
-  - Only one agent run per issue at a time. When a worker claims an issue, it's atomically locked (`executionRunId` + `executionLockedAt`).
-  - **Stale adoption**: If a run crashes, another run can adopt the orphaned issue instead of it being stuck forever.
-  - **Orphan reaping**: On app restart, detect runs that are "queued" or "running" but have no corresponding process. Mark them failed, release locks, promote deferred wakeups.
-
 - **Default heartbeat configurations**:
   | Agent | intervalSec | wakeOnDemand | Active Hours |
   |-------|-------------|--------------|--------------|
   | CTO | 300 (5 min) | yes | User-configured |
   | Workers | 0 (no timer) | yes | Follows CTO |
 
-  - CTO heartbeats periodically to check Linear/GitHub for new work and monitor running missions.
-  - Workers default to wake-on-demand only — CTO wakes them when it assigns work.
-  - Users can override any agent's heartbeat policy.
+  CTO heartbeats periodically to check Linear/GitHub for new work and monitor running missions. Workers default to wake-on-demand only — CTO wakes them when it assigns work.
 
-##### W1d: Bidirectional Linear Sync
+- **Two-tier execution model** (from OpenClaw):
+  - **Cheap checks first**: On each heartbeat, run fast deterministic checks — is there new work in the issue tracker? Did a mission finish? Are there pending interventions? Zero LLM tokens.
+  - **LLM escalation**: Only invoke the agent's model when something meaningful needs attention. "5 new Linear issues since last check" triggers CTO to classify and dispatch. "No changes" → skip.
+  - **HEARTBEAT_OK suppression**: If the agent determines nothing needs attention, it returns `HEARTBEAT_OK`. No notification to user.
+
+- **Wakeup coalescing** (from Paperclip):
+  - If a wakeup arrives while the agent is already running on the same task, merge the new context into the active run instead of spawning a duplicate.
+  - Example: 3 Linear updates to the same issue within 30 seconds → only 1 agent invocation with all 3 updates merged.
+  - **Deferred promotion**: If the agent is busy on a different task, the wakeup is queued as `deferred`. When the current run finishes, the oldest deferred wakeup auto-promotes.
+
+- **Issue execution locking** (adapted from Paperclip's atomic checkout — §8 Concurrency Model):
+  - Only one agent run per issue at a time. When a worker claims an issue, it's atomically locked (`executionRunId` + `executionLockedAt`).
+  - **Stale adoption**: If a run crashes, another run can adopt the orphaned issue instead of it being stuck forever.
+  - **Orphan reaping**: On app restart, detect runs that are "queued" or "running" but have no corresponding process. Mark them failed, release locks, promote deferred wakeups.
+
+**Tests:**
+- Timer-based wakeup fires at `intervalSec`.
+- Active hours enforcement (wakeup rejected outside window).
+- `wakeOnDemand` triggers on task assignment and user message.
+- Two-tier execution: cheap check skips LLM when no changes detected.
+- HEARTBEAT_OK suppression: no user notification on quiet heartbeat.
+- Coalescing: duplicate wakeup merges context into running execution.
+- Deferred promotion: wakeup promoted after current run completes.
+- Orphan reaping: stale runs detected and released on app restart.
+- Issue execution locking: atomic lock on checkout, stale adoption after crash, lock release on completion.
+
+#### W4: Bidirectional Linear Sync
+
+> Source: Polling loop from [Symphony §8 Polling, Scheduling, and Reconciliation](https://github.com/openai/symphony/blob/main/SPEC.md). Candidate selection, concurrency, reconciliation, and retry from Symphony §8.2-8.5. Workpad comment from Symphony §10. Atomic checkout from [Paperclip §8 Concurrency Model](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC-implementation.md). WORKFLOW.md → mission templates concept from Symphony §5.
 
 The CTO agent watches a Linear project board and autonomously dispatches missions from issues. Results flow back to Linear as state updates, comments, and proof of work.
 
-- **Inbound: Linear → ADE** (inspired by Symphony's polling + Paperclip's issue checkout):
+- **Inbound: Linear → ADE** (Symphony polling + Paperclip checkout):
   1. **CTO heartbeat fires** → cheap check: query Linear for issues in active states (`Todo`, `In Progress`).
-  2. **Candidate filtering**: Sort by priority (ascending) → `created_at` (oldest first) → identifier. Skip issues blocked by non-terminal blockers (from Symphony).
+  2. **Candidate filtering**: Sort by priority (ascending) → `created_at` (oldest first) → identifier. Skip issues blocked by non-terminal blockers (Symphony §8.2 blocker rule).
   3. **Classification**: CTO uses its memory + project knowledge to classify each issue: bug fix? feature? refactor? Which worker should handle it?
-  4. **Concurrency check**: Respect per-state concurrency limits (from Symphony): `max_concurrent_by_state: { todo: 5, in_progress: 3, bug: 2 }`.
-  5. **Auto-dispatch or escalate**: Based on auto-dispatch policy (see below), either create a mission automatically or surface the issue to the user for approval.
-  6. **Atomic checkout**: When dispatching, atomically lock the issue in ADE (prevents duplicate work). Move Linear issue to `In Progress`.
+  4. **Concurrency check**: Respect per-state concurrency limits (Symphony §8.3): `max_concurrent_by_state: { todo: 5, in_progress: 3, bug: 2 }`.
+  5. **Auto-dispatch or escalate**: Based on auto-dispatch policy, either create a mission automatically or surface the issue to the user for approval.
+  6. **Atomic checkout**: When dispatching, atomically lock the issue in ADE (Paperclip-style). Move Linear issue to `In Progress`.
 
-- **Outbound: ADE → Linear** (inspired by Symphony's workpad pattern):
+- **Outbound: ADE → Linear** (Symphony workpad pattern):
   - When a mission starts: move Linear issue to `In Progress`, post a "Workpad" comment with planned approach.
-  - During execution: update the workpad comment with progress checklist (single persistent comment, not multiple — from Symphony's workpad pattern).
+  - During execution: update the workpad comment with progress checklist (single persistent comment, not multiple — Symphony's workpad pattern).
   - When PR is created: post PR link to Linear issue, add `ade` label.
   - When mission completes: move issue to `Done` (or `In Review` if PR needs human review), post final summary with diff stats, test results, and proof of work.
   - When mission fails: post failure context to Linear, move to `Blocked` or keep in `In Progress` for retry.
 
-- **Reconciliation** (from Symphony):
+- **Reconciliation** (Symphony §8.5):
   - On every CTO heartbeat, validate running missions against current Linear state:
     - Issue moved to `Done` externally → cancel the ADE mission.
     - Issue moved to `Cancelled` → cancel and clean up.
     - Issue reassigned → release the worker, update mission.
     - Issue still active → refresh snapshot, continue.
+  - **Stall detection** (Symphony §8.5 Part A): If no agent activity for `stalledTimeoutSec` (default 300s), kill the agent run and schedule retry.
 
 - **Auto-dispatch policies** (user-configured):
   ```yaml
@@ -261,7 +303,7 @@ The CTO agent watches a Linear project board and autonomously dispatches mission
       stalledTimeoutSec: 300        # Kill agent if no activity for 5 min
   ```
 
-- **Mission templates** (from Symphony's WORKFLOW.md, but richer):
+- **Mission templates** (from Symphony's WORKFLOW.md concept, adapted):
   - Reusable mission archetypes stored in `.ade/templates/`:
     ```yaml
     # .ade/templates/bug-fix.yaml
@@ -277,9 +319,9 @@ The CTO agent watches a Linear project board and autonomously dispatches mission
       Priority: {{ issue.priority }}
     ```
   - CTO selects template based on issue classification (labels, priority, description analysis).
-  - Users can create custom templates in Settings → Mission Templates.
+  - Users create custom templates in Settings → Mission Templates.
 
-- **Tracker abstraction** (from Symphony):
+- **Tracker abstraction** (from Symphony §3.1 Component 3 — Issue Tracker Client):
   - Linear is the first tracker, but the integration uses an abstract `IssueTracker` interface:
     ```typescript
     interface IssueTracker {
@@ -290,19 +332,27 @@ The CTO agent watches a Linear project board and autonomously dispatches mission
     }
     ```
   - GitHub Issues adapter planned as a fast-follow (same interface, different GraphQL queries).
-  - Memory tracker for tests (from Symphony's in-memory tracker pattern).
+  - Memory tracker for tests (consistent with Symphony's in-memory tracker pattern).
+
+- **Linear client**: Built-in lightweight GraphQL client for the core polling/update loop (simpler, no MCP overhead). External MCP Linear tools (W8) available for ad-hoc agent queries.
 
 - **Configuration**: Linear API key and project slug stored in `.ade/local.secret.yaml` (gitignored). Poll interval and dispatch rules in `.ade/local.yaml` (git-tracked, no secrets).
 
-- **Dependency**: W5 (External MCP Consumption) provides the Linear MCP tools. W1d uses these tools for the polling/update loop. Alternatively, ADE can ship a lightweight built-in Linear GraphQL client (simpler, no MCP overhead for the core polling loop) and reserve MCP for ad-hoc Linear queries from agents.
+**Tests:**
+- Candidate issue polling, priority sorting (ascending), blocked-by filtering (skip Todo with non-terminal blockers).
+- Auto-dispatch with template matching, escalation for unmatched issues, concurrency limit enforcement (global and per-state).
+- Linear outbound: state update on mission start/complete/fail, workpad comment creation and update, PR link posting, label addition.
+- Reconciliation: external close → mission cancel, external reassign → worker release, stall detection → restart.
+- Mission template: loading from `.ade/templates/`, variable rendering with issue context, template selection by CTO classification.
+- Retry: exponential backoff on failure, short continuation retry on normal completion (consistent with Symphony §8.4).
 
-#### W2: Night Shift Mode (in Automations)
+#### W5: Night Shift Mode (in Automations)
 
 Night Shift becomes a mode within the existing Automations tab, not a separate agent type or tab.
 
 - **Night Shift as an Automations mode**:
   - The Automations tab gains a "Night Shift" section alongside existing automation rules.
-  - Night Shift is a way to queue missions and tasks for unattended overnight execution.
+  - Night Shift queues missions and tasks for unattended overnight execution.
   - Users configure: what tasks to run overnight, which models to use, budget caps, and stop conditions.
 
 - **Night Shift configuration**:
@@ -313,98 +363,68 @@ Night Shift becomes a mode within the existing Automations tab, not a separate a
   +------------------------------------------------------------------+
   | NIGHT SHIFT                                           [CONFIGURE]  |
   |                                                                    |
-  | Schedule: 11:00 PM – 6:00 AM (Mon-Fri)                           |
+  | Schedule: 11:00 PM - 6:00 AM (Mon-Fri)                            |
   | Mode: Conservative (60% capacity)                                  |
   | Weekly reserve: 20%                                                |
   |                                                                    |
-  | QUEUED TASKS                                           [+ ADD]    |
-  | ┌──────────────────────────────────────────────────────────────┐  |
-  | │ 1. Refactor auth module          Claude Sonnet  Budget: $2   │  |
-  | │ 2. Update test coverage          Claude Haiku   Budget: $1   │  |
-  | │ 3. Harden API endpoints          Codex          Budget: $3   │  |
-  | └──────────────────────────────────────────────────────────────┘  |
+  | QUEUED TASKS                                           [+ ADD]     |
+  | 1. Refactor auth module          Claude Sonnet  Budget: $2         |
+  | 2. Update test coverage          Claude Haiku   Budget: $1         |
+  | 3. Harden API endpoints          Codex          Budget: $3         |
   |                                                                    |
   | SUBSCRIPTION STATUS                                                |
-  | Claude: Pro tier | Available tonight: ~3.2 hrs                    |
-  | [████████░░░░] 65% of capacity allocated                          |
+  | Claude: Pro tier | Available tonight: ~3.2 hrs                     |
+  | [████████░░░░] 65% of capacity allocated                           |
   +------------------------------------------------------------------+
   ```
 
 - **Smart token budget management**:
-  - Night Shift monitors subscription utilization via rate limit headers and usage tracking.
   - **Utilization modes** (user-selectable):
     - `maximize`: Use all available capacity before the next reset window.
-    - `conservative`: Use up to a user-defined percentage of remaining capacity (default: 60%). This is the default.
+    - `conservative` (default): Use up to a user-defined percentage of remaining capacity (default: 60%).
     - `fixed`: Ignore subscription utilization — run with fixed per-task budgets.
   - **Rate limit awareness**: Before starting each task, check current rate limit state. If a reset is due during the night, schedule a second batch after the reset.
-  - **Weekly reserve protection**: Users set a reserve (default: 20% of weekly budget) that Night Shift will not consume, preserving capacity for daytime use.
+  - **Weekly reserve protection**: Users set a reserve (default: 20% of weekly budget) that Night Shift will not consume.
 
 - **Strict guardrails**:
   - Per-task budget caps (tokens, time, steps, USD).
   - Global Night Shift budget cap (applies on top of per-task caps).
-  - Stop conditions: `first-failure` (park the task, don't retry), `budget-exhaustion`, `intervention-threshold` (park if N intervention requests — nobody is there to respond), `rate-limited` (pause and wait for reset or skip), `reserve-protected` (stop to protect weekly reserve).
+  - Stop conditions: `first-failure`, `budget-exhaustion`, `intervention-threshold` (park if N intervention requests), `rate-limited`, `reserve-protected`.
   - Risk restrictions: Night Shift tasks run with conservative permissions by default.
 
-- **Morning Briefing sub-view**:
-  A swipeable card interface for reviewing overnight results.
+- **Morning Briefing sub-view**: Swipeable card interface for reviewing overnight results.
   ```
   +------------------------------------------------------------------+
-  | MORNING BRIEFING                    ● ● ● ○ ○  (3/5 reviewed)   |
+  | MORNING BRIEFING                    . . . o o  (3/5 reviewed)     |
   +------------------------------------------------------------------+
+  |  NIGHT SHIFT - Refactor Auth Module                                |
   |                                                                    |
-  |  ┌────────────────────────────────────────────────────────────┐  |
-  |  │                                                            │  |
-  |  │  NIGHT SHIFT — Refactor Auth Module                        │  |
-  |  │                                                            │  |
-  |  │  STATUS: SUCCEEDED                                         │  |
-  |  │  Model: Claude Sonnet · 12 steps · $1.84                   │  |
-  |  │                                                            │  |
-  |  │  WHAT HAPPENED:                                            │  |
-  |  │  Extracted auth middleware into dedicated module,           │  |
-  |  │  added refresh token rotation, updated 8 test files.       │  |
-  |  │  All 142 tests passing.                                    │  |
-  |  │                                                            │  |
-  |  │  CHANGES:                                                  │  |
-  |  │  +347 -128 across 12 files                                 │  |
-  |  │  [View Diff]  [View PR #47]                                │  |
-  |  │                                                            │  |
-  |  │  CONFIDENCE: ████████░░ 82%                                │  |
-  |  │                                                            │  |
-  |  │  ┌─────────┐  ┌──────────┐  ┌─────────────────────┐      │  |
-  |  │  │ APPROVE │  │ DISMISS  │  │ INVESTIGATE LATER   │      │  |
-  |  │  └─────────┘  └──────────┘  └─────────────────────┘      │  |
-  |  │                                                            │  |
-  |  └────────────────────────────────────────────────────────────┘  |
+  |  STATUS: SUCCEEDED                                                 |
+  |  Model: Claude Sonnet · 12 steps · $1.84                          |
   |                                                                    |
-  |  ← Swipe left: Dismiss    Swipe right: Approve →                 |
+  |  WHAT HAPPENED:                                                    |
+  |  Extracted auth middleware into dedicated module,                   |
+  |  added refresh token rotation, updated 8 test files.               |
+  |  All 142 tests passing.                                            |
   |                                                                    |
+  |  CHANGES: +347 -128 across 12 files                                |
+  |  [View Diff]  [View PR #47]                                        |
+  |                                                                    |
+  |  CONFIDENCE: ████████░░ 82%                                        |
+  |                                                                    |
+  |  [APPROVE]    [DISMISS]    [INVESTIGATE LATER]                     |
   +------------------------------------------------------------------+
-  | [BULK APPROVE ALL (3)]                    [SKIP TO SUMMARY]       |
+  | [BULK APPROVE ALL (3)]                    [SKIP TO SUMMARY]        |
   +------------------------------------------------------------------+
   ```
 
-  - **Card types**:
-    - **Succeeded Task**: Shows what changed, diff stats, PR link, confidence, test results. Actions: Approve (merge PR) / Dismiss (close PR) / Investigate Later.
-    - **Failed/Parked Task**: Shows failure reason, last step, partial changes, error context. Actions: Retry / Dismiss / Investigate Later.
-
-  - **Interaction model**:
-    - **Swipe right** (or click Approve): Execute the approval action.
-    - **Swipe left** (or click Dismiss): Dismiss, log the decision.
-    - **Swipe up** (or click Investigate Later): Move to an "investigate" queue.
-    - **Keyboard shortcuts**: Right arrow = approve, Left arrow = dismiss, Up arrow = investigate, Space = expand details.
-    - **Progress indicator**: Dots at top showing total items and reviewed count.
-    - **Bulk actions**: "Approve All" for high-confidence items.
-
-  - **Morning Briefing trigger**:
-    - Automatically shown as a modal overlay when user opens ADE after Night Shift tasks have completed.
-    - Also accessible on-demand from the Automations tab → Night Shift section.
-    - Badge count on the Automations tab icon shows pending briefing items.
+  - **Card types**: Succeeded (diff stats, PR link, confidence, test results) and Failed/Parked (failure reason, partial changes, error context).
+  - **Interaction**: Swipe right = approve, left = dismiss, up = investigate later. Keyboard shortcuts: Right/Left/Up arrows, Space = expand.
+  - **Trigger**: Modal overlay on app launch after Night Shift completes. Also accessible from Automations tab.
 
 - **Night Shift service** (`nightShiftService`):
-  - Manages the Night Shift queue: users queue tasks for after-hours execution.
-  - Executes tasks via the mission orchestrator with Night Shift-specific guardrails.
-  - Tracks subscription utilization and rate limits across providers.
-  - Generates a structured digest artifact at the end of each Night Shift session:
+  - Manages the Night Shift queue and executes tasks via the mission orchestrator with Night Shift-specific guardrails.
+  - Generates a structured digest artifact at the end of each session:
     ```typescript
     interface NightShiftDigest {
       id: string;
@@ -413,64 +433,45 @@ Night Shift becomes a mode within the existing Automations tab, not a separate a
       tasks: NightShiftTaskEntry[];
       totalBudgetUsed: BudgetSummary;
       subscriptionUtilization: {
-        claude?: {
-          tier: string;
-          tokensUsedOvernight: number;
-          tokensAvailableAtStart: number;
-          rateLimitResetsHit: number;
-          capacityUtilized: number;    // 0.0-1.0
-          tasksSkippedDueToLimits: number;
-        };
-        codex?: {
-          tier: string;
-          tokensUsedOvernight: number;
-          tokensAvailableAtStart: number;
-          capacityUtilized: number;
-          tasksSkippedDueToLimits: number;
-        };
+        claude?: { tier: string; tokensUsedOvernight: number; capacityUtilized: number; tasksSkippedDueToLimits: number; };
+        codex?: { tier: string; tokensUsedOvernight: number; capacityUtilized: number; };
         weeklyReserveRemaining: number;
       };
       pendingReviews: number;
       requiresAttention: number;
     }
-
-    interface NightShiftTaskEntry {
-      taskId: string;
-      taskName: string;
-      status: 'succeeded' | 'failed' | 'parked' | 'budget-exhausted' | 'rate-limited' | 'skipped';
-      summary: string;
-      changesProposed?: ChangeSet[];
-      prCreated?: string;
-      failureContext?: FailureContext;
-      budgetUsed: BudgetSummary;
-      skipReason?: string;
-    }
     ```
 
-- **Settings integration** (Automations → Night Shift section in Settings):
-  - Default Night Shift time window (e.g., 11pm-6am).
-  - Morning briefing delivery time.
-  - Global Night Shift budget cap.
-  - Subscription utilization mode: `maximize` / `conservative` / `fixed` (default: `conservative`).
-  - Conservative mode percentage: slider for max % of available overnight capacity (default: 60%).
-  - Weekly reserve: slider for % of weekly budget to protect (default: 20%).
-  - Multi-batch scheduling: toggle to schedule work across rate limit reset windows (default: on).
-  - Subscription status panel: live display of current tier per provider, rate limit state, estimated available capacity, and projected utilization bar.
+- **Settings integration** (Automations → Night Shift section):
+  - Default time window, morning briefing delivery time, global budget cap.
+  - Utilization mode selector, conservative mode percentage slider, weekly reserve slider.
+  - Multi-batch scheduling toggle, subscription status panel.
 
-#### W3: Memory Architecture Upgrade
+- **Renderer**: Night Shift tab within Automations, task queue UI, Morning Briefing modal overlay, subscription status panel.
 
-A comprehensive upgrade to ADE's memory system, introducing tiered storage, vector search, composite scoring, pre-compaction flushing, memory consolidation, episodic memory, procedural memory, and portable `.ade/` directory storage. These capabilities serve both mission workers and the CTO agent.
+**Tests:**
+- Stop conditions: first-failure, budget-exhaustion, intervention-threshold, rate-limited, reserve-protected.
+- Subscription-aware scheduling: utilization modes, rate limit awareness, weekly reserve protection.
+- Multi-batch scheduling across rate limit resets.
+- Morning briefing card rendering and interaction (approve/dismiss/investigate).
+- Bulk action tests.
+- Digest generation accuracy.
+
+#### W6: Memory Architecture Upgrade
+
+> Source: Three-tier memory from [OpenClaw](https://github.com/openclaw/openclaw) (MEMORY.md + daily logs). Pre-compaction flush from OpenClaw. Composite scoring from [CrewAI](https://github.com/crewAI/crewAI). Consolidation from [Mem0](https://github.com/mem0ai/mem0). Hybrid search from OpenClaw + RAG literature. Episodic/procedural memory from [LangMem](https://github.com/langchain-ai/langmem).
+
+A comprehensive upgrade to ADE's memory system, introducing tiered storage, vector search, composite scoring, pre-compaction flushing, memory consolidation, episodic memory, and procedural memory. These capabilities serve both mission workers and the CTO agent.
 
 ##### Carry-Over Scope: Candidate Memory Triage Automation
 
-To absorb the remaining near-term memory gap into Phase 4 (instead of shipping a separate pre-Phase-4 patch), W3 explicitly includes candidate-memory lifecycle automation:
+To absorb the remaining near-term memory gap into Phase 4 (instead of shipping a separate patch), W6 explicitly includes candidate-memory lifecycle automation:
 
-- Add a candidate sweep path that runs at safe checkpoints (app startup, run finalization, and optional periodic timer):
+- Add a candidate sweep path that runs at safe checkpoints (app startup, run finalization, optional periodic timer):
   - promote `candidate` entries with `confidence >= auto_promote_threshold`,
   - archive stale `candidate` entries older than `max_candidate_age_hours`.
-- Keep manual user controls unchanged (review/promote/archive from the existing candidate panel).
-- Align runtime config typing/validation with documented memory policy keys so behavior is deterministic.
-- Scope intent: this is a cleanup/quality guardrail for the existing memory lifecycle, not a semantic-search upgrade.
+- Keep manual user controls unchanged (review/promote/archive from existing candidate panel).
+- Align runtime config typing/validation with documented memory policy keys.
 
 ##### Three-Tier Memory
 
@@ -496,24 +497,18 @@ Tier 3: Cold Memory (archival, searched rarely)
 
 ##### Vector Search with sqlite-vec
 
-- Add `sqlite-vec` extension to the existing SQLite database (works with `better-sqlite3` in Electron).
+- Add `sqlite-vec` extension to the existing SQLite database.
 - Store embeddings alongside memory records in a `memory_vectors` table.
 - Hybrid search: BM25 keyword (30% weight) + vector similarity (70% weight).
-- **MMR re-ranking**: Maximal Marginal Relevance with lambda=0.7 to reduce redundant results in retrieval.
-- Embedding strategy: local GGUF model (`all-MiniLM-L6-v2`, ~25MB, 384 dimensions) for offline operation, OpenAI `text-embedding-3-small` (1536 dimensions) as fallback when online. Retrieval pipeline normalizes across both dimension sizes.
-- **Scalability**: sqlite-vec uses brute-force KNN — performant up to ~100K vectors, which is more than sufficient for per-project memory (typical project accumulates hundreds to low thousands of memories). If a project exceeds this threshold, cold archival (Tier 3) keeps the active vector count manageable.
-- Cache embeddings to avoid recomputation — embeddings are stored in `.ade/embeddings.db` (gitignored, regenerated on new machine in ~30s background job on first startup).
-- Budget tiers control how many memories are injected into agent context: **Lite (3 entries)** for quick tasks, **Standard (8 entries)** for normal agent work, **Deep (20 entries)** for mission planning and complex reasoning.
+- **MMR re-ranking**: Maximal Marginal Relevance with lambda=0.7 to reduce redundant results.
+- Embedding model: local `all-MiniLM-L6-v2` GGUF (~25MB, 384 dimensions) for offline operation, `text-embedding-3-small` (1536 dimensions) as online fallback. Retrieval pipeline normalizes across both dimension sizes.
+- **Scalability**: sqlite-vec uses brute-force KNN — performant up to ~100K vectors, sufficient for per-project memory. Cold archival keeps active vector count manageable.
+- Cache embeddings in `.ade/embeddings.db` (gitignored, regenerated in ~30s background job on first startup).
+- Budget tiers for context injection: **Lite (3 entries)** for quick tasks, **Standard (8 entries)** for normal work, **Deep (20 entries)** for mission planning.
 
 ##### Mem0 Sidecar Decision (Deferred)
 
-- `Mem0` remains a candidate integration as an optional semantic sidecar layer on top of ADE memory.
-- Phase 4 does **not** depend on Mem0 shipping; the baseline remains native/local memory retrieval (`sqlite-vec` hybrid search) with durable memory lifecycle in ADE.
-- Revisit Mem0 after Phase 4 memory baseline + CTO rollout stabilizes, and evaluate:
-  - sidecar reliability and fallback behavior,
-  - provider flexibility (fully local vs API-backed embeddings/extraction),
-  - operational complexity vs incremental retrieval quality gains.
-- If adopted later, Mem0 should be opt-in and non-breaking: semantic path first, then fallback to existing ADE retrieval when unavailable.
+Mem0 remains a candidate integration as an optional semantic sidecar. Phase 4 does **not** depend on Mem0. Revisit after Phase 4 memory baseline + CTO rollout stabilizes.
 
 ##### Composite Scoring for Retrieval
 
@@ -531,40 +526,34 @@ function computeMemoryScore(memory: Memory, semanticSimilarity: number): number 
 }
 ```
 
-Memories are ranked by this composite score during retrieval. The weights ensure that semantically relevant memories dominate, but frequently accessed and recent memories get a meaningful boost.
-
 ##### Pre-Compaction Memory Flush
 
-- Before context compaction (at 70% threshold, already shipped in Hivemind HW6), trigger a silent agentic turn.
-- The agent is prompted to persist important memories to disk before context is lost.
-- Uses the agent's own intelligence to decide what matters — the agent reviews its current context and calls memory tools to save anything it deems important.
-- Flush counter prevents double-flushing: each compaction event is assigned a monotonic ID, and the flush is skipped if the current ID has already been flushed.
+- Before context compaction (at 70% threshold, shipped in Hivemind HW6), trigger a silent agentic turn.
+- Agent is prompted to persist important memories to disk before context is lost.
+- Uses agent's own intelligence to decide what matters — reviews current context and calls memory tools.
+- Flush counter prevents double-flushing: each compaction event gets a monotonic ID, flush skipped if current ID already flushed.
 - Integrates with existing `compactionEngine.ts` via a pre-compaction hook.
 
-##### Memory Write Policy (Phase 4 + CTO-aligned)
+##### Memory Write Policy
 
-- Memory writes should be policy-driven rather than "save everything":
-  - **Always write**: durable architectural decisions, stable project conventions, high-signal gotchas, repeatable procedures.
-  - **Candidate first**: uncertain/temporary observations, plan assumptions, risks pending validation.
-  - **Do not write**: transient tool noise, one-off logs, stale intermediate reasoning.
-- Candidate memories are promoted via confidence + review flow; low-value/aged entries are archived.
-- Pre-compaction flush captures critical facts before context eviction, with the agent deciding what is worth preserving.
-- This policy applies to mission workers and is the same foundation the CTO uses when Phase 4 W1/W3 land together.
+- **Always write**: durable architectural decisions, stable conventions, high-signal gotchas, repeatable procedures.
+- **Candidate first**: uncertain observations, plan assumptions, risks pending validation.
+- **Do not write**: transient tool noise, one-off logs, stale intermediate reasoning.
+- Candidate memories promoted via confidence + review flow; low-value/aged entries archived.
 
 ##### Memory Consolidation
 
-- When a new memory is saved, compare against existing memories using cosine similarity (threshold > 0.85).
-- If a similar memory is found, invoke an LLM to decide the consolidation action:
-  - **PASS**: New memory is redundant — discard it silently.
-  - **REPLACE**: New memory supersedes the existing one — update the existing record with new content.
-  - **APPEND**: Both contain unique information — merge them into a single, richer memory.
-  - **DELETE**: Existing memory is obsolete in light of new information — remove the old one and save the new one.
-- Runs on save, not as a batch job — keeps memory clean in real-time.
-- Prevents unbounded growth by ensuring the memory store does not accumulate near-duplicate entries.
+- On save, compare new memory against existing memories using cosine similarity (threshold > 0.85).
+- If similar memory found, invoke LLM to decide:
+  - **PASS**: New memory is redundant — discard silently.
+  - **REPLACE**: New supersedes existing — update.
+  - **APPEND**: Both unique — merge into single richer memory.
+  - **DELETE**: Existing obsolete — remove old, save new.
+- Runs on save, not as batch job. Prevents unbounded growth.
 
 ##### Episodic Memory
 
-After each session or mission completes, generate a structured summary capturing what happened, what was learned, and what to remember for next time.
+After each session/mission, generate a structured summary:
 
 ```typescript
 interface EpisodicMemory {
@@ -583,149 +572,92 @@ interface EpisodicMemory {
 }
 ```
 
-Episodic memories are generated by prompting the agent to reflect on the completed work. They are stored as Tier 2 (hot) memories initially and decay to Tier 3 (cold) over time based on access patterns.
+Stored as Tier 2 initially, decay to Tier 3 over time based on access patterns.
 
 ##### Procedural Memory
 
 ```typescript
 interface ProceduralMemory {
   id: string;
-  trigger: string;       // When to apply (e.g., "when running tests in the auth module")
-  procedure: string;     // What to do (e.g., "always run setup checks first, then seed, then test")
+  trigger: string;       // When to apply
+  procedure: string;     // What to do
   confidence: number;    // 0-1, increases with successful applications
-  successCount: number;  // How many times this procedure led to success
-  failureCount: number;  // How many times this procedure led to failure
-  lastUsed: string;      // ISO 8601 timestamp
+  successCount: number;
+  failureCount: number;
+  lastUsed: string;
 }
 ```
 
-Procedural memories are extracted from episodic memories when a pattern is observed multiple times. They encode learned workflows that agents can apply automatically when the trigger condition matches.
+Extracted from episodic memories when a pattern is observed multiple times. Encode learned workflows applied automatically when trigger conditions match.
 
 ##### New Memory Tools for Agents
 
-- **`memorySearch`** — Upgraded with hybrid BM25+vector search. Agents call this to retrieve relevant memories during execution. Returns results ranked by composite score.
-- **`memoryAdd`** — Upgraded with consolidation check. When an agent saves a new memory, the system automatically checks for near-duplicates and consolidates as needed.
-- **`memoryUpdateCore`** — Self-edit Tier 1 working context. Agents can update their own core memory block (persona, current task context, critical conventions) without a full memory save cycle.
-- **`memoryPin`** — Pin a critical memory to Tier 1. Ensures the memory is always included in context, bypassing the retrieval scoring system.
+- **`memorySearch`** — Hybrid BM25+vector search, ranked by composite score.
+- **`memoryAdd`** — With consolidation check on save.
+- **`memoryUpdateCore`** — Self-edit Tier 1 working context.
+- **`memoryPin`** — Pin a critical memory to Tier 1 (always in context, bypasses retrieval scoring).
 
-##### Prior Art & Design References
+**Tests:**
+- Vector search accuracy: hybrid BM25+vector vs keyword-only retrieval quality.
+- Pre-compaction flush: memories persisted before compaction, flush counter prevents double-flush.
+- Memory consolidation: PASS/REPLACE/APPEND/DELETE operations with cosine similarity threshold.
+- Episodic memory extraction: post-session and post-mission summaries with correct structure.
+- Procedural memory extraction: pattern detection from repeated episodic memories.
+- Composite scoring: recency decay with 30-day half-life, importance weighting, access boost capping.
+- Memory tier promotion/demotion: Tier 2 → Tier 3 decay, Tier 2 → Tier 1 pinning.
+- Candidate sweep: auto-promote at confidence threshold, archive stale candidates.
 
-ADE's memory architecture is informed by research across the agent memory landscape. This section documents the external systems and academic findings that shaped our design decisions.
+#### W7: Learning Packs (Auto-Curated Project Knowledge)
 
-**Tiered Memory Hierarchy — MemGPT / Letta**
-The three-tier model (Core / Hot / Cold) is directly inspired by MemGPT (now Letta). MemGPT introduced the idea of treating LLM context as "main memory" and external storage as "disk", with the agent managing its own memory via explicit read/write operations. Their architecture uses core memory blocks (always in context, self-editable), archival memory (vector-searched cold storage), and recall memory (conversation history). ADE adapts this into Tier 1/2/3 with the addition of composite scoring and cross-machine portability via `.ade/`. Letta's benchmark found that simple file operations achieved 74% accuracy on memory tasks — validating our choice of file-based portable storage over complex database replication.
-
-**Memory Consolidation — Mem0**
-The PASS/REPLACE/APPEND/DELETE consolidation model is adapted from Mem0's memory management system. Mem0 performs real-time deduplication on every write by comparing new memories against existing entries using cosine similarity. When overlap is detected, an LLM decides whether to keep both (PASS), replace the old (REPLACE), merge them (APPEND), or remove the old one (DELETE). ADE uses Mem0's approach with a conservative 0.85 similarity threshold and extends it with scope-aware matching (only compare within the same memory scope). Mem0's benchmark (68.5% accuracy) and Letta's (74%) both informed our decision to keep the consolidation model simple and file-backed.
-
-**Composite Scoring — CrewAI**
-The weighted composite score formula (`semantic(0.5) + recency(0.2) + importance(0.2) + access(0.1)`) is adapted from CrewAI's memory retrieval system. CrewAI's `RecallFlow` uses a similar multi-signal approach combining semantic similarity with temporal decay and access frequency. ADE simplifies the weights for predictability and adds the explicit importance dimension (user-set tags rather than inferred importance).
-
-**Pre-Compaction Flush — OpenClaw**
-The silent agentic turn before context compaction is inspired by OpenClaw's memory management. OpenClaw uses Markdown-based memory files (MEMORY.md + daily logs) that the agent reads and writes as part of its workflow. Before context is evicted, the agent is prompted to persist anything important — using the agent's own intelligence rather than a mechanical extractor. ADE formalizes this with a flush counter (prevent double-flush) and integration with the compaction engine's threshold system.
-
-**Hybrid BM25 + Vector Search — OpenClaw / RAG Literature**
-OpenClaw's memory search combines keyword (BM25) and semantic (vector) search with configurable weights. This hybrid approach is well-established in RAG literature — BM25 excels at exact identifier matching (function names, error codes) while vector search finds conceptually related content. ADE adopts the 30/70 BM25/vector split with MMR re-ranking to reduce result redundancy.
-
-**Episodic & Procedural Memory — LangMem / LangChain**
-LangMem (LangChain's memory research project) introduced the taxonomy of episodic memory (structured post-session summaries) and procedural memory (learned tool-usage patterns) for LLM agents. ADE's `EpisodicMemory` and `ProceduralMemory` interfaces are informed by LangMem's approach, adapted with confidence scoring and self-reinforcement (success/failure counts). LangMem's key insight: procedural memories should be extracted from recurring episodic patterns, not from individual sessions — ADE follows this by requiring pattern observation across multiple episodes before creating a procedural entry.
-
-**Zettelkasten-Inspired Linking — A-MEM**
-A-MEM's research applies Zettelkasten (networked note-taking) principles to LLM memory. Each memory entry is enriched with automatic links to related entries, creating a knowledge graph rather than a flat list. While ADE does not implement full Zettelkasten linking in Phase 4, the consolidation system's APPEND operation creates implicit links, and the composite scoring formula ensures related memories surface together. Full graph-based memory navigation is a candidate for a future phase.
-
-**Observation Masking — JetBrains NeurIPS 2025**
-JetBrains' research (presented at NeurIPS 2025 Agentic AI workshop) found that **observation masking** — replacing old tool outputs with simple placeholders — outperforms LLM-based summarization for context management while being significantly cheaper. Their finding: replacing `<tool_output>full output here</tool_output>` with `<tool_output>[output omitted]</tool_output>` preserves agent performance better than asking an LLM to summarize the output. ADE applies this in context assembly: when building prompts for resumed sessions, old tool outputs beyond the most recent N are masked rather than summarized.
-
-**Context Window Separation — Elvis Sun (ZOE/CODEX)**
-Elvis Sun's ZOE/CODEX architecture (documented in his X thread and community discussions) demonstrates the principle of separating business context from code context. His setup uses ZOE as an orchestrator managing business logic and decision-making in one context window, while CODEX workers handle pure code generation in separate windows. This informed ADE's leader/worker separation: the orchestrator maintains mission context (planning, coordination, decisions) while workers maintain code context (file contents, test results, implementation details). Context windows are zero-sum — mixing both degrades both.
-
-**SOUL.md Pattern — Community Practice**
-The identity persistence pattern using versioned Markdown files to define agent persona, voice, constraints, and behavioral rules emerged from community practice around Claude Code's `CLAUDE.md` and OpenClaw's `MEMORY.md`. ADE formalizes this as `.ade/cto/core-memory.json` with explicit version history and audit trail, extending the informal pattern into a structured, policy-enforced system.
-
-##### Storage: .ade/ Directory for Portability
-
-```
-.ade/
-├── cto/
-│   ├── identity.yaml          # CTO persona, model preferences, policy config
-│   ├── core-memory.json       # CTO Tier 1: persona and project context
-│   ├── memory/                # CTO Tier 2: hot memories + archive/
-│   └── sessions.jsonl         # CTO session history log
-├── agents/
-│   ├── backend-dev/
-│   │   ├── identity.yaml      # Worker persona, adapter config, heartbeat policy
-│   │   ├── core-memory.json   # Worker Tier 1 core memory
-│   │   ├── memory/            # Worker Tier 2 + archive
-│   │   └── sessions.jsonl     # Worker session log
-│   ├── mobile-dev/
-│   │   └── ...
-│   └── qa-engineer/
-│       └── ...
-├── templates/
-│   ├── bug-fix.yaml           # Mission template: bug fixes
-│   ├── feature.yaml           # Mission template: features
-│   └── refactor.yaml          # Mission template: refactors
-├── memory/
-│   ├── project.json           # Project-level facts (Tier 2/3)
-│   ├── learning-pack.json     # Auto-curated knowledge
-│   └── archive/               # Cold storage (Tier 3)
-├── history/
-│   └── missions.jsonl         # Mission run log (append-only)
-└── embeddings.db              # sqlite-vec embeddings cache
-```
-
-- Tiny config files (agents, identities, context docs, `local.yaml`) are committable to the repo for version tracking.
-- **App state syncs via cr-sqlite** (Phase 6) — the database (`ade.db`) replicates across devices in real-time. Git tracks code and config, cr-sqlite syncs app state.
-- `.ade/local.yaml` (git-tracked) holds project-level config (lane templates, phase profiles, feature flags — no secrets).
-- `.ade/local.secret.yaml` (gitignored) holds machine-specific secrets (API keys, local paths, external MCP server configs).
-
-#### W4: Learning Packs (Auto-Curated Project Knowledge)
-
-A context pack type that automatically accumulates project-specific knowledge from agent interactions, building a persistent memory that improves agent performance over time. Learning packs feed into the memory system (W3) as high-confidence project-scope entries.
+A context pack type that automatically accumulates project-specific knowledge from agent interactions. Learning packs feed into the memory system (W6) as high-confidence project-scope entries.
 
 - New pack type: `LearningPack` alongside existing Lane/Project/Mission/Feature packs.
 - **Knowledge sources** (automatic):
-  - Mission/agent run failures and their resolutions (what went wrong, how it was fixed)
-  - User interventions during agent work (what the user corrected → inferred rule)
-  - Repeated issues across agent chat sessions (same error 3+ times → recorded pattern)
-  - PR review feedback patterns (reviewer consistently requests X → recorded preference)
+  - Mission/agent run failures and their resolutions.
+  - User interventions during agent work (what the user corrected → inferred rule).
+  - Repeated issues across agent chat sessions (same error 3+ times → recorded pattern).
+  - PR review feedback patterns (reviewer consistently requests X → recorded preference).
 - **Knowledge entries**:
   ```typescript
   interface LearningEntry {
     id: string;
     category: 'mistake-pattern' | 'preference' | 'flaky-test' | 'tool-usage' | 'architecture-rule';
-    scope: 'global' | 'directory' | 'file-pattern';  // How broadly it applies
-    scopePattern?: string;                              // e.g., "src/auth/**" for directory scope
-    content: string;                                    // The actual learning (human-readable rule)
-    confidence: number;                                 // 0-1, increases with repeated observations
-    observationCount: number;                           // How many times this was observed
-    sources: string[];                                  // IDs of missions/sessions that contributed
+    scope: 'global' | 'directory' | 'file-pattern';
+    scopePattern?: string;           // e.g., "src/auth/**"
+    content: string;                 // Human-readable rule
+    confidence: number;              // 0-1
+    observationCount: number;
+    sources: string[];               // IDs of contributing missions/sessions
     createdAt: string;
     updatedAt: string;
   }
   ```
-- **Injection**: Learning pack contents are injected into orchestrator context alongside project packs. High-confidence entries (confidence > 0.7) are always included; low-confidence entries are included when scope matches the current task.
-- **User review**: Entries are visible and editable in Settings → Learning. Users can confirm, edit, or delete entries. Confirmed entries get confidence boost.
-- **Export/import**: Learning packs can be exported to/from CLAUDE.md or agents.md format for interoperability with standard agent config files.
-- **Storage**: New `learning_entries` SQLite table with full-text search for efficient retrieval.
-- **Privacy**: Learning packs are local-only (never transmitted). They travel with the project directory.
+- **Injection**: High-confidence entries (confidence > 0.7) always included in orchestrator context; low-confidence entries included when scope matches current task.
+- **User review**: Entries visible and editable in Settings → Learning. User confirmation boosts confidence.
+- **Export/import**: Learning packs exportable to/from CLAUDE.md or agents.md format.
+- **Storage**: New `learning_entries` SQLite table with full-text search.
+- **Privacy**: Local-only (never transmitted). Travels with project directory.
 
-##### Carry-Over Scope: Skill Library (Recipes + Extraction + `.claude/skills/`)
+##### Carry-Over Scope: Skill Library
 
-To absorb the remaining skill-library gap into Phase 4, W4 includes a staged bridge from learning signals to reusable skills:
+- **Phase 4 baseline**: Read-only visibility for agent commands/skills files (aligned with PROJ-039).
+- **Recipe candidate extraction**: Derive candidate "how-to" recipes from repeated successful missions/interventions (stored as reviewable learning entries first).
+- **User-approved materialization**: Confirmed recipe candidates exportable to `.claude/skills/<name>/SKILL.md`.
+- **Separation**: Memory entries = "what is true" (facts/decisions); Skill recipes = "how to do it" (workflows).
 
-- **Phase 4 baseline (viewer/discovery)**: ship read-only visibility for agent commands/skills files (aligned with PROJ-039 goals).
-- **Recipe candidate extraction**: derive candidate "how-to" recipes from repeated successful missions/interventions (stored as reviewable learning entries first, not auto-published as skills).
-- **User-approved materialization**: confirmed recipe candidates can be exported to `.claude/skills/<name>/SKILL.md`.
-- **Separation of concerns**:
-  - Memory entries capture "what is true" (facts/decisions/preferences),
-  - Skill recipes capture "how to do it" (repeatable workflows).
+- **Renderer**: Learning entries panel in Settings. Confidence indicators. Scope badges. Export/import buttons.
 
-#### W5: External MCP Consumption
+**Tests:**
+- Entry accumulation: auto-capture from failures, interventions, repeated issues.
+- Confidence scoring: observation count → confidence increase, user confirmation boost.
+- Injection: high-confidence always included, scope-matched low-confidence included.
+- Export/import roundtrip: CLAUDE.md format, agents.md format.
 
-ADE agents (mission workers and the CTO agent) can consume external MCP servers, extending their capabilities beyond what ADE provides natively.
+#### W8: External MCP Consumption
 
-- **Configuration**: External MCP servers are declared in `.ade/local.secret.yaml` (gitignored, contains API keys) under an `externalMcp` key:
+ADE agents (mission workers and CTO) can consume external MCP servers, extending capabilities beyond what ADE provides natively.
+
+- **Configuration**: External MCP servers declared in `.ade/local.secret.yaml` (gitignored):
   ```yaml
   externalMcp:
     - name: web-browser
@@ -742,57 +674,49 @@ ADE agents (mission workers and the CTO agent) can consume external MCP servers,
       command: npx
       args: ["-y", "@anthropic/mcp-linear"]
   ```
-- **Tool discovery**: On startup, ADE connects to declared external MCP servers, discovers their available tools, and registers them in the tool namespace with a prefix (e.g., `ext.web-browser.navigate`, `ext.notion.search`).
-- **CTO agent access**: The CTO agent can use external MCP tools for research, documentation queries, issue tracking, and other cross-system tasks.
-- **Mission worker access**: Mission workers can use external MCP tools per a mission-level MCP profile. The mission launch flow includes an MCP tool selector that specifies which external tools are available for the mission.
-- **Use cases**:
-  - Agent needs to browse the web → connects to an MCP server that provides web browsing tools
-  - Agent needs to read Notion documentation → connects to Notion MCP server
-  - Agent needs to create Linear issues → connects to Linear MCP server
-  - Agent needs to query a database → connects to a database MCP server
-- **Lifecycle management**: ADE manages the lifecycle of external MCP server connections — starting them on demand, health-checking, reconnecting on failure, and shutting down when no agents need them.
-- **Security**: External MCP tools are subject to the same guardrail enforcement as built-in tools. Budget enforcement applies to external tool invocations that incur costs.
+- **Tool discovery**: On startup, ADE connects to declared servers, discovers tools, registers with prefix (e.g., `ext.web-browser.navigate`, `ext.notion.search`).
+- **CTO agent access**: External MCP tools available for research, documentation queries, issue tracking, cross-system tasks.
+- **Mission worker access**: Per mission-level MCP profile. Mission launch flow includes MCP tool selector.
+- **Lifecycle management**: ADE manages connections — start on demand, health-check, reconnect on failure, shutdown when unused.
+- **Security**: External MCP tools subject to same guardrail enforcement as built-in tools. Budget enforcement applies to external tool invocations that incur costs.
 
-#### W6: OpenClaw Bridge (External Agent Gateway Integration)
+- **Renderer**: External MCP configuration in Settings. Tool discovery status. Connection health indicators.
+
+**Tests:**
+- Tool discovery and namespace prefixing.
+- Lifecycle management: connect, health-check, reconnect, shutdown.
+- Permission enforcement on external tools.
+- Configuration parsing: `.ade/local.secret.yaml`, stdio and SSE transport support.
+
+#### W9: OpenClaw Bridge (External Agent Gateway)
+
+> Source: OpenClaw integration architecture from [features/CTO.md § OpenClaw Integration Architecture](../features/CTO.md).
 
 Connect ADE's CTO agent to OpenClaw (or similar external agent gateways), enabling bidirectional communication between the user's personal agent network and ADE's tech-focused CTO.
 
 - **Conceptual model**:
-  - OpenClaw is the user's personal life gateway — multiple agents (virtual self, CFO, marketing lead, etc.) handling different domains via messaging platforms.
+  - OpenClaw is the user's personal life gateway — multiple agents handling different domains.
   - ADE CTO is the entire tech department — one persistent agent with deep project knowledge.
   - The bridge makes CTO accessible as a specialist within the user's OpenClaw agent network.
 
 - **Bridge service** (`openclawBridgeService.ts` in `src/main/services/`):
-  - **HTTP server** (port 3742, configurable): Receives inbound requests from OpenClaw hooks and skills. Acknowledges immediately, forwards to CTO via IPC, returns response.
-  - **WebSocket operator client**: Connects to OpenClaw's Gateway (`ws://127.0.0.1:18789`) as an `operator` role client for bidirectional, low-latency communication.
+  - **HTTP server** (port 3742): Receives inbound requests from OpenClaw hooks/skills. Acknowledges immediately, forwards to CTO via IPC, returns response.
+  - **WebSocket operator client**: Connects to OpenClaw's Gateway (`ws://127.0.0.1:18789`) as `operator` role for bidirectional, low-latency communication.
   - Handles OpenClaw's device pairing protocol: challenge-nonce handshake, `connect` request with auth token, `deviceToken` persistence for reconnection.
   - Subscribes to `agent` and `chat` events for real-time message routing.
 
-- **Inbound flow (OpenClaw → CTO)**:
-  1. OpenClaw agent calls `sessions_send` targeting a `hook:ade-cto` session key.
-  2. Gateway hook triggers `message:received`, POSTs to ADE bridge HTTP endpoint.
-  3. Bridge forwards to CTO via IPC, CTO processes with full memory + MCP tools.
-  4. Bridge POSTs reply back via OpenClaw's `POST /hooks/agent` endpoint.
+- **Inbound flow (OpenClaw → CTO)**: OpenClaw agent calls `sessions_send` targeting `hook:ade-cto` → Gateway hook POSTs to bridge → bridge forwards to CTO via IPC → CTO processes → bridge POSTs reply back.
 
-- **Outbound flow (CTO → OpenClaw)**:
-  1. CTO (or orchestrator) wants to proactively message an OpenClaw agent.
-  2. Bridge calls `sessions_send` over the WebSocket operator connection.
-  3. Target OpenClaw agent receives the message; replies stream back as `agent` events.
+- **Outbound flow (CTO → OpenClaw)**: CTO/orchestrator wants to proactively message OpenClaw agent → bridge calls `sessions_send` over WebSocket → target agent receives and replies stream back as `agent` events.
 
-- **OpenClaw-side configuration** (documented for users, not implemented by ADE):
-  - `~/.openclaw/openclaw.json`: Enable `agentToAgent`, configure hooks token and `allowRequestSessionKey`.
-  - `~/.openclaw/workspace/skills/ade-cto/SKILL.md`: Custom skill teaching OpenClaw agents how to invoke CTO.
-
-- **Fallback: skill-only bridge** (no WebSocket):
-  - Simpler one-directional integration where OpenClaw agents use `exec` + `curl` to hit ADE's HTTP endpoint.
-  - Suitable for initial setup; the full bidirectional bridge is recommended for production.
+- **Fallback: skill-only bridge** (no WebSocket): Simpler one-directional integration where OpenClaw agents use `exec` + `curl` to hit ADE's HTTP endpoint.
 
 - **IPC channels**:
   - `openclaw:message-received` — inbound message from OpenClaw to CTO.
-  - `cto:forward-to-openclaw` — outbound message from CTO to an OpenClaw agent.
+  - `cto:forward-to-openclaw` — outbound message from CTO to OpenClaw agent.
   - `openclaw:connection-status` — bridge connection state for UI indicator.
 
-- **Configuration** (in `.ade/local.secret.yaml`, gitignored — contains secrets):
+- **Configuration** (in `.ade/local.secret.yaml`, gitignored):
   ```yaml
   openclaw:
     enabled: false
@@ -803,71 +727,82 @@ Connect ADE's CTO agent to OpenClaw (or similar external agent gateways), enabli
     deviceToken: <persisted-after-first-handshake>
   ```
 
-- **Dependency**: W1 (CTO Agent) must be functional — the bridge routes to CTO.
-- **Scope boundary**: ADE implements the bridge service and HTTP/WS endpoints. OpenClaw-side configuration (hooks, skills, agent setup) is user-managed and documented in `docs/features/CTO.md`.
+- **Scope boundary**: ADE implements the bridge service. OpenClaw-side configuration (hooks, skills, agent setup) is user-managed and documented in `docs/features/CTO.md`.
 
-#### W7: Validation & Testing
+- **Renderer**: OpenClaw connection status indicator in CTO tab. Bridge configuration in Settings.
 
-Comprehensive test coverage for all Phase 4 workstreams.
+**Tests:**
+- HTTP endpoint: inbound message acceptance, async CTO forwarding, response delivery.
+- WebSocket operator: handshake (challenge-nonce, connect, hello-ok), reconnection with persisted `deviceToken`.
+- Outbound: `sessions_send` over WebSocket delivers to OpenClaw and receives reply events.
+- Configuration: `.ade/local.secret.yaml` openclaw section parsing, enabled/disabled toggle, secret isolation.
+- Error handling: OpenClaw gateway unavailable (graceful degradation), CTO unavailable (queued retry), malformed inbound requests (reject with error).
 
-- **CTO + Org system tests** (W1):
-  - Core memory persistence across sessions (CTO and workers).
-  - Memory reconstruction on session start.
-  - Session history log integrity.
-  - MCP tool access from CTO and worker contexts.
-  - **Org chart tests** (W1b): Agent creation, reportsTo hierarchy, cycle detection (max 50 hops), chain-of-command traversal, org tree reconstruction from flat list, agent removal (unlink direct reports).
-  - **Multi-adapter tests** (W1b): Claude-local adapter spawns CLI correctly, OpenClaw webhook adapter sends HTTP POST, process adapter spawns subprocess, adapter hot-swap preserves identity/memory.
-  - **Config versioning tests** (W1b): Revision creation on config change, before/after snapshot accuracy, changed-keys detection, rollback, redacted-secret rollback prevention.
-  - **Budget auto-pause tests** (W1b): Cost event recording, monthly spend increment, auto-pause at budget ceiling, CTO notification on pause, monthly reset.
-  - **Task session persistence tests** (W1b): Session save on run completion, session resume on re-invocation, session keyed by (agentId, adapterType, taskKey), session clear signal.
-  - **Heartbeat tests** (W1c): Timer-based wakeup fires at intervalSec, active hours enforcement, wakeOnDemand triggers, two-tier execution (cheap check skips LLM when no changes), HEARTBEAT_OK suppression.
-  - **Coalescing tests** (W1c): Duplicate wakeup merges context into running execution, deferred promotion on run completion, orphan reaping on restart.
-  - **Issue execution locking tests** (W1c): Atomic lock on checkout, stale adoption after crash, lock release on completion.
-  - **Linear sync tests** (W1d): Candidate issue polling, priority sorting, blocked-by filtering, auto-dispatch with template matching, escalation for unmatched issues, concurrency limit enforcement.
-  - **Linear outbound tests** (W1d): State update on mission start/complete/fail, workpad comment creation and update, PR link posting, label addition.
-  - **Reconciliation tests** (W1d): External close → mission cancel, external reassign → worker release, stall detection → restart.
-  - **Mission template tests** (W1d): Template loading from `.ade/templates/`, variable rendering with issue context, template selection by CTO classification.
+#### W10: .ade/ Portable State
 
-- **Night Shift guardrail tests** (W2):
-  - Stop conditions (first-failure, budget-exhaustion, intervention-threshold, rate-limited, reserve-protected).
-  - Subscription-aware scheduling (utilization modes, rate limit awareness, weekly reserve).
-  - Multi-batch scheduling across rate limit resets.
-  - Morning briefing card rendering and interaction (approve/dismiss/investigate).
-  - Bulk action tests.
-  - Digest generation accuracy.
+Consolidates the project-level `.ade/` directory structure, git-tracking policy, and configuration split (tracked vs. secret). This workstream materializes the storage layout that W1 (CTO state) and W6 (memory) populate.
 
-- **Memory architecture tests** (W3):
-  - Vector search accuracy (hybrid BM25+vector vs keyword-only retrieval quality).
-  - Pre-compaction flush (memories persisted before compaction, flush counter prevents double-flush).
-  - Memory consolidation (PASS/REPLACE/APPEND/DELETE operations with cosine similarity threshold).
-  - Episodic memory extraction (post-session and post-mission summaries with correct structure).
-  - Procedural memory extraction (pattern detection from repeated episodic memories).
-  - Composite scoring (recency decay with 30-day half-life, importance weighting, access boost capping).
-  - Memory tier promotion/demotion (Tier 2 → Tier 3 decay, Tier 2 → Tier 1 pinning).
-  - `.ade/` portability (config files round-trip via git, app state round-trip via cr-sqlite in Phase 6, local.secret.yaml isolation).
+- **Complete directory structure**:
+  ```
+  .ade/
+  ├── cto/
+  │   ├── identity.yaml          # CTO persona, model preferences, policy config
+  │   ├── core-memory.json       # CTO Tier 1: persona and project context
+  │   ├── memory/                # CTO Tier 2: hot memories + archive/
+  │   └── sessions.jsonl         # CTO session history log
+  ├── agents/
+  │   ├── backend-dev/
+  │   │   ├── identity.yaml      # Worker persona, adapter config, heartbeat policy
+  │   │   ├── core-memory.json   # Worker Tier 1 core memory
+  │   │   ├── memory/            # Worker Tier 2 + archive
+  │   │   └── sessions.jsonl     # Worker session log
+  │   └── ...
+  ├── templates/
+  │   ├── bug-fix.yaml           # Mission template: bug fixes
+  │   ├── feature.yaml           # Mission template: features
+  │   └── refactor.yaml          # Mission template: refactors
+  ├── context/
+  │   ├── PRD.ade.md             # AI-generated project context
+  │   └── ARCHITECTURE.ade.md   # AI-generated architecture context
+  ├── memory/
+  │   ├── project.json           # Project-level facts (Tier 2/3)
+  │   ├── learning-pack.json     # Auto-curated knowledge (W7)
+  │   └── archive/               # Cold storage (Tier 3)
+  ├── history/
+  │   └── missions.jsonl         # Mission run log (append-only)
+  ├── local.yaml                 # Git-tracked: project config (lane templates, phase profiles, feature flags - NO secrets)
+  ├── local.secret.yaml          # Gitignored: machine-specific secrets (API keys, local paths, external MCP configs)
+  ├── ade.db                     # cr-sqlite synced (Phase 6): ALL app state (gitignored)
+  ├── ade.db-wal                 # WAL file (gitignored)
+  ├── mcp.sock                   # Runtime socket (gitignored)
+  ├── embeddings.db              # sqlite-vec embeddings cache (gitignored, regenerated)
+  ├── transcripts/               # Machine-specific logs (gitignored)
+  ├── cache/                     # Machine-specific cache (gitignored)
+  ├── worktrees/                 # Machine-specific lane checkouts (gitignored)
+  └── secrets/                   # Machine-specific secrets (gitignored)
+  ```
 
-- **Learning pack tests** (W4):
-  - Entry accumulation (auto-capture from failures, interventions, repeated issues).
-  - Confidence scoring (observation count → confidence increase, user confirmation boost).
-  - Injection (high-confidence always included, scope-matched low-confidence included).
-  - Export/import roundtrip (CLAUDE.md format, agents.md format).
+- **Git-tracking policy**:
+  - **Tracked** (committable): `cto/`, `agents/`, `templates/`, `context/`, `memory/`, `history/`, `local.yaml` — tiny config files for version tracking.
+  - **Gitignored** (machine-specific): `local.secret.yaml`, `ade.db*`, `mcp.sock`, `embeddings.db`, `transcripts/`, `cache/`, `worktrees/`, `secrets/`.
 
-- **External MCP consumption tests** (W5):
-  - Tool discovery and namespace prefixing.
-  - Lifecycle management (connect, health-check, reconnect, shutdown).
-  - Permission enforcement on external tools.
-  - Configuration parsing (.ade/local.yaml, stdio and SSE transport support).
+- **Configuration split**:
+  - `local.yaml` (tracked): Lane templates, phase profiles, feature flags, Linear sync config (project slug, dispatch rules, concurrency limits). No secrets.
+  - `local.secret.yaml` (gitignored): API keys, external MCP server configs, Linear API token, OpenClaw gateway token, local paths.
 
-- **OpenClaw bridge tests** (W6):
-  - HTTP endpoint: inbound message acceptance, async CTO forwarding, response delivery.
-  - WebSocket operator: handshake (challenge-nonce, connect, hello-ok), reconnection with persisted deviceToken.
-  - Outbound: `sessions_send` over WebSocket delivers to OpenClaw and receives reply events.
-  - Configuration: `.ade/local.yaml` openclaw section parsing, enabled/disabled toggle, secret isolation.
-  - Error handling: OpenClaw gateway unavailable (graceful degradation), CTO unavailable (queued retry), malformed inbound requests (reject with error).
+- **App state sync strategy**: Git tracks code and config. cr-sqlite (Phase 6) syncs app state (`ade.db`). Embeddings are local-only and regenerated on new machines.
 
-### Phase 4 / Phase 5.5 Bridge Notes
+- **Startup validation**: On app startup, verify `.ade/` structure exists and is well-formed. Create missing directories. Validate `local.yaml` schema. Warn on missing `local.secret.yaml` if features require it.
 
-Phase 4 does not introduce compute backend selection (VPS/Daytona/E2B) — that remains Phase 5.5 scope. Mission workers run locally in Phase 4. When Phase 5.5 ships, remote compute backends become available for mission phases, and the CTO agent can leverage remote environments for exploration and testing.
+- **Migration**: Move any existing state (from pre-Phase-4 storage) into the `.ade/` structure.
+
+- **Renderer**: `.ade/` structure visible in Settings → Project. Configuration editor for `local.yaml`.
+
+**Tests:**
+- Config files round-trip via git (tracked files preserve through clone/checkout).
+- `local.secret.yaml` isolation: never appears in git status after `.gitignore` setup.
+- Startup validation: missing directories created, schema validation catches malformed `local.yaml`.
+- Migration: existing state moved correctly into new structure.
 
 ### Exit criteria
 
@@ -877,6 +812,7 @@ Phase 4 does not introduce compute backend selection (VPS/Daytona/E2B) — that 
 - Each worker has its own identity, memory tiers, adapter config, heartbeat policy, and budget.
 - Heartbeat system activates agents on schedule or demand, with coalescing, deferred promotion, and orphan reaping.
 - Bidirectional Linear sync: CTO polls Linear for issues, auto-dispatches missions via templates, and posts results back (state updates, workpad comments, PR links).
+- Reconciliation validates running missions against Linear state on every heartbeat.
 - Auto-dispatch policies are user-configurable per label/priority with escalation for complex work.
 - Per-agent monthly budgets with auto-pause enforcement and CTO notification.
 - Agent config versioning with rollback support.
@@ -884,17 +820,13 @@ Phase 4 does not introduce compute backend selection (VPS/Daytona/E2B) — that 
 - Task session persistence enables workers to resume context when re-invoked on the same task.
 - CTO and worker memory persists across sessions via `.ade/cto/` and `.ade/agents/` directories.
 - Night Shift mode in Automations tab provides overnight execution with subscription-aware scheduling and guardrails.
-- Morning Briefing provides a swipeable card interface for reviewing overnight results (approve/dismiss/investigate).
-- Morning Briefing appears as modal overlay on app launch after Night Shift completes, and on-demand from Automations tab.
-- Memory retrieval uses hybrid BM25+vector search with composite scoring (semantic similarity, recency, importance, access frequency).
-- Pre-compaction flush prevents memory loss during context compaction by triggering agent-driven memory persistence.
-- Memory consolidation prevents unbounded growth via real-time deduplication on save (PASS/REPLACE/APPEND/DELETE).
-- Episodic memories are generated after session/mission completion with structured summaries.
-- Procedural memories are extracted from recurring episodic patterns and applied automatically when trigger conditions match.
-- `.ade/` directory provides portable state across machines — git is the sync layer.
-- Learning packs accumulate project knowledge from agent interactions with confidence scoring and scope matching.
-- Learning pack entries are visible and editable in Settings; export/import to CLAUDE.md format is supported.
-- ADE agents (mission workers and CTO) can consume external MCP servers for extended capabilities.
-- External MCP tools are subject to the same guardrail enforcement as built-in tools.
-- OpenClaw bridge service provides bidirectional communication between ADE CTO and OpenClaw agents via HTTP + WebSocket.
-- OpenClaw-side configuration (hooks, skills, agent setup) is documented in `docs/features/CTO.md` for user self-service.
+- Morning Briefing provides a swipeable card interface for reviewing overnight results.
+- Memory retrieval uses hybrid BM25+vector search with composite scoring.
+- Pre-compaction flush prevents memory loss during context compaction.
+- Memory consolidation prevents unbounded growth via real-time deduplication on save.
+- Episodic memories are generated after session/mission completion.
+- Procedural memories are extracted from recurring episodic patterns.
+- Learning packs accumulate project knowledge with confidence scoring and scope matching.
+- ADE agents can consume external MCP servers for extended capabilities.
+- OpenClaw bridge provides bidirectional communication between ADE CTO and external agent gateways.
+- `.ade/` directory provides portable state across machines — git tracks config, cr-sqlite (Phase 6) syncs app state.

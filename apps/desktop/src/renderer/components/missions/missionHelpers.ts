@@ -13,6 +13,8 @@ import type {
   MissionCliPermissionMode,
   MissionCliSandboxPermissions,
   MissionInProcessPermissionMode,
+  MissionPermissionConfig,
+  ModelConfig,
   MissionPriority,
   MissionStatus,
   OrchestratorAttempt,
@@ -163,18 +165,41 @@ export const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; h
 ];
 
 export type MissionSettingsDraft = {
-  defaultPlannerProvider: PlannerProvider;
+  defaultOrchestratorModel: ModelConfig;
   teammatePlanMode: TeammatePlanMode;
   requirePlanReview: boolean;
+  permissionConfig: MissionPermissionConfig;
+  /** @deprecated kept for backward-compat read/write */
+  defaultPlannerProvider: PlannerProvider;
+  /** @deprecated kept for backward-compat read/write */
   cliMode: MissionCliPermissionMode;
+  /** @deprecated kept for backward-compat read/write */
   cliSandboxPermissions: MissionCliSandboxPermissions;
+  /** @deprecated kept for backward-compat read/write */
   inProcessMode: MissionInProcessPermissionMode;
 };
 
+export const DEFAULT_ORCHESTRATOR_MODEL: ModelConfig = {
+  provider: "claude",
+  modelId: "anthropic/claude-sonnet-4-6",
+  thinkingLevel: "medium",
+};
+
+export const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
+  providers: {
+    claude: "full-auto",
+    codex: "full-auto",
+    unified: "full-auto",
+    codexSandbox: "workspace-write",
+  },
+};
+
 export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
-  defaultPlannerProvider: "auto",
+  defaultOrchestratorModel: { ...DEFAULT_ORCHESTRATOR_MODEL },
   teammatePlanMode: "auto",
   requirePlanReview: false,
+  permissionConfig: { ...DEFAULT_PERMISSION_CONFIG },
+  defaultPlannerProvider: "auto",
   cliMode: "full-auto",
   cliSandboxPermissions: "workspace-write",
   inProcessMode: "full-auto",
@@ -204,6 +229,21 @@ export function toPlannerProvider(value: string): PlannerProvider {
   const model = getModelById(value);
   if (model?.family === "anthropic") return "claude";
   if (model?.family === "openai") return "codex";
+  return "auto";
+}
+
+/** Convert a legacy PlannerProvider string to a full ModelConfig. */
+export function plannerProviderToModelConfig(provider: PlannerProvider): ModelConfig {
+  if (provider === "codex") return { provider: "codex", modelId: "openai/o3", thinkingLevel: "medium" };
+  // "auto" and "claude" both default to claude
+  return { ...DEFAULT_ORCHESTRATOR_MODEL };
+}
+
+/** Convert a ModelConfig back to a legacy PlannerProvider for backward compat. */
+export function modelConfigToPlannerProvider(config: ModelConfig): PlannerProvider {
+  const model = config.modelId ? getModelById(config.modelId) : undefined;
+  if (model?.family === "openai") return "codex";
+  if (model?.family === "anthropic") return "claude";
   return "auto";
 }
 

@@ -5,7 +5,8 @@
 import type { ProviderMode, ModelId } from "./core";
 import type { AgentChatModelInfo } from "./chat";
 import type { LaneType } from "./lanes";
-import type { MissionExecutionPolicy } from "./missions";
+import type { MissionExecutionPolicy, MissionProviderPermissions } from "./missions";
+import type { ModelConfig } from "./models";
 
 // Backward compatible with earlier configs that used `on_crash`.
 export type ProcessRestartPolicy = "never" | "on-failure" | "always" | "on_crash";
@@ -273,6 +274,8 @@ export type AiInProcessPermissionSettings = {
 export type AiPermissionSettings = {
   cli?: AiCliPermissionSettings;
   inProcess?: AiInProcessPermissionSettings;
+  /** Per-provider permission config (preferred over cli/inProcess for missions). */
+  providers?: MissionProviderPermissions;
 };
 
 export type WorkerSafetyPolicy = {
@@ -326,6 +329,9 @@ export type AiOrchestratorConfig = {
   maxTotalTokenBudget?: number;
   maxPerStepTokenBudget?: number;
   defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
+  /** Full model config for the orchestrator (preferred over defaultPlannerProvider). */
+  defaultOrchestratorModel?: ModelConfig;
+  /** @deprecated Use defaultOrchestratorModel instead. Kept for backward compat. */
   defaultPlannerProvider?: "auto" | "claude" | "codex";
   autoResolveInterventions?: boolean;
   interventionConfidenceThreshold?: number;
