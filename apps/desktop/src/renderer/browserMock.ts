@@ -702,6 +702,70 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listContextPacks: resolved([]),
       fetchContextPack: resolvedArg({ content: "" }),
     },
+    cto: {
+      getState: resolvedArg({
+        identity: {
+          name: "CTO",
+          version: 1,
+          persona: "Mock CTO persona",
+          modelPreferences: { provider: "claude", model: "sonnet" },
+          memoryPolicy: {
+            autoCompact: true,
+            compactionThreshold: 0.7,
+            preCompactionFlush: true,
+            temporalDecayHalfLifeDays: 30
+          },
+          updatedAt: now
+        },
+        coreMemory: {
+          version: 1,
+          updatedAt: now,
+          projectSummary: "Mock project summary",
+          criticalConventions: [],
+          userPreferences: [],
+          activeFocus: [],
+          notes: []
+        },
+        recentSessions: []
+      }),
+      ensureSession: resolvedArg({
+        id: "mock-cto-session",
+        laneId: "lane-main",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+        capabilityMode: "full_mcp",
+        status: "idle",
+        createdAt: now,
+        lastActivityAt: now
+      }),
+      updateCoreMemory: resolvedArg({
+        identity: {
+          name: "CTO",
+          version: 1,
+          persona: "Mock CTO persona",
+          modelPreferences: { provider: "claude", model: "sonnet" },
+          memoryPolicy: {
+            autoCompact: true,
+            compactionThreshold: 0.7,
+            preCompactionFlush: true,
+            temporalDecayHalfLifeDays: 30
+          },
+          updatedAt: now
+        },
+        coreMemory: {
+          version: 2,
+          updatedAt: now,
+          projectSummary: "Mock project summary",
+          criticalConventions: [],
+          userPreferences: [],
+          activeFocus: [],
+          notes: []
+        },
+        recentSessions: []
+      }),
+      listSessionLogs: resolvedArg([])
+    },
     pty: {
       create: resolvedArg({ ptyId: "mock" }),
       write: resolvedArg(undefined),

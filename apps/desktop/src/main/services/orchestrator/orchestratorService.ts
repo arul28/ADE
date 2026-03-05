@@ -10,6 +10,9 @@ import type {
   FinalizeRunResult,
   MissionExecutionPolicy,
   MissionStepHandoff,
+  MissionRetrospective,
+  OrchestratorRetrospectivePatternStat,
+  OrchestratorRetrospectiveTrend,
   OrchestratorAttempt,
   OrchestratorAttemptResultEnvelope,
   OrchestratorAttemptStatus,
@@ -33,6 +36,7 @@ import type {
   OrchestratorStep,
   OrchestratorStepStatus,
   OrchestratorRuntimeBusEvent,
+  OrchestratorReflectionEntry,
   OrchestratorRuntimeEventType,
   OrchestratorTeamRuntimeState,
   OrchestratorTimelineEvent,
@@ -79,6 +83,7 @@ import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
 import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
+import { getMissionStateDocumentPath } from "./missionStateDoc";
 import { buildFullPrompt, shellEscapeArg } from "./baseOrchestratorAdapter";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../shared/modelRegistry";
@@ -286,6 +291,156 @@ function hasPassingValidation(metadata: Record<string, unknown> | null): boolean
   if (reportVerdict === "pass") return true;
   const validationPassedAt = typeof metadata.validationPassedAt === "string" ? metadata.validationPassedAt.trim() : "";
   return validationPassedAt.length > 0;
+}
+
+type ReflectionAddInput = {
+  missionId: string;
+  runId: string;
+  stepId?: string | null;
+  attemptId?: string | null;
+  agentRole: string;
+  phase: string;
+  signalType: "wish" | "frustration" | "idea" | "pattern" | "limitation";
+  observation: string;
+  recommendation: string;
+  context: string;
+  occurredAt?: string;
+};
+
+type ReflectionValidationCode =
+  | "mission_id_required"
+  | "run_id_required"
+  | "agent_role_required"
+  | "phase_required"
+  | "signal_type_invalid"
+  | "observation_required"
+  | "recommendation_required"
+  | "context_required"
+  | "occurred_at_invalid"
+  | "run_not_found"
+  | "run_mission_mismatch"
+  | "step_not_found"
+  | "step_run_mismatch"
+  | "attempt_not_found"
+  | "attempt_run_mismatch"
+  | "attempt_step_mismatch";
+
+export class ReflectionValidationError extends Error {
+  readonly code: ReflectionValidationCode;
+  readonly details: Record<string, unknown> | null;
+
+  constructor(code: ReflectionValidationCode, message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "ReflectionValidationError";
+    this.code = code;
+    this.details = details ?? null;
+  }
+}
+
+type PainPointCounter = Map<string, { label: string; count: number }>;
+
+const RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD = 2;
+const RETROSPECTIVE_TREND_LOOKBACK_LIMIT = 50;
+const ISO_8601_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function normalizeReflectionSignalType(value: string): OrchestratorReflectionEntry["signalType"] | null {
+  if (
+    value === "wish" ||
+    value === "frustration" ||
+    value === "idea" ||
+    value === "pattern" ||
+    value === "limitation"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function normalizePainPointKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isStrictIsoTimestamp(value: string): boolean {
+  if (!ISO_8601_TIMESTAMP_RE.test(value)) return false;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms);
+}
+
+function parseRetrospectivePayload(payload: string | null | undefined): MissionRetrospective | null {
+  try {
+    const parsed = JSON.parse(String(payload ?? "{}")) as MissionRetrospective;
+    if (parsed && typeof parsed.missionId === "string" && typeof parsed.runId === "string" && parsed.missionId && parsed.runId) {
+      return parsed;
+    }
+  } catch {
+    // ignore malformed payloads
+  }
+  return null;
+}
+
+function buildPainPointCounter(entries: string[]): PainPointCounter {
+  const counter: PainPointCounter = new Map();
+  for (const entry of entries) {
+    const label = String(entry ?? "").trim();
+    if (!label) continue;
+    const key = normalizePainPointKey(label);
+    if (!key) continue;
+    const current = counter.get(key);
+    if (current) {
+      current.count += 1;
+    } else {
+      counter.set(key, { label, count: 1 });
+    }
+  }
+  return counter;
+}
+
+function computePainTrendStatus(previousPainScore: number, currentPainScore: number): "resolved" | "still_open" | "worsened" {
+  if (currentPainScore <= 0) return "resolved";
+  if (currentPainScore > previousPainScore) return "worsened";
+  return "still_open";
+}
+
+function ensureReflectionLedgerDir(projectRoot: string): string {
+  const dir = path.join(projectRoot, ".ade", "reflections");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function appendReflectionLedgerEntry(projectRoot: string, missionId: string, payload: Record<string, unknown>): void {
+  const dir = ensureReflectionLedgerDir(projectRoot);
+  const filePath = path.join(dir, `${missionId}.jsonl`);
+  fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`, "utf8");
+}
+
+function persistRetrospectiveArtifact(projectRoot: string, missionId: string, runId: string, payload: Record<string, unknown>): string {
+  const dir = path.join(ensureReflectionLedgerDir(projectRoot), "retrospectives");
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `${missionId}-${runId}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+  return filePath;
+}
+
+function loadMissionStateDocCounts(projectRoot: string, runId: string): {
+  decisions: number;
+  activeIssues: number;
+  pendingInterventions: number;
+  stepOutcomes: number;
+} {
+  const filePath = getMissionStateDocumentPath(projectRoot, runId);
+  if (!fs.existsSync(filePath)) {
+    return { decisions: 0, activeIssues: 0, pendingInterventions: 0, stepOutcomes: 0 };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
+    const decisions = Array.isArray(parsed.decisions) ? parsed.decisions.length : 0;
+    const activeIssues = Array.isArray(parsed.activeIssues) ? parsed.activeIssues.length : 0;
+    const pendingInterventions = Array.isArray(parsed.pendingInterventions) ? parsed.pendingInterventions.length : 0;
+    const stepOutcomes = Array.isArray(parsed.stepOutcomes) ? parsed.stepOutcomes.length : 0;
+    return { decisions, activeIssues, pendingInterventions, stepOutcomes };
+  } catch {
+    return { decisions: 0, activeIssues: 0, pendingInterventions: 0, stepOutcomes: 0 };
+  }
 }
 
 export function createOrchestratorService({
@@ -3377,6 +3532,540 @@ export function createOrchestratorService({
       limit?: number;
     } = {}): OrchestratorRuntimeBusEvent[] {
       return listRuntimeEventRows(args).map(toRuntimeEvent);
+    },
+
+    addReflection(input: ReflectionAddInput): OrchestratorReflectionEntry {
+      const missionId = String(input.missionId ?? "").trim();
+      const runId = String(input.runId ?? "").trim();
+      const stepId = String(input.stepId ?? "").trim() || null;
+      const attemptId = String(input.attemptId ?? "").trim() || null;
+      const agentRole = String(input.agentRole ?? "").trim();
+      const phase = String(input.phase ?? "").trim();
+      const observation = String(input.observation ?? "").trim();
+      const recommendation = String(input.recommendation ?? "").trim();
+      const context = String(input.context ?? "").trim();
+      const signalType = normalizeReflectionSignalType(String(input.signalType ?? "").trim());
+      const occurredAtRaw = String(input.occurredAt ?? "").trim();
+
+      if (!missionId) {
+        throw new ReflectionValidationError("mission_id_required", "missionId is required.");
+      }
+      if (!runId) {
+        throw new ReflectionValidationError("run_id_required", "runId is required.");
+      }
+      if (!agentRole) {
+        throw new ReflectionValidationError("agent_role_required", "agentRole is required.");
+      }
+      if (!phase) {
+        throw new ReflectionValidationError("phase_required", "phase is required.");
+      }
+      if (!signalType) {
+        throw new ReflectionValidationError("signal_type_invalid", "signalType must be one of wish|frustration|idea|pattern|limitation.");
+      }
+      if (!observation) {
+        throw new ReflectionValidationError("observation_required", "observation is required.");
+      }
+      if (!recommendation) {
+        throw new ReflectionValidationError("recommendation_required", "recommendation is required.");
+      }
+      if (!context) {
+        throw new ReflectionValidationError("context_required", "context is required.");
+      }
+      if (!occurredAtRaw) {
+        throw new ReflectionValidationError("occurred_at_invalid", "occurredAt is required and must be a valid ISO-8601 timestamp.");
+      }
+      if (!isStrictIsoTimestamp(occurredAtRaw)) {
+        throw new ReflectionValidationError("occurred_at_invalid", "occurredAt is required and must be a valid ISO-8601 timestamp.", { occurredAt: occurredAtRaw });
+      }
+      const occurredAtMs = Date.parse(occurredAtRaw);
+      const occurredAt = new Date(occurredAtMs).toISOString();
+
+      const runRow = getRunRow(runId);
+      if (!runRow) {
+        throw new ReflectionValidationError("run_not_found", `Run not found: ${runId}`, { runId });
+      }
+      if (String(runRow.mission_id) !== missionId) {
+        throw new ReflectionValidationError("run_mission_mismatch", "runId does not belong to missionId.", { runId, missionId, actualMissionId: runRow.mission_id });
+      }
+      if (stepId) {
+        const stepRow = getStepRow(stepId);
+        if (!stepRow) {
+          throw new ReflectionValidationError("step_not_found", `Step not found: ${stepId}`, { stepId });
+        }
+        if (String(stepRow.run_id) !== runId) {
+          throw new ReflectionValidationError("step_run_mismatch", "stepId does not belong to runId.", { stepId, runId, actualRunId: stepRow.run_id });
+        }
+      }
+      if (attemptId) {
+        const attemptRow = getAttemptRow(attemptId);
+        if (!attemptRow) {
+          throw new ReflectionValidationError("attempt_not_found", `Attempt not found: ${attemptId}`, { attemptId });
+        }
+        if (String(attemptRow.run_id) !== runId) {
+          throw new ReflectionValidationError("attempt_run_mismatch", "attemptId does not belong to runId.", { attemptId, runId, actualRunId: attemptRow.run_id });
+        }
+        if (stepId && String(attemptRow.step_id) !== stepId) {
+          throw new ReflectionValidationError("attempt_step_mismatch", "attemptId does not belong to stepId.", { attemptId, stepId, actualStepId: attemptRow.step_id });
+        }
+      }
+
+      const id = randomUUID();
+      const createdAt = nowIso();
+      const entry: OrchestratorReflectionEntry = {
+        id,
+        projectId,
+        missionId,
+        runId,
+        stepId,
+        attemptId,
+        agentRole,
+        phase,
+        signalType,
+        observation,
+        recommendation,
+        context,
+        occurredAt,
+        createdAt,
+        schemaVersion: 1,
+      };
+
+      db.run("begin immediate");
+      try {
+        db.run(
+          `
+            insert into orchestrator_reflections(
+              id, project_id, mission_id, run_id, step_id, attempt_id,
+              agent_role, phase, signal_type, observation, recommendation,
+              context, occurred_at, created_at, schema_version
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+          `,
+          [id, projectId, missionId, runId, stepId, attemptId, agentRole, phase, signalType, observation, recommendation, context, occurredAt, createdAt]
+        );
+        appendReflectionLedgerEntry(projectRoot, missionId, entry as unknown as Record<string, unknown>);
+        db.run("commit");
+      } catch (error) {
+        try {
+          db.run("rollback");
+        } catch {
+          // best effort rollback
+        }
+        throw error;
+      }
+
+      persistRuntimeEvent({ runId, stepId, attemptId, eventType: "reflection_added", payload: { reflectionId: id, signalType, phase, agentRole } });
+      return entry;
+    },
+
+    listReflections(args: { runId?: string; missionId?: string; limit?: number } = {}): OrchestratorReflectionEntry[] {
+      const runId = String(args.runId ?? "").trim();
+      const missionId = String(args.missionId ?? "").trim();
+      const limit = Math.max(1, Math.min(500, Math.floor(Number(args.limit ?? 200) || 200)));
+      const where: string[] = ["project_id = ?"];
+      const params: SqlValue[] = [projectId];
+      if (runId) {
+        where.push("run_id = ?");
+        params.push(runId);
+      }
+      if (missionId) {
+        where.push("mission_id = ?");
+        params.push(missionId);
+      }
+      params.push(limit);
+      const rows = db.all<any>(`select * from orchestrator_reflections where ${where.join(" and ")} order by occurred_at desc, created_at desc limit ?`, params);
+      return rows.map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        missionId: String(row.mission_id),
+        runId: String(row.run_id),
+        stepId: row.step_id ? String(row.step_id) : null,
+        attemptId: row.attempt_id ? String(row.attempt_id) : null,
+        agentRole: String(row.agent_role),
+        phase: String(row.phase),
+        signalType: row.signal_type as OrchestratorReflectionEntry["signalType"],
+        observation: String(row.observation),
+        recommendation: String(row.recommendation ?? ""),
+        context: String(row.context ?? ""),
+        occurredAt: String(row.occurred_at),
+        createdAt: String(row.created_at),
+        schemaVersion: 1,
+      }));
+    },
+
+    listRetrospectives(args: { missionId?: string; limit?: number } = {}): MissionRetrospective[] {
+      const missionId = String(args.missionId ?? "").trim();
+      const limit = Math.max(1, Math.min(100, Math.floor(Number(args.limit ?? 20) || 20)));
+      const where = ["project_id = ?"];
+      const params: SqlValue[] = [projectId];
+      if (missionId) {
+        where.push("mission_id = ?");
+        params.push(missionId);
+      }
+      params.push(limit);
+      const rows = db.all<{ payload_json: string }>(
+        `select payload_json from orchestrator_retrospectives where ${where.join(" and ")} order by generated_at desc limit ?`,
+        params
+      );
+      const out: MissionRetrospective[] = [];
+      for (const row of rows) {
+        const parsed = parseRetrospectivePayload(row.payload_json);
+        if (parsed) out.push(parsed);
+      }
+      return out;
+    },
+
+    listRetrospectiveTrends(args: { missionId?: string; runId?: string; limit?: number } = {}): OrchestratorRetrospectiveTrend[] {
+      const missionId = String(args.missionId ?? "").trim();
+      const runId = String(args.runId ?? "").trim();
+      const limit = Math.max(1, Math.min(500, Math.floor(Number(args.limit ?? 100) || 100)));
+      const where = ["project_id = ?"];
+      const params: SqlValue[] = [projectId];
+      if (missionId) {
+        where.push("mission_id = ?");
+        params.push(missionId);
+      }
+      if (runId) {
+        where.push("run_id = ?");
+        params.push(runId);
+      }
+      params.push(limit);
+      const rows = db.all<any>(
+        `select * from orchestrator_retrospective_trends where ${where.join(" and ")} order by created_at desc limit ?`,
+        params
+      );
+      return rows.map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        missionId: String(row.mission_id),
+        runId: String(row.run_id),
+        retrospectiveId: String(row.retrospective_id),
+        sourceMissionId: String(row.source_mission_id),
+        sourceRunId: String(row.source_run_id),
+        sourceRetrospectiveId: String(row.source_retrospective_id),
+        painPointKey: String(row.pain_point_key),
+        painPointLabel: String(row.pain_point_label),
+        status: row.status as OrchestratorRetrospectiveTrend["status"],
+        previousPainScore: Number(row.previous_pain_score ?? 0),
+        currentPainScore: Number(row.current_pain_score ?? 0),
+        createdAt: String(row.created_at),
+      }));
+    },
+
+    listRetrospectivePatternStats(args: { limit?: number } = {}): OrchestratorRetrospectivePatternStat[] {
+      const limit = Math.max(1, Math.min(500, Math.floor(Number(args.limit ?? 100) || 100)));
+      const rows = db.all<any>(
+        `
+          select *
+          from orchestrator_reflection_pattern_stats
+          where project_id = ?
+          order by occurrence_count desc, updated_at desc
+          limit ?
+        `,
+        [projectId, limit]
+      );
+      return rows.map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        patternKey: String(row.pattern_key),
+        patternLabel: String(row.pattern_label),
+        occurrenceCount: Number(row.occurrence_count ?? 0),
+        firstSeenRetrospectiveId: String(row.first_seen_retrospective_id),
+        firstSeenRunId: String(row.first_seen_run_id),
+        lastSeenRetrospectiveId: String(row.last_seen_retrospective_id),
+        lastSeenRunId: String(row.last_seen_run_id),
+        promotedMemoryId: row.promoted_memory_id ? String(row.promoted_memory_id) : null,
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      }));
+    },
+
+    generateRunRetrospective(args: { runId: string }): MissionRetrospective | null {
+      const runId = String(args.runId ?? "").trim();
+      if (!runId) return null;
+      const runRow = getRunRow(runId);
+      if (!runRow) return null;
+      const run = toRun(runRow);
+      if (!TERMINAL_RUN_STATUSES.has(run.status)) return null;
+      const existingRow = db.get<{ payload_json: string }>(
+        `
+          select payload_json
+          from orchestrator_retrospectives
+          where project_id = ?
+            and run_id = ?
+          limit 1
+        `,
+        [projectId, runId]
+      );
+      const existing = parseRetrospectivePayload(existingRow?.payload_json);
+      if (existing) return existing;
+
+      const graph = this.getRunGraph({ runId, timelineLimit: 500 });
+      const reflections = this.listReflections({ runId, limit: 500 });
+      const missionStateDocCounts = loadMissionStateDocCounts(projectRoot, runId);
+      const generatedAt = nowIso();
+
+      const painPointSignals = reflections
+        .filter((entry) => entry.signalType === "frustration" || entry.signalType === "limitation")
+        .map((entry) => entry.observation)
+        .filter(Boolean);
+      const improvementSignals = reflections
+        .filter((entry) => entry.signalType === "idea" || entry.signalType === "wish")
+        .map((entry) => (entry.recommendation || entry.observation).trim())
+        .filter(Boolean);
+      const patternSignals = reflections
+        .filter((entry) => entry.signalType === "pattern")
+        .map((entry) => entry.observation)
+        .filter(Boolean);
+
+      const painPointCounter = buildPainPointCounter(painPointSignals);
+      const topPainPoints = [...painPointCounter.entries()]
+        .sort((a, b) => b[1].count - a[1].count || a[1].label.localeCompare(b[1].label))
+        .slice(0, 12)
+        .map((entry) => entry[1].label);
+      const topImprovements = [...new Set(improvementSignals.map((item) => item.trim()).filter(Boolean))]
+        .slice(0, 12);
+      const patternsToCapture = [...new Set(patternSignals.map((item) => item.trim()).filter(Boolean))]
+        .slice(0, 12);
+
+      const previousRows = db.all<{ id: string; mission_id: string; run_id: string; payload_json: string }>(
+        `
+          select id, mission_id, run_id, payload_json
+          from orchestrator_retrospectives
+          where project_id = ?
+            and mission_id != ?
+            and run_id != ?
+          order by generated_at desc
+          limit ?
+        `,
+        [projectId, run.missionId, runId, RETROSPECTIVE_TREND_LOOKBACK_LIMIT]
+      );
+      const previousPainScores = new Map<string, { label: string; score: number; sourceRetrospectiveId: string; sourceMissionId: string; sourceRunId: string }>();
+      const trendEntries: Array<{
+        sourceMissionId: string;
+        sourceRunId: string;
+        sourceRetrospectiveId: string;
+        painPointKey: string;
+        painPointLabel: string;
+        status: "resolved" | "still_open" | "worsened";
+        previousPainScore: number;
+        currentPainScore: number;
+      }> = [];
+      for (const row of previousRows) {
+        const previousRetrospective = parseRetrospectivePayload(row.payload_json);
+        if (!previousRetrospective) continue;
+        const counter = buildPainPointCounter(previousRetrospective.topPainPoints ?? []);
+        for (const [key, value] of counter.entries()) {
+          const currentPainScore = painPointCounter.get(key)?.count ?? 0;
+          trendEntries.push({
+            sourceMissionId: String(row.mission_id),
+            sourceRunId: String(row.run_id),
+            sourceRetrospectiveId: String(row.id),
+            painPointKey: key,
+            painPointLabel: value.label,
+            status: computePainTrendStatus(value.count, currentPainScore),
+            previousPainScore: value.count,
+            currentPainScore,
+          });
+          const existingScore = previousPainScores.get(key);
+          if (!existingScore || value.count > existingScore.score) {
+            previousPainScores.set(key, {
+              label: value.label,
+              score: value.count,
+              sourceRetrospectiveId: String(row.id),
+              sourceMissionId: String(row.mission_id),
+              sourceRunId: String(row.run_id),
+            });
+          }
+        }
+      }
+      const changelog = [...previousPainScores.entries()]
+        .sort((a, b) => b[1].score - a[1].score || a[1].label.localeCompare(b[1].label))
+        .slice(0, 12)
+        .map(([key, prev]) => {
+          const currentPainScore = painPointCounter.get(key)?.count ?? 0;
+          const status = computePainTrendStatus(prev.score, currentPainScore);
+          const currentState = status === "resolved"
+            ? "Pain point did not recur in latest run."
+            : status === "worsened"
+              ? "Pain point frequency increased in latest run."
+              : "Pain point persisted in latest run.";
+          return {
+            previousPainPoint: prev.label,
+            status,
+            currentState,
+            sourceRetrospectiveId: prev.sourceRetrospectiveId,
+            sourceMissionId: prev.sourceMissionId,
+            sourceRunId: prev.sourceRunId,
+            previousPainScore: prev.score,
+            currentPainScore,
+          };
+        });
+      const runtimeEventCount = graph.runtimeEvents?.length ?? 0;
+
+      const retrospective: MissionRetrospective = {
+        id: `retro:${runId}`,
+        missionId: run.missionId,
+        runId,
+        generatedAt,
+        schemaVersion: 1,
+        finalStatus: run.status,
+        wins: graph.steps.filter((step) => step.status === "succeeded").slice(0, 12).map((step) => `Completed ${step.stepKey}: ${step.title}`),
+        failures: graph.steps.filter((step) => step.status === "failed").slice(0, 12).map((step) => `Failed ${step.stepKey}: ${step.title}`),
+        unresolvedRisks: graph.steps.filter((step) => step.status === "blocked").slice(0, 12).map((step) => `Blocked ${step.stepKey}: ${step.title}`),
+        followUpActions: topImprovements.slice(0, 12),
+        topPainPoints,
+        topImprovements,
+        patternsToCapture,
+        estimatedImpact: topImprovements.length
+          ? `Signals: timeline=${graph.timeline.length}, runtimeEvents=${runtimeEventCount}, reflections=${reflections.length}, decisions=${missionStateDocCounts.decisions}, activeIssues=${missionStateDocCounts.activeIssues}. Addressing top improvements should reduce retries and unresolved blockers in subsequent missions.`
+          : `Signals: timeline=${graph.timeline.length}, runtimeEvents=${runtimeEventCount}, reflections=${reflections.length}, decisions=${missionStateDocCounts.decisions}, activeIssues=${missionStateDocCounts.activeIssues}. No clear improvements captured from reflections in this run.`,
+        changelog,
+      };
+
+      db.run(
+        `
+          insert or ignore into orchestrator_retrospectives(
+            id, project_id, mission_id, run_id, generated_at, final_status, payload_json, schema_version, created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, 1, ?)
+        `,
+        [retrospective.id, projectId, retrospective.missionId, retrospective.runId, retrospective.generatedAt, retrospective.finalStatus, JSON.stringify(retrospective), generatedAt]
+      );
+      const persistedRow = db.get<{ payload_json: string }>(
+        `
+          select payload_json
+          from orchestrator_retrospectives
+          where project_id = ?
+            and run_id = ?
+          limit 1
+        `,
+        [projectId, runId]
+      );
+      const persisted = parseRetrospectivePayload(persistedRow?.payload_json);
+      if (!persisted) return null;
+
+      persistRetrospectiveArtifact(projectRoot, persisted.missionId, persisted.runId, persisted as unknown as Record<string, unknown>);
+
+      db.run(
+        `delete from orchestrator_retrospective_trends where project_id = ? and retrospective_id = ?`,
+        [projectId, persisted.id]
+      );
+      for (const entry of trendEntries) {
+        const trendId = randomUUID();
+        db.run(
+          `
+            insert into orchestrator_retrospective_trends(
+              id, project_id, mission_id, run_id, retrospective_id,
+              source_mission_id, source_run_id, source_retrospective_id,
+              pain_point_key, pain_point_label, status, previous_pain_score, current_pain_score, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            trendId,
+            projectId,
+            persisted.missionId,
+            persisted.runId,
+            persisted.id,
+            entry.sourceMissionId,
+            entry.sourceRunId,
+            entry.sourceRetrospectiveId,
+            entry.painPointKey,
+            entry.painPointLabel,
+            entry.status,
+            entry.previousPainScore,
+            entry.currentPainScore,
+            generatedAt
+          ]
+        );
+      }
+
+      if (memoryService) {
+        const seenPatternKeys = new Set<string>();
+        for (const patternLabel of persisted.patternsToCapture) {
+          const normalizedLabel = String(patternLabel ?? "").trim();
+          const patternKey = normalizePainPointKey(normalizedLabel);
+          if (!patternKey || seenPatternKeys.has(patternKey)) continue;
+          seenPatternKeys.add(patternKey);
+          const existingPattern = db.get<any>(
+            `
+              select *
+              from orchestrator_reflection_pattern_stats
+              where project_id = ?
+                and pattern_key = ?
+              limit 1
+            `,
+            [projectId, patternKey]
+          );
+          let patternStatId: string;
+          let nextCount = 1;
+          let promotedMemoryId: string | null = null;
+          if (existingPattern) {
+            patternStatId = String(existingPattern.id);
+            nextCount = Number(existingPattern.occurrence_count ?? 0) + 1;
+            promotedMemoryId = existingPattern.promoted_memory_id ? String(existingPattern.promoted_memory_id) : null;
+            db.run(
+              `
+                update orchestrator_reflection_pattern_stats
+                set
+                  pattern_label = ?,
+                  occurrence_count = ?,
+                  last_seen_retrospective_id = ?,
+                  last_seen_run_id = ?,
+                  updated_at = ?
+                where id = ?
+              `,
+              [normalizedLabel, nextCount, persisted.id, persisted.runId, generatedAt, patternStatId]
+            );
+          } else {
+            patternStatId = randomUUID();
+            db.run(
+              `
+                insert into orchestrator_reflection_pattern_stats(
+                  id, project_id, pattern_key, pattern_label,
+                  occurrence_count, first_seen_retrospective_id, first_seen_run_id,
+                  last_seen_retrospective_id, last_seen_run_id, promoted_memory_id,
+                  created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `,
+              [patternStatId, projectId, patternKey, normalizedLabel, 1, persisted.id, persisted.runId, persisted.id, persisted.runId, null, generatedAt, generatedAt]
+            );
+          }
+          db.run(
+            `
+              insert or ignore into orchestrator_reflection_pattern_sources(
+                id, project_id, pattern_stat_id, retrospective_id, mission_id, run_id, created_at
+              ) values (?, ?, ?, ?, ?, ?, ?)
+            `,
+            [randomUUID(), projectId, patternStatId, persisted.id, persisted.missionId, persisted.runId, generatedAt]
+          );
+          if (!promotedMemoryId && nextCount >= RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD) {
+            try {
+              const confidence = Math.min(0.95, 0.7 + ((nextCount - RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD) * 0.05));
+              const memory = memoryService.addCandidateMemory({
+                projectId,
+                scope: "project",
+                category: "pattern",
+                content: `[retrospective] ${normalizedLabel}`,
+                importance: "medium",
+                confidence,
+                sourceRunId: runId,
+              });
+              promotedMemoryId = memory.id;
+              db.run(
+                `
+                  update orchestrator_reflection_pattern_stats
+                  set promoted_memory_id = ?, updated_at = ?
+                  where id = ?
+                `,
+                [promotedMemoryId, generatedAt, patternStatId]
+              );
+            } catch {
+              // best-effort only
+            }
+          }
+        }
+      }
+
+      persistRuntimeEvent({ runId, eventType: "retrospective_generated", payload: { retrospectiveId: persisted.id } });
+      return persisted;
     },
 
     getRunGraph(args: { runId: string; timelineLimit?: number }): OrchestratorRunGraph {
@@ -6855,6 +7544,11 @@ export function createOrchestratorService({
           reason: args.reason ?? null
         }
       });
+      try {
+        void this.generateRunRetrospective({ runId: args.runId });
+      } catch {
+        // best-effort
+      }
     },
 
     addSteps(args: {
@@ -8660,6 +9354,11 @@ export function createOrchestratorService({
 
       // Already terminal — return current state
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        try {
+          void this.generateRunRetrospective({ runId });
+        } catch {
+          // best-effort
+        }
         return {
           finalized: true,
           blockers: [],
@@ -8828,6 +9527,11 @@ export function createOrchestratorService({
         }
       });
       emit({ type: "orchestrator-run-updated", runId, reason: "finalized" });
+      try {
+        void this.generateRunRetrospective({ runId });
+      } catch {
+        // best-effort
+      }
 
       return {
         finalized: true,

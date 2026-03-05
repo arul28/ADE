@@ -23,6 +23,12 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  CtoGetStateArgs,
+  CtoEnsureSessionArgs,
+  CtoUpdateCoreMemoryArgs,
+  CtoListSessionLogsArgs,
+  CtoSnapshot,
+  CtoSessionLogEntry,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   AutomationsEventPayload,
@@ -1036,5 +1042,15 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.memoryArchive, args),
     search: async (args: { query: string; projectId?: string; limit?: number }): Promise<unknown[]> =>
       ipcRenderer.invoke(IPC.memorySearch, args)
+  },
+  cto: {
+    getState: async (args: CtoGetStateArgs = {}): Promise<CtoSnapshot> =>
+      ipcRenderer.invoke(IPC.ctoGetState, args),
+    ensureSession: async (args: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> =>
+      ipcRenderer.invoke(IPC.ctoEnsureSession, args),
+    updateCoreMemory: async (args: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> =>
+      ipcRenderer.invoke(IPC.ctoUpdateCoreMemory, args),
+    listSessionLogs: async (args: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> =>
+      ipcRenderer.invoke(IPC.ctoListSessionLogs, args)
   }
 });

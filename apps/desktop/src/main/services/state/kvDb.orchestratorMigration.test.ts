@@ -35,6 +35,11 @@ describe("kvDb orchestrator schema bootstrap", () => {
       "mission_step_handoffs",
       "orchestrator_timeline_events",
       "orchestrator_gate_reports",
+      "orchestrator_reflections",
+      "orchestrator_retrospectives",
+      "orchestrator_retrospective_trends",
+      "orchestrator_reflection_pattern_stats",
+      "orchestrator_reflection_pattern_sources",
       "orchestrator_lane_decisions",
       "orchestrator_ai_decisions"
     ];
@@ -199,6 +204,86 @@ describe("kvDb orchestrator schema bootstrap", () => {
       ])
     );
 
+    expect(listColumnNames(db, "orchestrator_reflections")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "agent_role",
+        "phase",
+        "signal_type",
+        "observation",
+        "recommendation",
+        "context",
+        "occurred_at",
+        "created_at",
+        "schema_version"
+      ])
+    );
+
+    expect(listColumnNames(db, "orchestrator_retrospectives")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "generated_at",
+        "final_status",
+        "payload_json",
+        "schema_version",
+        "created_at"
+      ])
+    );
+
+    expect(listColumnNames(db, "orchestrator_retrospective_trends")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "retrospective_id",
+        "source_mission_id",
+        "source_run_id",
+        "source_retrospective_id",
+        "pain_point_key",
+        "pain_point_label",
+        "status",
+        "previous_pain_score",
+        "current_pain_score",
+        "created_at"
+      ])
+    );
+
+    expect(listColumnNames(db, "orchestrator_reflection_pattern_stats")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "pattern_key",
+        "pattern_label",
+        "occurrence_count",
+        "first_seen_retrospective_id",
+        "first_seen_run_id",
+        "last_seen_retrospective_id",
+        "last_seen_run_id",
+        "promoted_memory_id",
+        "created_at",
+        "updated_at"
+      ])
+    );
+
+    expect(listColumnNames(db, "orchestrator_reflection_pattern_sources")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "pattern_stat_id",
+        "retrospective_id",
+        "mission_id",
+        "run_id",
+        "created_at"
+      ])
+    );
+
     expect(listColumnNames(db, "orchestrator_lane_decisions")).toEqual(
       expect.arrayContaining([
         "id",
@@ -271,6 +356,14 @@ describe("kvDb orchestrator schema bootstrap", () => {
       "idx_orchestrator_timeline_attempt",
       "idx_orchestrator_timeline_project_created",
       "idx_orchestrator_gate_reports_project_generated",
+      "idx_orchestrator_reflections_run_occurred",
+      "idx_orchestrator_reflections_mission",
+      "idx_orchestrator_retrospectives_mission_generated",
+      "idx_orchestrator_retrospective_trends_mission_created",
+      "idx_orchestrator_retrospective_trends_run_created",
+      "idx_orchestrator_reflection_pattern_stats_count",
+      "idx_orchestrator_reflection_pattern_sources_pattern",
+      "idx_orchestrator_reflection_pattern_sources_mission",
       "idx_orchestrator_lane_decisions_mission_created",
       "idx_orchestrator_lane_decisions_run_created",
       "idx_orchestrator_lane_decisions_step_created",

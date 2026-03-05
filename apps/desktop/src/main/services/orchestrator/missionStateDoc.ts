@@ -7,6 +7,8 @@ import type {
   MissionStateDocumentPatch,
   MissionStateIssue,
   MissionStatePendingIntervention,
+  MissionRetrospective,
+  OrchestratorReflectionEntry,
   MissionStateProgress,
   MissionStateStepOutcome,
   MissionStateStepOutcomePartial,
@@ -159,6 +161,96 @@ function normalizePendingIntervention(value: unknown): MissionStatePendingInterv
   };
 }
 
+
+function normalizeReflectionEntry(value: unknown): OrchestratorReflectionEntry | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const id = stringOr(raw.id).trim();
+  const missionId = stringOr(raw.missionId).trim();
+  const runId = stringOr(raw.runId).trim();
+  const observation = stringOr(raw.observation).trim();
+  if (!id || !missionId || !runId || !observation) return null;
+  const signalTypeRaw = stringOr(raw.signalType).trim();
+  const signalType = signalTypeRaw === "wish" || signalTypeRaw === "frustration" || signalTypeRaw === "idea" || signalTypeRaw === "pattern" || signalTypeRaw === "limitation"
+    ? signalTypeRaw
+    : "idea";
+  return {
+    id,
+    projectId: stringOr(raw.projectId).trim(),
+    missionId,
+    runId,
+    stepId: stringOr(raw.stepId).trim() || null,
+    attemptId: stringOr(raw.attemptId).trim() || null,
+    agentRole: stringOr(raw.agentRole).trim() || "unknown",
+    phase: stringOr(raw.phase).trim() || "unknown",
+    signalType,
+    observation,
+    recommendation: stringOr(raw.recommendation).trim(),
+    context: stringOr(raw.context).trim(),
+    occurredAt: stringOr(raw.occurredAt).trim() || nowIso(),
+    createdAt: stringOr(raw.createdAt).trim() || nowIso(),
+    schemaVersion: 1,
+  };
+}
+
+function normalizeRetrospective(value: unknown): MissionRetrospective | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const id = stringOr(raw.id).trim();
+  const missionId = stringOr(raw.missionId).trim();
+  const runId = stringOr(raw.runId).trim();
+  if (!id || !missionId || !runId) return null;
+  const finalStatusRaw = stringOr(raw.finalStatus).trim();
+  const finalStatus = finalStatusRaw === "queued" || finalStatusRaw === "bootstrapping" || finalStatusRaw === "active" || finalStatusRaw === "paused" || finalStatusRaw === "completing" || finalStatusRaw === "succeeded" || finalStatusRaw === "failed" || finalStatusRaw === "canceled" ? finalStatusRaw : "failed";
+  return {
+    id,
+    missionId,
+    runId,
+    generatedAt: stringOr(raw.generatedAt).trim() || nowIso(),
+    schemaVersion: 1,
+    finalStatus,
+    wins: normalizeStringArray(raw.wins, 30),
+    failures: normalizeStringArray(raw.failures, 30),
+    unresolvedRisks: normalizeStringArray(raw.unresolvedRisks, 30),
+    followUpActions: normalizeStringArray(raw.followUpActions, 30),
+    topPainPoints: normalizeStringArray(raw.topPainPoints, 30),
+    topImprovements: normalizeStringArray(raw.topImprovements, 30),
+    patternsToCapture: normalizeStringArray(raw.patternsToCapture, 30),
+    estimatedImpact: stringOr(raw.estimatedImpact).trim(),
+    changelog: Array.isArray(raw.changelog)
+      ? raw.changelog
+          .filter(
+            (x): x is MissionRetrospective["changelog"][number] =>
+              isRecord(x) &&
+              typeof x.previousPainPoint === "string" &&
+              typeof x.currentState === "string" &&
+              (x.status === "resolved" || x.status === "still_open" || x.status === "worsened"),
+          )
+          .map((x) => {
+            const previousPainScore = Number(x.previousPainScore);
+            const currentPainScore = Number(x.currentPainScore);
+            return {
+              previousPainPoint: String(x.previousPainPoint),
+              status: x.status as MissionRetrospective["changelog"][number]["status"],
+              currentState: String(x.currentState),
+              ...(typeof x.fixApplied === "string" && x.fixApplied.trim() ? { fixApplied: x.fixApplied.trim() } : {}),
+              ...(typeof x.sourceRetrospectiveId === "string" && x.sourceRetrospectiveId.trim().length
+                ? { sourceRetrospectiveId: x.sourceRetrospectiveId.trim() }
+                : {}),
+              ...(typeof x.sourceMissionId === "string" && x.sourceMissionId.trim().length
+                ? { sourceMissionId: x.sourceMissionId.trim() }
+                : {}),
+              ...(typeof x.sourceRunId === "string" && x.sourceRunId.trim().length
+                ? { sourceRunId: x.sourceRunId.trim() }
+                : {}),
+              ...(Number.isFinite(previousPainScore) ? { previousPainScore } : {}),
+              ...(Number.isFinite(currentPainScore) ? { currentPainScore } : {}),
+            };
+          })
+      : [],
+  };
+}
+
 function normalizeDocument(rawDoc: unknown): MissionStateDocument | null {
   const raw = isRecord(rawDoc) ? rawDoc : null;
   if (!raw) return null;
@@ -199,6 +291,10 @@ function normalizeDocument(rawDoc: unknown): MissionStateDocument | null {
     activeIssues: activeIssues.slice(-MAX_ACTIVE_ISSUES),
     modifiedFiles,
     pendingInterventions: pendingInterventions.slice(-MAX_PENDING_INTERVENTIONS),
+    reflections: Array.isArray(raw.reflections)
+      ? raw.reflections.map((entry) => normalizeReflectionEntry(entry)).filter((entry): entry is OrchestratorReflectionEntry => Boolean(entry)).slice(-200)
+      : [],
+    latestRetrospective: normalizeRetrospective(raw.latestRetrospective),
   };
 }
 
@@ -289,6 +385,8 @@ function applyPatch(doc: MissionStateDocument, patch: MissionStateDocumentPatch)
     activeIssues: [...doc.activeIssues],
     modifiedFiles: [...doc.modifiedFiles],
     pendingInterventions: [...doc.pendingInterventions],
+    reflections: [...(doc.reflections ?? [])],
+    latestRetrospective: doc.latestRetrospective ?? null,
     updatedAt: nowIso(),
   };
 
@@ -374,6 +472,17 @@ function applyPatch(doc: MissionStateDocument, patch: MissionStateDocumentPatch)
       .slice(-MAX_PENDING_INTERVENTIONS);
   }
 
+  if (patch.reflections) {
+    next.reflections = patch.reflections
+      .map((entry) => normalizeReflectionEntry(entry))
+      .filter((entry): entry is OrchestratorReflectionEntry => Boolean(entry))
+      .slice(-200);
+  }
+
+  if (patch.latestRetrospective !== undefined) {
+    next.latestRetrospective = patch.latestRetrospective ? normalizeRetrospective(patch.latestRetrospective) : null;
+  }
+
   next.stepOutcomes = next.stepOutcomes.slice(-MAX_STEP_OUTCOMES);
   next.decisions = next.decisions.slice(-MAX_DECISIONS);
   next.activeIssues = next.activeIssues.slice(-MAX_ACTIVE_ISSUES);
@@ -415,6 +524,8 @@ export function createInitialMissionStateDocument(args: {
     activeIssues: [],
     modifiedFiles: [],
     pendingInterventions: [],
+    reflections: [],
+    latestRetrospective: null,
   };
 }
 

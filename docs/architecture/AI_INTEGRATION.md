@@ -1104,8 +1104,8 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 - Shared utilities consolidated: backend `utils.ts` (60+ duplicate removals), renderer `format.ts`/`shell.ts`/`sessions.ts`, shared React hooks
 
 **Remaining (~3%)**:
-- Orchestrator Overhaul Phases 1-6 are complete (subagent delegation, validation enforcement, UI observability all shipped).
-- Only Phase 7 (reflection protocol for system self-improvement) remains -- see `docs/ORCHESTRATOR_OVERHAUL.md`.
+- Orchestrator Overhaul Phases 1-7 are complete (reflection protocol closure shipped, including cross-mission trends and pattern-candidate promotion gates).
+- Remaining Phase 3 workstream is integration soak + broad regression verification (Task 8), tracked in test harness/docs.
 
 ### Compute Backends for Agent Execution
 
@@ -1658,7 +1658,7 @@ interface LearningEntry {
 | Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
-| AI orchestrator (Claude + MCP) | In Progress | Tasks 1-6 shipped; Orchestrator Overhaul Phases 1-6 complete; codebase decomposed (core ~7.7K + 8 modules). Remaining: Phase 7 (reflection protocol) |
+| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-7 complete (reflection protocol closure with deterministic retrospectives, trend persistence, and candidate promotion gating). Task 8 integration soak remains as verification hardening. |
 | Phase 4 orchestrator delegation/team runtime | Complete | `delegate_parallel`, push sub-agent progress/completion rollups, native teammate auto-registration + allocation cap guardrails, single team-member data path |
 | Mission phase engine + profiles (Task 3) | Complete | `phase_cards`/`phase_profiles`/`mission_phase_overrides`, profile CRUD/import/export, phase transition telemetry |
 | Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
@@ -1688,7 +1688,7 @@ interface LearningEntry {
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestration Tasks 1-6 are shipped, and Orchestrator Overhaul Phases 1-6 are complete (subagent delegation, validation enforcement, UI observability, team runtime, PR strategy, inter-agent comms all shipped). Only Overhaul Phase 7 (reflection protocol) remains. Phase 4 delegation/team-runtime hard-cut work is complete (`delegate_parallel`, push rollups, native teammate guardrails, and dead-path removal). A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7 (subagent delegation, validation enforcement, UI observability, team runtime, PR strategy, inter-agent comms, and reflection protocol closure shipped). Phase 4 delegation/team-runtime hard-cut work is complete (`delegate_parallel`, push rollups, native teammate guardrails, and dead-path removal). A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 

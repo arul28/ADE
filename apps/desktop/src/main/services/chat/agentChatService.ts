@@ -17,6 +17,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatFileRef,
+  AgentChatIdentityKey,
   AgentChatInterruptArgs,
   AgentChatModelInfo,
   AgentChatProvider,
@@ -25,7 +26,8 @@ import type {
   AgentChatSteerArgs,
   AgentChatSendArgs,
   TerminalSessionStatus,
-  TerminalToolType
+  TerminalToolType,
+  CtoCapabilityMode
 } from "../../../shared/types";
 import {
   getModelById,
@@ -37,6 +39,9 @@ import { detectAllAuth } from "../ai/authDetector";
 import { resolveModel, buildProviderOptions, isModelCliWrapped } from "../ai/providerResolver";
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
+import type { createMemoryService } from "../memory/memoryService";
+import type { createCtoStateService } from "../cto/ctoStateService";
+import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 
 type JsonRpcEnvelope = {
   jsonrpc?: string;
@@ -71,6 +76,8 @@ type PersistedChatState = {
   modelId?: string;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatSession["permissionMode"];
+  identityKey?: AgentChatIdentityKey;
+  capabilityMode?: CtoCapabilityMode;
   threadId?: string;
   messages?: PersistedClaudeMessage[];
   updatedAt: string;
@@ -150,6 +157,8 @@ type ManagedChatSession = {
   preview: string | null;
   closed: boolean;
   endedNotified: boolean;
+  ctoSessionStartedAt: string | null;
+  pendingReconstructionContext: string | null;
 };
 
 type ResolvedChatConfig = {
@@ -429,6 +438,37 @@ function normalizePersistedPermissionMode(value: unknown): AgentChatSession["per
   return undefined;
 }
 
+function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {
+  return value === "cto" ? "cto" : undefined;
+}
+
+function normalizeCapabilityMode(value: unknown): CtoCapabilityMode | undefined {
+  if (value === "full_mcp" || value === "fallback") {
+    return value;
+  }
+  return undefined;
+}
+
+function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
+  return provider === "codex" || provider === "claude" ? "full_mcp" : "fallback";
+}
+
+function resolveMcpRuntimeRoot(): string {
+  const startPoints = [process.cwd(), __dirname];
+  for (const start of startPoints) {
+    let dir = path.resolve(start);
+    for (let i = 0; i < 12; i += 1) {
+      if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
+        return dir;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return process.cwd();
+}
+
 function toIso(): string {
   return new Date().toISOString();
 }
@@ -445,6 +485,9 @@ export function createAgentChatService(args: {
   projectRoot: string;
   adeDir: string;
   transcriptsDir: string;
+  projectId?: string;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
+  ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -457,6 +500,9 @@ export function createAgentChatService(args: {
     projectRoot,
     adeDir,
     transcriptsDir,
+    projectId,
+    memoryService,
+    ctoStateService,
     laneService,
     sessionService,
     projectConfigService,
@@ -474,6 +520,46 @@ export function createAgentChatService(args: {
 
   const claudeProvider = createClaudeCode();
   const managedSessions = new Map<string, ManagedChatSession>();
+
+  const buildAdeMcpServers = (defaultRole: "agent" | "cto"): Record<string, Record<string, unknown>> => {
+    const launch = resolveAdeMcpServerLaunch({
+      workspaceRoot: projectRoot,
+      runtimeRoot: resolveMcpRuntimeRoot(),
+      defaultRole
+    });
+    return {
+      ade: {
+        command: launch.command,
+        args: launch.cmdArgs,
+        env: launch.env
+      }
+    };
+  };
+
+  const refreshReconstructionContext = (managed: ManagedChatSession): void => {
+    if (managed.session.identityKey !== "cto" || !ctoStateService) {
+      managed.pendingReconstructionContext = null;
+      return;
+    }
+    managed.pendingReconstructionContext = ctoStateService.buildReconstructionContext(8);
+  };
+
+  const applyReconstructionContextToStreamingRuntime = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime | UnifiedRuntime
+  ): void => {
+    const context = managed.pendingReconstructionContext?.trim() ?? "";
+    if (!context.length) return;
+    runtime.messages.push({
+      role: "user",
+      content: [
+        "System context (CTO reconstruction, do not echo verbatim):",
+        context
+      ].join("\n")
+    });
+    managed.pendingReconstructionContext = null;
+    persistChatState(managed);
+  };
 
   const detectAuth = async () => {
     const snapshot = projectConfigService.get();
@@ -537,6 +623,7 @@ export function createAgentChatService(args: {
 
     managed.runtime = runtime;
     managed.session.provider = "unified";
+    managed.session.capabilityMode = "fallback";
     return "handled";
   };
 
@@ -615,6 +702,8 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
+      ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
+      ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { messages: managed.runtime.messages } : {}),
       ...(managed.runtime?.kind === "unified"
@@ -651,6 +740,8 @@ export function createAgentChatService(args: {
         : resolveModelIdFromStoredValue(model, provider);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const permissionMode = normalizePersistedPermissionMode(record.permissionMode);
+      const identityKey = normalizeIdentityKey(record.identityKey);
+      const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
       if (!laneId || !model) return null;
       const messages = Array.isArray(record.messages)
         ? record.messages
@@ -670,6 +761,8 @@ export function createAgentChatService(args: {
         ...(modelId ? { modelId } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
+        ...(identityKey ? { identityKey } : {}),
+        ...(capabilityMode ? { capabilityMode } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
@@ -806,6 +899,28 @@ export function createAgentChatService(args: {
       status
     });
 
+    if (managed.session.identityKey === "cto" && ctoStateService) {
+      try {
+        const explicitSummary = typeof options?.summary === "string" ? options.summary.trim() : "";
+        const fallbackSummary = managed.preview?.trim() ?? "";
+        const summary = explicitSummary || fallbackSummary || "CTO session ended.";
+        ctoStateService.appendSessionLog({
+          sessionId: managed.session.id,
+          summary,
+          startedAt: managed.ctoSessionStartedAt ?? managed.session.createdAt,
+          endedAt,
+          provider: managed.session.provider,
+          modelId: managed.session.modelId ?? managed.session.model,
+          capabilityMode: managed.session.capabilityMode ?? inferCapabilityMode(managed.session.provider)
+        });
+      } catch (error) {
+        logger.warn("agent_chat.cto_log_append_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
     const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
     if (endSha) {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
@@ -813,6 +928,7 @@ export function createAgentChatService(args: {
 
     managed.session.status = "ended";
     managed.closed = true;
+    managed.ctoSessionStartedAt = null;
     persistChatState(managed);
 
     teardownRuntime(managed);
@@ -854,6 +970,8 @@ export function createAgentChatService(args: {
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
+        ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
+        capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
         status: mapTerminalStatusToChatStatus(row.status),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
         createdAt: row.startedAt,
@@ -867,9 +985,12 @@ export function createAgentChatService(args: {
       runtime: null,
       preview: row.lastOutputPreview ?? null,
       closed: row.status !== "running",
-      endedNotified: row.status !== "running"
+      endedNotified: row.status !== "running",
+      ctoSessionStartedAt: row.status === "running" ? row.startedAt : null,
+      pendingReconstructionContext: null
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
+    refreshReconstructionContext(managed);
 
     managedSessions.set(sessionId, managed);
     return managed;
@@ -893,6 +1014,19 @@ export function createAgentChatService(args: {
         text_elements: []
       }
     ];
+
+    const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
+    if (reconstructionContext.length) {
+      input.unshift({
+        type: "text",
+        text: [
+          "System context (CTO reconstruction, do not echo verbatim):",
+          reconstructionContext
+        ].join("\n"),
+        text_elements: []
+      });
+      managed.pendingReconstructionContext = null;
+    }
 
     for (const attachment of attachments) {
       if (attachment.type === "image") {
@@ -1019,6 +1153,8 @@ export function createAgentChatService(args: {
       : "";
     const userContent = `${text}${attachmentHint}`;
 
+    applyReconstructionContextToStreamingRuntime(managed, runtime);
+
     runtime.messages.push({ role: "user", content: userContent });
     emitChatEvent(managed, { type: "user_message", text, attachments, turnId });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
@@ -1038,6 +1174,18 @@ export function createAgentChatService(args: {
 
         const tools = createUniversalToolSet(managed.laneWorktreePath, {
           permissionMode: unifiedRt.permissionMode,
+          ...(memoryService && projectId ? { memoryService, projectId } : {}),
+          ...(managed.session.identityKey === "cto" && ctoStateService
+            ? {
+                onMemoryUpdateCore: (patch) => {
+                  const snapshot = ctoStateService.updateCoreMemory(patch);
+                  return {
+                    version: snapshot.coreMemory.version,
+                    updatedAt: snapshot.coreMemory.updatedAt
+                  };
+                }
+              }
+            : {}),
           onAskUser: async (question) => {
             const askItemId = randomUUID();
             emitChatEvent(managed, {
@@ -1115,6 +1263,7 @@ export function createAgentChatService(args: {
           cwd: managed.laneWorktreePath,
           permissionMode: claudePermissionMode,
           settingSources: [],
+          mcpServers: buildAdeMcpServers(managed.session.identityKey === "cto" ? "cto" : "agent"),
           maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
           canUseTool
         };
@@ -1831,6 +1980,7 @@ export function createAgentChatService(args: {
         laneId: "temporary",
         provider: "codex",
         model: DEFAULT_CODEX_MODEL,
+        capabilityMode: "full_mcp",
         status: "idle",
         createdAt: toIso(),
         lastActivityAt: toIso()
@@ -1843,7 +1993,9 @@ export function createAgentChatService(args: {
       runtime: null,
       preview: null,
       closed: false,
-      endedNotified: false
+      endedNotified: false,
+      ctoSessionStartedAt: null,
+      pendingReconstructionContext: null
     };
 
     let runtime: CodexRuntime | null = null;
@@ -1953,7 +2105,15 @@ export function createAgentChatService(args: {
     return mapped;
   };
 
-  const createSession = async ({ laneId, provider, model, modelId, reasoningEffort, permissionMode: requestedPermMode }: AgentChatCreateArgs): Promise<AgentChatSession> => {
+  const createSession = async ({
+    laneId,
+    provider,
+    model,
+    modelId,
+    reasoningEffort,
+    permissionMode: requestedPermMode,
+    identityKey
+  }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const lane = laneService.getLaneBaseAndBranch(laneId);
     const sessionId = randomUUID();
     const startedAt = toIso();
@@ -2010,6 +2170,7 @@ export function createAgentChatService(args: {
     const normalizedReasoningEffort = effectiveProvider === "unified"
       ? rawEffort
       : validateReasoningEffort(effectiveProvider === "claude" ? "claude" : "codex", rawEffort);
+    const capabilityMode = inferCapabilityMode(effectiveProvider);
 
     sessionService.create({
       sessionId,
@@ -2037,6 +2198,8 @@ export function createAgentChatService(args: {
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
         ...(requestedPermMode ? { permissionMode: requestedPermMode } : {}),
+        ...(identityKey ? { identityKey } : {}),
+        capabilityMode,
         status: "idle",
         createdAt: startedAt,
         lastActivityAt: startedAt
@@ -2049,9 +2212,12 @@ export function createAgentChatService(args: {
       runtime: null,
       preview: null,
       closed: false,
-      endedNotified: false
+      endedNotified: false,
+      ctoSessionStartedAt: identityKey === "cto" ? startedAt : null,
+      pendingReconstructionContext: null
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
+    refreshReconstructionContext(managed);
 
     // Init dedicated chat transcript file for persistence
     try {
@@ -2093,6 +2259,8 @@ export function createAgentChatService(args: {
       managed.session.status = "idle";
       managed.closed = false;
       managed.endedNotified = false;
+      managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? toIso() : null;
+      refreshReconstructionContext(managed);
     }
 
     // Unified runtime dispatch
@@ -2126,11 +2294,14 @@ export function createAgentChatService(args: {
         const codexPolicy = managed.session.permissionMode
           ? mapSessionPermissionToCodex(managed.session.permissionMode)
           : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
+        const mcpServers = buildAdeMcpServers(managed.session.identityKey === "cto" ? "cto" : "agent");
         const resumeParams = {
           threadId: threadIdToResume,
           model: managed.session.model,
           ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
           cwd: managed.laneWorktreePath,
+          mcpServers,
+          mcp_servers: mcpServers,
           ...codexPolicyArgs(codexPolicy),
           persistExtendedHistory: true
         };
@@ -2150,6 +2321,8 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
+            mcpServers,
+            mcp_servers: mcpServers,
             ...codexPolicyArgs(codexPolicy),
             experimentalRawEvents: false,
             persistExtendedHistory: true
@@ -2167,10 +2340,13 @@ export function createAgentChatService(args: {
         const codexPolicy = managed.session.permissionMode
           ? mapSessionPermissionToCodex(managed.session.permissionMode)
           : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
+        const mcpServers = buildAdeMcpServers(managed.session.identityKey === "cto" ? "cto" : "agent");
         const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
           model: managed.session.model,
           ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
           cwd: managed.laneWorktreePath,
+          mcpServers,
+          mcp_servers: mcpServers,
           ...codexPolicyArgs(codexPolicy),
           experimentalRawEvents: false,
           persistExtendedHistory: true
@@ -2289,6 +2465,8 @@ export function createAgentChatService(args: {
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
     const persisted = readPersistedState(sessionId);
+    managed.session.capabilityMode = managed.session.capabilityMode ?? inferCapabilityMode(managed.session.provider);
+    refreshReconstructionContext(managed);
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
@@ -2296,6 +2474,7 @@ export function createAgentChatService(args: {
       const codexPolicy = managed.session.permissionMode
         ? mapSessionPermissionToCodex(managed.session.permissionMode)
         : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
+      const mcpServers = buildAdeMcpServers(managed.session.identityKey === "cto" ? "cto" : "agent");
       if (!managed.session.reasoningEffort) {
         managed.session.reasoningEffort = persisted?.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
       }
@@ -2307,6 +2486,8 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
+            mcpServers,
+            mcp_servers: mcpServers,
             ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
           });
@@ -2324,6 +2505,8 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
+            mcpServers,
+            mcp_servers: mcpServers,
             ...codexPolicyArgs(codexPolicy),
             experimentalRawEvents: false,
             persistExtendedHistory: true
@@ -2370,6 +2553,7 @@ export function createAgentChatService(args: {
     managed.session.status = "idle";
     managed.closed = false;
     managed.endedNotified = false;
+    managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? toIso() : null;
 
     persistChatState(managed);
     return managed.session;
@@ -2395,6 +2579,8 @@ export function createAgentChatService(args: {
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
+        ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
+        capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
         status: row.status === "running" ? "idle" : "ended",
         startedAt: row.startedAt,
         endedAt: row.endedAt,
@@ -2404,6 +2590,90 @@ export function createAgentChatService(args: {
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {})
       } satisfies AgentChatSessionSummary;
     });
+  };
+
+  const ensureIdentitySession = async (args: {
+    identityKey: AgentChatIdentityKey;
+    laneId: string;
+    modelId?: string | null;
+    reasoningEffort?: string | null;
+    permissionMode?: AgentChatSession["permissionMode"];
+  }): Promise<AgentChatSession> => {
+    const laneId = args.laneId.trim();
+    if (!laneId.length) {
+      throw new Error("laneId is required to ensure an identity-bound chat session.");
+    }
+
+    const existing = (await listSessions())
+      .filter((entry) => entry.identityKey === args.identityKey)
+      .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
+
+    const preferred = existing.find((entry) => entry.laneId === laneId) ?? existing[0] ?? null;
+    if (preferred) {
+      const managed = ensureManagedSession(preferred.sessionId);
+      managed.session.identityKey = args.identityKey;
+      managed.session.capabilityMode = inferCapabilityMode(managed.session.provider);
+      if (args.reasoningEffort) {
+        managed.session.reasoningEffort = normalizeReasoningEffort(args.reasoningEffort);
+      }
+      if (args.permissionMode) {
+        managed.session.permissionMode = args.permissionMode;
+      }
+      refreshReconstructionContext(managed);
+      persistChatState(managed);
+
+      if (managed.session.status === "ended") {
+        await resumeSession({ sessionId: managed.session.id });
+      }
+      return ensureManagedSession(managed.session.id).session;
+    }
+
+    const identity = ctoStateService?.getIdentity();
+    const pref = identity?.modelPreferences;
+    const preferredProviderRaw = (pref?.provider ?? "").trim().toLowerCase();
+    const providerFromPreference: AgentChatProvider = preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")
+      ? "codex"
+      : preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")
+        ? "claude"
+        : "unified";
+
+    const explicitModelId = typeof args.modelId === "string" && args.modelId.trim().length
+      ? args.modelId.trim()
+      : null;
+    const preferredModelId = typeof pref?.modelId === "string" && pref.modelId.trim().length
+      ? pref.modelId.trim()
+      : null;
+    const resolvedModelId = explicitModelId ?? preferredModelId;
+    const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
+
+    const provider = resolvedDescriptor
+      ? resolvedDescriptor.isCliWrapped
+        ? resolvedDescriptor.family === "openai"
+          ? "codex"
+          : resolvedDescriptor.family === "anthropic"
+            ? "claude"
+            : providerFromPreference
+        : "unified"
+      : providerFromPreference;
+
+    const preferredModel = typeof pref?.model === "string" && pref.model.trim().length
+      ? pref.model.trim()
+      : fallbackModelForProvider(provider);
+
+    const created = await createSession({
+      laneId,
+      provider,
+      model: preferredModel,
+      ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
+      reasoningEffort: args.reasoningEffort ?? pref?.reasoningEffort ?? null,
+      permissionMode: args.permissionMode,
+      identityKey: args.identityKey
+    });
+
+    const managed = ensureManagedSession(created.id);
+    refreshReconstructionContext(managed);
+    persistChatState(managed);
+    return managed.session;
   };
 
   const approveToolUse = async ({ sessionId, itemId, decision }: { sessionId: string; itemId: string; decision: AgentChatApprovalDecision }): Promise<void> => {
@@ -2587,6 +2857,7 @@ export function createAgentChatService(args: {
     interrupt,
     resumeSession,
     listSessions,
+    ensureIdentitySession,
     approveToolUse,
     getAvailableModels,
     dispose,

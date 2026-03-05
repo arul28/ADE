@@ -17,6 +17,7 @@ import { createPtyService } from "../../desktop/src/main/services/pty/ptyService
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
+import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createOrchestratorService } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
@@ -101,6 +102,7 @@ export type AdeMcpRuntime = {
   testService: ReturnType<typeof createTestService>;
   prService?: ReturnType<typeof createPrService>;
   memoryService: ReturnType<typeof createMemoryService>;
+  ctoStateService: ReturnType<typeof createCtoStateService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   eventBuffer: EventBuffer;
@@ -269,6 +271,11 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
   const eventBuffer = createEventBuffer();
 
   const memoryService = createMemoryService(db);
+  const ctoStateService = createCtoStateService({
+    db,
+    projectId,
+    adeDir: paths.adeDir,
+  });
 
   const orchestratorService = createOrchestratorService({
     db,
@@ -352,6 +359,7 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     ptyService,
     testService,
     memoryService,
+    ctoStateService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,

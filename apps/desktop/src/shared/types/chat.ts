@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { ModelId } from "./core";
+import type { CtoCapabilityMode } from "./cto";
 
 export type AgentChatProvider = "codex" | "claude" | "unified" | (string & {});
 
@@ -136,6 +137,7 @@ export type AgentChatEventEnvelope = {
 };
 
 export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
+export type AgentChatIdentityKey = "cto";
 
 export type AgentChatSession = {
   id: string;
@@ -145,6 +147,8 @@ export type AgentChatSession = {
   modelId?: ModelId;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
+  identityKey?: AgentChatIdentityKey;
+  capabilityMode?: CtoCapabilityMode;
   status: AgentChatSessionStatus;
   threadId?: string;
   createdAt: string;
@@ -159,6 +163,8 @@ export type AgentChatSessionSummary = {
   modelId?: ModelId;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
+  identityKey?: AgentChatIdentityKey;
+  capabilityMode?: CtoCapabilityMode;
   status: AgentChatSessionStatus;
   startedAt: string;
   endedAt: string | null;
@@ -190,6 +196,7 @@ export type AgentChatCreateArgs = {
   modelId?: ModelId;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
+  identityKey?: AgentChatIdentityKey;
 };
 
 export type AgentChatListArgs = {

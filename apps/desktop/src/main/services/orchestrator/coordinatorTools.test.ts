@@ -13,6 +13,11 @@ function createTestDeps(args: {
     appendRuntimeEvent: vi.fn(),
     appendTimelineEvent: vi.fn(),
     emitRuntimeUpdate: vi.fn(),
+    addReflection: vi.fn(() => ({
+      id: "reflection-1",
+      missionId: "mission-1",
+      runId: "run-1"
+    })),
   } as any;
 
   const logger = {
@@ -95,6 +100,11 @@ function createCoordinatorHarness(args: {
     appendRuntimeEvent: vi.fn(),
     appendTimelineEvent: vi.fn(),
     emitRuntimeUpdate: vi.fn(),
+    addReflection: vi.fn(() => ({
+      id: "reflection-1",
+      missionId: "mission-1",
+      runId: "run-1"
+    })),
     createHandoff: vi.fn(),
     startReadyAutopilotAttempts: vi.fn(async () => 0),
     completeAttempt: vi.fn(),
@@ -1558,6 +1568,66 @@ describe("coordinatorTools report_validation milestone behavior", () => {
     });
     expect(result.interventionId).toBeTruthy();
     expect(missionService.addIntervention).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("coordinatorTools reflection_add", () => {
+  it("records reflection entries with inferred worker scope", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [
+        {
+          id: "step-impl",
+          stepKey: "impl-worker",
+          stepIndex: 0,
+          title: "Implementation",
+          laneId: null,
+          status: "running",
+          dependencyStepIds: [],
+          retryLimit: 2,
+          retryCount: 0,
+          metadata: {},
+        },
+      ],
+      attempts: [
+        {
+          id: "attempt-running",
+          stepId: "step-impl",
+          status: "running",
+          createdAt: "2026-03-05T00:00:00.000Z",
+          completedAt: null,
+        },
+      ],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.reflection_add as any).execute({
+      workerId: "impl-worker",
+      phase: "development",
+      signalType: "frustration",
+      observation: "Typecheck loop is slow",
+      recommendation: "Use incremental mode",
+      context: "editing auth flow",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      reflection: expect.objectContaining({ id: "reflection-1" })
+    });
+    expect(orchestratorService.addReflection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-1",
+        runId: "run-1",
+        stepId: "step-impl",
+        attemptId: "attempt-running",
+        phase: "development",
+        signalType: "frustration",
+        observation: "Typecheck loop is slow",
+        recommendation: "Use incremental mode",
+        context: "editing auth flow",
+        agentRole: "coordinator"
+      })
+    );
   });
 });
 

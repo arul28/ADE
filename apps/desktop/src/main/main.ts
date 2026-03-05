@@ -46,6 +46,7 @@ import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
 import { createMemoryService } from "./services/memory/memoryService";
+import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
@@ -710,13 +711,24 @@ app.whenReady().then(async () => {
       loadPty
     });
 
+    const memoryService = createMemoryService(db);
+
+    const ctoStateService = createCtoStateService({
+      db,
+      projectId,
+      adeDir: adePaths.adeDir
+    });
+
     const agentChatService = createAgentChatService({
       projectRoot,
       adeDir: adePaths.adeDir,
       transcriptsDir: adePaths.transcriptsDir,
+      projectId,
+      memoryService,
       laneService,
       sessionService,
       projectConfigService,
+      ctoStateService,
       logger,
       appVersion: app.getVersion(),
       onEvent: (event) => {
@@ -795,8 +807,6 @@ app.whenReady().then(async () => {
       projectConfigService,
       missionBudgetService
     });
-
-    const memoryService = createMemoryService(db);
 
     const orchestratorService = createOrchestratorService({
       db,
@@ -983,6 +993,7 @@ app.whenReady().then(async () => {
       testService,
       prService,
       memoryService,
+      ctoStateService,
       orchestratorService,
       aiOrchestratorService,
       eventBuffer: mcpEventBuffer,
@@ -1064,6 +1075,8 @@ app.whenReady().then(async () => {
       projectConfigService,
       processService,
       testService,
+      memoryService,
+      ctoStateService,
       mcpSocketServer,
       mcpSocketPath
     };
@@ -1119,7 +1132,8 @@ app.whenReady().then(async () => {
       projectConfigService: null,
       processService: null,
       testService: null,
-      memoryService: null
+      memoryService: null,
+      ctoStateService: null
     } as unknown as AppContext);
   };
 

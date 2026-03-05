@@ -124,7 +124,7 @@ Baseline derived from code in `apps/desktop`.
 
 Not implemented yet:
 
-- Remaining Phase 3 work (reflection protocol -- see `docs/ORCHESTRATOR_OVERHAUL.md` Phase 7; Overhaul Phases 1-6 complete)
+- Phase 3 orchestrator overhaul complete (Phases 1-7 shipped; reflection protocol included).
 - CTO agent + org chart (persistent project-aware org with worker agents, Linear sync, auto-dispatch)
 - Night Shift mode in Automations (overnight execution with morning briefing)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
@@ -181,7 +181,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server, Claude SDK, unified API/local runtime) | Phase 1.5 | Phase 1 (partial -- SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | In progress (Tasks 1-6 shipped; Overhaul Phases 1-6 complete; remaining: Phase 7 reflection protocol) |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | Complete (Tasks 1-6 shipped; Overhaul Phases 1-7 complete including reflection protocol) |
 | Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
 | Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Implemented (Task 2 baseline, coordinator-driven loop) |
 | Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
@@ -194,7 +194,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Pre-Mission Launch System (pre-flight checklist) | Phase 3 | Phase 3 | Implemented (Task 5) |
 | Tiered Validation System (strict self/dedicated runtime contracts) | Phase 3 | Phase 3 | Implemented (Task 5 + Orchestrator Overhaul Phase 5) |
 | Intervention Granularity (per-worker pause) | Phase 3 | Phase 3 | Implemented (Task 5) |
-| Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Planned (ORCHESTRATOR_OVERHAUL.md Phase 7) |
+| Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Implemented (ORCHESTRATOR_OVERHAUL.md Phase 7) |
 | Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Planned |
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |

@@ -358,6 +358,8 @@ export function normalizeRuntimeEventType(value: string): OrchestratorRuntimeEve
     value === "validation_self_check_reminder" ||
     value === "validation_auto_spawned" ||
     value === "validation_gate_blocked" ||
+    value === "reflection_added" ||
+    value === "retrospective_generated" ||
     value === "tool_profiles_updated"
   ) {
     return value;

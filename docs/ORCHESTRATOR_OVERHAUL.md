@@ -18,7 +18,7 @@ This document supersedes stale orchestrator planning details in older roadmap do
 | Phase 4 | Complete | Subagent delegation + team runtime consolidation |
 | Phase 5 | Complete (2026-03-04) | Strict runtime validation enforcement, no bypass/sampling |
 | Phase 6 | Complete (2026-03-04) | Strict validation UX + observability + hard legacy cut |
-| Phase 7 | Ready | Reflection protocol + retrospective synthesis on strict baseline |
+| Phase 7 | Complete (2026-03-05) | Reflection protocol + retrospective synthesis on strict baseline |
 
 ## Strict Baseline (Post-Phase 6)
 
@@ -165,9 +165,9 @@ Delivered:
 - No active `partially_completed` in `apps/desktop/src` or `apps/mcp-server/src`.
 - No role-default model fallback branches remain in orchestrator routing code.
 
-## Phase 7 (Execution-Ready): Reflection Protocol on Strict Baseline
+## Phase 7 (Shipped): Reflection Protocol on Strict Baseline
 
-Status: Ready to execute.
+Status: Complete (2026-03-05).
 
 ### 7.1 Reflection ingestion contract
 Build:
@@ -213,7 +213,54 @@ Acceptance:
 - Duplicate/noisy patterns are not repeatedly promoted.
 - Promoted candidates are traceable to originating retrospectives.
 
-### Phase 7 hard constraints
+#
+
+## Phase 7 Delivered (2026-03-05)
+
+Delivered:
+- Added strict reflection ingestion contract (`reflection_add`) with typed validation errors, required recommendation/context/timestamp fields, and run/mission/step/attempt scope enforcement.
+- Persisted reflections to DB (`orchestrator_reflections`) and append-only JSONL ledger under `.ade/reflections/<mission-id>.jsonl` with transaction rollback on ledger-write failure.
+- Added deterministic, idempotent post-run retrospective synthesis for terminal runs (including cancel/fallback finalization paths), persisted in DB (`orchestrator_retrospectives`) and JSON artifact files under `.ade/reflections/retrospectives/`.
+- Implemented cross-mission changelog persistence (`orchestrator_retrospective_trends`) including `resolved` / `still_open` / `worsened` classifications with source retrospective linkage.
+- Implemented pattern repetition tracking (`orchestrator_reflection_pattern_stats` + `orchestrator_reflection_pattern_sources`) with thresholded promotion to memory candidates and dedupe.
+- Emitted runtime observability signals (`reflection_added`, `retrospective_generated`) and projected reflection/retrospective state into mission state docs.
+- Added MCP observation coverage (`list_retrospectives`, `list_reflection_trends`, `list_reflection_pattern_stats`) and expanded runtime/migration test coverage for reflection protocol behavior.
+
+## Task 7 Operator Runbook
+
+### What is generated automatically
+- During run execution, structured reflections are written to:
+  - `.ade/reflections/<mission-id>.jsonl`
+- On terminal run (`succeeded` / `failed` / `canceled`), one deterministic retrospective is generated per run:
+  - DB row in `orchestrator_retrospectives` (`id = retro:<run-id>`)
+  - Artifact file in `.ade/reflections/retrospectives/`
+  - Runtime event `retrospective_generated`
+  - Mission state projection in `.ade/mission-state-<run-id>.json` (`reflections`, `latestRetrospective`)
+
+### Fast verification after a mission
+1. Confirm reflection ledger writes:
+   - `ls .ade/reflections`
+   - `tail -n 20 .ade/reflections/<mission-id>.jsonl`
+2. Confirm retrospective artifact exists:
+   - `ls .ade/reflections/retrospectives`
+3. Confirm mission-state projection:
+   - `cat .ade/mission-state-<run-id>.json`
+4. Confirm trend/pattern persistence:
+   - `sqlite3 .ade/ade.db "select id, run_id, status, pain_point_label from orchestrator_retrospective_trends order by created_at desc limit 20;"`
+   - `sqlite3 .ade/ade.db "select pattern_label, occurrence_count, promoted_memory_id from orchestrator_reflection_pattern_stats order by occurrence_count desc limit 20;"`
+
+### MCP queries for operational use
+- `list_retrospectives` (mission-scoped retrospective history)
+- `list_reflection_trends` (cross-mission pain-point trajectory with source linkage)
+- `list_reflection_pattern_stats` (pattern repetition and candidate-promotion state)
+
+### How to use outputs to improve the system
+1. Prioritize top `worsened` trend rows as immediate runtime/prompt fixes.
+2. Treat repeated `still_open` rows as structural backlog (workflow/tooling/model-routing debt).
+3. Validate `resolved` rows to confirm prior interventions actually removed pain points.
+4. Review `list_reflection_pattern_stats` for high-frequency patterns that crossed promotion threshold, then convert accepted candidates into durable memory/pack rules or orchestrator prompt updates.
+
+## Phase 7 hard constraints
 - Keep reflection additive only; do not weaken strict validation/runtime gate behavior.
 - No implicit completion status expansion.
 - No model-routing fallback reintroduction.

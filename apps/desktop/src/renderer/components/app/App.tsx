@@ -45,6 +45,9 @@ const WorkspaceGraphPage = React.lazy(() =>
 const MissionsPage = React.lazy(() =>
   import("../missions/MissionsPage").then((m) => ({ default: m.MissionsPage }))
 );
+const CtoPage = React.lazy(() =>
+  import("../cto/CtoPage").then((m) => ({ default: m.CtoPage }))
+);
 
 import { useAppStore } from "../../state/appStore";
 
@@ -181,6 +184,7 @@ export function App() {
             <Route path="/history" element={guardedLazy(<HistoryPage />)} />
             <Route path="/automations" element={guardedLazy(<AutomationsPage />)} />
             <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
+            <Route path="/cto" element={guardedLazy(<CtoPage />)} />
             <Route path="/settings" element={guardedLazy(<SettingsPage />)} />
             <Route path="*" element={<Navigate to="/project" replace />} />
           </Route>

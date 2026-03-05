@@ -2,9 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PackDeltaDigestV1, PackExport, PackType } from "../../../shared/types";
-import { createOrchestratorService } from "./orchestratorService";
+import { createOrchestratorService, ReflectionValidationError } from "./orchestratorService";
 import { openKvDb } from "../state/kvDb";
 
 function createLogger() {
@@ -46,6 +46,7 @@ async function createFixture(args: {
   packService?: Record<string, unknown>;
   projectConfigService?: Record<string, unknown> | null;
   aiIntegrationService?: Record<string, unknown> | null;
+  memoryService?: Record<string, unknown> | null;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-orchestrator-"));
   fs.mkdirSync(path.join(projectRoot, "docs", "architecture"), { recursive: true });
@@ -214,7 +215,8 @@ async function createFixture(args: {
     conflictService: args.conflictService,
     ptyService,
     projectConfigService: (args.projectConfigService ?? null) as any,
-    aiIntegrationService: (args.aiIntegrationService ?? null) as any
+    aiIntegrationService: (args.aiIntegrationService ?? null) as any,
+    memoryService: (args.memoryService ?? null) as any
   });
 
   // Test harness convenience: unified workers require metadata.modelId in Phase 3.
@@ -3557,6 +3559,411 @@ describe("orchestratorService", () => {
 
       const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
       expect(timeline.some((event) => event.eventType === "validation_self_check_reminder")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("validates reflection input strictly and rejects invalid timestamps", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "impl", title: "Implement", stepIndex: 0 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Expected step");
+
+      expect(() =>
+        fixture.service.addReflection({
+          missionId: fixture.missionId,
+          runId: started.run.id,
+          stepId: step.id,
+          agentRole: "implementer",
+          phase: "development",
+          signalType: "idea",
+          observation: "Need better local iteration loop",
+          recommendation: "Add focused test command",
+          context: "Editing auth handler",
+          occurredAt: "not-a-date"
+        })
+      ).toThrowError(ReflectionValidationError);
+      expect(() =>
+        fixture.service.addReflection({
+          missionId: fixture.missionId,
+          runId: started.run.id,
+          stepId: step.id,
+          agentRole: "implementer",
+          phase: "development",
+          signalType: "idea",
+          observation: "Need better local iteration loop",
+          recommendation: "Add focused test command",
+          context: "Editing auth handler",
+          occurredAt: "2026-03-05 00:00:00"
+        })
+      ).toThrowError(ReflectionValidationError);
+      expect(() =>
+        fixture.service.addReflection({
+          missionId: fixture.missionId,
+          runId: started.run.id,
+          stepId: step.id,
+          agentRole: "implementer",
+          phase: "development",
+          signalType: "idea",
+          observation: "Need better local iteration loop",
+          recommendation: "",
+          context: "Editing auth handler",
+          occurredAt: "2026-03-05T00:00:00.000Z"
+        })
+      ).toThrowError(ReflectionValidationError);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("rejects reflection scope mismatches and persists DB+ledger on valid writes", async () => {
+    const fixture = await createFixture();
+    try {
+      const runA = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "a", title: "A", stepIndex: 0 }]
+      });
+      const runB = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "b", title: "B", stepIndex: 0 }]
+      });
+      const stepB = fixture.service.listSteps(runB.run.id)[0];
+      if (!stepB) throw new Error("Expected runB step");
+
+      expect(() =>
+        fixture.service.addReflection({
+          missionId: fixture.missionId,
+          runId: runA.run.id,
+          stepId: stepB.id,
+          agentRole: "implementer",
+          phase: "development",
+          signalType: "frustration",
+          observation: "Scope mismatch",
+          recommendation: "Use correct step scope",
+          context: "unit test",
+          occurredAt: "2026-03-05T01:00:00.000Z"
+        })
+      ).toThrowError(ReflectionValidationError);
+
+      const stepA = fixture.service.listSteps(runA.run.id)[0];
+      if (!stepA) throw new Error("Expected runA step");
+      const reflection = fixture.service.addReflection({
+        missionId: fixture.missionId,
+        runId: runA.run.id,
+        stepId: stepA.id,
+        agentRole: "implementer",
+        phase: "development",
+        signalType: "frustration",
+        observation: "Typecheck is slow",
+        recommendation: "Use incremental mode",
+        context: "editing foo.ts",
+        occurredAt: "2026-03-05T01:05:00.000Z"
+      });
+      const stored = fixture.service.listReflections({ runId: runA.run.id, limit: 10 });
+      expect(stored.some((entry) => entry.id === reflection.id)).toBe(true);
+
+      const ledgerPath = path.join(fixture.projectRoot, ".ade", "reflections", `${fixture.missionId}.jsonl`);
+      const ledgerText = fs.readFileSync(ledgerPath, "utf8");
+      expect(ledgerText).toContain(reflection.id);
+      expect(ledgerText).toContain("\"signalType\":\"frustration\"");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("generates deterministic idempotent retrospectives, trends, and cancel-path artifacts", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-03-05T01:20:00.000Z";
+      fixture.db.run(
+        `
+          insert into missions(
+            id, project_id, lane_id, title, prompt, status, priority, execution_mode, target_machine_id,
+            outcome_summary, last_error, metadata_json, created_at, updated_at, started_at, completed_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "mission-2",
+          fixture.projectId,
+          fixture.laneId,
+          "Mission 2",
+          "Second mission",
+          "queued",
+          "normal",
+          "local",
+          null,
+          null,
+          null,
+          null,
+          now,
+          now,
+          null,
+          null
+        ]
+      );
+
+      const first = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "first", title: "First", stepIndex: 0 }]
+      });
+      const firstStep = fixture.service.listSteps(first.run.id)[0];
+      if (!firstStep) throw new Error("Expected first step");
+      const firstAttempt = await fixture.service.startAttempt({ runId: first.run.id, stepId: firstStep.id, ownerId: "owner" });
+      fixture.service.completeAttempt({
+        attemptId: firstAttempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "done",
+          outputs: {},
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+      fixture.service.addReflection({
+        missionId: fixture.missionId,
+        runId: first.run.id,
+        stepId: firstStep.id,
+        attemptId: firstAttempt.id,
+        agentRole: "validator",
+        phase: "validation",
+        signalType: "frustration",
+        observation: "Slow tests",
+        recommendation: "Parallelize tests",
+        context: "running integration suite",
+        occurredAt: "2026-03-05T01:21:00.000Z"
+      });
+      fixture.service.addReflection({
+        missionId: fixture.missionId,
+        runId: first.run.id,
+        stepId: firstStep.id,
+        attemptId: firstAttempt.id,
+        agentRole: "validator",
+        phase: "validation",
+        signalType: "frustration",
+        observation: "Flaky network",
+        recommendation: "Stabilize test network fixtures",
+        context: "integration setup",
+        occurredAt: "2026-03-05T01:21:30.000Z"
+      });
+      fixture.service.addReflection({
+        missionId: fixture.missionId,
+        runId: first.run.id,
+        stepId: firstStep.id,
+        attemptId: firstAttempt.id,
+        agentRole: "validator",
+        phase: "validation",
+        signalType: "frustration",
+        observation: "Tooling drift",
+        recommendation: "Pin shared tooling versions",
+        context: "worker bootstrap",
+        occurredAt: "2026-03-05T01:21:45.000Z"
+      });
+      fixture.service.finalizeRun({ runId: first.run.id, force: true });
+      const firstRetro = fixture.service.generateRunRetrospective({ runId: first.run.id });
+      expect(firstRetro?.id).toBe(`retro:${first.run.id}`);
+
+      const second = fixture.service.startRun({
+        missionId: "mission-2",
+        steps: [{ stepKey: "second", title: "Second", stepIndex: 0 }]
+      });
+      const secondStep = fixture.service.listSteps(second.run.id)[0];
+      if (!secondStep) throw new Error("Expected second step");
+      const secondAttempt = await fixture.service.startAttempt({ runId: second.run.id, stepId: secondStep.id, ownerId: "owner" });
+      fixture.service.completeAttempt({
+        attemptId: secondAttempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "done",
+          outputs: {},
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+      fixture.service.addReflection({
+        missionId: "mission-2",
+        runId: second.run.id,
+        stepId: secondStep.id,
+        attemptId: secondAttempt.id,
+        agentRole: "validator",
+        phase: "validation",
+        signalType: "frustration",
+        observation: "Slow tests",
+        recommendation: "Parallelize tests",
+        context: "first pass",
+        occurredAt: "2026-03-05T01:25:00.000Z"
+      });
+      fixture.service.addReflection({
+        missionId: "mission-2",
+        runId: second.run.id,
+        stepId: secondStep.id,
+        attemptId: secondAttempt.id,
+        agentRole: "validator",
+        phase: "validation",
+        signalType: "frustration",
+        observation: "Slow tests",
+        recommendation: "Parallelize tests",
+        context: "second pass",
+        occurredAt: "2026-03-05T01:26:00.000Z"
+      });
+      fixture.service.addReflection({
+        missionId: "mission-2",
+        runId: second.run.id,
+        stepId: secondStep.id,
+        attemptId: secondAttempt.id,
+        agentRole: "validator",
+        phase: "validation",
+        signalType: "frustration",
+        observation: "Tooling drift",
+        recommendation: "Pin shared tooling versions",
+        context: "worker bootstrap",
+        occurredAt: "2026-03-05T01:26:15.000Z"
+      });
+      fixture.service.finalizeRun({ runId: second.run.id, force: true });
+      const secondRetro = fixture.service.generateRunRetrospective({ runId: second.run.id });
+      const secondRetroAgain = fixture.service.generateRunRetrospective({ runId: second.run.id });
+      expect(secondRetro?.id).toBe(`retro:${second.run.id}`);
+      expect(secondRetroAgain?.id).toBe(secondRetro?.id);
+      expect(secondRetroAgain?.generatedAt).toBe(secondRetro?.generatedAt);
+      expect(secondRetro?.changelog.some((entry) => entry.status === "worsened")).toBe(true);
+      expect(secondRetro?.changelog.some((entry) => entry.status === "resolved")).toBe(true);
+      expect(secondRetro?.changelog.some((entry) => entry.status === "still_open")).toBe(true);
+      const trendsBefore = fixture.service.listRetrospectiveTrends({ runId: second.run.id, limit: 100 });
+      const trendsAfter = fixture.service.listRetrospectiveTrends({ runId: second.run.id, limit: 100 });
+      expect(trendsBefore.length).toBeGreaterThan(0);
+      expect(trendsAfter.length).toBe(trendsBefore.length);
+      expect(trendsBefore.some((entry) => entry.status === "worsened")).toBe(true);
+      expect(trendsBefore.some((entry) => entry.status === "resolved")).toBe(true);
+      expect(trendsBefore.some((entry) => entry.status === "still_open")).toBe(true);
+      expect(trendsBefore.every((entry) => entry.sourceRetrospectiveId.length > 0)).toBe(true);
+      expect(trendsBefore.every((entry) => entry.sourceMissionId.length > 0)).toBe(true);
+      expect(trendsBefore.every((entry) => entry.sourceRunId.length > 0)).toBe(true);
+
+      const canceled = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "cancel", title: "Cancel", stepIndex: 0 }]
+      });
+      fixture.service.cancelRun({ runId: canceled.run.id, reason: "user canceled" });
+      const canceledRetro = fixture.service.generateRunRetrospective({ runId: canceled.run.id });
+      expect(canceledRetro?.id).toBe(`retro:${canceled.run.id}`);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("promotes repeated patterns to candidate memory once with traceable sources", async () => {
+    const addCandidateMemory = vi.fn((opts: any) => ({
+      id: "candidate-memory-1",
+      ...opts
+    }));
+    const fixture = await createFixture({
+      memoryService: {
+        addCandidateMemory,
+        getSharedFacts: vi.fn(() => []),
+      }
+    });
+    try {
+      const runOne = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "one", title: "One", stepIndex: 0 }]
+      });
+      const stepOne = fixture.service.listSteps(runOne.run.id)[0];
+      if (!stepOne) throw new Error("Expected step one");
+      const attemptOne = await fixture.service.startAttempt({ runId: runOne.run.id, stepId: stepOne.id, ownerId: "owner" });
+      fixture.service.completeAttempt({
+        attemptId: attemptOne.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "done",
+          outputs: {},
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+      fixture.service.addReflection({
+        missionId: fixture.missionId,
+        runId: runOne.run.id,
+        stepId: stepOne.id,
+        attemptId: attemptOne.id,
+        agentRole: "implementer",
+        phase: "development",
+        signalType: "pattern",
+        observation: "Use barrel exports from index.ts",
+        recommendation: "Check index.ts first when wiring imports",
+        context: "import resolution",
+        occurredAt: "2026-03-05T01:40:00.000Z"
+      });
+      fixture.service.finalizeRun({ runId: runOne.run.id, force: true });
+      fixture.service.generateRunRetrospective({ runId: runOne.run.id });
+      expect(addCandidateMemory).not.toHaveBeenCalled();
+
+      const runTwo = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "two", title: "Two", stepIndex: 0 }]
+      });
+      const stepTwo = fixture.service.listSteps(runTwo.run.id)[0];
+      if (!stepTwo) throw new Error("Expected step two");
+      const attemptTwo = await fixture.service.startAttempt({ runId: runTwo.run.id, stepId: stepTwo.id, ownerId: "owner" });
+      fixture.service.completeAttempt({
+        attemptId: attemptTwo.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "done",
+          outputs: {},
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+      fixture.service.addReflection({
+        missionId: fixture.missionId,
+        runId: runTwo.run.id,
+        stepId: stepTwo.id,
+        attemptId: attemptTwo.id,
+        agentRole: "implementer",
+        phase: "development",
+        signalType: "pattern",
+        observation: "Use barrel exports from index.ts",
+        recommendation: "Check index.ts first when wiring imports",
+        context: "import resolution",
+        occurredAt: "2026-03-05T01:45:00.000Z"
+      });
+      fixture.service.finalizeRun({ runId: runTwo.run.id, force: true });
+      fixture.service.generateRunRetrospective({ runId: runTwo.run.id });
+      fixture.service.generateRunRetrospective({ runId: runTwo.run.id });
+      expect(addCandidateMemory).toHaveBeenCalledTimes(1);
+
+      const patternStats = fixture.service.listRetrospectivePatternStats({ limit: 10 });
+      const stat = patternStats.find((entry) => entry.patternKey.includes("use barrel exports"));
+      expect(stat).toBeTruthy();
+      expect(stat?.occurrenceCount).toBe(2);
+      expect(stat?.promotedMemoryId).toBe("candidate-memory-1");
+
+      if (!stat) throw new Error("Expected pattern stat");
+      const sourceRows = fixture.db.all<{ count: number }>(
+        `
+          select count(*) as count
+          from orchestrator_reflection_pattern_sources
+          where pattern_stat_id = ?
+        `,
+        [stat.id]
+      );
+      expect(Number(sourceRows[0]?.count ?? 0)).toBe(2);
     } finally {
       fixture.dispose();
     }

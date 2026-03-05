@@ -175,6 +175,14 @@ ${capabilities}
 - Complete the FULL scope of your task before finishing. Don't stop partway through.
 - If you encounter problems, solve them yourself — only report truly blocking issues that require human input or architectural decisions.
 - When you complete your task, provide a clear summary of what you did, what files changed, and any issues encountered.
+
+## Reflection Logging
+- If the \`reflection_add\` tool is available, log structured reflections during execution:
+  - when blocked/frustrated
+  - when you discover a reusable pattern
+  - before reporting final completion
+- Keep entries concrete and actionable (clear observation + recommendation + context).
+- Use current run/step/attempt scope (caller-context fallback is supported).
 ${identity.inheritedRules ? `\n## Rules\n${identity.inheritedRules}` : ""}`;
 }
 
@@ -823,6 +831,11 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - Use read_mission_state before major plan changes or mission completion to refresh durable facts
 - Keep mission-state summaries concise: short outcomes, short decisions, actionable issue descriptions
 
+### 6.6 Reflection Protocol Discipline
+- Require workers to log high-signal reflections with \`reflection_add\` when they hit friction, find repeatable patterns, or identify improvements.
+- Ensure every major milestone has at least one reflection capturing what worked/failed and a concrete recommendation.
+- Before \`complete_mission\`, quickly verify reflection coverage so the terminal retrospective has meaningful signal.
+
 ### 7. Finalize When Done
 - Call list_tasks and read_mission_status to verify everything is complete
 - Optionally spawn a final validator for an integration check
@@ -881,6 +894,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Restructure the plan | revise_plan (with dependencyPatches) |
 | Persist durable memory | update_mission_state |
 | Reload durable memory | read_mission_state |
+| Log structured reflection signal | reflection_add |
 | Insert milestone | insert_milestone |
 | Request specialist | request_specialist |
 | Delegate subtask to child agent | delegate_to_subagent |

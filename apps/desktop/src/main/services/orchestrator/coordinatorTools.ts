@@ -1951,6 +1951,60 @@ export function createCoordinatorToolSet(deps: {
     }
   });
 
+  const reflection_add = tool({
+    description:
+      "Record a structured reflection entry for mission introspection and retrospective synthesis.",
+    inputSchema: z.object({
+      workerId: z.string().optional().describe("Optional worker step key used to infer step/attempt scope."),
+      stepId: z.string().optional().describe("Optional explicit step ID."),
+      attemptId: z.string().optional().describe("Optional explicit attempt ID."),
+      agentRole: z.string().optional().describe("Role submitting the reflection (defaults to coordinator)."),
+      phase: z.string().min(1).describe("Mission phase where this reflection was observed."),
+      signalType: z.enum(["wish", "frustration", "idea", "pattern", "limitation"]),
+      observation: z.string().min(1),
+      recommendation: z.string().min(1),
+      context: z.string().min(1),
+      occurredAt: z.string().optional().describe("ISO-8601 timestamp; defaults to now.")
+    }),
+    execute: async ({ workerId, stepId, attemptId, agentRole, phase, signalType, observation, recommendation, context, occurredAt }) => {
+      try {
+        const g = graph();
+        const resolvedStep = workerId ? resolveStep(g, workerId) : null;
+        const resolvedStepId = typeof stepId === "string" && stepId.trim().length > 0
+          ? stepId.trim()
+          : resolvedStep?.id ?? null;
+        const runningAttempt = resolvedStepId
+          ? findRunningAttempt(g, resolvedStepId)
+          : null;
+        const latestAttempt = resolvedStepId
+          ? findLatestCompletedAttempt(g, resolvedStepId)
+          : null;
+        const resolvedAttemptId = typeof attemptId === "string" && attemptId.trim().length > 0
+          ? attemptId.trim()
+          : runningAttempt?.id ?? latestAttempt?.id ?? null;
+
+        const reflection = orchestratorService.addReflection({
+          missionId,
+          runId,
+          stepId: resolvedStepId,
+          attemptId: resolvedAttemptId,
+          agentRole: (agentRole ?? "coordinator").trim() || "coordinator",
+          phase: phase.trim(),
+          signalType,
+          observation: observation.trim(),
+          recommendation: recommendation.trim(),
+          context: context.trim(),
+          occurredAt: typeof occurredAt === "string" && occurredAt.trim().length > 0 ? occurredAt.trim() : nowIso()
+        });
+        return { ok: true, reflection };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.reflection_add.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    }
+  });
+
   const report_result = tool({
     description:
       "Structured worker completion report with outcome, artifacts, file changes, and test results.",
@@ -3494,6 +3548,11 @@ export function createCoordinatorToolSet(deps: {
             `update orchestrator_runs set status = 'succeeded', completed_at = ?, updated_at = ? where id = ?`,
             [ts, ts, runId],
           );
+          try {
+            deps.orchestratorService.generateRunRetrospective({ runId });
+          } catch {
+            // best-effort
+          }
         }
         logger.info("coordinator.complete_mission", { runId, summary });
         return { ok: true, runId, summary };
@@ -3528,6 +3587,11 @@ export function createCoordinatorToolSet(deps: {
             `update orchestrator_runs set status = 'failed', completed_at = ?, updated_at = ?, last_error = ? where id = ?`,
             [ts, ts, reason, runId],
           );
+          try {
+            deps.orchestratorService.generateRunRetrospective({ runId });
+          } catch {
+            // best-effort
+          }
         }
         logger.info("coordinator.fail_mission", { runId, reason });
         return { ok: true, runId, reason };
@@ -4496,6 +4560,7 @@ export function createCoordinatorToolSet(deps: {
     get_worker_output,
     list_workers,
     report_status,
+    reflection_add,
     report_result,
     report_validation,
     read_mission_status,

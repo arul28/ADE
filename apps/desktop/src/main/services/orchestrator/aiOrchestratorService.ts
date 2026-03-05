@@ -3011,7 +3011,40 @@ Check all worker statuses and continue managing the mission from here. Read work
       transitionMissionStatus(missionId, "failed");
     }
 
-    logger.info("ai_orchestrator.run_finalized", { runId, missionId, finalStatus, blockerCount: blockers.length });
+    const retrospective = (() => {
+      try {
+        return orchestratorService.generateRunRetrospective({ runId });
+      } catch (error) {
+        logger.debug("ai_orchestrator.retrospective_generation_failed", {
+          runId,
+          missionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+    })();
+
+    if (retrospective && projectRoot) {
+      const missionForState = missionService.get(missionId);
+      void updateMissionStateDocument({
+        projectRoot,
+        missionId,
+        runId,
+        goal: missionForState?.prompt || missionForState?.title || "Mission run",
+        patch: {
+          reflections: orchestratorService.listReflections({ runId, limit: 200 }),
+          latestRetrospective: retrospective,
+        },
+      }).catch((error) => {
+        logger.debug("ai_orchestrator.retrospective_mission_state_sync_failed", {
+          runId,
+          missionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+
+    logger.info("ai_orchestrator.run_finalized", { runId, missionId, finalStatus, blockerCount: blockers.length, retrospectiveGenerated: Boolean(retrospective) });
     return { finalized: true, blockers: [], finalStatus };
   };
 

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Tool } from "ai";
 import { createCoordinatorToolSet } from "../../desktop/src/main/services/orchestrator/coordinatorTools";
+import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { ContextExportLevel, MergeMethod } from "../../desktop/src/shared/types";
@@ -210,6 +211,47 @@ const TOOL_SPECS: ToolSpec[] = [
         content: { type: "string", minLength: 1 },
         category: { type: "string", enum: ["fact", "preference", "pattern", "decision", "gotcha"] },
         importance: { type: "string", enum: ["low", "medium", "high"], default: "medium" }
+      }
+    }
+  },
+  {
+    name: "memory_update_core",
+    description: "Update CTO core memory Tier-1 fields (project summary, conventions, preferences, focus, notes).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        projectSummary: { type: "string" },
+        criticalConventions: { type: "array", items: { type: "string" } },
+        userPreferences: { type: "array", items: { type: "string" } },
+        activeFocus: { type: "array", items: { type: "string" } },
+        notes: { type: "array", items: { type: "string" } }
+      }
+    }
+  },
+  {
+    name: "reflection_add",
+    description: "Record a structured reflection entry for mission introspection and retrospective synthesis.",
+    inputSchema: {
+      type: "object",
+      required: ["signalType", "observation", "agentRole", "phase", "recommendation", "context", "occurredAt"],
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string" },
+        runId: { type: "string" },
+        stepId: { type: "string" },
+        attemptId: { type: "string" },
+        agentRole: { type: "string", minLength: 1 },
+        phase: { type: "string", minLength: 1 },
+        signalType: { type: "string", enum: ["wish", "frustration", "idea", "pattern", "limitation"] },
+        observation: { type: "string", minLength: 1 },
+        recommendation: { type: "string", minLength: 1 },
+        context: { type: "string", minLength: 1 },
+        occurredAt: {
+          type: "string",
+          minLength: 1,
+          pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$"
+        }
       }
     }
   },
@@ -562,6 +604,42 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "list_retrospectives",
+    description: "List generated retrospectives. When called by a worker, missionId defaults to the worker mission.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", description: "Mission ID filter. Auto-populated from caller context if omitted." },
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      }
+    }
+  },
+  {
+    name: "list_reflection_trends",
+    description: "List cross-mission reflection trend entries linked to source retrospectives.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", description: "Mission ID filter. Auto-populated from caller context if omitted." },
+        runId: { type: "string", description: "Run ID filter. Auto-populated from caller context if omitted." },
+        limit: { type: "number", minimum: 1, maximum: 500 }
+      }
+    }
+  },
+  {
+    name: "list_reflection_pattern_stats",
+    description: "List reflection pattern repetition stats and candidate-promotion linkage.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        limit: { type: "number", minimum: 1, maximum: 500 }
+      }
+    }
+  },
+  {
     name: "get_mission_metrics",
     description: "Get aggregated metrics for a mission. When called by a worker, missionId defaults to the worker's own mission.",
     inputSchema: {
@@ -748,6 +826,8 @@ const MUTATION_TOOLS = new Set([
   "rebase_lane",
   "land_queue_next",
   "memory_add",
+  "memory_update_core",
+  "reflection_add",
   "spawn_agent"
 ]);
 
@@ -769,6 +849,9 @@ const OBSERVATION_TOOLS = new Set([
   "get_step_output",
   "get_worker_states",
   "get_timeline",
+  "list_retrospectives",
+  "list_reflection_trends",
+  "list_reflection_pattern_stats",
   "get_mission_metrics",
   "get_final_diff",
   "get_pending_messages"
@@ -1502,6 +1585,9 @@ function getCoordinatorToolSet(args: {
     db: args.runtime.db,
     projectRoot: args.runtime.projectRoot,
     missionLaneId: missionLaneId ?? undefined,
+    onRunFinalize: ({ runId }) => {
+      args.runtime.aiOrchestratorService.finalizeRun({ runId, force: true });
+    },
     onDagMutation: (event) => {
       args.runtime.eventBuffer.push({
         timestamp: nowIso(),
@@ -1510,11 +1596,12 @@ function getCoordinatorToolSet(args: {
       });
     }
   });
+  const normalizedToolSet = toolSet as unknown as Record<string, Tool>;
   runtimeCache.set(args.runId, {
     missionId: args.missionId,
-    tools: toolSet
+    tools: normalizedToolSet
   });
-  return toolSet;
+  return normalizedToolSet;
 }
 
 type NativeCallerRegistration = {
@@ -2157,6 +2244,93 @@ async function runTool(args: {
     };
   }
 
+  if (name === "memory_update_core") {
+    ensureMemoryAddAllowed(session);
+
+    const patch: Partial<{
+      projectSummary: string;
+      criticalConventions: string[];
+      userPreferences: string[];
+      activeFocus: string[];
+      notes: string[];
+    }> = {};
+
+    if (typeof toolArgs.projectSummary === "string") {
+      patch.projectSummary = toolArgs.projectSummary;
+    }
+    if (Array.isArray(toolArgs.criticalConventions)) {
+      patch.criticalConventions = toolArgs.criticalConventions.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+    }
+    if (Array.isArray(toolArgs.userPreferences)) {
+      patch.userPreferences = toolArgs.userPreferences.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+    }
+    if (Array.isArray(toolArgs.activeFocus)) {
+      patch.activeFocus = toolArgs.activeFocus.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+    }
+    if (Array.isArray(toolArgs.notes)) {
+      patch.notes = toolArgs.notes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+    }
+
+    const hasPatch = Object.values(patch).some((value) => value !== undefined);
+    if (!hasPatch) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "memory_update_core requires at least one patch field.");
+    }
+
+    const snapshot = runtime.ctoStateService.updateCoreMemory(patch);
+    return {
+      updated: true,
+      version: snapshot.coreMemory.version,
+      updatedAt: snapshot.coreMemory.updatedAt,
+      coreMemory: snapshot.coreMemory
+    };
+  }
+
+  if (name === "reflection_add") {
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId;
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
+    const signalType = assertNonEmptyString(toolArgs.signalType, "signalType");
+    const observation = assertNonEmptyString(toolArgs.observation, "observation");
+    const agentRole = assertNonEmptyString(toolArgs.agentRole, "agentRole");
+    const phase = assertNonEmptyString(toolArgs.phase, "phase");
+    if (!missionId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "missionId is required (either argument or initialize identity).");
+    }
+    if (!runId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (either argument or initialize identity).");
+    }
+
+    let reflection;
+    try {
+      reflection = runtime.orchestratorService.addReflection({
+        missionId,
+        runId,
+        stepId: asOptionalTrimmedString(toolArgs.stepId) ?? callerCtx.stepId,
+        attemptId: asOptionalTrimmedString(toolArgs.attemptId) ?? callerCtx.attemptId,
+        signalType: signalType as "wish" | "frustration" | "idea" | "pattern" | "limitation",
+        observation,
+        recommendation: assertNonEmptyString(toolArgs.recommendation, "recommendation"),
+        context: assertNonEmptyString(toolArgs.context, "context"),
+        agentRole,
+        phase,
+        occurredAt: assertNonEmptyString(toolArgs.occurredAt, "occurredAt"),
+      });
+    } catch (error) {
+      if (error instanceof ReflectionValidationError) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `Invalid reflection input [${error.code}]: ${error.message}`,
+          {
+            code: error.code,
+            ...(error.details ? { details: error.details } : {})
+          }
+        );
+      }
+      throw error;
+    }
+
+    return { reflection };
+  }
+
   if (name === "memory_search") {
     ensureMemorySearchAllowed(session);
 
@@ -2721,6 +2895,34 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Mission not found: ${missionId}`);
     }
     return { mission };
+  }
+
+  if (name === "list_retrospectives") {
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId ?? undefined;
+    const limit = asNumber(toolArgs.limit, 20);
+    const retrospectives = runtime.orchestratorService.listRetrospectives({
+      ...(missionId ? { missionId } : {}),
+      limit
+    });
+    return { retrospectives };
+  }
+
+  if (name === "list_reflection_trends") {
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId ?? undefined;
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId ?? undefined;
+    const limit = asNumber(toolArgs.limit, 100);
+    const trends = runtime.orchestratorService.listRetrospectiveTrends({
+      ...(missionId ? { missionId } : {}),
+      ...(runId ? { runId } : {}),
+      limit
+    });
+    return { trends };
+  }
+
+  if (name === "list_reflection_pattern_stats") {
+    const limit = asNumber(toolArgs.limit, 100);
+    const patternStats = runtime.orchestratorService.listRetrospectivePatternStats({ limit });
+    return { patternStats };
   }
 
   if (name === "get_run_graph") {

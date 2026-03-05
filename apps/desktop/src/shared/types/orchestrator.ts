@@ -564,6 +564,86 @@ export type MissionStatePendingIntervention = {
   createdAt: string;
 };
 
+export type ReflectionSignalType = "wish" | "frustration" | "idea" | "pattern" | "limitation";
+
+export type OrchestratorReflectionEntry = {
+  id: string;
+  projectId: string;
+  missionId: string;
+  runId: string;
+  stepId: string | null;
+  attemptId: string | null;
+  agentRole: string;
+  phase: string;
+  signalType: ReflectionSignalType;
+  observation: string;
+  recommendation: string;
+  context: string;
+  occurredAt: string;
+  createdAt: string;
+  schemaVersion: 1;
+};
+
+export type MissionRetrospective = {
+  id: string;
+  missionId: string;
+  runId: string;
+  generatedAt: string;
+  schemaVersion: 1;
+  finalStatus: OrchestratorRunStatus;
+  wins: string[];
+  failures: string[];
+  unresolvedRisks: string[];
+  followUpActions: string[];
+  topPainPoints: string[];
+  topImprovements: string[];
+  patternsToCapture: string[];
+  estimatedImpact: string;
+  changelog: Array<{
+    previousPainPoint: string;
+    status: "resolved" | "still_open" | "worsened";
+    currentState: string;
+    fixApplied?: string;
+    sourceRetrospectiveId?: string;
+    sourceMissionId?: string;
+    sourceRunId?: string;
+    previousPainScore?: number;
+    currentPainScore?: number;
+  }>;
+};
+
+export type OrchestratorRetrospectiveTrend = {
+  id: string;
+  projectId: string;
+  missionId: string;
+  runId: string;
+  retrospectiveId: string;
+  sourceMissionId: string;
+  sourceRunId: string;
+  sourceRetrospectiveId: string;
+  painPointKey: string;
+  painPointLabel: string;
+  status: "resolved" | "still_open" | "worsened";
+  previousPainScore: number;
+  currentPainScore: number;
+  createdAt: string;
+};
+
+export type OrchestratorRetrospectivePatternStat = {
+  id: string;
+  projectId: string;
+  patternKey: string;
+  patternLabel: string;
+  occurrenceCount: number;
+  firstSeenRetrospectiveId: string;
+  firstSeenRunId: string;
+  lastSeenRetrospectiveId: string;
+  lastSeenRunId: string;
+  promotedMemoryId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type MissionStateDocument = {
   schemaVersion: 1;
   missionId: string;
@@ -576,6 +656,8 @@ export type MissionStateDocument = {
   activeIssues: MissionStateIssue[];
   modifiedFiles: string[];
   pendingInterventions: MissionStatePendingIntervention[];
+  reflections?: OrchestratorReflectionEntry[];
+  latestRetrospective?: MissionRetrospective | null;
 };
 
 export type MissionStateDocumentPatch = {
@@ -589,6 +671,8 @@ export type MissionStateDocumentPatch = {
   resolveIssue?: { id: string; resolution: string };
   updateProgress?: Partial<MissionStateProgress>;
   pendingInterventions?: MissionStatePendingIntervention[];
+  reflections?: OrchestratorReflectionEntry[];
+  latestRetrospective?: MissionRetrospective | null;
 };
 
 export type GetMissionStateDocumentArgs = {
@@ -652,6 +736,8 @@ export type OrchestratorRuntimeEventType =
   | "validation_self_check_reminder"
   | "validation_auto_spawned"
   | "validation_gate_blocked"
+  | "reflection_added"
+  | "retrospective_generated"
   | "tool_profiles_updated";
 
 export type OrchestratorRuntimeQuestionLink = {

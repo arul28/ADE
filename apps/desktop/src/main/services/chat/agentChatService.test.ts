@@ -37,9 +37,14 @@ vi.mock("../git/git", () => ({
   }))
 }));
 
+vi.mock("../ai/authDetector", () => ({
+  detectAllAuth: vi.fn(async () => [])
+}));
+
 import { streamText } from "ai";
 import { spawn } from "node:child_process";
 import { runGit } from "../git/git";
+import * as providerResolver from "../ai/providerResolver";
 import { createAgentChatService } from "./agentChatService";
 import type {
   AgentChatEventEnvelope,
@@ -83,6 +88,17 @@ type CreatedFixture = {
   };
   projectConfigService: {
     get: ReturnType<typeof vi.fn>;
+  };
+  memoryService: {
+    addMemory: ReturnType<typeof vi.fn>;
+    addSharedFact: ReturnType<typeof vi.fn>;
+    searchMemories: ReturnType<typeof vi.fn>;
+  };
+  ctoStateService: {
+    getIdentity: ReturnType<typeof vi.fn>;
+    buildReconstructionContext: ReturnType<typeof vi.fn>;
+    updateCoreMemory: ReturnType<typeof vi.fn>;
+    appendSessionLog: ReturnType<typeof vi.fn>;
   };
   sessionService: MockSessionService;
   emitted: AgentChatEventEnvelope[];
@@ -309,6 +325,49 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
   };
 
   const sessionService = createMockSessionService();
+  const memoryService = {
+    addMemory: vi.fn(() => ({
+      id: "memory-1",
+      createdAt: new Date().toISOString()
+    })),
+    addSharedFact: vi.fn(() => ({ id: "fact-1" })),
+    searchMemories: vi.fn(() => [])
+  };
+  const ctoStateService = {
+    getIdentity: vi.fn(() => ({
+      name: "CTO",
+      version: 1,
+      persona: "Persistent CTO",
+      modelPreferences: {
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-4-6-cli",
+        reasoningEffort: "high"
+      },
+      memoryPolicy: {
+        autoCompact: true,
+        compactionThreshold: 0.7,
+        preCompactionFlush: true,
+        temporalDecayHalfLifeDays: 30
+      },
+      updatedAt: new Date().toISOString()
+    })),
+    buildReconstructionContext: vi.fn(() => "CTO Identity\n- Name: CTO\nCore Memory\n- Project summary: test"),
+    updateCoreMemory: vi.fn(() => ({
+      identity: null,
+      coreMemory: {
+        version: 2,
+        updatedAt: "2026-03-05T01:00:00.000Z",
+        projectSummary: "test",
+        criticalConventions: [],
+        userPreferences: [],
+        activeFocus: [],
+        notes: []
+      },
+      recentSessions: []
+    })),
+    appendSessionLog: vi.fn(() => ({ id: "log-1" }))
+  };
   const emitted: AgentChatEventEnvelope[] = [];
   const ended: Array<{ laneId: string; sessionId: string; exitCode: number | null }> = [];
 
@@ -316,6 +375,9 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
     projectRoot,
     adeDir,
     transcriptsDir,
+    projectId: "project-1",
+    memoryService: memoryService as any,
+    ctoStateService: ctoStateService as any,
     laneService: laneService as any,
     sessionService: sessionService as any,
     projectConfigService: projectConfigService as any,
@@ -337,6 +399,8 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
     laneWorktreePath,
     laneService,
     projectConfigService,
+    memoryService,
+    ctoStateService,
     sessionService,
     emitted,
     ended,
@@ -1237,6 +1301,159 @@ describe("agentChatService", () => {
       await sendPromise;
 
       expect((capturedSignal as AbortSignal | null)?.aborted).toBe(true);
+    });
+  });
+
+  describe("CTO identity sessions", () => {
+    it("persists identityKey/capabilityMode and reuses a stable CTO session", async () => {
+      const fixture = createFixture("claude");
+
+      const first = await fixture.service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1"
+      });
+      const second = await fixture.service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1"
+      });
+
+      expect(second.id).toBe(first.id);
+      expect(first.identityKey).toBe("cto");
+      expect(first.capabilityMode).toBe("full_mcp");
+
+      const metadataPath = path.join(fixture.adeDir, "chat-sessions", `${first.id}.json`);
+      const persisted = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as {
+        identityKey?: string;
+        capabilityMode?: string;
+      };
+      expect(persisted.identityKey).toBe("cto");
+      expect(persisted.capabilityMode).toBe("full_mcp");
+
+      const listed = await fixture.service.listSessions("lane-1");
+      expect(listed.find((entry) => entry.sessionId === first.id)?.identityKey).toBe("cto");
+    });
+
+    it("injects reconstruction context on resumed CTO session startup", async () => {
+      const fixture = createFixture("claude");
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto"
+      });
+      await fixture.service.dispose({ sessionId: session.id });
+
+      fixture.ctoStateService.buildReconstructionContext.mockClear();
+      await fixture.service.resumeSession({ sessionId: session.id });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "status check" });
+
+      expect(fixture.ctoStateService.buildReconstructionContext).toHaveBeenCalled();
+      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
+      expect(streamInput.messages[0]?.content).toContain("System context (CTO reconstruction");
+    });
+
+    it("writes CTO session logs when a CTO session is disposed", async () => {
+      const fixture = createFixture("claude");
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto"
+      });
+
+      await fixture.service.dispose({ sessionId: session.id });
+
+      expect(fixture.ctoStateService.appendSessionLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          capabilityMode: "full_mcp",
+          provider: "claude"
+        })
+      );
+    });
+
+    it("injects ADE MCP server config for Codex CTO sessions", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+      let threadStart: SentMessage | null = null;
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => {
+        threadStart = msg;
+        codex.respond(msg.id!, { thread: { id: "thread-cto-codex" } });
+      });
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-cto-codex" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        identityKey: "cto"
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot" });
+
+      const mcpServers = ((threadStart as any)?.params)?.mcpServers;
+      expect(mcpServers?.ade?.command).toBeTruthy();
+      expect(mcpServers?.ade?.env?.ADE_PROJECT_ROOT).toBe(fixture.projectRoot);
+      expect(mcpServers?.ade?.env?.ADE_DEFAULT_ROLE).toBe("cto");
+    });
+
+    it("injects ADE MCP server config for Claude CTO sessions", async () => {
+      const fixture = createFixture("claude");
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto"
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot" });
+
+      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
+      expect(streamInput.model?.__options?.mcpServers?.ade).toBeTruthy();
+      expect(streamInput.model?.__options?.mcpServers?.ade?.env?.ADE_DEFAULT_ROLE).toBe("cto");
+    });
+
+    it("uses fallback tools (including memoryUpdateCore) for unified CTO sessions", async () => {
+      const fixture = createFixture("unified");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "anthropic/claude-sonnet-4-6-api",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+        identityKey: "cto"
+      });
+      expect(session.capabilityMode).toBe("fallback");
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot unified" });
+
+      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
+      const toolNames = Object.keys(streamInput.tools ?? {});
+      expect(toolNames).toEqual(expect.arrayContaining(["memoryAdd", "memorySearch", "memoryUpdateCore"]));
+
+      const updateResult = await streamInput.tools.memoryUpdateCore.execute({
+        projectSummary: "Unified path update"
+      });
+      expect(fixture.ctoStateService.updateCoreMemory).toHaveBeenCalledWith(
+        expect.objectContaining({ projectSummary: "Unified path update" })
+      );
+      expect(updateResult.updated).toBe(true);
+      resolveModelSpy.mockRestore();
     });
   });
 

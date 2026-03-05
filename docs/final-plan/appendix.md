@@ -7,7 +7,7 @@ Base build order:
 1. Phase 1 (Agent SDK Integration + AgentExecutor Interface) — **Complete**
 1.5. Phase 1.5 (Agent Chat Integration) — **Complete**
 2. Phase 2 (MCP Server) — **Complete**
-3. Phase 3 (AI Orchestrator + Missions Overhaul) — **In Progress** (Waves 1-4 shipped including Project Hivemind and codebase refactoring; Tasks 7-8 remaining — see `phase-3.md`)
+3. Phase 3 (AI Orchestrator + Missions Overhaul) — **Complete** (Overhaul Phases 1-7 shipped including reflection protocol closure; Task 8 soak is tracked as verification hardening)
 4. Phase 4 (CTO + Ecosystem)
 5. Phase 5 (Play Runtime Isolation)
 6. Phase 6 (Multi-Device Sync Foundation) — **NEW**

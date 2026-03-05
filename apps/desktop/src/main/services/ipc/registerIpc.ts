@@ -286,6 +286,12 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  CtoGetStateArgs,
+  CtoEnsureSessionArgs,
+  CtoUpdateCoreMemoryArgs,
+  CtoListSessionLogsArgs,
+  CtoSnapshot,
+  CtoSessionLogEntry,
   GetOrchestratorWorkerStatesArgs,
   OrchestratorWorkerState,
   StartMissionRunWithAIArgs,
@@ -368,6 +374,7 @@ import type { createAiOrchestratorService } from "../orchestrator/aiOrchestrator
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import type { createMemoryService } from "../memory/memoryService";
+import type { createCtoStateService } from "../cto/ctoStateService";
 import { getErrorMessage, isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
 export type AppContext = {
@@ -412,6 +419,7 @@ export type AppContext = {
   processService: ReturnType<typeof createProcessService>;
   testService: ReturnType<typeof createTestService>;
   memoryService?: ReturnType<typeof createMemoryService> | null;
+  ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   mcpSocketServer?: import("node:net").Server;
   mcpSocketPath?: string;
 };
@@ -3756,5 +3764,51 @@ export function registerIpc({
     if (!ctx.memoryService) return [];
     const pid = arg?.projectId ?? ctx.projectId;
     return ctx.memoryService.searchMemories(arg.query, pid, undefined, arg?.limit ?? 10);
+  });
+
+  // ── CTO state IPC ─────────────────────────────────────────────────
+
+  ipcMain.handle(IPC.ctoGetState, async (_event, arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) {
+      throw new Error("CTO state service is not available.");
+    }
+    return ctx.ctoStateService.getSnapshot(arg.recentLimit ?? 20);
+  });
+
+  ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {
+    const ctx = getCtx();
+    const requestedLaneId = typeof arg.laneId === "string" ? arg.laneId.trim() : "";
+    let laneId = requestedLaneId;
+    if (!laneId) {
+      const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
+      laneId = lanes[0]?.id ?? "";
+    }
+    if (!laneId) {
+      throw new Error("No active lane is available to host the CTO chat session.");
+    }
+    return ctx.agentChatService.ensureIdentitySession({
+      identityKey: "cto",
+      laneId,
+      modelId: arg.modelId ?? null,
+      reasoningEffort: arg.reasoningEffort ?? null,
+      permissionMode: arg.permissionMode,
+    });
+  });
+
+  ipcMain.handle(IPC.ctoUpdateCoreMemory, async (_event, arg: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) {
+      throw new Error("CTO state service is not available.");
+    }
+    return ctx.ctoStateService.updateCoreMemory(arg.patch ?? {});
+  });
+
+  ipcMain.handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) {
+      throw new Error("CTO state service is not available.");
+    }
+    return ctx.ctoStateService.getSessionLogs(arg.limit ?? 40);
   });
 }

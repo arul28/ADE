@@ -12,6 +12,7 @@ import {
   ClockCounterClockwise,
   Robot,
   Strategy,
+  Brain,
   GearSix,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -30,6 +31,7 @@ const mainItems = [
   { to: "/history", label: "History", icon: ClockCounterClockwise },
   { to: "/automations", label: "Automations", icon: Robot },
   { to: "/missions", label: "Missions", icon: Strategy },
+  { to: "/cto", label: "CTO", icon: Brain },
 ] as const;
 
 const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;

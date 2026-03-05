@@ -95,11 +95,31 @@ New **CTO** tab added to the main tab bar. Icon: `brain` (Lucide). The tab provi
 
 - **Renderer**: CTO tab with persistent chat interface, org chart sidebar, worker list. Direct chat with any agent via sidebar click.
 
+**Implementation status (2026-03-05, updated 2026-03-05):**
+- W1 is now locked as **CTO-only end-to-end**.
+- Desktop and MCP runtimes instantiate a shared CTO state service with dual-canonical persistence:
+  - DB tables: `cto_identity_state`, `cto_core_memory_state`, `cto_session_logs`
+  - Files: `.ade/cto/identity.yaml`, `.ade/cto/core-memory.json`, `.ade/cto/sessions.jsonl`
+- Startup reconciliation is implemented (missing-side hydration, newest-write wins, file-wins tie-break).
+- CTO session reconstruction is injected on create/resume from identity + core memory + recent session summaries.
+- CTO session summaries are appended to durable session logs on session end/dispose (handled in `agentChatService` on `identityKey === "cto"` close path).
+- CTO chat is now identity-locked through `window.ade.cto.ensureSession()` and uses a persistent `lockSessionId` flow in the CTO tab.
+- Capability mode is explicit in CTO session metadata/UI:
+  - CLI models (`codex`, `claude`) => `full_mcp` (ADE MCP server injected in runtime startup options).
+  - Unified/API models => `fallback` (reduced in-process tools).
+- Fallback tool surface for unified CTO sessions includes `memoryAdd`, `memorySearch`, and `memoryUpdateCore`.
+- MCP server now exposes `memory_update_core` for CTO Tier-1 core-memory updates.
+- **CtoPage sidebar**: Core memory inspector (view + inline edit via `updateCoreMemory` IPC) and session history panel (collapsible, pulls from `getState`) added. Capability badge only shown after session is established.
+- **Deferred to W2**: worker persistence/runtime, worker org editing, worker acceptance tests, CTO model/identity settings UI (`ctoUpdateIdentity` IPC not yet built — model preferences live in `identity.yaml` and are only configurable by editing the file directly; W2 config editor will expose this).
+
 **Tests:**
-- Core memory persistence across sessions (CTO and workers).
-- Memory reconstruction on session start.
-- Session history log integrity.
-- MCP tool access from CTO and worker contexts.
+- CTO core memory persistence across restarts (DB/file reconciliation paths).
+- CTO reconstruction context injection on session create/resume.
+- CTO session history log append/replay integrity.
+- CTO chat identity/session lock behavior in renderer.
+- CLI CTO sessions include ADE MCP config; unified CTO sessions expose fallback tool mode.
+- MCP `memory_update_core` tool listing and core-memory update behavior.
+- CtoPage: core memory view/edit/save/error, session history expand, error state (bridge unavailable), loading state, badge only after session established.
 
 #### W2: Worker Agents & Org Chart
 
@@ -181,7 +201,7 @@ Configurable worker agents that sit under the CTO in an org hierarchy. Each work
 
 - **Direct conversation**: Users can chat with any worker directly from the CTO tab sidebar. Workers have full project context via their memory tiers + ADE MCP tools. CTO is not a bottleneck — users bypass it for quick asks. Inter-agent messaging (shipped in Phase 3) enables CTO ↔ worker communication during missions.
 
-- **Renderer**: Org chart sidebar with live status indicators (idle/active/paused/running). Agent creation dialog. Config editor with revision history. Budget display per agent.
+- **Renderer**: Org chart sidebar with live status indicators (idle/active/paused/running). Agent creation dialog. Config editor with revision history. Budget display per agent. **Also includes**: `ctoUpdateIdentity` IPC (deferred from W1) for updating CTO model preferences + persona from the config editor — this is the proper home for it since it belongs alongside the general agent config editing surface.
 
 **Tests:**
 - Agent creation, `reportsTo` hierarchy, cycle detection (max 50 hops).

@@ -14,6 +14,7 @@ import { webSearchTool } from "./webSearch";
 import { createMemoryTools } from "./memoryTools";
 import type { createMemoryService } from "../../memory/memoryService";
 import type { WorkerSandboxConfig } from "../../../../shared/types";
+import type { CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
 import { isWithinDir } from "../../shared/utils";
 
@@ -25,6 +26,11 @@ export interface UniversalToolSetOptions {
   permissionMode: PermissionMode;
   memoryService?: ReturnType<typeof createMemoryService>;
   projectId?: string;
+  /** Optional CTO core-memory updater for fallback/unified runtimes. */
+  onMemoryUpdateCore?: (patch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>) => {
+    version: number;
+    updatedAt: string;
+  };
   /** Callback invoked when askUser tool is called; must return the user's response */
   onAskUser?: (question: string) => Promise<string>;
   /** Sandbox config for API-model workers. CLI models skip this check. */
@@ -537,13 +543,44 @@ function createAskUserTool(onAskUser?: (question: string) => Promise<string>) {
   });
 }
 
+function createMemoryUpdateCoreTool(
+  onMemoryUpdateCore: NonNullable<UniversalToolSetOptions["onMemoryUpdateCore"]>
+) {
+  return tool({
+    description:
+      "Update CTO core memory (Tier-1) with durable project context fields.",
+    inputSchema: z.object({
+      projectSummary: z.string().optional(),
+      criticalConventions: z.array(z.string()).optional(),
+      userPreferences: z.array(z.string()).optional(),
+      activeFocus: z.array(z.string()).optional(),
+      notes: z.array(z.string()).optional(),
+    }),
+    execute: async (patch) => {
+      const hasAnyValue = Object.values(patch).some((value) => value !== undefined);
+      if (!hasAnyValue) {
+        return {
+          updated: false,
+          error: "At least one core-memory field is required.",
+        };
+      }
+      const next = onMemoryUpdateCore(patch);
+      return {
+        updated: true,
+        version: next.version,
+        updatedAt: next.updatedAt,
+      };
+    },
+  });
+}
+
 // ── Public factory ──────────────────────────────────────────────────
 
 export function createUniversalToolSet(
   cwd: string,
   opts: UniversalToolSetOptions
 ): Record<string, Tool> {
-  const { permissionMode, memoryService, projectId, onAskUser, sandboxConfig } = opts;
+  const { permissionMode, memoryService, projectId, onAskUser, onMemoryUpdateCore, sandboxConfig } = opts;
   const effectiveSandboxConfig = sandboxConfig ?? DEFAULT_WORKER_SANDBOX_CONFIG;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -575,6 +612,10 @@ export function createUniversalToolSet(
   if (memoryService && projectId) {
     const memTools = createMemoryTools(memoryService, projectId);
     Object.assign(tools, memTools);
+  }
+
+  if (onMemoryUpdateCore) {
+    tools.memoryUpdateCore = createMemoryUpdateCoreTool(onMemoryUpdateCore);
   }
 
   return tools;

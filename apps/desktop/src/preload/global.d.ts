@@ -82,6 +82,12 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  CtoGetStateArgs,
+  CtoEnsureSessionArgs,
+  CtoUpdateCoreMemoryArgs,
+  CtoListSessionLogsArgs,
+  CtoSnapshot,
+  CtoSessionLogEntry,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   KeybindingOverride,
@@ -747,6 +753,12 @@ declare global {
         promote: (args: { id: string }) => Promise<void>;
         archive: (args: { id: string }) => Promise<void>;
         search: (args: { query: string; projectId?: string; limit?: number }) => Promise<unknown[]>;
+      };
+      cto?: {
+        getState: (args?: CtoGetStateArgs) => Promise<CtoSnapshot>;
+        ensureSession: (args?: CtoEnsureSessionArgs) => Promise<AgentChatSession>;
+        updateCoreMemory: (args: CtoUpdateCoreMemoryArgs) => Promise<CtoSnapshot>;
+        listSessionLogs: (args?: CtoListSessionLogsArgs) => Promise<CtoSessionLogEntry[]>;
       };
     };
   }

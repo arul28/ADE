@@ -340,7 +340,11 @@ export const IPC = {
   memoryGetCandidates: "ade.memory.getCandidates",
   memoryPromote: "ade.memory.promote",
   memoryArchive: "ade.memory.archive",
-  memorySearch: "ade.memory.search"
+  memorySearch: "ade.memory.search",
+  ctoGetState: "ade.cto.getState",
+  ctoEnsureSession: "ade.cto.ensureSession",
+  ctoUpdateCoreMemory: "ade.cto.updateCoreMemory",
+  ctoListSessionLogs: "ade.cto.listSessionLogs"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

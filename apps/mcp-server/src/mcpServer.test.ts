@@ -230,6 +230,33 @@ function createRuntime() {
       })),
       searchMemories: vi.fn(() => [])
     } as any,
+    ctoStateService: {
+      updateCoreMemory: vi.fn((patch: Record<string, unknown>) => ({
+        identity: {
+          name: "CTO",
+          version: 1,
+          persona: "test",
+          modelPreferences: { provider: "claude", model: "sonnet" },
+          memoryPolicy: {
+            autoCompact: true,
+            compactionThreshold: 0.7,
+            preCompactionFlush: true,
+            temporalDecayHalfLifeDays: 30
+          },
+          updatedAt: new Date().toISOString()
+        },
+        coreMemory: {
+          version: 3,
+          updatedAt: "2026-03-05T12:00:00.000Z",
+          projectSummary: String((patch as { projectSummary?: unknown }).projectSummary ?? "summary"),
+          criticalConventions: [],
+          userPreferences: [],
+          activeFocus: [],
+          notes: []
+        },
+        recentSessions: []
+      }))
+    } as any,
     orchestratorService: {
       listRuns: vi.fn(() => []),
       pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
@@ -281,7 +308,77 @@ function createRuntime() {
       supersedeStep: vi.fn(),
       updateStepDependencies: vi.fn(),
       appendRuntimeEvent: vi.fn(),
-      appendTimelineEvent: vi.fn()
+      appendTimelineEvent: vi.fn(),
+      listRetrospectives: vi.fn(() => [
+        {
+          id: "retro:run-1",
+          missionId: "mission-1",
+          runId: "run-1",
+          generatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+          finalStatus: "succeeded",
+          wins: [],
+          failures: [],
+          unresolvedRisks: [],
+          followUpActions: [],
+          topPainPoints: [],
+          topImprovements: [],
+          patternsToCapture: [],
+          estimatedImpact: "n/a",
+          changelog: []
+        }
+      ]),
+      listRetrospectiveTrends: vi.fn(() => [
+        {
+          id: "trend-1",
+          projectId: "project-1",
+          missionId: "mission-1",
+          runId: "run-1",
+          retrospectiveId: "retro:run-1",
+          sourceMissionId: "mission-0",
+          sourceRunId: "run-0",
+          sourceRetrospectiveId: "retro:run-0",
+          painPointKey: "slow-tests",
+          painPointLabel: "Slow tests",
+          status: "still_open",
+          previousPainScore: 2,
+          currentPainScore: 2,
+          createdAt: new Date().toISOString()
+        }
+      ]),
+      listRetrospectivePatternStats: vi.fn(() => [
+        {
+          id: "pattern-stat-1",
+          projectId: "project-1",
+          patternKey: "slow-tests",
+          patternLabel: "Slow tests",
+          occurrenceCount: 2,
+          firstSeenRetrospectiveId: "retro:run-0",
+          firstSeenRunId: "run-0",
+          lastSeenRetrospectiveId: "retro:run-1",
+          lastSeenRunId: "run-1",
+          promotedMemoryId: "memory-candidate-1",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ]),
+      addReflection: vi.fn((input: any) => ({
+        id: "reflection-1",
+        projectId: "project-1",
+        missionId: input.missionId,
+        runId: input.runId,
+        stepId: input.stepId ?? null,
+        attemptId: input.attemptId ?? null,
+        agentRole: input.agentRole,
+        phase: input.phase,
+        signalType: input.signalType,
+        observation: input.observation,
+        recommendation: input.recommendation ?? "",
+        context: input.context ?? "",
+        occurredAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        schemaVersion: 1
+      }))
     } as any,
     aiOrchestratorService: {
       startMissionRun: vi.fn(async ({ missionId }: any) => ({
@@ -289,6 +386,7 @@ function createRuntime() {
         started: { run: { id: "run-1", missionId, status: "running" }, steps: [] },
         mission: { id: missionId }
       })),
+      finalizeRun: vi.fn(() => ({ finalized: true, blockers: [], finalStatus: "succeeded" })),
       cancelRunGracefully: vi.fn(async ({ runId }: any) => ({ cancelled: true, runId })),
       steerMission: vi.fn(({ missionId }: any) => ({ acknowledged: true, appliedAt: new Date().toISOString() })),
       approveMissionPlan: vi.fn(async ({ missionId }: any) => ({
@@ -403,6 +501,8 @@ describe("mcpServer", () => {
         "merge_lane",
         "ask_user",
         "memory_add",
+        "memory_update_core",
+        "reflection_add",
         "memory_search",
         "run_tests",
         "get_lane_status",
@@ -422,6 +522,9 @@ describe("mcpServer", () => {
         "get_step_output",
         "get_worker_states",
         "get_timeline",
+        "list_retrospectives",
+        "list_reflection_trends",
+        "list_reflection_pattern_stats",
         "get_mission_metrics",
         "get_final_diff",
         "evaluate_run",
@@ -446,6 +549,96 @@ describe("mcpServer", () => {
       ])
     );
     expect(names.length).toBeGreaterThan(38);
+  });
+
+  it("routes reflection_add and uses initialize identity fallback", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "reflection_add", {
+      signalType: "frustration",
+      agentRole: "implementer",
+      phase: "development",
+      observation: "Typecheck takes too long for small edits",
+      recommendation: "Cache incremental build artifacts",
+      context: "Running npm run typecheck repeatedly",
+      occurredAt: "2026-03-05T01:23:45.000Z"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.orchestratorService.addReflection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-1",
+        runId: "run-1",
+        stepId: "step-1",
+        attemptId: "attempt-1",
+        signalType: "frustration",
+      })
+    );
+    expect(response.structuredContent.reflection.id).toBe("reflection-1");
+  });
+
+  it("rejects reflection_add payloads missing strict fields", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+    });
+
+    const response = await callTool(handler, "reflection_add", {
+      signalType: "idea",
+      agentRole: "implementer",
+      phase: "development",
+      observation: "Need a faster test target",
+      recommendation: "Split unit and integration suites",
+      context: "running test command"
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("occurredAt");
+  });
+
+  it("lists retrospectives, trends, and pattern stats with caller-context fallback", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+    });
+
+    const retrospectivesResponse = await callTool(handler, "list_retrospectives", {});
+    expect(retrospectivesResponse?.isError).toBeUndefined();
+    expect(fixture.runtime.orchestratorService.listRetrospectives).toHaveBeenCalledWith(
+      expect.objectContaining({ missionId: "mission-1" })
+    );
+    expect(Array.isArray(retrospectivesResponse.structuredContent.retrospectives)).toBe(true);
+
+    const trendsResponse = await callTool(handler, "list_reflection_trends", {});
+    expect(trendsResponse?.isError).toBeUndefined();
+    expect(fixture.runtime.orchestratorService.listRetrospectiveTrends).toHaveBeenCalledWith(
+      expect.objectContaining({ missionId: "mission-1", runId: "run-1" })
+    );
+    expect(Array.isArray(trendsResponse.structuredContent.trends)).toBe(true);
+
+    const patternStatsResponse = await callTool(handler, "list_reflection_pattern_stats", {});
+    expect(patternStatsResponse?.isError).toBeUndefined();
+    expect(fixture.runtime.orchestratorService.listRetrospectivePatternStats).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 100 })
+    );
+    expect(Array.isArray(patternStatsResponse.structuredContent.patternStats)).toBe(true);
   });
 
   it("supports read_context contracts for all pack scopes", async () => {
@@ -1021,6 +1214,34 @@ describe("mcpServer", () => {
       })
     );
     expect(response.structuredContent.sharedFact.written).toBe(true);
+  });
+
+  it("exposes memory_update_core and writes CTO core memory", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "cto-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1"
+    });
+
+    const response = await callTool(handler, "memory_update_core", {
+      projectSummary: "Stabilize checkout retries and tighten CI gating.",
+      activeFocus: ["checkout reliability", "merge safety"]
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ctoStateService.updateCoreMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectSummary: "Stabilize checkout retries and tighten CI gating.",
+        activeFocus: ["checkout reliability", "merge safety"]
+      })
+    );
+    expect(response.structuredContent.updated).toBe(true);
+    expect(response.structuredContent.version).toBe(3);
+    expect(response.structuredContent.updatedAt).toBe("2026-03-05T12:00:00.000Z");
   });
 
   it("materializes compact context manifests for spawn_agent to keep prompts lightweight", async () => {

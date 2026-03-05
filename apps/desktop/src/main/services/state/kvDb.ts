@@ -1329,6 +1329,44 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_memories_status on memories(project_id, status)");
   db.run("create index if not exists idx_memories_agent on memories(agent_id)");
 
+  // CTO persistent identity/core-memory/session-log state.
+  db.run(`
+    create table if not exists cto_identity_state (
+      project_id text primary key,
+      version integer not null,
+      payload_json text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_identity_state_updated on cto_identity_state(updated_at)");
+
+  db.run(`
+    create table if not exists cto_core_memory_state (
+      project_id text primary key,
+      version integer not null,
+      payload_json text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_core_memory_state_updated on cto_core_memory_state(updated_at)");
+
+  db.run(`
+    create table if not exists cto_session_logs (
+      id text primary key,
+      project_id text not null,
+      session_id text not null,
+      summary text not null,
+      started_at text not null,
+      ended_at text,
+      provider text not null,
+      model_id text,
+      capability_mode text not null,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_session_logs_project_created on cto_session_logs(project_id, created_at)");
+  db.run("create index if not exists idx_cto_session_logs_session on cto_session_logs(project_id, session_id)");
+
   // WS7 Agent identities table (schema placeholder for future).
   db.run(`
     create table if not exists agent_identities (
@@ -1383,6 +1421,104 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_orchestrator_team_members_mission on orchestrator_team_members(mission_id)");
   db.run("create index if not exists idx_orchestrator_team_members_status on orchestrator_team_members(run_id, status)");
 
+
+  // Reflection protocol tables (Phase 7): structured reflection ledger + run retrospectives.
+  db.run(`
+    create table if not exists orchestrator_reflections (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      step_id text,
+      attempt_id text,
+      agent_role text not null,
+      phase text not null,
+      signal_type text not null,
+      observation text not null,
+      recommendation text not null,
+      context text not null,
+      occurred_at text not null,
+      created_at text not null,
+      schema_version integer not null default 1,
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_reflections_run_occurred on orchestrator_reflections(run_id, occurred_at)");
+  db.run("create index if not exists idx_orchestrator_reflections_mission on orchestrator_reflections(mission_id, occurred_at)");
+
+  db.run(`
+    create table if not exists orchestrator_retrospectives (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      generated_at text not null,
+      final_status text not null,
+      payload_json text not null,
+      schema_version integer not null default 1,
+      created_at text not null,
+      unique(project_id, run_id),
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_retrospectives_mission_generated on orchestrator_retrospectives(mission_id, generated_at)");
+
+  db.run(`
+    create table if not exists orchestrator_retrospective_trends (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      retrospective_id text not null,
+      source_mission_id text not null,
+      source_run_id text not null,
+      source_retrospective_id text not null,
+      pain_point_key text not null,
+      pain_point_label text not null,
+      status text not null,
+      previous_pain_score integer not null default 0,
+      current_pain_score integer not null default 0,
+      created_at text not null,
+      unique(project_id, retrospective_id, source_retrospective_id, pain_point_key)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_retrospective_trends_mission_created on orchestrator_retrospective_trends(mission_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_retrospective_trends_run_created on orchestrator_retrospective_trends(run_id, created_at)");
+
+  db.run(`
+    create table if not exists orchestrator_reflection_pattern_stats (
+      id text primary key,
+      project_id text not null,
+      pattern_key text not null,
+      pattern_label text not null,
+      occurrence_count integer not null default 0,
+      first_seen_retrospective_id text not null,
+      first_seen_run_id text not null,
+      last_seen_retrospective_id text not null,
+      last_seen_run_id text not null,
+      promoted_memory_id text,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, pattern_key)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_reflection_pattern_stats_count on orchestrator_reflection_pattern_stats(project_id, occurrence_count desc, updated_at desc)");
+
+  db.run(`
+    create table if not exists orchestrator_reflection_pattern_sources (
+      id text primary key,
+      project_id text not null,
+      pattern_stat_id text not null,
+      retrospective_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      created_at text not null,
+      unique(pattern_stat_id, retrospective_id),
+      foreign key(pattern_stat_id) references orchestrator_reflection_pattern_stats(id)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_reflection_pattern_sources_pattern on orchestrator_reflection_pattern_sources(pattern_stat_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_reflection_pattern_sources_mission on orchestrator_reflection_pattern_sources(mission_id, created_at)");
   // Team runtime: durable run-level state for team lifecycle (phase, completion gating).
   db.run(`
     create table if not exists orchestrator_run_state (
