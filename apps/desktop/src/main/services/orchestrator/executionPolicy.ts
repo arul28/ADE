@@ -114,7 +114,6 @@ export function resolveExecutionPolicy(sources: {
 // ─────────────────────────────────────────────────────
 
 export type ExecutionPhase =
-  | "planning"
   | "implementation"
   | "testing"
   | "validation"
@@ -129,7 +128,7 @@ export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionP
     return "testReview";
   }
 
-  if (primary === "analysis" || secondary === "analysis") return "planning";
+  if (primary === "analysis" || secondary === "analysis") return "implementation";
   if (primary === "code" || primary === "implementation" || secondary === "code" || secondary === "implementation") return "implementation";
   if (primary === "test" || primary === "validation" || secondary === "test" || secondary === "validation") return "testing";
   if (primary === "milestone" || secondary === "milestone") return "validation";
@@ -166,8 +165,8 @@ export function evaluateRunCompletion(
   }
 
   // Determine which phases are required
+  // NOTE: "planning" is NOT an execution phase — the pre-mission planner runs before execution.
   const phaseRequired: Record<ExecutionPhase, boolean> = {
-    planning: policy.planning.mode !== "off",
     implementation: true, // always required
     testing: policy.testing.mode !== "none",
     validation: policy.validation.mode === "required",
@@ -177,7 +176,6 @@ export function evaluateRunCompletion(
   };
 
   const allPhases: ExecutionPhase[] = [
-    "planning",
     "implementation",
     "testing",
     "validation",
@@ -436,7 +434,7 @@ export function roleForStepType(
     return "test_review";
   }
 
-  if (primary === "analysis" || secondary === "analysis") return "planning";
+  if (primary === "analysis" || secondary === "analysis") return "implementation";
   if (
     primary === "code" ||
     primary === "implementation" ||
@@ -664,7 +662,6 @@ export function buildExecutionPlanPreview(args: {
   // ── Build phase details ──
   const phases: ExecutionPlanPhase[] = [];
   const phaseOrder = [
-    "planning",
     "implementation",
     "testing",
     "validation",
@@ -757,7 +754,7 @@ export function buildExecutionPlanPreview(args: {
 /** Maps a phaseKey from PhaseCard to an ExecutionPhase */
 function phaseKeyToExecutionPhase(phaseKey: string): ExecutionPhase | null {
   const key = phaseKey.trim().toLowerCase();
-  if (key === "planning" || key === "analysis") return "planning";
+  if (key === "planning" || key === "analysis") return "implementation";
   if (key === "implementation" || key === "code") return "implementation";
   if (key === "testing" || key === "test") return "testing";
   if (key === "validation") return "validation";
@@ -816,7 +813,7 @@ export function evaluateRunCompletionFromPhases(
   }
 
   const allPhases: ExecutionPhase[] = [
-    "planning", "implementation", "testing", "validation",
+    "implementation", "testing", "validation",
     "codeReview", "testReview", "integration"
   ];
 
@@ -993,7 +990,7 @@ export function buildExecutionPlanPreviewFromPhases(args: {
   }
 
   const phaseOrder = [
-    "planning", "implementation", "testing", "validation",
+    "implementation", "testing", "validation",
     "codeReview", "testReview", "integration"
   ];
 

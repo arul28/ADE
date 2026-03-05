@@ -113,6 +113,8 @@ import {
   readDocPaths,
 } from "./stepPolicyResolver";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
+import { normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
+import type { MissionPermissionConfig } from "../../../shared/types/missions";
 
 // Row types, StepPolicy, and other extracted types are imported from
 // ./orchestratorQueries and ./stepPolicyResolver
@@ -177,14 +179,14 @@ export type OrchestratorExecutorStartArgs = {
       mode?: "read-only" | "edit" | "full-auto";
       sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
       writablePaths?: string[];
-      commandAllowlist?: string[];
       allowedTools?: string[];
-      settingsSources?: string[];
-      maxBudgetUsd?: number;
     };
     inProcess?: {
       mode?: "plan" | "edit" | "full-auto";
     };
+    /** Per-provider permission modes (new unified shape). When present, adapters
+     *  should prefer this over the legacy cli/inProcess fields. */
+    _providers?: import("../../../shared/types/missions").MissionProviderPermissions;
   };
   /** Checkpoint content from a previous interrupted attempt's worker checkpoint file. */
   previousCheckpoint?: string;
@@ -5336,6 +5338,40 @@ export function createOrchestratorService({
           const requiresPlanApproval =
             step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
 
+          // Resolve in-process permission from project + mission config
+          const inProcessPermissionMode: "read-only" | "edit" | "full-auto" = (() => {
+            if (requiresPlanApproval) return "read-only" as const;
+            // Build unified provider permissions for this mission
+            const projPerms: MissionPermissionConfig = {};
+            const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
+            const perms = asRecord(aiCfg?.permissions);
+            if (perms) {
+              const ip = asRecord(perms.inProcess);
+              if (ip) {
+                const m = typeof ip.mode === "string" ? ip.mode : "";
+                if (m === "plan" || m === "edit" || m === "full-auto") projPerms.inProcess = { mode: m };
+              }
+            }
+            let providers = normalizeMissionPermissions(projPerms);
+            if (run.missionId) {
+              try {
+                const mRow = db.get<{ metadata_json: string | null }>(
+                  `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+                  [run.missionId, projectId]
+                );
+                if (mRow?.metadata_json) {
+                  const meta = asRecord(JSON.parse(mRow.metadata_json));
+                  const mpc = asRecord(asRecord(meta?.launch)?.permissionConfig) as MissionPermissionConfig | undefined;
+                  if (mpc) {
+                    const mp = normalizeMissionPermissions(mpc);
+                    providers = { ...providers, ...mp };
+                  }
+                }
+              } catch { /* non-critical */ }
+            }
+            return mapPermissionToInProcess(providers.unified);
+          })();
+
           try {
             const aiResult = await aiIntegrationService.executeViaUnified({
               feature: "orchestrator",
@@ -5345,7 +5381,7 @@ export function createOrchestratorService({
               model: descriptor.id,
               ...(reasoningEffort ? { reasoningEffort } : {}),
               timeoutMs,
-              permissionMode: requiresPlanApproval ? "read-only" : "full-auto",
+              permissionMode: inProcessPermissionMode,
               oneShot: true,
             });
 
@@ -5424,130 +5460,63 @@ export function createOrchestratorService({
 
       const adapter = adapters.get(executorKind) ?? defaultAdapterFor(executorKind);
       if (adapter) {
-        // Start from safe defaults, then layer project and mission overrides.
+        // Build unified permission config: project-level → mission-level override.
+        // Both old (cli/inProcess) and new (providers) shapes are normalized through
+        // the same `normalizeMissionPermissions` pipeline.
         const permissionConfig = (() => {
-          const config: NonNullable<OrchestratorExecutorStartArgs["permissionConfig"]> = {
-            cli: {
-              mode: "full-auto",
-              sandboxPermissions: "workspace-write"
-            },
-            inProcess: {
-              mode: "full-auto"
-            }
-          };
-          const toStringArray = (value: unknown): string[] | undefined => {
-            if (!Array.isArray(value)) return undefined;
-            const normalized = value
-              .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-              .filter((entry) => entry.length > 0);
-            return normalized.length > 0 ? normalized : undefined;
-          };
-          const applyCliOverrides = (source: Record<string, unknown> | null) => {
-            if (!source) return;
-            const mode = typeof source.mode === "string" ? source.mode : "";
-            const sandboxPermissions = typeof source.sandboxPermissions === "string" ? source.sandboxPermissions : "";
-            config.cli = {
-              ...(config.cli ?? {}),
-              ...(mode === "read-only" || mode === "edit" || mode === "full-auto" ? { mode } : {}),
-              ...(sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access"
-                ? { sandboxPermissions }
-                : {}),
-              ...(toStringArray(source.writablePaths) ? { writablePaths: toStringArray(source.writablePaths) } : {}),
-              ...(toStringArray(source.commandAllowlist) ? { commandAllowlist: toStringArray(source.commandAllowlist) } : {}),
-              ...(toStringArray(source.allowedTools) ? { allowedTools: toStringArray(source.allowedTools) } : {}),
-              ...(toStringArray(source.settingsSources) ? { settingsSources: toStringArray(source.settingsSources) } : {}),
-              ...(Number.isFinite(Number(source.maxBudgetUsd)) ? { maxBudgetUsd: Number(source.maxBudgetUsd) } : {})
-            };
-          };
-          const applyInProcessOverrides = (source: Record<string, unknown> | null) => {
-            if (!source) return;
-            const mode = typeof source.mode === "string" ? source.mode : "";
-            if (mode !== "plan" && mode !== "edit" && mode !== "full-auto") return;
-            config.inProcess = {
-              ...(config.inProcess ?? {}),
-              mode
-            };
-          };
-
+          // 1. Start with project-level permission config (old shape from config file)
+          const projectPerms: MissionPermissionConfig = {};
           const snapshot = projectConfigService?.get();
           const ai = asRecord(snapshot?.effective?.ai);
           const permissions = asRecord(ai?.permissions);
-          if (!permissions) return config;
-          applyCliOverrides(asRecord(permissions.cli));
-          applyInProcessOverrides(asRecord(permissions.inProcess));
-          return config;
-        })();
-
-        // Merge mission-level permission overrides if present
-        if (run.missionId) {
-          try {
-            const missionRow = db.get<{ metadata_json: string | null }>(
-              `select metadata_json from missions where id = ? and project_id = ? limit 1`,
-              [run.missionId, projectId]
-            );
-            if (missionRow?.metadata_json) {
-              const meta = asRecord(JSON.parse(missionRow.metadata_json));
-              const missionPerms = asRecord(asRecord(meta?.launch)?.permissionConfig);
-              const missionCli = asRecord(missionPerms?.cli);
-              const missionInProcess = asRecord(missionPerms?.inProcess);
-              if (missionCli) {
-                const mode = typeof missionCli.mode === "string" ? missionCli.mode : "";
-                const sandboxPermissions = typeof missionCli.sandboxPermissions === "string" ? missionCli.sandboxPermissions : "";
-                permissionConfig.cli = {
-                  ...(permissionConfig.cli ?? {}),
-                  ...(mode === "read-only" || mode === "edit" || mode === "full-auto" ? { mode } : {}),
-                  ...(sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access"
-                    ? { sandboxPermissions }
-                    : {}),
-                  ...(Array.isArray(missionCli.writablePaths)
-                    ? {
-                        writablePaths: missionCli.writablePaths
-                          .filter((entry): entry is string => typeof entry === "string")
-                          .map((entry) => entry.trim())
-                          .filter((entry) => entry.length > 0)
-                      }
-                    : {}),
-                  ...(Array.isArray(missionCli.commandAllowlist)
-                    ? {
-                        commandAllowlist: missionCli.commandAllowlist
-                          .filter((entry): entry is string => typeof entry === "string")
-                          .map((entry) => entry.trim())
-                          .filter((entry) => entry.length > 0)
-                      }
-                    : {}),
-                  ...(Array.isArray(missionCli.allowedTools)
-                    ? {
-                        allowedTools: missionCli.allowedTools
-                          .filter((entry): entry is string => typeof entry === "string")
-                          .map((entry) => entry.trim())
-                          .filter((entry) => entry.length > 0)
-                      }
-                    : {}),
-                  ...(Array.isArray(missionCli.settingsSources)
-                    ? {
-                        settingsSources: missionCli.settingsSources
-                          .filter((entry): entry is string => typeof entry === "string")
-                          .map((entry) => entry.trim())
-                          .filter((entry) => entry.length > 0)
-                      }
-                    : {}),
-                  ...(Number.isFinite(Number(missionCli.maxBudgetUsd)) ? { maxBudgetUsd: Number(missionCli.maxBudgetUsd) } : {})
-                };
-              }
-              if (missionInProcess) {
-                const mode = typeof missionInProcess.mode === "string" ? missionInProcess.mode : "";
-                if (mode === "plan" || mode === "edit" || mode === "full-auto") {
-                  permissionConfig.inProcess = {
-                    ...(permissionConfig.inProcess ?? {}),
-                    mode
-                  };
-                }
+          if (permissions) {
+            const cli = asRecord(permissions.cli);
+            const inProc = asRecord(permissions.inProcess);
+            if (cli) {
+              projectPerms.cli = {
+                ...(typeof cli.mode === "string" ? { mode: cli.mode as MissionPermissionConfig["cli"] extends { mode?: infer M } ? M : never } : {}),
+                ...(typeof cli.sandboxPermissions === "string" ? { sandboxPermissions: cli.sandboxPermissions as "read-only" | "workspace-write" | "danger-full-access" } : {}),
+                ...(Array.isArray(cli.writablePaths) ? { writablePaths: cli.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
+                ...(Array.isArray(cli.allowedTools) ? { allowedTools: cli.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
+              };
+            }
+            if (inProc) {
+              const mode = typeof inProc.mode === "string" ? inProc.mode : "";
+              if (mode === "plan" || mode === "edit" || mode === "full-auto") {
+                projectPerms.inProcess = { mode };
               }
             }
-          } catch {
-            // Non-critical: fall back to project-level permissions
           }
-        }
+
+          // Normalize project-level to unified provider shape
+          let providers = normalizeMissionPermissions(projectPerms);
+
+          // 2. Layer mission-level overrides if present
+          if (run.missionId) {
+            try {
+              const missionRow = db.get<{ metadata_json: string | null }>(
+                `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+                [run.missionId, projectId]
+              );
+              if (missionRow?.metadata_json) {
+                const meta = asRecord(JSON.parse(missionRow.metadata_json));
+                const missionPermConfig = asRecord(asRecord(meta?.launch)?.permissionConfig) as MissionPermissionConfig | undefined;
+                if (missionPermConfig) {
+                  // Re-normalize with mission overrides applied on top.
+                  // normalizeMissionPermissions handles both old (cli/inProcess) and new (providers) shapes.
+                  const missionProviders = normalizeMissionPermissions(missionPermConfig);
+                  // Merge: mission-level overrides take precedence
+                  providers = { ...providers, ...missionProviders };
+                }
+              }
+            } catch {
+              // Non-critical: fall back to project-level permissions
+            }
+          }
+
+          // 3. Convert back to legacy shape for adapter compatibility, carrying _providers through
+          return providerPermissionsToLegacyConfig(providers);
+        })();
 
         // Recovery-aware retry: read checkpoint and previous attempt data when retrying
         const recoveryContext = await (async (): Promise<{ previousCheckpoint?: string; previousAttemptSummary?: string }> => {

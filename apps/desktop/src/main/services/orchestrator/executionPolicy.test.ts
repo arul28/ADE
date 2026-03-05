@@ -88,7 +88,7 @@ describe("executionPolicy", () => {
 
   describe("stepTypeToPhase", () => {
     it("maps step types to phases correctly", () => {
-      expect(stepTypeToPhase("analysis")).toBe("planning");
+      expect(stepTypeToPhase("analysis")).toBe("implementation");
       expect(stepTypeToPhase("code")).toBe("implementation");
       expect(stepTypeToPhase("implementation")).toBe("implementation");
       expect(stepTypeToPhase("test")).toBe("testing");
@@ -100,7 +100,7 @@ describe("executionPolicy", () => {
     });
 
     it("falls back to taskType when stepType is empty", () => {
-      expect(stepTypeToPhase("", "analysis")).toBe("planning");
+      expect(stepTypeToPhase("", "analysis")).toBe("implementation");
       expect(stepTypeToPhase("", "review")).toBe("codeReview");
     });
   });
@@ -273,7 +273,7 @@ describe("evaluateRunCompletionFromPhases", () => {
 
   it("succeeds when all phase cards are satisfied", () => {
     const phases = [
-      makePhaseCard({ phaseKey: "planning", validationGate: { tier: "none", required: false } }),
+      makePhaseCard({ phaseKey: "development", validationGate: { tier: "none", required: false } }),
       makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
       makePhaseCard({ phaseKey: "testing", validationGate: { tier: "self", required: false } })
     ];
@@ -555,8 +555,8 @@ describe("validateRunCompletion", () => {
 // ─────────────────────────────────────────────────────
 
 describe("roleForStepType", () => {
-  it('maps "analysis" to "planning"', () => {
-    expect(roleForStepType("analysis")).toBe("planning");
+  it('maps "analysis" to "implementation"', () => {
+    expect(roleForStepType("analysis")).toBe("implementation");
   });
 
   it('maps "code" to "implementation"', () => {
@@ -601,7 +601,7 @@ describe("roleForStepType", () => {
   });
 
   it("uses taskType as fallback when stepType is empty", () => {
-    expect(roleForStepType("", "analysis")).toBe("planning");
+    expect(roleForStepType("", "analysis")).toBe("implementation");
     expect(roleForStepType("", "code")).toBe("implementation");
     expect(roleForStepType("", "test")).toBe("testing");
     expect(roleForStepType("", "review")).toBe("code_review");

@@ -132,7 +132,7 @@ export function inferRoleFromStepMetadata(metadata: Record<string, unknown>, kin
   if (combined.includes("test_review") || combined.includes("testreview")) return "test_review";
   if (combined.includes("review") || combined.includes("code_review")) return "code_review";
   if (combined.includes("test") || combined.includes("validation")) return "testing";
-  if (combined.includes("plan")) return "planning";
+  if (combined.includes("plan")) return "implementation";
   if (combined.includes("integration") || combined.includes("merge")) return "integration";
   return "implementation";
 }

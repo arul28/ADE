@@ -13,15 +13,13 @@ describe("CreateMissionDialog helpers", () => {
   it("applies mission settings defaults to launch draft", () => {
     const draft = buildCreateMissionDraft({
       plannerProvider: "codex",
-      cliMode: "edit",
-      cliSandboxPermissions: "workspace-write",
-      inProcessMode: "edit",
     });
 
     expect(draft.modelConfig.orchestratorModel.provider).toBe("codex");
-    expect(draft.permissionConfig.cli?.mode).toBe("edit");
-    expect(draft.permissionConfig.cli?.sandboxPermissions).toBe("workspace-write");
-    expect(draft.permissionConfig.inProcess?.mode).toBe("edit");
+    expect(draft.permissionConfig.providers?.claude).toBe("full-auto");
+    expect(draft.permissionConfig.providers?.codex).toBe("full-auto");
+    expect(draft.permissionConfig.providers?.unified).toBe("full-auto");
+    expect(draft.permissionConfig.providers?.codexSandbox).toBe("workspace-write");
   });
 
   it("handles an empty built-in profile list without throwing", () => {

@@ -6,25 +6,45 @@ import type { ModelConfig, MissionModelConfig } from "./models";
 import type { PrStrategy } from "./prs";
 import type { OrchestratorExecutorKind, TeamRuntimeConfig, RecoveryLoopPolicy, IntegrationPrPolicy } from "./orchestrator";
 import type { AiCliPermissionMode, AiCliSandboxPermissions, AiInProcessPermissionMode } from "./config";
+import type { AgentChatPermissionMode } from "./chat";
 
-/** Mission permission overrides use runtime classes, not provider buckets. */
+/** @deprecated Use MissionProviderPermissions instead. Kept for backward compat with stored missions. */
 export type MissionCliPermissionMode = AiCliPermissionMode;
+/** @deprecated Use MissionProviderPermissions instead. Kept for backward compat with stored missions. */
 export type MissionCliSandboxPermissions = AiCliSandboxPermissions;
+/** @deprecated Use MissionProviderPermissions instead. Kept for backward compat with stored missions. */
 export type MissionInProcessPermissionMode = AiInProcessPermissionMode;
 
+/** Per-provider permission mode — mirrors chat pane semantics (AgentChatPermissionMode). */
+export type MissionProviderPermissions = {
+  /** Permission mode for Claude CLI workers */
+  claude?: AgentChatPermissionMode;
+  /** Permission mode for Codex CLI workers */
+  codex?: AgentChatPermissionMode;
+  /** Permission mode for API/unified model workers */
+  unified?: AgentChatPermissionMode;
+  /** Codex sandbox level (only relevant for codex) */
+  codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  /** Additional writable paths for CLI workers */
+  writablePaths?: string[];
+  /** Allowed tools for Claude CLI workers */
+  allowedTools?: string[];
+};
+
 export type MissionPermissionConfig = {
+  /** @deprecated Old CLI-class shape. Kept for backward compat with stored missions. */
   cli?: {
     mode?: MissionCliPermissionMode;
     sandboxPermissions?: MissionCliSandboxPermissions;
     writablePaths?: string[];
-    commandAllowlist?: string[];
     allowedTools?: string[];
-    settingsSources?: Array<"user" | "project" | "local">;
-    maxBudgetUsd?: number;
   };
+  /** @deprecated Old in-process shape. Kept for backward compat with stored missions. */
   inProcess?: {
     mode?: MissionInProcessPermissionMode;
   };
+  /** New per-provider permission shape. Takes precedence over cli/inProcess when present. */
+  providers?: MissionProviderPermissions;
 };
 
 export type MissionStatus =

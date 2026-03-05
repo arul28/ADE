@@ -1,7 +1,7 @@
 import type { OrchestratorStep } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
-type ExecutionPhase = "planning" | "implementation" | "testing" | "codeReview" | "integration" | "merge" | "other";
+type ExecutionPhase = "implementation" | "testing" | "codeReview" | "integration" | "merge" | "other";
 
 type PhaseProgressBarProps = {
   steps: OrchestratorStep[];
@@ -9,7 +9,6 @@ type PhaseProgressBarProps = {
 };
 
 const PHASE_LABELS: Record<ExecutionPhase, string> = {
-  planning: "PLANNING",
   implementation: "IMPLEMENTATION",
   testing: "TESTING",
   codeReview: "REVIEW",
@@ -19,7 +18,6 @@ const PHASE_LABELS: Record<ExecutionPhase, string> = {
 };
 
 const PHASE_COLORS: Record<ExecutionPhase, { bg: string; fill: string }> = {
-  planning: { bg: "#3B82F618", fill: "#3B82F6" },
   implementation: { bg: "#A78BFA18", fill: "#A78BFA" },
   testing: { bg: "#06B6D418", fill: "#06B6D4" },
   codeReview: { bg: "#F59E0B18", fill: "#F59E0B" },
@@ -32,7 +30,7 @@ function stepTypeToPhase(stepType: string, taskType?: string): ExecutionPhase {
   const primary = (stepType || "").trim().toLowerCase();
   const secondary = (taskType || "").trim().toLowerCase();
 
-  if (primary === "analysis" || secondary === "analysis") return "planning";
+  if (primary === "analysis" || secondary === "analysis") return "implementation";
   if (primary === "code" || primary === "implementation" || secondary === "code" || secondary === "implementation") return "implementation";
   if (primary === "test" || primary === "validation" || secondary === "test" || secondary === "validation") return "testing";
   if (primary === "review" || secondary === "review") return "codeReview";
@@ -58,7 +56,7 @@ export function PhaseProgressBar({ steps, className }: PhaseProgressBarProps) {
   const phases = Array.from(phaseGroups.entries())
     .filter(([, g]) => g.total > 0)
     .sort(([a], [b]) => {
-      const order: ExecutionPhase[] = ["planning", "implementation", "testing", "codeReview", "integration", "merge", "other"];
+      const order: ExecutionPhase[] = ["implementation", "testing", "codeReview", "integration", "merge", "other"];
       return order.indexOf(a) - order.indexOf(b);
     });
 

@@ -191,6 +191,13 @@ export function buildFullPrompt(
     systemParts.push(`Step instructions:\n${instructions}`);
   }
 
+  // Phase-level instructions from the phase card (supplements step instructions)
+  const phaseInstructions =
+    typeof step.metadata?.phaseInstructions === "string" ? step.metadata.phaseInstructions.trim() : "";
+  if (phaseInstructions && phaseInstructions !== instructions) {
+    systemParts.push(`Phase-level guidance:\n${phaseInstructions}`);
+  }
+
   const steeringDirectives = Array.isArray(step.metadata?.steeringDirectives)
     ? (step.metadata.steeringDirectives as unknown[])
         .map((entry) => {

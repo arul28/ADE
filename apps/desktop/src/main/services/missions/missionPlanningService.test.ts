@@ -584,8 +584,8 @@ describe("missionPlanningService planner contract", () => {
     };
 
     const phases = [
-      { id: "planning", phaseKey: "planning", name: "Planning" },
       { id: "development", phaseKey: "development", name: "Development" },
+      { id: "testing", phaseKey: "testing", name: "Testing" },
       { id: "validation", phaseKey: "validation", name: "Validation" }
     ] as unknown as PhaseCard[];
 

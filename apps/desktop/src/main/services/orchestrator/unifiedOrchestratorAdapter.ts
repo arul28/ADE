@@ -10,6 +10,7 @@ import {
   resolveModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import { mapPermissionToClaude, mapPermissionToCodex } from "./permissionMapping";
 
 /**
  * Build environment variable assignments for worker identity.
@@ -229,6 +230,7 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
   }
 }
 
+/** @deprecated Kept only as fallback when _providers is absent. Prefer per-provider mapping. */
 function resolveCliMode(permissionConfig: { cli?: { mode?: "read-only" | "edit" | "full-auto" } } | undefined): "read-only" | "edit" | "full-auto" {
   const mode = permissionConfig?.cli?.mode;
   if (mode === "read-only" || mode === "edit" || mode === "full-auto") return mode;
@@ -283,12 +285,13 @@ export function createUnifiedOrchestratorAdapter(options?: {
 
       // Determine which CLI to use based on the model
       if (descriptor?.isCliWrapped && descriptor.family === "anthropic") {
-        // Claude CLI path
+        // Claude CLI path — use per-provider permission when available
         const cliModel = resolveClaudeCliModel(descriptor?.sdkModelId ?? model);
-        const cliMode = resolveCliMode(permissionConfig);
-        const permissionMode = cliMode === "read-only" ? "plan" : "acceptEdits";
-        const dangerouslySkip = cliMode === "full-auto";
-        const allowedTools = permissionConfig?.cli?.allowedTools ?? [];
+        const claudeProviderMode = permissionConfig?._providers?.claude;
+        const mappedClaude = mapPermissionToClaude(claudeProviderMode);
+        const dangerouslySkip = mappedClaude === "bypassPermissions";
+        const permissionMode = mappedClaude === "bypassPermissions" ? "acceptEdits" : mappedClaude;
+        const allowedTools = permissionConfig?._providers?.allowedTools ?? permissionConfig?.cli?.allowedTools ?? [];
 
         const parts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
 
@@ -326,16 +329,12 @@ export function createUnifiedOrchestratorAdapter(options?: {
       }
 
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
-        // Codex CLI path — inject ADE MCP server via -c config overrides
-        const cliMode = resolveCliMode(permissionConfig);
-        const approvalPolicy =
-          cliMode === "full-auto"
-            ? "never"
-            : cliMode === "edit"
-              ? "on-request"
-              : "untrusted";
-        const sandboxMode = permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
-        const writablePaths = permissionConfig?.cli?.writablePaths ?? [];
+        // Codex CLI path — use per-provider permission when available
+        const codexProviderMode = permissionConfig?._providers?.codex;
+        const mappedCodex = mapPermissionToCodex(codexProviderMode);
+        const approvalPolicy = mappedCodex?.approvalPolicy ?? "untrusted";
+        const sandboxMode = permissionConfig?._providers?.codexSandbox ?? permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+        const writablePaths = permissionConfig?._providers?.writablePaths ?? permissionConfig?.cli?.writablePaths ?? [];
 
         const parts: string[] = [
           "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.sdkModelId)),

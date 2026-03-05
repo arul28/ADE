@@ -397,26 +397,22 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
   return DEFAULT_UNIFIED_MODEL_ID;
 }
 
+// Permission mapping functions are shared with the orchestrator/mission system.
+// Delegate to the single source of truth in permissionMapping.ts.
+import {
+  mapPermissionToClaude,
+  mapPermissionToCodex
+} from "../orchestrator/permissionMapping";
+
 function mapSessionPermissionToClaude(mode: AgentChatSession["permissionMode"]): "default" | "plan" | "acceptEdits" | "bypassPermissions" {
-  if (mode === "full-auto") return "bypassPermissions";
-  if (mode === "edit") return "acceptEdits";
-  if (mode === "default") return "default";
-  return "plan";
+  return mapPermissionToClaude(mode);
 }
 
 function mapSessionPermissionToCodex(mode: AgentChatSession["permissionMode"]): {
   approvalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
 } | null {
-  if (mode === "full-auto") {
-    return { approvalPolicy: "never", sandbox: "danger-full-access" };
-  }
-  // "config-toml" means run with no flags — let Codex read its own config.toml
-  if (mode === "config-toml") {
-    return null;
-  }
-  // "default" / "plan" / undefined → suggest mode (approval required for every action)
-  return { approvalPolicy: "untrusted", sandbox: "read-only" };
+  return mapPermissionToCodex(mode);
 }
 
 /** Spread-ready codex policy args (approvalPolicy + sandbox) or empty object if null. */

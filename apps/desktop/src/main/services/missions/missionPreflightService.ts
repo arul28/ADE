@@ -13,6 +13,8 @@ import type {
 import { createBuiltInPhaseCards, validatePhaseSequence } from "./phaseEngine";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import type { MissionBudgetService } from "../orchestrator/missionBudgetService";
+import { normalizeMissionPermissions } from "../orchestrator/permissionMapping";
+import type { MissionPermissionConfig } from "../../../shared/types/missions";
 import { isRecord, nowIso } from "../shared/utils";
 
 function toNonEmptyString(value: unknown): string | null {
@@ -241,49 +243,76 @@ export function createMissionPreflightService(args: {
       : null;
     if (orchestratorDescriptor) requestedDescriptors.set(orchestratorDescriptor.id, orchestratorDescriptor);
 
-    const requiresCli = Array.from(requestedDescriptors.values()).some(
-      (descriptor) => descriptor?.isCliWrapped === true,
-    );
-    const requiresInProcess = Array.from(requestedDescriptors.values()).some(
-      (descriptor) => descriptor?.isCliWrapped === false,
-    );
+    // Determine which model families are in use
+    const familiesInUse = new Set<"anthropic" | "openai" | "api">();
+    for (const descriptor of requestedDescriptors.values()) {
+      if (!descriptor) continue;
+      if (descriptor.isCliWrapped && descriptor.family === "anthropic") familiesInUse.add("anthropic");
+      else if (descriptor.isCliWrapped && descriptor.family === "openai") familiesInUse.add("openai");
+      else if (!descriptor.isCliWrapped) familiesInUse.add("api");
+    }
 
+    // Build per-provider permission config from project + mission overrides
     const config = projectConfigService.get();
     const aiConfig = config.effective.ai;
     const projectPermissions = aiConfig?.permissions;
-    const missionPermissions = launch.permissionConfig;
-    const effectiveCliMode = missionPermissions?.cli?.mode ?? projectPermissions?.cli?.mode ?? "read-only";
-    const effectiveInProcessMode = missionPermissions?.inProcess?.mode ?? projectPermissions?.inProcess?.mode ?? "plan";
-    const cliFullAuto = effectiveCliMode === "full-auto";
-    const inProcessFullAuto = effectiveInProcessMode === "full-auto";
-    const permissionFailures: string[] = [];
+    const projectPermConfig: MissionPermissionConfig = {};
+    if (projectPermissions?.cli) {
+      projectPermConfig.cli = {
+        ...(typeof projectPermissions.cli.mode === "string" ? { mode: projectPermissions.cli.mode as MissionPermissionConfig["cli"] extends { mode?: infer M } ? M : never } : {}),
+      };
+    }
+    if (projectPermissions?.inProcess) {
+      const m = projectPermissions.inProcess.mode;
+      if (m === "plan" || m === "edit" || m === "full-auto") projectPermConfig.inProcess = { mode: m };
+    }
+    let providers = normalizeMissionPermissions(projectPermConfig);
+    if (launch.permissionConfig) {
+      const missionProviders = normalizeMissionPermissions(launch.permissionConfig);
+      providers = { ...providers, ...missionProviders };
+    }
+
+    const permissionWarnings: string[] = [];
     const permissionDetails: string[] = [];
-    if (requiresCli) {
-      if (!cliFullAuto) permissionFailures.push("CLI models require permissions.cli.mode=full-auto for unattended execution.");
-      permissionDetails.push(`CLI: ${cliFullAuto ? "full-auto" : `mode=${effectiveCliMode}`}`);
-    }
-    if (requiresInProcess) {
-      if (!inProcessFullAuto) {
-        permissionFailures.push("In-process models require permissions.inProcess.mode=full-auto for unattended worker execution.");
+
+    if (familiesInUse.has("anthropic")) {
+      const mode = providers.claude ?? "full-auto";
+      permissionDetails.push(`Claude workers: ${mode}`);
+      if (mode !== "full-auto") {
+        permissionWarnings.push(`Claude workers: ${mode} mode — shell commands require approval.`);
       }
-      permissionDetails.push(`In-process: ${inProcessFullAuto ? "full-auto" : `mode=${effectiveInProcessMode}`}`);
     }
+    if (familiesInUse.has("openai")) {
+      const mode = providers.codex ?? "full-auto";
+      permissionDetails.push(`Codex workers: ${mode}`);
+      if (mode !== "full-auto") {
+        permissionWarnings.push(`Codex workers: ${mode} mode — all commands require approval.`);
+      }
+    }
+    if (familiesInUse.has("api")) {
+      const mode = providers.unified ?? "full-auto";
+      permissionDetails.push(`API workers: ${mode}`);
+      if (mode !== "full-auto") {
+        permissionWarnings.push(`API workers: ${mode} mode — modifications require approval.`);
+      }
+    }
+
     checklist.push(
-      permissionFailures.length === 0
+      permissionWarnings.length === 0
         ? toChecklistItem({
             id: "permissions",
             severity: "pass",
             title: "Permissions",
-            summary: "Required providers are configured for unattended full-auto execution.",
+            summary: "All worker families configured for unattended full-auto execution.",
             details: permissionDetails.length > 0 ? permissionDetails : ["No provider-specific permission requirements detected."],
           })
         : toChecklistItem({
             id: "permissions",
-            severity: "fail",
+            severity: "warning",
             title: "Permissions",
-            summary: "Unattended execution requires full-auto permission settings.",
-            details: permissionFailures,
-            fixHint: "Set ai.permissions.cli.mode=full-auto and/or ai.permissions.inProcess.mode=full-auto based on selected models.",
+            summary: "Some workers may pause for approval during execution.",
+            details: [...permissionDetails, "", ...permissionWarnings],
+            fixHint: "Non-full-auto modes are valid but workers will pause for user approval. Set full-auto if you want fully unattended execution.",
           }),
     );
 

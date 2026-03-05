@@ -28,12 +28,18 @@ import type {
   AggregatedUsageStats,
   TeamRuntimeConfig,
   MissionPermissionConfig,
-  MissionCliPermissionMode,
-  MissionCliSandboxPermissions,
-  MissionInProcessPermissionMode,
+  AgentChatPermissionMode,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
-import { MODEL_REGISTRY } from "../../../shared/modelRegistry";
+import { MODEL_REGISTRY, getModelById } from "../../../shared/modelRegistry";
+import {
+  getPermissionOptions,
+  safetyBadgeLabel,
+  safetyColorHex,
+  familyToPermissionKey,
+  permissionFamilyLabel,
+  type PermissionOption,
+} from "../shared/permissionOptions";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
 import { ModelProfileSelector } from "./ModelProfileSelector";
@@ -57,9 +63,6 @@ export type CreateDraft = {
 
 export type CreateMissionDefaults = {
   plannerProvider?: "auto" | "claude" | "codex";
-  cliMode?: MissionCliPermissionMode;
-  cliSandboxPermissions?: MissionCliSandboxPermissions;
-  inProcessMode?: MissionInProcessPermissionMode;
 };
 
 const DEFAULT_AGENT_RUNTIME: MissionAgentRuntimeConfig = {
@@ -96,13 +99,14 @@ function buildDefaultModelConfig(
   };
 }
 
-function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | undefined): MissionPermissionConfig {
+function createDefaultPermissionConfig(_defaults: CreateMissionDefaults | null | undefined): MissionPermissionConfig {
   return {
-    cli: {
-      mode: defaults?.cliMode ?? "full-auto",
-      sandboxPermissions: defaults?.cliSandboxPermissions ?? "workspace-write",
+    providers: {
+      claude: "full-auto",
+      codex: "full-auto",
+      unified: "full-auto",
+      codexSandbox: "workspace-write",
     },
-    inProcess: { mode: defaults?.inProcessMode ?? "full-auto" },
   };
 }
 
@@ -181,6 +185,221 @@ function formatPreflightDuration(ms: number | null): string {
 
 const DLG_INPUT_STYLE: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 };
 const DLG_LABEL_STYLE: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
+
+// ---------------------------------------------------------------------------
+// Worker Permissions — per-model-family sub-component
+// ---------------------------------------------------------------------------
+
+type PermFamilyKey = "claude" | "codex" | "unified";
+
+/** Derive unique model families in use from orchestrator + phase card models */
+function deriveActivePermFamilies(
+  orchestratorModelId: string | undefined,
+  phases: PhaseCard[],
+): PermFamilyKey[] {
+  const seen = new Set<PermFamilyKey>();
+  const modelIds = new Set<string>();
+  if (orchestratorModelId) modelIds.add(orchestratorModelId);
+  for (const phase of phases) {
+    if (phase.model?.modelId) modelIds.add(phase.model.modelId);
+  }
+  for (const id of modelIds) {
+    const desc = getModelById(id);
+    if (desc) {
+      seen.add(familyToPermissionKey(desc.family, desc.isCliWrapped));
+    }
+    // Unknown models are ignored — they won't run anyway
+  }
+  // No fallback: only show permission sections for families actually in use
+  const order: PermFamilyKey[] = ["claude", "codex", "unified"];
+  return order.filter((k) => seen.has(k));
+}
+
+function WorkerPermissionsSection({
+  draft,
+  activePhases,
+  setDraft,
+  dlgLabelStyle,
+  dlgInputStyle,
+}: {
+  draft: CreateDraft;
+  activePhases: PhaseCard[];
+  setDraft: React.Dispatch<React.SetStateAction<CreateDraft>>;
+  dlgLabelStyle: React.CSSProperties;
+  dlgInputStyle: React.CSSProperties;
+}) {
+  const families = useMemo(
+    () => deriveActivePermFamilies(draft.modelConfig.orchestratorModel?.modelId, activePhases),
+    [draft.modelConfig.orchestratorModel?.modelId, activePhases],
+  );
+
+  const provPerms = draft.permissionConfig?.providers;
+
+  // Build option lists per active family
+  const familyOptions = useMemo(() => {
+    const map = new Map<PermFamilyKey, PermissionOption[]>();
+    for (const fam of families) {
+      const modelFamily = fam === "claude" ? "anthropic" : fam === "codex" ? "openai" : "unified";
+      const isCliWrapped = fam === "claude" || fam === "codex";
+      map.set(fam, getPermissionOptions({ family: modelFamily, isCliWrapped }));
+    }
+    return map;
+  }, [families]);
+
+  const updateProviderPerm = (key: PermFamilyKey, value: AgentChatPermissionMode) => {
+    setDraft((p) => ({
+      ...p,
+      permissionConfig: {
+        ...p.permissionConfig,
+        providers: { ...p.permissionConfig?.providers, [key]: value },
+      },
+    }));
+  };
+
+  const updateCodexSandbox = (value: "read-only" | "workspace-write" | "danger-full-access") => {
+    setDraft((p) => ({
+      ...p,
+      permissionConfig: {
+        ...p.permissionConfig,
+        providers: { ...p.permissionConfig?.providers, codexSandbox: value },
+      },
+    }));
+  };
+
+  const hasRestricted = families.some((f) => {
+    const mode = provPerms?.[f] ?? "full-auto";
+    return mode !== "full-auto";
+  });
+
+  return (
+    <div className="space-y-2">
+      <span style={dlgLabelStyle}>
+        <Shield size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
+        WORKER PERMISSIONS
+      </span>
+
+      <div className="space-y-2">
+        {families.length === 0 && (
+          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, padding: "8px 0" }}>
+            Select an orchestrator model and phase models above to configure permissions.
+          </div>
+        )}
+        {families.map((fam) => {
+          const opts = familyOptions.get(fam) ?? [];
+          const current = provPerms?.[fam] ?? "full-auto";
+          const selected = opts.find((o) => o.value === current) ?? opts[opts.length - 1];
+
+          return (
+            <div
+              key={fam}
+              style={{
+                background: COLORS.recessedBg,
+                border: `1px solid ${COLORS.border}`,
+                padding: "10px 12px",
+              }}
+            >
+              {/* Family header */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textPrimary }}>
+                  {permissionFamilyLabel(fam)}
+                </span>
+                {selected && (
+                  <span
+                    style={{
+                      fontSize: 9,
+                      fontWeight: 700,
+                      fontFamily: MONO_FONT,
+                      textTransform: "uppercase" as const,
+                      letterSpacing: "1px",
+                      color: safetyColorHex(selected.safety),
+                      marginLeft: "auto",
+                    }}
+                  >
+                    {safetyBadgeLabel(selected.safety)}
+                  </span>
+                )}
+              </div>
+
+              {/* Permission dropdown */}
+              <select
+                value={current}
+                onChange={(e) => updateProviderPerm(fam, e.target.value as AgentChatPermissionMode)}
+                className="h-7 w-full px-2 outline-none"
+                style={dlgInputStyle}
+              >
+                {opts.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label} — {opt.shortDesc}
+                  </option>
+                ))}
+              </select>
+
+              {/* Description of selected mode */}
+              {selected && (
+                <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6, lineHeight: "1.5" }}>
+                  {selected.detail}
+                </div>
+              )}
+
+              {/* Codex sandbox sub-dropdown */}
+              {fam === "codex" && (
+                <div style={{ marginTop: 8 }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
+                    SANDBOX
+                  </span>
+                  <select
+                    value={provPerms?.codexSandbox ?? "workspace-write"}
+                    onChange={(e) => updateCodexSandbox(e.target.value as "read-only" | "workspace-write" | "danger-full-access")}
+                    className="mt-1 h-7 w-full px-2 outline-none"
+                    style={dlgInputStyle}
+                  >
+                    <option value="read-only">Read-only</option>
+                    <option value="workspace-write">Workspace write</option>
+                    <option value="danger-full-access">Danger full-access</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Warning for selected mode */}
+              {selected?.warning && (
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: COLORS.danger,
+                    fontFamily: MONO_FONT,
+                    marginTop: 6,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <Warning size={12} weight="bold" />
+                  {selected.warning}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {hasRestricted && (
+        <div
+          style={{
+            fontSize: 10,
+            color: COLORS.warning,
+            fontFamily: MONO_FONT,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          <Warning size={12} weight="bold" />
+          Workers using restricted permissions may pause for approval during autonomous execution.
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CreateMissionDialogInner({
   open,
@@ -800,104 +1019,7 @@ function CreateMissionDialogInner({
                   )}
                 </div>
 
-                {/* d. Worker Permissions */}
-                <div className="space-y-2">
-                  <span style={dlgLabelStyle}>
-                    <Shield size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-                    WORKER PERMISSIONS
-                  </span>
-                  <div className="grid grid-cols-3 gap-3">
-                    {/* CLI Mode */}
-                    <label className="space-y-1 text-[10px]">
-                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>CLI MODE</span>
-                      <select
-                        value={draft.permissionConfig?.cli?.mode ?? "full-auto"}
-                        onChange={(e) => {
-                          const mode = e.target.value as MissionCliPermissionMode;
-                          setDraft((p) => ({
-                            ...p,
-                            permissionConfig: {
-                              ...p.permissionConfig,
-                              cli: { ...p.permissionConfig?.cli, mode },
-                            },
-                          }));
-                        }}
-                        className="h-7 w-full px-2 outline-none"
-                        style={dlgInputStyle}
-                      >
-                        <option value="read-only">Read-only</option>
-                        <option value="edit">Edit</option>
-                        <option value="full-auto">Full-auto</option>
-                      </select>
-                    </label>
-                    {/* CLI Sandbox */}
-                    <label className="space-y-1 text-[10px]">
-                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>CLI SANDBOX</span>
-                      <select
-                        value={draft.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write"}
-                        onChange={(e) => {
-                          const mode = e.target.value as MissionCliSandboxPermissions;
-                          setDraft((p) => ({
-                            ...p,
-                            permissionConfig: {
-                              ...p.permissionConfig,
-                              cli: { ...p.permissionConfig?.cli, sandboxPermissions: mode },
-                            },
-                          }));
-                        }}
-                        className="h-7 w-full px-2 outline-none"
-                        style={dlgInputStyle}
-                      >
-                        <option value="read-only">Read-only</option>
-                        <option value="workspace-write">Workspace write</option>
-                        <option value="danger-full-access">Danger full-access</option>
-                      </select>
-                    </label>
-                    {/* In-process */}
-                    <label className="space-y-1 text-[10px]">
-                      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>IN-PROCESS MODE</span>
-                      <select
-                        value={draft.permissionConfig?.inProcess?.mode ?? "full-auto"}
-                        onChange={(e) => {
-                          const mode = e.target.value as MissionInProcessPermissionMode;
-                          setDraft((p) => ({
-                            ...p,
-                            permissionConfig: {
-                              ...p.permissionConfig,
-                              inProcess: { ...p.permissionConfig?.inProcess, mode },
-                            },
-                          }));
-                        }}
-                        className="h-7 w-full px-2 outline-none"
-                        style={dlgInputStyle}
-                      >
-                        <option value="plan">Plan (read-only)</option>
-                        <option value="edit">Edit (no shell)</option>
-                        <option value="full-auto">Full-Auto</option>
-                      </select>
-                    </label>
-                  </div>
-                  {(
-                    (draft.permissionConfig?.cli?.mode && draft.permissionConfig.cli.mode !== "full-auto") ||
-                    (draft.permissionConfig?.inProcess?.mode && draft.permissionConfig.inProcess.mode !== "full-auto")
-                  ) && (
-                    <div
-                      style={{
-                        fontSize: 10,
-                        color: "#F59E0B",
-                        fontFamily: MONO_FONT,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                      }}
-                    >
-                      <Warning size={12} weight="bold" />
-                      Workers using restricted permissions may pause for approval during autonomous execution.
-                    </div>
-                  )}
-                </div>
-
-                {/* e. Phase Configuration */}
+                {/* d. Phase Configuration */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span style={dlgLabelStyle}>
@@ -1534,6 +1656,15 @@ function CreateMissionDialogInner({
                     </div>
                   ) : null}
                 </div>
+
+                {/* Worker Permissions — per-model-family (placed last so all model selections are finalized) */}
+                <WorkerPermissionsSection
+                  draft={draft}
+                  activePhases={activePhases}
+                  setDraft={setDraft}
+                  dlgLabelStyle={dlgLabelStyle}
+                  dlgInputStyle={dlgInputStyle}
+                />
           </div>
 
           {(preflightRunning || preflightResult || preflightError) ? (

@@ -23510,6 +23510,114 @@ function resolveCodexCliModel(model) {
   return raw;
 }
 
+// ../desktop/src/main/services/orchestrator/permissionMapping.ts
+function mapPermissionToClaude(mode) {
+  if (mode === "full-auto") return "bypassPermissions";
+  if (mode === "edit") return "acceptEdits";
+  if (mode === "default") return "default";
+  return "plan";
+}
+function mapPermissionToCodex(mode) {
+  if (mode === "full-auto") {
+    return { approvalPolicy: "never", sandbox: "danger-full-access" };
+  }
+  if (mode === "config-toml") {
+    return null;
+  }
+  return { approvalPolicy: "untrusted", sandbox: "read-only" };
+}
+function mapPermissionToInProcess(mode) {
+  if (mode === "full-auto") return "full-auto";
+  if (mode === "edit") return "edit";
+  return "read-only";
+}
+var VALID_CLI_MODES = /* @__PURE__ */ new Set(["read-only", "edit", "full-auto"]);
+var VALID_IN_PROCESS_MODES = /* @__PURE__ */ new Set(["plan", "edit", "full-auto"]);
+var VALID_PROVIDER_MODES = /* @__PURE__ */ new Set(["default", "plan", "edit", "full-auto", "config-toml"]);
+function oldCliModeToProvider(mode) {
+  if (mode === "read-only") return "plan";
+  if (mode === "edit") return "edit";
+  if (mode === "full-auto") return "full-auto";
+  return "full-auto";
+}
+function oldInProcessModeToProvider(mode) {
+  if (mode === "plan") return "plan";
+  if (mode === "edit") return "edit";
+  if (mode === "full-auto") return "full-auto";
+  return "full-auto";
+}
+function normalizeMissionPermissions(config2) {
+  const result = {
+    claude: "full-auto",
+    codex: "full-auto",
+    unified: "full-auto",
+    codexSandbox: "workspace-write"
+  };
+  if (config2?.cli) {
+    const cliMode = VALID_CLI_MODES.has(config2.cli.mode ?? "") ? config2.cli.mode : void 0;
+    const asProvider = oldCliModeToProvider(cliMode);
+    result.claude = asProvider;
+    result.codex = asProvider;
+    if (config2.cli.sandboxPermissions === "read-only" || config2.cli.sandboxPermissions === "workspace-write" || config2.cli.sandboxPermissions === "danger-full-access") {
+      result.codexSandbox = config2.cli.sandboxPermissions;
+    }
+    if (Array.isArray(config2.cli.writablePaths)) {
+      result.writablePaths = config2.cli.writablePaths.filter((p) => typeof p === "string" && p.trim().length > 0).map((p) => p.trim());
+    }
+    if (Array.isArray(config2.cli.allowedTools)) {
+      result.allowedTools = config2.cli.allowedTools.filter((t) => typeof t === "string" && t.trim().length > 0).map((t) => t.trim());
+    }
+  }
+  if (config2?.inProcess) {
+    const inProcMode = VALID_IN_PROCESS_MODES.has(config2.inProcess.mode ?? "") ? config2.inProcess.mode : void 0;
+    result.unified = oldInProcessModeToProvider(inProcMode);
+  }
+  if (config2?.providers) {
+    const p = config2.providers;
+    if (p.claude && VALID_PROVIDER_MODES.has(p.claude)) result.claude = p.claude;
+    if (p.codex && VALID_PROVIDER_MODES.has(p.codex)) result.codex = p.codex;
+    if (p.unified && VALID_PROVIDER_MODES.has(p.unified)) result.unified = p.unified;
+    if (p.codexSandbox === "read-only" || p.codexSandbox === "workspace-write" || p.codexSandbox === "danger-full-access") {
+      result.codexSandbox = p.codexSandbox;
+    }
+    if (Array.isArray(p.writablePaths) && p.writablePaths.length > 0) {
+      result.writablePaths = p.writablePaths.filter((x) => typeof x === "string" && x.trim().length > 0).map((x) => x.trim());
+    }
+    if (Array.isArray(p.allowedTools) && p.allowedTools.length > 0) {
+      result.allowedTools = p.allowedTools.filter((x) => typeof x === "string" && x.trim().length > 0).map((x) => x.trim());
+    }
+  }
+  return result;
+}
+function providerModeToCliMode(mode) {
+  if (mode === "full-auto") return "full-auto";
+  if (mode === "edit") return "edit";
+  if (mode === "default" || mode === "plan") return "read-only";
+  if (mode === "config-toml") return "full-auto";
+  return "full-auto";
+}
+function providerModeToInProcessMode(mode) {
+  if (mode === "full-auto") return "full-auto";
+  if (mode === "edit") return "edit";
+  if (mode === "default" || mode === "plan" || mode === "config-toml") return "plan";
+  return "full-auto";
+}
+function providerPermissionsToLegacyConfig(providers) {
+  const claudeCliMode = providerModeToCliMode(providers.claude);
+  return {
+    cli: {
+      mode: claudeCliMode,
+      sandboxPermissions: providers.codexSandbox ?? "workspace-write",
+      ...providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {},
+      ...providers.allowedTools?.length ? { allowedTools: providers.allowedTools } : {}
+    },
+    inProcess: {
+      mode: providerModeToInProcessMode(providers.unified)
+    },
+    _providers: providers
+  };
+}
+
 // ../desktop/src/main/services/orchestrator/unifiedOrchestratorAdapter.ts
 function buildWorkerEnvVars(args) {
   return [
@@ -23657,11 +23765,6 @@ function cleanupStaleMcpConfigFiles(projectRoot) {
   } catch {
   }
 }
-function resolveCliMode(permissionConfig) {
-  const mode = permissionConfig?.cli?.mode;
-  if (mode === "read-only" || mode === "edit" || mode === "full-auto") return mode;
-  return "full-auto";
-}
 function createUnifiedOrchestratorAdapter(options) {
   const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length ? options.runtimeRoot.trim() : resolveUnifiedRuntimeRoot();
   const workspaceRoot = typeof options?.workspaceRoot === "string" && options.workspaceRoot.trim().length ? options.workspaceRoot.trim() : runtimeRoot;
@@ -23690,10 +23793,11 @@ function createUnifiedOrchestratorAdapter(options) {
       };
       if (descriptor?.isCliWrapped && descriptor.family === "anthropic") {
         const cliModel = resolveClaudeCliModel(descriptor?.sdkModelId ?? model);
-        const cliMode = resolveCliMode(permissionConfig);
-        const permissionMode = cliMode === "read-only" ? "plan" : "acceptEdits";
-        const dangerouslySkip = cliMode === "full-auto";
-        const allowedTools = permissionConfig?.cli?.allowedTools ?? [];
+        const claudeProviderMode = permissionConfig?._providers?.claude;
+        const mappedClaude = mapPermissionToClaude(claudeProviderMode);
+        const dangerouslySkip = mappedClaude === "bypassPermissions";
+        const permissionMode = mappedClaude === "bypassPermissions" ? "acceptEdits" : mappedClaude;
+        const allowedTools = permissionConfig?._providers?.allowedTools ?? permissionConfig?.cli?.allowedTools ?? [];
         const parts = ["claude", "--model", shellEscapeArg(cliModel)];
         if (dangerouslySkip) {
           parts.push("--dangerously-skip-permissions");
@@ -23717,10 +23821,11 @@ function createUnifiedOrchestratorAdapter(options) {
         return envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
       }
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
-        const cliMode = resolveCliMode(permissionConfig);
-        const approvalPolicy = cliMode === "full-auto" ? "never" : cliMode === "edit" ? "on-request" : "untrusted";
-        const sandboxMode = permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
-        const writablePaths = permissionConfig?.cli?.writablePaths ?? [];
+        const codexProviderMode = permissionConfig?._providers?.codex;
+        const mappedCodex = mapPermissionToCodex(codexProviderMode);
+        const approvalPolicy = mappedCodex?.approvalPolicy ?? "untrusted";
+        const sandboxMode = permissionConfig?._providers?.codexSandbox ?? permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+        const writablePaths = permissionConfig?._providers?.writablePaths ?? permissionConfig?.cli?.writablePaths ?? [];
         const parts = [
           "codex",
           "--model",
@@ -29821,6 +29926,38 @@ function createOrchestratorService({
           })();
           const timeoutMs = Number.isFinite(Number(step.metadata?.timeoutMs)) ? Math.max(1e3, Math.floor(Number(step.metadata?.timeoutMs))) : runtimeConfig.stepTimeoutDefaultMs;
           const requiresPlanApproval = step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
+          const inProcessPermissionMode = (() => {
+            if (requiresPlanApproval) return "read-only";
+            const projPerms = {};
+            const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
+            const perms = asRecord(aiCfg?.permissions);
+            if (perms) {
+              const ip = asRecord(perms.inProcess);
+              if (ip) {
+                const m = typeof ip.mode === "string" ? ip.mode : "";
+                if (m === "plan" || m === "edit" || m === "full-auto") projPerms.inProcess = { mode: m };
+              }
+            }
+            let providers = normalizeMissionPermissions(projPerms);
+            if (run.missionId) {
+              try {
+                const mRow = db.get(
+                  `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+                  [run.missionId, projectId]
+                );
+                if (mRow?.metadata_json) {
+                  const meta3 = asRecord(JSON.parse(mRow.metadata_json));
+                  const mpc = asRecord(asRecord(meta3?.launch)?.permissionConfig);
+                  if (mpc) {
+                    const mp = normalizeMissionPermissions(mpc);
+                    providers = { ...providers, ...mp };
+                  }
+                }
+              } catch {
+              }
+            }
+            return mapPermissionToInProcess(providers.unified);
+          })();
           try {
             const aiResult = await aiIntegrationService.executeViaUnified({
               feature: "orchestrator",
@@ -29830,7 +29967,7 @@ function createOrchestratorService({
               model: descriptor.id,
               ...reasoningEffort ? { reasoningEffort } : {},
               timeoutMs,
-              permissionMode: requiresPlanApproval ? "read-only" : "full-auto",
+              permissionMode: inProcessPermissionMode,
               oneShot: true
             });
             appendTimelineEvent({
@@ -29905,98 +30042,48 @@ function createOrchestratorService({
       const adapter = adapters.get(executorKind) ?? defaultAdapterFor(executorKind);
       if (adapter) {
         const permissionConfig = (() => {
-          const config2 = {
-            cli: {
-              mode: "full-auto",
-              sandboxPermissions: "workspace-write"
-            },
-            inProcess: {
-              mode: "full-auto"
-            }
-          };
-          const toStringArray2 = (value) => {
-            if (!Array.isArray(value)) return void 0;
-            const normalized = value.map((entry) => typeof entry === "string" ? entry.trim() : "").filter((entry) => entry.length > 0);
-            return normalized.length > 0 ? normalized : void 0;
-          };
-          const applyCliOverrides = (source) => {
-            if (!source) return;
-            const mode = typeof source.mode === "string" ? source.mode : "";
-            const sandboxPermissions = typeof source.sandboxPermissions === "string" ? source.sandboxPermissions : "";
-            config2.cli = {
-              ...config2.cli ?? {},
-              ...mode === "read-only" || mode === "edit" || mode === "full-auto" ? { mode } : {},
-              ...sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access" ? { sandboxPermissions } : {},
-              ...toStringArray2(source.writablePaths) ? { writablePaths: toStringArray2(source.writablePaths) } : {},
-              ...toStringArray2(source.commandAllowlist) ? { commandAllowlist: toStringArray2(source.commandAllowlist) } : {},
-              ...toStringArray2(source.allowedTools) ? { allowedTools: toStringArray2(source.allowedTools) } : {},
-              ...toStringArray2(source.settingsSources) ? { settingsSources: toStringArray2(source.settingsSources) } : {},
-              ...Number.isFinite(Number(source.maxBudgetUsd)) ? { maxBudgetUsd: Number(source.maxBudgetUsd) } : {}
-            };
-          };
-          const applyInProcessOverrides = (source) => {
-            if (!source) return;
-            const mode = typeof source.mode === "string" ? source.mode : "";
-            if (mode !== "plan" && mode !== "edit" && mode !== "full-auto") return;
-            config2.inProcess = {
-              ...config2.inProcess ?? {},
-              mode
-            };
-          };
+          const projectPerms = {};
           const snapshot2 = projectConfigService?.get();
           const ai = asRecord(snapshot2?.effective?.ai);
           const permissions = asRecord(ai?.permissions);
-          if (!permissions) return config2;
-          applyCliOverrides(asRecord(permissions.cli));
-          applyInProcessOverrides(asRecord(permissions.inProcess));
-          return config2;
-        })();
-        if (run.missionId) {
-          try {
-            const missionRow = db.get(
-              `select metadata_json from missions where id = ? and project_id = ? limit 1`,
-              [run.missionId, projectId]
-            );
-            if (missionRow?.metadata_json) {
-              const meta3 = asRecord(JSON.parse(missionRow.metadata_json));
-              const missionPerms = asRecord(asRecord(meta3?.launch)?.permissionConfig);
-              const missionCli = asRecord(missionPerms?.cli);
-              const missionInProcess = asRecord(missionPerms?.inProcess);
-              if (missionCli) {
-                const mode = typeof missionCli.mode === "string" ? missionCli.mode : "";
-                const sandboxPermissions = typeof missionCli.sandboxPermissions === "string" ? missionCli.sandboxPermissions : "";
-                permissionConfig.cli = {
-                  ...permissionConfig.cli ?? {},
-                  ...mode === "read-only" || mode === "edit" || mode === "full-auto" ? { mode } : {},
-                  ...sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access" ? { sandboxPermissions } : {},
-                  ...Array.isArray(missionCli.writablePaths) ? {
-                    writablePaths: missionCli.writablePaths.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-                  } : {},
-                  ...Array.isArray(missionCli.commandAllowlist) ? {
-                    commandAllowlist: missionCli.commandAllowlist.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-                  } : {},
-                  ...Array.isArray(missionCli.allowedTools) ? {
-                    allowedTools: missionCli.allowedTools.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-                  } : {},
-                  ...Array.isArray(missionCli.settingsSources) ? {
-                    settingsSources: missionCli.settingsSources.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-                  } : {},
-                  ...Number.isFinite(Number(missionCli.maxBudgetUsd)) ? { maxBudgetUsd: Number(missionCli.maxBudgetUsd) } : {}
-                };
-              }
-              if (missionInProcess) {
-                const mode = typeof missionInProcess.mode === "string" ? missionInProcess.mode : "";
-                if (mode === "plan" || mode === "edit" || mode === "full-auto") {
-                  permissionConfig.inProcess = {
-                    ...permissionConfig.inProcess ?? {},
-                    mode
-                  };
-                }
+          if (permissions) {
+            const cli = asRecord(permissions.cli);
+            const inProc = asRecord(permissions.inProcess);
+            if (cli) {
+              projectPerms.cli = {
+                ...typeof cli.mode === "string" ? { mode: cli.mode } : {},
+                ...typeof cli.sandboxPermissions === "string" ? { sandboxPermissions: cli.sandboxPermissions } : {},
+                ...Array.isArray(cli.writablePaths) ? { writablePaths: cli.writablePaths.filter((e) => typeof e === "string").map((e) => e.trim()).filter((e) => e.length > 0) } : {},
+                ...Array.isArray(cli.allowedTools) ? { allowedTools: cli.allowedTools.filter((e) => typeof e === "string").map((e) => e.trim()).filter((e) => e.length > 0) } : {}
+              };
+            }
+            if (inProc) {
+              const mode = typeof inProc.mode === "string" ? inProc.mode : "";
+              if (mode === "plan" || mode === "edit" || mode === "full-auto") {
+                projectPerms.inProcess = { mode };
               }
             }
-          } catch {
           }
-        }
+          let providers = normalizeMissionPermissions(projectPerms);
+          if (run.missionId) {
+            try {
+              const missionRow = db.get(
+                `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+                [run.missionId, projectId]
+              );
+              if (missionRow?.metadata_json) {
+                const meta3 = asRecord(JSON.parse(missionRow.metadata_json));
+                const missionPermConfig = asRecord(asRecord(meta3?.launch)?.permissionConfig);
+                if (missionPermConfig) {
+                  const missionProviders = normalizeMissionPermissions(missionPermConfig);
+                  providers = { ...providers, ...missionProviders };
+                }
+              }
+            } catch {
+            }
+          }
+          return providerPermissionsToLegacyConfig(providers);
+        })();
         const recoveryContext = await (async () => {
           if (attemptNumber <= 1) return {};
           const result2 = {};
@@ -52617,7 +52704,7 @@ function wrapWithMiddleware(model, descriptor, opts) {
 // ../desktop/src/main/services/ai/providerResolver.ts
 async function tryImport(pkg) {
   try {
-    return await Function("p", "return import(p)")(pkg);
+    return await new Function("p", "return import(p)")(pkg);
   } catch {
     throw new Error(`Package ${pkg} is not installed. Run: npm install ${pkg}`);
   }
@@ -52627,7 +52714,7 @@ async function loadClaudeCodeProvider() {
   return mod.createClaudeCode;
 }
 async function loadCodexCliProvider() {
-  const mod = await tryImport("ai-sdk-provider-codex-cli");
+  const mod = await import("ai-sdk-provider-codex-cli");
   const moduleRecord = mod;
   const factory = moduleRecord.createCodexCli ?? moduleRecord.createCodexCLI;
   if (typeof factory !== "function") {
@@ -52862,9 +52949,7 @@ var CLI_AUTH_PROBES = {
     ["whoami"]
   ],
   codex: [
-    ["auth", "status", "--json"],
-    ["auth", "status"],
-    ["whoami"]
+    ["login", "status"]
   ],
   gemini: [
     ["auth", "status"],
@@ -52948,6 +53033,13 @@ async function inspectCliAuthentication(cli) {
       const output = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
+      try {
+        const json2 = JSON.parse(result.stdout?.trim() || "");
+        if (typeof json2 === "object" && json2 !== null && "loggedIn" in json2) {
+          return { authenticated: Boolean(json2.loggedIn), verified: true };
+        }
+      } catch {
+      }
       if (hasPattern(normalized, UNAUTH_INDICATORS)) {
         return { authenticated: false, verified: true };
       }

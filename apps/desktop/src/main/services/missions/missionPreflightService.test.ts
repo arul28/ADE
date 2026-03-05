@@ -189,4 +189,150 @@ describe("missionPreflightService", () => {
     expect(result.hardFailures).toBeGreaterThan(0);
     expect(result.checklist.find((item) => item.id === "budget")?.severity).toBe("fail");
   });
+
+  it("shows warning (not fail) for non-full-auto permissions and still allows launch", async () => {
+    const profiles = createProfiles();
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles
+      } as any,
+      laneService: {
+        list: async () => [
+          { id: "lane-1", archivedAt: null },
+          { id: "lane-2", archivedAt: null },
+          { id: "lane-3", archivedAt: null },
+          { id: "lane-4", archivedAt: null },
+        ]
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+            { id: "openai/gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "openai", displayName: "GPT-5.3 Codex" },
+            { id: "gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "codex", displayName: "GPT-5.3 Codex" },
+          ]
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "edit" },
+                inProcess: { mode: "plan" },
+              }
+            }
+          }
+        })
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.6,
+          remainingWindowCostUsd: 10.4,
+          budgetLimitCostUsd: 11
+        })
+      } as any
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Implement feature.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: profiles[0]!.phases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "claude-sonnet-4-6"
+          }
+        },
+      }
+    });
+
+    const permItem = result.checklist.find((item) => item.id === "permissions");
+    expect(permItem?.severity).toBe("warning");
+    expect(result.canLaunch).toBe(true);
+    expect(result.hardFailures).toBe(0);
+    // Warning details should mention the specific mode
+    expect(permItem?.details?.some((d) => d.includes("edit"))).toBe(true);
+  });
+
+  it("uses per-provider permissions from providers field over old cli/inProcess", async () => {
+    const profiles = createProfiles();
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles
+      } as any,
+      laneService: {
+        list: async () => [
+          { id: "lane-1", archivedAt: null },
+          { id: "lane-2", archivedAt: null },
+          { id: "lane-3", archivedAt: null },
+          { id: "lane-4", archivedAt: null },
+        ]
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+            { id: "openai/gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "openai", displayName: "GPT-5.3 Codex" },
+            { id: "gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "codex", displayName: "GPT-5.3 Codex" },
+          ]
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "edit" },
+                inProcess: { mode: "plan" },
+              }
+            }
+          }
+        })
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.6,
+          remainingWindowCostUsd: 10.4,
+          budgetLimitCostUsd: 11
+        })
+      } as any
+    });
+
+    // Mission-level providers field overrides all old cli/inProcess modes
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Implement feature.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: profiles[0]!.phases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "claude-sonnet-4-6"
+          }
+        },
+        permissionConfig: {
+          providers: { claude: "full-auto", codex: "full-auto", unified: "full-auto" },
+        },
+      }
+    });
+
+    const permItem = result.checklist.find((item) => item.id === "permissions");
+    // providers overrides project-level cli.mode=edit for all families
+    expect(permItem?.severity).toBe("pass");
+    expect(result.canLaunch).toBe(true);
+  });
 });

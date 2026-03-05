@@ -193,24 +193,9 @@ function resolvePlannerClarificationPolicy(args: {
   allowPlanningQuestions: boolean;
   phaseCards?: PhaseCard[];
 }): PlannerClarificationPolicy {
-  const planningPhase =
-    args.phaseCards?.find((phase) => phase.phaseKey === "planning")
-    ?? args.phaseCards?.find((phase) => phase.name.trim().toLowerCase() === "planning")
-    ?? null;
-  const phaseAsk = planningPhase?.askQuestions;
-  const phaseEnabled = phaseAsk?.enabled === true;
-  const enabled = args.allowPlanningQuestions || phaseEnabled;
-  const phaseMode = phaseAsk?.mode === "always" || phaseAsk?.mode === "auto_if_uncertain" || phaseAsk?.mode === "never"
-    ? phaseAsk.mode
-    : "auto_if_uncertain";
-  const mode = enabled
-    ? (phaseEnabled
-        ? phaseMode
-        : phaseMode === "never"
-          ? "auto_if_uncertain"
-          : phaseMode)
-    : "never";
-  const maxQuestions = clampQuestionCount(phaseEnabled ? phaseAsk?.maxQuestions : undefined);
+  const enabled = args.allowPlanningQuestions;
+  const mode = enabled ? "auto_if_uncertain" : "never";
+  const maxQuestions = clampQuestionCount(undefined);
   if (!enabled) {
     return {
       enabled: false,
@@ -527,10 +512,26 @@ function buildPlannerPrompt(args: {
   ].concat(bundleConstraints.map((entry) => `Mission runtime constraint: ${entry}`));
 
   const lines = [
-    "You are a PLANNING agent. Your job is to analyze the request and produce a structured mission plan. You have READ-ONLY access to the codebase to understand the project structure. You MUST NOT write code or modify repository files.",
+    "You are a PLANNING agent. Your job is to deeply analyze the request, research the codebase, and produce a structured mission plan. You have READ-ONLY access to the codebase — use it extensively. You MUST NOT write code or modify repository files.",
     "",
-    "You are ADE mission planner.",
+    "You are the ADE mission planner — the ONLY research and analysis phase before execution begins.",
+    "There is no separate analysis/planning phase during execution. Your plan IS the foundation.",
     "Generate a deterministic mission plan object that matches the provided JSON schema exactly.",
+    "",
+    "## Deep Research Protocol",
+    "Before generating a plan, you MUST thoroughly research the codebase:",
+    "1. READ key files mentioned in the mission prompt — understand their current implementation",
+    "2. SEARCH for related code patterns, imports, dependencies, and test files",
+    "3. IDENTIFY architectural patterns, conventions, and constraints the workers must follow",
+    "4. TRACE data flows and call chains relevant to the requested changes",
+    "5. CHECK for existing tests, CI configuration, and build tooling that affect the work",
+    "6. NOTE any gotchas, edge cases, or non-obvious dependencies you discover",
+    "",
+    "Your research findings must flow into your plan:",
+    "- Each step's description should include specific file paths, function names, and patterns you discovered",
+    "- Step descriptions should warn workers about pitfalls you found during research",
+    "- Dependencies between steps should reflect real code dependencies you traced",
+    "- Do NOT produce a generic plan — every step must reference concrete code you actually read",
     "",
     "Mission intake:",
     `- title: ${args.title}`,
@@ -596,6 +597,34 @@ function buildPlannerPrompt(args: {
     "- **Parallel Execution**: Steps without dependencies can execute simultaneously across multiple agents.",
     ""
   ];
+
+  // Inject phase card context so the planner aligns steps with configured phases
+  if (args.phases?.length) {
+    lines.push(
+      "## Mission Phase Pipeline",
+      "This mission uses a pre-configured phase pipeline. Your plan steps MUST align with these phases.",
+      "Map each step to the appropriate phase via its taskType. The orchestrator will enforce phase ordering and validation gates.",
+      ""
+    );
+    for (const phase of args.phases) {
+      const gateLine = phase.validationGate.tier === "none"
+        ? "no validation gate"
+        : `${phase.validationGate.tier} validation${phase.validationGate.required ? " (required — blocks downstream)" : ""}${phase.validationGate.criteria ? `, criteria: "${phase.validationGate.criteria}"` : ""}`;
+      lines.push(
+        `### Phase ${phase.position + 1}: ${phase.name} (key: ${phase.phaseKey})`,
+        `- Description: ${phase.description}`,
+        `- Instructions: ${phase.instructions}`,
+        `- Validation: ${gateLine}`,
+        `- Model: ${phase.model.modelId}`,
+      );
+      if (phase.orderingConstraints.mustBeFirst) lines.push("- Constraint: must be first phase");
+      if (phase.orderingConstraints.mustBeLast) lines.push("- Constraint: must be last phase");
+      if (phase.orderingConstraints.mustFollow?.length) lines.push(`- Constraint: must follow ${phase.orderingConstraints.mustFollow.join(", ")}`);
+      if (phase.orderingConstraints.mustPrecede?.length) lines.push(`- Constraint: must precede ${phase.orderingConstraints.mustPrecede.join(", ")}`);
+      if (phase.orderingConstraints.canLoop && phase.orderingConstraints.loopTarget) lines.push(`- Constraint: can loop back to ${phase.orderingConstraints.loopTarget}`);
+      lines.push("");
+    }
+  }
 
   if (args.teamRuntime?.enabled) {
     lines.push(
@@ -1043,7 +1072,7 @@ function inferReviewTarget(step: PlannerStepPlan): "code" | "tests" {
 }
 
 function inferRoleClass(step: PlannerStepPlan): string {
-  if (step.taskType === "analysis") return "planning";
+  if (step.taskType === "analysis") return "implementation";
   if (step.taskType === "code" || step.taskType === "deploy") return "implementation";
   if (step.taskType === "test") return "testing";
   if (step.taskType === "review" || step.taskType === "milestone") return "review";
@@ -1264,6 +1293,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
     contextBundle: args.contextBundle,
     projectKnowledge,
     policy: args.policy,
+    phases: args.phaseCards,
     teamRuntime: args.teamRuntime
   });
 

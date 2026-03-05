@@ -133,9 +133,6 @@ function parseModelString(rawModel: string): { normalized: string; display: stri
 }
 
 function resolvePhaseBudgetDefaults(phaseKey: string): { tokens: number; timeMs: number } {
-  if (phaseKey === BUILT_IN_PHASE_KEYS.planning) {
-    return { tokens: 12_000, timeMs: 8 * 60_000 };
-  }
   if (phaseKey === BUILT_IN_PHASE_KEYS.development) {
     return { tokens: 80_000, timeMs: 45 * 60_000 };
   }

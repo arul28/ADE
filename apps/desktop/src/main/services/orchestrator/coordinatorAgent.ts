@@ -705,7 +705,7 @@ You are autonomous WITHIN user-configured settings. This means:
 - When to escalate to the user vs. handle it yourself
 
 **You FOLLOW (user constraints — never override):**
-- Which execution phases are enabled (planning, testing, validation, code review) — skip disabled phases, run enabled ones
+- Which execution phases are enabled (development, testing, validation, code review) — skip disabled phases, run enabled ones
 - Model selection — use the configured coordinator and worker models
 - PR strategy — create PRs according to the user's chosen strategy
 - Budget limits — hard caps on cost/tokens are guardrails, not suggestions

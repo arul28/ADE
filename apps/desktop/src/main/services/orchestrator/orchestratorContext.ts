@@ -1228,7 +1228,6 @@ export function deriveRuntimeProfileFromPhases(
   // Build a set of enabled phase keys
   const phaseKeys = new Set(phases.map((p) => p.phaseKey.toLowerCase()));
 
-  const planningCard = phases.find((p) => p.phaseKey.toLowerCase() === "planning");
   const testingEnabled = phaseKeys.has("testing") || phaseKeys.has("test");
   const reviewEnabled = phaseKeys.has("code_review") || phaseKeys.has("codereview") || phaseKeys.has("review")
     || phaseKeys.has("test_review") || phaseKeys.has("testreview");
@@ -1239,7 +1238,7 @@ export function deriveRuntimeProfileFromPhases(
     (p) => (p.phaseKey.toLowerCase() === "testing" || p.phaseKey.toLowerCase() === "test")
       && p.instructions.toLowerCase().includes("tdd")
   );
-  const hasManualReview = planningCard?.askQuestions.mode === "always";
+  const hasManualReview = false;
 
   let maxParallelWorkers = 2;
   if (testingEnabled) maxParallelWorkers += 1;
@@ -1266,15 +1265,11 @@ export function deriveRuntimeProfileFromPhases(
     (p) => ["validation", "code_review", "codereview", "review", "test_review", "testreview"]
       .includes(p.phaseKey.toLowerCase())
   );
-  const planningPhases = phases.filter(
-    (p) => p.phaseKey.toLowerCase() === "planning" || p.phaseKey.toLowerCase() === "analysis"
-  );
-
   return {
     planning: {
-      useAiPlanner: phaseKeys.has("planning") || phaseKeys.has("analysis"),
-      requirePlanReview: hasManualReview,
-      preferProvider: planningCard?.model?.modelId ?? config.defaultPlannerProvider ?? null
+      useAiPlanner: true,
+      requirePlanReview: false,
+      preferProvider: config.defaultPlannerProvider ?? null
     },
     execution: {
       maxParallelWorkers,
@@ -1283,7 +1278,7 @@ export function deriveRuntimeProfileFromPhases(
     },
     evaluation: {
       evaluateEveryStep: hasStrictGates || hasTdd,
-      autoAdjustPlan: (phaseKeys.has("planning") || phaseKeys.has("analysis")) || reviewEnabled,
+      autoAdjustPlan: true,
       autoResolveInterventions: testingEnabled || reviewEnabled,
       interventionConfidenceThreshold: hasStrictGates ? 0.75 : 0.9,
       evaluationReasoningEffort: normalizeReasoningEffort(
@@ -1291,7 +1286,7 @@ export function deriveRuntimeProfileFromPhases(
         hasStrictGates ? "high" : "medium"
       ),
       interventionReasoningEffort: normalizeReasoningEffort(
-        planningPhases[0]?.model?.modelId,
+        config.defaultPlannerProvider ?? null,
         hasStrictGates ? "high" : "medium"
       )
     },

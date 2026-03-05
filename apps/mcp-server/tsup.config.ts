@@ -13,5 +13,5 @@ export default defineConfig({
   outExtension: () => ({
     js: ".cjs"
   }),
-  external: ["node-pty", "sql.js"]
+  external: ["node-pty", "sql.js", "ai-sdk-provider-codex-cli"]
 });

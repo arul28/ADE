@@ -21,8 +21,10 @@ export { buildProviderOptions } from "./providerOptions";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function tryImport(pkg: string): Promise<any> {
+  // Use an opaque dynamic import to prevent bundlers (esbuild/tsup) from resolving
+  // the package at bundle time. Optional provider packages may not be installed.
   try {
-    return await (Function("p", "return import(p)")(pkg) as Promise<unknown>);
+    return await (new Function("p", "return import(p)")(pkg) as Promise<unknown>);
   } catch {
     throw new Error(`Package ${pkg} is not installed. Run: npm install ${pkg}`);
   }

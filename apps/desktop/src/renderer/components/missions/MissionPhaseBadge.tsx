@@ -71,8 +71,7 @@ export function MissionPhaseBadge({ phases, profileName, className }: MissionPha
         </span>
       )}
       <span className="inline-flex items-center gap-px">
-        <PhaseIcon active={phaseKeys.has("planning")} label="P" tooltip="Planning" />
-        <PhaseIcon active={phaseKeys.has("implementation")} label="I" tooltip="Implementation" />
+        <PhaseIcon active={phaseKeys.has("implementation")} label="D" tooltip="Development" />
         <PhaseIcon active={phaseKeys.has("testing")} label="T" tooltip="Testing" />
         <PhaseIcon active={phaseKeys.has("validation")} label="V" tooltip="Validation" />
         <PhaseIcon active={phaseKeys.has("code_review") || phaseKeys.has("test_review") || phaseKeys.has("review")} label="R" tooltip="Review" />
