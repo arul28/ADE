@@ -618,10 +618,32 @@ export class CoordinatorAgent {
           return parts.join("\n");
         });
       phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nClarification rules per phase govern when you may use the ask_user tool:
-- "auto_if_uncertain": Before starting phase work, ask only when ambiguity or risk could cause significant rework.
-- "always": Ask at least one clarifying question before starting that phase.
+- "auto_if_uncertain": You MAY use ask_user if you encounter genuine ambiguity that could cause significant rework. Do not ask for trivial things.
+- "always": You MUST use ask_user to gather clarifying questions from the user BEFORE spawning any workers or building the task DAG for that phase. This is mandatory.
 - "never": Do not ask questions in that phase; proceed with reasonable assumptions.
-- Respect each phase max question limit. Avoid obvious or low-value questions.\n${phaseLines.join("\n")}`;
+- Respect each phase max question limit. Avoid obvious or low-value questions.\n- When using ask_user, bundle ALL your questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
+    }
+
+    // Build planning phase guidance
+    let planningPhaseSection = "";
+    if (phases?.some(p => p.phaseKey === "planning")) {
+      planningPhaseSection = `\n## Planning Phase Protocol
+When you enter the Planning phase (your first phase), follow this protocol:
+1. IF the Planning phase has askQuestions enabled (mode "always" or "auto_if_uncertain"):
+   - You MUST use ask_user FIRST to gather clarifying questions from the user BEFORE spawning the planning worker or building the task DAG.
+   - Bundle all questions into one ask_user call. Wait for the user to respond before proceeding.
+   - Once the user has answered, incorporate their responses into your planning.
+2. Spawn ONE planning worker with a rich research prompt that includes the full mission goal and the planning phase instructions
+3. The planning worker should have READ-ONLY focus \u2014 its job is to research the codebase, not write code
+4. Wait for the planning worker to complete, then read its output via get_worker_output
+5. Use the research findings to build your task DAG via create_task:
+   - Create tasks with proper dependsOn relationships reflecting real code dependencies
+   - Set parallelism based on the planner\u2019s analysis of independent workstreams
+   - Each task should be scoped for ONE worker in ONE session
+   - The DAG is visible to the user in real-time \u2014 structure it clearly
+6. After building the DAG, mark the planning step complete and transition to Development
+
+If the Planning phase is NOT in your phase list, skip straight to building tasks from the mission prompt and your own codebase analysis.`;
     }
 
     // Build available workers section
@@ -695,7 +717,7 @@ These flags are enforced deterministically by the tools — violations are rejec
 - **allowParallelAgents**: When false, spawn workers sequentially (one at a time).
 - **allowSubAgents**: When false, delegate_to_subagent is disabled. Use spawn_worker instead.
 - **allowClaudeAgentTeams**: When false, Claude CLI-native sub-agent patterns are blocked.
-${phasesSection}
+${phasesSection}${planningPhaseSection}
 ${workersSection}
 ${projectSection}
 

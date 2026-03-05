@@ -52,7 +52,7 @@ function makeLane(id: string, name: string, branchRef: string, opts?: Partial<an
     stackDepth: 0,
     parentStatus: null,
     isEditProtected: false,
-    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0 },
+    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
     color: null,
     icon: null,
     tags: [],
@@ -528,11 +528,6 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       resolveIntervention: resolvedArg({ id: "mock" }),
       onEvent: noop,
     },
-    planner: {
-      planMission: resolvedArg({ plan: null }),
-      getRuns: resolved([]),
-      getAttempt: resolvedArg(null),
-    },
     orchestrator: {
       listRuns: resolved([]),
       getRunGraph: resolvedArg({ nodes: [], edges: [] }),
@@ -764,7 +759,24 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         },
         recentSessions: []
       }),
-      listSessionLogs: resolvedArg([])
+      listSessionLogs: resolvedArg([]),
+      updateIdentity: resolvedArg({
+        identity: { name: "CTO", version: 1, persona: "Mock CTO persona", modelPreferences: { provider: "claude", model: "sonnet" }, memoryPolicy: { autoCompact: true, compactionThreshold: 0.7, preCompactionFlush: true, temporalDecayHalfLifeDays: 30 }, updatedAt: now },
+        coreMemory: { version: 1, updatedAt: now, projectSummary: "Mock project summary", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] },
+        recentSessions: []
+      }),
+      listAgents: resolved([]),
+      saveAgent: resolvedArg({ id: "mock-agent", name: "Mock Agent", slug: "mock-agent", role: "engineer", reportsTo: null, capabilities: [], status: "idle", adapterType: "claude-local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, spentMonthlyCents: 0, createdAt: now, updatedAt: now, deletedAt: null }),
+      removeAgent: resolvedArg(undefined),
+      listAgentRevisions: resolvedArg([]),
+      rollbackAgentRevision: resolvedArg({ id: "mock-agent", name: "Mock Agent", slug: "mock-agent", role: "engineer", reportsTo: null, capabilities: [], status: "idle", adapterType: "claude-local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, spentMonthlyCents: 0, createdAt: now, updatedAt: now, deletedAt: null }),
+      ensureAgentSession: resolvedArg({ id: "mock-agent-session", laneId: "lane-main", provider: "claude", model: "sonnet", identityKey: "cto", capabilityMode: "full_mcp", status: "idle", createdAt: now, lastActivityAt: now }),
+      getBudgetSnapshot: resolvedArg({ computedAt: now, monthKey: "2026-03", companyBudgetMonthlyCents: 0, companySpentMonthlyCents: 0, companyExactSpentCents: 0, companyEstimatedSpentCents: 0, companyRemainingCents: null, workers: [] }),
+      triggerAgentWakeup: resolvedArg({ runId: "mock-run", status: "completed" }),
+      listAgentRuns: resolved([]),
+      getAgentCoreMemory: resolvedArg({ version: 1, updatedAt: now, projectSummary: "Mock worker memory", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] }),
+      updateAgentCoreMemory: resolvedArg({ version: 2, updatedAt: now, projectSummary: "Mock worker memory", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] }),
+      listAgentSessionLogs: resolvedArg([])
     },
     pty: {
       create: resolvedArg({ ptyId: "mock" }),
@@ -984,6 +996,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       save: resolvedArg({ effective: { providerMode: "guest" }, overrides: {} }),
       diffAgainstDisk: resolved({ changed: false }),
       confirmTrust: resolved({ trusted: true }),
+    },
+    zoom: {
+      getLevel: () => 0,
+      setLevel: (_level: number) => {},
+      getFactor: () => 1,
     },
   };
 }

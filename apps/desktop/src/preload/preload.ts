@@ -29,6 +29,25 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  AgentIdentity,
+  AgentCoreMemory,
+  AgentSessionLogEntry,
+  AgentConfigRevision,
+  AgentBudgetSnapshot,
+  WorkerAgentRun,
+  CtoListAgentsArgs,
+  CtoSaveAgentArgs,
+  CtoRemoveAgentArgs,
+  CtoListAgentRevisionsArgs,
+  CtoRollbackAgentRevisionArgs,
+  CtoEnsureAgentSessionArgs,
+  CtoGetBudgetSnapshotArgs,
+  CtoTriggerAgentWakeupArgs,
+  CtoTriggerAgentWakeupResult,
+  CtoListAgentRunsArgs,
+  CtoGetAgentCoreMemoryArgs,
+  CtoUpdateAgentCoreMemoryArgs,
+  CtoListAgentSessionLogsArgs,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   AutomationsEventPayload,
@@ -248,12 +267,6 @@ import type {
   TerminalProfilesSnapshot,
   TerminalSessionSummary,
   ResolveMissionInterventionArgs,
-  PlanMissionArgs,
-  PlanMissionResult,
-  ListPlannerRunsArgs,
-  GetPlannerAttemptArgs,
-  MissionPlannerAttempt,
-  MissionPlannerRun,
   PhaseProfile,
   SavePhaseProfileArgs,
   ListPhaseProfilesArgs,
@@ -476,12 +489,6 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.missionsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.missionsEvent, listener);
     }
-  },
-  planner: {
-    planMission: async (args: PlanMissionArgs): Promise<PlanMissionResult> => ipcRenderer.invoke(IPC.plannerPlanMission, args),
-    getRuns: async (args: ListPlannerRunsArgs = {}): Promise<MissionPlannerRun[]> => ipcRenderer.invoke(IPC.plannerGetRuns, args),
-    getAttempt: async (args: GetPlannerAttemptArgs): Promise<MissionPlannerAttempt | null> =>
-      ipcRenderer.invoke(IPC.plannerGetAttempt, args)
   },
   orchestrator: {
     listRuns: async (args: ListOrchestratorRunsArgs = {}): Promise<OrchestratorRun[]> =>
@@ -1051,6 +1058,32 @@ contextBridge.exposeInMainWorld("ade", {
     updateCoreMemory: async (args: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> =>
       ipcRenderer.invoke(IPC.ctoUpdateCoreMemory, args),
     listSessionLogs: async (args: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> =>
-      ipcRenderer.invoke(IPC.ctoListSessionLogs, args)
+      ipcRenderer.invoke(IPC.ctoListSessionLogs, args),
+    updateIdentity: async (args: { patch: Record<string, unknown> }): Promise<CtoSnapshot> =>
+      ipcRenderer.invoke(IPC.ctoUpdateIdentity, args),
+    listAgents: async (args: CtoListAgentsArgs = {}): Promise<AgentIdentity[]> =>
+      ipcRenderer.invoke(IPC.ctoListAgents, args),
+    saveAgent: async (args: CtoSaveAgentArgs): Promise<AgentIdentity> =>
+      ipcRenderer.invoke(IPC.ctoSaveAgent, args),
+    removeAgent: async (args: CtoRemoveAgentArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.ctoRemoveAgent, args),
+    listAgentRevisions: async (args: CtoListAgentRevisionsArgs): Promise<AgentConfigRevision[]> =>
+      ipcRenderer.invoke(IPC.ctoListAgentRevisions, args),
+    rollbackAgentRevision: async (args: CtoRollbackAgentRevisionArgs): Promise<AgentIdentity> =>
+      ipcRenderer.invoke(IPC.ctoRollbackAgentRevision, args),
+    ensureAgentSession: async (args: CtoEnsureAgentSessionArgs): Promise<AgentChatSession> =>
+      ipcRenderer.invoke(IPC.ctoEnsureAgentSession, args),
+    getBudgetSnapshot: async (args: CtoGetBudgetSnapshotArgs = {}): Promise<AgentBudgetSnapshot> =>
+      ipcRenderer.invoke(IPC.ctoGetBudgetSnapshot, args),
+    triggerAgentWakeup: async (args: CtoTriggerAgentWakeupArgs): Promise<CtoTriggerAgentWakeupResult> =>
+      ipcRenderer.invoke(IPC.ctoTriggerAgentWakeup, args),
+    listAgentRuns: async (args: CtoListAgentRunsArgs = {}): Promise<WorkerAgentRun[]> =>
+      ipcRenderer.invoke(IPC.ctoListAgentRuns, args),
+    getAgentCoreMemory: async (args: CtoGetAgentCoreMemoryArgs): Promise<AgentCoreMemory> =>
+      ipcRenderer.invoke(IPC.ctoGetAgentCoreMemory, args),
+    updateAgentCoreMemory: async (args: CtoUpdateAgentCoreMemoryArgs): Promise<AgentCoreMemory> =>
+      ipcRenderer.invoke(IPC.ctoUpdateAgentCoreMemory, args),
+    listAgentSessionLogs: async (args: CtoListAgentSessionLogsArgs): Promise<AgentSessionLogEntry[]> =>
+      ipcRenderer.invoke(IPC.ctoListAgentSessionLogs, args),
   }
 });

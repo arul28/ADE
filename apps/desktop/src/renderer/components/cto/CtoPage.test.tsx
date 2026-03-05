@@ -3,7 +3,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import React from "react";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import { CtoPage } from "./CtoPage";
-import type { CtoCoreMemory, CtoSnapshot } from "../../../shared/types";
+import type {
+  AgentBudgetSnapshot,
+  AgentConfigRevision,
+  AgentCoreMemory,
+  AgentIdentity,
+  AgentSessionLogEntry,
+  CtoCoreMemory,
+  CtoSnapshot,
+  WorkerAgentRun,
+} from "../../../shared/types";
 
 vi.mock("../chat/AgentChatPane", () => ({
   AgentChatPane: ({ laneId, lockSessionId }: { laneId: string | null; lockSessionId?: string | null }) => (
@@ -11,7 +20,6 @@ vi.mock("../chat/AgentChatPane", () => ({
   ),
 }));
 
-// Mutable store state for per-test control.
 let mockLanes: Array<{ id: string }> = [{ id: "lane-1" }];
 let mockSelectedLaneId: string | null = "lane-1";
 
@@ -68,12 +76,78 @@ const makeSession = () => ({
   lastActivityAt: "2026-03-05T00:00:00.000Z",
 });
 
+const makeWorkerAgent = (overrides?: Partial<AgentIdentity>): AgentIdentity => ({
+  id: "agent-1",
+  slug: "backend-dev",
+  name: "Backend Dev",
+  role: "backend" as any,
+  title: "Backend Developer",
+  reportsTo: null,
+  capabilities: ["code", "test"],
+  status: "idle",
+  adapterType: "claude-local" as any,
+  adapterConfig: {},
+  runtimeConfig: {},
+  budgetMonthlyCents: 5000,
+  spentMonthlyCents: 1200,
+  lastHeartbeatAt: undefined,
+  createdAt: "2026-03-05T00:00:00.000Z",
+  updatedAt: "2026-03-05T00:00:00.000Z",
+  deletedAt: null,
+  ...overrides,
+});
+
+const makeBudgetSnapshot = (): AgentBudgetSnapshot => ({
+  computedAt: "2026-03-05T00:00:00.000Z",
+  monthKey: "2026-03",
+  companyBudgetMonthlyCents: 50000,
+  companySpentMonthlyCents: 1200,
+  companyExactSpentCents: 1000,
+  companyEstimatedSpentCents: 200,
+  companyRemainingCents: 48800,
+  workers: [
+    {
+      agentId: "agent-1",
+      name: "Backend Dev",
+      budgetMonthlyCents: 5000,
+      spentMonthlyCents: 1200,
+      exactSpentCents: 1000,
+      estimatedSpentCents: 200,
+      remainingCents: 3800,
+      status: "idle" as const,
+    },
+  ],
+});
+
+const makeAgentCoreMemory = (): AgentCoreMemory => ({
+  version: 1,
+  updatedAt: "2026-03-05T00:00:00.000Z",
+  projectSummary: "Worker memory summary",
+  criticalConventions: ["lint before push"],
+  userPreferences: [],
+  activeFocus: [],
+  notes: [],
+});
+
 function buildCtoBridge() {
   return {
     getState: vi.fn(async () => makeSnapshot()),
     ensureSession: vi.fn(async () => makeSession()),
     updateCoreMemory: vi.fn(async ({ patch }: { patch: Partial<CtoCoreMemory> }) => makeSnapshot(patch)),
     listSessionLogs: vi.fn(async () => makeSnapshot().recentSessions),
+    updateIdentity: vi.fn(async () => makeSnapshot()),
+    listAgents: vi.fn(async () => [makeWorkerAgent()]),
+    saveAgent: vi.fn(async () => makeWorkerAgent()),
+    removeAgent: vi.fn(async () => {}),
+    listAgentRevisions: vi.fn(async () => [] as AgentConfigRevision[]),
+    rollbackAgentRevision: vi.fn(async () => makeWorkerAgent()),
+    ensureAgentSession: vi.fn(async () => makeSession()),
+    getBudgetSnapshot: vi.fn(async () => makeBudgetSnapshot()),
+    triggerAgentWakeup: vi.fn(async () => ({ runId: "run-1", status: "queued" as const })),
+    listAgentRuns: vi.fn(async () => [] as WorkerAgentRun[]),
+    getAgentCoreMemory: vi.fn(async () => makeAgentCoreMemory()),
+    updateAgentCoreMemory: vi.fn(async () => makeAgentCoreMemory()),
+    listAgentSessionLogs: vi.fn(async () => [] as AgentSessionLogEntry[]),
   };
 }
 
@@ -91,8 +165,7 @@ describe("CtoPage", () => {
   it("renders org chart, locks persistent CTO session, and shows capability badge", async () => {
     render(<CtoPage />);
 
-    expect(screen.getByText("Org Chart")).toBeTruthy();
-    expect(screen.getByText("Deferred To W2")).toBeTruthy();
+    expect(screen.getByText("ORG CHART")).toBeTruthy();
 
     await waitFor(() => {
       expect((window as any).ade.cto.ensureSession).toHaveBeenCalledWith({ laneId: "lane-1" });
@@ -103,7 +176,7 @@ describe("CtoPage", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId("cto-capability-badge").textContent).toContain("Full MCP");
+      expect(screen.getByTestId("cto-capability-badge").textContent).toContain("FULL MCP");
     });
   });
 
@@ -165,18 +238,6 @@ describe("CtoPage", () => {
     });
   });
 
-  it("shows recent session history when section is expanded", async () => {
-    render(<CtoPage />);
-
-    const toggle = await screen.findByText("Recent Sessions");
-    fireEvent.click(toggle);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("session-history-list")).toBeTruthy();
-      expect(screen.getByText("Reviewed auth module")).toBeTruthy();
-    });
-  });
-
   it("shows error when CTO bridge is unavailable", async () => {
     (window as any).ade = {};
 
@@ -230,6 +291,81 @@ describe("CtoPage", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("cto-capability-badge")).toBeTruthy();
+    });
+  });
+
+  // W2: Worker agents
+  it("loads and renders worker tree in sidebar", async () => {
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-tree")).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-row-agent-1")).toBeTruthy();
+    });
+
+    expect(screen.getByText("Backend Dev")).toBeTruthy();
+  });
+
+  it("calls listAgents and getBudgetSnapshot on mount", async () => {
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.listAgents).toHaveBeenCalledWith({ includeDeleted: false });
+      expect((window as any).ade.cto.getBudgetSnapshot).toHaveBeenCalledWith({});
+    });
+  });
+
+  it("displays budget summary", async () => {
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("budget-company-row")).toBeTruthy();
+    });
+  });
+
+  // W3: Heartbeat & activation
+  it("shows worker details panel when worker is selected", async () => {
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-row-agent-1")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("worker-row-agent-1"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-ops-panel")).toBeTruthy();
+    });
+  });
+
+  it("triggers Wake Now and shows status", async () => {
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-row-agent-1")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("worker-row-agent-1"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-wake-now-btn")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("worker-wake-now-btn"));
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.triggerAgentWakeup).toHaveBeenCalledWith({
+        agentId: "agent-1",
+        reason: "manual",
+        context: { source: "cto_ui" },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-wake-status")).toBeTruthy();
     });
   });
 });

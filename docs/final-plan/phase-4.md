@@ -68,6 +68,48 @@ W6 (Memory) ──→ W7 (Learning Packs)
 
 Each workstream includes its own renderer/UI changes and tests (no standalone workstreams for these).
 
+### End-to-End Flows (Workers + Linear Projects)
+
+Phase 4 should enable a "tech department" loop: one persistent agent per employee, each connected to one or more Linear projects, with the CTO coordinating and staying globally informed.
+
+- **Org + ownership setup** (W2 + W4):
+  - Create workers (employees) under the CTO.
+  - Connect workers to the Linear projects they own (default owner per project; optional label/priority routing).
+  - Optionally map each worker to a real Linear user for assignment + attribution.
+
+- **New issue intake → immediate delegation** (W3 + W4):
+  1. CTO heartbeat polls configured Linear projects for candidates in active states.
+  2. Issues are normalized + filtered (blocked rules, state rules, dedupe).
+  3. Routing picks a responsible worker (label routing → project default owner → CTO classification fallback).
+  4. CTO dispatches a mission to that worker, respecting budgets + concurrency limits.
+  5. Linear issue is assigned (optional), moved to `In Progress`, and gets/updates a single persistent workpad comment.
+
+- **Worker execution loop** (W2 + Phase 3 missions):
+  - Worker runs in a lane and can use any ADE tool surface required by the mission (terminal, browser, git, external MCP).
+  - Worker escalates to CTO (and the user) when blocked or when policy requires approval.
+
+- **Completion and backlog movement** (W4):
+  - Worker posts PR link + results; CTO reconciles Linear state and releases locks.
+  - Issues move through `In Review`/`Done` based on project policy and whether a human review is required.
+
+- **Proof of work** (W4 + W10):
+  - Each mission emits an artifact bundle (logs, screenshots, short videos when relevant).
+  - Artifact bundle is attached/linked to Linear (final comment + attachments) and kept under `.ade/` for audit.
+
+- **Human-only work (user works without agents)** (W6):
+  - ADE generates a "project change digest" (git commits + working tree deltas) and writes it into CTO memory.
+  - Before starting a mission, workers run a freshness check against the last observed project snapshot; if diverged, request/auto-generate a digest and ingest it.
+
+- **First-run CTO onboarding (OpenClaw-style)**:
+  - On first launch or incomplete CTO setup (`.ade/cto/identity.yaml` missing, no workers, or no `linearSync` policy), the CTO sends a startup welcome message: "I’m your CTO. Glad to join your team. If you want, I can scan the repo and stand up an initial department."
+  - If accepted, bootstrap sequence runs:
+    1. Project fingerprint pass (stack/manifest detection, lane layout, CI, changelog signals).
+    2. Context-pack ingestion (`.ade/context/PRD.ade.md`, `.ade/context/ARCHITECTURE.ade.md`, prior mission/context artifacts where available).
+    3. Memory pack creation: project summary + conventions + conventions-to-enforce + known hotspots + recommended worker routing defaults.
+    4. CTO-first default org suggestion (editable): suggested workers + per-worker default roles, adapters, and policies.
+    5. Default auto-dispatch policy presented as editable templates before activation.
+  - If skipped, ADE creates minimal `.ade/cto/` scaffold and keeps onboarding as a persistent in-chat task in the CTO tab (`needsSetup` state) until confirmed.
+
 ### Workstreams
 
 #### W1: CTO Agent Core
@@ -88,6 +130,7 @@ New **CTO** tab added to the main tab bar. Icon: `brain` (Lucide). The tab provi
   - CTO state stored in `.ade/cto/`; worker state in `.ade/agents/<name>/` (see W10 for full structure).
   - Core memory persists across sessions — agent reconstructs context from stored memory on session start.
   - Session history log tracks conversation summaries for long-term continuity.
+  - On partial or missing CTO identity, onboarding state machine drives a visible welcome/setup mode before active delegation starts.
 
 - **ADE capabilities via MCP tools**: CTO and all workers have access to the full ADE MCP tool set (same tools exposed by `apps/mcp-server`). They can create missions, query status, list lanes, check PR health, read files, search code, check conflicts, query usage metrics. External MCP tools (W8) also available if configured. Tool access governed by the same permission model as mission workers.
 
@@ -120,6 +163,7 @@ New **CTO** tab added to the main tab bar. Icon: `brain` (Lucide). The tab provi
 - CLI CTO sessions include ADE MCP config; unified CTO sessions expose fallback tool mode.
 - MCP `memory_update_core` tool listing and core-memory update behavior.
 - CtoPage: core memory view/edit/save/error, session history expand, error state (bridge unavailable), loading state, badge only after session established.
+- Onboarding bootstrap: startup detects missing setup, runs repo/context-pack scan on opt-in, and surfaces confirmable defaults without forcing mission dispatch.
 
 #### W2: Worker Agents & Org Chart
 
@@ -203,6 +247,19 @@ Configurable worker agents that sit under the CTO in an org hierarchy. Each work
 
 - **Renderer**: Org chart sidebar with live status indicators (idle/active/paused/running). Agent creation dialog. Config editor with revision history. Budget display per agent. **Also includes**: `ctoUpdateIdentity` IPC (deferred from W1) for updating CTO model preferences + persona from the config editor — this is the proper home for it since it belongs alongside the general agent config editing surface.
 
+**Implementation status (2026-03-05):**
+- All W2 services fully implemented and tested:
+  - `workerAgentService.ts`: Agent CRUD, org-tree hierarchy with cycle detection, `reportsTo` management, slug-based filesystem layout, core memory (file-backed), session logs (file-backed), status management, soft-delete with report unlinking.
+  - `workerRevisionService.ts`: Config versioning with before/after snapshots, changed-keys detection, rollback with redacted-secret protection.
+  - `workerBudgetService.ts`: Cost event recording (exact + estimated), per-worker and company-level budget enforcement, auto-pause on budget breach, monthly boundary handling, CLI telemetry reconciliation.
+  - `workerTaskSessionService.ts`: Deterministic task key derivation, session persistence keyed by `(agentId, adapterType, taskKey)`, targeted and bulk clear.
+  - `workerAdapterRuntimeService.ts`: Multi-adapter pattern (claude-local CLI spawn, codex-local CLI spawn, openclaw-webhook HTTP POST with env header, process adapter with unsafe command blocking).
+- DB tables added to kvDb.ts migration: `worker_agents`, `worker_agent_revisions`, `worker_agent_task_sessions`, `worker_agent_cost_events`, `worker_agent_runs`.
+- All W2 IPC handlers registered: `ctoListAgents`, `ctoSaveAgent`, `ctoRemoveAgent`, `ctoListAgentRevisions`, `ctoRollbackAgentRevision`, `ctoEnsureAgentSession`, `ctoGetBudgetSnapshot`, `ctoUpdateIdentity`.
+- Preload bridge and global.d.ts updated with all W2 methods.
+- Services instantiated in main.ts and wired into AppContext.
+- CtoPage redesigned with industrial shell theme: org chart sidebar (320px) with CTO card, worker tree with status dots and depth indentation, inline worker editor (hire/edit), budget summary, config revision history with rollback, worker core memory inspector and session logs.
+
 **Tests:**
 - Agent creation, `reportsTo` hierarchy, cycle detection (max 50 hops).
 - Chain-of-command traversal, org tree reconstruction from flat list.
@@ -211,6 +268,7 @@ Configurable worker agents that sit under the CTO in an org hierarchy. Each work
 - Config versioning: revision creation on config change, before/after snapshot accuracy, changed-keys detection, rollback, redacted-secret rollback prevention.
 - Budget auto-pause: cost event recording, monthly spend increment, auto-pause at budget ceiling, CTO notification on pause, monthly reset.
 - Task session persistence: session save on run completion, session resume on re-invocation, session keyed by `(agentId, adapterType, taskKey)`, session clear signal.
+- CtoPage: worker tree rendering, worker row click selection, Wake Now trigger, budget summary display, listAgents/getBudgetSnapshot called on mount.
 
 #### W3: Heartbeat & Activation System
 
@@ -255,6 +313,13 @@ A configurable activation system that determines when and how agents wake up.
   - **Stale adoption**: If a run crashes, another run can adopt the orphaned issue instead of it being stuck forever.
   - **Orphan reaping**: On app restart, detect runs that are "queued" or "running" but have no corresponding process. Mark them failed, release locks, promote deferred wakeups.
 
+**Implementation status (2026-03-05):**
+- `workerHeartbeatService.ts` (789 lines): Full heartbeat engine with timer pool, wakeup queue with deferred promotion, two-tier execution (cheap check → LLM escalation), active hours gate, HEARTBEAT_OK suppression, orphan reaping, issue execution locking with atomic checkout and stale adoption, coalescing.
+- All W3 IPC handlers registered: `ctoTriggerAgentWakeup`, `ctoListAgentRuns`, `ctoGetAgentCoreMemory`, `ctoUpdateAgentCoreMemory`, `ctoListAgentSessionLogs`, `ctoListAgentTaskSessions`, `ctoClearAgentTaskSession`.
+- Preload bridge and global.d.ts updated with all W3 methods.
+- CtoPage: "Wake Now" button on selected worker, heartbeat run history panel, wake status/error feedback.
+- Service instantiated in main.ts with full dependency injection (workerAgentService, workerAdapterRuntimeService, workerTaskSessionService, workerBudgetService).
+
 **Tests:**
 - Timer-based wakeup fires at `intervalSec`.
 - Active hours enforcement (wakeup rejected outside window).
@@ -270,15 +335,26 @@ A configurable activation system that determines when and how agents wake up.
 
 > Source: Polling loop from [Symphony §8 Polling, Scheduling, and Reconciliation](https://github.com/openai/symphony/blob/main/SPEC.md). Candidate selection, concurrency, reconciliation, and retry from Symphony §8.2-8.5. Workpad comment from Symphony §10. Atomic checkout from [Paperclip §8 Concurrency Model](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC-implementation.md). WORKFLOW.md → mission templates concept from Symphony §5.
 
-The CTO agent watches a Linear project board and autonomously dispatches missions from issues. Results flow back to Linear as state updates, comments, and proof of work.
+The CTO agent watches one or more Linear project boards and autonomously dispatches missions from issues. Results flow back to Linear as state updates, comments, and proof of work.
+
+- **Flow policy UI (CTO tab + Automations)**:
+  - Add a policy composer UI for building intake, routing, execution, escalation, and closeout logic without direct YAML editing.
+  - Intake controls: polling-only, trigger-aware, or manual queue-only modes.
+  - Routing controls: ordered rule chains by label/project/priority/owner plus per-project fallback.
+  - Execution controls: autonomy level, allowed tools, max parallelism, and active hours.
+  - Escalation controls: confidence gates, manual-approval checkpoints, retry ladders, and escalation targets.
+  - Closeout controls: workpad format, terminal summary fields, state mapping, artifact inclusion, and proof-of-work requirements.
+  - Add route simulation mode: paste a sample issue and show predicted worker, template, assignment, and target status updates.
+  - Add policy diff/rollback UI with enable/disable toggles and conflict warnings.
 
 - **Inbound: Linear → ADE** (Symphony polling + Paperclip checkout):
-  1. **CTO heartbeat fires** → cheap check: query Linear for issues in active states (`Todo`, `In Progress`).
+  1. **CTO heartbeat fires** → cheap check: query Linear for issues in active states (`Todo`, `In Progress`) across configured projects.
   2. **Candidate filtering**: Sort by priority (ascending) → `created_at` (oldest first) → identifier. Skip issues blocked by non-terminal blockers (Symphony §8.2 blocker rule).
-  3. **Classification**: CTO uses its memory + project knowledge to classify each issue: bug fix? feature? refactor? Which worker should handle it?
-  4. **Concurrency check**: Respect per-state concurrency limits (Symphony §8.3): `max_concurrent_by_state: { todo: 5, in_progress: 3, bug: 2 }`.
-  5. **Auto-dispatch or escalate**: Based on auto-dispatch policy, either create a mission automatically or surface the issue to the user for approval.
-  6. **Atomic checkout**: When dispatching, atomically lock the issue in ADE (Paperclip-style). Move Linear issue to `In Progress`.
+  3. **Routing**: Pick a responsible worker using configurable W4 rules: label routing → per-project default owner → CTO classification fallback.
+  4. **Classification**: CTO uses its memory + project knowledge to pick a mission template and validate the routing decision (bug fix? feature? refactor?).
+  5. **Concurrency check**: Respect per-state concurrency limits (Symphony §8.3): `max_concurrent_by_state: { todo: 5, in_progress: 3, bug: 2 }`.
+  6. **Auto-dispatch or escalate**: Based on auto-dispatch policy, either create a mission automatically or surface the issue to the user for approval.
+  7. **Atomic checkout + assignment**: When dispatching, atomically lock the issue in ADE (Paperclip-style). Optionally assign the issue in Linear according to user-configured policy. Move Linear issue to `In Progress`.
 
 - **Outbound: ADE → Linear** (Symphony workpad pattern):
   - When a mission starts: move Linear issue to `In Progress`, post a "Workpad" comment with planned approach.
@@ -286,6 +362,14 @@ The CTO agent watches a Linear project board and autonomously dispatches mission
   - When PR is created: post PR link to Linear issue, add `ade` label.
   - When mission completes: move issue to `Done` (or `In Review` if PR needs human review), post final summary with diff stats, test results, and proof of work.
   - When mission fails: post failure context to Linear, move to `Blocked` or keep in `In Progress` for retry.
+
+- **Proof-of-work artifacts**:
+  - On mission completion (success or failure), write a small artifact bundle under `.ade/artifacts/<missionId>/`:
+    - logs: `build.log`, `tests.log`, `mission-summary.md`
+    - evidence: `before.png`, `after.png`, `repro.mp4` (when relevant)
+  - Post artifacts back to Linear:
+    - Always: link or inline summary in the final comment (paths, hashes, how to reproduce).
+    - When configured: upload files and create Linear attachments (screenshots/videos), not just links.
 
 - **Reconciliation** (Symphony §8.5):
   - On every CTO heartbeat, validate running missions against current Linear state:
@@ -300,13 +384,23 @@ The CTO agent watches a Linear project board and autonomously dispatches mission
   # .ade/local.yaml
   linearSync:
     enabled: true
-    projectSlug: my-project
     pollingIntervalSec: 300        # CTO heartbeat interval for Linear checks
+    projects:
+      - slug: my-project
+        defaultWorker: backend-dev
+      - slug: mobile-app
+        defaultWorker: mobile-dev
+    routing:
+      byLabel:
+        ios: mobile-dev
+        android: mobile-dev
+        backend: backend-dev
+    assignment:
+      setAssigneeOnDispatch: true  # If policy allows assignment and identity is configured, set Linear assignee
     autoDispatch:
       rules:
         - match: { labels: ["bug"], priority: ["urgent", "high"] }
           action: auto              # Create mission immediately
-          worker: backend-dev       # Route to specific worker (optional)
           template: bug-fix         # Mission template to use
         - match: { labels: ["feature"] }
           action: escalate          # Surface to user for approval
@@ -356,15 +450,17 @@ The CTO agent watches a Linear project board and autonomously dispatches mission
 
 - **Linear client**: Built-in lightweight GraphQL client for the core polling/update loop (simpler, no MCP overhead). External MCP Linear tools (W8) available for ad-hoc agent queries.
 
-- **Configuration**: Linear API key and project slug stored in `.ade/local.secret.yaml` (gitignored). Poll interval and dispatch rules in `.ade/local.yaml` (git-tracked, no secrets).
+  - **Configuration**: Linear API key stored in `.ade/local.secret.yaml` (gitignored). Poll interval, routing policy, and dispatch rules in `.ade/local.yaml` (git-tracked, no secrets).
+- **Configuration**: Linear API key stored in `.ade/local.secret.yaml` (gitignored). Poll interval and dispatch rules in `.ade/local.yaml` (git-tracked, no secrets).
 
 **Tests:**
-- Candidate issue polling, priority sorting (ascending), blocked-by filtering (skip Todo with non-terminal blockers).
-- Auto-dispatch with template matching, escalation for unmatched issues, concurrency limit enforcement (global and per-state).
+- Candidate issue polling across multiple projects, priority sorting (ascending), blocked-by filtering (skip Todo with non-terminal blockers), routing by label/defaultWorker with CTO fallback.
+- Auto-dispatch with template matching, escalation for unmatched issues, concurrency limit enforcement (global and per-state), optional assignee setting on dispatch.
 - Linear outbound: state update on mission start/complete/fail, workpad comment creation and update, PR link posting, label addition.
 - Reconciliation: external close → mission cancel, external reassign → worker release, stall detection → restart.
 - Mission template: loading from `.ade/templates/`, variable rendering with issue context, template selection by CTO classification.
 - Retry: exponential backoff on failure, short continuation retry on normal completion (consistent with Symphony §8.4).
+- Flow composer UI: policy validation and simulation, versioned history, and readable diff before activation.
 
 #### W5: Night Shift Mode (in Automations)
 
@@ -594,6 +690,29 @@ interface EpisodicMemory {
 
 Stored as Tier 2 initially, decay to Tier 3 over time based on access patterns.
 
+##### Human Work Ingestion (User-Only Changes)
+
+Users frequently change code/config/Linear state outside agent runs. Without ingestion, workers and the CTO will make decisions on stale assumptions. Phase 4 should explicitly capture and distribute "what changed" when the human user works solo.
+
+- **Project snapshot tracking**:
+  - Track `lastSeenHeadSha` and a lightweight working-tree fingerprint per agent and per project.
+  - Use this to gate dispatch and detect when a worker's understanding is stale.
+
+- **Change digest triggers**:
+  - App startup (first run after a repo change).
+  - Before dispatching a mission when HEAD changed since the last digest.
+  - Explicit user action ("Sync knowledge").
+  - On PR merge / branch switch (best-effort, derived from git + lane events).
+
+- **Digest contents** (noise-controlled; no raw diffs):
+  - Commit range summary (`git log --oneline`), diffstat (`git diff --stat`), changed file list.
+  - Semantic clustering of changed files (e.g., auth, billing, mobile) for routing to the right worker.
+  - Optional issue linkage heuristics (commit message mentions `ABC-123`, branch naming, PR title).
+
+- **Write + distribution policy**:
+  - Write digest as a Tier 2 memory entry (category: `project-change-digest`) owned by the CTO.
+  - Optionally notify relevant workers (project owner + anyone whose path/label routing matches the change cluster) so their next run starts with fresh context.
+
 ##### Procedural Memory
 
 ```typescript
@@ -626,6 +745,7 @@ Extracted from episodic memories when a pattern is observed multiple times. Enco
 - Composite scoring: recency decay with 30-day half-life, importance weighting, access boost capping.
 - Memory tier promotion/demotion: Tier 2 → Tier 3 decay, Tier 2 → Tier 1 pinning.
 - Candidate sweep: auto-promote at confidence threshold, archive stale candidates.
+- Human work ingestion: snapshot divergence triggers digest creation, digest stored as Tier 2 memory, relevant workers notified, digests are noise-controlled (no raw diffs).
 
 #### W7: Learning Packs (Auto-Curated Project Knowledge)
 
@@ -796,6 +916,7 @@ Consolidates the project-level `.ade/` directory structure, git-tracking policy,
   ├── ade.db-wal                 # WAL file (gitignored)
   ├── mcp.sock                   # Runtime socket (gitignored)
   ├── embeddings.db              # sqlite-vec embeddings cache (gitignored, regenerated)
+  ├── artifacts/                 # Proof-of-work artifacts (screenshots/videos/logs) (gitignored)
   ├── transcripts/               # Machine-specific logs (gitignored)
   ├── cache/                     # Machine-specific cache (gitignored)
   ├── worktrees/                 # Machine-specific lane checkouts (gitignored)
@@ -804,7 +925,7 @@ Consolidates the project-level `.ade/` directory structure, git-tracking policy,
 
 - **Git-tracking policy**:
   - **Tracked** (committable): `cto/`, `agents/`, `templates/`, `context/`, `memory/`, `history/`, `local.yaml` — tiny config files for version tracking.
-  - **Gitignored** (machine-specific): `local.secret.yaml`, `ade.db*`, `mcp.sock`, `embeddings.db`, `transcripts/`, `cache/`, `worktrees/`, `secrets/`.
+  - **Gitignored** (machine-specific): `local.secret.yaml`, `ade.db*`, `mcp.sock`, `embeddings.db`, `artifacts/`, `transcripts/`, `cache/`, `worktrees/`, `secrets/`.
 
 - **Configuration split**:
   - `local.yaml` (tracked): Lane templates, phase profiles, feature flags, Linear sync config (project slug, dispatch rules, concurrency limits). No secrets.
@@ -829,11 +950,15 @@ Consolidates the project-level `.ade/` directory structure, git-tracking policy,
 - CTO tab provides persistent project-aware agent interface with three-tier memory model and org chart sidebar.
 - CTO agent has access to all ADE MCP tools and external MCP tools.
 - Worker agents can be created, configured, and managed under the CTO in an org hierarchy.
+- First-run CTO onboarding exists for empty projects: detects missing setup and supports opt-in repo/context-pack bootstrap into core memory.
 - Each worker has its own identity, memory tiers, adapter config, heartbeat policy, and budget.
 - Heartbeat system activates agents on schedule or demand, with coalescing, deferred promotion, and orphan reaping.
 - Bidirectional Linear sync: CTO polls Linear for issues, auto-dispatches missions via templates, and posts results back (state updates, workpad comments, PR links).
 - Reconciliation validates running missions against Linear state on every heartbeat.
 - Auto-dispatch policies are user-configurable per label/priority with escalation for complex work.
+- Linear sync supports multiple projects with per-project default owners (worker routing), plus optional assignee setting for attribution.
+- Mission runs emit a proof-of-work artifact bundle and link/attach it back to Linear on completion (logs + screenshots/videos when relevant).
+- Human-only work ingestion creates change digests when the repo diverges outside agent runs and feeds them into CTO/worker memory before the next dispatch.
 - Per-agent monthly budgets with auto-pause enforcement and CTO notification.
 - Agent config versioning with rollback support.
 - Multi-adapter pattern supports claude-local, codex-local, openclaw-webhook, and process backends.

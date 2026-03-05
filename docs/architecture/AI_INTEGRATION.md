@@ -1682,7 +1682,10 @@ interface LearningEntry {
 | Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
 | Learning packs | Planned | Phase 4 -- auto-accumulating project knowledge from agent interactions, failures, and PR review patterns |
 | Memory architecture upgrade (sqlite-vec, hybrid search, composite scoring) | Planned | Phase 4 -- three-tier memory with vector search, pre-compaction flush, consolidation |
-| CTO Agent | Planned | Phase 4 -- persistent project-aware agent, mission/lane orchestration, MCP entry point, intent classification, autonomous project management |
+| CTO Agent — core identity, persistent chat, core memory (W1) | Complete | Phase 4 -- `ctoStateService.ts`, dual-canonical persistence (DB + file), session reconstruction, CtoPage with chat |
+| Worker Agents — org chart, multi-adapter, config versioning, budget (W2) | Complete | Phase 4 -- `workerAgentService.ts`, `workerRevisionService.ts`, `workerBudgetService.ts`, `workerTaskSessionService.ts`, `workerAdapterRuntimeService.ts` |
+| Heartbeat & Activation — timer pool, coalescing, orphan reaping (W3) | Complete | Phase 4 -- `workerHeartbeatService.ts` (789 lines), two-tier execution, deferred promotion, issue locking |
+| Bidirectional Linear Sync (W4) | In Progress | Phase 4 -- depends on W2+W3 (now complete) |
 | External MCP consumption | Planned | Phase 4 -- agents connect to external MCP servers for extended capabilities |
 | `.ade/` portable state | Planned | Phase 4 -- git-based cross-machine state sync, embedding regeneration on clone |
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |

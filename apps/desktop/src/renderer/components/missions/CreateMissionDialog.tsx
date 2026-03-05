@@ -44,7 +44,6 @@ export type CreateDraft = {
   prompt: string;
   laneId: string;
   priority: import("../../../shared/types").MissionPriority;
-  allowPlanningQuestions: boolean;
   prStrategy: PrStrategy;
   modelConfig: MissionModelConfig;
   phaseProfileId: string | null;
@@ -127,7 +126,6 @@ export function buildCreateMissionDraft(
     prompt: "",
     laneId: "",
     priority: "normal",
-    allowPlanningQuestions: true,
     prStrategy: { kind: "integration", targetBranch: "main", draft: true },
     modelConfig: buildDefaultModelConfig(defaults, builtInProfiles),
     phaseProfileId: null,
@@ -435,7 +433,6 @@ function CreateMissionDialogInner({
         prompt: draft.prompt.trim(),
         laneId: resolvedLaneId || undefined,
         priority: draft.priority,
-        allowPlanningQuestions: draft.allowPlanningQuestions,
         teamRuntime: draft.teamRuntime,
         executionPolicy: {
           prStrategy: draft.prStrategy,
@@ -1027,15 +1024,6 @@ function CreateMissionDialogInner({
                   ) : undefined}
                   billingContext={billingContext}
                 />
-
-                <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                  <input
-                    type="checkbox"
-                    checked={draft.allowPlanningQuestions}
-                    onChange={(e) => setDraft((p) => ({ ...p, allowPlanningQuestions: e.target.checked }))}
-                  />
-                  ALLOW PLANNING CLARIFICATION QUESTIONS
-                </label>
 
                 <div className="space-y-1.5">
                   <span style={dlgLabelStyle}>AGENT RUNTIME CAPABILITIES</span>

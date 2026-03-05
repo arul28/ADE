@@ -497,18 +497,6 @@ export type WorkerResultReport = {
   reportedAt: string;
 };
 
-/** Request payload for delegating a subtask to a child agent under an existing worker. */
-export type SubAgentDelegationRequest = {
-  parentWorkerId: string;
-  name: string;
-  prompt: string;
-  provider?: "claude" | "codex";
-  role?: string;
-};
-
-/** Maps phase card validation gate tiers to coordinator behavior. */
-export type ValidationTierBehavior = "none" | "self-check" | "dedicated";
-
 export type MissionStateProgress = {
   currentPhase: string;
   completedSteps: number;
@@ -1006,7 +994,6 @@ export type StartMissionRunWithAIArgs = {
 };
 
 export type StartMissionRunWithAIResult = {
-  blockedByPlanReview: boolean;
   started: { run: OrchestratorRun; steps: OrchestratorStep[] } | null;
   mission: MissionDetail | null;
 };

@@ -803,29 +803,6 @@ export function createAiIntegrationService(args: {
       });
     },
 
-    async planMission(args: {
-      cwd: string;
-      prompt: string;
-      timeoutMs?: number;
-      model?: string;
-      provider?: AgentProvider;
-      jsonSchema?: unknown;
-      permissionMode?: ExecutorOpts["permissions"]["mode"];
-    }): Promise<ExecuteAiTaskResult> {
-      return await executeTask({
-        feature: "mission_planning",
-        taskType: "mission_planning",
-        prompt: args.prompt,
-        cwd: args.cwd,
-        provider: args.provider,
-        timeoutMs: args.timeoutMs,
-        model: args.model,
-        jsonSchema: args.jsonSchema,
-        permissionMode: args.permissionMode ?? "read-only",
-        oneShot: true
-      });
-    },
-
     async generateInitialContext(args: {
       cwd: string;
       prompt: string;

@@ -10,6 +10,8 @@ export type LaneStatus = {
   behind: number;
   /** Commits the remote tracking branch is ahead of local (0 = in sync, -1 = no upstream) */
   remoteBehind: number;
+  /** true when the worktree is stuck in an interrupted rebase (rebase-merge / rebase-apply dir exists) */
+  rebaseInProgress: boolean;
 };
 
 export type LaneSummary = {

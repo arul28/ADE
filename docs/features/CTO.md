@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-05
 >
-> **Status: Planned** — Phase 4 establishes infrastructure and basic interface. Detailed implementation is deferred.
+> **Status: W1-W3 Complete** — CTO core identity, worker agents org chart, heartbeat/activation system, and full CtoPage UI shipped. W4 (Bidirectional Linear Sync) is next.
 
 ---
 

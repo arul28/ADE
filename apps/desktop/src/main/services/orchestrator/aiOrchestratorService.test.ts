@@ -196,7 +196,6 @@ function createStagnationRecoveryAiIntegrationService() {
 
 function createMockAiIntegrationService(overrides: {
   executeTask?: (...args: any[]) => Promise<any>;
-  planMission?: (...args: any[]) => Promise<any>;
 } = {}) {
   return {
     getAvailability: () => ({ claude: true, codex: true }),
@@ -208,16 +207,6 @@ function createMockAiIntegrationService(overrides: {
       const prompt = String(request?.prompt ?? "");
       const structuredOutput = buildDefaultDecisionStructuredOutput(prompt);
       return createAiTaskResult(structuredOutput);
-    }),
-    planMission: overrides.planMission ?? vi.fn().mockResolvedValue({
-      text: VALID_PLANNER_PLAN,
-      structuredOutput: null,
-      provider: "claude",
-      model: "sonnet",
-      sessionId: null,
-      inputTokens: 200,
-      outputTokens: 100,
-      durationMs: 2000
     }),
     listModels: vi.fn().mockResolvedValue([])
   } as any;
@@ -2596,355 +2585,6 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("planWithAI throws MissionPlanningError when aiIntegrationService is not available", async () => {
-    const fixture = await createFixture({ aiIntegrationService: null });
-    try {
-      const mission = fixture.missionService.create({
-        prompt: "Test planning without AI.",
-        laneId: fixture.laneId
-      });
-      // No aiIntegrationService → should throw MissionPlanningError
-      await expect(
-        fixture.aiOrchestratorService.planWithAI({
-          missionId: mission.id,
-          provider: "claude"
-        })
-      ).rejects.toThrow("Mission planning failed");
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("planWithAI replaces mission steps when AI planning succeeds", async () => {
-    // Build a mock that returns a valid planner plan JSON
-    const mockPlanJson = JSON.stringify({
-      schemaVersion: "1.0",
-      missionSummary: {
-        title: "AI-planned mission",
-        objective: "Test objective",
-        domain: "backend",
-        complexity: "low",
-        strategy: "sequential",
-        parallelismCap: 1
-      },
-      assumptions: [],
-      risks: [],
-      steps: [
-        {
-          stepId: "ai-step-1",
-          name: "AI Step One",
-          description: "First AI step.",
-          taskType: "code",
-          executorHint: "unified",
-          preferredScope: "lane",
-          requiresContextProfiles: ["deterministic"],
-          dependencies: [],
-          artifactHints: [],
-          claimPolicy: { lanes: ["backend"] },
-          maxAttempts: 2,
-          retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
-          outputContract: { expectedSignals: [], completionCriteria: "step_done" }
-        },
-        {
-          stepId: "ai-step-2",
-          name: "AI Step Two",
-          description: "Second AI step.",
-          taskType: "test",
-          executorHint: "unified",
-          preferredScope: "lane",
-          requiresContextProfiles: ["deterministic"],
-          dependencies: ["ai-step-1"],
-          artifactHints: [],
-          claimPolicy: { lanes: ["backend"] },
-          maxAttempts: 2,
-          retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
-          outputContract: { expectedSignals: [], completionCriteria: "tests_pass" }
-        }
-      ],
-      handoffPolicy: { externalConflictDefault: "intervention" }
-    });
-
-    const mockAi = createMockAiIntegrationService({
-      planMission: vi.fn().mockResolvedValue({
-        text: mockPlanJson,
-        structuredOutput: JSON.parse(mockPlanJson),
-        provider: "claude",
-        model: "sonnet",
-        sessionId: null,
-        inputTokens: 200,
-        outputTokens: 300,
-        durationMs: 3000
-      })
-    });
-
-    const fixture = await createFixture({ aiIntegrationService: mockAi });
-    try {
-      const mission = fixture.missionService.create({
-        prompt: "Implement a backend feature.",
-        laneId: fixture.laneId
-      });
-      const originalStepCount = mission.steps.length;
-      expect(originalStepCount).toBeGreaterThan(0);
-
-      await fixture.aiOrchestratorService.planWithAI({
-        missionId: mission.id,
-        provider: "claude"
-      });
-
-      const refreshed = fixture.missionService.get(mission.id);
-      expect(refreshed).toBeTruthy();
-      // AI plan produced 2 steps
-      expect(refreshed!.steps.length).toBe(2);
-      expect(refreshed!.steps[0].title).toBe("AI Step One");
-      expect(refreshed!.steps[1].title).toBe("AI Step Two");
-
-      // Verify metadata was stored
-      const metaRow = fixture.db.get<{ metadata_json: string | null }>(
-        `select metadata_json from missions where id = ?`,
-        [mission.id]
-      );
-      expect(metaRow?.metadata_json).toBeTruthy();
-      const meta = JSON.parse(metaRow!.metadata_json!);
-      expect(meta.plannerPlan).toBeTruthy();
-      expect(meta.plannerPlan.stepCount).toBe(2);
-      expect(meta.planner).toBeTruthy();
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("planWithAI uses a spawned planner agent session when lane + chat services are available", async () => {
-    const plannerResponse = JSON.stringify({
-      schemaVersion: "1.0",
-      missionSummary: {
-        title: "Planner agent mission",
-        objective: "Ensure planner runs as a visible agent thread",
-        domain: "backend",
-        complexity: "low",
-        strategy: "sequential",
-        parallelismCap: 1
-      },
-      assumptions: [],
-      risks: [],
-      steps: [
-        {
-          stepId: "planner-agent-step-1",
-          name: "Planner agent step",
-          description: "Implement planner-agent integration.",
-          taskType: "code",
-          executorHint: "either",
-          preferredScope: "lane",
-          requiresContextProfiles: ["deterministic"],
-          dependencies: [],
-          artifactHints: [],
-          claimPolicy: { lanes: ["backend"] },
-          maxAttempts: 2,
-          retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
-          outputContract: { expectedSignals: ["code_written"], completionCriteria: "code_written" }
-        }
-      ],
-      handoffPolicy: { externalConflictDefault: "intervention" }
-    });
-
-    const mockAi = createMockAiIntegrationService();
-    const plannerSessionId = "planner-session-1";
-    let aiOrchestratorRef: ReturnType<typeof createAiOrchestratorService> | null = null;
-
-    const agentChatService = createMockAgentChatService({
-      createSession: vi.fn().mockResolvedValue({
-        id: plannerSessionId,
-        laneId: "lane-1",
-        provider: "claude",
-        model: "opus",
-        reasoningEffort: "high",
-        status: "idle",
-        createdAt: "2026-02-20T00:00:00.000Z",
-        lastActivityAt: "2026-02-20T00:00:00.000Z"
-      }),
-      sendMessage: vi.fn().mockImplementation(async ({ sessionId }: { sessionId: string }) => {
-        const orchestrator = aiOrchestratorRef;
-        if (!orchestrator) return;
-        orchestrator.onAgentChatEvent({
-          sessionId,
-          timestamp: "2026-02-20T00:00:01.000Z",
-          event: { type: "status", turnStatus: "started", turnId: "planner-turn-1" }
-        });
-        orchestrator.onAgentChatEvent({
-          sessionId,
-          timestamp: "2026-02-20T00:00:02.000Z",
-          event: { type: "text", text: plannerResponse, turnId: "planner-turn-1" }
-        });
-        orchestrator.onAgentChatEvent({
-          sessionId,
-          timestamp: "2026-02-20T00:00:03.000Z",
-          event: { type: "done", turnId: "planner-turn-1", status: "completed" }
-        });
-      }),
-      listSessions: vi.fn().mockResolvedValue([
-        {
-          sessionId: plannerSessionId,
-          laneId: "lane-1",
-          provider: "claude",
-          model: "opus",
-          reasoningEffort: "high",
-          status: "idle",
-          startedAt: "2026-02-20T00:00:00.000Z",
-          endedAt: null,
-          lastActivityAt: "2026-02-20T00:00:03.000Z",
-          lastOutputPreview: plannerResponse.slice(0, 120),
-          summary: "Planner output ready"
-        }
-      ])
-    });
-
-    const fixture = await createFixture({
-      aiIntegrationService: mockAi,
-      laneService: {} as any,
-      agentChatService
-    });
-    aiOrchestratorRef = fixture.aiOrchestratorService;
-
-    try {
-      const mission = fixture.missionService.create({
-        prompt: "Run planner through an agent session.",
-        laneId: fixture.laneId
-      });
-
-      await fixture.aiOrchestratorService.planWithAI({
-        missionId: mission.id,
-        provider: "claude",
-        model: "opus"
-      });
-
-      expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
-      expect(agentChatService.sendMessage).toHaveBeenCalledTimes(1);
-      expect(mockAi.planMission).not.toHaveBeenCalled();
-
-      const plannerThreadId = `planner:${mission.id}`;
-      const threads = fixture.aiOrchestratorService.listChatThreads({ missionId: mission.id, includeClosed: true });
-      const plannerThread = threads.find((thread) => thread.id === plannerThreadId);
-      expect(plannerThread?.threadType).toBe("worker");
-      expect(plannerThread?.sessionId).toBe(plannerSessionId);
-      expect(plannerThread?.title).toBe("Planner Agent");
-
-      const plannerMessages = fixture.aiOrchestratorService.getThreadMessages({
-        missionId: mission.id,
-        threadId: plannerThreadId,
-        limit: 200
-      });
-      expect(plannerMessages.some((entry) => entry.content.includes("Planner online"))).toBe(true);
-      expect(plannerMessages.some((entry) => entry.content.includes("\"schemaVersion\""))).toBe(true);
-
-      const refreshed = fixture.missionService.get(mission.id);
-      expect(refreshed?.steps.length).toBe(1);
-      expect(refreshed?.steps[0]?.title).toBe("Planner agent step");
-    } finally {
-      aiOrchestratorRef = null;
-      fixture.dispose();
-    }
-  });
-
-  it("startMissionRun goes to in_progress regardless of planner config in AI-first flow", async () => {
-    const mockAi = createMockAiIntegrationService({
-      planMission: vi.fn().mockResolvedValue({
-        text: "planner output was malformed",
-        structuredOutput: null,
-        provider: "claude",
-        model: "sonnet",
-        sessionId: null,
-        inputTokens: 120,
-        outputTokens: 80,
-        durationMs: 900
-      })
-    });
-
-    const fixture = await createFixture({ aiIntegrationService: mockAi });
-    try {
-      const mission = fixture.missionService.create({
-        prompt: "Add endpoint, tests, docs, and final review.",
-        laneId: fixture.laneId
-      });
-
-      // In the AI-first flow, startMissionRun always succeeds and goes to in_progress.
-      // The coordinator agent handles planning internally.
-      const launch = await fixture.aiOrchestratorService.startMissionRun({
-        missionId: mission.id,
-        plannerProvider: "claude",
-        runMode: "manual",
-        defaultExecutorKind: "manual"
-      });
-      expect(launch.started).toBeTruthy();
-      const refreshed = fixture.missionService.get(mission.id);
-      expect(refreshed?.status).toBe("in_progress");
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("planWithAI throws when AI returns generic plan labels", async () => {
-    const genericPlan = {
-      schemaVersion: "1.0",
-      missionSummary: {
-        title: "Generic plan",
-        objective: "Should be rejected by planner validation",
-        domain: "backend",
-        complexity: "medium",
-        strategy: "parallel-lite",
-        parallelismCap: 2
-      },
-      assumptions: [],
-      risks: [],
-      steps: [
-        {
-          stepId: "step-1",
-          name: "Step 1",
-          description: "Execute mission work for this step.",
-          taskType: "code",
-          executorHint: "either",
-          preferredScope: "lane",
-          requiresContextProfiles: ["deterministic"],
-          dependencies: [],
-          artifactHints: [],
-          claimPolicy: { lanes: ["backend"] },
-          maxAttempts: 2,
-          retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
-          outputContract: { expectedSignals: [], completionCriteria: "done" }
-        }
-      ],
-      handoffPolicy: { externalConflictDefault: "intervention" }
-    };
-
-    const mockAi = createMockAiIntegrationService({
-      planMission: vi.fn().mockResolvedValue({
-        text: JSON.stringify(genericPlan),
-        structuredOutput: genericPlan,
-        provider: "claude",
-        model: "sonnet",
-        sessionId: null,
-        inputTokens: 150,
-        outputTokens: 120,
-        durationMs: 1200
-      })
-    });
-
-    const fixture = await createFixture({ aiIntegrationService: mockAi });
-    try {
-      const mission = fixture.missionService.create({
-        prompt: "Add health endpoint, tests, docs, and final review.",
-        laneId: fixture.laneId
-      });
-
-      await expect(
-        fixture.aiOrchestratorService.planWithAI({
-          missionId: mission.id,
-          provider: "claude"
-        })
-      ).rejects.toThrow("Mission planning failed");
-    } finally {
-      fixture.dispose();
-    }
-  });
-
   it("evaluateWorkerPlan approves when AI returns approved=true", async () => {
     const mockAi = createMockAiIntegrationService({
       executeTask: vi.fn().mockResolvedValue({
@@ -3164,7 +2804,6 @@ describe("aiOrchestratorService", () => {
         plannerProvider: "claude"
       });
 
-      expect(result.blockedByPlanReview).toBe(false);
       expect(result.started).toBeTruthy();
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("in_progress");
@@ -3345,7 +2984,6 @@ describe("aiOrchestratorService", () => {
 	        defaultExecutorKind: "manual",
 	      });
       // In the AI-first flow, the run starts with empty steps and the coordinator manages lanes
-      expect(started.blockedByPlanReview).toBe(false);
       expect(started.started).toBeTruthy();
 
       const runs = fixture.orchestratorService.listRuns({ missionId: mission.id });
@@ -3468,7 +3106,6 @@ describe("aiOrchestratorService", () => {
 	        defaultExecutorKind: "manual",
 	      });
       // In the AI-first flow, the run starts with empty steps and goes to in_progress
-      expect(started.blockedByPlanReview).toBe(false);
       expect(started.started).toBeTruthy();
 
       const refreshedMission = fixture.missionService.get(mission.id);
@@ -3522,7 +3159,6 @@ describe("aiOrchestratorService", () => {
       // In the AI-first flow, the run starts with empty steps and in_progress.
       // The coordinator handles lane assignments internally.
       expect(started.started).toBeTruthy();
-      expect(started.blockedByPlanReview).toBe(false);
 
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("in_progress");
@@ -3565,7 +3201,6 @@ describe("aiOrchestratorService", () => {
       });
 
       expect(started.started).toBeTruthy();
-      expect(started.blockedByPlanReview).toBe(false);
 
       // Parallelism decision failure is now a soft failure — the run proceeds
       // with a default parallelism cap instead of pausing for intervention.

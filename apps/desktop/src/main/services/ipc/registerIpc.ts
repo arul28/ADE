@@ -239,8 +239,6 @@ import type {
   MissionStatus,
   MissionStepHandoff,
   MissionSummary,
-  MissionPlannerAttempt,
-  MissionPlannerRun,
   PhaseProfile,
   ListPhaseProfilesArgs,
   SavePhaseProfileArgs,
@@ -255,10 +253,6 @@ import type {
   MissionPreflightResult,
   ResolveMissionInterventionArgs,
   CreateMissionArgs,
-  PlanMissionArgs,
-  PlanMissionResult,
-  ListPlannerRunsArgs,
-  GetPlannerAttemptArgs,
   DeleteMissionArgs,
   CancelOrchestratorRunArgs,
   CleanupOrchestratorTeamResourcesArgs,
@@ -332,7 +326,29 @@ import type {
   GetGlobalChatArgs,
   DeliverMessageArgs,
   GetActiveAgentsArgs,
-  ActiveAgentInfo
+  ActiveAgentInfo,
+  AgentIdentity,
+  AgentCoreMemory,
+  AgentSessionLogEntry,
+  AgentConfigRevision,
+  AgentBudgetSnapshot,
+  WorkerAgentRun,
+  AgentTaskSession,
+  CtoListAgentsArgs,
+  CtoSaveAgentArgs,
+  CtoRemoveAgentArgs,
+  CtoListAgentRevisionsArgs,
+  CtoRollbackAgentRevisionArgs,
+  CtoEnsureAgentSessionArgs,
+  CtoGetBudgetSnapshotArgs,
+  CtoTriggerAgentWakeupArgs,
+  CtoTriggerAgentWakeupResult,
+  CtoListAgentRunsArgs,
+  CtoGetAgentCoreMemoryArgs,
+  CtoUpdateAgentCoreMemoryArgs,
+  CtoListAgentSessionLogsArgs,
+  CtoListAgentTaskSessionsArgs,
+  CtoClearAgentTaskSessionArgs,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -367,7 +383,7 @@ import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import { normalizeMissionStatus, type createMissionService } from "../missions/missionService";
 import type { createMissionPreflightService } from "../missions/missionPreflightService";
-import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionPlanningService";
+
 import type { createMissionBudgetService } from "../orchestrator/missionBudgetService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
@@ -375,6 +391,11 @@ import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
+import type { createWorkerAgentService } from "../cto/workerAgentService";
+import type { createWorkerRevisionService } from "../cto/workerRevisionService";
+import type { createWorkerBudgetService } from "../cto/workerBudgetService";
+import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
+import type { createWorkerTaskSessionService } from "../cto/workerTaskSessionService";
 import { getErrorMessage, isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
 export type AppContext = {
@@ -420,6 +441,11 @@ export type AppContext = {
   testService: ReturnType<typeof createTestService>;
   memoryService?: ReturnType<typeof createMemoryService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
+  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
+  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
+  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
+  workerTaskSessionService?: ReturnType<typeof createWorkerTaskSessionService> | null;
   mcpSocketServer?: import("node:net").Server;
   mcpSocketPath?: string;
 };
@@ -1540,69 +1566,6 @@ export function registerIpc({
     return ctx.automationPlannerService.simulate(arg);
   });
 
-  ipcMain.handle(IPC.plannerPlanMission, async (_event, arg: PlanMissionArgs): Promise<PlanMissionResult> => {
-    const ctx = getCtx();
-    const prompt = typeof arg?.prompt === "string" ? arg.prompt.trim() : "";
-    if (!prompt.length) throw new Error("Mission prompt is required.");
-    const title =
-      typeof arg?.title === "string" && arg.title.trim().length > 0
-        ? arg.title.trim()
-        : prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "Mission";
-    const plannerEngine = arg?.plannerEngine ?? "auto";
-    const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : null;
-    const phaseCards = (() => {
-      const missionId = typeof arg?.missionId === "string" ? arg.missionId.trim() : "";
-      if (!missionId.length) return undefined;
-      return ctx.missionService.getPhaseConfiguration(missionId)?.selectedPhases;
-    })();
-    const planning = await planMissionOnce({
-      missionId: typeof arg?.missionId === "string" ? arg.missionId.trim() : undefined,
-      title,
-      prompt,
-      laneId,
-      plannerEngine,
-      timeoutMs: arg?.planningTimeoutMs,
-      allowPlanningQuestions: arg?.allowPlanningQuestions,
-      phaseCards,
-      model: arg?.model,
-      projectRoot: ctx.project.rootPath,
-      contextBundle: buildMissionPlanningContextBundle({
-        ctx,
-        laneId,
-        executionMode: "local",
-        targetMachineId: null
-      }),
-      aiIntegrationService: ctx.aiIntegrationService,
-      memoryService: ctx.memoryService ?? undefined,
-      memoryProjectId: ctx.projectId,
-      logger: ctx.logger
-    });
-    const plannedSteps = plannerPlanToMissionSteps({
-      plan: planning.plan,
-      requestedEngine: planning.run.requestedEngine,
-      resolvedEngine: planning.run.resolvedEngine!,
-      executorPolicy: "both",
-      degraded: planning.run.degraded,
-      reasonCode: planning.run.reasonCode,
-      validationErrors: planning.run.validationErrors
-    });
-    return {
-      plan: planning.plan,
-      run: planning.run,
-      plannedSteps
-    };
-  });
-
-  ipcMain.handle(IPC.plannerGetRuns, async (_event, arg: ListPlannerRunsArgs = {}): Promise<MissionPlannerRun[]> => {
-    const ctx = getCtx();
-    return ctx.missionService.listPlannerRuns(arg);
-  });
-
-  ipcMain.handle(IPC.plannerGetAttempt, async (_event, arg: GetPlannerAttemptArgs): Promise<MissionPlannerAttempt | null> => {
-    const ctx = getCtx();
-    return ctx.missionService.getPlannerAttempt(arg);
-  });
-
   ipcMain.handle(IPC.missionsList, async (_event, arg: ListMissionsArgs = {}): Promise<MissionSummary[]> => {
     const ctx = getCtx();
     return ctx.missionService.list(arg);
@@ -1706,11 +1669,6 @@ export function registerIpc({
               plannerExecutorPolicy: "codex"
             }
           });
-          if (launch.blockedByPlanReview) {
-            ctx.logger.info("missions.autostart_plan_review_blocked", {
-              missionId: created.id
-            });
-          }
         } catch (error) {
           const message = getErrorMessage(error);
           ctx.logger.warn("missions.autostart_failed", {
@@ -1738,46 +1696,12 @@ export function registerIpc({
       return created;
     }
 
-    const planning = await planMissionOnce({
-      title,
-      prompt,
-      laneId,
-      plannerEngine,
-      timeoutMs: arg?.planningTimeoutMs,
-      allowPlanningQuestions: arg?.allowPlanningQuestions,
-      phaseCards: Array.isArray(arg?.phaseOverride) ? arg.phaseOverride : undefined,
-      model: arg?.modelConfig?.orchestratorModel?.modelId,
-      projectRoot: ctx.project.rootPath,
-      contextBundle: buildMissionPlanningContextBundle({
-        ctx,
-        laneId,
-        executionMode,
-        targetMachineId
-      }),
-      aiIntegrationService: ctx.aiIntegrationService,
-      memoryService: ctx.memoryService ?? undefined,
-      memoryProjectId: ctx.projectId,
-      logger: ctx.logger
-    });
-
-    const plannedSteps = plannerPlanToMissionSteps({
-      plan: planning.plan,
-      requestedEngine: planning.run.requestedEngine,
-      resolvedEngine: planning.run.resolvedEngine!,
-      executorPolicy: "both",
-      degraded: planning.run.degraded,
-      reasonCode: planning.run.reasonCode,
-      validationErrors: planning.run.validationErrors
-    });
-
+    // Pre-mission planner pipeline retired — coordinator builds the DAG at runtime.
+    // Simply create the mission with empty steps (non-autostart path).
     const created = ctx.missionService.create({
       ...arg,
-      plannedSteps,
-      plannerRun: {
-        ...planning.run,
-        missionId: ""
-      },
-      plannerPlan: planning.plan
+      launchMode: "manual",
+      autostart: false,
     });
     await safeRefreshMissionPack(ctx, created.id, "mission_created");
 
@@ -1867,7 +1791,7 @@ export function registerIpc({
         metadata: arg.metadata ?? null,
         plannerProvider: arg.plannerProvider ?? undefined
       });
-      if (started.blockedByPlanReview || !started.started) {
+      if (!started.started) {
         throw new Error("Mission run is blocked pending plan review approval.");
       }
       return started.started;
@@ -1891,7 +1815,7 @@ export function registerIpc({
         metadata: arg.metadata ?? null,
         plannerProvider: arg.plannerProvider ?? undefined
       });
-      if (started.blockedByPlanReview || !started.started) {
+      if (!started.started) {
         throw new Error("Mission plan approval did not produce a runnable mission execution.");
       }
       return started.started;
@@ -3810,5 +3734,114 @@ export function registerIpc({
       throw new Error("CTO state service is not available.");
     }
     return ctx.ctoStateService.getSessionLogs(arg.limit ?? 40);
+  });
+
+  // -- W2: Worker Agents & Org Chart --
+
+  ipcMain.handle(IPC.ctoListAgents, async (_event, arg: CtoListAgentsArgs = {}): Promise<AgentIdentity[]> => {
+    const ctx = getCtx();
+    if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
+    return ctx.workerAgentService.listAgents(arg);
+  });
+
+  ipcMain.handle(IPC.ctoSaveAgent, async (_event, arg: CtoSaveAgentArgs): Promise<AgentIdentity> => {
+    const ctx = getCtx();
+    if (!ctx.workerRevisionService) throw new Error("Worker revision service is not available.");
+    return ctx.workerRevisionService.saveAgent(arg.agent, arg.actor ?? "user");
+  });
+
+  ipcMain.handle(IPC.ctoRemoveAgent, async (_event, arg: CtoRemoveAgentArgs): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
+    ctx.workerAgentService.removeAgent(arg.agentId);
+    ctx.workerHeartbeatService?.syncFromConfig();
+  });
+
+  ipcMain.handle(IPC.ctoListAgentRevisions, async (_event, arg: CtoListAgentRevisionsArgs): Promise<AgentConfigRevision[]> => {
+    const ctx = getCtx();
+    if (!ctx.workerRevisionService) throw new Error("Worker revision service is not available.");
+    return ctx.workerRevisionService.listAgentRevisions(arg.agentId, arg.limit ?? 20);
+  });
+
+  ipcMain.handle(IPC.ctoRollbackAgentRevision, async (_event, arg: CtoRollbackAgentRevisionArgs): Promise<AgentIdentity> => {
+    const ctx = getCtx();
+    if (!ctx.workerRevisionService) throw new Error("Worker revision service is not available.");
+    return ctx.workerRevisionService.rollbackAgentRevision(arg.agentId, arg.revisionId, arg.actor ?? "user");
+  });
+
+  ipcMain.handle(IPC.ctoEnsureAgentSession, async (_event, arg: CtoEnsureAgentSessionArgs): Promise<AgentChatSession> => {
+    const ctx = getCtx();
+    if (!ctx.agentChatService) throw new Error("Agent chat service is not available.");
+    const requestedLaneId = typeof arg.laneId === "string" ? arg.laneId.trim() : "";
+    let laneId = requestedLaneId;
+    if (!laneId) {
+      const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
+      laneId = lanes[0]?.id ?? "";
+    }
+    if (!laneId) throw new Error("No lane available for agent session.");
+    return ctx.agentChatService.ensureIdentitySession({
+      identityKey: "cto",
+      laneId,
+      modelId: arg.modelId ?? null,
+      reasoningEffort: arg.reasoningEffort ?? null,
+      permissionMode: arg.permissionMode,
+    });
+  });
+
+  ipcMain.handle(IPC.ctoGetBudgetSnapshot, async (_event, arg: CtoGetBudgetSnapshotArgs = {}): Promise<AgentBudgetSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.workerBudgetService) throw new Error("Worker budget service is not available.");
+    return ctx.workerBudgetService.getBudgetSnapshot({ monthKey: arg.monthKey });
+  });
+
+  ipcMain.handle(IPC.ctoUpdateIdentity, async (_event, arg: { patch: Record<string, unknown> }): Promise<CtoSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
+    // updateIdentity not yet implemented on ctoStateService — return current snapshot
+    return ctx.ctoStateService.getSnapshot(20);
+  });
+
+  // -- W3: Heartbeat & Activation --
+
+  ipcMain.handle(IPC.ctoTriggerAgentWakeup, async (_event, arg: CtoTriggerAgentWakeupArgs): Promise<CtoTriggerAgentWakeupResult> => {
+    const ctx = getCtx();
+    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
+    return ctx.workerHeartbeatService.triggerWakeup(arg);
+  });
+
+  ipcMain.handle(IPC.ctoListAgentRuns, async (_event, arg: CtoListAgentRunsArgs = {}): Promise<WorkerAgentRun[]> => {
+    const ctx = getCtx();
+    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
+    return ctx.workerHeartbeatService.listRuns(arg);
+  });
+
+  ipcMain.handle(IPC.ctoGetAgentCoreMemory, async (_event, arg: CtoGetAgentCoreMemoryArgs): Promise<AgentCoreMemory> => {
+    const ctx = getCtx();
+    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
+    return ctx.workerHeartbeatService.getAgentCoreMemory(arg.agentId);
+  });
+
+  ipcMain.handle(IPC.ctoUpdateAgentCoreMemory, async (_event, arg: CtoUpdateAgentCoreMemoryArgs): Promise<AgentCoreMemory> => {
+    const ctx = getCtx();
+    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
+    return ctx.workerHeartbeatService.updateAgentCoreMemory(arg.agentId, arg.patch ?? {});
+  });
+
+  ipcMain.handle(IPC.ctoListAgentSessionLogs, async (_event, arg: CtoListAgentSessionLogsArgs): Promise<AgentSessionLogEntry[]> => {
+    const ctx = getCtx();
+    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
+    return ctx.workerHeartbeatService.listAgentSessionLogs(arg.agentId, arg.limit ?? 40);
+  });
+
+  ipcMain.handle(IPC.ctoListAgentTaskSessions, async (_event, arg: CtoListAgentTaskSessionsArgs): Promise<AgentTaskSession[]> => {
+    const ctx = getCtx();
+    if (!ctx.workerTaskSessionService) throw new Error("Worker task session service is not available.");
+    return ctx.workerTaskSessionService.listAgentTaskSessions(arg.agentId, arg.limit ?? 40);
+  });
+
+  ipcMain.handle(IPC.ctoClearAgentTaskSession, async (_event, arg: CtoClearAgentTaskSessionArgs): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.workerTaskSessionService) throw new Error("Worker task session service is not available.");
+    ctx.workerTaskSessionService.clearAgentTaskSession(arg);
   });
 }

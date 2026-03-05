@@ -4,7 +4,6 @@ import nodePath from "node:path";
 import type {
   MissionDetail,
   MissionExecutionPolicy,
-  MissionPlannerEngine,
   MissionStepStatus,
   MissionStatus,
   CancelOrchestratorRunArgs,
@@ -85,7 +84,6 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPrService } from "../prs/prService";
 import { createMemoryService } from "../memory/memoryService";
-import { planMissionOnce, plannerPlanToMissionSteps, MissionPlanningError } from "../missions/missionPlanningService";
 import { CoordinatorAgent } from "./coordinatorAgent";
 import { routeEventToCoordinator } from "./runtimeEventRouter";
 import {
@@ -203,11 +201,39 @@ import {
 } from "./missionLifecycle";
 import type { HookDispatchDeps } from "./missionLifecycle";
 
-// Import from planning pipeline module
-import {
-  buildInterventionResolverPrompt,
-  beginPlannerTurn,
-} from "./planningPipeline";
+// ── Intervention Prompt Builder (inlined from deleted planningPipeline module) ──
+
+function buildInterventionResolverPrompt(args: {
+  missionTitle: string;
+  missionPrompt: string;
+  interventionDescription: string;
+  runContext: string;
+  steeringContext: string;
+  confidenceThreshold: number;
+}): string {
+  return [
+    `You are an AI orchestrator deciding how to handle an intervention during a mission.`,
+    ``,
+    `Mission: ${args.missionTitle}`,
+    `Prompt: ${args.missionPrompt.slice(0, 300)}`,
+    ``,
+    `Intervention: ${args.interventionDescription}`,
+    ``,
+    `Run context: ${args.runContext}`,
+    args.steeringContext.length > 0 ? `\nSteering context:\n${args.steeringContext}` : "",
+    ``,
+    `Confidence threshold for auto-resolution: ${args.confidenceThreshold}`,
+    ``,
+    `Respond with a JSON object:`,
+    `{`,
+    `  "autoResolvable": boolean,`,
+    `  "confidence": number (0-1),`,
+    `  "suggestedAction": "retry" | "skip" | "add_workaround" | "escalate",`,
+    `  "reasoning": string,`,
+    `  "retryInstructions": string (if action is retry)`,
+    `}`
+  ].join("\n");
+}
 
 // Quality gate module imports removed — quality evaluation is the coordinator's domain
 
@@ -2774,19 +2800,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     return row?.project_id ? String(row.project_id).trim() : "";
   };
 
-  const inferPlannerProviderFromHint = (hint: string | null | undefined): "claude" | "codex" | null => {
-    const raw = String(hint ?? "").trim();
-    if (!raw.length) return null;
-    if (raw === "claude" || raw === "codex") return raw;
-    const desc = getModelById(raw);
-    if (desc?.family === "anthropic") return "claude";
-    if (desc?.family === "openai") return "codex";
-    const lower = raw.toLowerCase();
-    if (lower.includes("claude") || lower.includes("anthropic")) return "claude";
-    if (lower.includes("codex") || lower.includes("gpt")) return "codex";
-    return null;
-  };
-
   const persistDiscoveredDocPathsToMemory = (args: { missionId: string; docPaths: string[]; sourceRunId?: string | null }): void => {
     const missionProjectId = resolveMissionProjectId(args.missionId);
     if (!missionProjectId.length || args.docPaths.length === 0) return;
@@ -2827,18 +2840,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     } catch {
       return [];
     }
-  };
-
-  const resolvePlannerProviderForMission = (args: {
-    missionId: string;
-    plannerProviderHint?: string | null;
-    runtimeProfile?: MissionRuntimeProfile | null;
-  }): "claude" | "codex" | null => {
-    const explicit = inferPlannerProviderFromHint(args.plannerProviderHint);
-    if (explicit) return explicit;
-    const runtimeHint = inferPlannerProviderFromHint(args.runtimeProfile?.planning.preferProvider ?? null);
-    if (runtimeHint) return runtimeHint;
-    return resolveChatProvider(args.missionId);
   };
 
   // ── Team Runtime Manager ─────────────────────────────────────
@@ -3413,398 +3414,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     })();
   };
 
-
-  const canUsePlannerAgentSessions = (): boolean => {
-    return Boolean(
-      agentChatService
-      && laneService
-      && typeof agentChatService.createSession === "function"
-      && typeof agentChatService.sendMessage === "function"
-    );
-  };
-
-  const createPlannerAgentIntegration = (args: {
-    mission: MissionDetail;
-    provider: "claude" | "codex";
-    model?: string;
-    policy?: MissionExecutionPolicy;
-  }): ReturnType<typeof createAiIntegrationService> => {
-    if (!agentChatService) {
-      throw new Error("Planner agent chat service is unavailable.");
-    }
-    const providerAvailability = {
-      claude: args.provider === "claude",
-      codex: args.provider === "codex"
-    };
-    const planningReasoningEffort =
-      typeof args.policy?.planning.reasoningEffort === "string" && args.policy.planning.reasoningEffort.trim().length
-        ? args.policy.planning.reasoningEffort.trim()
-        : null;
-    const fallbackModel = args.provider === "claude" ? "sonnet" : "gpt-5.3-codex";
-
-    return {
-      getMode: () => "subscription",
-      getAvailability: () => providerAvailability,
-      planMission: async (planArgs: {
-        cwd: string;
-        prompt: string;
-        timeoutMs?: number;
-        model?: string;
-        provider?: "claude" | "codex";
-        jsonSchema?: unknown;
-      }) => {
-        const startedAtMs = Date.now();
-        const laneId = await resolvePlannerLaneId(args.mission);
-        const model = String(planArgs.model ?? args.model ?? fallbackModel).trim() || fallbackModel;
-        const session = await agentChatService.createSession({
-          laneId,
-          provider: args.provider,
-          model,
-          permissionMode: "plan",
-          ...(planningReasoningEffort ? { reasoningEffort: planningReasoningEffort } : {})
-        });
-        const thread = upsertPlannerThread({
-          missionId: args.mission.id,
-          laneId,
-          sessionId: session.id,
-          provider: args.provider,
-          model: session.model,
-          reasoningEffort: session.reasoningEffort ?? planningReasoningEffort
-        });
-        const plannerState: PlannerAgentSessionState = {
-          missionId: args.mission.id,
-          runId: null,
-          stepId: null,
-          threadId: thread.id,
-          sessionId: session.id,
-          laneId,
-          provider: args.provider,
-          model: session.model,
-          reasoningEffort: session.reasoningEffort ?? planningReasoningEffort,
-          rawOutput: "",
-          rawOutputTruncated: false,
-          streamBuffer: "",
-          lastStreamFlushAtMs: 0,
-          turn: null,
-          activeTurnId: null,
-          createdAt: nowIso(),
-          lastEventAt: nowIso()
-        };
-        registerPlannerSession(plannerState);
-        updateMissionMetadata(args.mission.id, (metadata) => {
-          metadata.plannerAgent = {
-            sessionId: session.id,
-            threadId: thread.id,
-            laneId,
-            provider: args.provider,
-            model: session.model,
-            reasoningEffort: session.reasoningEffort ?? planningReasoningEffort,
-            updatedAt: nowIso()
-          };
-        });
-        appendPlannerWorkerMessage(
-          plannerState,
-          "Planner online. Prompt received — drafting the mission plan now.",
-          {
-            planner: {
-              event: "session_started",
-              sessionId: session.id,
-              provider: args.provider,
-              model: session.model
-            }
-          }
-        );
-
-        const turn = beginPlannerTurn(plannerState);
-        appendPlannerWorkerMessage(
-          plannerState,
-          "Planning in progress. I will post the execution breakdown as soon as it is ready.",
-          {
-            planner: {
-              event: "turn_enqueued",
-              sessionId: session.id
-            }
-          }
-        );
-
-        try {
-          await agentChatService.sendMessage({
-            sessionId: session.id,
-            text: planArgs.prompt,
-            ...(planningReasoningEffort ? { reasoningEffort: planningReasoningEffort } : {})
-          });
-          const completion = await turn.promise;
-          const text = completion.rawOutput.trim();
-          // If the planner produced output, use it even if the turn status is
-          // "failed" due to an incidental tool error (e.g. a late Read failure).
-          // The plan is the valuable artifact — a stray error doesn't invalidate it.
-          if (!text.length) {
-            if (completion.status !== "completed") {
-              throw new Error(completion.error ?? `Planner turn finished with status '${completion.status}'.`);
-            }
-            throw new Error("Planner turn completed without returning text.");
-          }
-          if (completion.status !== "completed") {
-            logger.warn("ai_orchestrator.planner_turn_non_success_with_output", {
-              missionId: args.mission.id,
-              sessionId: session.id,
-              status: completion.status,
-              error: completion.error,
-              outputLength: text.length
-            });
-          }
-          appendPlannerWorkerMessage(
-            plannerState,
-            "Planner produced a candidate plan. Validating and applying steps...",
-            {
-              planner: {
-                event: "response_ready",
-                sessionId: session.id
-              }
-            }
-          );
-          return {
-            text,
-            structuredOutput: null,
-            provider: args.provider,
-            model: session.model,
-            sessionId: session.id,
-            durationMs: Date.now() - startedAtMs,
-            inputTokens: null,
-            outputTokens: null
-          } as any;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          completePlannerTurn(plannerState, "failed", message);
-          appendPlannerWorkerMessage(
-            plannerState,
-            `Planner turn failed: ${message}`,
-            {
-              planner: {
-                event: "turn_failed",
-                sessionId: session.id
-              }
-            }
-          );
-          throw error;
-        }
-      }
-    } as ReturnType<typeof createAiIntegrationService>;
-  };
-
-  /**
-   * Plan a mission using AI.
-   *
-   * Delegation model: planning runs through an explicit planner agent session
-   * whenever chat/lane services are available. This keeps planning behavior
-   * aligned with other spawned worker agents and exposes a dedicated planner
-   * thread in the UI.
-   *
-   * AI planning is policy-driven — callers decide whether to invoke this
-   * based on the active mission execution policy/runtime profile.
-   */
-  const planWithAI = async (args: {
-    missionId: string;
-    provider: "claude" | "codex";
-    model?: string;
-    policy?: MissionExecutionPolicy;
-  }): Promise<void> => {
-    const mission = missionService.get(args.missionId);
-    if (!mission) {
-      logger.warn("ai_orchestrator.plan_with_ai_mission_not_found", { missionId: args.missionId });
-      return;
-    }
-
-    const plannerSessionSupported = canUsePlannerAgentSessions();
-    if (!projectRoot || (!aiIntegrationService && !plannerSessionSupported)) {
-      logger.warn("ai_orchestrator.plan_with_ai_not_available", {
-        missionId: args.missionId,
-        hasAiService: !!aiIntegrationService,
-        hasPlannerSessionSupport: plannerSessionSupported,
-        hasProjectRoot: !!projectRoot
-      });
-      throw new MissionPlanningError({
-        reasonCode: "planner_unavailable",
-        reasonDetail: "Planner execution service is not available.",
-        engine: null
-      });
-    }
-
-    try {
-      const plannerEngine: MissionPlannerEngine = args.provider === "codex" ? "codex_cli" : "claude_cli";
-      const planningIntegration = plannerSessionSupported
-        ? createPlannerAgentIntegration({
-            mission,
-            provider: args.provider,
-            model: args.model,
-            policy: args.policy
-          })
-        : aiIntegrationService ?? undefined;
-
-      const teamRuntimeCfgRaw = resolveMissionTeamRuntime(args.missionId);
-      const teamRuntimeCfg = teamRuntimeCfgRaw ? normalizeTeamRuntimeConfig(args.missionId, teamRuntimeCfgRaw) : null;
-      const phaseConfig = missionService.getPhaseConfiguration(args.missionId);
-      const missionMetadata = getMissionMetadata(args.missionId);
-      const launchMetadata = isRecord(missionMetadata.launch) ? missionMetadata.launch : null;
-      const agentRuntime = isRecord(launchMetadata?.agentRuntime) ? launchMetadata.agentRuntime : null;
-      const missionProjectId = resolveMissionProjectId(args.missionId);
-      const projectDocsContext = discoverProjectDocs();
-      if (projectDocsContext.paths.length > 0) {
-        persistDiscoveredDocPathsToMemory({
-          missionId: args.missionId,
-          docPaths: projectDocsContext.paths
-        });
-      }
-      const docsDigest = projectDocsContext.docs.slice(0, 40).map((entry) => ({
-        path: entry.path,
-        sha256: entry.sha256,
-        bytes: entry.bytes
-      }));
-      const plannerConstraints = (() => {
-        const constraints: string[] = [];
-        if (agentRuntime?.allowParallelAgents === false) {
-          constraints.push("Parallel agents are disabled by mission settings. Use sequential strategy and set missionSummary.parallelismCap=1.");
-        }
-        if (agentRuntime?.allowSubAgents === false) {
-          constraints.push("Nested sub-agent delegation is disabled by mission settings. Keep steps self-contained for single-agent execution.");
-        }
-        if (agentRuntime?.allowClaudeAgentTeams === false) {
-          constraints.push("Claude native agent teams are disabled by mission settings.");
-        }
-        return constraints;
-      })();
-      const planning = await planMissionOnce({
-        missionId: args.missionId,
-        title: mission.title,
-        prompt: mission.prompt,
-        laneId: mission.laneId,
-        plannerEngine,
-        model: args.model,
-        projectRoot,
-        allowPlanningQuestions: (() => {
-          return launchMetadata?.allowPlanningQuestions === true;
-        })(),
-        phaseCards: phaseConfig?.selectedPhases,
-        contextBundle: docsDigest.length > 0 || plannerConstraints.length > 0
-          ? {
-              ...(docsDigest.length > 0 ? { docsDigest } : {}),
-              ...(plannerConstraints.length > 0 ? { constraints: plannerConstraints } : {})
-            }
-          : undefined,
-        aiIntegrationService: planningIntegration,
-        memoryService: missionProjectId.length > 0 ? plannerMemoryService : undefined,
-        memoryProjectId: missionProjectId.length > 0 ? missionProjectId : undefined,
-        logger,
-        policy: args.policy,
-        teamRuntime: teamRuntimeCfg ?? undefined
-      });
-
-      const plannedSteps = plannerPlanToMissionSteps({
-        plan: planning.plan,
-        requestedEngine: planning.run.requestedEngine,
-        resolvedEngine: planning.run.resolvedEngine!,
-        executorPolicy: "both",
-        degraded: planning.run.degraded,
-        reasonCode: planning.run.reasonCode,
-        validationErrors: planning.run.validationErrors,
-        policy: args.policy
-      });
-      if (!missionProjectId.length) return;
-
-      // Replace existing mission steps with AI-planned steps
-      db.run(`delete from mission_steps where mission_id = ?`, [args.missionId]);
-      const now = nowIso();
-      for (const step of plannedSteps) {
-        db.run(
-          `insert into mission_steps(
-            id, mission_id, project_id, step_index, title, detail, kind,
-            lane_id, status, metadata_json, created_at, updated_at, started_at, completed_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, null, null)`,
-          [
-            randomUUID(),
-            args.missionId,
-            missionProjectId,
-            step.index,
-            step.title,
-            step.detail,
-            step.kind,
-            mission.laneId,
-            JSON.stringify(step.metadata),
-            now,
-            now
-          ]
-        );
-      }
-
-      // Store planner plan + run metadata on the mission
-      const existingMetadata = (() => {
-        const row = db.get<{ metadata_json: string | null }>(
-          `select metadata_json from missions where id = ? limit 1`,
-          [args.missionId]
-        );
-        if (!row?.metadata_json) return {};
-        try { return JSON.parse(row.metadata_json) as Record<string, unknown>; } catch { return {}; }
-      })();
-
-      const updatedMetadata = {
-        ...existingMetadata,
-        plannerPlan: {
-          schemaVersion: planning.plan.schemaVersion,
-          clarifyingQuestions: planning.plan.clarifyingQuestions ?? [],
-          clarifyingAnswers: planning.plan.clarifyingAnswers ?? [],
-          missionSummary: planning.plan.missionSummary,
-          assumptions: planning.plan.assumptions,
-          risks: planning.plan.risks,
-          stepCount: planning.plan.steps.length,
-          handoffPolicy: planning.plan.handoffPolicy
-        },
-        planner: {
-          id: planning.run.id,
-          requestedEngine: planning.run.requestedEngine,
-          resolvedEngine: planning.run.resolvedEngine,
-          status: planning.run.status,
-          degraded: planning.run.degraded,
-          reasonCode: planning.run.reasonCode,
-          reasonDetail: planning.run.reasonDetail,
-          planHash: planning.run.planHash,
-          normalizedPlanHash: planning.run.normalizedPlanHash,
-          durationMs: planning.run.durationMs,
-          validationErrors: planning.run.validationErrors
-        }
-      };
-
-      db.run(
-        `update missions set metadata_json = ?, updated_at = ? where id = ?`,
-        [JSON.stringify(updatedMetadata), now, args.missionId]
-      );
-
-      emitOrchestratorMessage(
-        args.missionId,
-        (() => {
-          const titles = plannedSteps.map((step) => step.title);
-          const preview =
-            titles.length <= 6
-              ? titles.join(", ")
-              : `${titles.slice(0, 6).join(", ")} (+${titles.length - 6} more)`;
-          return `Planning complete. Created ${plannedSteps.length} steps: ${preview}.`;
-        })()
-      );
-
-      logger.info("ai_orchestrator.plan_with_ai_completed", {
-        missionId: args.missionId,
-        provider: args.provider,
-        plannerSessionSupported,
-        resolvedEngine: planning.run.resolvedEngine,
-        stepCount: plannedSteps.length
-      });
-    } catch (error) {
-      logger.warn("ai_orchestrator.plan_with_ai_failed", {
-        missionId: args.missionId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      throw error;
-    }
-  };
 
   const evaluateWorkerPlan = async (args: {
     attemptId: string;
@@ -5660,7 +5269,6 @@ Check all worker statuses and continue managing the mission from here. Read work
           { graph: existingGraph }
         );
         return {
-          blockedByPlanReview: false,
           started: {
             run: orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === activeRun.id) ?? activeRun,
             steps
@@ -5670,8 +5278,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
     }
 
-    const runtimeProfile = resolveActiveRuntimeProfile(missionId);
-    const planningEnabled = runtimeProfile.planning.useAiPlanner;
     const missionMetadata = getMissionMetadata(missionId);
     const launchMetadata = isRecord(missionMetadata.launch) ? missionMetadata.launch : null;
     const launchTeamRuntime = isRecord(launchMetadata?.teamRuntime) ? launchMetadata.teamRuntime : null;
@@ -5682,45 +5288,6 @@ Check all worker statuses and continue managing the mission from here. Read work
           allowSubAgents: true,
           allowClaudeAgentTeams: true
         };
-    const replanOnStart = launchMetadata?.replanOnStart === true;
-    const shouldPlanBeforeCoordinator = planningEnabled && (initialMission.steps.length === 0 || replanOnStart);
-    if (shouldPlanBeforeCoordinator) {
-      const plannerProvider = resolvePlannerProviderForMission({
-        missionId,
-        plannerProviderHint: args.plannerProvider ?? null,
-        runtimeProfile
-      });
-      const plannerModelHint = runtimeProfile.planning.preferProvider;
-      const plannerModel =
-        typeof plannerModelHint === "string" && plannerModelHint.trim().length > 0 && getModelById(plannerModelHint)
-          ? plannerModelHint
-          : undefined;
-
-      if (!plannerProvider) {
-        logger.warn("ai_orchestrator.start_mission_planner_unavailable", {
-          missionId,
-          preferProvider: runtimeProfile.planning.preferProvider
-        });
-      } else {
-        transitionMissionStatus(missionId, "planning");
-        emitOrchestratorMessage(
-          missionId,
-          `Planner starting (${plannerProvider}${plannerModel ? ` · ${plannerModel}` : ""}). Coordinator activation will begin after planning completes.`
-        );
-        await planWithAI({
-          missionId,
-          provider: plannerProvider,
-          ...(plannerModel ? { model: plannerModel } : {}),
-          policy: resolveActivePolicy(missionId)
-        });
-      }
-    } else if (planningEnabled && initialMission.steps.length > 0) {
-      logger.info("ai_orchestrator.start_mission_reusing_existing_plan", {
-        missionId,
-        stepCount: initialMission.steps.length
-      });
-    }
-
     const missionAfterPlanning = missionService.get(missionId);
     const missionMetadataAfterPlanning = getMissionMetadata(missionId);
     const plannerPlanMeta = isRecord(missionMetadataAfterPlanning.plannerPlan)
@@ -5827,7 +5394,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
       const failedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
       return {
-        blockedByPlanReview: false,
         started: {
           run: failedRun,
           steps: orchestratorService.listSteps(started.run.id)
@@ -5861,7 +5427,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     void syncMissionFromRun(started.run.id, "mission_run_started");
 
     return {
-      blockedByPlanReview: false,
       started,
       mission: missionService.get(missionId),
     };
@@ -7398,7 +6963,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     syncMissionFromRun,
 
     getWorkerStates,
-    planWithAI,
     evaluateWorkerPlan,
     handleInterventionWithAI,
     steerMission,

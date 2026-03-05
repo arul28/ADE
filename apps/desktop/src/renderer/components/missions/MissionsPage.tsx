@@ -85,6 +85,8 @@ import { ActivityNarrativeHeader } from "./ActivityNarrativeHeader";
 import { MissionsHomeDashboard } from "./MissionsHomeDashboard";
 import { MissionStateSummary } from "./MissionStateSummary";
 import { PlanReviewInterventions } from "./PlanReviewInterventions";
+import { ClarificationQuizModal } from "./ClarificationQuizModal";
+import type { ClarificationQuestion, ClarificationQuiz } from "../../../shared/types";
 
 /* Re-export helpers used by tests */
 export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./missionHelpers";
@@ -140,6 +142,9 @@ export default function MissionsPage() {
   const [steeringLog, setSteeringLog] = useState<SteeringEntry[]>([]);
   const graphRefreshTimerRef = useRef<number | null>(null);
 
+
+  /* ── Clarification quiz modal state ── */
+  const [quizInterventionId, setQuizInterventionId] = useState<string | null>(null);
 
   /* ── Track original step count for dynamic step indicator ── */
   const [originalStepCount, setOriginalStepCount] = useState<number | null>(null);
@@ -568,7 +573,6 @@ export default function MissionsPage() {
         prompt,
         laneId: resolvedLaneId || undefined,
         priority: draft.priority,
-        allowPlanningQuestions: draft.allowPlanningQuestions,
         agentRuntime: draft.agentRuntime,
         teamRuntime: draft.teamRuntime,
         executionPolicy: {
@@ -1132,6 +1136,46 @@ export default function MissionsPage() {
                   />
                 )}
 
+              {/* ── Coordinator Clarification Quiz Banner ── */}
+              {selectedMission && (() => {
+                const quizInterventions = selectedMission.interventions.filter(
+                  (iv) =>
+                    iv.interventionType === "manual_input" &&
+                    iv.status === "open" &&
+                    iv.metadata?.quizMode === true &&
+                    Array.isArray(iv.metadata?.questions)
+                );
+                if (quizInterventions.length === 0) return null;
+                return (
+                  <div
+                    style={{
+                      background: COLORS.cardBg,
+                      border: `1px solid ${COLORS.accentBorder}`,
+                      margin: "12px 16px",
+                      padding: "12px 16px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <ChatCircle weight="bold" style={{ color: COLORS.accent, width: 14, height: 14 }} />
+                      <span style={{ fontFamily: MONO_FONT, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.accent }}>
+                        {quizInterventions.length === 1
+                          ? `Coordinator has ${(quizInterventions[0].metadata?.questions as ClarificationQuestion[]).length} question${(quizInterventions[0].metadata?.questions as ClarificationQuestion[]).length === 1 ? "" : "s"}`
+                          : `${quizInterventions.length} clarification requests pending`}
+                      </span>
+                    </div>
+                    <button
+                      style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                      onClick={() => setQuizInterventionId(quizInterventions[0].id)}
+                    >
+                      ANSWER QUESTIONS
+                    </button>
+                  </div>
+                );
+              })()}
+
               {/* ── Tab Navigation ── */}
               <div className="flex items-center gap-0 px-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
                 {([
@@ -1399,6 +1443,38 @@ export default function MissionsPage() {
           />
         )}
       </AnimatePresence>
+
+      {/* ════════════ CLARIFICATION QUIZ MODAL ════════════ */}
+      {quizInterventionId && selectedMission && (() => {
+        const iv = selectedMission.interventions.find((i) => i.id === quizInterventionId);
+        if (!iv || !iv.metadata?.quizMode || !Array.isArray(iv.metadata?.questions)) {
+          return null;
+        }
+        const questions = iv.metadata.questions as ClarificationQuestion[];
+        const phase = typeof iv.metadata.phase === "string" ? iv.metadata.phase : null;
+        return (
+          <ClarificationQuizModal
+            interventionId={iv.id}
+            missionId={selectedMission.id}
+            questions={questions}
+            phase={phase}
+            onClose={() => setQuizInterventionId(null)}
+            onSubmit={async (quiz: ClarificationQuiz) => {
+              await window.ade.missions.resolveIntervention({
+                missionId: selectedMission.id,
+                interventionId: iv.id,
+                status: "resolved",
+                note: JSON.stringify(quiz),
+              });
+              setQuizInterventionId(null);
+              await refreshMissionList({ preserveSelection: true, silent: true });
+              if (selectedMission.id) {
+                await loadMissionDetail(selectedMission.id);
+              }
+            }}
+          />
+        );
+      })()}
     </LazyMotion>
   );
 }

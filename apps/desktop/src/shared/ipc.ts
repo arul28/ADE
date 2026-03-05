@@ -197,9 +197,6 @@ export const IPC = {
   missionsGetDashboard: "ade.missions.getDashboard",
   missionsPreflight: "ade.missions.preflight",
   missionsEvent: "ade.missions.event",
-  plannerPlanMission: "ade.planner.planMission",
-  plannerGetRuns: "ade.planner.getRuns",
-  plannerGetAttempt: "ade.planner.getAttempt",
   orchestratorListRuns: "ade.orchestrator.listRuns",
   orchestratorGetRunGraph: "ade.orchestrator.getRunGraph",
   orchestratorStartRun: "ade.orchestrator.startRun",
@@ -344,7 +341,22 @@ export const IPC = {
   ctoGetState: "ade.cto.getState",
   ctoEnsureSession: "ade.cto.ensureSession",
   ctoUpdateCoreMemory: "ade.cto.updateCoreMemory",
-  ctoListSessionLogs: "ade.cto.listSessionLogs"
+  ctoListSessionLogs: "ade.cto.listSessionLogs",
+  ctoUpdateIdentity: "ade.cto.updateIdentity",
+  ctoListAgents: "ade.cto.listAgents",
+  ctoSaveAgent: "ade.cto.saveAgent",
+  ctoRemoveAgent: "ade.cto.removeAgent",
+  ctoListAgentRevisions: "ade.cto.listAgentRevisions",
+  ctoRollbackAgentRevision: "ade.cto.rollbackAgentRevision",
+  ctoEnsureAgentSession: "ade.cto.ensureAgentSession",
+  ctoGetBudgetSnapshot: "ade.cto.getBudgetSnapshot",
+  ctoTriggerAgentWakeup: "ade.cto.triggerAgentWakeup",
+  ctoListAgentRuns: "ade.cto.listAgentRuns",
+  ctoGetAgentCoreMemory: "ade.cto.getAgentCoreMemory",
+  ctoUpdateAgentCoreMemory: "ade.cto.updateAgentCoreMemory",
+  ctoListAgentSessionLogs: "ade.cto.listAgentSessionLogs",
+  ctoListAgentTaskSessions: "ade.cto.listAgentTaskSessions",
+  ctoClearAgentTaskSession: "ade.cto.clearAgentTaskSession"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

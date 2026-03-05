@@ -88,6 +88,29 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  CtoIdentity,
+  AgentIdentity,
+  AgentCoreMemory,
+  AgentSessionLogEntry,
+  AgentConfigRevision,
+  AgentBudgetSnapshot,
+  WorkerAgentRun,
+  CtoListAgentsArgs,
+  CtoSaveAgentArgs,
+  CtoRemoveAgentArgs,
+  CtoListAgentRevisionsArgs,
+  CtoRollbackAgentRevisionArgs,
+  CtoEnsureAgentSessionArgs,
+  CtoListAgentTaskSessionsArgs,
+  CtoClearAgentTaskSessionArgs,
+  CtoGetBudgetSnapshotArgs,
+  CtoTriggerAgentWakeupArgs,
+  CtoTriggerAgentWakeupResult,
+  CtoListAgentRunsArgs,
+  CtoGetAgentCoreMemoryArgs,
+  CtoUpdateAgentCoreMemoryArgs,
+  CtoListAgentSessionLogsArgs,
+  CtoUpdateIdentityArgs,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   KeybindingOverride,
@@ -245,8 +268,6 @@ import type {
   MissionStep,
   MissionSummary,
   MissionsEventPayload,
-  MissionPlannerAttempt,
-  MissionPlannerRun,
   PhaseProfile,
   SavePhaseProfileArgs,
   ListPhaseProfilesArgs,
@@ -259,10 +280,6 @@ import type {
   MissionDashboardSnapshot,
   MissionPreflightRequest,
   MissionPreflightResult,
-  PlanMissionArgs,
-  PlanMissionResult,
-  ListPlannerRunsArgs,
-  GetPlannerAttemptArgs,
   GetOrchestratorGateReportArgs,
   GetOrchestratorRunGraphArgs,
   ListOrchestratorRunsArgs,
@@ -420,11 +437,6 @@ declare global {
         getDashboard: () => Promise<MissionDashboardSnapshot>;
         preflight: (args: MissionPreflightRequest) => Promise<MissionPreflightResult>;
         onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
-      };
-      planner: {
-        planMission: (args: PlanMissionArgs) => Promise<PlanMissionResult>;
-        getRuns: (args?: ListPlannerRunsArgs) => Promise<MissionPlannerRun[]>;
-        getAttempt: (args: GetPlannerAttemptArgs) => Promise<MissionPlannerAttempt | null>;
       };
       orchestrator: {
         listRuns: (args?: ListOrchestratorRunsArgs) => Promise<OrchestratorRun[]>;
@@ -759,6 +771,19 @@ declare global {
         ensureSession: (args?: CtoEnsureSessionArgs) => Promise<AgentChatSession>;
         updateCoreMemory: (args: CtoUpdateCoreMemoryArgs) => Promise<CtoSnapshot>;
         listSessionLogs: (args?: CtoListSessionLogsArgs) => Promise<CtoSessionLogEntry[]>;
+        updateIdentity: (args: { patch: Record<string, unknown> }) => Promise<CtoSnapshot>;
+        listAgents: (args?: CtoListAgentsArgs) => Promise<AgentIdentity[]>;
+        saveAgent: (args: CtoSaveAgentArgs) => Promise<AgentIdentity>;
+        removeAgent: (args: CtoRemoveAgentArgs) => Promise<void>;
+        listAgentRevisions: (args: CtoListAgentRevisionsArgs) => Promise<AgentConfigRevision[]>;
+        rollbackAgentRevision: (args: CtoRollbackAgentRevisionArgs) => Promise<AgentIdentity>;
+        ensureAgentSession: (args: CtoEnsureAgentSessionArgs) => Promise<AgentChatSession>;
+        getBudgetSnapshot: (args?: CtoGetBudgetSnapshotArgs) => Promise<AgentBudgetSnapshot>;
+        triggerAgentWakeup: (args: CtoTriggerAgentWakeupArgs) => Promise<CtoTriggerAgentWakeupResult>;
+        listAgentRuns: (args?: CtoListAgentRunsArgs) => Promise<WorkerAgentRun[]>;
+        getAgentCoreMemory: (args: CtoGetAgentCoreMemoryArgs) => Promise<AgentCoreMemory>;
+        updateAgentCoreMemory: (args: CtoUpdateAgentCoreMemoryArgs) => Promise<AgentCoreMemory>;
+        listAgentSessionLogs: (args: CtoListAgentSessionLogsArgs) => Promise<AgentSessionLogEntry[]>;
       };
     };
   }

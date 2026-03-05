@@ -295,9 +295,15 @@ export function PhaseCardEditor({
 
           {/* Clarification / askQuestions */}
           <div className="space-y-1">
-            <span style={labelStyle}>CLARIFICATION</span>
+            <span style={labelStyle} title={phase.orderingConstraints.mustBeFirst
+              ? "When enabled, the coordinator must ask clarifying questions before starting this phase"
+              : "When enabled, the coordinator may ask clarifying questions when uncertain"
+            }>USER CLARIFICATIONS</span>
             <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }} title={phase.orderingConstraints.mustBeFirst
+                ? "Planning phase: coordinator MUST ask before proceeding"
+                : "Other phases: coordinator MAY ask when genuinely uncertain"
+              }>
                 <input
                   type="checkbox"
                   checked={phase.askQuestions.enabled}

@@ -424,6 +424,13 @@ export type EffectiveProjectConfig = {
   ai?: AiConfig;
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
+  cto?: {
+    companyBudgetMonthlyCents?: number;
+    budgetTelemetry?: {
+      enabled?: boolean;
+      codexBarCommand?: string;
+    };
+  };
 };
 
 export type ProjectConfigValidationIssue = {

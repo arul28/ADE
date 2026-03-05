@@ -100,8 +100,6 @@ export const NOISY_EVENT_TYPES = new Set([
   "dynamic_cap",
 ]);
 
-export const PLANNER_STEP_KEY = "planner";
-
 export const STALE_HEARTBEAT_THRESHOLD_MINUTES = 3;
 
 export const METRIC_TOGGLE_ORDER: MissionMetricToggle[] = [

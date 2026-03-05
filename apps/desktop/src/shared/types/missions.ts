@@ -136,6 +136,32 @@ export type PlannerClarifyingAnswer = {
   answeredAt: string;
 };
 
+// ---------------------------------------------------------------------------
+// Coordinator clarification quiz types (ask_user structured questions)
+// ---------------------------------------------------------------------------
+
+export type ClarificationQuestion = {
+  question: string;
+  context?: string;
+  options?: string[]; // optional multiple choice
+  defaultAssumption?: string;
+  impact?: string;
+};
+
+export type ClarificationAnswer = {
+  questionIndex: number;
+  answer: string; // free text or selected option
+  source: "user" | "default_assumption";
+  markedConfusing?: boolean; // user flagged as unclear
+};
+
+export type ClarificationQuiz = {
+  questions: ClarificationQuestion[];
+  answers: ClarificationAnswer[];
+  phase?: string;
+  submittedAt?: string;
+};
+
 export type PlannerStepPlan = {
   stepId: string;
   name: string;
@@ -474,7 +500,6 @@ export type CreateMissionArgs = {
   targetMachineId?: string | null;
   plannerEngine?: MissionPlannerEngine;
   planningTimeoutMs?: number;
-  allowPlanningQuestions?: boolean;
   autostart?: boolean;
   launchMode?: "autopilot" | "manual";
   autopilotExecutor?: OrchestratorExecutorKind;
@@ -569,16 +594,6 @@ export type PlanMissionResult = {
     kind: string;
     metadata: Record<string, unknown>;
   }>;
-};
-
-export type ListPlannerRunsArgs = {
-  missionId?: string;
-  limit?: number;
-};
-
-export type GetPlannerAttemptArgs = {
-  plannerRunId: string;
-  attemptId: string;
 };
 
 export type UpdateMissionArgs = {

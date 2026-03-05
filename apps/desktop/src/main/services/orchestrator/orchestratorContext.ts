@@ -135,11 +135,8 @@ export type MissionRunStartArgs = {
 };
 
 export type MissionRunStartResult = {
-  blockedByPlanReview: boolean;
   started: ReturnType<ReturnType<typeof createOrchestratorService>["startRunFromMission"]> | null;
   mission: MissionDetail | null;
-  /** Resolves when async planner phase + post-planning execution setup completes. */
-  planningComplete?: Promise<void>;
 };
 
 export type OrchestratorHookEvent = "TeammateIdle" | "TaskCompleted";
@@ -418,8 +415,6 @@ export const DECISION_TIMEOUT_CAP_MS_BY_HOURS: Record<number, number> = {
   48: 48 * 60 * 60 * 1_000
 };
 export const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "superseded", "canceled"]);
-export const TRANSIENT_ERROR_CLASSES = new Set(["transient", "claim_conflict", "resume_recovered"]);
-
 export const CALL_TYPE_DEFAULTS: Record<OrchestratorCallType, ResolvedCallTypeConfig> = {
   coordinator: { provider: "claude", model: "anthropic/claude-sonnet-4-6", reasoningEffort: "high" },
   chat_response: { provider: "claude", model: "anthropic/claude-sonnet-4-6", reasoningEffort: "medium" },
@@ -576,14 +571,6 @@ export function parseSteeringDirective(value: unknown, missionId: string): UserS
 export function parseChatVisibility(value: unknown): OrchestratorChatVisibilityMode | null {
   if (value === "full" || value === "digest_only" || value === "metadata_only") return value;
   return null;
-}
-
-export function classifyFailureTier(args: {
-  errorClass: string;
-}): RecoveryDiagnosisTier {
-  if (TRANSIENT_ERROR_CLASSES.has(args.errorClass)) return "transient";
-  if (args.errorClass === "policy") return "blocker";
-  return "semantic";
 }
 
 export function parseChatDeliveryState(value: unknown): OrchestratorChatDeliveryState | null {
@@ -1049,15 +1036,6 @@ export function extractRunFailureMessage(graph: OrchestratorRunGraph): string | 
   return latestFailure?.errorMessage ?? null;
 }
 
-// ── PR Strategy Inference ────────────────────────────────────────
-
-export function inferPrStrategy(args: { laneCount: number; lanesAreCoupled: boolean; userOverride?: PrStrategy }): PrStrategy {
-  if (args.userOverride) return args.userOverride;
-  if (args.laneCount === 1) return { kind: "per-lane" };
-  if (args.lanesAreCoupled) return { kind: "integration" };
-  return { kind: "queue" };
-}
-
 // ── Hook Command Runner ──────────────────────────────────────────
 
 export const runOrchestratorHookCommand: OrchestratorHookCommandRunner = async (args) => {
@@ -1419,20 +1397,3 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
   return { profiles };
 }
 
-export function getModelCapabilitiesFromRegistry(modelId: string): ModelCapabilityProfile | null {
-  const descriptor = getModelById(modelId);
-  if (!descriptor) return null;
-  return {
-    provider: descriptor.family,
-    modelId: descriptor.sdkModelId,
-    displayName: descriptor.displayName,
-    strengths: [],
-    weaknesses: [],
-    costTier: descriptor.family === "anthropic"
-      ? (descriptor.sdkModelId.includes("opus") ? "very_high" : descriptor.sdkModelId.includes("haiku") ? "low" : "medium")
-      : "medium",
-    bestFor: [],
-    parallelCapable: true,
-    reasoningTiers: ["low", "medium", "high"]
-  };
-}

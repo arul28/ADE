@@ -37,7 +37,6 @@ import type {
   UsageActiveSession,
   UsageMissionBreakdown,
   OrchestratorContextCheckpoint,
-  OrchestratorLaneDecision,
 } from "../../../shared/types";
 
 // ── Token Cost Estimation ────────────────────────────────────────
@@ -386,76 +385,6 @@ export function createContextCheckpoint(
     ]
   );
   return checkpoint;
-}
-
-// ── Lane Decision Recording ──────────────────────────────────────
-
-export function recordLaneDecision(
-  ctx: OrchestratorContext,
-  args: {
-    missionId: string;
-    runId?: string | null;
-    stepId?: string | null;
-    stepKey?: string | null;
-    laneId?: string | null;
-    decisionType: OrchestratorLaneDecision["decisionType"];
-    validatorOutcome: OrchestratorLaneDecision["validatorOutcome"];
-    ruleHits?: string[];
-    rationale: string;
-    metadata?: Record<string, unknown> | null;
-  }
-): OrchestratorLaneDecision | null {
-  const missionIdentity = getMissionIdentity(ctx, args.missionId);
-  if (!missionIdentity) return null;
-  const decision: OrchestratorLaneDecision = {
-    id: randomUUID(),
-    missionId: args.missionId,
-    runId: args.runId ?? null,
-    stepId: args.stepId ?? null,
-    stepKey: args.stepKey ?? null,
-    laneId: args.laneId ?? null,
-    decisionType: args.decisionType,
-    validatorOutcome: args.validatorOutcome,
-    ruleHits: Array.isArray(args.ruleHits) ? args.ruleHits.slice(0, 64) : [],
-    rationale: args.rationale,
-    metadata: args.metadata ?? null,
-    createdAt: nowIso()
-  };
-  ctx.db.run(
-    `
-      insert into orchestrator_lane_decisions(
-        id,
-        project_id,
-        mission_id,
-        run_id,
-        step_id,
-        step_key,
-        lane_id,
-        decision_type,
-        validator_outcome,
-        rule_hits_json,
-        rationale,
-        metadata_json,
-        created_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      decision.id,
-      missionIdentity.projectId,
-      decision.missionId,
-      decision.runId,
-      decision.stepId,
-      decision.stepKey,
-      decision.laneId,
-      decision.decisionType,
-      decision.validatorOutcome,
-      JSON.stringify(decision.ruleHits),
-      decision.rationale,
-      decision.metadata ? JSON.stringify(decision.metadata) : null,
-      decision.createdAt
-    ]
-  );
-  return decision;
 }
 
 // ── Mission Metric Sample Recording ──────────────────────────────

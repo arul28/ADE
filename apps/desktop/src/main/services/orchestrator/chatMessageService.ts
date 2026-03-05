@@ -245,24 +245,6 @@ export function loadChatSessionStateFromMetadata(
   return null;
 }
 
-export function persistChatSessionState(
-  ctx: OrchestratorContext,
-  missionId: string,
-  state: OrchestratorChatSessionState
-): void {
-  ctx.activeChatSessions.set(missionId, state);
-  try {
-    updateMissionMetadata(ctx, missionId, (metadata) => {
-      metadata[ORCHESTRATOR_CHAT_SESSION_METADATA_KEY] = state;
-    });
-  } catch (error) {
-    ctx.logger.debug("ai_orchestrator.chat_session_persist_failed", {
-      missionId,
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
-}
-
 // ── Chat Context Builders ────────────────────────────────────────
 
 export function formatRecentChatContext(
@@ -281,15 +263,6 @@ export function formatRecentChatContext(
   });
   const rendered = ["Recent mission chat:", ...lines, ""].join("\n");
   return clipTextForContext(rendered, MAX_CHAT_CONTEXT_CHARS);
-}
-
-export function buildRecentChatContext(
-  ctx: OrchestratorContext,
-  missionId: string,
-  limit = MAX_CHAT_CONTEXT_MESSAGES
-): string {
-  const messages = ctx.chatMessages.get(missionId) ?? loadChatMessagesFromMetadata(ctx, missionId);
-  return formatRecentChatContext(messages, limit);
 }
 
 // ── Orchestrator Message Emission ────────────────────────────────

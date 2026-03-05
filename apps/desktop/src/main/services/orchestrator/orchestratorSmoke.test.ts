@@ -152,16 +152,6 @@ function createMockAiIntegrationService() {
         durationMs: 500
       };
     }),
-    planMission: vi.fn().mockResolvedValue({
-      text: "{}",
-      structuredOutput: null,
-      provider: "claude",
-      model: "sonnet",
-      sessionId: null,
-      inputTokens: 100,
-      outputTokens: 50,
-      durationMs: 500
-    }),
     listModels: vi.fn().mockResolvedValue([])
   } as any;
 }
@@ -768,16 +758,6 @@ describe("orchestrator smoke", () => {
           outputTokens: 16,
           durationMs: 30
         };
-      }),
-      planMission: vi.fn().mockResolvedValue({
-        text: JSON.stringify(complexPlan),
-        structuredOutput: complexPlan,
-        provider: "claude",
-        model: "claude-sonnet-4-6",
-        sessionId: "complex-plan-1",
-        inputTokens: 210,
-        outputTokens: 450,
-        durationMs: 80
       }),
       listModels: vi.fn().mockResolvedValue([])
     } as any;

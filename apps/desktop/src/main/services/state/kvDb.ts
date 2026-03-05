@@ -1553,6 +1553,110 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_attempt_transcripts_attempt on attempt_transcripts(attempt_id)");
   db.run("create index if not exists idx_attempt_transcripts_run on attempt_transcripts(run_id)");
+
+  // Phase 4 W2: Worker agents org chart
+  db.run(`
+    create table if not exists worker_agents (
+      id text primary key,
+      project_id text not null,
+      slug text not null,
+      name text not null,
+      role text not null default 'generalist',
+      title text,
+      reports_to text,
+      capabilities_json text not null default '[]',
+      status text not null default 'idle',
+      adapter_type text not null default 'claude-local',
+      adapter_config_json text not null default '{}',
+      runtime_config_json text not null default '{}',
+      budget_monthly_cents integer not null default 0,
+      spent_monthly_cents integer not null default 0,
+      last_heartbeat_at text,
+      created_at text not null,
+      updated_at text not null,
+      deleted_at text
+    )
+  `);
+  db.run("create index if not exists idx_worker_agents_project on worker_agents(project_id)");
+  db.run("create index if not exists idx_worker_agents_project_active on worker_agents(project_id, deleted_at)");
+
+  // Phase 4 W2: Worker agent config revisions (audit trail)
+  db.run(`
+    create table if not exists worker_agent_revisions (
+      id text primary key,
+      project_id text not null,
+      agent_id text not null,
+      before_json text not null,
+      after_json text not null,
+      changed_keys_json text not null default '[]',
+      had_redactions integer not null default 0,
+      actor text not null default 'user',
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_worker_agent_revisions_agent on worker_agent_revisions(project_id, agent_id)");
+
+  // Phase 4 W2: Worker agent task sessions (persistent per-agent task context)
+  db.run(`
+    create table if not exists worker_agent_task_sessions (
+      id text primary key,
+      project_id text not null,
+      agent_id text not null,
+      adapter_type text not null,
+      task_key text not null,
+      payload_json text not null default '{}',
+      cleared_at text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_worker_agent_task_sessions_lookup on worker_agent_task_sessions(project_id, agent_id, adapter_type, task_key)");
+
+  // Phase 4 W3: Worker agent heartbeat runs
+  db.run(`
+    create table if not exists worker_agent_runs (
+      id text primary key,
+      project_id text not null,
+      agent_id text not null,
+      status text not null default 'pending',
+      wakeup_reason text not null default 'timer',
+      task_key text,
+      issue_key text,
+      execution_run_id text,
+      execution_locked_at text,
+      context_json text not null default '{}',
+      result_json text,
+      error_message text,
+      started_at text,
+      finished_at text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_worker_agent_runs_agent on worker_agent_runs(project_id, agent_id)");
+  db.run("create index if not exists idx_worker_agent_runs_status on worker_agent_runs(project_id, status)");
+
+  // Phase 4 W2: Worker agent cost events (budget tracking)
+  db.run(`
+    create table if not exists worker_agent_cost_events (
+      id text primary key,
+      project_id text not null,
+      agent_id text not null,
+      run_id text,
+      session_id text,
+      provider text not null,
+      model_id text,
+      input_tokens integer,
+      output_tokens integer,
+      cost_cents integer not null default 0,
+      estimated integer not null default 0,
+      source text not null default 'manual',
+      occurred_at text not null,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_worker_agent_cost_events_agent on worker_agent_cost_events(project_id, agent_id)");
+  db.run("create index if not exists idx_worker_agent_cost_events_month on worker_agent_cost_events(project_id, agent_id, occurred_at)");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

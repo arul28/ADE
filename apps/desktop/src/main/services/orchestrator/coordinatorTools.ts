@@ -3868,23 +3868,84 @@ export function createCoordinatorToolSet(deps: {
 
   const ask_user = tool({
     description:
-      "Escalate a genuinely blocking question to the human user. Creates an intervention visible in the UI.",
+      "Ask the user one or more structured clarification questions. Creates a single quiz-style intervention visible in the UI. Bundle all related questions in one call.",
     inputSchema: z.object({
-      question: z.string().describe("The question to ask the user"),
-      context: z
-        .string()
-        .optional()
-        .describe("Additional context for the question"),
-      urgency: z.enum(["low", "normal", "high"]).default("normal")
+      questions: z.array(z.object({
+        question: z.string().describe("The question text"),
+        context: z.string().optional().describe("Additional context for this question"),
+        options: z.array(z.string()).optional().describe("Optional multiple-choice options"),
+        defaultAssumption: z.string().optional().describe("What you will assume if the user does not answer"),
+        impact: z.string().optional().describe("Why this question matters / what it affects"),
+      })).min(1).describe("Array of structured questions to ask"),
+      phase: z.string().optional().describe("Which phase this quiz is for"),
     }),
-    execute: async ({ question, context, urgency }) => {
+    execute: async ({ questions, phase }) => {
       try {
-        return openHumanIntervention({
-          source: "ask_user",
-          question,
-          context: context ?? null,
-          urgency
+        const firstQuestion = questions[0].question.trim();
+        if (!firstQuestion.length) {
+          return { ok: false as const, error: "First question text is required." };
+        }
+
+        const mission = missionService.get(missionId);
+        if (!mission) {
+          return { ok: false as const, error: `Mission not found: ${missionId}` };
+        }
+
+        const title = questions.length === 1
+          ? (firstQuestion.length > 96 ? "Coordinator clarification needed" : `Clarification: ${firstQuestion}`)
+          : `Coordinator has ${questions.length} clarification questions`;
+        const bodyLines = questions.map((q: { question: string }, i: number) => `Q${i + 1}: ${q.question}`);
+        const body = bodyLines.join("\n");
+
+        const intervention = missionService.addIntervention({
+          missionId,
+          interventionType: "manual_input",
+          title,
+          body,
+          requestedAction: "Answer the clarification questions to unblock coordinator execution.",
+          pauseMission: false,
+          metadata: {
+            source: "ask_user",
+            runId,
+            quizMode: true,
+            questions,
+            phase: phase ?? null,
+            questionCount: questions.length,
+          }
         });
+
+        orchestratorService.appendRuntimeEvent({
+          runId,
+          eventType: "intervention_opened",
+          payload: {
+            missionId,
+            interventionId: intervention.id,
+            interventionType: intervention.interventionType,
+            source: "ask_user",
+            quizMode: true,
+            questionCount: questions.length,
+            phase: phase ?? null,
+          },
+        });
+        orchestratorService.appendTimelineEvent({
+          runId,
+          eventType: "intervention_opened",
+          reason: "coordinator_escalation",
+          detail: {
+            interventionId: intervention.id,
+            source: "ask_user",
+            quizMode: true,
+            questionCount: questions.length,
+          }
+        });
+        logger.info("coordinator.ask_user_quiz", {
+          runId,
+          missionId,
+          interventionId: intervention.id,
+          questionCount: questions.length,
+          phase: phase ?? null,
+        });
+        return { ok: true as const, interventionId: intervention.id, questionCount: questions.length, deduped: false };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.ask_user.error", { error: msg });

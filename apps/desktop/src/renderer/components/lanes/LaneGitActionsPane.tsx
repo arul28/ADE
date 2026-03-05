@@ -7,17 +7,19 @@ import {
   Stack,
   DotsThree,
   ArrowsClockwise,
-  Upload
+  Upload,
+  Warning
 } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { CommitTimeline } from "./CommitTimeline";
 import type {
   DiffChanges,
   FileChange,
   GitCommitSummary,
+  GitConflictState,
   GitRecommendedAction,
   GitStashSummary,
   GitSyncMode,
@@ -120,6 +122,7 @@ export function LaneGitActionsPane({
   const [showStashes, setShowStashes] = useState(true);
   const [amendCommit, setAmendCommit] = useState(false);
   const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(null);
+  const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(null);
   const pullDropdownRef = useRef<HTMLDivElement>(null);
   const pushDropdownRef = useRef<HTMLDivElement>(null);
   const moreDropdownRef = useRef<HTMLDivElement>(null);
@@ -201,10 +204,11 @@ export function LaneGitActionsPane({
 
   const refreshGitMeta = async () => {
     if (!laneId) return;
-    const [stashesResult, commitsResult, syncStatusResult] = await Promise.allSettled([
+    const [stashesResult, commitsResult, syncStatusResult, conflictResult] = await Promise.allSettled([
       window.ade.git.stashList({ laneId }),
       window.ade.git.listRecentCommits({ laneId, limit: 20 }),
-      window.ade.git.getSyncStatus({ laneId })
+      window.ade.git.getSyncStatus({ laneId }),
+      window.ade.git.getConflictState(laneId)
     ]);
     if (stashesResult.status === "fulfilled") {
       setStashes(stashesResult.value);
@@ -217,6 +221,12 @@ export function LaneGitActionsPane({
     } else {
       // Avoid leaving stale "next action" guidance visible when sync refresh fails.
       setSyncStatus(null);
+    }
+    if (conflictResult.status === "fulfilled") {
+      const cs = conflictResult.value;
+      setStuckRebase(cs.kind === "rebase" && cs.inProgress ? cs : null);
+    } else {
+      setStuckRebase(null);
     }
   };
 
@@ -308,6 +318,7 @@ export function LaneGitActionsPane({
     setMoreDropdownOpen(false);
     setAmendCommit(false);
     setAutoRebaseStatus(null);
+    setStuckRebase(null);
     if (!laneId) return;
     refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     void refreshAutoRebaseStatus();
@@ -605,14 +616,14 @@ export function LaneGitActionsPane({
             e.stopPropagation();
             toggleStageFile(file.path, mode === "staged");
           }}
-          title={mode === "staged" ? "Unstage" : "Stage"}
+          title={mode === "staged" ? "Click to unstage this file (remove from next commit)" : "Click to stage this file (include in next commit)"}
         >
           {mode === "staged" ? <Check size={8} style={{ color: COLORS.accent }} /> : null}
         </button>
-        <span className="shrink-0" style={{ width: 6, height: 6, borderRadius: "50%", background: kindColor }} />
+        <span className="shrink-0" title={`${file.kind} file`} style={{ width: 6, height: 6, borderRadius: "50%", background: kindColor }} />
         <span className="truncate flex-1" style={{ fontSize: 11 }}>{file.path}</span>
         {(alsoStaged || alsoUnstaged) ? (
-          <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>PARTIAL</span>
+          <span title="This file has both staged and unstaged changes — only part of the diff is staged for commit" style={inlineBadge(COLORS.warning, { fontSize: 9 })}>PARTIAL</span>
         ) : null}
       </div>
     );
@@ -623,7 +634,7 @@ export function LaneGitActionsPane({
       {/* Section A -- Lane Header */}
       <div className="shrink-0" style={{ padding: "10px 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}>
         <div className="flex items-center" style={{ gap: 12 }}>
-          <span className="shrink-0" style={{
+          <span className="shrink-0" title={lane?.laneType === "primary" ? "Primary lane" : lane?.status.dirty ? "Lane has uncommitted changes" : "Lane is clean"} style={{
             width: 10, height: 10, borderRadius: "50%",
             background: headerDotColor,
           }} />
@@ -634,11 +645,11 @@ export function LaneGitActionsPane({
           }} className="truncate" title={lane?.name}>{lane?.name ?? "NO LANE"}</span>
           {lane ? (
             <>
-              <span style={{
+              <span title={`Git branch: ${lane.branchRef}`} style={{
                 padding: "3px 8px", fontSize: 10, fontWeight: 600, fontFamily: MONO_FONT,
                 color: COLORS.accent, background: `${COLORS.accent}15`, letterSpacing: "0.5px",
               }}>{lane.branchRef}</span>
-              <span style={{
+              <span title={lane.status.dirty ? "Worktree has uncommitted changes" : "Worktree is clean — no uncommitted changes"} style={{
                 padding: "3px 8px", fontSize: 10, fontWeight: 600, fontFamily: MONO_FONT,
                 color: lane.status.dirty ? COLORS.warning : "#10B981",
                 background: lane.status.dirty ? `${COLORS.warning}15` : "#10B98115",
@@ -651,7 +662,7 @@ export function LaneGitActionsPane({
               fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim,
               letterSpacing: "0.5px", marginLeft: "auto", whiteSpace: "nowrap",
             }}>
-              base {"\u2191"}{lane.status.ahead} {"\u2193"}{lane.status.behind}
+              <span title={`${lane.status.ahead} commit${lane.status.ahead === 1 ? "" : "s"} ahead of base, ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind base (parent lane)`}>base {"\u2191"}{lane.status.ahead} {"\u2193"}{lane.status.behind}</span>
               {syncStatus ? (
                 <>
                   {" \u00B7 "}
@@ -660,7 +671,7 @@ export function LaneGitActionsPane({
                       remote {"\u2191"}{syncStatus.ahead} {"\u2193"}{syncStatus.behind}
                     </span>
                   ) : (
-                    <span style={{ color: COLORS.warning }}>remote unpublished</span>
+                    <span title="No remote tracking branch — push to publish this lane" style={{ color: COLORS.warning }}>remote unpublished</span>
                   )}
                 </>
               ) : null}
@@ -668,11 +679,84 @@ export function LaneGitActionsPane({
           ) : null}
         </div>
         {lane && originLabel ? (
-          <div style={{ marginTop: 4, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}>
+          <div title="The parent lane this branch was forked from. ADE tracks divergence and suggests rebases." style={{ marginTop: 4, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}>
             {originLabel}
           </div>
         ) : null}
       </div>
+
+      {/* Stuck Rebase Banner */}
+      {stuckRebase ? (
+        <div className="shrink-0" style={{
+          padding: "10px 16px",
+          background: `${COLORS.danger}12`,
+          borderBottom: `1px solid ${COLORS.danger}30`,
+        }}>
+          <div className="flex items-center" style={{ gap: 10 }}>
+            <Warning size={16} weight="bold" color={COLORS.danger} style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "0.8px", textTransform: "uppercase", color: COLORS.danger }}>
+                Rebase in progress — worktree locked
+              </div>
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2, letterSpacing: "0.3px" }}>
+                {stuckRebase.conflictedFiles.length > 0
+                  ? `${stuckRebase.conflictedFiles.length} conflicted file${stuckRebase.conflictedFiles.length === 1 ? "" : "s"}. Commits and pushes are blocked until resolved.`
+                  : "An interrupted rebase is blocking commits and pushes. Abort or continue to unlock."}
+              </div>
+            </div>
+            <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
+              {stuckRebase.canAbort && (
+                <button
+                  type="button"
+                  style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                  title="Abort the in-progress rebase and restore the branch to its pre-rebase state"
+                  disabled={busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    runAction("abort rebase", async () => {
+                      await window.ade.git.rebaseAbort(laneId);
+                    });
+                  }}
+                >
+                  ABORT REBASE
+                </button>
+              )}
+              {stuckRebase.canContinue && (
+                <button
+                  type="button"
+                  style={{
+                    ...primaryButton({ height: 28, padding: "0 12px", fontSize: 10 }),
+                  }}
+                  title="Continue the rebase after resolving conflicts"
+                  disabled={busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    runAction("continue rebase", async () => {
+                      await window.ade.git.rebaseContinue(laneId);
+                    });
+                  }}
+                >
+                  CONTINUE REBASE
+                </button>
+              )}
+            </div>
+          </div>
+          {stuckRebase.conflictedFiles.length > 0 && (
+            <div style={{ marginTop: 6, paddingLeft: 26 }}>
+              {stuckRebase.conflictedFiles.slice(0, 5).map((f) => (
+                <div key={f} style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.danger, lineHeight: 1.6, letterSpacing: "0.3px" }}>
+                  {f}
+                </div>
+              ))}
+              {stuckRebase.conflictedFiles.length > 5 && (
+                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.3px" }}>
+                  +{stuckRebase.conflictedFiles.length - 5} more
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
 
       {/* Section B -- Sync Actions Bar */}
       <div className="shrink-0 flex items-center" style={{ padding: "8px 16px", gap: 8, borderBottom: `1px solid ${COLORS.border}` }}>
@@ -688,7 +772,7 @@ export function LaneGitActionsPane({
               }}
               disabled={!laneId || busyAction != null}
               onClick={() => { if (laneId) runPull(syncMode); }}
-              title={`Pull (${syncMode})`}
+              title={`Pull from remote using ${syncMode} strategy. Fetches and integrates upstream changes into this lane.`}
             >
               <ArrowDown size={14} weight={pullHighlighted ? "bold" : "regular"} />
             </button>
@@ -696,6 +780,7 @@ export function LaneGitActionsPane({
               type="button"
               style={splitBtnRight(false)}
               onClick={() => setPullDropdownOpen((prev) => !prev)}
+              title="Pull options: choose merge, rebase, or fetch-only"
             >
               <CaretDown size={12} />
             </button>
@@ -710,6 +795,7 @@ export function LaneGitActionsPane({
                   onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   onClick={() => { setSyncMode(mode); if (laneId) runPull(mode); }}
+                  title={mode === "merge" ? "Fetch remote changes and merge them into your branch (creates a merge commit)" : "Fetch remote changes and replay your commits on top (linear history, no merge commit)"}
                 >
                   {syncMode === mode ? <Check size={12} /> : <span style={{ width: 12 }} />}
                   <span>PULL ({mode.toUpperCase()})</span>
@@ -722,6 +808,7 @@ export function LaneGitActionsPane({
                 onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                 onClick={() => { setPullDropdownOpen(false); if (laneId) runAction("fetch", async () => { await window.ade.git.fetch({ laneId }); }); }}
+                title="Download remote changes without integrating them. Updates remote tracking refs only."
               >
                 <span style={{ width: 12 }} />
                 <span>FETCH ONLY</span>
@@ -742,7 +829,7 @@ export function LaneGitActionsPane({
               }}
               disabled={!laneId || busyAction != null}
               onClick={() => runPush(false)}
-              title={pushButtonTitle}
+              title={syncStatus?.hasUpstream === false ? "Publish this lane to remote for the first time (git push -u origin)" : "Push local commits to the remote tracking branch"}
             >
               <Upload size={14} weight={pushHighlighted ? "bold" : "regular"} />
             </button>
@@ -755,7 +842,7 @@ export function LaneGitActionsPane({
               }}
               disabled={!laneId || busyAction != null}
               onClick={() => setPushDropdownOpen((prev) => !prev)}
-              title="Push options"
+              title="Push options: normal push or force push with lease"
             >
               <CaretDown size={12} />
             </button>
@@ -768,6 +855,7 @@ export function LaneGitActionsPane({
                 onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                 onClick={() => runPush(false)}
+                title={syncStatus?.hasUpstream === false ? "Create the remote branch and push all commits" : "Push new local commits to the remote branch"}
               >
                 <span>{syncStatus?.hasUpstream === false ? "PUBLISH LANE" : "PUSH UPDATES"}</span>
               </button>
@@ -777,6 +865,7 @@ export function LaneGitActionsPane({
                 onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                 onClick={() => runPush(true)}
+                title="Force-push with lease: overwrites remote history safely (fails if someone else pushed). Required after rebase or amend."
               >
                 <div>
                   <div style={{ fontWeight: 600, color: forcePushHighlighted ? COLORS.warning : COLORS.textSecondary }}>
@@ -797,7 +886,7 @@ export function LaneGitActionsPane({
               opacity: (!laneId || busyAction != null) ? 0.4 : 1,
               pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
             }}
-            title="Rebase now (local only)"
+            title="Rebase this lane onto its parent branch locally. Does not push — use 'Rebase and push' to also update remote."
             disabled={!laneId || busyAction != null}
             onClick={() => {
               if (!laneId) return;
@@ -834,7 +923,7 @@ export function LaneGitActionsPane({
               opacity: (!laneId || busyAction != null) ? 0.4 : 1,
               pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
             }}
-            title="Rebase and push (local + remote)"
+            title="Rebase this lane onto its parent, then force-push the rewritten history to remote. Combines rebase + push in one step."
             disabled={!laneId || busyAction != null}
             onClick={() => runRebaseAndPushFlow(true)}
           >
@@ -849,7 +938,7 @@ export function LaneGitActionsPane({
               opacity: (!laneId || busyAction != null) ? 0.4 : 1,
               pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
             }}
-            title="View rebase details"
+            title="Open detailed rebase run history: see which lanes were rebased, conflicts, and timing"
             disabled={!laneId || busyAction != null}
             onClick={() => onViewRebaseDetails?.()}
           >
@@ -869,7 +958,7 @@ export function LaneGitActionsPane({
             background: "transparent", color: COLORS.textMuted, cursor: "pointer",
           }}
           onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
-          title="Refresh (fetches remote)"
+          title="Refresh all git state: fetches from remote, reloads file changes, commits, and sync status"
         >
           <ArrowsClockwise size={14} className={cn(loading && "animate-spin")} />
         </button>
@@ -884,7 +973,7 @@ export function LaneGitActionsPane({
               border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 0,
               background: "transparent", color: COLORS.textMuted, cursor: "pointer",
             }}
-            title="More actions"
+            title="More git actions: stash, revert commits, cherry-pick"
             onClick={() => setMoreDropdownOpen((prev) => !prev)}
           >
             <DotsThree size={16} weight="bold" />
@@ -920,7 +1009,7 @@ export function LaneGitActionsPane({
 
       {/* Section C -- Commit Area */}
       <div className="shrink-0 flex items-center" style={{ padding: "8px 16px", gap: 8, borderBottom: `1px solid ${COLORS.border}` }}>
-        <span style={{ ...LABEL_STYLE, color: COLORS.textDim, fontSize: 10, fontWeight: 600 }}>COMMIT</span>
+        <span title="Create a git commit with staged changes" style={{ ...LABEL_STYLE, color: COLORS.textDim, fontSize: 10, fontWeight: 600 }}>COMMIT</span>
         <input
           style={{
             height: 32, flex: 1,
@@ -929,6 +1018,7 @@ export function LaneGitActionsPane({
             background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`,
             color: COLORS.textSecondary, outline: "none",
           }}
+          title="Type a commit message, then press Cmd+Enter or click COMMIT. Stage files first using the checkboxes below."
           placeholder="COMMIT MESSAGE..."
           value={commitMessage}
           onChange={(e) => setCommitMessage(e.target.value)}
@@ -952,7 +1042,7 @@ export function LaneGitActionsPane({
             borderColor: amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder,
             background: amendCommit ? `${COLORS.warning}10` : "transparent",
           }}
-          title="Amend the latest commit using this message"
+          title={amendCommit ? "Amend mode ON: the next commit will replace the latest commit instead of creating a new one. Click to toggle off." : "Toggle amend mode: rewrite the latest commit with new staged changes and/or a new message"}
           disabled={busyAction != null}
           onClick={() => setAmendCommit((prev) => !prev)}
         >
@@ -965,6 +1055,7 @@ export function LaneGitActionsPane({
             opacity: (!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null) ? 0.4 : 1,
             pointerEvents: (!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
           }}
+          title={amendCommit ? "Amend the latest commit with this message and staged changes" : "Create a new commit with the staged changes (Cmd+Enter)"}
           disabled={!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null}
           onClick={() => {
             if (laneId)
@@ -998,27 +1089,27 @@ export function LaneGitActionsPane({
           }}>{nextActionHint.detail}</span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
             {nextActionHint.action === "pull" ? (
-              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runPull(syncMode); }}>
+              <button type="button" title={`Pull upstream changes using ${syncMode} strategy`} style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runPull(syncMode); }}>
                 PULL ({syncMode.toUpperCase()})
               </button>
             ) : null}
             {nextActionHint.action === "rebase_push" ? (
-              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runRebaseAndPushFlow(true)}>
+              <button type="button" title="Rebase onto parent then push rewritten history to remote" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runRebaseAndPushFlow(true)}>
                 Rebase and push (local + remote)
               </button>
             ) : null}
             {nextActionHint.action === "pull" && divergedSync ? (
-              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(true)}>
+              <button type="button" title="Force-push with lease to overwrite remote after local rebase" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(true)}>
                 FORCE PUSH (LEASE)
               </button>
             ) : null}
             {nextActionHint.action === "push" ? (
-              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(false)}>
+              <button type="button" title={syncStatus?.hasUpstream === false ? "Create remote branch and push all commits" : "Push local commits to remote"} style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(false)}>
                 {syncStatus?.hasUpstream === false ? "PUBLISH NOW" : "PUSH NOW"}
               </button>
             ) : null}
             {nextActionHint.action === "force_push_lease" ? (
-              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(true)}>
+              <button type="button" title="Force-push with lease to overwrite remote with your local history" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(true)}>
                 FORCE PUSH NOW
               </button>
             ) : null}
@@ -1030,7 +1121,7 @@ export function LaneGitActionsPane({
         <div className="shrink-0" style={{ padding: "8px 16px", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.5px", borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.info}08`, color: COLORS.info }}>
           <div className="flex items-center gap-2">
             <span className="truncate">Auto-rebase is off. Enable it in Settings to auto-rebase child lanes when parent/main advances.</span>
-            <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), marginLeft: "auto", flexShrink: 0 }} onClick={onOpenSettings}>
+            <button type="button" title="Open lane settings to enable auto-rebase" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), marginLeft: "auto", flexShrink: 0 }} onClick={onOpenSettings}>
               SETTINGS
             </button>
           </div>
@@ -1055,7 +1146,7 @@ export function LaneGitActionsPane({
             {autoRebaseStatus.state !== "autoRebased" ? (
               <div style={{ marginLeft: "auto", flexShrink: 0 }}>
                 {autoRebaseStatus.state === "rebaseConflict" ? (
-                  <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) onResolveRebaseConflict?.(laneId, rebaseConflictParentLaneId); }}>
+                  <button type="button" title="Open the conflict resolution view to manually resolve rebase conflicts" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) onResolveRebaseConflict?.(laneId, rebaseConflictParentLaneId); }}>
                     RESOLVE IN CONFLICTS
                   </button>
                 ) : (
@@ -1078,8 +1169,8 @@ export function LaneGitActionsPane({
               {/* File header */}
               <div className="shrink-0 flex items-center justify-between" style={{ padding: "8px 16px", background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}`, borderRight: `1px solid ${COLORS.border}` }}>
                 <div className="flex items-center" style={{ gap: 8 }}>
-                  <span style={LABEL_STYLE}>FILES</span>
-                  <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{changedFileCount}</span>
+                  <span title="Files with uncommitted changes in this lane's worktree" style={LABEL_STYLE}>FILES</span>
+                  <span title={`${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}`} style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{changedFileCount}</span>
                   {stagedCount > 0 ? (
                     <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}>({stagedCount} STAGED)</span>
                   ) : null}
@@ -1089,16 +1180,17 @@ export function LaneGitActionsPane({
                     type="button"
                     style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", padding: "0 4px", color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }}
                     onClick={() => setShowStashes((prev) => !prev)}
+                    title={showStashes ? "Hide the stash panel" : `Show ${stashes.length} stash${stashes.length === 1 ? "" : "es"} saved in this lane`}
                   >
                     {showStashes ? "HIDE STASHES" : `STASHES (${stashes.length})`}
                   </button>
                   {changes.unstaged.length > 0 ? (
-                    <button type="button" style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "1px", padding: "0 4px", color: COLORS.accent, background: "transparent", border: "none", cursor: "pointer" }} onClick={stageAll}>
+                    <button type="button" title="Stage all unstaged files for the next commit (git add)" style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "1px", padding: "0 4px", color: COLORS.accent, background: "transparent", border: "none", cursor: "pointer" }} onClick={stageAll}>
                       STAGE ALL
                     </button>
                   ) : null}
                   {changes.staged.length > 0 ? (
-                    <button type="button" style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "1px", padding: "0 4px", color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }} onClick={unstageAll}>
+                    <button type="button" title="Remove all files from the staging area (git reset)" style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "1px", padding: "0 4px", color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }} onClick={unstageAll}>
                       UNSTAGE ALL
                     </button>
                   ) : null}
@@ -1119,6 +1211,7 @@ export function LaneGitActionsPane({
                           <button
                             type="button"
                             style={outlineButton({ height: 24, padding: "0 10px", fontSize: 10 })}
+                            title="Save all uncommitted changes to the stash stack (git stash push)"
                             disabled={!laneId || busyAction != null}
                             onClick={() => {
                               if (!laneId) return;
@@ -1142,13 +1235,13 @@ export function LaneGitActionsPane({
                                   <div className="truncate" style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>{stash.subject || stash.ref}</div>
                                   <div className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
                                 </div>
-                                <button type="button" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.info, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash apply", async () => { await window.ade.git.stashApply({ laneId, stashRef: stash.ref }); }); }}>
+                                <button type="button" title="Apply this stash to the worktree without removing it from the stash stack" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.info, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash apply", async () => { await window.ade.git.stashApply({ laneId, stashRef: stash.ref }); }); }}>
                                   APPLY
                                 </button>
-                                <button type="button" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.warning, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash pop", async () => { await window.ade.git.stashPop({ laneId, stashRef: stash.ref }); }); }}>
+                                <button type="button" title="Apply this stash and remove it from the stash stack" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.warning, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash pop", async () => { await window.ade.git.stashPop({ laneId, stashRef: stash.ref }); }); }}>
                                   POP
                                 </button>
-                                <button type="button" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash drop", async () => { await window.ade.git.stashDrop({ laneId, stashRef: stash.ref }); }); }}>
+                                <button type="button" title="Permanently delete this stash entry" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash drop", async () => { await window.ade.git.stashDrop({ laneId, stashRef: stash.ref }); }); }}>
                                   DROP
                                 </button>
                               </div>

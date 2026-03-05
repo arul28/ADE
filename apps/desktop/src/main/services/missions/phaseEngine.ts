@@ -7,7 +7,14 @@ import type {
   ModelConfig,
   MissionPhaseConfiguration,
 } from "../../../shared/types";
-import type { MissionPlanStepDraft } from "./missionPlanningService";
+/** Inline type — formerly in the deleted missionPlanningService module. */
+type MissionPlanStepDraft = {
+  index: number;
+  title: string;
+  detail: string;
+  kind: string;
+  metadata: Record<string, unknown>;
+};
 import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
 import { nowIso } from "../shared/utils";
 

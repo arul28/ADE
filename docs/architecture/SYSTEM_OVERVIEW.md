@@ -483,7 +483,10 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Memory architecture (scoped namespaces + candidate/promoted lifecycle) | Complete |
 | Shared facts + run narrative | Complete |
 | Memory architecture upgrade (sqlite-vec, hybrid search, composite scoring, pre-compaction flush) | Planned (Phase 4) |
-| CTO Agent (MCP entry point for external systems) | Planned (Phase 4) |
+| CTO Agent — core identity, memory, persistent chat (W1) | Complete (Phase 4) |
+| Worker Agents — org chart, multi-adapter, config versioning, budget, task sessions (W2) | Complete (Phase 4) |
+| Heartbeat & Activation — timer pool, two-tier execution, coalescing, orphan reaping (W3) | Complete (Phase 4) |
+| Bidirectional Linear Sync (W4) | In Progress (Phase 4) |
 | External MCP consumption (agents connect to external MCP servers) | Planned (Phase 4) |
 | `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
 | Compute backend abstraction (Phase 5.5) | Planned |

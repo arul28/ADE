@@ -47,6 +47,12 @@ import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
 import { createMemoryService } from "./services/memory/memoryService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
+import { createWorkerAgentService } from "./services/cto/workerAgentService";
+import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
+import { createWorkerBudgetService } from "./services/cto/workerBudgetService";
+import { createWorkerAdapterRuntimeService } from "./services/cto/workerAdapterRuntimeService";
+import { createWorkerTaskSessionService } from "./services/cto/workerTaskSessionService";
+import { createWorkerHeartbeatService } from "./services/cto/workerHeartbeatService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
@@ -719,6 +725,42 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir
     });
 
+    const workerAgentService = createWorkerAgentService({
+      db,
+      projectId,
+      adeDir: adePaths.adeDir,
+    });
+
+    const workerRevisionService = createWorkerRevisionService({
+      db,
+      projectId,
+      workerAgentService,
+    });
+
+    const workerTaskSessionService = createWorkerTaskSessionService({
+      db,
+      projectId,
+    });
+
+    const workerAdapterRuntimeService = createWorkerAdapterRuntimeService();
+
+    const workerBudgetService = createWorkerBudgetService({
+      db,
+      projectId,
+      workerAgentService,
+      projectConfigService,
+    });
+
+    const workerHeartbeatService = createWorkerHeartbeatService({
+      db,
+      projectId,
+      workerAgentService,
+      workerAdapterRuntimeService,
+      workerTaskSessionService,
+      workerBudgetService,
+      logger,
+    });
+
     const agentChatService = createAgentChatService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -1077,6 +1119,11 @@ app.whenReady().then(async () => {
       testService,
       memoryService,
       ctoStateService,
+      workerAgentService,
+      workerRevisionService,
+      workerBudgetService,
+      workerHeartbeatService,
+      workerTaskSessionService,
       mcpSocketServer,
       mcpSocketPath
     };
@@ -1133,7 +1180,12 @@ app.whenReady().then(async () => {
       processService: null,
       testService: null,
       memoryService: null,
-      ctoStateService: null
+      ctoStateService: null,
+      workerAgentService: null,
+      workerRevisionService: null,
+      workerBudgetService: null,
+      workerHeartbeatService: null,
+      workerTaskSessionService: null
     } as unknown as AppContext);
   };
 
@@ -1155,6 +1207,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.aiOrchestratorService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.workerHeartbeatService?.dispose();
     } catch {
       // ignore
     }

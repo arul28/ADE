@@ -7,9 +7,7 @@ import type {
   ClonePhaseProfileArgs,
   CreateMissionArgs,
   DeletePhaseProfileArgs,
-  GetPlannerAttemptArgs,
   ImportPhaseProfileArgs,
-  ListPlannerRunsArgs,
   ListPhaseProfilesArgs,
   MissionConcurrencyCheckResult,
   MissionConcurrencyConfig,
@@ -50,8 +48,14 @@ import type {
   UpdateMissionStepArgs
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
-import { buildDeterministicMissionPlan } from "./missionPlanner";
-import type { MissionPlanStepDraft } from "./missionPlanningService";
+/** Inline type — formerly in the deleted missionPlanningService module. */
+type MissionPlanStepDraft = {
+  index: number;
+  title: string;
+  detail: string;
+  kind: string;
+  metadata: Record<string, unknown>;
+};
 import {
   applyPhaseCardsToPlanSteps,
   createBuiltInPhaseCards,
@@ -99,17 +103,6 @@ const STEP_TRANSITIONS: Record<MissionStepStatus, Set<MissionStepStatus>> = {
   failed: new Set(["failed", "running", "canceled"]),
   skipped: new Set(["skipped"]),
   canceled: new Set(["canceled"])
-};
-
-const PLANNER_CLARIFY_SOURCE = "planner_clarifying_question";
-
-type PlannerClarifyingInterventionMetadata = {
-  source: typeof PLANNER_CLARIFY_SOURCE;
-  questionIndex: number;
-  question: string;
-  context?: string;
-  defaultAssumption?: string;
-  impact?: string;
 };
 
 type MissionRow = {
@@ -312,13 +305,6 @@ function normalizePlannerClarifyingAnswers(value: unknown): PlannerClarifyingAns
     .map((entry) => normalizePlannerClarifyingAnswer(entry))
     .filter((entry): entry is PlannerClarifyingAnswer => entry != null)
     .slice(0, 20);
-}
-
-function isPlannerClarifyingInterventionMetadata(
-  metadata: Record<string, unknown> | null
-): metadata is PlannerClarifyingInterventionMetadata {
-  if (!metadata) return false;
-  return metadata.source === PLANNER_CLARIFY_SOURCE && Number.isFinite(Number(metadata.questionIndex));
 }
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -571,64 +557,6 @@ function truncateForMetadata(value: string | null, maxChars = 120_000): string |
 }
 
 
-
-function toPlannerAttempt(value: unknown): MissionPlannerAttempt | null {
-  if (!isRecord(value)) return null;
-  const id = String(value.id ?? "").trim();
-  const engine = String(value.engine ?? "").trim();
-  const status = String(value.status ?? "").trim();
-  if (!id.length || !engine.length || (status !== "succeeded" && status !== "failed")) return null;
-  return {
-    id,
-    engine: engine as MissionPlannerAttempt["engine"],
-    status: status as MissionPlannerAttempt["status"],
-    reasonCode: typeof value.reasonCode === "string" ? (value.reasonCode as MissionPlannerAttempt["reasonCode"]) : null,
-    detail: typeof value.detail === "string" ? value.detail : null,
-    commandPreview: typeof value.commandPreview === "string" ? value.commandPreview : null,
-    rawResponse: typeof value.rawResponse === "string" ? value.rawResponse : null,
-    validationErrors: Array.isArray(value.validationErrors)
-      ? value.validationErrors.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-      : [],
-    createdAt: typeof value.createdAt === "string" ? value.createdAt : nowIso()
-  };
-}
-
-function toPlannerRunFromEvent(row: MissionEventRow): MissionPlannerRun | null {
-  if (row.event_type !== "mission_plan_generated") return null;
-  const payload = safeParseRecord(row.payload_json);
-  if (!payload) return null;
-  const runId = String(payload.plannerRunId ?? "").trim();
-  if (!runId.length) return null;
-  const attemptsRaw = Array.isArray(payload.attempts) ? payload.attempts : [];
-  const attempts = attemptsRaw.map((entry) => toPlannerAttempt(entry)).filter((entry): entry is MissionPlannerAttempt => entry != null);
-  const validationErrors = Array.isArray(payload.validationErrors)
-    ? payload.validationErrors.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-    : [];
-  const rawResolvedEngine = String(payload.resolvedEngine ?? "").trim();
-  const resolvedEngine: MissionPlannerRun["resolvedEngine"] =
-    rawResolvedEngine === "claude_cli" || rawResolvedEngine === "codex_cli"
-      ? rawResolvedEngine
-      : null;
-  return {
-    id: runId,
-    missionId: row.mission_id,
-    requestedEngine: String(payload.requestedEngine ?? "auto") as MissionPlannerRun["requestedEngine"],
-    resolvedEngine,
-    status: resolvedEngine != null && payload.degraded !== true ? "succeeded" : "skipped",
-    degraded: payload.degraded === true,
-    reasonCode: typeof payload.reasonCode === "string" ? (payload.reasonCode as MissionPlannerRun["reasonCode"]) : null,
-    reasonDetail: typeof payload.reasonDetail === "string" ? payload.reasonDetail : null,
-    planHash: typeof payload.planHash === "string" && payload.planHash.length > 0 ? payload.planHash : "",
-    normalizedPlanHash:
-      typeof payload.normalizedPlanHash === "string" && payload.normalizedPlanHash.length > 0 ? payload.normalizedPlanHash : "",
-    commandPreview: typeof payload.commandPreview === "string" ? payload.commandPreview : null,
-    rawResponse: typeof payload.rawResponse === "string" ? payload.rawResponse : null,
-    createdAt: row.created_at,
-    durationMs: Number.isFinite(Number(payload.durationMs)) ? Math.floor(Number(payload.durationMs)) : 0,
-    validationErrors,
-    attempts
-  };
-}
 
 function toMissionSummary(row: MissionRow): MissionSummary {
   return {
@@ -927,13 +855,6 @@ export function createMissionService({
       [next, startedAt, completedAt, updatedAt, args.missionId, projectId]
     );
 
-    if (next === "plan_review") {
-      try {
-        ensurePlanReviewClarifyingQuestionInterventions(args.missionId);
-      } catch {
-        // Best-effort intervention hydration. Status transition should still succeed.
-      }
-    }
 
     if (previous !== next) {
       recordEvent({
@@ -1098,184 +1019,6 @@ export function createMissionService({
     };
   };
 
-  const parsePlannerPlanFromMissionMetadata = (missionId: string): {
-    metadata: Record<string, unknown>;
-    plannerPlan: Record<string, unknown>;
-  } | null => {
-    const row = db.get<{ metadata_json: string | null }>(
-      "select metadata_json from missions where id = ? and project_id = ? limit 1",
-      [missionId, projectId]
-    );
-    const metadata = safeParseRecord(row?.metadata_json ?? null);
-    if (!metadata) return null;
-    const plannerPlan = isRecord(metadata.plannerPlan) ? metadata.plannerPlan : null;
-    if (!plannerPlan) return null;
-    return { metadata, plannerPlan };
-  };
-
-  const propagatePlannerClarifyingAnswersToSteps = (args: {
-    missionId: string;
-    questions: PlannerClarifyingQuestion[];
-    answers: PlannerClarifyingAnswer[];
-    updatedAt: string;
-  }) => {
-    const stepRows = db.all<{ id: string; metadata_json: string | null }>(
-      `
-        select id, metadata_json
-        from mission_steps
-        where mission_id = ?
-          and project_id = ?
-      `,
-      [args.missionId, projectId]
-    );
-    for (const row of stepRows) {
-      const metadata = safeParseRecord(row.metadata_json) ?? {};
-      metadata.plannerClarifyingQuestions = args.questions;
-      metadata.plannerClarifyingAnswers = args.answers;
-      db.run(
-        `
-          update mission_steps
-          set metadata_json = ?,
-              updated_at = ?
-          where id = ?
-            and mission_id = ?
-            and project_id = ?
-        `,
-        [JSON.stringify(metadata), args.updatedAt, row.id, args.missionId, projectId]
-      );
-    }
-  };
-
-  const persistPlannerClarifyingAnswer = (args: {
-    missionId: string;
-    questionIndex: number;
-    note: string | null;
-    status: Exclude<MissionInterventionStatus, "open">;
-    fallbackQuestion?: string;
-    fallbackContext?: string;
-    fallbackDefaultAssumption?: string;
-    fallbackImpact?: string;
-  }) => {
-    const parsed = parsePlannerPlanFromMissionMetadata(args.missionId);
-    if (!parsed) return;
-
-    const questions = normalizePlannerClarifyingQuestions(parsed.plannerPlan.clarifyingQuestions);
-    const existingAnswers = normalizePlannerClarifyingAnswers(parsed.plannerPlan.clarifyingAnswers);
-    const question = questions[args.questionIndex] ?? {
-      question: args.fallbackQuestion ?? `Clarifying question ${args.questionIndex + 1}`,
-      ...(args.fallbackContext ? { context: args.fallbackContext } : {}),
-      ...(args.fallbackDefaultAssumption ? { defaultAssumption: args.fallbackDefaultAssumption } : {}),
-      ...(args.fallbackImpact ? { impact: args.fallbackImpact } : {})
-    };
-
-    const noteValue = String(args.note ?? "").trim();
-    const defaultAssumption = question.defaultAssumption ?? args.fallbackDefaultAssumption ?? "Proceed with conservative assumptions.";
-    const useUserAnswer = args.status === "resolved" && noteValue.length > 0;
-    const answer: PlannerClarifyingAnswer = {
-      questionIndex: Math.max(0, args.questionIndex),
-      question: question.question,
-      answer: useUserAnswer ? noteValue : defaultAssumption,
-      source: useUserAnswer ? "user" : "default_assumption",
-      answeredAt: nowIso(),
-      ...(question.context ? { context: question.context } : {}),
-      ...(defaultAssumption ? { defaultAssumption } : {}),
-      ...(question.impact ? { impact: question.impact } : {})
-    };
-
-    const mergedAnswers = [
-      ...existingAnswers.filter((entry) => entry.questionIndex !== answer.questionIndex),
-      answer
-    ].sort((a, b) => a.questionIndex - b.questionIndex || a.question.localeCompare(b.question));
-
-    parsed.plannerPlan.clarifyingQuestions = questions;
-    parsed.plannerPlan.clarifyingAnswers = mergedAnswers;
-    parsed.metadata.plannerPlan = parsed.plannerPlan;
-
-    const updatedAt = nowIso();
-    db.run(
-      `
-        update missions
-        set metadata_json = ?,
-            updated_at = ?
-        where id = ?
-          and project_id = ?
-      `,
-      [JSON.stringify(parsed.metadata), updatedAt, args.missionId, projectId]
-    );
-
-    propagatePlannerClarifyingAnswersToSteps({
-      missionId: args.missionId,
-      questions,
-      answers: mergedAnswers,
-      updatedAt
-    });
-  };
-
-  const ensurePlanReviewClarifyingQuestionInterventions = (missionId: string) => {
-    const parsed = parsePlannerPlanFromMissionMetadata(missionId);
-    if (!parsed) return;
-    const questions = normalizePlannerClarifyingQuestions(parsed.plannerPlan.clarifyingQuestions);
-    if (!questions.length) return;
-
-    const existingRows = db.all<{ metadata_json: string | null; status: string }>(
-      `
-        select metadata_json, status
-        from mission_interventions
-        where mission_id = ?
-          and project_id = ?
-          and intervention_type = 'manual_input'
-      `,
-      [missionId, projectId]
-    );
-
-    const seenQuestionIndexes = new Set<number>();
-    for (const row of existingRows) {
-      const metadata = safeParseRecord(row.metadata_json);
-      if (!isPlannerClarifyingInterventionMetadata(metadata)) continue;
-      seenQuestionIndexes.add(Math.max(0, Math.floor(Number(metadata.questionIndex))));
-    }
-
-    const createdInterventions: string[] = [];
-    for (let index = 0; index < questions.length; index += 1) {
-      if (seenQuestionIndexes.has(index)) continue;
-      const question = questions[index]!;
-      const bodyParts = [
-        question.question,
-        question.context ? `Context: ${question.context}` : null,
-        question.impact ? `Impact: ${question.impact}` : null,
-        question.defaultAssumption ? `Default assumption if unanswered: ${question.defaultAssumption}` : null,
-      ].filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
-      const intervention = insertIntervention({
-        missionId,
-        interventionType: "manual_input",
-        title: `Planning clarification ${index + 1}/${questions.length}`,
-        body: bodyParts.join("\n\n"),
-        requestedAction: "Provide guidance or dismiss to accept the default assumption.",
-        metadata: {
-          source: PLANNER_CLARIFY_SOURCE,
-          questionIndex: index,
-          question: question.question,
-          ...(question.context ? { context: question.context } : {}),
-          ...(question.defaultAssumption ? { defaultAssumption: question.defaultAssumption } : {}),
-          ...(question.impact ? { impact: question.impact } : {})
-        }
-      });
-      createdInterventions.push(intervention.id);
-    }
-
-    if (!createdInterventions.length) return;
-
-    recordEvent({
-      missionId,
-      eventType: "mission_intervention_added",
-      actor: "system",
-      summary: `Planner requested ${createdInterventions.length} clarification question${createdInterventions.length === 1 ? "" : "s"}.`,
-      payload: {
-        interventionIds: createdInterventions,
-        source: PLANNER_CLARIFY_SOURCE
-      }
-    });
-  };
 
   const profilesDir = projectRoot ? path.join(projectRoot, ".ade", "profiles") : null;
   let phaseStorageSeeded = false;
@@ -1899,38 +1642,6 @@ export function createMissionService({
       };
     },
 
-    listPlannerRuns(args: ListPlannerRunsArgs = {}): MissionPlannerRun[] {
-      const where: string[] = ["project_id = ?", "event_type = 'mission_plan_generated'"];
-      const params: Array<string | number | null> = [projectId];
-      const missionId = String(args.missionId ?? "").trim();
-      if (missionId.length > 0) {
-        where.push("mission_id = ?");
-        params.push(missionId);
-      }
-      const limit = Number.isFinite(args.limit) ? Math.max(1, Math.min(250, Math.floor(args.limit ?? 50))) : 50;
-      const rows = db.all<MissionEventRow>(
-        `
-          select id, mission_id, event_type, actor, summary, payload_json, created_at
-          from mission_events
-          where ${where.join(" and ")}
-          order by created_at desc
-          limit ?
-        `,
-        [...params, limit]
-      );
-      return rows.map((row) => toPlannerRunFromEvent(row)).filter((entry): entry is MissionPlannerRun => entry != null);
-    },
-
-    getPlannerAttempt(args: GetPlannerAttemptArgs): MissionPlannerAttempt | null {
-      const plannerRunId = String(args.plannerRunId ?? "").trim();
-      const attemptId = String(args.attemptId ?? "").trim();
-      if (!plannerRunId.length || !attemptId.length) return null;
-      const runs = this.listPlannerRuns({ limit: 250 });
-      const run = runs.find((entry) => entry.id === plannerRunId);
-      if (!run) return null;
-      return run.attempts.find((entry) => entry.id === attemptId) ?? null;
-    },
-
     listPhaseProfiles(args: ListPhaseProfilesArgs = {}): PhaseProfile[] {
       ensurePhaseStorageSeeded();
       return listPhaseProfileRows(args.includeArchived === true).map(toPhaseProfile);
@@ -2334,7 +2045,6 @@ export function createMissionService({
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
       const autopilotExecutor = args.autopilotExecutor ?? "unified";
-      const allowPlanningQuestions = args.allowPlanningQuestions !== false;
       const launchAgentRuntime = normalizeAgentRuntimeFlags(
         isRecord(args.agentRuntime) ? (args.agentRuntime as Record<string, unknown>) : {}
       );
@@ -2398,10 +2108,8 @@ export function createMissionService({
         throw new Error(`Invalid mission phase sequence: ${phaseErrors.join(" ")}`);
       }
 
-      const deterministicSeedPlan = buildDeterministicMissionPlan({
-        prompt,
-        laneId
-      });
+      // Deterministic seed planner retired — coordinator builds the DAG at runtime.
+      // If the caller provided planned steps, use them; otherwise default to empty (coordinator plans).
       const plannerClarifyingQuestions = plannerPlan
         ? normalizePlannerClarifyingQuestions(plannerPlan.clarifyingQuestions)
         : [];
@@ -2410,14 +2118,8 @@ export function createMissionService({
         : [];
       const rawStepsToPersist: MissionPlanStepDraft[] =
         Array.isArray(args.plannedSteps) && args.plannedSteps.length
-          ? [...args.plannedSteps].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title))
-          : deterministicSeedPlan.steps.map((step) => ({
-              index: step.index,
-              title: step.title,
-              detail: step.detail,
-              kind: step.kind,
-              metadata: step.metadata
-            }));
+          ? [...args.plannedSteps].sort((a: MissionPlanStepDraft, b: MissionPlanStepDraft) => a.index - b.index || a.title.localeCompare(b.title))
+          : [];
       const stepsToPersist = applyPhaseCardsToPlanSteps(
         rawStepsToPersist.map((step) => ({
           ...step,
@@ -2439,7 +2141,6 @@ export function createMissionService({
           autostart,
           runMode: launchMode,
           autopilotExecutor,
-          allowPlanningQuestions,
           agentRuntime: launchAgentRuntime,
           ...(args.modelConfig ? { modelConfig: args.modelConfig } : {}),
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
@@ -2604,10 +2305,10 @@ export function createMissionService({
           executionMode,
           targetMachineId,
           preview: summarizePrompt(prompt),
-          plannerVersion: plannerRun ? "ade.missionPlanner.v2" : deterministicSeedPlan.plannerVersion,
-          plannerStrategy: plannerPlan?.missionSummary.strategy ?? deterministicSeedPlan.strategy,
+          plannerVersion: plannerRun ? "ade.missionPlanner.v2" : "coordinator",
+          plannerStrategy: plannerPlan?.missionSummary.strategy ?? "coordinator",
           plannerStepCount: stepsToPersist.length,
-          plannerKeywords: deterministicSeedPlan.keywords,
+          plannerKeywords: [],
           plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
           plannerEngineResolved: plannerRun?.resolvedEngine ?? null,
           plannerDegraded: plannerRun?.degraded ?? false,
@@ -3346,13 +3047,7 @@ export function createMissionService({
       const keepPlanReview =
         missionStatus === "plan_review" &&
         intervention.status === "open" &&
-        (
-          intervention.interventionType === "approval_required"
-          || (
-            intervention.interventionType === "manual_input"
-            && isPlannerClarifyingInterventionMetadata(isRecord(intervention.metadata) ? intervention.metadata : null)
-          )
-        );
+        intervention.interventionType === "approval_required";
       const shouldPauseMission = args.pauseMission !== false;
       if (!keepPlanReview && shouldPauseMission) {
         upsertMissionStatus({
@@ -3436,23 +3131,6 @@ export function createMissionService({
         }
       });
 
-      const interventionMetadata = safeParseRecord(row.metadata_json);
-      if (
-        row.intervention_type === "manual_input"
-        && isPlannerClarifyingInterventionMetadata(interventionMetadata)
-      ) {
-        persistPlannerClarifyingAnswer({
-          missionId,
-          questionIndex: Math.max(0, Math.floor(Number(interventionMetadata.questionIndex))),
-          note,
-          status: targetStatus,
-          fallbackQuestion: typeof interventionMetadata.question === "string" ? interventionMetadata.question : undefined,
-          fallbackContext: typeof interventionMetadata.context === "string" ? interventionMetadata.context : undefined,
-          fallbackDefaultAssumption:
-            typeof interventionMetadata.defaultAssumption === "string" ? interventionMetadata.defaultAssumption : undefined,
-          fallbackImpact: typeof interventionMetadata.impact === "string" ? interventionMetadata.impact : undefined
-        });
-      }
 
       const openCount = db.get<{ count: number }>(
         `

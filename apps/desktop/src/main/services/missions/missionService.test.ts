@@ -91,7 +91,11 @@ describe("missionService lifecycle", () => {
 
     const created = service.create({
       prompt: "Implement profile tab improvements and prepare PR summary.",
-      laneId
+      laneId,
+      plannedSteps: [
+        { index: 0, title: "Implement profile tab", detail: "Profile tab improvements", kind: "task", metadata: { stepType: "implementation" } },
+        { index: 1, title: "Prepare PR summary", detail: "PR summary", kind: "integration", metadata: { stepType: "integration" } }
+      ]
     });
 
     expect(created.status).toBe("queued");
@@ -162,18 +166,19 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
-  it("creates deterministic planner steps with dependencies and completion criteria", async () => {
+  it("persists explicit planned steps with metadata", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });
 
     const created = service.create({
-      prompt: [
-        "Implement auth orchestration end-to-end:",
-        "1. refactor token middleware",
-        "2. add route guards",
-        "3. run tests and summarize outcome"
-      ].join("\n"),
-      laneId
+      prompt: "Implement auth orchestration end-to-end.",
+      laneId,
+      plannedSteps: [
+        { index: 0, title: "Refactor token middleware", detail: "Refactor", kind: "task", metadata: { stepType: "implementation", doneCriteria: "Middleware refactored" } },
+        { index: 1, title: "Add route guards", detail: "Guards", kind: "task", metadata: { stepType: "implementation", doneCriteria: "Guards added", dependencyIndices: [0] } },
+        { index: 2, title: "Run tests", detail: "Tests", kind: "validation", metadata: { stepType: "test", doneCriteria: "Tests pass", dependencyIndices: [0, 1] } },
+        { index: 3, title: "Summarize and integrate", detail: "Integration", kind: "integration", metadata: { stepType: "integration", doneCriteria: "PR ready", dependencyIndices: [2] } }
+      ]
     });
 
     expect(created.steps.length).toBeGreaterThanOrEqual(4);
@@ -217,148 +222,16 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
-  it("creates planner clarification interventions when entering plan_review", async () => {
-    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
-    const service = createMissionService({ db, projectId });
-
-    const created = service.create({
-      prompt: "Prepare a plan with open API auth ambiguity.",
-      laneId,
-      plannerPlan: {
-        schemaVersion: "1.0",
-        clarifyingQuestions: [
-          {
-            question: "Should the new endpoint require JWT authentication?",
-            context: "Current /api endpoints use JWT while /public endpoints do not.",
-            defaultAssumption: "Use JWT authentication by default.",
-            impact: "Changes middleware and test cases."
-          }
-        ],
-        missionSummary: {
-          title: "API auth plan",
-          objective: "Plan auth behavior",
-          domain: "backend",
-          complexity: "medium",
-          strategy: "sequential",
-          parallelismCap: 1
-        },
-        assumptions: [],
-        risks: [],
-        steps: [],
-        handoffPolicy: { externalConflictDefault: "intervention" }
-      }
-    });
-
-    service.update({ missionId: created.id, status: "planning" });
-    const review = service.update({ missionId: created.id, status: "plan_review" });
-    expect(review.status).toBe("plan_review");
-    const manualInputs = review.interventions.filter(
-      (entry) => entry.status === "open" && entry.interventionType === "manual_input"
-    );
-    expect(manualInputs).toHaveLength(1);
-    expect(manualInputs[0]?.title).toContain("Planning clarification");
-    expect(manualInputs[0]?.body).toContain("Should the new endpoint require JWT authentication?");
-
-    dispose();
-  });
-
-  it("stores planner clarification answers in mission and step metadata", async () => {
-    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
-    const service = createMissionService({ db, projectId });
-
-    const created = service.create({
-      prompt: "Plan rollout strategy for auth changes.",
-      laneId,
-      plannerPlan: {
-        schemaVersion: "1.0",
-        clarifyingQuestions: [
-          {
-            question: "Should rollout be behind a feature flag?",
-            defaultAssumption: "Enable behind a feature flag by default."
-          },
-          {
-            question: "Should we keep legacy fallback for one release?",
-            defaultAssumption: "Keep fallback for one release."
-          }
-        ],
-        missionSummary: {
-          title: "Rollout plan",
-          objective: "Decide rollout controls",
-          domain: "backend",
-          complexity: "medium",
-          strategy: "sequential",
-          parallelismCap: 1
-        },
-        assumptions: [],
-        risks: [],
-        steps: [],
-        handoffPolicy: { externalConflictDefault: "intervention" }
-      }
-    });
-
-    service.update({ missionId: created.id, status: "planning" });
-    const review = service.update({ missionId: created.id, status: "plan_review" });
-    const interventions = review.interventions
-      .filter((entry) => entry.status === "open" && entry.interventionType === "manual_input")
-      .sort((a, b) => a.title.localeCompare(b.title));
-    expect(interventions).toHaveLength(2);
-
-    service.resolveIntervention({
-      missionId: created.id,
-      interventionId: interventions[0]!.id,
-      status: "resolved",
-      note: "Yes, enforce a feature flag for first release."
-    });
-
-    service.resolveIntervention({
-      missionId: created.id,
-      interventionId: interventions[1]!.id,
-      status: "dismissed"
-    });
-
-    const missionRow = db.get<{ metadata_json: string | null }>(
-      "select metadata_json from missions where id = ? and project_id = ? limit 1",
-      [created.id, projectId]
-    );
-    const missionMetadata = missionRow?.metadata_json ? JSON.parse(missionRow.metadata_json) : {};
-    const plannerPlan = missionMetadata?.plannerPlan ?? {};
-    const answers = Array.isArray(plannerPlan.clarifyingAnswers) ? plannerPlan.clarifyingAnswers : [];
-    expect(answers).toHaveLength(2);
-    expect(
-      answers.some(
-        (entry: any) =>
-          entry.question === "Should rollout be behind a feature flag?"
-          && entry.answer === "Yes, enforce a feature flag for first release."
-          && entry.source === "user"
-      )
-    ).toBe(true);
-    expect(
-      answers.some(
-        (entry: any) =>
-          entry.question === "Should we keep legacy fallback for one release?"
-          && entry.answer === "Keep fallback for one release."
-          && entry.source === "default_assumption"
-      )
-    ).toBe(true);
-
-    const stepRow = db.get<{ metadata_json: string | null }>(
-      "select metadata_json from mission_steps where mission_id = ? and project_id = ? order by step_index asc limit 1",
-      [created.id, projectId]
-    );
-    const stepMetadata = stepRow?.metadata_json ? JSON.parse(stepRow.metadata_json) : {};
-    const stepAnswers = Array.isArray(stepMetadata.plannerClarifyingAnswers) ? stepMetadata.plannerClarifyingAnswers : [];
-    expect(stepAnswers).toHaveLength(2);
-
-    dispose();
-  });
-
   it("rejects invalid mission and step transitions", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });
 
     const created = service.create({
       prompt: "Write migration notes and close release lane.",
-      laneId
+      laneId,
+      plannedSteps: [
+        { index: 0, title: "Write migration notes", detail: "Notes", kind: "task", metadata: { stepType: "implementation" } }
+      ]
     });
 
     expect(() => service.update({ missionId: created.id, status: "completed" })).toThrow(/Invalid mission transition/i);
@@ -387,7 +260,10 @@ describe("missionService lifecycle", () => {
 
     const created = service.create({
       prompt: "Refactor auth checks and run regression tests.",
-      laneId
+      laneId,
+      plannedSteps: [
+        { index: 0, title: "Refactor auth checks", detail: "Auth refactor", kind: "task", metadata: { stepType: "implementation" } }
+      ]
     });
 
     service.update({ missionId: created.id, status: "in_progress" });
@@ -425,7 +301,10 @@ describe("missionService lifecycle", () => {
     const service = createMissionService({ db, projectId });
     const created = service.create({
       prompt: "Ship auth hardening changes and open PR.",
-      laneId
+      laneId,
+      plannedSteps: [
+        { index: 0, title: "Ship auth hardening", detail: "Auth hardening", kind: "task", metadata: { stepType: "implementation" } }
+      ]
     });
     const firstStep = created.steps[0];
     if (!firstStep) {
@@ -600,77 +479,6 @@ describe("missionService lifecycle", () => {
     expect(
       db.get<{ count: number }>("select count(*) as count from orchestrator_timeline_events where run_id = ?", [runId])?.count ?? 0
     ).toBe(0);
-
-    dispose();
-  });
-
-  it("lists planner runs and resolves planner attempts from mission events", async () => {
-    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
-    const service = createMissionService({ db, projectId });
-
-    const created = service.create({
-      prompt: "Ship a deterministic planner run.",
-      laneId,
-      plannerRun: {
-        id: "planner-run-1",
-        missionId: "",
-        requestedEngine: "auto",
-        resolvedEngine: "claude_cli",
-        status: "succeeded",
-        degraded: false,
-        reasonCode: null,
-        reasonDetail: null,
-        planHash: "hash-raw",
-        normalizedPlanHash: "hash-normalized",
-        commandPreview: "claude -p ...",
-        rawResponse: "{\"schemaVersion\":\"1.0\"}",
-        createdAt: "2026-02-19T00:00:00.000Z",
-        durationMs: 1200,
-        validationErrors: [],
-        attempts: [
-          {
-            id: "planner-attempt-1",
-            engine: "claude_cli",
-            status: "succeeded",
-            reasonCode: null,
-            detail: null,
-            commandPreview: "claude -p ...",
-            rawResponse: "{\"schemaVersion\":\"1.0\"}",
-            validationErrors: [],
-            createdAt: "2026-02-19T00:00:00.000Z"
-          }
-        ]
-      },
-      plannerPlan: {
-        schemaVersion: "1.0",
-        missionSummary: {
-          title: "Ship a deterministic planner run.",
-          objective: "Ship a deterministic planner run.",
-          domain: "mixed",
-          complexity: "low",
-          strategy: "sequential",
-          parallelismCap: 1
-        },
-        assumptions: [],
-        risks: [],
-        steps: [],
-        handoffPolicy: {
-          externalConflictDefault: "intervention"
-        }
-      }
-    });
-
-    const runs = service.listPlannerRuns({ missionId: created.id, limit: 10 });
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.id).toBe("planner-run-1");
-    expect(runs[0]?.attempts).toHaveLength(1);
-
-    const attempt = service.getPlannerAttempt({
-      plannerRunId: "planner-run-1",
-      attemptId: "planner-attempt-1"
-    });
-    expect(attempt?.id).toBe("planner-attempt-1");
-    expect(attempt?.engine).toBe("claude_cli");
 
     dispose();
   });

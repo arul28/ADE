@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { runGit, runGitOrThrow } from "../git/git";
+import { detectConflictKind } from "../git/gitConflictState";
 import type { createOperationService } from "../history/operationService";
 import type {
   AdoptAttachedLaneArgs,
@@ -52,7 +53,7 @@ type LaneRow = {
   status: string;
 };
 
-const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
 
 function cloneLaneStatus(status: LaneStatus): LaneStatus {
@@ -60,7 +61,8 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
     dirty: status.dirty,
     ahead: status.ahead,
     behind: status.behind,
-    remoteBehind: status.remoteBehind
+    remoteBehind: status.remoteBehind,
+    rebaseInProgress: status.rebaseInProgress
   };
 }
 
@@ -197,7 +199,20 @@ async function computeLaneStatus(worktreePath: string, baseRef: string, branchRe
     }
   }
 
-  return { dirty, ahead, behind, remoteBehind };
+  // Detect stuck rebase state
+  let rebaseInProgress = false;
+  try {
+    const gitDirRes = await runGit(["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: worktreePath, timeoutMs: 5_000 });
+    if (gitDirRes.exitCode === 0) {
+      const gitDir = gitDirRes.stdout.trim();
+      const kind = detectConflictKind(gitDir);
+      rebaseInProgress = kind === "rebase";
+    }
+  } catch {
+    // ignore
+  }
+
+  return { dirty, ahead, behind, remoteBehind, rebaseInProgress };
 }
 
 function computeStackDepth(args: {
@@ -602,6 +617,13 @@ export function createLaneService({
     );
     invalidateLaneListCache();
 
+    // Best-effort initial push to establish upstream tracking
+    try {
+      await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+    } catch {
+      // Non-fatal: lane works locally even without remote tracking
+    }
+
     const row = getLaneRow(laneId);
     if (!row) throw new Error(`Failed to create lane: ${laneId}`);
     const rowsById = new Map(getAllLaneRows(true).map((entry) => [entry.id, entry] as const));
@@ -796,6 +818,16 @@ export function createLaneService({
       );
       invalidateLaneListCache();
 
+      // Best-effort push to establish upstream if not already tracking a remote
+      try {
+        const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
+        if (upstreamCheck.exitCode !== 0) {
+          await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+        }
+      } catch {
+        // Non-fatal: lane works locally even without remote tracking
+      }
+
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Failed to import lane: ${laneId}`);
       const rowsById = getRowsById(true);
@@ -854,11 +886,11 @@ export function createLaneService({
             parentRow.branch_ref
           );
         } catch {
-          parentStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+          parentStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
         }
       }
 
-      const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+      const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
       const out: LaneSummary[] = [];
       for (const row of childRows) {
         let status: LaneStatus;
@@ -1625,6 +1657,16 @@ export function createLaneService({
         [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
       );
       invalidateLaneListCache();
+
+      // Best-effort push to establish upstream if not already tracking a remote
+      try {
+        const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: attachedPath, timeoutMs: 5_000 });
+        if (upstreamCheck.exitCode !== 0) {
+          await runGit(["push", "-u", "origin", branchRef], { cwd: attachedPath, timeoutMs: 60_000 });
+        }
+      } catch {
+        // Non-fatal: lane works locally even without remote tracking
+      }
 
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Failed to attach lane: ${laneId}`);
