@@ -129,8 +129,22 @@ export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionP
   }
 
   if (primary === "analysis" || secondary === "analysis") return "implementation";
-  if (primary === "code" || primary === "implementation" || secondary === "code" || secondary === "implementation") return "implementation";
-  if (primary === "test" || primary === "validation" || secondary === "test" || secondary === "validation") return "testing";
+  if (
+    primary === "code" ||
+    primary === "implementation" ||
+    primary === "development" ||
+    secondary === "code" ||
+    secondary === "implementation" ||
+    secondary === "development"
+  ) return "implementation";
+  if (
+    primary === "test" ||
+    primary === "testing" ||
+    primary === "validation" ||
+    secondary === "test" ||
+    secondary === "testing" ||
+    secondary === "validation"
+  ) return "testing";
   if (primary === "milestone" || secondary === "milestone") return "validation";
   if ((primary === "review" && (secondary === "test" || secondary === "validation")) || (secondary === "review" && primary === "test")) {
     return "testReview";
@@ -438,15 +452,19 @@ export function roleForStepType(
   if (
     primary === "code" ||
     primary === "implementation" ||
+    primary === "development" ||
     secondary === "code" ||
-    secondary === "implementation"
+    secondary === "implementation" ||
+    secondary === "development"
   ) {
     return "implementation";
   }
   if (
     primary === "test" ||
+    primary === "testing" ||
     primary === "validation" ||
     secondary === "test" ||
+    secondary === "testing" ||
     secondary === "validation"
   ) {
     return "testing";
@@ -755,12 +773,12 @@ export function buildExecutionPlanPreview(args: {
 function phaseKeyToExecutionPhase(phaseKey: string): ExecutionPhase | null {
   const key = phaseKey.trim().toLowerCase();
   if (key === "planning" || key === "analysis") return "implementation";
-  if (key === "implementation" || key === "code") return "implementation";
+  if (key === "implementation" || key === "development" || key === "code") return "implementation";
   if (key === "testing" || key === "test") return "testing";
   if (key === "validation") return "validation";
   if (key === "code_review" || key === "codereview" || key === "review") return "codeReview";
   if (key === "test_review" || key === "testreview") return "testReview";
-  if (key === "integration") return "integration";
+  if (key === "integration" || key === "merge" || key === "pr_conflict_resolution") return "integration";
   return null;
 }
 
@@ -792,11 +810,15 @@ export function evaluateRunCompletionFromPhases(
   // Derive which phases are required from the phase cards
   const enabledPhases = new Set<ExecutionPhase>();
   const requiredPhases = new Set<ExecutionPhase>();
+  const phaseLabelByExecution = new Map<ExecutionPhase, string>();
 
   for (const card of phases) {
     const ep = phaseKeyToExecutionPhase(card.phaseKey);
     if (ep) {
       enabledPhases.add(ep);
+      if (!phaseLabelByExecution.has(ep)) {
+        phaseLabelByExecution.set(ep, card.name || card.phaseKey || ep);
+      }
       if (card.validationGate.required) {
         requiredPhases.add(ep);
       }
@@ -821,13 +843,14 @@ export function evaluateRunCompletionFromPhases(
     const stepsInPhase = phaseSteps.get(phase) ?? [];
     const required = requiredPhases.has(phase);
     const enabled = enabledPhases.has(phase);
+    const phaseLabel = phaseLabelByExecution.get(phase) ?? phase;
 
     if (stepsInPhase.length === 0) {
       if (required) {
         diagnostics.push({
           phase,
           code: "phase_required_missing",
-          message: `Required phase "${phase}" has no steps`,
+          message: `Required phase "${phaseLabel}" has no steps`,
           blocking: true
         });
         riskFactors.push(`${phase}_required_but_missing`);
@@ -835,7 +858,7 @@ export function evaluateRunCompletionFromPhases(
         diagnostics.push({
           phase,
           code: "phase_skipped_by_policy",
-          message: `Phase "${phase}" not included in phase cards`,
+          message: `Phase "${phaseLabel}" not included in phase cards`,
           blocking: false
         });
       }
@@ -853,7 +876,7 @@ export function evaluateRunCompletionFromPhases(
       diagnostics.push({
         phase,
         code: "phase_succeeded",
-        message: `Phase "${phase}" completed successfully`,
+        message: `Phase "${phaseLabel}" completed successfully`,
         blocking: false
       });
     } else if (anyFailed && allTerminal) {
@@ -861,7 +884,7 @@ export function evaluateRunCompletionFromPhases(
       diagnostics.push({
         phase,
         code: "phase_failed",
-        message: `Phase "${phase}" has failed steps`,
+        message: `Phase "${phaseLabel}" has failed steps`,
         blocking
       });
       if (!blocking && required) {
@@ -871,7 +894,7 @@ export function evaluateRunCompletionFromPhases(
       diagnostics.push({
         phase,
         code: "phase_in_progress",
-        message: `Phase "${phase}" still in progress`,
+        message: `Phase "${phaseLabel}" still in progress`,
         blocking: true
       });
     }

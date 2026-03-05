@@ -106,8 +106,11 @@ export function CompletionBanner({ status, evaluation, runId, className }: Compl
 
   if (!style) return null;
 
-  const blockingDiagnostics = evaluation?.diagnostics?.filter((d) => d.blocking) ?? [];
-  const riskFactors = evaluation?.riskFactors ?? [];
+  const showEvaluationDetails = status !== "canceled";
+  const blockingDiagnostics = showEvaluationDetails
+    ? (evaluation?.diagnostics?.filter((d) => d.blocking) ?? [])
+    : [];
+  const riskFactors = showEvaluationDetails ? (evaluation?.riskFactors ?? []) : [];
 
   return (
     <div

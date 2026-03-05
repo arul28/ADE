@@ -12,6 +12,7 @@ import type {
   CtoCoreMemory,
   CtoSnapshot,
   WorkerAgentRun,
+  LinearSyncConfig,
 } from "../../../shared/types";
 
 vi.mock("../chat/AgentChatPane", () => ({
@@ -130,6 +131,19 @@ const makeAgentCoreMemory = (): AgentCoreMemory => ({
 });
 
 function buildCtoBridge() {
+  const basePolicy: LinearSyncConfig = {
+    enabled: false,
+    pollingIntervalSec: 300,
+    projects: [{ slug: "my-project", defaultWorker: "backend-dev" }],
+    routing: { byLabel: { bug: "backend-dev" } },
+    assignment: { setAssigneeOnDispatch: false },
+    autoDispatch: { default: "escalate", rules: [] },
+    concurrency: { global: 5, byState: { todo: 3, in_progress: 5 } },
+    reconciliation: { enabled: true, stalledTimeoutSec: 300 },
+    classification: { mode: "hybrid", confidenceThreshold: 0.7 },
+    artifacts: { mode: "links" },
+  };
+
   return {
     getState: vi.fn(async () => makeSnapshot()),
     ensureSession: vi.fn(async () => makeSession()),
@@ -148,7 +162,76 @@ function buildCtoBridge() {
     getAgentCoreMemory: vi.fn(async () => makeAgentCoreMemory()),
     updateAgentCoreMemory: vi.fn(async () => makeAgentCoreMemory()),
     listAgentSessionLogs: vi.fn(async () => [] as AgentSessionLogEntry[]),
+    getLinearConnectionStatus: vi.fn(async () => ({
+      tokenStored: false,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-03-05T00:00:00.000Z",
+      message: "Linear token not configured.",
+    })),
+    setLinearToken: vi.fn(async () => ({
+      tokenStored: true,
+      connected: true,
+      viewerId: "viewer-1",
+      viewerName: "Alex",
+      checkedAt: "2026-03-05T00:00:00.000Z",
+      message: null,
+    })),
+    clearLinearToken: vi.fn(async () => ({
+      tokenStored: false,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-03-05T00:00:00.000Z",
+      message: "Linear token cleared.",
+    })),
+    getFlowPolicy: vi.fn(async () => basePolicy),
+    saveFlowPolicy: vi.fn(async ({ policy }: { policy: LinearSyncConfig }) => policy),
+    listFlowPolicyRevisions: vi.fn(async () => []),
+    rollbackFlowPolicyRevision: vi.fn(async () => basePolicy),
+    simulateFlowRoute: vi.fn(async () => ({
+      action: "escalate",
+      workerSlug: "backend-dev",
+      workerId: "agent-1",
+      workerName: "Backend Dev",
+      templateId: "bug-fix",
+      reason: "Matched bug route.",
+      confidence: 0.9,
+      matchedRuleId: "rule-1",
+      matchedSignals: ["label:bug"],
+    })),
+    getLinearSyncDashboard: vi.fn(async () => ({
+      enabled: false,
+      running: false,
+      pollingIntervalSec: 300,
+      lastPollAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+      queue: { queued: 0, retryWaiting: 0, escalated: 0, dispatched: 0, failed: 0 },
+      claimsActive: 0,
+    })),
+    runLinearSyncNow: vi.fn(async () => ({
+      enabled: false,
+      running: false,
+      pollingIntervalSec: 300,
+      lastPollAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+      queue: { queued: 0, retryWaiting: 0, escalated: 0, dispatched: 0, failed: 0 },
+      claimsActive: 0,
+    })),
+    listLinearSyncQueue: vi.fn(async () => []),
+    resolveLinearSyncQueueItem: vi.fn(async () => null),
   };
+}
+
+/** Click a tab by its label text */
+function clickTab(label: string) {
+  const tabs = screen.getAllByText(label);
+  // Tab buttons are font-mono uppercase — find the one that's a button
+  const tab = tabs.find((el) => el.closest("button"));
+  if (tab) fireEvent.click(tab);
 }
 
 describe("CtoPage", () => {
@@ -162,10 +245,11 @@ describe("CtoPage", () => {
     cleanup();
   });
 
-  it("renders org chart, locks persistent CTO session, and shows capability badge", async () => {
+  it("renders agent sidebar, locks persistent CTO session, and shows capability badge", async () => {
     render(<CtoPage />);
 
-    expect(screen.getByText("ORG CHART")).toBeTruthy();
+    // Sidebar shows "Department" header
+    expect(screen.getByText("Department")).toBeTruthy();
 
     await waitFor(() => {
       expect((window as any).ade.cto.ensureSession).toHaveBeenCalledWith({ laneId: "lane-1" });
@@ -180,8 +264,11 @@ describe("CtoPage", () => {
     });
   });
 
-  it("loads and renders core memory view", async () => {
+  it("loads and renders core memory view in Settings tab", async () => {
     render(<CtoPage />);
+
+    // Navigate to Settings tab
+    clickTab("Settings");
 
     await waitFor(() => {
       expect(screen.getByTestId("core-memory-view")).toBeTruthy();
@@ -194,6 +281,7 @@ describe("CtoPage", () => {
 
   it("enters edit mode and saves core memory patch", async () => {
     render(<CtoPage />);
+    clickTab("Settings");
 
     await waitFor(() => {
       expect(screen.getByTestId("core-memory-edit-btn")).toBeTruthy();
@@ -222,6 +310,7 @@ describe("CtoPage", () => {
     });
 
     render(<CtoPage />);
+    clickTab("Settings");
 
     await waitFor(() => {
       expect(screen.getByTestId("core-memory-edit-btn")).toBeTruthy();
@@ -327,7 +416,7 @@ describe("CtoPage", () => {
   });
 
   // W3: Heartbeat & activation
-  it("shows worker details panel when worker is selected", async () => {
+  it("shows worker details panel when worker is selected and Team tab is active", async () => {
     render(<CtoPage />);
 
     await waitFor(() => {
@@ -335,6 +424,9 @@ describe("CtoPage", () => {
     });
 
     fireEvent.click(screen.getByTestId("worker-row-agent-1"));
+
+    // Clicking a worker switches to Chat tab by default; navigate to Team
+    clickTab("Team");
 
     await waitFor(() => {
       expect(screen.getByTestId("worker-ops-panel")).toBeTruthy();
@@ -349,6 +441,7 @@ describe("CtoPage", () => {
     });
 
     fireEvent.click(screen.getByTestId("worker-row-agent-1"));
+    clickTab("Team");
 
     await waitFor(() => {
       expect(screen.getByTestId("worker-wake-now-btn")).toBeTruthy();
@@ -366,6 +459,49 @@ describe("CtoPage", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("worker-wake-status")).toBeTruthy();
+    });
+  });
+
+  it("renders linear sync panel in Linear tab", async () => {
+    render(<CtoPage />);
+
+    // Navigate to Linear tab
+    clickTab("Linear");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("linear-sync-panel")).toBeTruthy();
+    });
+
+    expect((window as any).ade.cto.getFlowPolicy).toHaveBeenCalled();
+    expect((window as any).ade.cto.getLinearSyncDashboard).toHaveBeenCalled();
+  });
+
+  it("simulates a route from Linear tab routing step", async () => {
+    render(<CtoPage />);
+
+    // Navigate to Linear tab
+    clickTab("Linear");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("linear-sync-panel")).toBeTruthy();
+    });
+
+    // Navigate to Routing step (which has the simulation)
+    const routingBtn = screen.getByText("Routing");
+    fireEvent.click(routingBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("linear-simulate-btn")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("linear-simulate-btn"));
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.simulateFlowRoute).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("linear-simulation-result")).toBeTruthy();
     });
   });
 });

@@ -31,22 +31,24 @@ This phase draws heavily from three open-source projects. Each workstream credit
 
 ### Execution Order
 
-Workstreams are numbered in dependency order. Hand them to agents sequentially — or in parallel where noted.
+Workstreams are numbered by topic but executed in dependency order. W1-W4 are complete. Remaining workstreams execute W6→W7→W5 (memory and learning directly strengthen CTO; Night Shift deferred until memory is solid).
 
 ```
-Wave 1 (start day 1, parallel):
-  W1: CTO Agent Core                  ← org foundation
-  W6: Memory Architecture Upgrade     ← knowledge foundation
-  W8: External MCP Consumption        ← independent infra
+Wave 1 (complete):
+  W1: CTO Agent Core                  ✅ shipped
+  W2: Worker Agents & Org Chart       ✅ shipped
+  W3: Heartbeat & Activation          ✅ shipped
+  W4: Bidirectional Linear Sync       ✅ shipped
 
-Wave 2 (parallel, after W1):
-  W2: Worker Agents & Org Chart       ← needs W1
-  W3: Heartbeat & Activation          ← needs W1
-  W5: Night Shift Mode                ← needs W1
+Wave 2 (start next, sequential — W6a→W6b→W6c→W6d):
+  W6: Unified Memory System           ← knowledge foundation (replaces packs + memoryService + CTO state)
 
-Wave 3 (parallel, after their deps):
-  W4: Bidirectional Linear Sync       ← needs W2, W3
-  W7: Learning Packs                  ← needs W6
+Wave 3 (after W6):
+  W7: Skills + Learning Pipeline      ← needs W6 (episodic → procedural → skill materialization)
+  W8: External MCP Consumption        ← independent infra, can parallel with W7
+
+Wave 4 (after W6, can parallel with W7/W8):
+  W5: Night Shift Mode                ← needs W1 + benefits from W6 memory
   W9: OpenClaw Bridge                 ← needs W1, W8
   W10: .ade/ Portable State           ← needs W1, W6
 ```
@@ -54,16 +56,15 @@ Wave 3 (parallel, after their deps):
 Dependency graph:
 ```
 W1 (CTO Core) ──→ W2 (Workers) ──┐
-     │                             ├──→ W4 (Linear Sync)
+     │                             ├──→ W4 (Linear Sync)     ✅ all complete
      ├──→ W3 (Heartbeat) ─────────┘
      │
-     ├──→ W5 (Night Shift)
+     ├──→ W6 (Unified Memory) ──→ W7 (Skills + Learning)
+     │         │
+     │         ├──→ W5 (Night Shift)
+     │         └──→ W10 (.ade/ State)
      │
      └──→ W9 (OpenClaw) ←── W8 (External MCP)
-
-W6 (Memory) ──→ W7 (Learning Packs)
-     │
-     └──→ W10 (.ade/ State) ←── W1
 ```
 
 Each workstream includes its own renderer/UI changes and tests (no standalone workstreams for these).
@@ -152,8 +153,8 @@ New **CTO** tab added to the main tab bar. Icon: `brain` (Lucide). The tab provi
   - Unified/API models => `fallback` (reduced in-process tools).
 - Fallback tool surface for unified CTO sessions includes `memoryAdd`, `memorySearch`, and `memoryUpdateCore`.
 - MCP server now exposes `memory_update_core` for CTO Tier-1 core-memory updates.
-- **CtoPage sidebar**: Core memory inspector (view + inline edit via `updateCoreMemory` IPC) and session history panel (collapsible, pulls from `getState`) added. Capability badge only shown after session is established.
-- **Deferred to W2**: worker persistence/runtime, worker org editing, worker acceptance tests, CTO model/identity settings UI (`ctoUpdateIdentity` IPC not yet built — model preferences live in `identity.yaml` and are only configurable by editing the file directly; W2 config editor will expose this).
+- **CtoPage redesigned (2026-03-05)**: Monolithic 1700-line sidebar replaced with modular Tailwind-based layout matching the app's industrial shell theme. New structure: compact agent sidebar (240px, Slack-style) + tabbed content area (Chat / Team / Linear / Settings). Sub-components: `AgentSidebar.tsx`, `TeamPanel.tsx` (WorkerEditorPanel + WorkerDetailPanel), `LinearSyncPanel.tsx` (self-contained with own state), `CtoSettingsPanel.tsx` (identity + core memory + session history). All shared UI components: `Button`, `Chip`, `EmptyState`, `PaneHeader`, `cn()`. Capability badge shown in tab bar after session established.
+- **Deferred to W2**: ~~worker persistence/runtime, worker org editing~~ (done). CTO model/identity settings UI now available in Settings tab via `ctoUpdateIdentity` IPC.
 
 **Tests:**
 - CTO core memory persistence across restarts (DB/file reconciliation paths).
@@ -258,7 +259,7 @@ Configurable worker agents that sit under the CTO in an org hierarchy. Each work
 - All W2 IPC handlers registered: `ctoListAgents`, `ctoSaveAgent`, `ctoRemoveAgent`, `ctoListAgentRevisions`, `ctoRollbackAgentRevision`, `ctoEnsureAgentSession`, `ctoGetBudgetSnapshot`, `ctoUpdateIdentity`.
 - Preload bridge and global.d.ts updated with all W2 methods.
 - Services instantiated in main.ts and wired into AppContext.
-- CtoPage redesigned with industrial shell theme: org chart sidebar (320px) with CTO card, worker tree with status dots and depth indentation, inline worker editor (hire/edit), budget summary, config revision history with rollback, worker core memory inspector and session logs.
+- CtoPage fully redesigned (2026-03-05): Slack-inspired modular layout with `AgentSidebar` (240px compact tree), `TeamPanel` (worker detail + editor), tabbed navigation (Chat/Team/Linear/Settings). Uses shared UI kit (`Button`, `Chip`, `PaneHeader`, `EmptyState`, Tailwind + `cn()`). Worker editor, budget summary, revision history with rollback, core memory inspector, session logs all functional. `ctoUpdateIdentity` IPC implemented for CTO model/persona editing from Settings tab.
 
 **Tests:**
 - Agent creation, `reportsTo` hierarchy, cycle detection (max 50 hops).
@@ -453,6 +454,22 @@ The CTO agent watches one or more Linear project boards and autonomously dispatc
   - **Configuration**: Linear API key stored in `.ade/local.secret.yaml` (gitignored). Poll interval, routing policy, and dispatch rules in `.ade/local.yaml` (git-tracked, no secrets).
 - **Configuration**: Linear API key stored in `.ade/local.secret.yaml` (gitignored). Poll interval and dispatch rules in `.ade/local.yaml` (git-tracked, no secrets).
 
+**Implementation status (2026-03-05):**
+- All W4 services implemented and tested:
+  - `linearClient.ts`: Lightweight GraphQL client for Linear API (issue queries, state mutations, comment CRUD).
+  - `linearCredentialService.ts`: Secure token storage in `.ade/local.secret.yaml`, connection verification.
+  - `linearIssueTracker.ts`: `IssueTracker` interface implementation for Linear (fetchCandidates, fetchStates, updateState, createComment).
+  - `issueTracker.ts`: Abstract `IssueTracker` interface (pluggable backends — GitHub Issues planned as fast-follow).
+  - `linearRoutingService.ts`: Label routing, per-project default owner, CTO classification fallback, route simulation.
+  - `linearSyncService.ts`: Full polling loop, candidate filtering (priority+created_at sort, blocker skip), concurrency enforcement (global + per-state), auto-dispatch/escalate, atomic checkout, reconciliation (external close→cancel, reassign→release, stall detection→restart).
+  - `linearOutboundService.ts`: State transitions (In Progress, Done, Blocked), workpad comment lifecycle (create, update, finalize), PR link posting, label addition.
+  - `linearTemplateService.ts`: Mission template loading from `.ade/templates/`, variable rendering with issue context, CTO classification-based selection.
+  - `flowPolicyService.ts`: Policy CRUD with versioned history (before/after snapshots), rollback, simulation mode.
+- All W4 IPC handlers registered: `ctoGetLinearConnectionStatus`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoGetFlowPolicy`, `ctoSaveFlowPolicy`, `ctoListFlowPolicyRevisions`, `ctoRollbackFlowPolicyRevision`, `ctoGetLinearSyncDashboard`, `ctoListLinearSyncQueue`, `ctoResolveLinearSyncQueueItem`, `ctoRunLinearSyncNow`, `ctoSimulateFlowRoute`.
+- Preload bridge and global.d.ts updated with all W4 methods.
+- `LinearSyncPanel.tsx` (2026-03-05): Self-contained panel with own state management, 6-step navigation (Connection/Intake/Routing/Execution/Escalation/Closeout), escalation queue, policy history with rollback, route simulation. Tailwind + shared UI kit.
+- `projectConfigService.linearSync.test.ts`: Config integration tests for Linear sync policy persistence.
+
 **Tests:**
 - Candidate issue polling across multiple projects, priority sorting (ascending), blocked-by filtering (skip Todo with non-terminal blockers), routing by label/defaultWorker with CTO fallback.
 - Auto-dispatch with template matching, escalation for unmatched issues, concurrency limit enforcement (global and per-state), optional assignee setting on dispatch.
@@ -573,225 +590,494 @@ Night Shift becomes a mode within the existing Automations tab, not a separate a
 - Bulk action tests.
 - Digest generation accuracy.
 
-#### W6: Memory Architecture Upgrade
+#### W6: Unified Memory System
 
-> Source: Three-tier memory from [OpenClaw](https://github.com/openclaw/openclaw) (MEMORY.md + daily logs). Pre-compaction flush from OpenClaw. Composite scoring from [CrewAI](https://github.com/crewAI/crewAI). Consolidation from [Mem0](https://github.com/mem0ai/mem0). Hybrid search from OpenClaw + RAG literature. Episodic/procedural memory from [LangMem](https://github.com/langchain-ai/langmem).
+> Source: Three-tier memory from [OpenClaw](https://docs.openclaw.ai/concepts/memory) (markdown-as-truth, hybrid BM25+vector search, temporal decay, pre-compaction flush). Composite scoring from [CrewAI](https://github.com/crewAI/crewAI). Consolidation from [Mem0](https://github.com/mem0ai/mem0). Episodic/procedural memory from [LangMem](https://github.com/langchain-ai/langmem). Org context from [Paperclip](https://paperclip.ing) (goal hierarchy, runtime skill injection).
 
-A comprehensive upgrade to ADE's memory system, introducing tiered storage, vector search, composite scoring, pre-compaction flushing, memory consolidation, episodic memory, and procedural memory. These capabilities serve both mission workers and the CTO agent.
+##### Required Reading for Implementation
 
-##### Carry-Over Scope: Candidate Memory Triage Automation
+The implementing agent **must** read these references before starting work. Each link contains design patterns and implementation details that directly inform W6.
 
-To absorb the remaining near-term memory gap into Phase 4 (instead of shipping a separate patch), W6 explicitly includes candidate-memory lifecycle automation:
+| Reference | What to Read | What ADE Adopts |
+|-----------|-------------|-----------------|
+| [OpenClaw Memory Concepts](https://docs.openclaw.ai/concepts/memory) | Full page — MEMORY.md format, daily logs, search, temporal decay, evergreen exemptions | Three-tier model, pre-compaction flush, hybrid BM25+vector search, evergreen pinning, temporal decay with half-life |
+| [OpenClaw Source — `memory/`](https://github.com/nichochar/openclaw/tree/main/src/openclaw/memory) | `memory_manager.py`, `embedding.py`, `search.py` | Search implementation patterns, embedding cache, memory lifecycle hooks |
+| [Mem0 — Memory Layer](https://github.com/mem0ai/mem0) | README + `mem0/memory/` source, especially `main.py` and the dedup/consolidation flow | Write-time dedup via vector similarity, LLM-driven PASS/REPLACE/APPEND/DELETE consolidation, confidence scoring |
+| [Mem0 Docs — How It Works](https://docs.mem0.ai/overview) | "How Mem0 Works" section — the add/search/update flow diagrams | Four-stage write pipeline (extract → dedup → consolidate → store), update-vs-add decision logic |
+| [LangMem — Long-Term Memory](https://github.com/langchain-ai/langmem) | README, `langmem/knowledge/` source, episodic/semantic/procedural concepts | Episodic → semantic → procedural extraction pipeline, memory consolidation patterns, namespace scoping |
+| [LangMem Concepts](https://langchain-ai.github.io/langmem/concepts/) | Full concepts page — memory types, extraction, consolidation | Three memory types (semantic fact, episodic event, procedural instruction), extraction triggers, consolidation strategies |
+| [CrewAI Memory](https://docs.crewai.com/concepts/memory) | Full page — short-term, long-term, entity, contextual memory | Composite scoring with multiple signals (recency, importance, access frequency), scope-based retrieval |
+| [sqlite-vec](https://github.com/asg017/sqlite-vec) | README, API docs, `vec0` virtual table, distance functions | KNN search via `vec0` virtual table, cosine distance function, WASM/Node.js integration |
+| [sqlite-vec Docs](https://alexgarcia.xyz/sqlite-vec/) | Full docs — creating tables, inserting vectors, querying, performance characteristics | Brute-force KNN (no index needed < 100K vectors), `vec_distance_cosine()`, BLOB vs JSON vector format |
+| [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | Model card — dimensions (384), performance benchmarks, GGUF availability | Local embedding model, 384-dim vectors, ~25MB GGUF weight file for offline operation |
+| [BM25 Algorithm](https://en.wikipedia.org/wiki/Okapi_BM25) | Formula and parameters (k1=1.2, b=0.75 defaults) | Keyword relevance scoring for hybrid search, term frequency saturation, document length normalization |
+| [MMR — Maximal Marginal Relevance](https://www.cs.cmu.edu/~jgc/publication/The_Use_MMR_Diversity_Based_LTMIR_1998.pdf) | Carbonell & Goldstein 1998 — MMR formula | Re-ranking to reduce redundancy in results: `lambda * sim(q, d) - (1-lambda) * max(sim(d, d_selected))` |
+| [Paperclip Spec](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) | §2 Agent Model, §3 Org Structure, §6 Cost Tracking | Agent identity schema, org hierarchy context injection, budget-gated memory operations |
+| [Factory.ai Missions](https://factory.ai/news/missions) | Blog post — skill extraction from mission runs | Skills compound over time from agent work; procedural knowledge extracted from successful patterns (W7 input) |
 
-- Add a candidate sweep path that runs at safe checkpoints (app startup, run finalization, optional periodic timer):
-  - promote `candidate` entries with `confidence >= auto_promote_threshold`,
-  - archive stale `candidate` entries older than `max_candidate_age_hours`.
-- Keep manual user controls unchanged (review/promote/archive from existing candidate panel).
-- Align runtime config typing/validation with documented memory policy keys.
+W6 replaces three overlapping systems — context packs, the basic `memoryService`, and CTO core memory — with a single unified memory service. One service, three scopes (project / agent / mission), three tiers (pinned / hot / cold). This is the largest architectural change in Phase 4.
 
-##### Three-Tier Memory
+##### Why: The Current Problem
+
+ADE currently has three overlapping knowledge systems:
+
+1. **Context packs** (`packService.ts`, ~8,600 lines + ~1,700 lines UI): Deterministic markdown documents assembled from git/DB state. Project packs, lane packs, mission packs, plan packs, feature packs, conflict packs. Versioned, stored on disk, injected into worker prompts. Users see them in Settings > Context and Lane Inspector.
+2. **Memory service** (`memoryService.ts`, ~420 lines): SQLite table where agents write facts/patterns/gotchas. Simple `LIKE %word%` keyword search. Scoped by project/lane/mission. Written by mission workers, read by mission workers.
+3. **CTO state service** (`ctoStateService.ts`): Dual-persisted (file + DB) identity, core memory, and session logs. Separate from the memory service. Only used by CTO.
+
+Problems:
+- Project pack and CTO core memory store the same information (project conventions, stack details) in two places.
+- Memory service and CTO memory are separate stores with separate search.
+- Pack system pre-computes deterministic state into markdown blobs instead of letting agents query live.
+- Pack versioning/events/deltas add complexity with little user value.
+- Lane packs, mission packs, plan packs, feature packs are internal context assembly surfaced as user-facing artifacts.
+
+##### The Replacement: One Memory Service, Three Scopes
 
 ```
-Tier 1: Core Memory (always in context, ~2-4K tokens)
-  - Agent persona block (identity, role)
-  - Current task context (what am I working on)
-  - Critical project conventions
-  - Self-editable via memoryUpdateCore tool
+┌─────────────────────────────────────────────────────────┐
+│              UNIFIED MEMORY SERVICE                      │
+│  unifiedMemoryService.ts — replaces packService.ts,     │
+│  memoryService.ts, and ctoStateService core memory       │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  PROJECT MEMORY (one per project, persistent)            │
+│  Shared knowledge about this codebase.                   │
+│  Writers: CTO, CTO workers, mission pipeline,            │
+│           bootstrap scan, chat sessions (strict), user   │
+│  Readers: everyone                                       │
+│                                                          │
+│  AGENT MEMORY (one per CTO-tab agent, persistent)        │
+│  Personal knowledge for one CTO or CTO worker.           │
+│  Writers: that agent only (self-editing via tools)        │
+│  Readers: that agent only                                │
+│                                                          │
+│  MISSION MEMORY (one per mission run, temporary)          │
+│  Shared state for workers in a single mission.            │
+│  Writers: coordinator, mission workers, orchestrator sys  │
+│  Readers: coordinator, workers in same mission            │
+│  Lifecycle: promotes to project memory on completion,     │
+│             then archived                                 │
+│                                                          │
+├─────────────────────────────────────────────────────────┤
+│  Each scope has three tiers:                             │
+│  Tier 1 (Pinned): Always in context (~2-4K tokens)       │
+│  Tier 2 (Hot): Retrieved on demand via hybrid search     │
+│  Tier 3 (Cold): Archived, rarely searched                │
+└─────────────────────────────────────────────────────────┘
+```
 
-Tier 2: Hot Memory (retrieved on demand via hybrid search)
-  - Recent episodic memories
-  - Relevant semantic memories (facts, patterns, decisions)
-  - Mission shared facts
-  - Retrieved via composite scoring
+##### Memory Schema
 
-Tier 3: Cold Memory (archival, searched rarely)
-  - Old episodic memories
-  - Low-importance facts
-  - Archived/superseded memories
-  - Stored in .ade/memory/archive/
+```typescript
+interface UnifiedMemoryEntry {
+  id: string;
+  projectId: string;
+  scope: "project" | "agent" | "mission";
+  scopeOwnerId: string | null;      // agentId for agent scope, missionId for mission scope, null for project
+  tier: 1 | 2 | 3;
+  category: "fact" | "convention" | "pattern" | "decision" | "gotcha" | "preference"
+          | "episode" | "procedure" | "digest" | "handoff";
+  content: string;
+  importance: "low" | "medium" | "high";
+  confidence: number;                // 0-1, increases with observations/confirmations
+  observationCount: number;          // how many times this has been seen/confirmed
+  status: "candidate" | "promoted" | "archived";
+  sourceType: "agent" | "system" | "user" | "mission_promotion";
+  sourceId: string | null;           // sessionId, missionId, runId, or null
+  fileScopePattern: string | null;   // e.g. "src/auth/**" for scoped applicability
+  embedding: Float32Array | null;    // populated async by embedding pipeline
+  accessCount: number;
+  lastAccessedAt: string;
+  promotedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+SQLite table: `unified_memories` replaces `memories` table and `shared_facts` table.
+
+##### Three-Tier Details Per Scope
+
+**Project Memory tiers:**
+```
+Tier 1 (Pinned, always injected, ~2-4K tokens budget):
+  - Critical conventions ("use vitest not jest", "run migrations after auth changes")
+  - User-stated preferences ("prefer small PRs", "always write tests")
+  - Active project focus ("currently refactoring billing module")
+  - Self-editable by CTO via memoryUpdateCore, user-editable in UI
+
+Tier 2 (Hot, searched on demand):
+  - Learned patterns from missions ("Stripe webhook handler needs CORS update")
+  - Episodic summaries from completed missions/sessions
+  - Project change digests (what changed while user worked solo)
+  - Architecture decisions, API patterns, gotchas
+
+Tier 3 (Cold, archived):
+  - Old episodic summaries past decay threshold
+  - Superseded facts (replaced by consolidation)
+  - Low-access-count entries that decayed out of Tier 2
+```
+
+**Agent Memory tiers (CTO tab agents only):**
+```
+Tier 1 (Pinned, always in that agent's context):
+  - Agent identity: name, role, persona, adapter config
+  - Domain ownership: "I own /api and /middleware"
+  - Current focus: "working on billing refactor"
+  - Replaces: ctoStateService core-memory.json fields
+
+Tier 2 (Hot, searched when agent activates):
+  - Past run summaries and outcomes
+  - Domain-specific patterns learned
+  - Recent session summaries (replaces ctoStateService session logs)
+
+Tier 3 (Cold):
+  - Old run history, superseded domain knowledge
+```
+
+**Mission Memory tiers:**
+```
+Tier 2 only (everything is hot during active mission):
+  - Shared facts: "API endpoint changed from /v1 to /v2"
+  - Coordinator decisions: "splitting into 3 parallel steps because X"
+  - Step handoffs: "Step A completed, output: new middleware added at /api/auth"
+  - Replaces: shared_facts table, handoff digests
+
+After mission completes:
+  - Episodic summary auto-generated → promoted to project memory
+  - High-confidence discoveries auto-promoted to project memory
+  - Rest archived to Tier 3 (queryable for audits, not actively searched)
 ```
 
 ##### Vector Search with sqlite-vec
 
-- Add `sqlite-vec` extension to the existing SQLite database.
-- Store embeddings alongside memory records in a `memory_vectors` table.
-- Hybrid search: BM25 keyword (30% weight) + vector similarity (70% weight).
-- **MMR re-ranking**: Maximal Marginal Relevance with lambda=0.7 to reduce redundant results.
-- Embedding model: local `all-MiniLM-L6-v2` GGUF (~25MB, 384 dimensions) for offline operation, `text-embedding-3-small` (1536 dimensions) as online fallback. Retrieval pipeline normalizes across both dimension sizes.
-- **Scalability**: sqlite-vec uses brute-force KNN — performant up to ~100K vectors, sufficient for per-project memory. Cold archival keeps active vector count manageable.
-- Cache embeddings in `.ade/embeddings.db` (gitignored, regenerated in ~30s background job on first startup).
-- Budget tiers for context injection: **Lite (3 entries)** for quick tasks, **Standard (8 entries)** for normal work, **Deep (20 entries)** for mission planning.
+> Reference: [sqlite-vec API docs](https://alexgarcia.xyz/sqlite-vec/), [all-MiniLM-L6-v2 model card](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), [BM25 algorithm](https://en.wikipedia.org/wiki/Okapi_BM25), [MMR paper (Carbonell & Goldstein 1998)](https://www.cs.cmu.edu/~jgc/publication/The_Use_MMR_Diversity_Based_LTMIR_1998.pdf)
 
-##### Mem0 Sidecar Decision (Deferred)
-
-Mem0 remains a candidate integration as an optional semantic sidecar. Phase 4 does **not** depend on Mem0. Revisit after Phase 4 memory baseline + CTO rollout stabilizes.
+- Add [sqlite-vec](https://github.com/asg017/sqlite-vec) extension to the existing SQLite database. Use the `vec0` virtual table with `vec_distance_cosine()` for similarity queries. See [sqlite-vec docs](https://alexgarcia.xyz/sqlite-vec/) for table creation, insertion, and query patterns.
+- Store embeddings in `unified_memory_vectors` table (foreign key to `unified_memories`).
+- **Hybrid search**: Run BM25 keyword search (via SQLite FTS5) and vector cosine search in parallel, then merge results with weighted score fusion (30% BM25 + 70% vector). This is the same hybrid approach used by [OpenClaw's search pipeline](https://github.com/nichochar/openclaw/tree/main/src/openclaw/memory). Over-fetch 4x the budget to leave room for re-ranking.
+- **MMR re-ranking**: After score fusion, apply [Maximal Marginal Relevance](https://www.cs.cmu.edu/~jgc/publication/The_Use_MMR_Diversity_Based_LTMIR_1998.pdf) (lambda=0.7) to reduce redundancy — penalize candidates that are too similar to already-selected entries. This prevents returning 5 entries that all say the same thing.
+- **Embedding model**: local [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) GGUF (~25MB, 384 dimensions) for offline operation, `text-embedding-3-small` (1536 dimensions) as online fallback. Retrieval pipeline normalizes across both dimension sizes.
+- **Scalability**: sqlite-vec uses brute-force KNN — performant up to ~100K vectors, sufficient for per-project memory. Exclude Tier 3 (cold/archived) entries from the vector index to keep the active set small.
+- **Embedding cache**: Content-hash the entry text before embedding. If the hash matches an existing entry's hash, reuse the stored embedding. Same approach as [OpenClaw's embedding cache](https://github.com/nichochar/openclaw/tree/main/src/openclaw/memory).
+- **Budget tiers**: Control how many results are returned per search — **Lite (3 entries)** for quick tasks and chat sessions, **Standard (8 entries)** for normal work, **Deep (20 entries)** for mission planning and CTO activation.
+- **Access tracking**: Every time an entry is returned from search, bump its `accessCount` and `lastAccessedAt`. This feeds the composite scoring formula and prevents useful entries from decaying.
 
 ##### Composite Scoring for Retrieval
 
-```typescript
-function computeMemoryScore(memory: Memory, semanticSimilarity: number): number {
-  const ageDays = daysSince(memory.lastAccessedAt);
-  const recencyScore = Math.pow(0.5, ageDays / 30); // 30-day half-life
-  const importanceScore = { high: 1.0, medium: 0.6, low: 0.3 }[memory.importance];
-  const accessBoost = Math.min(memory.accessCount / 10, 1.0);
+> Reference: [CrewAI memory scoring](https://docs.crewai.com/concepts/memory) — multi-signal ranking. The weighting below is tuned for developer knowledge where recency and semantic relevance matter most.
 
-  return (0.5 * semanticSimilarity) +
-         (0.2 * recencyScore) +
-         (0.2 * importanceScore) +
-         (0.1 * accessBoost);
-}
-```
+Every search result is ranked by composite score, not just semantic similarity. The formula combines five signals:
+
+- **Semantic similarity (40%)**: The hybrid BM25+vector score from the search phase.
+- **Recency (20%)**: Exponential decay with 30-day half-life on `lastAccessedAt`. An entry untouched for 30 days scores 0.50; at 90 days, 0.125; at 180 days, effectively zero. This is standard [exponential decay](https://en.wikipedia.org/wiki/Exponential_decay) — same math as radioactive half-life.
+- **Importance (15%)**: High=1.0, Medium=0.6, Low=0.3. User-confirmed entries and conventions get high importance.
+- **Confidence (15%)**: The entry's `confidence` field (0-1). Grows with observations and confirmations, decays on contradictions.
+- **Access frequency (10%)**: `min(accessCount / 10, 1.0)`. Frequently retrieved memories rank higher, capped at 10 accesses.
+
+##### Write Gate: Preventing Memory Bloat
+
+> Reference: Study [Mem0's write pipeline](https://docs.mem0.ai/overview) — their "How Mem0 Works" diagrams show the extract → dedup → consolidate → store flow. Read [Mem0 `main.py` source](https://github.com/mem0ai/mem0/blob/main/mem0/memory/main.py), especially the `add()` method, for the full dedup/consolidation pattern. Also see [LangMem consolidation](https://langchain-ai.github.io/langmem/concepts/) for semantic dedup and merge strategies.
+
+Every write goes through a four-stage gate. This runs **on every single write** — it's the primary defense against memory bloat. The goal: the memory store never grows faster than the rate of genuinely new knowledge.
+
+**Stage 1 — Category filter (instant, no AI)**: Reject transient noise (tool invocation logs, raw diffs, step lifecycle events, reasoning preamble, one-line fragments). Accept only entries with valid categories (fact, convention, pattern, decision, gotcha, preference, episode, procedure, digest, handoff). Entries with high importance in knowledge-bearing categories (convention, decision, preference) pass directly as "promoted". Everything else enters as "candidate" status with low initial confidence — needs multiple observations to earn promotion. User-written entries always pass. Truncate content over 2,000 chars.
+
+**Stage 2 — Vector dedup (embedding similarity, no AI)**: Embed the new entry and search existing entries in the same scope using cosine similarity. Only search Tier 1 + Tier 2 (not archived Tier 3). Three outcomes based on [Mem0's similarity thresholds](https://github.com/mem0ai/mem0/blob/main/mem0/memory/main.py):
+- **Exact duplicate (cosine > 0.95)**: Silently discard the new entry. Reinforce the existing one by bumping its `accessCount`, `observationCount`, and `confidence`. Example: "use vitest" vs "always use vitest not jest" — same knowledge, minor rewording.
+- **Near duplicate (0.85-0.95)**: Proceed to Stage 3 for LLM judgment. Example: "auth uses JWT" vs "auth module uses JWT with 1hr expiry" — same topic, but the new entry might add detail.
+- **No match (< 0.85)**: Save directly — this is genuinely new knowledge.
+
+**Stage 3 — LLM consolidation (only when Stage 2 finds near-duplicates)**: Send the new entry and its near-duplicate(s) to a cheap, fast LLM (haiku-class, 300-token max). The LLM decides one of four actions, following [Mem0's PASS/REPLACE/APPEND/DELETE pattern](https://docs.mem0.ai/overview):
+- **PASS**: New entry is redundant — discard it, boost existing confidence.
+- **REPLACE**: New entry supersedes existing — update the existing entry's content with merged information.
+- **APPEND**: Both contain unique info — merge into a single richer entry.
+- **DELETE**: Existing entry is obsolete/wrong — delete it, save the new one.
+
+This is the key insight from Mem0: rather than just checking "is this a duplicate?", the LLM makes a nuanced decision about how to reconcile overlapping knowledge. The merged content preserves all unique information while reducing entry count. In practice, Stage 3 fires on <10% of writes because most are either exact duplicates (caught by Stage 2) or genuinely novel.
+
+**Stage 4 — Chat session strictness (for regular chat sessions only)**: Regular chat sessions (non-CTO, non-mission) write to project memory with a higher bar — only `importance: "high"` entries with categories `convention | pattern | gotcha | decision` pass. The agent's `memoryAdd` tool prompt instructs: _"Only save discoveries that other agents working on this project would need."_
+
+**Pipeline order**: Stage 4 (cheapest) → Stage 1 (category filter) → Stage 2 (vector dedup) → Stage 3 (LLM, only if needed).
+
+##### Memory Lifecycle: Decay, Compaction, and Upkeep
+
+> Reference: [OpenClaw temporal decay with evergreen exemptions](https://docs.openclaw.ai/concepts/memory) — exemptions for pinned/critical entries. [Mem0 memory lifecycle](https://docs.mem0.ai/overview) — how entries age and get consolidated. [LangMem consolidation](https://langchain-ai.github.io/langmem/concepts/) — clustering and merging strategies. The decay math uses standard [exponential decay / half-life](https://en.wikipedia.org/wiki/Exponential_decay).
+
+Memory management runs at four levels, from continuous to periodic. Together they guarantee the memory store stays bounded, high-quality, and relevant without manual intervention.
+
+**1. Temporal Decay (continuous, passive)**: No background job — the composite scoring formula includes a 30-day half-life on `lastAccessedAt`. Entries that are never retrieved naturally sink in ranking and become invisible to budget-limited searches. This is implicit in every search — stale entries lose to fresh ones automatically. **Evergreen exemption** (from [OpenClaw](https://docs.openclaw.ai/concepts/memory)): Tier 1 pinned entries and entries with `importance: "high"` + `confidence >= 0.9` are exempt from tier demotion. They still decay in composite scoring but are never auto-demoted. Only the user or CTO can unpin/archive them.
+
+**2. Periodic Sweep (at safe checkpoints: app startup, mission completion, CTO session end, every 6 hours)**: Four jobs:
+- **Promote mature candidates**: Candidates with `confidence >= 0.7` and `observationCount >= 2` become "promoted" — they've proven their worth through repeated observation.
+- **Archive stale candidates**: Candidates older than 14 days with `confidence < 0.3` are archived — they never got confirmed, likely noise.
+- **Demote stale Tier 2 → Tier 3**: Promoted entries not accessed for 90 days (with `importance != "high"`) demote to cold storage. Also removes them from the vector index to save space.
+- **Archive cold Tier 3**: Tier 3 entries not accessed for 180 days with `confidence < 0.5` get archived status — excluded from all searches but retained in DB for audit.
+- **Enforce hard limits** (see below).
+
+**3. Consolidation Batch (weekly or on-demand)**: This is the equivalent of LSM-tree compaction for memories. Scan all Tier 2 promoted entries within a scope, cluster them by embedding similarity (threshold 0.80 — entries about the same topic), and for each cluster with 3+ entries, invoke an LLM to merge them into a single richer entry. The original entries are archived (not deleted — audit trail). This reduces entry count while preserving knowledge density. Same pattern as [Mem0's consolidation flow](https://github.com/mem0ai/mem0/blob/main/mem0/memory/main.py) and [LangMem's merge strategies](https://langchain-ai.github.io/langmem/concepts/). Triggered weekly on a timer, manually via Settings > Memory "Consolidate Now", or automatically when entry count exceeds 75% of hard limit.
+
+**4. Hard Limits (safety nets)**: Absolute upper bounds regardless of what other algorithms do. Project: max 2,000 active entries (Tier 1 + Tier 2), Agent: max 500, Mission: max 200, Tier 1 pinned: max 20 per scope. When exceeded, lowest-scoring Tier 2 entries demote to Tier 3. Tier 1 also has a **token budget** (~2-4K tokens total) — if pinned entries exceed the budget, the least-important ones demote to Tier 2.
+
+**Metrics and observability**: Track per-scope entry counts, tier distribution, write gate rejection rate (by stage), consolidation merge rate, decay demotion rate, candidate promotion rate, hard limit eviction count. Surface in Settings > Memory as a health dashboard. Emit `memory:sweep-complete` and `memory:consolidation-complete` events for UI refresh.
 
 ##### Pre-Compaction Memory Flush
 
-- Before context compaction (at 70% threshold, shipped in Hivemind HW6), trigger a silent agentic turn.
-- Agent is prompted to persist important memories to disk before context is lost.
-- Uses agent's own intelligence to decide what matters — reviews current context and calls memory tools.
-- Flush counter prevents double-flushing: each compaction event gets a monotonic ID, flush skipped if current ID already flushed.
-- Integrates with existing `compactionEngine.ts` via a pre-compaction hook.
+> Reference: [OpenClaw pre-compaction flush](https://docs.openclaw.ai/concepts/memory) — a silent agentic turn before context eviction to persist important state. Critical for long-running sessions (CTO chat, coordinator) where context compaction happens multiple times.
 
-##### Memory Write Policy
+Before context compaction (at compaction threshold), trigger a silent agentic turn where the agent is prompted to review its current context and persist important memories via `memoryAdd` before they're lost. Uses the agent's own intelligence to decide what matters. A flush counter (monotonic ID per compaction event) prevents double-flushing. Integrates with existing `compactionEngine.ts` via a `beforeCompaction` hook. All writes from the flush still go through the full write gate (dedup, consolidation, etc.). Applies to: CTO chat sessions, CTO worker sessions, coordinator agent, regular chat sessions.
 
-- **Always write**: durable architectural decisions, stable conventions, high-signal gotchas, repeatable procedures.
-- **Candidate first**: uncertain observations, plan assumptions, risks pending validation.
-- **Do not write**: transient tool noise, one-off logs, stale intermediate reasoning.
-- Candidate memories promoted via confidence + review flow; low-value/aged entries archived.
+##### Mission Memory Lifecycle
 
-##### Memory Consolidation
+**During mission**:
+- Coordinator creates mission memory scope on mission start (automatic, no agent action needed).
+- Coordinator writes decisions and plan rationale via `memoryAdd` with `scope: "mission"`.
+- Mission workers write shared facts and handoffs via `memoryAdd` with `scope: "mission"`.
+- Workers read mission memory via `memorySearch` with `scope: "mission"` to find peer discoveries.
+- The worker briefing (L0/L1/L2 assembly in `orchestratorService.ts`) pulls relevant mission memory entries instead of building markdown packs.
 
-- On save, compare new memory against existing memories using cosine similarity (threshold > 0.85).
-- If similar memory found, invoke LLM to decide:
-  - **PASS**: New memory is redundant — discard silently.
-  - **REPLACE**: New supersedes existing — update.
-  - **APPEND**: Both unique — merge into single richer memory.
-  - **DELETE**: Existing obsolete — remove old, save new.
-- Runs on save, not as batch job. Prevents unbounded growth.
+**On mission completion**:
+- System generates an episodic summary (structured: what happened, outcome, tools used, patterns found, gotchas):
+  ```typescript
+  interface EpisodicMemory {
+    id: string;
+    sessionId?: string;
+    missionId?: string;
+    taskDescription: string;
+    approachTaken: string;
+    outcome: "success" | "partial" | "failure";
+    toolsUsed: string[];
+    patternsDiscovered: string[];
+    gotchas: string[];
+    decisionsMade: string[];
+    duration: number;
+    createdAt: string;
+  }
+  ```
+- Episodic summary saved to project memory as `category: "episode"`, Tier 2, `sourceType: "mission_promotion"`.
+- High-confidence discoveries (confidence >= 0.7) auto-promoted to project memory.
+- Everything else archived to Tier 3 (retained for audit, excluded from search).
 
-##### Episodic Memory
-
-After each session/mission, generate a structured summary:
-
-```typescript
-interface EpisodicMemory {
-  id: string;
-  sessionId?: string;
-  missionId?: string;
-  taskDescription: string;
-  approachTaken: string;
-  outcome: 'success' | 'partial' | 'failure';
-  toolsUsed: string[];
-  patternsDiscovered: string[];
-  gotchas: string[];
-  decisionsMade: string[];
-  duration: number;
-  createdAt: string;
-}
-```
-
-Stored as Tier 2 initially, decay to Tier 3 over time based on access patterns.
+**Promotion decision logic**: The system (not an AI agent) decides promotion. Rules:
+1. Any entry with `importance: "high"` and `confidence >= 0.7` → auto-promote.
+2. Any entry with `category: "pattern" | "gotcha" | "convention"` and `observationCount >= 2` → auto-promote.
+3. Any entry matching an existing project memory entry (cosine similarity > 0.85) → merge into existing (boost confidence/access count).
+4. Everything else → archive. CTO can later review archived mission memories and manually promote.
 
 ##### Human Work Ingestion (User-Only Changes)
 
-Users frequently change code/config/Linear state outside agent runs. Without ingestion, workers and the CTO will make decisions on stale assumptions. Phase 4 should explicitly capture and distribute "what changed" when the human user works solo.
+Users frequently change code/config outside agent runs. Without ingestion, agents make decisions on stale assumptions.
 
-- **Project snapshot tracking**:
-  - Track `lastSeenHeadSha` and a lightweight working-tree fingerprint per agent and per project.
-  - Use this to gate dispatch and detect when a worker's understanding is stale.
+- **Project snapshot tracking**: Track `lastSeenHeadSha` per project. Gate dispatch on freshness.
+- **Change digest triggers**: App startup after repo change, before mission dispatch when HEAD diverged, explicit user action ("Sync knowledge"), PR merge / branch switch.
+- **Digest contents** (noise-controlled, no raw diffs): Commit range summary, diffstat, changed file list, semantic clustering of changed files.
+- **Write policy**: Digest saved as project memory entry with `category: "digest"`, Tier 2. CTO workers whose path routing matches the change cluster get notified so their next activation starts with fresh context.
 
-- **Change digest triggers**:
-  - App startup (first run after a repo change).
-  - Before dispatching a mission when HEAD changed since the last digest.
-  - Explicit user action ("Sync knowledge").
-  - On PR merge / branch switch (best-effort, derived from git + lane events).
+##### Memory Tools for Agents
 
-- **Digest contents** (noise-controlled; no raw diffs):
-  - Commit range summary (`git log --oneline`), diffstat (`git diff --stat`), changed file list.
-  - Semantic clustering of changed files (e.g., auth, billing, mobile) for routing to the right worker.
-  - Optional issue linkage heuristics (commit message mentions `ABC-123`, branch naming, PR title).
+- **`memorySearch`** — Hybrid BM25+vector search, ranked by composite score. Scope-aware (defaults to project, can specify agent/mission).
+- **`memoryAdd`** — With write gate (dedup + consolidation). Scope-aware. Chat sessions get strict mode (high-importance only).
+- **`memoryUpdateCore`** — Self-edit Tier 1 pinned entries for the current agent. CTO edits project Tier 1, workers edit their own agent Tier 1.
+- **`memoryPin`** — Pin a Tier 2 entry to Tier 1 (always in context, bypasses retrieval scoring). Subject to Tier 1 max (20 entries).
 
-- **Write + distribution policy**:
-  - Write digest as a Tier 2 memory entry (category: `project-change-digest`) owned by the CTO.
-  - Optionally notify relevant workers (project owner + anyone whose path/label routing matches the change cluster) so their next run starts with fresh context.
+All four tools available to: CTO sessions, CTO worker sessions, mission workers, regular chat sessions (with strict write gate for chat).
 
-##### Procedural Memory
+##### Context Pack Removal
+
+W6 deletes the entire context pack system. This is a hard removal, not a deprecation.
+
+**Files to delete** (~10,300 lines of backend + ~1,700 lines of UI):
+- `src/main/services/packs/packService.ts` (3,282 lines)
+- `src/main/services/packs/projectPackBuilder.ts` (992 lines)
+- `src/main/services/packs/missionPackBuilder.ts` (1,047 lines)
+- `src/main/services/packs/conflictPackBuilder.ts` (321 lines)
+- `src/main/services/packs/packExports.ts` (665 lines)
+- `src/main/services/packs/packUtils.ts` (554 lines)
+- `src/main/services/packs/packSections.ts` (165 lines)
+- `src/main/services/packs/lanePackTemplate.ts` (211 lines)
+- `src/main/services/packs/transcriptInsights.ts` (228 lines)
+- All test files in `src/main/services/packs/` (~800 lines)
+- `src/renderer/components/packs/PackViewer.tsx` (363 lines)
+- `src/renderer/components/packs/PackFreshnessIndicator.tsx` (25 lines)
+- `src/renderer/components/settings/ContextSection.tsx` (1,092 lines) — replaced by Memory Inspector
+- `src/shared/types/packs.ts` — all pack-related types
+
+**Consumers to migrate** (22 files reference packService):
+- `orchestratorService.ts`: Replace `packService.getProjectExport()` / `packService.getLaneExport()` calls with `unifiedMemoryService.search({ scope: "project", budget: "standard" })`. The worker briefing assembly (L0/L1/L2) stays as structured prompt assembly but pulls from memory queries instead of pack markdown.
+- `aiOrchestratorService.ts`: Remove pack version tracking from mission run metadata.
+- `registerIpc.ts`: Remove pack-related IPC handlers (`refreshLanePack`, `getPackHead`, `getPackBody`, `listPackVersions`, `listPackEvents`, `getDeltaDigest`, etc.). Add memory IPC handlers.
+- `main.ts`: Replace `createPackService()` with `createUnifiedMemoryService()`.
+- `jobEngine.ts`: Remove pack refresh jobs. Add memory sweep/consolidation jobs.
+- `conflictService.ts`: Query memory for conflict-relevant entries instead of reading conflict packs.
+- `automationService.ts`: Query memory instead of reading packs.
+- `onboardingService.ts`: Bootstrap scan writes to project memory instead of building project pack.
+- `prService.ts`: Query memory for PR context instead of reading pack exports.
+
+**What stays**:
+- `.ade/context/PRD.ade.md` and `ARCHITECTURE.ade.md` — user-editable reference docs. Indexed into project memory (Tier 2) by the bootstrap scan. `GenerateDocsModal.tsx` stays.
+- Worker briefing assembly in `orchestratorService.ts` — the L0/L1/L2 structured prompt stays as-is architecturally but pulls from memory instead of packs.
+- `contextContract.ts` / `contextShared.ts` — evaluate which parts are still needed for `.ade/context/` docs, remove the rest.
+
+**New UI replacement**:
+- `src/renderer/components/settings/MemoryInspector.tsx` — replaces ContextSection. Shows project memory entries by tier, search, filter by category/scope. Edit/pin/archive controls. Health dashboard (entry counts, last sweep, consolidation stats).
+
+##### CTO State Migration
+
+- `ctoStateService.ts` core memory fields (`projectSummary`, `criticalConventions`, `userPreferences`, `activeFocus`, `notes`) become Tier 1 pinned entries in project memory scope.
+- `ctoStateService.ts` session logs become Tier 2 entries in agent memory scope (CTO agent).
+- `ctoStateService.ts` identity fields (name, persona, model preferences) stay in `cto_identity_state` DB table — identity is not memory.
+- `ctoStateService.buildReconstructionContext()` is replaced by: query Tier 1 project memory + Tier 1 CTO agent memory → assemble reconstruction context.
+- Worker agent core memory (`getAgentCoreMemory`, `updateAgentCoreMemory`) migrates to agent-scoped Tier 1 entries.
+
+##### Implementation Sub-Phases
+
+**W6a — Memory engine** (core infrastructure):
+- `unifiedMemoryService.ts`: CRUD, scoping, tiering, write gate (stages 1-2), temporal decay, candidate sweep.
+- `unified_memories` SQLite table + migration from `memories` and `shared_facts`.
+- sqlite-vec integration: embedding pipeline, hybrid search, MMR re-ranking.
+- Composite scoring function.
+- Memory tools: `memorySearch`, `memoryAdd`, `memoryUpdateCore`, `memoryPin`.
+- Tests: search accuracy, dedup, scoring, tier promotion/demotion, candidate sweep, hard limits.
+
+**W6b — CTO + worker migration**:
+- Migrate CTO core memory → project memory Tier 1 + agent memory Tier 1.
+- Migrate CTO session logs → agent memory Tier 2 episodes.
+- Migrate worker core memory → agent memory Tier 1.
+- Wire memory tools into all chat sessions (not just CTO). Strict write gate for regular chat.
+- Update `agentChatService.ts` to inject relevant project memory (Tier 2 search) into regular chat session context.
+- Pre-compaction flush hook in `compactionEngine.ts`.
+- Tests: CTO reconstruction from memory, worker activation with agent memory, chat memory injection.
+
+**W6c — Mission memory**:
+- Replace `shared_facts` with mission-scoped memory entries.
+- Coordinator writes decisions/rationale to mission memory.
+- Mission workers write discoveries to mission memory.
+- Episodic summary generation at mission/session end.
+- Promotion pipeline: mission memory → project memory (rule-based, not AI).
+- Update worker briefing assembly to pull from memory.
+- Tests: mission memory lifecycle, episodic extraction, promotion rules, briefing assembly from memory.
+
+**W6d — Pack removal + UI**:
+- Delete all pack files listed above.
+- Migrate all 22 consumer files.
+- Remove pack-related IPC handlers, add memory IPC handlers.
+- Remove pack-related preload bridge methods, add memory bridge methods.
+- Build `MemoryInspector.tsx` replacing `ContextSection.tsx`.
+- Remove `PackViewer.tsx`, `PackFreshnessIndicator.tsx`.
+- Update `LaneInspectorPane.tsx` to show relevant memory entries instead of pack viewer.
+- Human work ingestion: snapshot tracking, change digest triggers, digest-to-memory pipeline.
+- Tests: consumer migration (orchestrator reads memory instead of packs), UI rendering, IPC handlers.
+
+**Tests (comprehensive):**
+- Vector search accuracy: hybrid BM25+vector vs keyword-only retrieval quality.
+- Write gate: dedup detection at 0.95 threshold, near-dedup at 0.85, LLM consolidation PASS/REPLACE/APPEND/DELETE.
+- Composite scoring: recency decay with 30-day half-life, importance weighting, confidence boost, access boost capping.
+- Tier lifecycle: Tier 2 → Tier 3 decay (90 days), Tier 3 → archived (180 days), Tier 2 → Tier 1 pinning, Tier 1 max enforcement.
+- Candidate sweep: auto-promote at confidence >= 0.7 + observationCount >= 2, auto-archive stale candidates.
+- Consolidation batch: cluster detection, LLM merge, entry count reduction.
+- Hard limits: project 2,000, agent 500, mission 200, Tier 1 max 20.
+- Pre-compaction flush: memories persisted before compaction, flush counter prevents double-flush.
+- Episodic memory extraction: post-session and post-mission summaries with correct structure.
+- Mission memory lifecycle: creation, cross-worker reads, promotion on completion, archival.
+- Human work ingestion: snapshot divergence triggers digest, digest stored as Tier 2, workers notified.
+- Chat session strict mode: high-importance only, category filter, rejection of transient writes.
+- Consumer migration: orchestrator builds worker briefing from memory, not packs.
+- CTO reconstruction: Tier 1 project + Tier 1 agent → same quality as old buildReconstructionContext.
+
+#### W7: Skills + Learning Pipeline
+
+> Source: [Factory.ai missions](https://factory.ai/news/missions) — skill extraction pattern (missions extract skills, skill library compounds over time). [LangMem procedural memory](https://langchain-ai.github.io/langmem/concepts/) — episodic → semantic → procedural extraction pipeline. [Vercel/Anthropic skills format](https://docs.anthropic.com/en/docs/claude-code/skills) — `.claude/skills/` universal markdown convention. [Paperclip runtime skill injection](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) — SKILLS.md injected into agent context at runtime.
+
+##### Required Reading for Implementation
+
+| Reference | What to Read | What ADE Adopts |
+|-----------|-------------|-----------------|
+| [Factory.ai Missions Blog](https://factory.ai/news/missions) | Full post — how missions extract skills that compound over time | Core concept: agent work produces reusable skills. Skill library grows with each mission. |
+| [LangMem Concepts — Memory Types](https://langchain-ai.github.io/langmem/concepts/) | Episodic, Semantic, and Procedural memory sections | Three-stage pipeline: episodes (what happened) → semantic facts (what we know) → procedures (what to do). Extraction triggers and consolidation. |
+| [LangMem Source — `knowledge/`](https://github.com/langchain-ai/langmem/tree/main/langmem/knowledge) | Extraction logic, clustering, and procedural generation | Pattern detection from episode clusters, LLM-driven procedure extraction. |
+| [Claude Code Skills Docs](https://docs.anthropic.com/en/docs/claude-code/skills) | Skills format, directory convention, how skills are loaded | `.claude/skills/<name>/SKILL.md` format — universal markdown, any agent can consume. Trigger description + step-by-step instructions. |
+| [Paperclip SKILLS.md Injection](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) | §7 Runtime Context, SKILLS.md section | Skills injected into agent system prompt at activation time. Goal hierarchy provides skill selection context. |
+| [CrewAI Memory — Long-Term](https://docs.crewai.com/concepts/memory) | Long-term memory and learning sections | Confidence evolution: success/failure tracking, automatic archival of low-confidence procedures. |
+
+W7 builds the extraction and materialization layer on top of W6's unified memory. It turns accumulated mission experience into reusable skills that any agent (Claude, Codex, or any future adapter) can consume.
+
+##### Procedural Memory Extraction
+
+> Reference: [LangMem — procedural memory](https://langchain-ai.github.io/langmem/concepts/) — extraction from episodic clusters. [Factory.ai — missions](https://factory.ai/news/missions) — skills compound over time from agent work.
+
+When the same pattern appears across 3+ episodic summaries (from different missions or sessions), the system extracts it as a procedural memory:
 
 ```typescript
 interface ProceduralMemory {
   id: string;
-  trigger: string;       // When to apply
-  procedure: string;     // What to do
+  trigger: string;       // When to apply: "changing auth module", "updating API endpoints"
+  procedure: string;     // What to do: "1. Run migration 2. Update CORS 3. Regenerate types"
   confidence: number;    // 0-1, increases with successful applications
   successCount: number;
   failureCount: number;
+  sourceEpisodeIds: string[];  // episodic memories this was derived from
   lastUsed: string;
+  createdAt: string;
 }
 ```
 
-Extracted from episodic memories when a pattern is observed multiple times. Encode learned workflows applied automatically when trigger conditions match.
+**Extraction trigger**: After each episodic summary is saved to project memory, the system scans for recurring patterns. This follows [LangMem's episodic → procedural extraction pipeline](https://langchain-ai.github.io/langmem/concepts/):
+1. Embed the new episode, search project memory for similar episodes (cosine > 0.75).
+2. If 3+ similar episodes found with overlapping `patternsDiscovered` or `decisionsMade`, check if a procedure already exists for this pattern (cosine > 0.85 against existing procedures). If so, boost its confidence instead of creating a new one.
+3. If no existing procedure matches, invoke LLM with the cluster of episodes. LLM extracts: trigger condition + step-by-step procedure + confidence estimate.
+4. Saved as project memory entry with `category: "procedure"`, Tier 2, `status: "candidate"`.
+5. On subsequent missions, procedures with matching triggers are injected into worker context.
 
-##### New Memory Tools for Agents
+**Confidence evolution**: Follows a Bayesian-style belief update — success increases confidence with diminishing returns (asymptotic to 1.0), failure decreases it more sharply (we take failures seriously). See [CrewAI's long-term memory confidence tracking](https://docs.crewai.com/concepts/memory) for a similar pattern. Auto-archive procedures that consistently fail (confidence < 0.3 after 5+ applications). Auto-promote procedures that consistently succeed (confidence >= 0.8 after 3+ applications).
 
-- **`memorySearch`** — Hybrid BM25+vector search, ranked by composite score.
-- **`memoryAdd`** — With consolidation check on save.
-- **`memoryUpdateCore`** — Self-edit Tier 1 working context.
-- **`memoryPin`** — Pin a critical memory to Tier 1 (always in context, bypasses retrieval scoring).
+##### Knowledge Source Capture
 
-**Tests:**
-- Vector search accuracy: hybrid BM25+vector vs keyword-only retrieval quality.
-- Pre-compaction flush: memories persisted before compaction, flush counter prevents double-flush.
-- Memory consolidation: PASS/REPLACE/APPEND/DELETE operations with cosine similarity threshold.
-- Episodic memory extraction: post-session and post-mission summaries with correct structure.
-- Procedural memory extraction: pattern detection from repeated episodic memories.
-- Composite scoring: recency decay with 30-day half-life, importance weighting, access boost capping.
-- Memory tier promotion/demotion: Tier 2 → Tier 3 decay, Tier 2 → Tier 1 pinning.
-- Candidate sweep: auto-promote at confidence threshold, archive stale candidates.
-- Human work ingestion: snapshot divergence triggers digest creation, digest stored as Tier 2 memory, relevant workers notified, digests are noise-controlled (no raw diffs).
+Automatic capture from agent interactions into project memory. These entries feed the episodic → procedural pipeline above. All captures go through the W6 write gate (dedup + consolidation), so duplicates are automatically merged.
 
-#### W7: Learning Packs (Auto-Curated Project Knowledge)
+- **Mission failures and resolutions**: Hook into the orchestrator's step failure → retry/resolution path. Capture the failure pattern and resolution as a gotcha/pattern entry with file scope inferred from changed files. Enters as candidate with medium confidence — needs confirmation from repeated observation.
+- **User interventions**: When a user corrects an agent during a mission (steering message, manual fix), infer the implicit rule and save as a candidate convention. Example: user says "don't use default exports" → candidate convention, promoted after 2+ observations.
+- **Repeated errors**: On session/mission end, check error patterns against existing gotcha entries via vector search. If the same error appears in 3+ sessions (2 existing + current, cosine > 0.85), escalate the existing entry's importance to "high" and boost confidence.
+- **PR review feedback**: If available (via Linear sync or git), reviewer patterns that repeat → recorded as preferences.
 
-A context pack type that automatically accumulates project-specific knowledge from agent interactions. Learning packs feed into the memory system (W6) as high-confidence project-scope entries.
+##### Skill Materialization
 
-- New pack type: `LearningPack` alongside existing Lane/Project/Mission/Feature packs.
-- **Knowledge sources** (automatic):
-  - Mission/agent run failures and their resolutions.
-  - User interventions during agent work (what the user corrected → inferred rule).
-  - Repeated issues across agent chat sessions (same error 3+ times → recorded pattern).
-  - PR review feedback patterns (reviewer consistently requests X → recorded preference).
-- **Knowledge entries**:
-  ```typescript
-  interface LearningEntry {
-    id: string;
-    category: 'mistake-pattern' | 'preference' | 'flaky-test' | 'tool-usage' | 'architecture-rule';
-    scope: 'global' | 'directory' | 'file-pattern';
-    scopePattern?: string;           // e.g., "src/auth/**"
-    content: string;                 // Human-readable rule
-    confidence: number;              // 0-1
-    observationCount: number;
-    sources: string[];               // IDs of contributing missions/sessions
-    createdAt: string;
-    updatedAt: string;
-  }
-  ```
-- **Injection**: High-confidence entries (confidence > 0.7) always included in orchestrator context; low-confidence entries included when scope matches current task.
-- **User review**: Entries visible and editable in Settings → Learning. User confirmation boosts confidence.
-- **Export/import**: Learning packs exportable to/from CLAUDE.md or agents.md format.
-- **Storage**: New `learning_entries` SQLite table with full-text search.
-- **Privacy**: Local-only (never transmitted). Travels with project directory.
+Confirmed procedural memories can be exported as universal skill files:
 
-##### Carry-Over Scope: Skill Library
+- User reviews procedural memories in Settings > Memory (procedures section).
+- User confirms a procedure → system materializes it as `.claude/skills/<name>/SKILL.md`.
+- Skill file format: plain markdown with trigger description, step-by-step instructions, and context notes. Follows Vercel skills convention — any agent that reads markdown can consume it.
+- Skills are also indexed back into project memory so ADE's own agents can discover and apply them.
 
-- **Phase 4 baseline**: Read-only visibility for agent commands/skills files (aligned with PROJ-039).
-- **Recipe candidate extraction**: Derive candidate "how-to" recipes from repeated successful missions/interventions (stored as reviewable learning entries first).
-- **User-approved materialization**: Confirmed recipe candidates exportable to `.claude/skills/<name>/SKILL.md`.
-- **Separation**: Memory entries = "what is true" (facts/decisions); Skill recipes = "how to do it" (workflows).
+```
+.claude/
+  skills/
+    auth-migration/
+      SKILL.md          # "When changing auth module: 1. Run migration..."
+    api-versioning/
+      SKILL.md          # "When updating API endpoints: 1. Update routes..."
+```
 
-- **Renderer**: Learning entries panel in Settings. Confidence indicators. Scope badges. Export/import buttons.
+##### Skill Ingestion
+
+Read existing skill and command files into project memory:
+
+- On startup and on file change, scan `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, `agents.md`.
+- Parse each file and index into project memory as Tier 2 entries with `category: "procedure"`, `sourceType: "user"`.
+- This means skills written by the user or imported from external sources (e.g. `npx skills add`) are automatically available to all ADE agents.
+
+##### Renderer
+
+- Settings > Memory section (built in W6d) gains a "Procedures" tab showing extracted procedures with confidence scores, source episodes, and "Export as Skill" button.
+- Settings > Memory also shows a "Skills" tab listing `.claude/skills/` files with import status.
 
 **Tests:**
-- Entry accumulation: auto-capture from failures, interventions, repeated issues.
-- Confidence scoring: observation count → confidence increase, user confirmation boost.
-- Injection: high-confidence always included, scope-matched low-confidence included.
-- Export/import roundtrip: CLAUDE.md format, agents.md format.
+- Procedural extraction: pattern detection from 3+ similar episodes, LLM extraction call, confidence initialization.
+- Confidence evolution: success increments, failure decrements, archival at low confidence.
+- Knowledge capture: failure→resolution recording, user intervention→candidate convention, repeated errors→gotcha.
+- Skill materialization: procedure → `.claude/skills/SKILL.md` file, correct format, file write.
+- Skill ingestion: `.claude/skills/` scan, parse, index into project memory, dedup with existing entries.
+- End-to-end: mission run → episodic summary → pattern detected → procedure extracted → user confirms → skill file created → future mission reads skill.
 
 #### W8: External MCP Consumption
 

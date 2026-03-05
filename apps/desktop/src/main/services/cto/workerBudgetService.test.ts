@@ -69,7 +69,7 @@ describe("workerBudgetService", () => {
     });
     fixture.workerBudgetService.recordCostEvent({
       agentId: worker.id,
-      provider: "codexbar",
+      provider: "codex-local",
       modelId: "gpt-5.3-codex",
       costCents: 80,
       estimated: true,
@@ -186,4 +186,3 @@ describe("workerBudgetService", () => {
     fixture.db.close();
   });
 });
-

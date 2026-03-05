@@ -66,6 +66,12 @@ import type {
   MissionStatePendingIntervention,
   MissionStateProgress,
   MissionStateStepOutcome,
+  GetMissionLogsArgs,
+  GetMissionLogsResult,
+  MissionLogEntry,
+  MissionLogChannel,
+  ExportMissionLogsArgs,
+  ExportMissionLogsResult,
 } from "../../../shared/types";
 import type { ModelConfig, OrchestratorCallType } from "../../../shared/types";
 import {
@@ -3209,52 +3215,28 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     // Route user messages directly to the coordinator agent (tool-based)
     const runs = orchestratorService.listRuns({ missionId: chatArgs.missionId });
+    const latestRun = runs[0] ?? null;
+    if (latestRun && (latestRun.status === "succeeded" || latestRun.status === "failed" || latestRun.status === "canceled")) {
+      // Mission run already closed — do not emit post-terminal fallback chat responses.
+      return;
+    }
     const activeRun = runs.find((r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused");
     if (activeRun) {
       const routed = routeUserMessageToCoordinator(chatArgs.missionId, activeRun.id, latestUserMessage);
       if (routed) return;
-    }
-
-    // Fallback: no active coordinator agent — use a simple one-shot AI call
-    if (!aiIntegrationService || !projectRoot) return;
-    const provider = resolveChatProvider(chatArgs.missionId);
-    if (!provider) return;
-
-    const runSummary = summarizeRunForChat(chatArgs.missionId);
-    const prompt = [
-      "You are the ADE mission coordinator. Respond to the user's message concisely.",
-      "Be direct, specific, and actionable. Reference step names and metrics.",
-      "",
-      `Mission: ${mission.title}`,
-      `Run summary: ${runSummary}`,
-      `User message: ${latestUserMessage}`,
-    ].join("\n");
-
-    const configChat = resolveOrchestratorModelConfig(chatArgs.missionId, "chat_response");
-    const chatCallConfig = resolveCallTypeConfig(chatArgs.missionId, "chat_response");
-    try {
-      const result = await aiIntegrationService.executeTask({
-        feature: "orchestrator" as const,
-        taskType: "review" as const,
-        prompt,
-        cwd: projectRoot,
-        provider: chatCallConfig.provider,
-        model: modelConfigToServiceModel(configChat),
-        reasoningEffort: chatCallConfig.reasoningEffort,
-        permissionMode: "read-only" as const,
-        oneShot: true,
-        timeoutMs: 30_000
-      });
-      const response = String(result.text ?? "").trim();
-      if (response.length > 0) {
-        emitOrchestratorMessage(chatArgs.missionId, response);
+      if (activeRun.status === "paused") {
+        emitOrchestratorMessage(
+          chatArgs.missionId,
+          "Orchestrator runtime is currently paused or unavailable. Resume or restart the run before sending additional directives."
+        );
+        return;
       }
-    } catch (error) {
-      logger.debug("ai_orchestrator.chat_fallback_failed", {
-        missionId: chatArgs.missionId,
-        error: error instanceof Error ? error.message : String(error)
-      });
     }
+
+    emitOrchestratorMessage(
+      chatArgs.missionId,
+      "Orchestrator runtime is not currently online for this mission. Start or resume the run to continue."
+    );
   };
 
   const enqueueChatResponse = (chatArgs: SendOrchestratorChatArgs, recentChatContext: string): void => {
@@ -4698,18 +4680,17 @@ Check all worker statuses and continue managing the mission from here. Read work
         } else try {
           const { settings: runPhaseSettings } = resolveActivePhaseSettings(mission.id);
           const integrationPrPolicy = runPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
-          const teamManifest = runTeamManifests.get(runId);
-          const graphLaneCount = new Set(graph.steps.map((s) => s.laneId).filter(Boolean)).size;
-          const usedMultipleLanes = (teamManifest && teamManifest.parallelLanes.length > 1) || graphLaneCount > 1;
+          const laneIdArrayBase = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+          if (laneIdArrayBase.length === 0 && mission.laneId) laneIdArrayBase.push(mission.laneId);
           const prStrategy: PrStrategy =
             runPhaseSettings.prStrategy
             ?? { kind: "manual" };
 
           if (prStrategy.kind === "manual") {
             logger.debug("ai_orchestrator.pr_strategy_manual", { missionId: mission.id, runId });
-          } else if (prStrategy.kind === "integration" && usedMultipleLanes && prService) {
+          } else if (prStrategy.kind === "integration" && prService) {
             try {
-              const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+              const laneIdArray = laneIdArrayBase;
               const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
               const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
               const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
@@ -4746,7 +4727,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
               try {
                 // Step 1: Simulate integration to get a conflict map / proposal
-                const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+                const laneIdArray = laneIdArrayBase;
                 const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
                 const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
 
@@ -5011,9 +4992,9 @@ Check all worker statuses and continue managing the mission from here. Read work
                 );
               }
             }
-          } else if (prStrategy.kind === "per-lane" && prService && usedMultipleLanes) {
+          } else if (prStrategy.kind === "per-lane" && prService) {
             try {
-              const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+              const laneIdArray = laneIdArrayBase;
               const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
               const isDraft = prStrategy.draft ?? true;
 
@@ -5058,9 +5039,9 @@ Check all worker statuses and continue managing the mission from here. Read work
                 error: perLaneError instanceof Error ? perLaneError.message : String(perLaneError)
               });
             }
-          } else if (prStrategy.kind === "queue" && prService && usedMultipleLanes) {
+          } else if (prStrategy.kind === "queue" && prService) {
             try {
-              const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+              const laneIdArray = laneIdArrayBase;
               const targetBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
 
               const queueResult = await prService.createQueuePrs({
@@ -6753,6 +6734,405 @@ Check all worker statuses and continue managing the mission from here. Read work
   // Smart Agent Recovery: AI-diagnosed failure handling with tiered response
   // ---------------------------------------------------------------------------
 
+  const ALL_MISSION_LOG_CHANNELS: MissionLogChannel[] = [
+    "timeline",
+    "runtime",
+    "chat",
+    "outputs",
+    "reflections",
+    "retrospectives",
+    "interventions",
+  ];
+
+  const normalizeMissionLogChannels = (channels?: MissionLogChannel[]): MissionLogChannel[] => {
+    if (!Array.isArray(channels) || channels.length === 0) return ALL_MISSION_LOG_CHANNELS;
+    const out: MissionLogChannel[] = [];
+    for (const raw of channels) {
+      if (
+        raw === "timeline" ||
+        raw === "runtime" ||
+        raw === "chat" ||
+        raw === "outputs" ||
+        raw === "reflections" ||
+        raw === "retrospectives" ||
+        raw === "interventions"
+      ) {
+        if (!out.includes(raw)) out.push(raw);
+      }
+    }
+    return out.length > 0 ? out : ALL_MISSION_LOG_CHANNELS;
+  };
+
+  const toMissionLogLevel = (args: {
+    eventType?: string | null;
+    message?: string | null;
+  }): MissionLogEntry["level"] => {
+    const text = `${args.eventType ?? ""} ${args.message ?? ""}`.toLowerCase();
+    if (
+      text.includes("failed") ||
+      text.includes("error") ||
+      text.includes("unavailable") ||
+      text.includes("hard_cap") ||
+      text.includes("budget_exceeded")
+    ) {
+      return "error";
+    }
+    if (
+      text.includes("warning") ||
+      text.includes("blocked") ||
+      text.includes("paused") ||
+      text.includes("retry")
+    ) {
+      return "warning";
+    }
+    return "info";
+  };
+
+  const pickMissionLogRunId = (missionId: string, requestedRunId?: string | null): string | null => {
+    const explicit = toOptionalString(requestedRunId);
+    if (explicit) return explicit;
+    const runs = orchestratorService.listRuns({ missionId, limit: 200 });
+    return runs[0]?.id ?? null;
+  };
+
+  const getMissionLogs = async (args: GetMissionLogsArgs): Promise<GetMissionLogsResult> => {
+    const missionId = String(args.missionId ?? "").trim();
+    if (!missionId.length) throw new Error("missionId is required.");
+    const mission = missionService.get(missionId);
+    if (!mission) throw new Error(`Mission not found: ${missionId}`);
+
+    const channels = normalizeMissionLogChannels(args.channels);
+    const channelSet = new Set<MissionLogChannel>(channels);
+    const runId = pickMissionLogRunId(missionId, args.runId);
+    const entries: MissionLogEntry[] = [];
+    const pushEntry = (entry: MissionLogEntry) => entries.push(entry);
+
+    if (channelSet.has("timeline")) {
+      for (const event of mission.events) {
+        pushEntry({
+          id: `mission-event:${event.id}`,
+          missionId,
+          runId: runId ?? null,
+          channel: "timeline",
+          level: toMissionLogLevel({ eventType: event.eventType, message: event.summary }),
+          at: event.createdAt,
+          title: event.eventType,
+          message: event.summary,
+          payload: event.payload,
+        });
+      }
+    }
+
+    if (runId && channelSet.has("timeline")) {
+      const timeline = orchestratorService.listTimeline({ runId, limit: 4_000 });
+      for (const event of timeline) {
+        pushEntry({
+          id: `timeline:${event.id}`,
+          missionId,
+          runId,
+          channel: "timeline",
+          level: toMissionLogLevel({ eventType: event.eventType, message: event.reason }),
+          at: event.createdAt,
+          title: event.eventType,
+          message: event.reason,
+          stepId: event.stepId ?? null,
+          attemptId: event.attemptId ?? null,
+          payload: event.detail ?? null,
+        });
+      }
+    }
+
+    if (runId && channelSet.has("runtime")) {
+      const runtimeEvents = orchestratorService.listRuntimeEvents({ runId, limit: 4_000 });
+      for (const event of runtimeEvents) {
+        const payload = isRecord(event.payload) ? event.payload : null;
+        const summary =
+          (payload && typeof payload.summary === "string" && payload.summary.trim().length > 0)
+            ? payload.summary.trim()
+            : event.eventType;
+        pushEntry({
+          id: `runtime:${event.id}`,
+          missionId,
+          runId,
+          channel: "runtime",
+          level: toMissionLogLevel({ eventType: event.eventType, message: summary }),
+          at: event.occurredAt,
+          title: event.eventType,
+          message: summary,
+          stepId: event.stepId ?? null,
+          attemptId: event.attemptId ?? null,
+          payload,
+        });
+      }
+    }
+
+    if (channelSet.has("chat")) {
+      const seenMessageIds = new Set<string>();
+      const addChatEntry = (message: OrchestratorChatMessage): void => {
+        if (seenMessageIds.has(message.id)) return;
+        seenMessageIds.add(message.id);
+        const role = message.role;
+        const prefix = role === "user" ? "User" : role === "agent" ? "Agent" : role === "worker" ? "Worker" : "Orchestrator";
+        const text = String(message.content ?? "").trim();
+        pushEntry({
+          id: `chat:${message.id}`,
+          missionId,
+          runId: message.runId ?? runId ?? null,
+          channel: "chat",
+          level: role === "orchestrator" ? "warning" : "info",
+          at: message.timestamp,
+          title: `${prefix} message`,
+          message: text.length > 0 ? text : "(empty message)",
+          stepKey: message.stepKey ?? null,
+          threadId: message.threadId ?? null,
+          payload: isRecord(message.metadata) ? message.metadata : null,
+        });
+      };
+
+      const globalMessages = getGlobalChat({ missionId, limit: 2_000 });
+      for (const message of globalMessages) addChatEntry(message);
+
+      const threads = listChatThreads({ missionId, includeClosed: true });
+      for (const thread of threads) {
+        const threadMessages = getThreadMessages({ missionId, threadId: thread.id, limit: 500 });
+        for (const message of threadMessages) addChatEntry(message);
+      }
+    }
+
+    if (runId && channelSet.has("outputs")) {
+      const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const stepById = new Map(graph.steps.map((step) => [step.id, step] as const));
+      for (const attempt of graph.attempts) {
+        const summary = attempt.resultEnvelope?.summary?.trim();
+        const errorMessage = attempt.errorMessage?.trim();
+        if (!summary && !errorMessage) continue;
+        const step = stepById.get(attempt.stepId);
+        const msg = summary ?? errorMessage ?? `Attempt ${attempt.status}`;
+        pushEntry({
+          id: `output:${attempt.id}`,
+          missionId,
+          runId,
+          channel: "outputs",
+          level: attempt.status === "failed" ? "error" : attempt.status === "blocked" ? "warning" : "info",
+          at: attempt.completedAt ?? attempt.startedAt ?? attempt.createdAt,
+          title: step ? `Step output: ${step.stepKey}` : "Step output",
+          message: msg,
+          stepId: attempt.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: attempt.id,
+          payload: attempt.resultEnvelope?.outputs ?? null,
+        });
+      }
+      const checkpoint = getContextCheckpoint({ missionId });
+      if (checkpoint) {
+        pushEntry({
+          id: `output:checkpoint:${checkpoint.id}`,
+          missionId,
+          runId,
+          channel: "outputs",
+          level: "info",
+          at: checkpoint.createdAt,
+          title: "Context checkpoint",
+          message: `Checkpoint saved for ${checkpoint.trigger ?? "runtime state"}.`,
+          payload: {
+            trigger: checkpoint.trigger,
+            summary: checkpoint.summary,
+          },
+        });
+      }
+    }
+
+    if (channelSet.has("reflections")) {
+      const reflections = orchestratorService.listReflections({
+        missionId,
+        ...(runId ? { runId } : {}),
+        limit: 500,
+      });
+      for (const reflection of reflections) {
+        const message = `${reflection.observation} Recommendation: ${reflection.recommendation}`;
+        pushEntry({
+          id: `reflection:${reflection.id}`,
+          missionId,
+          runId: reflection.runId,
+          channel: "reflections",
+          level: "info",
+          at: reflection.occurredAt,
+          title: `Reflection (${reflection.signalType})`,
+          message,
+          stepId: reflection.stepId,
+          attemptId: reflection.attemptId,
+          payload: {
+            phase: reflection.phase,
+            agentRole: reflection.agentRole,
+            context: reflection.context,
+          },
+        });
+      }
+    }
+
+    if (channelSet.has("retrospectives")) {
+      const retrospectives = orchestratorService.listRetrospectives({ missionId, limit: 100 });
+      for (const retrospective of retrospectives) {
+        if (runId && retrospective.runId !== runId) continue;
+        const summaryParts: string[] = [];
+        if (retrospective.wins.length > 0) summaryParts.push(`Wins: ${retrospective.wins.slice(0, 3).join("; ")}`);
+        if (retrospective.failures.length > 0) summaryParts.push(`Failures: ${retrospective.failures.slice(0, 3).join("; ")}`);
+        if (retrospective.followUpActions.length > 0) {
+          summaryParts.push(`Follow-ups: ${retrospective.followUpActions.slice(0, 3).join("; ")}`);
+        }
+        pushEntry({
+          id: `retrospective:${retrospective.id}`,
+          missionId,
+          runId: retrospective.runId,
+          channel: "retrospectives",
+          level: retrospective.finalStatus === "failed" ? "error" : retrospective.finalStatus === "canceled" ? "warning" : "info",
+          at: retrospective.generatedAt,
+          title: "Run retrospective",
+          message: summaryParts.length > 0 ? summaryParts.join(" | ") : "Retrospective generated.",
+          payload: {
+            finalStatus: retrospective.finalStatus,
+            wins: retrospective.wins,
+            failures: retrospective.failures,
+            unresolvedRisks: retrospective.unresolvedRisks,
+            followUpActions: retrospective.followUpActions,
+            topPainPoints: retrospective.topPainPoints,
+            topImprovements: retrospective.topImprovements,
+            estimatedImpact: retrospective.estimatedImpact,
+          },
+        });
+      }
+    }
+
+    if (channelSet.has("interventions")) {
+      for (const intervention of mission.interventions) {
+        pushEntry({
+          id: `intervention:${intervention.id}`,
+          missionId,
+          runId: runId ?? null,
+          channel: "interventions",
+          level: intervention.status === "open" ? "warning" : "info",
+          at: intervention.updatedAt ?? intervention.createdAt,
+          title: intervention.title,
+          message: intervention.body,
+          interventionId: intervention.id,
+          payload: {
+            status: intervention.status,
+            interventionType: intervention.interventionType,
+            requestedAction: intervention.requestedAction,
+            resolutionNote: intervention.resolutionNote,
+          },
+        });
+      }
+    }
+
+    const sorted = [...entries].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    const total = sorted.length;
+    const offsetRaw = Number(args.cursor ?? "0");
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+    const limitRaw = Number(args.limit ?? 200);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1_000, Math.floor(limitRaw))) : 200;
+    const paged = sorted.slice(offset, offset + limit);
+    const nextCursor = offset + limit < total ? String(offset + limit) : null;
+    return {
+      entries: paged,
+      nextCursor,
+      total,
+    };
+  };
+
+  const exportMissionLogs = async (args: ExportMissionLogsArgs): Promise<ExportMissionLogsResult> => {
+    const missionId = String(args.missionId ?? "").trim();
+    if (!missionId.length) throw new Error("missionId is required.");
+    const runId = pickMissionLogRunId(missionId, args.runId);
+    const includeArtifacts = args.includeArtifacts === true;
+    const channels = ALL_MISSION_LOG_CHANNELS;
+
+    const allEntries: MissionLogEntry[] = [];
+    let cursor: string | null = null;
+    for (;;) {
+      const page = await getMissionLogs({
+        missionId,
+        runId,
+        channels,
+        cursor,
+        limit: 1_000,
+      });
+      allEntries.push(...page.entries);
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+
+    const root = projectRoot ?? process.cwd();
+    const runPart = runId ?? "latest";
+    const bundlePath = nodePath.join(root, ".ade", "log-bundles", missionId, runPart);
+    fs.mkdirSync(bundlePath, { recursive: true });
+
+    const files: ExportMissionLogsResult["manifest"]["files"] = [];
+    const writeBundleFile = (name: string, content: string, entriesCount = 0): void => {
+      const filePath = nodePath.join(bundlePath, name);
+      fs.writeFileSync(filePath, content, "utf8");
+      files.push({
+        name,
+        path: filePath,
+        bytes: Buffer.byteLength(content, "utf8"),
+        entries: entriesCount,
+      });
+    };
+
+    const grouped = new Map<MissionLogChannel, MissionLogEntry[]>();
+    for (const channel of channels) grouped.set(channel, []);
+    for (const entry of allEntries) {
+      const bucket = grouped.get(entry.channel);
+      if (bucket) bucket.push(entry);
+    }
+
+    for (const channel of channels) {
+      const channelEntries = grouped.get(channel) ?? [];
+      writeBundleFile(`${channel}.json`, `${JSON.stringify(channelEntries, null, 2)}\n`, channelEntries.length);
+    }
+
+    if (includeArtifacts) {
+      const mission = missionService.get(missionId);
+      if (mission) {
+        writeBundleFile(
+          "mission-detail.json",
+          `${JSON.stringify(
+            {
+              id: mission.id,
+              title: mission.title,
+              status: mission.status,
+              prompt: mission.prompt,
+              createdAt: mission.createdAt,
+              updatedAt: mission.updatedAt,
+              artifacts: mission.artifacts,
+              interventions: mission.interventions,
+            },
+            null,
+            2,
+          )}\n`,
+        );
+      }
+    }
+
+    const exportedAt = nowIso();
+    const manifest: ExportMissionLogsResult["manifest"] = {
+      schema: "ade.mission-log-bundle.v1",
+      missionId,
+      runId,
+      exportedAt,
+      channels,
+      entryCount: allEntries.length,
+      files,
+      includeArtifacts,
+    };
+    writeBundleFile("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+
+    return {
+      bundlePath,
+      manifest,
+    };
+  };
+
   return {
     startMissionRun,
 
@@ -6998,6 +7378,8 @@ Check all worker statuses and continue managing the mission from here. Read work
       return runRecoveryLoopStates.get(rlArgs.runId) ?? null;
     },
     runHealthSweep: (reason = "manual") => runHealthSweep(reason),
+    getMissionLogs,
+    exportMissionLogs,
     dispose: () => {
       disposed = true;
       disposedRef.current = true;

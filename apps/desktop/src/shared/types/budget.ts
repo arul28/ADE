@@ -84,6 +84,18 @@ export type MissionBudgetRateLimit = {
   source: "runtime" | "claude-local" | "unknown";
 };
 
+export type MissionBudgetForecast = {
+  lowCostUsd: number | null;
+  medianCostUsd: number | null;
+  highCostUsd: number | null;
+  lowDurationMs: number | null;
+  medianDurationMs: number | null;
+  highDurationMs: number | null;
+  confidence: number | null;
+  sampleSize: number;
+  basis: string;
+};
+
 export type MissionBudgetSnapshot = {
   missionId: string;
   runId: string | null;
@@ -97,6 +109,8 @@ export type MissionBudgetSnapshot = {
   hardCaps: MissionBudgetHardCapStatus;
   activeWorkers: number;
   recommendation: string;
+  burnRateUsdPerHour: number | null;
+  forecast: MissionBudgetForecast | null;
   estimatedRemainingCapacity: {
     steps: number | null;
     durationMs: number | null;
@@ -108,4 +122,15 @@ export type MissionBudgetSnapshot = {
 export type GetMissionBudgetStatusArgs = {
   missionId: string;
   runId?: string | null;
+};
+
+export type GetMissionBudgetTelemetryArgs = {
+  providers?: string[];
+  providerLimits?: Partial<Record<ModelProvider, import("./models").ProviderBudgetLimits>>;
+};
+
+export type MissionBudgetTelemetrySnapshot = {
+  computedAt: string;
+  perProvider: MissionBudgetProviderSnapshot[];
+  dataSources: string[];
 };

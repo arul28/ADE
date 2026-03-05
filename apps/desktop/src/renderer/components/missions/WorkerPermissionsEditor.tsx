@@ -1,7 +1,7 @@
 import React, { useMemo } from "react";
 import { Shield, Warning } from "@phosphor-icons/react";
 import type { PhaseCard, MissionPermissionConfig, AgentChatPermissionMode } from "../../../shared/types";
-import { getModelById } from "../../../shared/modelRegistry";
+import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import {
   getPermissionOptions,
   safetyBadgeLabel,
@@ -26,7 +26,7 @@ export function deriveActivePermFamilies(
     if (phase.model?.modelId) modelIds.add(phase.model.modelId);
   }
   for (const id of modelIds) {
-    const desc = getModelById(id);
+    const desc = resolveModelDescriptor(id);
     if (desc) {
       seen.add(familyToPermissionKey(desc.family, desc.isCliWrapped));
     }
@@ -198,6 +198,9 @@ export function WorkerPermissionsEditor({
                     <option value="workspace-write">Workspace write</option>
                     <option value="danger-full-access">Danger full-access</option>
                   </select>
+                  <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6, lineHeight: "1.4" }}>
+                    Mode controls approval behavior. Sandbox controls filesystem access. They are applied together for Codex workers.
+                  </div>
                 </div>
               )}
 

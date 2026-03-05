@@ -4686,6 +4686,140 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("honors integration closing strategy for single-lane runs", async () => {
+    const prServiceMock = {
+      createIntegrationPr: vi.fn().mockResolvedValue({
+        groupId: "group-single",
+        integrationLaneId: "int-lane-single",
+        pr: {
+          id: "pr-single",
+          laneId: "int-lane-single",
+          projectId: "proj-1",
+          repoOwner: "test",
+          repoName: "repo",
+          githubPrNumber: 7,
+          githubUrl: "https://github.com/test/repo/pull/7",
+          githubNodeId: null,
+          title: "[ADE] Integration: Single lane mission",
+          state: "draft",
+          baseBranch: "main",
+          headBranch: "integration/single",
+          checksStatus: "none",
+          reviewStatus: "none",
+          additions: 0,
+          deletions: 0,
+          lastSyncedAt: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        },
+        mergeResults: []
+      })
+    } as any;
+
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Single lane integration PR mission.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          { index: 0, title: "Worker task", detail: "Task", kind: "implementation", metadata: { stepType: "implementation" } }
+        ]
+      });
+
+      const existingMeta = JSON.parse(
+        fixture.db.get<{ metadata_json: string | null }>(
+          `select metadata_json from missions where id = ? limit 1`,
+          [mission.id]
+        )?.metadata_json ?? "{}"
+      );
+      existingMeta.executionPolicy = {
+        ...existingMeta.executionPolicy,
+        prStrategy: { kind: "integration", targetBranch: "main", draft: true },
+        integrationPr: { enabled: true, draft: true, autoResolveConflicts: false }
+      };
+      existingMeta.missionLevelSettings = {
+        ...(existingMeta.missionLevelSettings ?? {}),
+        prStrategy: { kind: "integration", targetBranch: "main", draft: true },
+      };
+      fixture.db.run(
+        `update missions set metadata_json = ? where id = ?`,
+        [JSON.stringify(existingMeta), mission.id]
+      );
+
+      const aiOrchestratorWithPr = createAiOrchestratorService({
+        db: fixture.db,
+        logger: createLogger(),
+        missionService: fixture.missionService,
+        orchestratorService: fixture.orchestratorService,
+        laneService: fixture.laneService,
+        projectConfigService: fixture.projectConfigService,
+        aiIntegrationService: fixture.aiIntegrationService,
+        prService: prServiceMock,
+        projectRoot: fixture.projectRoot
+      });
+
+      setMissionPlanningMode(fixture.db, mission.id, "off");
+      const launch = await aiOrchestratorWithPr.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual",
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "worker-task",
+            title: "Worker task",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { stepType: "implementation", instructions: "Do the work" }
+          }
+        ]
+      });
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((entry) => entry.status === "ready") ?? graph.steps[0];
+      if (!readyStep) throw new Error("Expected mission step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Done",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      fixture.orchestratorService.tick({ runId });
+      aiOrchestratorWithPr.finalizeRun({ runId, force: true });
+      await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed");
+
+      expect(prServiceMock.createIntegrationPr).toHaveBeenCalled();
+      const prArgs = prServiceMock.createIntegrationPr.mock.calls[0]![0];
+      expect(Array.isArray(prArgs.sourceLaneIds)).toBe(true);
+      expect(prArgs.sourceLaneIds).toContain(fixture.laneId);
+      aiOrchestratorWithPr.dispose();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("does not create integration PR for single-lane run", async () => {
     const prServiceMock = {
       createIntegrationPr: vi.fn().mockResolvedValue({

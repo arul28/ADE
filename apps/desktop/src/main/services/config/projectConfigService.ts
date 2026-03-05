@@ -35,6 +35,8 @@ import type {
   ProjectConfigValidationIssue,
   ProjectConfigValidationResult,
   ProviderMode,
+  LinearAutoDispatchAction,
+  LinearSyncConfig,
   StackButtonDefinition,
   TestSuiteDefinition,
   TestSuiteTag
@@ -561,6 +563,236 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+function normalizePriorityLabels(value: unknown): Array<"urgent" | "high" | "normal" | "low" | "none"> | undefined {
+  const labels = asStringArray(value);
+  if (!labels) return undefined;
+  const normalized = labels
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(
+      (entry): entry is "urgent" | "high" | "normal" | "low" | "none" =>
+        entry === "urgent" || entry === "high" || entry === "normal" || entry === "low" || entry === "none"
+    );
+  return normalized.length ? normalized : undefined;
+}
+
+function normalizeIssueStateKey(value: unknown):
+  | "todo"
+  | "in_progress"
+  | "in_review"
+  | "done"
+  | "canceled"
+  | "blocked"
+  | null {
+  const state = asString(value)?.trim().toLowerCase() ?? "";
+  if (
+    state === "todo" ||
+    state === "in_progress" ||
+    state === "in_review" ||
+    state === "done" ||
+    state === "canceled" ||
+    state === "blocked"
+  ) {
+    return state;
+  }
+  return null;
+}
+
+function coerceLinearSync(value: unknown): LinearSyncConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: LinearSyncConfig = {};
+  const enabled = asBool(value.enabled);
+  if (enabled != null) out.enabled = enabled;
+
+  const pollingIntervalSec = asNumber(value.pollingIntervalSec);
+  if (pollingIntervalSec != null) out.pollingIntervalSec = Math.max(5, Math.floor(pollingIntervalSec));
+
+  if (Array.isArray(value.projects)) {
+    const projects = value.projects
+      .map((entry) => {
+        if (!isRecord(entry)) return null;
+        const slug = asString(entry.slug)?.trim();
+        if (!slug) return null;
+        const stateMapRaw = isRecord(entry.stateMap) ? entry.stateMap : null;
+        let stateMap: Record<string, string> | undefined;
+        if (stateMapRaw) {
+          const next: Record<string, string> = {};
+          for (const [rawKey, rawValue] of Object.entries(stateMapRaw)) {
+            const key = normalizeIssueStateKey(rawKey);
+            const mapped = asString(rawValue)?.trim();
+            if (!key || !mapped) continue;
+            next[key] = mapped;
+          }
+          if (Object.keys(next).length) stateMap = next;
+        }
+        return {
+          slug,
+          ...(asString(entry.defaultWorker)?.trim() ? { defaultWorker: asString(entry.defaultWorker)!.trim() } : {}),
+          ...(asString(entry.teamKey)?.trim() ? { teamKey: asString(entry.teamKey)!.trim() } : {}),
+          ...(stateMap ? { stateMap } : {})
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry != null);
+    if (projects.length) out.projects = projects;
+  }
+
+  if (isRecord(value.routing)) {
+    const byLabel = asStringMap(value.routing.byLabel);
+    if (byLabel && Object.keys(byLabel).length) out.routing = { byLabel };
+  }
+
+  if (isRecord(value.assignment)) {
+    const setAssigneeOnDispatch = asBool(value.assignment.setAssigneeOnDispatch);
+    if (setAssigneeOnDispatch != null) out.assignment = { setAssigneeOnDispatch };
+  }
+
+  if (isRecord(value.autoDispatch)) {
+    const rules = Array.isArray(value.autoDispatch.rules)
+      ? value.autoDispatch.rules
+          .map((rule, index) => {
+            if (!isRecord(rule)) return null;
+            const actionRaw = asString(rule.action)?.trim();
+            const action: LinearAutoDispatchAction | null =
+              actionRaw === "auto" || actionRaw === "escalate" || actionRaw === "queue-night-shift"
+                ? actionRaw
+                : null;
+            if (!action) return null;
+            const match = isRecord(rule.match) ? rule.match : null;
+            const labels = match ? asStringArray(match.labels) : undefined;
+            const priority = match ? normalizePriorityLabels(match.priority) : undefined;
+            const projectSlugs = match ? asStringArray(match.projectSlugs) : undefined;
+            const owner = match ? asStringArray(match.owner) : undefined;
+            return {
+              id: asString(rule.id)?.trim() || `rule-${index + 1}`,
+              action,
+              ...(asString(rule.template)?.trim() ? { template: asString(rule.template)!.trim() } : {}),
+              ...(labels || priority || projectSlugs || owner
+                ? {
+                    match: {
+                      ...(labels ? { labels } : {}),
+                      ...(priority ? { priority } : {}),
+                      ...(projectSlugs ? { projectSlugs } : {}),
+                      ...(owner ? { owner } : {})
+                    }
+                  }
+                : {})
+            };
+          })
+          .filter((entry): entry is NonNullable<typeof entry> => entry != null)
+      : undefined;
+    const defaultActionRaw = asString(value.autoDispatch.default)?.trim();
+    const defaultAction: LinearAutoDispatchAction | null =
+      defaultActionRaw === "auto" || defaultActionRaw === "escalate" || defaultActionRaw === "queue-night-shift"
+        ? defaultActionRaw
+        : null;
+    const autoDispatch: NonNullable<LinearSyncConfig["autoDispatch"]> = {};
+    if (rules?.length) autoDispatch.rules = rules;
+    if (defaultAction) autoDispatch.default = defaultAction;
+    if (Object.keys(autoDispatch).length) out.autoDispatch = autoDispatch;
+  }
+
+  if (isRecord(value.concurrency)) {
+    const global = asNumber(value.concurrency.global);
+    const byStateRaw = isRecord(value.concurrency.byState) ? value.concurrency.byState : null;
+    let byState: Record<string, number> | undefined;
+    if (byStateRaw) {
+      const next: Record<string, number> = {};
+      for (const [rawKey, rawValue] of Object.entries(byStateRaw)) {
+        const key = normalizeIssueStateKey(rawKey);
+        const n = asNumber(rawValue);
+        if (!key || n == null) continue;
+        next[key] = Math.max(0, Math.floor(n));
+      }
+      if (Object.keys(next).length) byState = next;
+    }
+    if (global != null || byState) {
+      out.concurrency = {
+        ...(global != null ? { global: Math.max(1, Math.floor(global)) } : {}),
+        ...(byState ? { byState } : {})
+      };
+    }
+  }
+
+  if (isRecord(value.reconciliation)) {
+    const enabled = asBool(value.reconciliation.enabled);
+    const stalledTimeoutSec = asNumber(value.reconciliation.stalledTimeoutSec);
+    if (enabled != null || stalledTimeoutSec != null) {
+      out.reconciliation = {
+        ...(enabled != null ? { enabled } : {}),
+        ...(stalledTimeoutSec != null ? { stalledTimeoutSec: Math.max(30, Math.floor(stalledTimeoutSec)) } : {})
+      };
+    }
+  }
+
+  if (isRecord(value.classification)) {
+    const mode = asString(value.classification.mode)?.trim();
+    const confidenceThreshold = asNumber(value.classification.confidenceThreshold);
+    if (mode || confidenceThreshold != null) {
+      out.classification = {
+        ...(mode === "heuristics" || mode === "ai" || mode === "hybrid" ? { mode } : {}),
+        ...(confidenceThreshold != null ? { confidenceThreshold: Math.max(0, Math.min(1, confidenceThreshold)) } : {})
+      };
+    }
+  }
+
+  if (isRecord(value.artifacts)) {
+    const mode = asString(value.artifacts.mode)?.trim();
+    if (mode === "links" || mode === "attachments") out.artifacts = { mode };
+  }
+
+  return Object.keys(out).length ? out : undefined;
+}
+
+function mergeLinearSync(shared?: LinearSyncConfig, local?: LinearSyncConfig): LinearSyncConfig | undefined {
+  if (!shared && !local) return undefined;
+  const out: LinearSyncConfig = {
+    enabled: local?.enabled ?? shared?.enabled,
+    pollingIntervalSec: local?.pollingIntervalSec ?? shared?.pollingIntervalSec,
+    projects: local?.projects ?? shared?.projects,
+    routing: {
+      ...(shared?.routing ?? {}),
+      ...(local?.routing ?? {}),
+      byLabel: {
+        ...(shared?.routing?.byLabel ?? {}),
+        ...(local?.routing?.byLabel ?? {}),
+      }
+    },
+    assignment: {
+      ...(shared?.assignment ?? {}),
+      ...(local?.assignment ?? {}),
+    },
+    autoDispatch: {
+      ...(shared?.autoDispatch ?? {}),
+      ...(local?.autoDispatch ?? {}),
+      ...(local?.autoDispatch?.rules != null
+        ? { rules: local.autoDispatch.rules }
+        : shared?.autoDispatch?.rules != null
+          ? { rules: shared.autoDispatch.rules }
+          : {}),
+    },
+    concurrency: {
+      ...(shared?.concurrency ?? {}),
+      ...(local?.concurrency ?? {}),
+      byState: {
+        ...(shared?.concurrency?.byState ?? {}),
+        ...(local?.concurrency?.byState ?? {}),
+      }
+    },
+    reconciliation: {
+      ...(shared?.reconciliation ?? {}),
+      ...(local?.reconciliation ?? {}),
+    },
+    classification: {
+      ...(shared?.classification ?? {}),
+      ...(local?.classification ?? {}),
+    },
+    artifacts: {
+      ...(shared?.artifacts ?? {}),
+      ...(local?.artifacts ?? {}),
+    }
+  };
+  return Object.keys(out).length ? out : undefined;
+}
+
 function mergeAiConfig(sharedAi?: AiConfig, localAi?: AiConfig): AiConfig | undefined {
   if (!sharedAi && !localAi) return undefined;
   const taskRouting: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>> = {
@@ -647,6 +879,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ? { ...((value as Record<string, unknown>).providers as Record<string, unknown>) }
     : undefined;
   const ai = coerceAiConfig((value as Record<string, unknown>).ai);
+  const linearSync = coerceLinearSync((value as Record<string, unknown>).linearSync);
 
   if (providersRaw) {
     delete providersRaw.mode;
@@ -664,7 +897,8 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(github ? { github } : {}),
     ...(git ? { git } : {}),
     ...(ai ? { ai } : {}),
-    ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {})
+    ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}),
+    ...(linearSync ? { linearSync } : {})
   };
 }
 
@@ -702,7 +936,8 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.github ? { github: config.github } : {}),
     ...(config.git ? { git: config.git } : {}),
     ...(config.ai ? { ai: config.ai } : {}),
-    ...(config.providers ? { providers: config.providers } : {})
+    ...(config.providers ? { providers: config.providers } : {}),
+    ...(config.linearSync ? { linearSync: config.linearSync } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
 }
@@ -882,6 +1117,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     : undefined;
 
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
+  const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);
 
   const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
 
@@ -912,7 +1148,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false
     },
     ...(effectiveAi ? { ai: effectiveAi } : {}),
-    ...(mergedProviders ? { providers: mergedProviders } : {})
+    ...(mergedProviders ? { providers: mergedProviders } : {}),
+    ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {})
   };
 }
 
@@ -1227,6 +1464,53 @@ function validateEffectiveConfig(
       if (action.retry != null && (!Number.isFinite(action.retry) || action.retry < 0)) {
         issues.push({ path: `${ap}.retry`, message: "retry must be >= 0 when provided" });
       }
+    }
+  }
+
+  const linearSync = effective.linearSync;
+  if (linearSync) {
+    const p = "effective.linearSync";
+    if (linearSync.pollingIntervalSec != null) {
+      if (!Number.isFinite(linearSync.pollingIntervalSec) || linearSync.pollingIntervalSec <= 0) {
+        issues.push({ path: `${p}.pollingIntervalSec`, message: "pollingIntervalSec must be > 0" });
+      } else if (linearSync.pollingIntervalSec < 5 || linearSync.pollingIntervalSec > 3600) {
+        issues.push({ path: `${p}.pollingIntervalSec`, message: "pollingIntervalSec must be between 5 and 3600" });
+      }
+    }
+    if (linearSync.classification?.confidenceThreshold != null) {
+      const threshold = linearSync.classification.confidenceThreshold;
+      if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+        issues.push({ path: `${p}.classification.confidenceThreshold`, message: "confidenceThreshold must be between 0 and 1" });
+      }
+    }
+    if (linearSync.projects?.length) {
+      const seen = new Set<string>();
+      for (let i = 0; i < linearSync.projects.length; i += 1) {
+        const project = linearSync.projects[i]!;
+        const pp = `${p}.projects[${i}]`;
+        const slug = (project.slug ?? "").trim().toLowerCase();
+        if (!slug.length) {
+          issues.push({ path: `${pp}.slug`, message: "Project slug is required" });
+          continue;
+        }
+        if (seen.has(slug)) {
+          issues.push({ path: `${pp}.slug`, message: `Duplicate project slug '${slug}'` });
+        } else {
+          seen.add(slug);
+        }
+      }
+    }
+    if (linearSync.autoDispatch?.rules?.length) {
+      for (let i = 0; i < linearSync.autoDispatch.rules.length; i += 1) {
+        const rule = linearSync.autoDispatch.rules[i]!;
+        const rp = `${p}.autoDispatch.rules[${i}]`;
+        if (rule.action !== "auto" && rule.action !== "escalate" && rule.action !== "queue-night-shift") {
+          issues.push({ path: `${rp}.action`, message: `Unknown action '${String(rule.action)}'` });
+        }
+      }
+    }
+    if (linearSync.concurrency?.global != null && linearSync.concurrency.global < 1) {
+      issues.push({ path: `${p}.concurrency.global`, message: "global concurrency must be >= 1" });
     }
   }
 

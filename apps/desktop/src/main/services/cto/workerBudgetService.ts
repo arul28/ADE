@@ -1,4 +1,6 @@
-import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   AgentBudgetSnapshot,
@@ -69,52 +71,152 @@ function normalizeMonthKey(input?: string): string {
   return monthKeyFor(new Date());
 }
 
-function parseCostUsdToCents(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.round(value * 100));
-  }
-  if (typeof value === "string" && value.trim().length) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return Math.max(0, Math.round(parsed * 100));
-  }
-  return null;
+function parseNumber(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.floor(numeric));
 }
 
-function extractCodexBarCostCents(payload: unknown): number | null {
-  if (!payload || typeof payload !== "object") return null;
-  const source = payload as Record<string, unknown>;
-  const candidates: unknown[] = [
-    source.costUsd,
-    source.totalCostUsd,
-    source.total_cost_usd,
-    source.totalCost,
-    source.total_cost,
-    (source.session as Record<string, unknown> | undefined)?.costUsd,
-    (source.session as Record<string, unknown> | undefined)?.totalCostUsd,
-    (source.session as Record<string, unknown> | undefined)?.totalCost,
-    (source.session as Record<string, unknown> | undefined)?.cost,
-    (source.last30days as Record<string, unknown> | undefined)?.costUsd,
-    (source.last30days as Record<string, unknown> | undefined)?.totalCostUsd,
-    (source.last30days as Record<string, unknown> | undefined)?.totalCost,
-    (source.last30days as Record<string, unknown> | undefined)?.cost,
-  ];
-  for (const candidate of candidates) {
-    const cents = parseCostUsdToCents(candidate);
-    if (cents != null) return cents;
+function estimateCodexCostCents(inputTokens: number, outputTokens: number): number {
+  // Matches ADE's budget estimate pricing for codex/gpt families.
+  const usd = (inputTokens * (2 / 1_000_000)) + (outputTokens * (8 / 1_000_000));
+  return Math.max(0, Math.round(usd * 100));
+}
+
+function readCodexUsageCostCents(args: {
+  fromMs: number;
+  toMs: number;
+  sessionId?: string | null;
+  sessionsRoot?: string | null;
+}): number {
+  const configuredRoot = typeof args.sessionsRoot === "string" ? args.sessionsRoot.trim() : "";
+  const root = configuredRoot.length > 0
+    ? path.resolve(configuredRoot)
+    : path.join(os.homedir(), ".codex", "sessions");
+  if (!fs.existsSync(root)) return 0;
+
+  const files: string[] = [];
+  const minMtimeMs = args.fromMs - (24 * 60 * 60 * 1000);
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(abs);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      try {
+        const stat = fs.statSync(abs);
+        if (stat.mtimeMs < minMtimeMs) continue;
+      } catch {
+        continue;
+      }
+      files.push(abs);
+    }
   }
 
-  const daily = Array.isArray(source.daily) ? source.daily : [];
-  let sumCents = 0;
-  let found = false;
-  for (const day of daily) {
-    if (!day || typeof day !== "object") continue;
-    const row = day as Record<string, unknown>;
-    const cents = parseCostUsdToCents(row.costUsd ?? row.totalCostUsd ?? row.cost ?? row.totalCost);
-    if (cents == null) continue;
-    sumCents += cents;
-    found = true;
+  const sessionIdFilter = typeof args.sessionId === "string" && args.sessionId.trim().length > 0
+    ? args.sessionId.trim()
+    : null;
+  let totalCents = 0;
+
+  for (const filePath of files) {
+    let sessionIdInFile = "";
+    let previousTotals: { input: number; output: number; cached: number; reasoning: number } | null = null;
+    let lastEventKey = "";
+    let fileCents = 0;
+
+    let text = "";
+    try {
+      text = fs.readFileSync(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    const lines = text.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.length) continue;
+      const parsed = safeJsonParse(trimmed, null) as Record<string, unknown> | null;
+      if (!parsed || typeof parsed !== "object") continue;
+      const timestampRaw =
+        (typeof parsed.timestamp === "string" && parsed.timestamp)
+        || (typeof parsed.createdAt === "string" && parsed.createdAt)
+        || null;
+      if (!timestampRaw) continue;
+      const timestampMs = Date.parse(timestampRaw);
+      if (!Number.isFinite(timestampMs)) continue;
+
+      const recordType = typeof parsed.type === "string" ? parsed.type : "";
+      const payload = parsed.payload && typeof parsed.payload === "object"
+        ? parsed.payload as Record<string, unknown>
+        : null;
+      if (recordType === "session_meta" && payload && typeof payload.id === "string") {
+        sessionIdInFile = payload.id;
+      }
+      if (recordType !== "event_msg" || !payload || payload.type !== "token_count") continue;
+
+      if (sessionIdFilter && sessionIdInFile !== sessionIdFilter) continue;
+      if (timestampMs < args.fromMs || timestampMs > args.toMs) continue;
+
+      const info = payload.info && typeof payload.info === "object"
+        ? payload.info as Record<string, unknown>
+        : null;
+      if (!info) continue;
+      const totalUsage = info.total_token_usage && typeof info.total_token_usage === "object"
+        ? info.total_token_usage as Record<string, unknown>
+        : null;
+      const lastUsage = info.last_token_usage && typeof info.last_token_usage === "object"
+        ? info.last_token_usage as Record<string, unknown>
+        : null;
+
+      const currentTotal = {
+        input: parseNumber(totalUsage?.input_tokens),
+        output: parseNumber(totalUsage?.output_tokens),
+        cached: parseNumber(totalUsage?.cached_input_tokens),
+        reasoning: parseNumber(totalUsage?.reasoning_output_tokens),
+      };
+      const currentLast = {
+        input: parseNumber(lastUsage?.input_tokens),
+        output: parseNumber(lastUsage?.output_tokens),
+        cached: parseNumber(lastUsage?.cached_input_tokens),
+        reasoning: parseNumber(lastUsage?.reasoning_output_tokens),
+      };
+      const eventKey =
+        `${timestampMs}:${currentTotal.input}:${currentTotal.output}:${currentTotal.cached}:${currentTotal.reasoning}:` +
+        `${currentLast.input}:${currentLast.output}:${currentLast.cached}:${currentLast.reasoning}`;
+      if (eventKey === lastEventKey) continue;
+      lastEventKey = eventKey;
+
+      let deltaInput = 0;
+      let deltaOutput = 0;
+      if (totalUsage) {
+        if (previousTotals) {
+          deltaInput = Math.max(0, currentTotal.input - previousTotals.input);
+          deltaOutput = Math.max(0, currentTotal.output - previousTotals.output);
+        } else {
+          deltaInput = currentTotal.input;
+          deltaOutput = currentTotal.output;
+        }
+        previousTotals = currentTotal;
+      } else {
+        deltaInput = currentLast.input;
+        deltaOutput = currentLast.output;
+      }
+      if (deltaInput <= 0 && deltaOutput <= 0) continue;
+      fileCents += estimateCodexCostCents(deltaInput, deltaOutput);
+    }
+    totalCents += fileCents;
   }
-  return found ? sumCents : null;
+
+  return Math.max(0, Math.floor(totalCents));
 }
 
 export function createWorkerBudgetService(args: WorkerBudgetServiceArgs) {
@@ -296,29 +398,41 @@ export function createWorkerBudgetService(args: WorkerBudgetServiceArgs) {
     }));
   };
 
-  const reconcileCliEstimateFromCodexBar = (input: { agentId: string; sessionId?: string | null }): AgentCostEvent | null => {
+  const reconcileCliEstimateFromLocalTelemetry = (input: { agentId: string; sessionId?: string | null }): AgentCostEvent | null => {
     const config = args.projectConfigService.get().effective.cto;
     const telemetry = config?.budgetTelemetry;
     const enabled = telemetry?.enabled !== false;
     if (!enabled) return null;
-    const command = (telemetry?.codexBarCommand ?? "cost --format json").trim();
-    if (!command.length) return null;
+    const sessionsRoot =
+      typeof telemetry?.codexSessionsRoot === "string" && telemetry.codexSessionsRoot.trim().length > 0
+        ? telemetry.codexSessionsRoot.trim()
+        : null;
 
-    const result = spawnSync(command, {
-      cwd: process.cwd(),
-      shell: true,
-      encoding: "utf8",
-      timeout: 15_000,
-      maxBuffer: 1_024 * 1_024,
-    });
-    if (result.status !== 0) return null;
-    const payload = safeJsonParse(result.stdout, null);
-    if (!payload) return null;
-    const totalCents = extractCodexBarCostCents(payload);
-    if (totalCents == null) return null;
+    const now = Date.now();
+    const sessionId = typeof input.sessionId === "string" && input.sessionId.trim().length > 0
+      ? input.sessionId.trim()
+      : null;
+    const totalCents = sessionId
+      ? readCodexUsageCostCents({
+          fromMs: now - (365 * 24 * 60 * 60 * 1000),
+          toMs: now,
+          sessionId,
+          sessionsRoot,
+        })
+      : (() => {
+          const { startIso, endIso } = monthBounds(monthKeyFor(new Date()));
+          const fromMs = Date.parse(startIso);
+          const toMs = Date.parse(endIso);
+          if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return 0;
+          return readCodexUsageCostCents({
+            fromMs,
+            toMs,
+            sessionsRoot,
+          });
+        })();
+    if (totalCents <= 0) return null;
 
-    if (input.sessionId && input.sessionId.trim().length) {
-      const sessionId = input.sessionId.trim();
+    if (sessionId) {
       const existing = args.db.get<{ total: number }>(
         `
           select sum(cost_cents) as total
@@ -333,7 +447,7 @@ export function createWorkerBudgetService(args: WorkerBudgetServiceArgs) {
       return recordCostEvent({
         agentId: input.agentId,
         sessionId,
-        provider: "codexbar",
+        provider: "codex-local",
         costCents: delta,
         estimated: true,
         source: "reconcile",
@@ -342,7 +456,7 @@ export function createWorkerBudgetService(args: WorkerBudgetServiceArgs) {
 
     return recordCostEvent({
       agentId: input.agentId,
-      provider: "codexbar",
+      provider: "codex-local",
       costCents: totalCents,
       estimated: true,
       source: "reconcile",
@@ -353,7 +467,7 @@ export function createWorkerBudgetService(args: WorkerBudgetServiceArgs) {
     recordCostEvent,
     listCostEvents,
     getBudgetSnapshot,
-    reconcileCliEstimateFromCodexBar,
+    reconcileCliEstimateFromLocalTelemetry,
   };
 }
 

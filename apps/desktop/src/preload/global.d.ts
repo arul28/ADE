@@ -101,6 +101,7 @@ import type {
   CtoListAgentRevisionsArgs,
   CtoRollbackAgentRevisionArgs,
   CtoEnsureAgentSessionArgs,
+  AgentTaskSession,
   CtoListAgentTaskSessionsArgs,
   CtoClearAgentTaskSessionArgs,
   CtoGetBudgetSnapshotArgs,
@@ -111,6 +112,17 @@ import type {
   CtoUpdateAgentCoreMemoryArgs,
   CtoListAgentSessionLogsArgs,
   CtoUpdateIdentityArgs,
+  LinearConnectionStatus,
+  CtoSetLinearTokenArgs,
+  CtoSaveFlowPolicyArgs,
+  CtoFlowPolicyRevision,
+  CtoRollbackFlowPolicyRevisionArgs,
+  CtoSimulateFlowRouteArgs,
+  LinearRouteDecision,
+  LinearSyncDashboard,
+  LinearSyncQueueItem,
+  CtoResolveLinearSyncQueueItemArgs,
+  LinearSyncConfig,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   KeybindingOverride,
@@ -267,7 +279,14 @@ import type {
   OrchestratorTimelineEvent,
   MissionStep,
   MissionSummary,
+  PhaseCard,
   MissionsEventPayload,
+  ListPhaseItemsArgs,
+  SavePhaseItemArgs,
+  DeletePhaseItemArgs,
+  ImportPhaseItemsArgs,
+  ExportPhaseItemsArgs,
+  ExportPhaseItemsResult,
   PhaseProfile,
   SavePhaseProfileArgs,
   ListPhaseProfilesArgs,
@@ -280,6 +299,10 @@ import type {
   MissionDashboardSnapshot,
   MissionPreflightRequest,
   MissionPreflightResult,
+  GetMissionLogsArgs,
+  GetMissionLogsResult,
+  ExportMissionLogsArgs,
+  ExportMissionLogsResult,
   GetOrchestratorGateReportArgs,
   GetOrchestratorRunGraphArgs,
   ListOrchestratorRunsArgs,
@@ -338,7 +361,9 @@ import type {
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
+  MissionBudgetTelemetrySnapshot,
   MissionBudgetSnapshot,
   SendAgentMessageArgs,
   GetGlobalChatArgs,
@@ -427,6 +452,11 @@ declare global {
         addArtifact: (args: AddMissionArtifactArgs) => Promise<MissionArtifact>;
         addIntervention: (args: AddMissionInterventionArgs) => Promise<MissionIntervention>;
         resolveIntervention: (args: ResolveMissionInterventionArgs) => Promise<MissionIntervention>;
+        listPhaseItems: (args?: ListPhaseItemsArgs) => Promise<PhaseCard[]>;
+        savePhaseItem: (args: SavePhaseItemArgs) => Promise<PhaseCard>;
+        deletePhaseItem: (args: DeletePhaseItemArgs) => Promise<void>;
+        importPhaseItems: (args: ImportPhaseItemsArgs) => Promise<PhaseCard[]>;
+        exportPhaseItems: (args?: ExportPhaseItemsArgs) => Promise<ExportPhaseItemsResult>;
         listPhaseProfiles: (args?: ListPhaseProfilesArgs) => Promise<PhaseProfile[]>;
         savePhaseProfile: (args: SavePhaseProfileArgs) => Promise<PhaseProfile>;
         deletePhaseProfile: (args: DeletePhaseProfileArgs) => Promise<void>;
@@ -457,6 +487,8 @@ declare global {
         cleanupTeamResources: (args: CleanupOrchestratorTeamResourcesArgs) => Promise<CleanupOrchestratorTeamResourcesResult>;
         heartbeatClaims: (args: HeartbeatOrchestratorClaimsArgs) => Promise<number>;
         listTimeline: (args: ListOrchestratorTimelineArgs) => Promise<OrchestratorTimelineEvent[]>;
+        getMissionLogs: (args: GetMissionLogsArgs) => Promise<GetMissionLogsResult>;
+        exportMissionLogs: (args: ExportMissionLogsArgs) => Promise<ExportMissionLogsResult>;
         getGateReport: (args?: GetOrchestratorGateReportArgs) => Promise<OrchestratorGateReport>;
         getWorkerStates: (args: GetOrchestratorWorkerStatesArgs) => Promise<OrchestratorWorkerState[]>;
         startMissionRun: (args: StartMissionRunWithAIArgs) => Promise<StartMissionRunWithAIResult>;
@@ -480,6 +512,7 @@ declare global {
         getMissionStateDocument: (args: GetMissionStateDocumentArgs) => Promise<MissionStateDocument | null>;
         getCheckpointStatus: (args: { runId: string }) => Promise<{ savedAt: string; turnCount: number; compactionCount: number } | null>;
         getMissionBudgetStatus: (args: GetMissionBudgetStatusArgs) => Promise<MissionBudgetSnapshot>;
+        getMissionBudgetTelemetry: (args: GetMissionBudgetTelemetryArgs) => Promise<MissionBudgetTelemetrySnapshot>;
         sendAgentMessage: (args: SendAgentMessageArgs) => Promise<OrchestratorChatMessage>;
         getGlobalChat: (args: GetGlobalChatArgs) => Promise<OrchestratorChatMessage[]>;
         getActiveAgents: (args: GetActiveAgentsArgs) => Promise<ActiveAgentInfo[]>;
@@ -784,6 +817,20 @@ declare global {
         getAgentCoreMemory: (args: CtoGetAgentCoreMemoryArgs) => Promise<AgentCoreMemory>;
         updateAgentCoreMemory: (args: CtoUpdateAgentCoreMemoryArgs) => Promise<AgentCoreMemory>;
         listAgentSessionLogs: (args: CtoListAgentSessionLogsArgs) => Promise<AgentSessionLogEntry[]>;
+        getLinearConnectionStatus: () => Promise<LinearConnectionStatus>;
+        setLinearToken: (args: CtoSetLinearTokenArgs) => Promise<LinearConnectionStatus>;
+        clearLinearToken: () => Promise<LinearConnectionStatus>;
+        getFlowPolicy: () => Promise<LinearSyncConfig>;
+        saveFlowPolicy: (args: CtoSaveFlowPolicyArgs) => Promise<LinearSyncConfig>;
+        listFlowPolicyRevisions: () => Promise<CtoFlowPolicyRevision[]>;
+        rollbackFlowPolicyRevision: (args: CtoRollbackFlowPolicyRevisionArgs) => Promise<LinearSyncConfig>;
+        simulateFlowRoute: (args: CtoSimulateFlowRouteArgs) => Promise<LinearRouteDecision>;
+        getLinearSyncDashboard: () => Promise<LinearSyncDashboard>;
+        runLinearSyncNow: () => Promise<LinearSyncDashboard>;
+        listLinearSyncQueue: () => Promise<LinearSyncQueueItem[]>;
+        resolveLinearSyncQueueItem: (args: CtoResolveLinearSyncQueueItemArgs) => Promise<LinearSyncQueueItem | null>;
+        listAgentTaskSessions: (args: CtoListAgentTaskSessionsArgs) => Promise<AgentTaskSession[]>;
+        clearAgentTaskSession: (args: CtoClearAgentTaskSessionArgs) => Promise<void>;
       };
     };
   }

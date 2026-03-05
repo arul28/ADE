@@ -86,6 +86,7 @@ import { MissionsHomeDashboard } from "./MissionsHomeDashboard";
 import { MissionStateSummary } from "./MissionStateSummary";
 import { PlanReviewInterventions } from "./PlanReviewInterventions";
 import { ClarificationQuizModal } from "./ClarificationQuizModal";
+import { MissionLogsTab } from "./MissionLogsTab";
 import type { ClarificationQuestion, ClarificationQuiz } from "../../../shared/types";
 
 /* Re-export helpers used by tests */
@@ -134,6 +135,8 @@ export default function MissionsPage() {
   const [missionListView, setMissionListView] = useState<MissionListViewMode>("list");
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [chatJumpTarget, setChatJumpTarget] = useState<OrchestratorChatTarget | null>(null);
+  const [logsFocusInterventionId, setLogsFocusInterventionId] = useState<string | null>(null);
+  const [activityPanelMode, setActivityPanelMode] = useState<"signal" | "logs">("signal");
 
   /* ── Steering state ── */
   const [steerInput, setSteerInput] = useState("");
@@ -184,6 +187,23 @@ export default function MissionsPage() {
     runGraph && (runGraph.run.status === "active" || runGraph.run.status === "bootstrapping")
   );
   const hasNonTerminalRun = Boolean(runGraph && !TERMINAL_RUN_STATUSES.has(runGraph.run.status));
+  const missionElapsedEndedAt = useMemo(() => {
+    if (!selectedMission) return null;
+    const runStatus = runGraph?.run.status ?? null;
+    if (runStatus === "paused") {
+      return runGraph?.run.updatedAt ?? selectedMission.updatedAt;
+    }
+    if (runStatus === "canceled" || runStatus === "failed" || runStatus === "succeeded") {
+      return runGraph?.run.completedAt ?? runGraph?.run.updatedAt ?? selectedMission.completedAt ?? selectedMission.updatedAt;
+    }
+    if (selectedMission.status === "intervention_required") {
+      return selectedMission.updatedAt;
+    }
+    if (TERMINAL_MISSION_STATUSES.has(selectedMission.status)) {
+      return selectedMission.completedAt ?? selectedMission.updatedAt;
+    }
+    return null;
+  }, [runGraph?.run.completedAt, runGraph?.run.status, runGraph?.run.updatedAt, selectedMission]);
   const checkpointIndicatorLabel = checkpointStatus ? relativeWhen(checkpointStatus.savedAt) : "pending";
   const checkpointIndicatorTooltip = checkpointStatus
     ? `Last checkpoint: ${relativeWhen(checkpointStatus.savedAt)} | ${checkpointStatus.turnCount} turns | ${checkpointStatus.compactionCount} compactions`
@@ -441,11 +461,15 @@ export default function MissionsPage() {
       setRunGraph(null);
       setSteeringLog([]);
       setChatJumpTarget(null);
+      setLogsFocusInterventionId(null);
+      setActivityPanelMode("signal");
       setOriginalStepCount(null);
       return;
     }
     setSteeringLog([]);
     setChatJumpTarget(null);
+    setLogsFocusInterventionId(null);
+    setActivityPanelMode("signal");
     void loadMissionDetail(selectedMissionId);
     void loadOrchestratorGraph(selectedMissionId);
   }, [selectedMissionId, loadMissionDetail, loadOrchestratorGraph]);
@@ -1045,7 +1069,7 @@ export default function MissionsPage() {
                     )}
                   </div>
                   <div className="mt-0.5 flex items-center gap-3 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <span><Clock className="inline h-3 w-3 mr-0.5" /><ElapsedTime startedAt={selectedMission?.startedAt ?? null} endedAt={selectedMission && TERMINAL_MISSION_STATUSES.has(selectedMission.status) ? selectedMission.completedAt : null} /></span>
+                    <span><Clock className="inline h-3 w-3 mr-0.5" /><ElapsedTime startedAt={selectedMission?.startedAt ?? null} endedAt={missionElapsedEndedAt} /></span>
                     {selectedMission?.laneName && (
                       <span><GitBranch className="inline h-3 w-3 mr-0.5" />{selectedMission.laneName}</span>
                     )}
@@ -1310,31 +1334,66 @@ export default function MissionsPage() {
 
                 {activeTab === "activity" && (
                   <div className="space-y-3">
-                    <ActivityNarrativeHeader
-                      runGraph={runGraph}
-                      steeringLog={steeringLog}
-                    />
-                    <OrchestratorActivityFeed
-                      runId={runGraph?.run.id ?? ""}
-                      initialTimeline={runTimeline}
-                    />
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setActivityPanelMode("signal")}
+                        className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                        style={activityPanelMode === "signal"
+                          ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
+                          : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
+                        }
+                      >
+                        Signal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActivityPanelMode("logs")}
+                        className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                        style={activityPanelMode === "logs"
+                          ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
+                          : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
+                        }
+                      >
+                        Logs
+                      </button>
+                    </div>
+                    {activityPanelMode === "signal" ? (
+                      <>
+                        <ActivityNarrativeHeader
+                          runGraph={runGraph}
+                          steeringLog={steeringLog}
+                        />
+                        <OrchestratorActivityFeed
+                          runId={runGraph?.run.id ?? ""}
+                          initialTimeline={runTimeline}
+                        />
 
-                    {/* Run Narrative - shown when available */}
-                    {Array.isArray(runGraph?.run?.metadata?.runNarrative) && (runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).length > 0 && (
-                      <div className="space-y-1.5 mt-4">
-                        <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: COLORS.textMuted }}>
-                          RUN NARRATIVE
-                        </div>
-                        <div className="space-y-1">
-                          {(runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).map((entry, i: number) => (
-                            <div key={i} className="text-[11px] flex gap-2 items-start" style={{ fontFamily: MONO_FONT }}>
-                              <span className="shrink-0" style={{ color: COLORS.accent }}>{entry.stepKey}</span>
-                              <span style={{ color: COLORS.textSecondary }}>{entry.summary}</span>
+                        {/* Run Narrative - shown when available */}
+                        {Array.isArray(runGraph?.run?.metadata?.runNarrative) && (runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).length > 0 && (
+                          <div className="space-y-1.5 mt-4">
+                            <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: COLORS.textMuted }}>
+                              RUN NARRATIVE
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                            <div className="space-y-1">
+                              {(runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).map((entry, i: number) => (
+                                <div key={i} className="text-[11px] flex gap-2 items-start" style={{ fontFamily: MONO_FONT }}>
+                                  <span className="shrink-0" style={{ color: COLORS.accent }}>{entry.stepKey}</span>
+                                  <span style={{ color: COLORS.textSecondary }}>{entry.summary}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : selectedMission ? (
+                      <MissionLogsTab
+                        missionId={selectedMission.id}
+                        runId={runGraph?.run.id ?? null}
+                        focusInterventionId={logsFocusInterventionId}
+                        onFocusHandled={() => setLogsFocusInterventionId(null)}
+                      />
+                    ) : null}
                   </div>
                 )}
 
@@ -1343,6 +1402,7 @@ export default function MissionsPage() {
                     missionId={selectedMissionId}
                     missionStatus={selectedMission?.status ?? null}
                     runId={runGraph?.run.id ?? null}
+                    runStatus={runGraph?.run.status ?? null}
                     jumpTarget={chatJumpTarget}
                     onJumpHandled={() => setChatJumpTarget(null)}
                   />
@@ -1368,6 +1428,51 @@ export default function MissionsPage() {
                         </div>
                       ) : null}
                     </div>
+                    {selectedMission.interventions.length > 0 ? (
+                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          Interventions
+                        </div>
+                        <div className="mt-2 space-y-2">
+                          {selectedMission.interventions.slice(0, 10).map((iv) => {
+                            const isOpen = iv.status === "open";
+                            return (
+                              <div key={iv.id} className="px-2 py-1.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                                <div className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                  <span style={{ color: isOpen ? COLORS.warning : COLORS.success }}>{isOpen ? "OPEN" : "RESOLVED"}</span>
+                                  <span>{iv.interventionType.replace(/_/g, " ")}</span>
+                                </div>
+                                <div className="mt-1 text-[11px]" style={{ color: COLORS.textPrimary }}>
+                                  {iv.title}
+                                </div>
+                                <div className="mt-1 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
+                                    onClick={() => {
+                                      setLogsFocusInterventionId(iv.id);
+                                      setActivityPanelMode("logs");
+                                      setActiveTab("activity");
+                                    }}
+                                  >
+                                    VIEW LOGS
+                                  </button>
+                                  {isOpen ? (
+                                    <button
+                                      type="button"
+                                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
+                                      onClick={() => setActiveTab("chat")}
+                                    >
+                                      OPEN CHAT
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
                     <MissionStateSummary runId={runGraph?.run.id ?? null} />
                     <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
                   </div>

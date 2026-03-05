@@ -75,6 +75,14 @@ const DEFAULT_CONFIG = { icon: "\u25CB", color: "text-muted-fg", label: "Event",
 
 const CATEGORY_OPTIONS = ["All Events", "Steps", "Workers", "Quality", "Integration"];
 type Severity = "all" | "warnings" | "errors";
+const HIDDEN_MAINTENANCE_EVENT_TYPES = new Set([
+  "scheduler_tick",
+  "tick",
+  "dynamic_cap",
+  "autopilot_parallelism_cap_adjusted",
+  "claim_heartbeat",
+  "context_pack_bootstrap",
+]);
 
 function sortTimeline(events: OrchestratorTimelineEvent[]): OrchestratorTimelineEvent[] {
   return [...events].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
@@ -146,6 +154,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
   const [category, setCategory] = useState("All Events");
   const [severity, setSeverity] = useState<Severity>("all");
   const [searchText, setSearchText] = useState("");
+  const [showRawEvents, setShowRawEvents] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -238,6 +247,10 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
   const filteredEvents = useMemo(() => {
     let result = events;
 
+    if (!showRawEvents) {
+      result = result.filter((ev) => !HIDDEN_MAINTENANCE_EVENT_TYPES.has(ev.eventType));
+    }
+
     // Category filter
     if (category !== "All Events") {
       result = result.filter((ev) => {
@@ -267,7 +280,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
     }
 
     return result;
-  }, [events, category, severity, searchText]);
+  }, [events, category, severity, searchText, showRawEvents]);
 
   const grouped = useMemo(() => groupConsecutive(filteredEvents), [filteredEvents]);
 
@@ -319,6 +332,19 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
             Clear
           </button>
         )}
+
+        <button
+          type="button"
+          onClick={() => setShowRawEvents((prev) => !prev)}
+          className="px-2 py-0.5 text-[10px] font-medium transition-colors"
+          style={showRawEvents
+            ? { background: "#A78BFA18", border: "1px solid #A78BFA30", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace" }
+            : { background: "#13101A", border: "1px solid #1E1B26", color: "#71717A", fontFamily: "JetBrains Mono, monospace" }
+          }
+          title="Show raw maintenance events (scheduler ticks, cap adjustments, heartbeats)."
+        >
+          {showRawEvents ? "RAW: ON" : "RAW: OFF"}
+        </button>
       </div>
 
       {/* Event list */}

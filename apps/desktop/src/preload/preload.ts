@@ -45,9 +45,23 @@ import type {
   CtoTriggerAgentWakeupArgs,
   CtoTriggerAgentWakeupResult,
   CtoListAgentRunsArgs,
+  CtoListAgentTaskSessionsArgs,
+  CtoClearAgentTaskSessionArgs,
+  AgentTaskSession,
   CtoGetAgentCoreMemoryArgs,
   CtoUpdateAgentCoreMemoryArgs,
   CtoListAgentSessionLogsArgs,
+  LinearConnectionStatus,
+  CtoSetLinearTokenArgs,
+  CtoSaveFlowPolicyArgs,
+  CtoFlowPolicyRevision,
+  CtoRollbackFlowPolicyRevisionArgs,
+  CtoSimulateFlowRouteArgs,
+  LinearRouteDecision,
+  LinearSyncDashboard,
+  LinearSyncQueueItem,
+  CtoResolveLinearSyncQueueItemArgs,
+  LinearSyncConfig,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   AutomationsEventPayload,
@@ -267,7 +281,14 @@ import type {
   TerminalProfilesSnapshot,
   TerminalSessionSummary,
   ResolveMissionInterventionArgs,
+  PhaseCard,
   PhaseProfile,
+  ListPhaseItemsArgs,
+  SavePhaseItemArgs,
+  DeletePhaseItemArgs,
+  ExportPhaseItemsArgs,
+  ExportPhaseItemsResult,
+  ImportPhaseItemsArgs,
   SavePhaseProfileArgs,
   ListPhaseProfilesArgs,
   DeletePhaseProfileArgs,
@@ -351,9 +372,15 @@ import type {
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  GetMissionLogsArgs,
+  GetMissionLogsResult,
+  ExportMissionLogsArgs,
+  ExportMissionLogsResult,
   GetAggregatedUsageArgs,
   AggregatedUsageStats,
+  GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
+  MissionBudgetTelemetrySnapshot,
   MissionBudgetSnapshot,
   SendAgentMessageArgs,
   GetGlobalChatArgs,
@@ -466,6 +493,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.missionsAddIntervention, args),
     resolveIntervention: async (args: ResolveMissionInterventionArgs): Promise<MissionIntervention> =>
       ipcRenderer.invoke(IPC.missionsResolveIntervention, args),
+    listPhaseItems: async (args: ListPhaseItemsArgs = {}): Promise<PhaseCard[]> =>
+      ipcRenderer.invoke(IPC.missionsListPhaseItems, args),
+    savePhaseItem: async (args: SavePhaseItemArgs): Promise<PhaseCard> =>
+      ipcRenderer.invoke(IPC.missionsSavePhaseItem, args),
+    deletePhaseItem: async (args: DeletePhaseItemArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.missionsDeletePhaseItem, args),
+    importPhaseItems: async (args: ImportPhaseItemsArgs): Promise<PhaseCard[]> =>
+      ipcRenderer.invoke(IPC.missionsImportPhaseItems, args),
+    exportPhaseItems: async (args: ExportPhaseItemsArgs = {}): Promise<ExportPhaseItemsResult> =>
+      ipcRenderer.invoke(IPC.missionsExportPhaseItems, args),
     listPhaseProfiles: async (args: ListPhaseProfilesArgs = {}): Promise<PhaseProfile[]> =>
       ipcRenderer.invoke(IPC.missionsListPhaseProfiles, args),
     savePhaseProfile: async (args: SavePhaseProfileArgs): Promise<PhaseProfile> =>
@@ -522,6 +559,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorHeartbeatClaims, args),
     listTimeline: async (args: ListOrchestratorTimelineArgs): Promise<OrchestratorTimelineEvent[]> =>
       ipcRenderer.invoke(IPC.orchestratorListTimeline, args),
+    getMissionLogs: async (args: GetMissionLogsArgs): Promise<GetMissionLogsResult> =>
+      ipcRenderer.invoke(IPC.orchestratorGetMissionLogs, args),
+    exportMissionLogs: async (args: ExportMissionLogsArgs): Promise<ExportMissionLogsResult> =>
+      ipcRenderer.invoke(IPC.orchestratorExportMissionLogs, args),
     getGateReport: async (args: GetOrchestratorGateReportArgs = {}): Promise<OrchestratorGateReport> =>
       ipcRenderer.invoke(IPC.orchestratorGetGateReport, args),
     getWorkerStates: async (args: GetOrchestratorWorkerStatesArgs): Promise<OrchestratorWorkerState[]> =>
@@ -570,6 +611,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorGetCheckpointStatus, args),
     getMissionBudgetStatus: async (args: GetMissionBudgetStatusArgs): Promise<MissionBudgetSnapshot> =>
       ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetStatus, args),
+    getMissionBudgetTelemetry: async (
+      args: GetMissionBudgetTelemetryArgs
+    ): Promise<MissionBudgetTelemetrySnapshot> =>
+      ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetTelemetry, args),
     sendAgentMessage: async (args: SendAgentMessageArgs): Promise<OrchestratorChatMessage> =>
       ipcRenderer.invoke(IPC.orchestratorSendAgentMessage, args),
     getGlobalChat: async (args: GetGlobalChatArgs): Promise<OrchestratorChatMessage[]> =>
@@ -1085,5 +1130,33 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoUpdateAgentCoreMemory, args),
     listAgentSessionLogs: async (args: CtoListAgentSessionLogsArgs): Promise<AgentSessionLogEntry[]> =>
       ipcRenderer.invoke(IPC.ctoListAgentSessionLogs, args),
+    getLinearConnectionStatus: async (): Promise<LinearConnectionStatus> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearConnectionStatus),
+    setLinearToken: async (args: CtoSetLinearTokenArgs): Promise<LinearConnectionStatus> =>
+      ipcRenderer.invoke(IPC.ctoSetLinearToken, args),
+    clearLinearToken: async (): Promise<LinearConnectionStatus> =>
+      ipcRenderer.invoke(IPC.ctoClearLinearToken),
+    getFlowPolicy: async (): Promise<LinearSyncConfig> =>
+      ipcRenderer.invoke(IPC.ctoGetFlowPolicy),
+    saveFlowPolicy: async (args: CtoSaveFlowPolicyArgs): Promise<LinearSyncConfig> =>
+      ipcRenderer.invoke(IPC.ctoSaveFlowPolicy, args),
+    listFlowPolicyRevisions: async (): Promise<CtoFlowPolicyRevision[]> =>
+      ipcRenderer.invoke(IPC.ctoListFlowPolicyRevisions),
+    rollbackFlowPolicyRevision: async (args: CtoRollbackFlowPolicyRevisionArgs): Promise<LinearSyncConfig> =>
+      ipcRenderer.invoke(IPC.ctoRollbackFlowPolicyRevision, args),
+    simulateFlowRoute: async (args: CtoSimulateFlowRouteArgs): Promise<LinearRouteDecision> =>
+      ipcRenderer.invoke(IPC.ctoSimulateFlowRoute, args),
+    getLinearSyncDashboard: async (): Promise<LinearSyncDashboard> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearSyncDashboard),
+    runLinearSyncNow: async (): Promise<LinearSyncDashboard> =>
+      ipcRenderer.invoke(IPC.ctoRunLinearSyncNow),
+    listLinearSyncQueue: async (): Promise<LinearSyncQueueItem[]> =>
+      ipcRenderer.invoke(IPC.ctoListLinearSyncQueue),
+    resolveLinearSyncQueueItem: async (args: CtoResolveLinearSyncQueueItemArgs): Promise<LinearSyncQueueItem | null> =>
+      ipcRenderer.invoke(IPC.ctoResolveLinearSyncQueueItem, args),
+    listAgentTaskSessions: async (args: CtoListAgentTaskSessionsArgs): Promise<AgentTaskSession[]> =>
+      ipcRenderer.invoke(IPC.ctoListAgentTaskSessions, args),
+    clearAgentTaskSession: async (args: CtoClearAgentTaskSessionArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.ctoClearAgentTaskSession, args),
   }
 });

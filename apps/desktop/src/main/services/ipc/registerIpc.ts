@@ -239,7 +239,14 @@ import type {
   MissionStatus,
   MissionStepHandoff,
   MissionSummary,
+  PhaseCard,
   PhaseProfile,
+  ListPhaseItemsArgs,
+  SavePhaseItemArgs,
+  DeletePhaseItemArgs,
+  ExportPhaseItemsArgs,
+  ExportPhaseItemsResult,
+  ImportPhaseItemsArgs,
   ListPhaseProfilesArgs,
   SavePhaseProfileArgs,
   DeletePhaseProfileArgs,
@@ -320,8 +327,14 @@ import type {
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  GetMissionLogsArgs,
+  GetMissionLogsResult,
+  ExportMissionLogsArgs,
+  ExportMissionLogsResult,
+  GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
   MissionBudgetSnapshot,
+  MissionBudgetTelemetrySnapshot,
   SendAgentMessageArgs,
   GetGlobalChatArgs,
   DeliverMessageArgs,
@@ -349,6 +362,18 @@ import type {
   CtoListAgentSessionLogsArgs,
   CtoListAgentTaskSessionsArgs,
   CtoClearAgentTaskSessionArgs,
+  LinearConnectionStatus,
+  CtoSetLinearTokenArgs,
+  CtoFlowPolicyRevision,
+  CtoSaveFlowPolicyArgs,
+  CtoRollbackFlowPolicyRevisionArgs,
+  CtoSimulateFlowRouteArgs,
+  LinearRouteDecision,
+  LinearSyncDashboard,
+  LinearSyncQueueItem,
+  CtoResolveLinearSyncQueueItemArgs,
+  LinearSyncConfig,
+  NormalizedLinearIssue,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -396,6 +421,11 @@ import type { createWorkerRevisionService } from "../cto/workerRevisionService";
 import type { createWorkerBudgetService } from "../cto/workerBudgetService";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import type { createWorkerTaskSessionService } from "../cto/workerTaskSessionService";
+import type { createLinearCredentialService } from "../cto/linearCredentialService";
+import type { createFlowPolicyService } from "../cto/flowPolicyService";
+import type { createLinearRoutingService } from "../cto/linearRoutingService";
+import type { createLinearSyncService } from "../cto/linearSyncService";
+import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import { getErrorMessage, isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
 export type AppContext = {
@@ -446,6 +476,11 @@ export type AppContext = {
   workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
   workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
   workerTaskSessionService?: ReturnType<typeof createWorkerTaskSessionService> | null;
+  linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
+  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
+  linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
   mcpSocketServer?: import("node:net").Server;
   mcpSocketPath?: string;
 };
@@ -1576,6 +1611,31 @@ export function registerIpc({
     return ctx.missionService.get(arg?.missionId ?? "");
   });
 
+  ipcMain.handle(IPC.missionsListPhaseItems, async (_event, arg: ListPhaseItemsArgs = {}): Promise<PhaseCard[]> => {
+    const ctx = getCtx();
+    return ctx.missionService.listPhaseItems(arg);
+  });
+
+  ipcMain.handle(IPC.missionsSavePhaseItem, async (_event, arg: SavePhaseItemArgs): Promise<PhaseCard> => {
+    const ctx = getCtx();
+    return ctx.missionService.savePhaseItem(arg);
+  });
+
+  ipcMain.handle(IPC.missionsDeletePhaseItem, async (_event, arg: DeletePhaseItemArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.missionService.deletePhaseItem(arg);
+  });
+
+  ipcMain.handle(IPC.missionsImportPhaseItems, async (_event, arg: ImportPhaseItemsArgs): Promise<PhaseCard[]> => {
+    const ctx = getCtx();
+    return ctx.missionService.importPhaseItems(arg);
+  });
+
+  ipcMain.handle(IPC.missionsExportPhaseItems, async (_event, arg: ExportPhaseItemsArgs = {}): Promise<ExportPhaseItemsResult> => {
+    const ctx = getCtx();
+    return ctx.missionService.exportPhaseItems(arg);
+  });
+
   ipcMain.handle(IPC.missionsListPhaseProfiles, async (_event, arg: ListPhaseProfilesArgs = {}): Promise<PhaseProfile[]> => {
     const ctx = getCtx();
     return ctx.missionService.listPhaseProfiles(arg);
@@ -1897,6 +1957,22 @@ export function registerIpc({
   );
 
   ipcMain.handle(
+    IPC.orchestratorGetMissionLogs,
+    async (_event, arg: GetMissionLogsArgs): Promise<GetMissionLogsResult> => {
+      const ctx = getCtx();
+      return await ctx.aiOrchestratorService.getMissionLogs(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorExportMissionLogs,
+    async (_event, arg: ExportMissionLogsArgs): Promise<ExportMissionLogsResult> => {
+      const ctx = getCtx();
+      return await ctx.aiOrchestratorService.exportMissionLogs(arg);
+    }
+  );
+
+  ipcMain.handle(
     IPC.orchestratorGetGateReport,
     async (_event, arg: GetOrchestratorGateReportArgs = {}): Promise<OrchestratorGateReport> => {
       const ctx = getCtx();
@@ -2049,6 +2125,14 @@ export function registerIpc({
     async (_event, arg: GetMissionBudgetStatusArgs): Promise<MissionBudgetSnapshot> => {
       const ctx = getCtx();
       return await ctx.missionBudgetService.getMissionBudgetStatus(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetMissionBudgetTelemetry,
+    async (_event, arg: GetMissionBudgetTelemetryArgs): Promise<MissionBudgetTelemetrySnapshot> => {
+      const ctx = getCtx();
+      return ctx.missionBudgetService.getMissionBudgetTelemetry(arg ?? {});
     }
   );
 
@@ -3844,4 +3928,158 @@ export function registerIpc({
     if (!ctx.workerTaskSessionService) throw new Error("Worker task session service is not available.");
     ctx.workerTaskSessionService.clearAgentTaskSession(arg);
   });
+
+  // -- W4: Bidirectional Linear Sync --
+
+  ipcMain.handle(IPC.ctoGetLinearConnectionStatus, async (): Promise<LinearConnectionStatus> => {
+    const ctx = getCtx();
+    const tokenStored = Boolean(ctx.linearCredentialService?.getStatus().tokenStored);
+    if (!ctx.linearIssueTracker || !tokenStored) {
+      return {
+        tokenStored,
+        connected: false,
+        viewerId: null,
+        viewerName: null,
+        checkedAt: nowIso(),
+        message: tokenStored ? "Linear tracker service unavailable." : "Linear token not configured.",
+      };
+    }
+
+    const status = await ctx.linearIssueTracker.getConnectionStatus();
+    return {
+      tokenStored,
+      connected: status.connected,
+      viewerId: status.viewerId,
+      viewerName: status.viewerName,
+      checkedAt: nowIso(),
+      message: status.message,
+    };
+  });
+
+  ipcMain.handle(IPC.ctoSetLinearToken, async (_event, arg: CtoSetLinearTokenArgs): Promise<LinearConnectionStatus> => {
+    const ctx = getCtx();
+    if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
+    ctx.linearCredentialService.setToken(arg.token);
+
+    const tokenStored = Boolean(ctx.linearCredentialService.getStatus().tokenStored);
+    if (!ctx.linearIssueTracker || !tokenStored) {
+      return {
+        tokenStored,
+        connected: false,
+        viewerId: null,
+        viewerName: null,
+        checkedAt: nowIso(),
+        message: tokenStored ? "Linear tracker service unavailable." : "Linear token not configured.",
+      };
+    }
+
+    const status = await ctx.linearIssueTracker.getConnectionStatus();
+    return {
+      tokenStored,
+      connected: status.connected,
+      viewerId: status.viewerId,
+      viewerName: status.viewerName,
+      checkedAt: nowIso(),
+      message: status.message,
+    };
+  });
+
+  ipcMain.handle(IPC.ctoClearLinearToken, async (): Promise<LinearConnectionStatus> => {
+    const ctx = getCtx();
+    if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
+    ctx.linearCredentialService.clearToken();
+    return {
+      tokenStored: false,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: nowIso(),
+      message: "Linear token cleared.",
+    };
+  });
+
+  ipcMain.handle(IPC.ctoGetFlowPolicy, async (): Promise<LinearSyncConfig> => {
+    const ctx = getCtx();
+    if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
+    return ctx.flowPolicyService.getPolicy();
+  });
+
+  ipcMain.handle(IPC.ctoSaveFlowPolicy, async (_event, arg: CtoSaveFlowPolicyArgs): Promise<LinearSyncConfig> => {
+    const ctx = getCtx();
+    if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
+    const saved = ctx.flowPolicyService.savePolicy(arg.policy, arg.actor ?? "user");
+    return saved;
+  });
+
+  ipcMain.handle(IPC.ctoListFlowPolicyRevisions, async (): Promise<CtoFlowPolicyRevision[]> => {
+    const ctx = getCtx();
+    if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
+    return ctx.flowPolicyService.listRevisions(50);
+  });
+
+  ipcMain.handle(IPC.ctoRollbackFlowPolicyRevision, async (_event, arg: CtoRollbackFlowPolicyRevisionArgs): Promise<LinearSyncConfig> => {
+    const ctx = getCtx();
+    if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
+    return ctx.flowPolicyService.rollbackRevision(arg.revisionId, arg.actor ?? "user");
+  });
+
+  ipcMain.handle(IPC.ctoSimulateFlowRoute, async (_event, arg: CtoSimulateFlowRouteArgs): Promise<LinearRouteDecision> => {
+    const ctx = getCtx();
+    if (!ctx.linearRoutingService) throw new Error("Linear routing service is not available.");
+
+    const now = nowIso();
+    const issue: NormalizedLinearIssue = {
+      id: arg.issue.id ?? `sim-${randomUUID()}`,
+      identifier: arg.issue.identifier ?? "SIM-1",
+      title: arg.issue.title,
+      description: arg.issue.description ?? "",
+      url: arg.issue.url ?? null,
+      projectId: arg.issue.projectId ?? "sim-project",
+      projectSlug: arg.issue.projectSlug ?? (ctx.flowPolicyService?.getPolicy().projects?.[0]?.slug ?? "sim-project"),
+      teamId: arg.issue.teamId ?? "sim-team",
+      teamKey: arg.issue.teamKey ?? "SIM",
+      stateId: arg.issue.stateId ?? "sim-state",
+      stateName: arg.issue.stateName ?? "Todo",
+      stateType: arg.issue.stateType ?? "unstarted",
+      priority: Number.isFinite(Number(arg.issue.priority)) ? Number(arg.issue.priority) : 3,
+      priorityLabel: arg.issue.priorityLabel ?? "normal",
+      labels: Array.isArray(arg.issue.labels) ? arg.issue.labels : [],
+      assigneeId: arg.issue.assigneeId ?? null,
+      assigneeName: arg.issue.assigneeName ?? null,
+      ownerId: arg.issue.ownerId ?? null,
+      blockerIssueIds: Array.isArray(arg.issue.blockerIssueIds) ? arg.issue.blockerIssueIds : [],
+      hasOpenBlockers: Boolean(arg.issue.hasOpenBlockers),
+      createdAt: arg.issue.createdAt ?? now,
+      updatedAt: arg.issue.updatedAt ?? now,
+      raw: isRecord(arg.issue.raw) ? arg.issue.raw : {},
+    };
+    return ctx.linearRoutingService.simulateRoute({ issue });
+  });
+
+  ipcMain.handle(IPC.ctoGetLinearSyncDashboard, async (): Promise<LinearSyncDashboard> => {
+    const ctx = getCtx();
+    if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
+    return ctx.linearSyncService.getDashboard();
+  });
+
+  ipcMain.handle(IPC.ctoRunLinearSyncNow, async (): Promise<LinearSyncDashboard> => {
+    const ctx = getCtx();
+    if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
+    return ctx.linearSyncService.runSyncNow();
+  });
+
+  ipcMain.handle(IPC.ctoListLinearSyncQueue, async (): Promise<LinearSyncQueueItem[]> => {
+    const ctx = getCtx();
+    if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
+    return ctx.linearSyncService.listQueue({ limit: 300 });
+  });
+
+  ipcMain.handle(
+    IPC.ctoResolveLinearSyncQueueItem,
+    async (_event, arg: CtoResolveLinearSyncQueueItemArgs): Promise<LinearSyncQueueItem | null> => {
+      const ctx = getCtx();
+      if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
+      return ctx.linearSyncService.resolveQueueItem(arg);
+    }
+  );
 }

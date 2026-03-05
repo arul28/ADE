@@ -7,6 +7,7 @@ import type { AgentChatModelInfo } from "./chat";
 import type { LaneType } from "./lanes";
 import type { MissionExecutionPolicy, MissionProviderPermissions } from "./missions";
 import type { ModelConfig } from "./models";
+import type { LinearSyncConfig } from "./linearSync";
 
 // Backward compatible with earlier configs that used `on_crash`.
 export type ProcessRestartPolicy = "never" | "on-failure" | "always" | "on_crash";
@@ -400,6 +401,7 @@ export type ProjectConfigFile = {
   };
   ai?: AiConfig;
   providers?: Record<string, unknown>;
+  linearSync?: LinearSyncConfig;
 };
 
 export type ProjectConfigCandidate = {
@@ -424,11 +426,13 @@ export type EffectiveProjectConfig = {
   ai?: AiConfig;
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
+  linearSync?: LinearSyncConfig;
   cto?: {
     companyBudgetMonthlyCents?: number;
     budgetTelemetry?: {
       enabled?: boolean;
-      codexBarCommand?: string;
+      codexSessionsRoot?: string;
+      claudeProjectsRoot?: string;
     };
   };
 };

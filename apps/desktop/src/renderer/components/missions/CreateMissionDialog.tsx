@@ -8,7 +8,6 @@ import {
   ChatCircle,
   Robot,
   Shield,
-  CircleHalf,
   Hash,
   CaretLeft,
   CheckCircle,
@@ -26,14 +25,14 @@ import type {
   PrDepth,
   OrchestratorDecisionTimeoutCapHours,
   AggregatedUsageStats,
+  MissionBudgetTelemetrySnapshot,
   TeamRuntimeConfig,
   MissionPermissionConfig,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
-import { MODEL_REGISTRY } from "../../../shared/modelRegistry";
+import { MODEL_REGISTRY, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
-import { ModelProfileSelector } from "./ModelProfileSelector";
 import { SmartBudgetPanel } from "./SmartBudgetPanel";
 import { MissionPromptInput } from "./MissionPromptInput";
 import { PhaseCardEditor } from "./PhaseCardEditor";
@@ -78,7 +77,7 @@ function buildDefaultModelConfig(
   defaults: CreateMissionDefaults | null | undefined,
   builtInProfiles: typeof BUILT_IN_PROFILES = BUILT_IN_PROFILES,
 ): MissionModelConfig {
-  const firstProfile = builtInProfiles[0];
+  void builtInProfiles;
   const plannerProvider = defaults?.plannerProvider ?? "auto";
 
   // Prefer explicit orchestratorModel from settings, fall back to provider-based default
@@ -88,10 +87,10 @@ function buildDefaultModelConfig(
       : DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER.claude);
 
   return {
-    profileId: plannerProvider === "auto" ? (firstProfile?.id ?? undefined) : undefined,
+    profileId: undefined,
     orchestratorModel,
     decisionTimeoutCapHours: 24,
-    intelligenceConfig: firstProfile?.intelligenceConfig,
+    intelligenceConfig: undefined,
     smartBudget: { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 },
   };
 }
@@ -139,29 +138,20 @@ function validatePhaseOrder(cards: PhaseCard[]): string[] {
   if (!cards.length) return ["At least one phase is required."];
   const errors: string[] = [];
   const byKey = new Map<string, number>();
+  let firstDevelopmentIndex = -1;
+  let firstPlanningIndex = -1;
   cards.forEach((card, index) => {
-    if (!card.phaseKey.trim()) errors.push(`Phase ${index + 1} is missing a key.`);
-    if (byKey.has(card.phaseKey)) errors.push(`Duplicate phase key: ${card.phaseKey}`);
-    byKey.set(card.phaseKey, index);
-    if (card.orderingConstraints.mustBeFirst && index !== 0) {
-      errors.push(`${card.name} must be first.`);
-    }
-    if (card.orderingConstraints.mustBeLast && index !== cards.length - 1) {
-      errors.push(`${card.name} must be last.`);
-    }
+    const phaseKey = card.phaseKey.trim().toLowerCase();
+    if (!phaseKey) errors.push(`Phase ${index + 1} is missing a key.`);
+    if (byKey.has(phaseKey)) errors.push(`Duplicate phase key: ${card.phaseKey}`);
+    byKey.set(phaseKey, index);
+    if (phaseKey === "development" && firstDevelopmentIndex < 0) firstDevelopmentIndex = index;
+    if (phaseKey === "planning" && firstPlanningIndex < 0) firstPlanningIndex = index;
   });
-  cards.forEach((card, index) => {
-    (card.orderingConstraints.mustFollow ?? []).forEach((dep) => {
-      const depIndex = byKey.get(dep);
-      if (depIndex == null) errors.push(`${card.name} requires missing predecessor ${dep}.`);
-      if (depIndex != null && depIndex >= index) errors.push(`${card.name} must follow ${dep}.`);
-    });
-    (card.orderingConstraints.mustPrecede ?? []).forEach((dep) => {
-      const depIndex = byKey.get(dep);
-      if (depIndex == null) errors.push(`${card.name} requires missing successor ${dep}.`);
-      if (depIndex != null && depIndex <= index) errors.push(`${card.name} must precede ${dep}.`);
-    });
-  });
+  if (!byKey.has("development")) errors.push("Development phase is required.");
+  if (firstPlanningIndex >= 0 && firstDevelopmentIndex >= 0 && firstPlanningIndex > firstDevelopmentIndex) {
+    errors.push("Planning phase must appear before development.");
+  }
   return [...new Set(errors)];
 }
 
@@ -236,7 +226,6 @@ function CreateMissionDialogInner({
     [lanes]
   );
   const initialDraft = useMemo(() => buildCreateMissionDraft(missionDefaults), [missionDefaults]);
-  const [selectedProfileId, setSelectedProfileId] = useState<string>(initialDraft.modelConfig.profileId ?? "custom");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>([]);
   const [phaseLoading, setPhaseLoading] = useState(false);
@@ -247,19 +236,27 @@ function CreateMissionDialogInner({
   const [aiDetectedAuth, setAiDetectedAuth] = useState<import("../../../shared/types").AiDetectedAuth[] | null>(null);
   const [currentUsage, setCurrentUsage] = useState<AggregatedUsageStats | null>(null);
   const [weeklyUsage, setWeeklyUsage] = useState<AggregatedUsageStats | null>(null);
+  const [budgetTelemetry, setBudgetTelemetry] = useState<MissionBudgetTelemetrySnapshot | null>(null);
   const [launchStage, setLaunchStage] = useState<"config" | "preflight">("config");
   const [preflightRunning, setPreflightRunning] = useState(false);
   const [preflightResult, setPreflightResult] = useState<MissionPreflightResult | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [phaseItems, setPhaseItems] = useState<PhaseCard[]>([]);
+  const [phaseItemsLoading, setPhaseItemsLoading] = useState(false);
+  const [phaseItemsError, setPhaseItemsError] = useState<string | null>(null);
+  const [selectedPhaseItemKey, setSelectedPhaseItemKey] = useState<string>("");
+  const [phaseNotice, setPhaseNotice] = useState<string | null>(null);
   const [teamBudgetGuardrailConfirmed, setTeamBudgetGuardrailConfirmed] = useState(false);
   const [draft, setDraft] = useState<CreateDraft>(initialDraft);
 
   useEffect(() => {
     if (!open) return;
     const resetDraft = buildCreateMissionDraft(missionDefaults);
-    setSelectedProfileId(resetDraft.modelConfig.profileId ?? "custom");
     setAttachments([]);
     setPhaseError(null);
+    setPhaseNotice(null);
+    setPhaseItemsError(null);
+    setSelectedPhaseItemKey("");
     setExpandedPhases({});
     setDisabledPhases({});
     setLaunchStage("config");
@@ -271,6 +268,7 @@ function CreateMissionDialogInner({
 
     let cancelled = false;
     setPhaseLoading(true);
+    setPhaseItemsLoading(true);
     void window.ade.missions
       .listPhaseProfiles({})
       .then((profiles) => {
@@ -294,6 +292,21 @@ function CreateMissionDialogInner({
       })
       .finally(() => {
         if (!cancelled) setPhaseLoading(false);
+      });
+
+    void window.ade.missions
+      .listPhaseItems({})
+      .then((items) => {
+        if (cancelled) return;
+        setPhaseItems(items);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPhaseItems([]);
+        setPhaseItemsError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setPhaseItemsLoading(false);
       });
 
     return () => {
@@ -333,20 +346,6 @@ function CreateMissionDialogInner({
       }).catch(() => {
         if (!cancelled) setAvailableModelIds(undefined);
       });
-
-      const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
-      void window.ade.orchestrator.getAggregatedUsage({ since: fiveHoursAgo }).then((stats) => {
-        if (!cancelled) setCurrentUsage(stats);
-      }).catch(() => {
-        if (!cancelled) setCurrentUsage(null);
-      });
-
-      const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      void window.ade.orchestrator.getAggregatedUsage({ since: oneWeekAgo }).then((stats) => {
-        if (!cancelled) setWeeklyUsage(stats);
-      }).catch(() => {
-        if (!cancelled) setWeeklyUsage(null);
-      });
     });
 
     return () => { cancelled = true; cancelAnimationFrame(rafId); };
@@ -366,12 +365,180 @@ function CreateMissionDialogInner({
   }, [draft, open]);
 
   const activePhases = useMemo(() => {
-    return draft.phaseOverride
+    const enabled = draft.phaseOverride
       .filter((phase) => !disabledPhases[phase.id])
       .map((phase, index) => ({ ...phase, position: index }));
+    const activeKeys = new Set(
+      enabled.map((phase) => phase.phaseKey.trim().toLowerCase()).filter((key) => key.length > 0)
+    );
+    return enabled.map((phase, index) => {
+      const constraints = phase.orderingConstraints ?? {};
+      return {
+        ...phase,
+        position: index,
+        orderingConstraints: {
+          ...constraints,
+          mustFollow: Array.isArray(constraints.mustFollow)
+            ? constraints.mustFollow.filter((entry) => activeKeys.has(String(entry ?? "").trim().toLowerCase()))
+            : [],
+          mustPrecede: Array.isArray(constraints.mustPrecede)
+            ? constraints.mustPrecede.filter((entry) => activeKeys.has(String(entry ?? "").trim().toLowerCase()))
+            : [],
+        },
+      };
+    });
   }, [draft.phaseOverride, disabledPhases]);
 
+  const selectedBudgetFamilies = useMemo(() => {
+    const subscriptionProviders = new Set<"claude" | "codex">();
+    let hasApiModels = false;
+    const inspectModel = (rawModelId: string | null | undefined): void => {
+      const modelId = String(rawModelId ?? "").trim();
+      if (!modelId.length) return;
+      const descriptor = resolveModelDescriptor(modelId);
+      if (!descriptor) {
+        hasApiModels = true;
+        return;
+      }
+      if (descriptor.isCliWrapped && descriptor.family === "anthropic") {
+        subscriptionProviders.add("claude");
+        return;
+      }
+      if (descriptor.isCliWrapped && descriptor.family === "openai") {
+        subscriptionProviders.add("codex");
+        return;
+      }
+      if (descriptor.authTypes.includes("api-key") || descriptor.authTypes.includes("openrouter")) {
+        hasApiModels = true;
+      }
+    };
+    for (const phase of activePhases) inspectModel(phase.model.modelId);
+    inspectModel(draft.modelConfig.orchestratorModel?.modelId);
+    return {
+      subscriptionProviders: [...subscriptionProviders].sort(),
+      hasApiModels,
+    };
+  }, [activePhases, draft.modelConfig.orchestratorModel?.modelId]);
+
+  useEffect(() => {
+    if (!open) {
+      setBudgetTelemetry(null);
+      setCurrentUsage(null);
+      setWeeklyUsage(null);
+      return;
+    }
+    let cancelled = false;
+    if (selectedBudgetFamilies.subscriptionProviders.length > 0) {
+      void window.ade.orchestrator.getMissionBudgetTelemetry({
+        providers: selectedBudgetFamilies.subscriptionProviders,
+      }).then((snapshot) => {
+        if (!cancelled) setBudgetTelemetry(snapshot);
+      }).catch(() => {
+        if (!cancelled) setBudgetTelemetry(null);
+      });
+    } else {
+      setBudgetTelemetry(null);
+    }
+    if (!selectedBudgetFamilies.hasApiModels) {
+      setCurrentUsage(null);
+      setWeeklyUsage(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+    const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    void window.ade.orchestrator.getAggregatedUsage({ since: fiveHoursAgo }).then((stats) => {
+      if (!cancelled) setCurrentUsage(stats);
+    }).catch(() => {
+      if (!cancelled) setCurrentUsage(null);
+    });
+    void window.ade.orchestrator.getAggregatedUsage({ since: oneWeekAgo }).then((stats) => {
+      if (!cancelled) setWeeklyUsage(stats);
+    }).catch(() => {
+      if (!cancelled) setWeeklyUsage(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    open,
+    selectedBudgetFamilies.hasApiModels,
+    selectedBudgetFamilies.subscriptionProviders,
+  ]);
+
+  const launcherPerProviderUsage = useMemo(() => {
+    if (!budgetTelemetry?.perProvider?.length) return undefined;
+    const providerLimits = draft.modelConfig.smartBudget?.providerLimits ?? {};
+    return budgetTelemetry.perProvider.map((providerSnapshot) => {
+      const limits = providerLimits[providerSnapshot.provider];
+      const fiveHourLimit = typeof limits?.fiveHourTokenLimit === "number"
+        ? limits.fiveHourTokenLimit
+        : null;
+      const weeklyLimit = typeof limits?.weeklyTokenLimit === "number"
+        ? limits.weeklyTokenLimit
+        : null;
+      const fiveHourPct = fiveHourLimit != null && fiveHourLimit > 0
+        ? Number(((providerSnapshot.fiveHour.usedTokens / fiveHourLimit) * 100).toFixed(1))
+        : null;
+      const weeklyPct = weeklyLimit != null && weeklyLimit > 0
+        ? Number(((providerSnapshot.weekly.usedTokens / weeklyLimit) * 100).toFixed(1))
+        : null;
+      return {
+        provider: providerSnapshot.provider,
+        fiveHour: {
+          ...providerSnapshot.fiveHour,
+          limitTokens: fiveHourLimit,
+          usedPct: fiveHourPct,
+        },
+        weekly: {
+          ...providerSnapshot.weekly,
+          limitTokens: weeklyLimit,
+          usedPct: weeklyPct,
+        },
+      };
+    });
+  }, [budgetTelemetry, draft.modelConfig.smartBudget?.providerLimits]);
+
   const phaseValidationErrors = useMemo(() => validatePhaseOrder(activePhases), [activePhases]);
+  const customPhaseItems = useMemo(
+    () => phaseItems.filter((item) => !item.isBuiltIn),
+    [phaseItems]
+  );
+
+  const appendPhaseFromItem = useCallback((item: PhaseCard) => {
+    setDraft((prev) => {
+      const usedKeys = new Set(
+        prev.phaseOverride.map((phase) => phase.phaseKey.trim().toLowerCase()).filter((key) => key.length > 0)
+      );
+      const baseKey = item.phaseKey.trim().length > 0
+        ? item.phaseKey.trim()
+        : `custom_${prev.phaseOverride.length + 1}`;
+      let phaseKey = baseKey;
+      let suffix = 2;
+      while (usedKeys.has(phaseKey.toLowerCase())) {
+        phaseKey = `${baseKey}_${suffix}`;
+        suffix += 1;
+      }
+      const now = new Date().toISOString();
+      return {
+        ...prev,
+        phaseOverride: [
+          ...prev.phaseOverride,
+          {
+            ...item,
+            id: `custom:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+            phaseKey,
+            isBuiltIn: false,
+            isCustom: true,
+            position: prev.phaseOverride.length,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      };
+    });
+  }, []);
 
   const billingContext = useMemo(() => {
     if (!aiDetectedAuth?.length) return undefined;
@@ -542,35 +709,7 @@ function CreateMissionDialogInner({
 
           <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
 
-          {/* 4. Profile */}
-          <div className="space-y-1">
-            <span style={dlgLabelStyle}>
-              <CircleHalf size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-              PROFILE
-            </span>
-            <ModelProfileSelector
-              selectedProfileId={selectedProfileId}
-              onSelect={(profile) => {
-                if (profile) {
-                  setSelectedProfileId(profile.id);
-                  setDraft((p) => ({
-                    ...p,
-                    modelConfig: {
-                      profileId: profile.id,
-                      orchestratorModel: profile.orchestratorModel,
-                      decisionTimeoutCapHours: profile.decisionTimeoutCapHours ?? 24,
-                      intelligenceConfig: profile.intelligenceConfig,
-                      smartBudget: profile.smartBudget ?? p.modelConfig.smartBudget,
-                    },
-                  }));
-                } else {
-                  setSelectedProfileId("custom");
-                }
-              }}
-            />
-          </div>
-
-          {/* 5. Orchestrator Model */}
+          {/* 4. Orchestrator Model */}
           <div className="space-y-1">
             <span style={dlgLabelStyle}>
               <Robot size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
@@ -581,7 +720,6 @@ function CreateMissionDialogInner({
                 <ModelSelector
                   value={draft.modelConfig.orchestratorModel}
                   onChange={(config) => {
-                    setSelectedProfileId("custom");
                     setDraft((p) => ({
                       ...p,
                       modelConfig: { ...p.modelConfig, profileId: undefined, orchestratorModel: config },
@@ -632,7 +770,7 @@ function CreateMissionDialogInner({
 
           <div style={{ borderTop: `1px solid ${COLORS.border}`, margin: "4px 0" }} />
 
-          {/* 6. Additional Options */}
+          {/* 5. Additional Options */}
           <div className="space-y-3">
                 {/* Decision Timeout Cap */}
                 <label className="block space-y-1">
@@ -640,7 +778,6 @@ function CreateMissionDialogInner({
                   <select
                     value={draft.modelConfig.decisionTimeoutCapHours ?? 24}
                     onChange={(e) => {
-                      setSelectedProfileId("custom");
                       setDraft((p) => ({
                         ...p,
                         modelConfig: {
@@ -670,8 +807,8 @@ function CreateMissionDialogInner({
                   <div className="flex flex-wrap gap-1">
                     {(["integration", "per-lane", "queue", "manual"] as const).map((kind) => {
                       const labels: Record<string, string> = {
-                        integration: "INTEGRATION PR",
-                        "per-lane": "PER-LANE PRS",
+                        integration: "INTEGRATION",
+                        "per-lane": "PER-LANE",
                         queue: "QUEUE",
                         manual: "MANUAL",
                       };
@@ -710,6 +847,14 @@ function CreateMissionDialogInner({
                             }
                           }}
                           className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+                          title={kind === "manual"
+                            ? "Complete mission without PR automation."
+                            : kind === "integration"
+                              ? "Create one integration PR flow at mission end."
+                              : kind === "per-lane"
+                                ? "Create one PR per lane at mission end."
+                                : "Use queue-based PR automation at mission end."
+                          }
                           style={draft.prStrategy.kind === kind
                             ? { background: `${accentColor}18`, color: accentColor, border: `1px solid ${accentColor}30`, fontFamily: MONO_FONT }
                             : { background: COLORS.recessedBg, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }
@@ -719,6 +864,9 @@ function CreateMissionDialogInner({
                         </button>
                       );
                     })}
+                  </div>
+                  <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    Applied after mission work completes. This is not a phase card.
                   </div>
                   {draft.prStrategy.kind !== "manual" && (
                     <div className="flex items-center gap-3 mt-1">
@@ -825,7 +973,7 @@ function CreateMissionDialogInner({
                         })}
                       </div>
                       <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 4 }}>
-                        Orchestrator never merges — always requires human approval
+                        Closing automation never auto-merges without explicit human approval.
                       </div>
                     </div>
                   )}
@@ -863,7 +1011,7 @@ function CreateMissionDialogInner({
                       ))}
                     </select>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       style={outlineButton()}
@@ -898,6 +1046,35 @@ function CreateMissionDialogInner({
                       <Plus size={12} weight="bold" />
                       ADD CUSTOM PHASE
                     </button>
+                    <select
+                      value={selectedPhaseItemKey}
+                      onChange={(e) => setSelectedPhaseItemKey(e.target.value)}
+                      className="h-7 min-w-[220px] px-2 text-[10px] outline-none"
+                      style={dlgInputStyle}
+                      disabled={phaseItemsLoading || customPhaseItems.length === 0}
+                      title="Pick a saved phase item to add to this mission."
+                    >
+                      <option value="">Add saved phase item...</option>
+                      {customPhaseItems.map((item) => (
+                        <option key={item.phaseKey} value={item.phaseKey}>
+                          {item.name} ({item.phaseKey})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      style={outlineButton()}
+                      disabled={!selectedPhaseItemKey}
+                      onClick={() => {
+                        const item = customPhaseItems.find((entry) => entry.phaseKey === selectedPhaseItemKey);
+                        if (!item) return;
+                        appendPhaseFromItem(item);
+                        setPhaseNotice(`Added phase item "${item.name}".`);
+                        setSelectedPhaseItemKey("");
+                      }}
+                    >
+                      ADD ITEM
+                    </button>
                     <button
                       type="button"
                       style={outlineButton()}
@@ -922,15 +1099,104 @@ function CreateMissionDialogInner({
                     >
                       SAVE AS PROFILE
                     </button>
+                    <button
+                      type="button"
+                      style={outlineButton()}
+                      disabled={phaseItemsLoading}
+                      onClick={async () => {
+                        const filePath = window.prompt("Path to phase items JSON", "");
+                        if (!filePath || !filePath.trim()) return;
+                        try {
+                          const imported = await window.ade.missions.importPhaseItems({ filePath: filePath.trim() });
+                          setPhaseItems((prev) => {
+                            const map = new Map(prev.map((item) => [item.phaseKey, item] as const));
+                            for (const item of imported) map.set(item.phaseKey, item);
+                            return Array.from(map.values());
+                          });
+                          setPhaseNotice(`Imported ${imported.length} phase item${imported.length === 1 ? "" : "s"}.`);
+                          setPhaseItemsError(null);
+                        } catch (err) {
+                          setPhaseItemsError(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                    >
+                      IMPORT ITEMS
+                    </button>
+                    <button
+                      type="button"
+                      style={outlineButton()}
+                      disabled={phaseItemsLoading}
+                      onClick={async () => {
+                        try {
+                          const exported = await window.ade.missions.exportPhaseItems({});
+                          setPhaseNotice(
+                            exported.savedPath
+                              ? `Exported ${exported.items.length} phase items to ${exported.savedPath}.`
+                              : `Exported ${exported.items.length} phase items.`
+                          );
+                          setPhaseItemsError(null);
+                        } catch (err) {
+                          setPhaseItemsError(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                    >
+                      EXPORT ITEMS
+                    </button>
+                    <button
+                      type="button"
+                      style={outlineButton()}
+                      disabled={draft.phaseOverride.length === 0}
+                      onClick={async () => {
+                        const reusable = draft.phaseOverride.filter((phase) => !phase.isBuiltIn);
+                        if (reusable.length === 0) {
+                          setPhaseNotice("No custom phases to save as reusable items.");
+                          return;
+                        }
+                        try {
+                          const saved: PhaseCard[] = [];
+                          for (const item of reusable) {
+                            // Save each non-built-in phase card as a reusable phase item.
+                            const next = await window.ade.missions.savePhaseItem({ item: { ...item, isBuiltIn: false, isCustom: true } });
+                            saved.push(next);
+                          }
+                          setPhaseItems((prev) => {
+                            const map = new Map(prev.map((item) => [item.phaseKey, item] as const));
+                            for (const item of saved) map.set(item.phaseKey, item);
+                            return Array.from(map.values());
+                          });
+                          setPhaseNotice(`Saved ${saved.length} reusable phase item${saved.length === 1 ? "" : "s"}.`);
+                          setPhaseItemsError(null);
+                        } catch (err) {
+                          setPhaseItemsError(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                    >
+                      SAVE CUSTOM ITEMS
+                    </button>
                   </div>
                   {phaseLoading ? (
                     <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                       Loading phase profiles...
                     </div>
                   ) : null}
+                  {phaseItemsLoading ? (
+                    <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      Loading phase items...
+                    </div>
+                  ) : null}
                   {phaseError ? (
                     <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
                       {phaseError}
+                    </div>
+                  ) : null}
+                  {phaseItemsError ? (
+                    <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
+                      {phaseItemsError}
+                    </div>
+                  ) : null}
+                  {phaseNotice ? (
+                    <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.success}14`, border: `1px solid ${COLORS.success}30`, color: COLORS.success }}>
+                      {phaseNotice}
                     </div>
                   ) : null}
                   <div className="space-y-1.5">
@@ -1010,11 +1276,11 @@ function CreateMissionDialogInner({
                     ...p,
                     modelConfig: { ...p.modelConfig, smartBudget: config }
                   }))}
-                  currentSpend={currentUsage ? {
+                  currentSpend={selectedBudgetFamilies.hasApiModels && currentUsage ? {
                     fiveHourUsd: currentUsage.summary.totalCostEstimateUsd,
                     weeklyUsd: weeklyUsage?.summary.totalCostEstimateUsd ?? currentUsage.summary.totalCostEstimateUsd,
                   } : null}
-                  modelUsage={currentUsage?.byModel?.length ? Object.fromEntries(
+                  modelUsage={selectedBudgetFamilies.hasApiModels && currentUsage?.byModel?.length ? Object.fromEntries(
                     currentUsage.byModel.map((m) => [m.model, {
                       inputTokens: m.inputTokens,
                       outputTokens: m.outputTokens,
@@ -1023,6 +1289,7 @@ function CreateMissionDialogInner({
                     }])
                   ) : undefined}
                   billingContext={billingContext}
+                  perProvider={launcherPerProviderUsage}
                 />
 
                 <div className="space-y-1.5">
@@ -1079,7 +1346,7 @@ function CreateMissionDialogInner({
                     ALLOW CLAUDE CODE AGENT TEAMS
                   </label>
                   <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 2 }}>
-                    These controls are passed to planner/coordinator strategy prompts and runtime metadata.
+                    These controls are passed to orchestrator strategy prompts and runtime metadata.
                   </div>
                 </div>
 
@@ -1088,6 +1355,7 @@ function CreateMissionDialogInner({
                     <input
                       type="checkbox"
                       checked={draft.teamRuntime?.enabled ?? false}
+                      title="Enable teammate worker orchestration for this mission."
                       onChange={(e) => setDraft((p) => ({
                         ...p,
                         teamRuntime: {
@@ -1102,6 +1370,9 @@ function CreateMissionDialogInner({
                     />
                     ENABLE TEAM RUNTIME
                   </label>
+                  <div className="pl-5 text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                    Team runtime lets the orchestrator coordinate additional teammate workers for parallel execution.
+                  </div>
                   {draft.teamRuntime?.enabled && (
                     <div className="flex items-center gap-3 pl-5">
                       <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
@@ -1111,6 +1382,7 @@ function CreateMissionDialogInner({
                           min={1}
                           max={8}
                           value={draft.teamRuntime?.teammateCount ?? 2}
+                          title="Number of teammate workers available to the orchestrator."
                           onChange={(e) => setDraft((p) => ({
                             ...p,
                             teamRuntime: {
@@ -1126,6 +1398,7 @@ function CreateMissionDialogInner({
                         <span>PROVIDER</span>
                         <select
                           value={draft.teamRuntime?.targetProvider ?? "auto"}
+                          title="Preferred provider family for teammate workers."
                           onChange={(e) => setDraft((p) => ({
                             ...p,
                             teamRuntime: {
@@ -1224,17 +1497,57 @@ function CreateMissionDialogInner({
                   })}
                   {preflightResult.budgetEstimate ? (
                     <div className="mt-2 space-y-1.5">
+                      {(() => {
+                        const isSubscription = preflightResult.budgetEstimate.mode === "subscription";
+                        return (
                       <div className="flex flex-wrap items-center gap-3 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                         <span>Mode: {preflightResult.budgetEstimate.mode}</span>
-                        <span>Est. Cost: {preflightResult.budgetEstimate.estimatedCostUsd != null ? `$${preflightResult.budgetEstimate.estimatedCostUsd.toFixed(2)}` : "n/a"}</span>
+                        {!isSubscription ? (
+                          <span>
+                            {`Est. Cost: ${preflightResult.budgetEstimate.estimatedCostUsd != null ? `$${preflightResult.budgetEstimate.estimatedCostUsd.toFixed(2)}` : "n/a"}`}
+                          </span>
+                        ) : null}
                         <span>Est. Time: {formatPreflightDuration(preflightResult.budgetEstimate.estimatedTimeMs)}</span>
+                        <span>Observed Spend: {preflightResult.budgetEstimate.actualSpendUsd != null ? `$${preflightResult.budgetEstimate.actualSpendUsd.toFixed(2)}` : "n/a"}</span>
+                        {!isSubscription ? (
+                          <span>Burn Rate: {preflightResult.budgetEstimate.burnRateUsdPerHour != null ? `$${preflightResult.budgetEstimate.burnRateUsdPerHour.toFixed(2)}/h` : "n/a"}</span>
+                        ) : null}
                         <span>Hard fails: {preflightResult.hardFailures}</span>
                         <span>Warnings: {preflightResult.warnings}</span>
                       </div>
+                        );
+                      })()}
+                      {preflightResult.budgetEstimate.mode !== "subscription" && preflightResult.budgetEstimate.forecast ? (
+                        <div className="grid grid-cols-1 gap-0.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <div>
+                            Forecast cost (low/median/high): {
+                              [preflightResult.budgetEstimate.forecast.lowCostUsd, preflightResult.budgetEstimate.forecast.medianCostUsd, preflightResult.budgetEstimate.forecast.highCostUsd]
+                                .map((value) => value != null ? `$${value.toFixed(2)}` : "n/a")
+                                .join(" / ")
+                            }
+                          </div>
+                          <div>
+                            Forecast time (low/median/high): {
+                              [preflightResult.budgetEstimate.forecast.lowDurationMs, preflightResult.budgetEstimate.forecast.medianDurationMs, preflightResult.budgetEstimate.forecast.highDurationMs]
+                                .map((value) => formatPreflightDuration(value))
+                                .join(" / ")
+                            }
+                          </div>
+                          <div>
+                            Confidence: {preflightResult.budgetEstimate.forecast.confidence != null ? `${Math.round(preflightResult.budgetEstimate.forecast.confidence * 100)}%` : "n/a"}
+                            {" "}({preflightResult.budgetEstimate.forecast.sampleSize} samples, {preflightResult.budgetEstimate.forecast.basis})
+                          </div>
+                        </div>
+                      ) : null}
+                      {preflightResult.budgetEstimate.note ? (
+                        <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          {preflightResult.budgetEstimate.note}
+                        </div>
+                      ) : null}
                       {(() => {
                         const rows = preflightResult.budgetEstimate?.perPhase ?? [];
                         const totalCost = rows.reduce((sum, phase) => sum + (phase.estimatedCostUsd ?? 0), 0);
-                        if (!rows.length || totalCost <= 0) return null;
+                        if (preflightResult.budgetEstimate.mode === "subscription" || !rows.length || totalCost <= 0) return null;
                         return (
                           <div className="space-y-1">
                             <div className="text-[10px] uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>

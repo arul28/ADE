@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-04
+> Last updated: 2026-03-05
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -847,7 +847,9 @@ Memory tools follow the same MCP permission model as other agent tools. Read ope
 
 ### Memory Architecture
 
-The memory system provides agents with durable, searchable long-term memory that persists across sessions, runs, and machines. It upgrades the existing scoped-namespace memory (candidate/promoted lifecycle) with vector search, composite scoring, and pre-compaction integration.
+> **Full spec**: `docs/final-plan/phase-4.md` W6 (Unified Memory System) contains the comprehensive implementation plan including schema, write gate, scoring formula, lifecycle algorithms, and pack removal strategy.
+
+The memory system provides agents with durable, searchable long-term memory that persists across sessions, runs, and machines. Phase 4 W6 replaces the current `memoryService.ts`, context packs, and CTO core memory with a single `unifiedMemoryService.ts` — one service, three scopes (project/agent/mission), three tiers (pinned/hot/cold). The unified `UnifiedMemoryEntry` schema includes category, confidence, importance, observation count, file scope, and embedding vector.
 
 #### Storage Layer
 
@@ -1584,7 +1586,9 @@ The mission service (`missionService.ts`) provides the user-facing lifecycle for
 
 ### Pack Service
 
-The pack service provides the context backbone for all AI operations. It has been decomposed from a 5.7K-line monolith into a 3.2K-line core (`packService.ts`) plus four extracted modules: `projectPackBuilder.ts` (~1K lines) for project pack assembly, `missionPackBuilder.ts` (~1K lines) for mission pack assembly, `conflictPackBuilder.ts` (~330 lines) for conflict pack assembly, and `packUtils.ts` (~550 lines) for shared pack utilities.
+> **Planned removal (Phase 4 W6)**: The entire pack service will be deleted and replaced by the Unified Memory System. See `docs/final-plan/phase-4.md` W6 "Context Pack Removal" for the full file list (~10.3K lines backend + ~1.7K lines UI) and consumer migration plan. The worker briefing assembly stays but pulls from memory queries instead of pack markdown.
+
+The pack service currently provides the context backbone for all AI operations. It has been decomposed from a 5.7K-line monolith into a 3.2K-line core (`packService.ts`) plus four extracted modules: `projectPackBuilder.ts` (~1K lines) for project pack assembly, `missionPackBuilder.ts` (~1K lines) for mission pack assembly, `conflictPackBuilder.ts` (~330 lines) for conflict pack assembly, and `packUtils.ts` (~550 lines) for shared pack utilities.
 
 - **Lane packs**: Deterministic snapshots of lane state (files changed, commits, diffs, test results) that serve as primary AI context.
 - **Project packs**: Cross-lane summaries that give AI agents a view of the full workspace. Assembly logic in `projectPackBuilder.ts`.
@@ -1593,44 +1597,23 @@ The pack service provides the context backbone for all AI operations. It has bee
 - **Token-budgeted exports**: Lite/Standard/Deep export tiers that bound context size for different AI task types.
 - **Pack events**: Every AI-generated artifact (narrative, proposal, PR description) is recorded as a pack event for audit and versioning.
 
-### Learning Packs
+### Skills + Learning Pipeline
 
-A new context pack type that automatically accumulates project-specific knowledge from agent interactions. Unlike static project packs, learning packs grow over time as agents work and users provide feedback.
+> **Replaces**: The earlier "Learning Packs" concept (separate pack type with `LearningEntry` schema). Now unified into W7 as procedural memory extraction on top of W6's unified memory. See `docs/final-plan/phase-4.md` W7 for full spec.
 
-**Knowledge sources** (automatic ingestion):
-- Agent run failures: when an agent fails and is manually corrected, the correction is recorded as a learning entry
-- User interventions: when a user interrupts an agent to correct its approach, the correction is inferred
-- Repeated errors: when the same error pattern appears across 3+ separate agent sessions
-- PR review patterns: when reviewers consistently request the same type of change
+W7 builds an extraction and materialization layer on top of the Unified Memory System (W6). It turns accumulated mission experience into reusable skills that any agent (Claude, Codex, or any future adapter) can consume.
 
-**Entry schema**:
-```typescript
-interface LearningEntry {
-  id: string;
-  category: 'mistake-pattern' | 'preference' | 'flaky-test' | 'tool-usage' | 'architecture-rule';
-  scope: 'global' | 'directory' | 'file-pattern';
-  scopePattern?: string;              // e.g., "src/auth/**"
-  content: string;                    // Human-readable rule
-  confidence: number;                 // 0-1, increases with observations
-  observationCount: number;
-  sources: string[];                  // Contributing mission/session IDs
-  createdAt: string;
-  updatedAt: string;
-}
-```
+**Procedural extraction**: When the same pattern appears across 3+ episodic summaries (from different missions/sessions), the system extracts it as a `ProceduralMemory` entry (trigger, procedure, confidence, success/failure counts). Stored in project memory with `category: "procedure"`.
 
-**Context injection**: Learning entries are included in the orchestrator and agent context window alongside project packs:
-- Entries with confidence > 0.7: always included
-- Entries with confidence 0.3-0.7: included when scope matches current task
-- Entries with confidence < 0.3: excluded (still accumulating evidence)
+**Knowledge sources** (automatic capture into project memory, feeding the episodic → procedural pipeline):
+- Mission failures and resolutions (captured as gotcha/pattern entries)
+- User interventions during missions (inferred as candidate conventions)
+- Repeated errors across 3+ sessions (recorded as gotcha patterns with file scope)
+- PR review feedback patterns
 
-**User controls**: Settings → Learning provides a review interface where users can confirm (boost confidence), edit, or delete entries. Confirmed entries immediately reach confidence 1.0.
+**Skill materialization**: Confirmed procedural memories are exported as `.claude/skills/<name>/SKILL.md` — universal markdown format consumable by any agent. Skills are also indexed back into project memory.
 
-**Export/Import**: Learning packs can be exported to CLAUDE.md or agents.md format, and rules from those files can be imported as high-confidence learning entries. This provides interoperability with standard agent configuration.
-
-**Storage**: `learning_entries` SQLite table with full-text search index on `content` and `scopePattern` fields.
-
-**Privacy**: Learning packs are local-only, stored in the project's `.ade/` directory, and never transmitted to any external service.
+**Skill ingestion**: On startup/file change, scans `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, `agents.md` and indexes into project memory as Tier 2 procedure entries.
 
 ---
 
@@ -1680,18 +1663,18 @@ interface LearningEntry {
 | E2B compute backend | Planned | Phase 4 -- Firecracker microVM sandboxes via E2B SDK |
 | Compute environment types | Planned | Phase 4 -- terminal-only, browser, and desktop environment support |
 | Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
-| Learning packs | Planned | Phase 4 -- auto-accumulating project knowledge from agent interactions, failures, and PR review patterns |
-| Memory architecture upgrade (sqlite-vec, hybrid search, composite scoring) | Planned | Phase 4 -- three-tier memory with vector search, pre-compaction flush, consolidation |
+| Unified Memory System (W6) — replaces context packs + memoryService + CTO core memory | Planned | Phase 4 — one service, three scopes (project/agent/mission), three tiers (pinned/hot/cold), sqlite-vec hybrid BM25+vector search, composite scoring, write gate (dedup+consolidation), temporal decay, pre-compaction flush, context pack removal (~10.3K lines deleted) |
+| Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Planned | Phase 4 — episodic→procedural extraction from 3+ similar episodes, `.claude/skills/SKILL.md` materialization, skill ingestion, knowledge source capture (failures, interventions, repeated errors) |
 | CTO Agent — core identity, persistent chat, core memory (W1) | Complete | Phase 4 -- `ctoStateService.ts`, dual-canonical persistence (DB + file), session reconstruction, CtoPage with chat |
 | Worker Agents — org chart, multi-adapter, config versioning, budget (W2) | Complete | Phase 4 -- `workerAgentService.ts`, `workerRevisionService.ts`, `workerBudgetService.ts`, `workerTaskSessionService.ts`, `workerAdapterRuntimeService.ts` |
 | Heartbeat & Activation — timer pool, coalescing, orphan reaping (W3) | Complete | Phase 4 -- `workerHeartbeatService.ts` (789 lines), two-tier execution, deferred promotion, issue locking |
-| Bidirectional Linear Sync (W4) | In Progress | Phase 4 -- depends on W2+W3 (now complete) |
+| Bidirectional Linear Sync (W4) | Complete | Phase 4 -- `linearClient.ts`, `linearSyncService.ts`, `linearOutboundService.ts`, `linearRoutingService.ts`, `linearTemplateService.ts`, `linearCredentialService.ts`, `flowPolicyService.ts`, `issueTracker.ts` abstraction, `LinearSyncPanel.tsx` UI with 6-step flow composer |
 | External MCP consumption | Planned | Phase 4 -- agents connect to external MCP servers for extended capabilities |
 | `.ade/` portable state | Planned | Phase 4 -- git-based cross-machine state sync, embedding regeneration on clone |
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7 (subagent delegation, validation enforcement, UI observability, team runtime, PR strategy, inter-agent comms, and reflection protocol closure shipped). Phase 4 delegation/team-runtime hard-cut work is complete (`delegate_parallel`, push rollups, native teammate guardrails, and dead-path removal). A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules, and the model system was unified with pricing fields in ModelDescriptor and profiles derived from the registry. Shared utilities were consolidated to eliminate 60+ cross-service duplicates. MCP dual-mode architecture (WS8-WS11) shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4 complete: CTO agent core (W1), worker agents + org chart (W2), heartbeat + activation (W3), bidirectional Linear sync (W4). Remaining Phase 4 workstreams execute W6→W7→W5: Unified Memory System (W6, replaces packs + memoryService + CTO state), Skills + Learning Pipeline (W7), then Night Shift (W5), External MCP (W8), OpenClaw Bridge (W9), Portable State (W10). A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction — will be fully deleted in W6). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 

@@ -104,6 +104,92 @@ async function createDbWithProjectAndLane() {
   };
 }
 
+function writeCodexSessionLog(args: {
+  sessionsRoot: string;
+  cwd: string;
+  timestampIso: string;
+  model?: string;
+  inputTokens: number;
+  outputTokens: number;
+}): void {
+  const date = new Date(args.timestampIso);
+  const yyyy = String(date.getUTCFullYear());
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const dayDir = path.join(args.sessionsRoot, yyyy, mm, dd);
+  fs.mkdirSync(dayDir, { recursive: true });
+  const filePath = path.join(dayDir, "rollout-test.jsonl");
+  const model = args.model ?? "openai/gpt-5";
+  const lines = [
+    JSON.stringify({
+      timestamp: args.timestampIso,
+      type: "session_meta",
+      payload: {
+        id: "session-test-1",
+        cwd: args.cwd,
+      },
+    }),
+    JSON.stringify({
+      timestamp: args.timestampIso,
+      type: "turn_context",
+      payload: {
+        cwd: args.cwd,
+        model,
+      },
+    }),
+    JSON.stringify({
+      timestamp: args.timestampIso,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            input_tokens: args.inputTokens,
+            output_tokens: args.outputTokens,
+            cached_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: args.inputTokens + args.outputTokens,
+          },
+          last_token_usage: {
+            input_tokens: args.inputTokens,
+            output_tokens: args.outputTokens,
+            cached_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: args.inputTokens + args.outputTokens,
+          },
+        },
+      },
+    }),
+  ];
+  fs.writeFileSync(filePath, `${lines.join("\n")}\n`, "utf8");
+}
+
+function writeClaudeProjectLog(args: {
+  projectsRoot: string;
+  timestampIso: string;
+  model?: string;
+  inputTokens: number;
+  outputTokens: number;
+}): void {
+  const projectDir = path.join(args.projectsRoot, "-tmp-test-project");
+  fs.mkdirSync(projectDir, { recursive: true });
+  const filePath = path.join(projectDir, "session.jsonl");
+  const model = args.model ?? "anthropic/claude-sonnet-4-6";
+  const line = JSON.stringify({
+    timestamp: args.timestampIso,
+    message: {
+      model,
+      usage: {
+        input_tokens: args.inputTokens,
+        output_tokens: args.outputTokens,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    },
+  });
+  fs.writeFileSync(filePath, `${line}\n`, "utf8");
+}
+
 describe("missionBudgetService", () => {
   it("flags API-key launch estimate when projected spend exceeds remaining envelope", async () => {
     const { db, projectId, root, dispose } = await createDbWithProjectAndLane();
@@ -145,6 +231,78 @@ describe("missionBudgetService", () => {
     expect(estimate.estimate.mode).toBe("api-key");
     expect(estimate.estimate.estimatedCostUsd).toBeGreaterThan(0);
     expect(estimate.hardLimitExceeded).toBe(true);
+
+    dispose();
+  });
+
+  it("uses local Codex session telemetry for subscription preflight and runtime budget snapshots", async () => {
+    const { db, projectId, laneId, root, dispose } = await createDbWithProjectAndLane();
+    const missionService = createMissionService({ db, projectId });
+    const mission = missionService.create({
+      prompt: "Use subscription telemetry.",
+      laneId,
+      phaseOverride: createBuiltInPhaseCards(),
+    });
+    const codexSessionsRoot = path.join(root, "codex-sessions");
+    const nowIso = new Date().toISOString();
+    writeCodexSessionLog({
+      sessionsRoot: codexSessionsRoot,
+      cwd: root,
+      timestampIso: nowIso,
+      model: "openai/gpt-5",
+      inputTokens: 100_000,
+      outputTokens: 128_750,
+    });
+
+    const budgetService = createMissionBudgetService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: root,
+      missionService,
+      aiIntegrationService: {
+        getStatus: async () => ({ mode: "subscription", detectedAuth: [{ type: "cli-subscription", authenticated: true, cli: "codex" }] })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            cto: {
+              budgetTelemetry: {
+                enabled: true,
+                codexSessionsRoot,
+                claudeProjectsRoot: path.join(root, "no-claude-logs"),
+              },
+            },
+          },
+        }),
+      } as any,
+    });
+
+    const estimate = await budgetService.estimateLaunchBudget({
+      launch: {
+        prompt: "Run with local CLI subscription telemetry.",
+        modelConfig: {
+          orchestratorModel: {
+            provider: "codex",
+            modelId: "openai/gpt-5",
+          },
+        },
+      },
+      selectedPhases: createBuiltInPhaseCards(),
+    });
+    expect(estimate.estimate.mode).toBe("subscription");
+    expect(estimate.estimate.actualSpendUsd).toBeCloseTo(1.23, 6);
+    expect(estimate.estimate.burnRateUsdPerHour ?? null).toBeNull();
+    expect(estimate.estimate.note ?? "").toContain("local CLI telemetry");
+
+    const snapshot = await budgetService.getMissionBudgetStatus({
+      missionId: mission.id,
+    });
+    expect(snapshot.mode).toBe("subscription");
+    const codexProvider = snapshot.perProvider.find((provider) => provider.provider === "codex");
+    expect(codexProvider?.fiveHour.usedCostUsd).toBeCloseTo(1.23, 6);
+    expect(snapshot.burnRateUsdPerHour).toBeNull();
+    expect(snapshot.dataSources).toContain("~/.codex/sessions/*.jsonl");
 
     dispose();
   });
@@ -268,6 +426,181 @@ describe("missionBudgetService", () => {
     expect(snapshot.perPhase.length).toBeGreaterThan(0);
     expect(snapshot.perWorker.length).toBeGreaterThan(0);
     expect(snapshot.dataSources).toContain("ai_usage_log");
+
+    dispose();
+  });
+
+  it("enforces subscription hard caps only for providers selected by mission models", async () => {
+    const { db, projectId, laneId, root, dispose } = await createDbWithProjectAndLane();
+    const missionService = createMissionService({ db, projectId });
+    const codexSessionsRoot = path.join(root, "codex-sessions");
+    const claudeProjectsRoot = path.join(root, "claude-projects");
+    const nowIso = new Date().toISOString();
+    writeCodexSessionLog({
+      sessionsRoot: codexSessionsRoot,
+      cwd: root,
+      timestampIso: nowIso,
+      model: "openai/gpt-5.3-codex",
+      inputTokens: 500,
+      outputTokens: 500,
+    });
+    writeClaudeProjectLog({
+      projectsRoot: claudeProjectsRoot,
+      timestampIso: nowIso,
+      model: "anthropic/claude-sonnet-4-6",
+      inputTokens: 5_000,
+      outputTokens: 5_000,
+    });
+
+    const phaseOverride = createBuiltInPhaseCards().map((phase, index) => ({
+      ...phase,
+      model: {
+        ...phase.model,
+        provider: "codex",
+        modelId: "openai/gpt-5.3-codex",
+      },
+      position: index,
+    }));
+    const mission = missionService.create({
+      prompt: "Codex-only mission with provider-scoped hard caps.",
+      laneId,
+      phaseOverride,
+      modelConfig: {
+        orchestratorModel: {
+          provider: "codex",
+          modelId: "openai/gpt-5.3-codex",
+        },
+        smartBudget: {
+          enabled: true,
+          fiveHourThresholdUsd: 10,
+          weeklyThresholdUsd: 40,
+          fiveHourHardStopPercent: 80,
+          weeklyHardStopPercent: 90,
+          providerLimits: {
+            codex: { fiveHourTokenLimit: 10_000, weeklyTokenLimit: 10_000 },
+            claude: { fiveHourTokenLimit: 1_000, weeklyTokenLimit: 1_000 },
+          },
+        },
+      },
+    });
+
+    const budgetService = createMissionBudgetService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: root,
+      missionService,
+      aiIntegrationService: {
+        getStatus: async () => ({ mode: "subscription", detectedAuth: [{ type: "cli-subscription", authenticated: true, cli: "codex" }] })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            cto: {
+              budgetTelemetry: {
+                enabled: true,
+                codexSessionsRoot,
+                claudeProjectsRoot,
+              },
+            },
+          },
+        }),
+      } as any,
+    });
+
+    const snapshot = await budgetService.getMissionBudgetStatus({ missionId: mission.id });
+    const claudeProvider = snapshot.perProvider.find((provider) => provider.provider === "claude");
+    expect((claudeProvider?.fiveHour.usedPct ?? 0)).toBeGreaterThan(80);
+    expect(snapshot.hardCaps.fiveHourTriggered).toBe(false);
+    expect(snapshot.hardCaps.weeklyTriggered).toBe(false);
+
+    const telemetry = budgetService.getMissionBudgetTelemetry({
+      providers: ["codex"],
+      providerLimits: {
+        codex: { fiveHourTokenLimit: 10_000, weeklyTokenLimit: 10_000 },
+      },
+    });
+    expect(telemetry.perProvider).toHaveLength(1);
+    expect(telemetry.perProvider[0]?.provider).toBe("codex");
+    expect(telemetry.perProvider[0]?.fiveHour.usedTokens ?? 0).toBeGreaterThan(0);
+
+    dispose();
+  });
+
+  it("disables hard-stop enforcement when smart budget toggle is off", async () => {
+    const { db, projectId, laneId, root, dispose } = await createDbWithProjectAndLane();
+    const missionService = createMissionService({ db, projectId });
+    const codexSessionsRoot = path.join(root, "codex-sessions");
+    const nowIso = new Date().toISOString();
+    writeCodexSessionLog({
+      sessionsRoot: codexSessionsRoot,
+      cwd: root,
+      timestampIso: nowIso,
+      model: "openai/gpt-5.3-codex",
+      inputTokens: 9_000,
+      outputTokens: 9_000,
+    });
+    const phaseOverride = createBuiltInPhaseCards().map((phase, index) => ({
+      ...phase,
+      model: {
+        ...phase.model,
+        provider: "codex",
+        modelId: "openai/gpt-5.3-codex",
+      },
+      position: index,
+    }));
+    const mission = missionService.create({
+      prompt: "Mission with smart budget disabled.",
+      laneId,
+      phaseOverride,
+      modelConfig: {
+        orchestratorModel: {
+          provider: "codex",
+          modelId: "openai/gpt-5.3-codex",
+        },
+        smartBudget: {
+          enabled: false,
+          fiveHourThresholdUsd: 10,
+          weeklyThresholdUsd: 40,
+          fiveHourHardStopPercent: 80,
+          weeklyHardStopPercent: 90,
+          providerLimits: {
+            codex: { fiveHourTokenLimit: 1_000, weeklyTokenLimit: 1_000 },
+          },
+        },
+      },
+    });
+
+    const budgetService = createMissionBudgetService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: root,
+      missionService,
+      aiIntegrationService: {
+        getStatus: async () => ({ mode: "subscription", detectedAuth: [{ type: "cli-subscription", authenticated: true, cli: "codex" }] })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            cto: {
+              budgetTelemetry: {
+                enabled: true,
+                codexSessionsRoot,
+              },
+            },
+          },
+        }),
+      } as any,
+    });
+
+    const snapshot = await budgetService.getMissionBudgetStatus({ missionId: mission.id });
+    expect(snapshot.hardCaps.fiveHourHardStopPercent).toBeNull();
+    expect(snapshot.hardCaps.weeklyHardStopPercent).toBeNull();
+    expect(snapshot.hardCaps.apiKeyMaxSpendUsd).toBeNull();
+    expect(snapshot.hardCaps.fiveHourTriggered).toBe(false);
+    expect(snapshot.hardCaps.weeklyTriggered).toBe(false);
+    expect(snapshot.hardCaps.apiKeyTriggered).toBe(false);
 
     dispose();
   });

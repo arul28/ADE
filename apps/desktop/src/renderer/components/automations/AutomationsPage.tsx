@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowClockwise as RefreshCw,
   Plus,
@@ -20,6 +21,8 @@ import type {
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  LinearConnectionStatus,
+  LinearSyncDashboard,
   TestSuiteDefinition
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
@@ -1019,6 +1022,7 @@ function CreateWithNaturalLanguageDialog({
 }
 
 export function AutomationsPage() {
+  const navigate = useNavigate();
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1039,6 +1043,31 @@ export function AutomationsPage() {
   const [acceptedConfirmations, setAcceptedConfirmations] = useState<Set<string>>(new Set());
 
   const [suites, setSuites] = useState<TestSuiteDefinition[]>([]);
+  const [linearConnection, setLinearConnection] = useState<LinearConnectionStatus | null>(null);
+  const [linearDashboard, setLinearDashboard] = useState<LinearSyncDashboard | null>(null);
+  const [linearPolicyEnabled, setLinearPolicyEnabled] = useState(false);
+  const [linearBusy, setLinearBusy] = useState(false);
+  const [linearCardError, setLinearCardError] = useState<string | null>(null);
+
+  const refreshLinearIntakeCard = useCallback(async () => {
+    if (!window.ade?.cto) return;
+    setLinearBusy(true);
+    setLinearCardError(null);
+    try {
+      const [connection, dashboard, policy] = await Promise.all([
+        window.ade.cto.getLinearConnectionStatus(),
+        window.ade.cto.getLinearSyncDashboard(),
+        window.ade.cto.getFlowPolicy(),
+      ]);
+      setLinearConnection(connection);
+      setLinearDashboard(dashboard);
+      setLinearPolicyEnabled(policy.enabled === true);
+    } catch (err) {
+      setLinearCardError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLinearBusy(false);
+    }
+  }, []);
 
   const refresh = async () => {
     setLoading(true);
@@ -1059,6 +1088,7 @@ export function AutomationsPage() {
       if (selectedRuleId && !nextRules.some((r) => r.id === selectedRuleId)) {
         setSelectedRuleId(nextRules[0]?.id ?? null);
       }
+      await refreshLinearIntakeCard();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1093,6 +1123,15 @@ export function AutomationsPage() {
   }, [rules, search]);
 
   const selectedRule = useMemo(() => rules.find((r) => r.id === selectedRuleId) ?? null, [rules, selectedRuleId]);
+  const linearQueuePending = useMemo(() => {
+    if (!linearDashboard) return 0;
+    return (
+      linearDashboard.queue.queued +
+      linearDashboard.queue.retryWaiting +
+      linearDashboard.queue.escalated +
+      linearDashboard.queue.dispatched
+    );
+  }, [linearDashboard]);
 
   useEffect(() => {
     if (!selectedRule) {
@@ -1173,6 +1212,22 @@ export function AutomationsPage() {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const runLinearSyncNow = async () => {
+    if (!window.ade?.cto) return;
+    setLinearBusy(true);
+    setLinearCardError(null);
+    try {
+      const dashboard = await window.ade.cto.runLinearSyncNow();
+      setLinearDashboard(dashboard);
+      const connection = await window.ade.cto.getLinearConnectionStatus();
+      setLinearConnection(connection);
+    } catch (err) {
+      setLinearCardError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLinearBusy(false);
     }
   };
 
@@ -1308,6 +1363,56 @@ export function AutomationsPage() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto p-3">
+          <div
+            className="mb-3 rounded-lg border border-border/10 bg-card/80 p-3 shadow-card"
+            data-testid="linear-intake-policy-card"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-fg">Linear Intake Policy</div>
+                <div className="mt-1 text-xs text-muted-fg">
+                  Route and dispatch Linear issues through the CTO composer and queue workflow.
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Chip className={cn("text-[11px]", linearConnection?.connected ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300")}>
+                    {linearConnection?.connected ? "Connected" : "Disconnected"}
+                  </Chip>
+                  <Chip className={cn("text-[11px]", linearPolicyEnabled ? "bg-emerald-500/15 text-emerald-300" : "bg-border/30 text-muted-fg")}>
+                    {linearPolicyEnabled ? "Policy Enabled" : "Policy Disabled"}
+                  </Chip>
+                  <Chip className="text-[11px]">
+                    Queue: {linearQueuePending}
+                  </Chip>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => navigate("/cto#linear-sync")}>
+                  Open in CTO
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={linearBusy || !(linearPolicyEnabled && linearConnection?.tokenStored)}
+                  onClick={() => void runLinearSyncNow()}
+                >
+                  <RefreshCw size={16} weight="regular" className={cn(linearBusy && "animate-spin")} />
+                  Run Sync Now
+                </Button>
+                <Button size="sm" variant="ghost" disabled={linearBusy} onClick={() => void refreshLinearIntakeCard()}>
+                  Refresh
+                </Button>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-muted-fg">
+              {linearDashboard
+                ? `Last success: ${formatWhen(linearDashboard.lastSuccessAt)} · Polling: ${linearDashboard.pollingIntervalSec}s · Escalated: ${linearDashboard.queue.escalated}`
+                : "Linear sync dashboard unavailable."}
+            </div>
+            {linearCardError ? (
+              <div className="mt-2 rounded bg-red-500/10 px-2 py-1 text-xs text-red-300">{linearCardError}</div>
+            ) : null}
+          </div>
+
           {configTrustRequired ? (
             <div className="mb-3 rounded bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
               <div className="flex flex-wrap items-center justify-between gap-3">

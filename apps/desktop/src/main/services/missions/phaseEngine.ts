@@ -25,6 +25,7 @@ export const BUILT_IN_PHASE_KEYS = {
   development: "development",
   testing: "testing",
   validation: "validation",
+  /** @deprecated Legacy phase key retained only for backward compatibility with existing mission metadata. */
   prAndConflicts: "pr_conflict_resolution",
 } as const;
 
@@ -32,7 +33,6 @@ const DEFAULT_MODELS: Record<string, ModelConfig> = {
   [BUILT_IN_PHASE_KEYS.development]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
   [BUILT_IN_PHASE_KEYS.testing]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "low" },
   [BUILT_IN_PHASE_KEYS.validation]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
-  [BUILT_IN_PHASE_KEYS.prAndConflicts]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "low" },
 };
 
 export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
@@ -45,9 +45,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       instructions: "Execute implementation tasks, update code, and publish structured progress/results.",
       model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.development],
       budget: {},
-      orderingConstraints: {
-        mustBeFirst: true,
-      },
+      orderingConstraints: {},
       askQuestions: {
         enabled: true,
         mode: "auto_if_uncertain",
@@ -71,10 +69,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       instructions: "Run tests, collect failures, and feed remediation details back into execution.",
       model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.testing],
       budget: {},
-      orderingConstraints: {
-        canLoop: true,
-        loopTarget: BUILT_IN_PHASE_KEYS.development,
-      },
+      orderingConstraints: {},
       askQuestions: {
         enabled: false,
         mode: "never",
@@ -97,9 +92,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       instructions: "Validate done criteria, audit risk, and identify remaining obligations before completion.",
       model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.validation],
       budget: {},
-      orderingConstraints: {
-        mustFollow: [BUILT_IN_PHASE_KEYS.development],
-      },
+      orderingConstraints: {},
       askQuestions: {
         enabled: false,
         mode: "never",
@@ -114,32 +107,6 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       createdAt: at,
       updatedAt: at,
     },
-    {
-      id: `builtin:${BUILT_IN_PHASE_KEYS.prAndConflicts}`,
-      phaseKey: BUILT_IN_PHASE_KEYS.prAndConflicts,
-      name: "PR & Conflict Resolution",
-      description: "Prepare PR strategy outputs and resolve merge conflicts.",
-      instructions: "Produce PR artifacts, integrate lane outputs, and resolve conflicts with full audit trail.",
-      model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.prAndConflicts],
-      budget: {},
-      orderingConstraints: {
-        mustBeLast: true,
-        mustFollow: [BUILT_IN_PHASE_KEYS.validation],
-      },
-      askQuestions: {
-        enabled: false,
-        mode: "never",
-      },
-      validationGate: {
-        tier: "self",
-        required: false,
-      },
-      isBuiltIn: true,
-      isCustom: false,
-      position: 3,
-      createdAt: at,
-      updatedAt: at,
-    },
   ];
 }
 
@@ -149,13 +116,11 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
     BUILT_IN_PHASE_KEYS.development,
     BUILT_IN_PHASE_KEYS.testing,
     BUILT_IN_PHASE_KEYS.validation,
-    BUILT_IN_PHASE_KEYS.prAndConflicts,
   ];
   const tddKeys = [
     BUILT_IN_PHASE_KEYS.testing,
     BUILT_IN_PHASE_KEYS.development,
     BUILT_IN_PHASE_KEYS.validation,
-    BUILT_IN_PHASE_KEYS.prAndConflicts,
   ];
   const asPhaseList = (keys: string[]): PhaseCard[] =>
     keys
@@ -170,7 +135,7 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
     {
       id: "builtin:default",
       name: "Default",
-      description: "Development -> Testing -> Validation -> PR",
+      description: "Development -> Testing -> Validation",
       phases: asPhaseList(defaultKeys),
       isBuiltIn: true,
       isDefault: true,
@@ -180,7 +145,7 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
     {
       id: "builtin:tdd",
       name: "TDD",
-      description: "Testing -> Development -> Validation -> PR",
+      description: "Testing -> Development -> Validation",
       phases: asPhaseList(tddKeys),
       isBuiltIn: true,
       isDefault: false,
@@ -188,39 +153,6 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
       updatedAt: at,
     },
   ];
-}
-
-function hasCycle(edges: Array<[string, string]>): boolean {
-  const nodes = new Set<string>();
-  for (const [from, to] of edges) {
-    nodes.add(from);
-    nodes.add(to);
-  }
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const adjacency = new Map<string, string[]>();
-  for (const [from, to] of edges) {
-    const list = adjacency.get(from) ?? [];
-    list.push(to);
-    adjacency.set(from, list);
-  }
-
-  const dfs = (node: string): boolean => {
-    if (visited.has(node)) return false;
-    if (visiting.has(node)) return true;
-    visiting.add(node);
-    for (const next of adjacency.get(node) ?? []) {
-      if (dfs(next)) return true;
-    }
-    visiting.delete(node);
-    visited.add(node);
-    return false;
-  };
-
-  for (const node of nodes) {
-    if (dfs(node)) return true;
-  }
-  return false;
 }
 
 export function validatePhaseSequence(phases: PhaseCard[]): string[] {
@@ -231,60 +163,32 @@ export function validatePhaseSequence(phases: PhaseCard[]): string[] {
   }
 
   const byKey = new Map<string, number>();
+  let firstDevelopmentIndex = -1;
+  let firstPlanningIndex = -1;
   for (let i = 0; i < phases.length; i += 1) {
     const phase = phases[i]!;
-    if (!phase.phaseKey.trim()) {
+    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    if (!phaseKey) {
       errors.push(`Phase at position ${i + 1} is missing phaseKey.`);
       continue;
     }
-    if (byKey.has(phase.phaseKey)) {
+    if (byKey.has(phaseKey)) {
       errors.push(`Duplicate phase key: ${phase.phaseKey}.`);
     }
-    byKey.set(phase.phaseKey, i);
-    if (phase.orderingConstraints.mustBeFirst && i !== 0) {
-      errors.push(`${phase.name} must be first.`);
-    }
-    if (phase.orderingConstraints.mustBeLast && i !== phases.length - 1) {
-      errors.push(`${phase.name} must be last.`);
-    }
-    if (phase.orderingConstraints.canLoop && phase.orderingConstraints.loopTarget) {
-      if (!byKey.has(phase.orderingConstraints.loopTarget) && !phases.some((p) => p.phaseKey === phase.orderingConstraints.loopTarget)) {
-        errors.push(`${phase.name} loop target does not exist: ${phase.orderingConstraints.loopTarget}.`);
-      }
-    }
+    byKey.set(phaseKey, i);
+    if (phaseKey === BUILT_IN_PHASE_KEYS.development && firstDevelopmentIndex < 0) firstDevelopmentIndex = i;
+    if (phaseKey === BUILT_IN_PHASE_KEYS.planning && firstPlanningIndex < 0) firstPlanningIndex = i;
   }
 
-  for (let i = 0; i < phases.length; i += 1) {
-    const phase = phases[i]!;
-    for (const dep of phase.orderingConstraints.mustFollow ?? []) {
-      const depPos = byKey.get(dep);
-      if (depPos == null) {
-        errors.push(`${phase.name} requires missing predecessor: ${dep}.`);
-      } else if (depPos >= i) {
-        errors.push(`${phase.name} must follow ${dep}.`);
-      }
-    }
-    for (const dep of phase.orderingConstraints.mustPrecede ?? []) {
-      const depPos = byKey.get(dep);
-      if (depPos == null) {
-        errors.push(`${phase.name} requires missing successor: ${dep}.`);
-      } else if (depPos <= i) {
-        errors.push(`${phase.name} must precede ${dep}.`);
-      }
-    }
+  if (!byKey.has(BUILT_IN_PHASE_KEYS.development)) {
+    errors.push("Development phase is required.");
   }
-
-  const edges: Array<[string, string]> = [];
-  for (const phase of phases) {
-    for (const dep of phase.orderingConstraints.mustFollow ?? []) {
-      edges.push([dep, phase.phaseKey]);
-    }
-    for (const dep of phase.orderingConstraints.mustPrecede ?? []) {
-      edges.push([phase.phaseKey, dep]);
-    }
-  }
-  if (hasCycle(edges)) {
-    errors.push("Phase ordering constraints contain a cycle.");
+  if (
+    firstPlanningIndex >= 0
+    && firstDevelopmentIndex >= 0
+    && firstPlanningIndex > firstDevelopmentIndex
+  ) {
+    errors.push("Planning phase must appear before development.");
   }
 
   return [...new Set(errors)];
@@ -326,7 +230,7 @@ function inferPhaseKeyFromStep(kind: string, metadata: MissionStepMetadata | Rec
   if (lowerType === "test" || lowerKind === "validation") return BUILT_IN_PHASE_KEYS.testing;
   if (lowerType === "milestone") return BUILT_IN_PHASE_KEYS.validation;
   if (lowerType === "review") return BUILT_IN_PHASE_KEYS.validation;
-  if (lowerType === "integration" || lowerType === "merge" || lowerKind === "integration") return BUILT_IN_PHASE_KEYS.prAndConflicts;
+  if (lowerType === "integration" || lowerType === "merge" || lowerKind === "integration") return BUILT_IN_PHASE_KEYS.validation;
   if (lowerKind === "summary") return BUILT_IN_PHASE_KEYS.validation;
   return BUILT_IN_PHASE_KEYS.development;
 }

@@ -450,14 +450,37 @@ export function createMissionPreflightService(args: {
       launch,
       selectedPhases: selected.phases,
     });
-    const budgetDetails = [
-      `Estimated: ${summarizeUsd(budget.estimate.estimatedCostUsd)} / ${summarizeDuration(budget.estimate.estimatedTimeMs)}`,
-      `Mode: ${budget.estimate.mode}`,
-      ...budget.estimate.perPhase.map(
-        (phase) => `${phase.phaseName}: ${summarizeUsd(phase.estimatedCostUsd)} / ${summarizeDuration(phase.estimatedTimeMs)}`,
-      ),
-      ...(budget.estimate.note ? [budget.estimate.note] : []),
-    ];
+    const forecast = budget.estimate.forecast ?? null;
+    const budgetDetails = budget.estimate.mode === "subscription"
+      ? [
+          `Mode: ${budget.estimate.mode}`,
+          `Estimated time: ${summarizeDuration(budget.estimate.estimatedTimeMs)}`,
+          ...(budget.estimate.actualSpendUsd != null
+            ? [`Observed spend so far: ${summarizeUsd(budget.estimate.actualSpendUsd)}`]
+            : []),
+          ...(budget.estimate.note ? [budget.estimate.note] : []),
+        ]
+      : [
+          `Estimated: ${summarizeUsd(budget.estimate.estimatedCostUsd)} / ${summarizeDuration(budget.estimate.estimatedTimeMs)}`,
+          `Mode: ${budget.estimate.mode}`,
+          ...(budget.estimate.actualSpendUsd != null
+            ? [`Actual spend so far (window): ${summarizeUsd(budget.estimate.actualSpendUsd)}`]
+            : []),
+          ...(budget.estimate.burnRateUsdPerHour != null
+            ? [`Live burn rate: ${summarizeUsd(budget.estimate.burnRateUsdPerHour)}/hour`]
+            : []),
+          ...(forecast
+            ? [
+                `Forecast cost (low/median/high): ${summarizeUsd(forecast.lowCostUsd)} / ${summarizeUsd(forecast.medianCostUsd)} / ${summarizeUsd(forecast.highCostUsd)}`,
+                `Forecast time (low/median/high): ${summarizeDuration(forecast.lowDurationMs)} / ${summarizeDuration(forecast.medianDurationMs)} / ${summarizeDuration(forecast.highDurationMs)}`,
+                `Forecast confidence: ${forecast.confidence != null ? `${Math.round(forecast.confidence * 100)}%` : "n/a"} (n=${forecast.sampleSize}, basis: ${forecast.basis})`,
+              ]
+            : []),
+          ...budget.estimate.perPhase.map(
+            (phase) => `${phase.phaseName}: ${summarizeUsd(phase.estimatedCostUsd)} / ${summarizeDuration(phase.estimatedTimeMs)}`,
+          ),
+          ...(budget.estimate.note ? [budget.estimate.note] : []),
+        ];
     checklist.push(
       budget.hardLimitExceeded
         ? toChecklistItem({
@@ -473,7 +496,7 @@ export function createMissionPreflightService(args: {
               id: "budget",
               severity: "warning",
               title: "Budget",
-              summary: "Subscription mode budget is best-effort estimated from local CLI telemetry.",
+              summary: "Subscription mode budget uses observed local CLI telemetry (predictive cost forecast is disabled).",
               details: budgetDetails,
             })
           : toChecklistItem({

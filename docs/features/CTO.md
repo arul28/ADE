@@ -4,7 +4,7 @@
 
 > Last updated: 2026-03-05
 >
-> **Status: W1-W3 Complete** — CTO core identity, worker agents org chart, heartbeat/activation system, and full CtoPage UI shipped. W4 (Bidirectional Linear Sync) is next.
+> **Status: W1-W4 Complete** — CTO core identity, worker agents org chart, heartbeat/activation system, bidirectional Linear sync, and full CtoPage UI shipped. W5 (Night Shift Mode) is next.
 
 ---
 
@@ -795,29 +795,11 @@ This design draws from three open-source projects:
 
 ## Deferred Design
 
-The CTO feature is **Planned**. Phase 4 of the ADE roadmap establishes the foundational infrastructure that the CTO will build on:
+W1-W4 are **Complete** as of 2026-03-05. The following areas remain open for future workstreams:
 
-- **Memory service**: Three-tier memory with compaction, hybrid search, and composite scoring.
-- **Agent runtime**: Unified agent definition, runtime, and memory model.
-- **MCP tool surface**: Full tool coverage for external agent integration.
-- **Identity persistence**: `.ade/` directory structure and versioned identity files.
-- **Decomposed orchestrator**: The AI orchestrator has been decomposed into focused modules that the CTO can leverage directly:
-  - `chatMessageService` (1,849 lines) for chat/messaging infrastructure
-  - `workerDeliveryService` (1,329 lines) for inter-agent message delivery
-  - `workerTracking` (1,087 lines) for worker state management
-  - `missionLifecycle` (1,045 lines) for mission run management
-  - `recoveryService` for failure recovery and health monitoring
-  - `modelConfigResolver` for model config with TTL caching
-  - `orchestratorContext` for runtime state management (22+ Map objects)
+- **Proactive behavior**: When and how the CTO should surface information without being asked (e.g., morning briefing, mission completion notifications). Partially addressed by heartbeat system (W3) but proactive chat messages not yet implemented.
+- **Multi-project support**: How the CTO handles users working across multiple projects. Current implementation is single-project.
+- **Learning rate and accuracy**: How quickly the CTO should adopt new patterns vs. maintaining stable behavior. Three-tier memory model (W6) will address this.
+- **Trust and permissions**: What the CTO can do autonomously vs. what requires user approval. Currently governed by adapter capability mode (`full_mcp` vs `fallback`).
 
-Detailed CTO implementation is deferred to a later phase. The following areas require design work before implementation begins:
-
-- **Chat UI specifics**: Layout, components, and keyboard shortcuts for the CTO tab.
-- **Conversation persistence**: How conversation history is stored and resumed across app restarts.
-- **Proactive behavior**: When and how the CTO should surface information without being asked (e.g., morning briefing, mission completion notifications).
-- **Multi-project support**: How the CTO handles users working across multiple projects.
-- **Model selection and cost management**: Budget controls for the CTO's ongoing operation (it consumes tokens for every interaction and memory operation).
-- **Learning rate and accuracy**: How quickly the CTO should adopt new patterns vs. maintaining stable behavior.
-- **Trust and permissions**: What the CTO can do autonomously vs. what requires user approval.
-
-These design questions will be addressed when the CTO moves from Planned to In Progress.
+These design questions will be addressed in W5+ (Night Shift, Memory Architecture, OpenClaw Bridge).

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-04
+> Last updated: 2026-03-05
 >
 > Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan/README.md`.
 
@@ -29,7 +29,7 @@
 
 ADE (Agentic Development Environment) is a desktop application designed to augment the developer workflow by providing deep integration between terminal sessions, git operations, and context-aware tooling. The system is built around two main components -- the Desktop UI and the Local Core Engine -- with an integrated AI layer that connects to configured providers (CLI subscriptions, API-key/OpenRouter, and local OpenAI-compatible endpoints) via native agent SDKs and an MCP server. Strict boundaries govern which layer is permitted to perform mutations on the repository and filesystem.
 
-The core insight behind ADE's architecture is that developer context -- the state of code changes, terminal output, test results, process health, and git history -- is fragmented across tools. ADE unifies this context into structured artifacts called "packs" that serve both humans and AI agents.
+The core insight behind ADE's architecture is that developer context -- the state of code changes, terminal output, test results, process health, and git history -- is fragmented across tools. ADE unifies this context into a persistent memory system (three scopes: project, agent, mission; three tiers: pinned, hot, cold) that serves both humans and AI agents. The memory system replaces the earlier "context packs" approach with intelligent write gates, hybrid vector search, and temporal decay.
 
 The AI integration layer replaces the previous hosted cloud backend with a local-first, provider-flexible approach. ADE can run with CLI subscriptions (`claude`/`codex`), API-key/OpenRouter providers, and local model endpoints (LM Studio/Ollama/vLLM). An MCP server exposes ADE's internal tools to these AI processes, and an AI orchestrator coordinates multi-step mission execution.
 
@@ -64,6 +64,8 @@ ADE supports pluggable compute backends for lane and mission execution. The `Com
 Rather than using branches alone, ADE maps each lane (unit of work) to a dedicated git worktree. This enables true parallel development: multiple lanes can have different working trees checked out simultaneously without interference. The worktree model also provides a clean filesystem boundary for process execution and test isolation.
 
 ### Deterministic Packs Over Live Queries
+
+> **Planned removal (Phase 4 W6)**: The context pack system will be replaced by the Unified Memory System — one service with three scopes (project/agent/mission) and three tiers (pinned/hot/cold). See `docs/final-plan/phase-4.md` W6 for details.
 
 ADE materializes context into markdown pack files rather than relying on live queries. This decision ensures reproducibility (packs are snapshots), enables offline consumption, and provides a natural serialization format for AI context delivery. Packs are rebuilt on deterministic triggers (session end, HEAD change) rather than polled.
 
@@ -482,15 +484,16 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Inter-agent messaging | Complete |
 | Memory architecture (scoped namespaces + candidate/promoted lifecycle) | Complete |
 | Shared facts + run narrative | Complete |
-| Memory architecture upgrade (sqlite-vec, hybrid search, composite scoring, pre-compaction flush) | Planned (Phase 4) |
+| Unified Memory System (W6) — replaces packs + memoryService + CTO state; sqlite-vec, hybrid search, write gate, decay | Planned (Phase 4) |
+| Skills + Learning Pipeline (W7) — procedural extraction, skill materialization to `.claude/skills/` | Planned (Phase 4) |
 | CTO Agent — core identity, memory, persistent chat (W1) | Complete (Phase 4) |
 | Worker Agents — org chart, multi-adapter, config versioning, budget, task sessions (W2) | Complete (Phase 4) |
 | Heartbeat & Activation — timer pool, two-tier execution, coalescing, orphan reaping (W3) | Complete (Phase 4) |
-| Bidirectional Linear Sync (W4) | In Progress (Phase 4) |
+| Bidirectional Linear Sync (W4) | Complete (Phase 4) |
 | External MCP consumption (agents connect to external MCP servers) | Planned (Phase 4) |
 | `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
 | Compute backend abstraction (Phase 5.5) | Planned |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 focuses on agent-first runtime unification plus four new architectural capabilities: memory architecture upgrade (sqlite-vec vector search, hybrid retrieval, pre-compaction flush), CTO Agent (external system bridge via MCP), external MCP consumption (agents connecting to third-party MCP servers), and `.ade/` portable state (git-based cross-machine sync). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 complete: CTO agent core identity + persistent chat (W1), worker agents + org chart (W2), heartbeat + activation system (W3), bidirectional Linear sync (W4). Remaining Phase 4 workstreams execute in order W6→W7→W5: Unified Memory System (W6, replaces context packs + memoryService + CTO state with one service, three scopes, three tiers, sqlite-vec hybrid search), Skills + Learning Pipeline (W7, episodic→procedural extraction + skill materialization), Night Shift Mode (W5), External MCP Consumption (W8), OpenClaw Bridge (W9), `.ade/` Portable State (W10). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan/README.md`

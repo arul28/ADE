@@ -644,6 +644,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       sendAgentMessage: resolvedArg({}),
       getGlobalChat: resolvedArg([]),
       getActiveAgents: resolvedArg([]),
+      getMissionBudgetTelemetry: resolvedArg({ computedAt: new Date().toISOString(), perProvider: [], dataSources: [] }),
       getAggregatedUsage: resolvedArg({ totalTokens: 0, totalCost: 0, byModel: [] }),
       onEvent: noop,
       onThreadEvent: noop,

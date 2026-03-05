@@ -278,21 +278,63 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
             Mission Budget
           </h3>
           <div className="flex flex-col gap-2" style={{ background: "#13101A", border: "1px solid #1E1B26", padding: "10px" }}>
-            <div className="flex flex-wrap items-center gap-3" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
-              <span>Mode: {budget.mode}</span>
-              <span>Pressure: {budget.pressure}</span>
-              <span>Active workers: {budget.activeWorkers}</span>
-              <span>Tokens: {formatTokens(budget.mission.usedTokens)} / {budget.mission.maxTokens != null ? formatTokens(budget.mission.maxTokens) : "n/a"}</span>
-              <span>Cost: {formatCost(budget.mission.usedCostUsd)} / {budget.mission.maxCostUsd != null ? formatCost(budget.mission.maxCostUsd) : "n/a"}</span>
-              <span>Time: {formatBudgetMs(budget.mission.usedTimeMs)} / {formatBudgetMs(budget.mission.maxTimeMs ?? null)}</span>
-            </div>
+            {budget.mode === "subscription" ? (
+              <div className="flex flex-wrap items-center gap-3" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                <span>Mode: subscription</span>
+                <span>Pressure: {budget.pressure}</span>
+                <span>Active workers: {budget.activeWorkers}</span>
+                <span>Tokens: {formatTokens(budget.mission.usedTokens)} / {budget.mission.maxTokens != null ? formatTokens(budget.mission.maxTokens) : "n/a"}</span>
+                <span>Time: {formatBudgetMs(budget.mission.usedTimeMs)} / {formatBudgetMs(budget.mission.maxTimeMs ?? null)}</span>
+                <span>Observed spend: {formatCost(budget.mission.usedCostUsd)}</span>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                <span>Mode: {budget.mode}</span>
+                <span>Pressure: {budget.pressure}</span>
+                <span>Active workers: {budget.activeWorkers}</span>
+                <span>Tokens: {formatTokens(budget.mission.usedTokens)} / {budget.mission.maxTokens != null ? formatTokens(budget.mission.maxTokens) : "n/a"}</span>
+                <span>Cost: {formatCost(budget.mission.usedCostUsd)} / {budget.mission.maxCostUsd != null ? formatCost(budget.mission.maxCostUsd) : "n/a"}</span>
+                <span>Time: {formatBudgetMs(budget.mission.usedTimeMs)} / {formatBudgetMs(budget.mission.maxTimeMs ?? null)}</span>
+                <span>Burn: {budget.burnRateUsdPerHour != null ? `${formatCost(budget.burnRateUsdPerHour)}/h` : "n/a"}</span>
+              </div>
+            )}
             <div style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
               {budget.recommendation}
             </div>
+            {budget.mode === "subscription" ? (
+              <div style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                Subscription mode uses telemetry-only stats (no predictive cost forecast).
+                {budget.dataSources.length > 0 ? ` Source: ${budget.dataSources.join(", ")}.` : ""}
+              </div>
+            ) : null}
+            {budget.mode !== "subscription" && budget.forecast ? (
+              <div className="grid grid-cols-1 gap-0.5" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                <div>
+                  Forecast cost (low/median/high): {
+                    [budget.forecast.lowCostUsd, budget.forecast.medianCostUsd, budget.forecast.highCostUsd]
+                      .map((value) => value != null ? formatCost(value) : "n/a")
+                      .join(" / ")
+                  }
+                </div>
+                <div>
+                  Forecast time (low/median/high): {
+                    [budget.forecast.lowDurationMs, budget.forecast.medianDurationMs, budget.forecast.highDurationMs]
+                      .map((value) => formatBudgetMs(value))
+                      .join(" / ")
+                  }
+                </div>
+                <div>
+                  Confidence: {budget.forecast.confidence != null ? `${Math.round(budget.forecast.confidence * 100)}%` : "n/a"}
+                  {" "}({budget.forecast.sampleSize} samples, {budget.forecast.basis})
+                </div>
+              </div>
+            ) : null}
             <div className="grid grid-cols-1 gap-1">
               {[
                 { key: "tokens", label: "Token Budget", used: budget.mission.usedTokens, limit: budget.mission.maxTokens, display: `${formatTokens(budget.mission.usedTokens)} / ${budget.mission.maxTokens != null ? formatTokens(budget.mission.maxTokens) : "n/a"}` },
-                { key: "cost", label: "Cost Budget", used: budget.mission.usedCostUsd, limit: budget.mission.maxCostUsd ?? null, display: `${formatCost(budget.mission.usedCostUsd)} / ${budget.mission.maxCostUsd != null ? formatCost(budget.mission.maxCostUsd) : "n/a"}` },
+                ...(budget.mode === "api-key"
+                  ? [{ key: "cost", label: "Cost Budget", used: budget.mission.usedCostUsd, limit: budget.mission.maxCostUsd ?? null, display: `${formatCost(budget.mission.usedCostUsd)} / ${budget.mission.maxCostUsd != null ? formatCost(budget.mission.maxCostUsd) : "n/a"}` }]
+                  : []),
                 { key: "time", label: "Time Budget", used: budget.mission.usedTimeMs, limit: budget.mission.maxTimeMs ?? null, display: `${formatBudgetMs(budget.mission.usedTimeMs)} / ${formatBudgetMs(budget.mission.maxTimeMs ?? null)}` },
               ].map((entry) => {
                 const pct = budgetPercent(Number(entry.used), Number(entry.limit));
@@ -315,19 +357,21 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 );
               })}
             </div>
-            <div className="flex flex-wrap items-center gap-2" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
-              <span>Rate Limits:</span>
-              {budget.rateLimits.length === 0 ? (
-                <span style={{ color: "#71717A" }}>none reported</span>
-              ) : (
-                budget.rateLimits.map((limit) => (
-                  <span key={`${limit.provider}:${limit.source}`}>
-                    {limit.provider} {limit.remainingTokens != null ? `${formatTokens(limit.remainingTokens)} remaining` : "remaining n/a"} {limit.resetAt ? `(reset ${new Date(limit.resetAt).toLocaleTimeString()})` : ""}
-                  </span>
-                ))
-              )}
-            </div>
-            {budget.perPhase.length > 0 ? (
+            {budget.mode !== "subscription" ? (
+              <div className="flex flex-wrap items-center gap-2" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                <span>Rate Limits:</span>
+                {budget.rateLimits.length === 0 ? (
+                  <span style={{ color: "#71717A" }}>none reported</span>
+                ) : (
+                  budget.rateLimits.map((limit) => (
+                    <span key={`${limit.provider}:${limit.source}`}>
+                      {limit.provider} {limit.remainingTokens != null ? `${formatTokens(limit.remainingTokens)} remaining` : "remaining n/a"} {limit.resetAt ? `(reset ${new Date(limit.resetAt).toLocaleTimeString()})` : ""}
+                    </span>
+                  ))
+                )}
+              </div>
+            ) : null}
+            {budget.mode !== "subscription" && budget.perPhase.length > 0 ? (
               <div className="flex flex-col gap-1">
                 <div style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
                   By Phase
@@ -346,7 +390,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 ))}
               </div>
             ) : null}
-            {budget.perWorker.length > 0 ? (
+            {budget.mode !== "subscription" && budget.perWorker.length > 0 ? (
               <div className="flex flex-col gap-1">
                 <div style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
                   Top Workers
@@ -599,4 +643,3 @@ function SummaryCard({ icon: Icon, label, value, sub }: { icon: React.ElementTyp
     </div>
   );
 }
-

@@ -53,6 +53,14 @@ import { createWorkerBudgetService } from "./services/cto/workerBudgetService";
 import { createWorkerAdapterRuntimeService } from "./services/cto/workerAdapterRuntimeService";
 import { createWorkerTaskSessionService } from "./services/cto/workerTaskSessionService";
 import { createWorkerHeartbeatService } from "./services/cto/workerHeartbeatService";
+import { createLinearCredentialService } from "./services/cto/linearCredentialService";
+import { createLinearClient } from "./services/cto/linearClient";
+import { createLinearIssueTracker } from "./services/cto/linearIssueTracker";
+import { createLinearTemplateService } from "./services/cto/linearTemplateService";
+import { createFlowPolicyService } from "./services/cto/flowPolicyService";
+import { createLinearRoutingService } from "./services/cto/linearRoutingService";
+import { createLinearOutboundService } from "./services/cto/linearOutboundService";
+import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
@@ -761,6 +769,39 @@ app.whenReady().then(async () => {
       logger,
     });
 
+    const linearCredentialService = createLinearCredentialService({
+      adeDir: adePaths.adeDir,
+      logger,
+    });
+    const linearClient = createLinearClient({
+      credentials: linearCredentialService,
+      logger,
+    });
+    const linearIssueTracker = createLinearIssueTracker({
+      client: linearClient,
+    });
+    const linearTemplateService = createLinearTemplateService({
+      adeDir: adePaths.adeDir,
+    });
+    const flowPolicyService = createFlowPolicyService({
+      db,
+      projectId,
+      projectConfigService,
+    });
+    const linearRoutingService = createLinearRoutingService({
+      projectRoot,
+      workerAgentService,
+      aiIntegrationService,
+      flowPolicyService,
+    });
+    const linearOutboundService = createLinearOutboundService({
+      db,
+      projectId,
+      projectRoot,
+      issueTracker: linearIssueTracker,
+      logger,
+    });
+
     const agentChatService = createAgentChatService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -832,13 +873,23 @@ app.whenReady().then(async () => {
       projectRoot,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.missionsEvent, event)
     });
+    // Run phase built-in migration/cleanup once at startup so launcher state is canonical.
+    try {
+      missionService.listPhaseProfiles({ includeArchived: true });
+      missionService.listPhaseItems({ includeArchived: true });
+    } catch (error) {
+      logger.warn("missions.phase_storage_seed_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     const missionBudgetService = createMissionBudgetService({
       db,
       logger,
       projectId,
       projectRoot,
       missionService,
-      aiIntegrationService
+      aiIntegrationService,
+      projectConfigService,
     });
     const missionPreflightService = createMissionPreflightService({
       logger,
@@ -883,6 +934,23 @@ app.whenReady().then(async () => {
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
+
+    const linearSyncService = createLinearSyncService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      issueTracker: linearIssueTracker,
+      flowPolicyService,
+      routingService: linearRoutingService,
+      templateService: linearTemplateService,
+      outboundService: linearOutboundService,
+      workerAgentService,
+      missionService,
+      aiOrchestratorService,
+      orchestratorService,
+      autoStart: true,
+    });
 
     // Resume any active team runtimes that were running before app restart
     setImmediate(() => aiOrchestratorService.resumeActiveTeamRuntimes());
@@ -1124,6 +1192,11 @@ app.whenReady().then(async () => {
       workerBudgetService,
       workerHeartbeatService,
       workerTaskSessionService,
+      linearCredentialService,
+      linearIssueTracker,
+      flowPolicyService,
+      linearRoutingService,
+      linearSyncService,
       mcpSocketServer,
       mcpSocketPath
     };
@@ -1185,7 +1258,12 @@ app.whenReady().then(async () => {
       workerRevisionService: null,
       workerBudgetService: null,
       workerHeartbeatService: null,
-      workerTaskSessionService: null
+      workerTaskSessionService: null,
+      linearCredentialService: null,
+      linearIssueTracker: null,
+      flowPolicyService: null,
+      linearRoutingService: null,
+      linearSyncService: null
     } as unknown as AppContext);
   };
 
@@ -1207,6 +1285,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.aiOrchestratorService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.linearSyncService?.dispose();
     } catch {
       // ignore
     }

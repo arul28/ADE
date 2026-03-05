@@ -95,9 +95,9 @@ export function getPermissionOptions(opts: {
       {
         value: "config-toml",
         label: "Custom",
-        shortDesc: "No flags passed \u2014 uses your codex.toml",
-        detail: "No --approval-policy or --sandbox flags are passed to the Codex runtime. Your project codex.toml (or ~/.codex/config.toml) fully controls sandbox and approval behavior.",
-        allows: ["Determined by codex.toml"],
+        shortDesc: "No flags passed \u2014 uses config.toml",
+        detail: "No --approval-policy or --sandbox flags are passed to the Codex runtime. Runtime behavior is controlled by Codex config files (for example, ~/.codex/config.toml).",
+        allows: ["Determined by config.toml"],
         gates: [],
         safety: "custom",
       },

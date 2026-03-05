@@ -307,6 +307,108 @@ export type PhaseProfile = {
   updatedAt: string;
 };
 
+export type ListPhaseItemsArgs = {
+  includeArchived?: boolean;
+};
+
+export type SavePhaseItemArgs = {
+  item: PhaseCard;
+};
+
+export type DeletePhaseItemArgs = {
+  phaseKey: string;
+};
+
+export type ExportPhaseItemsArgs = {
+  phaseKeys?: string[];
+};
+
+export type ExportPhaseItemsResult = {
+  items: PhaseCard[];
+  savedPath: string | null;
+};
+
+export type ImportPhaseItemsArgs = {
+  filePath: string;
+};
+
+export type MissionLogChannel =
+  | "timeline"
+  | "runtime"
+  | "chat"
+  | "outputs"
+  | "reflections"
+  | "retrospectives"
+  | "interventions";
+
+export type MissionLogEntry = {
+  id: string;
+  missionId: string;
+  runId: string | null;
+  channel: MissionLogChannel;
+  level: "info" | "warning" | "error";
+  at: string;
+  title: string;
+  message: string;
+  stepId?: string | null;
+  stepKey?: string | null;
+  attemptId?: string | null;
+  interventionId?: string | null;
+  threadId?: string | null;
+  payload?: Record<string, unknown> | null;
+};
+
+export type GetMissionLogsArgs = {
+  missionId: string;
+  runId?: string | null;
+  channels?: MissionLogChannel[];
+  cursor?: string | null;
+  limit?: number;
+};
+
+export type GetMissionLogsResult = {
+  entries: MissionLogEntry[];
+  nextCursor: string | null;
+  total: number;
+};
+
+export type MissionLogBundleManifest = {
+  schema: "ade.mission-log-bundle.v1";
+  missionId: string;
+  runId: string | null;
+  exportedAt: string;
+  channels: MissionLogChannel[];
+  entryCount: number;
+  files: Array<{
+    name: string;
+    path: string;
+    bytes: number;
+    entries: number;
+  }>;
+  includeArtifacts: boolean;
+};
+
+export type ExportMissionLogsArgs = {
+  missionId: string;
+  runId?: string | null;
+  includeArtifacts?: boolean;
+};
+
+export type ExportMissionLogsResult = {
+  bundlePath: string;
+  manifest: MissionLogBundleManifest;
+};
+
+export type RuntimeAvailabilityState = {
+  missionId: string;
+  runId: string | null;
+  available: boolean;
+  paused: boolean;
+  blockedReason: string | null;
+  canStart: boolean;
+  canResume: boolean;
+};
+
 export type MissionPhaseOverride = {
   id: string;
   missionId: string;
@@ -554,6 +656,9 @@ export type MissionPreflightBudgetEstimate = {
   estimatedTokens: number | null;
   estimatedCostUsd: number | null;
   estimatedTimeMs: number | null;
+  actualSpendUsd?: number | null;
+  burnRateUsdPerHour?: number | null;
+  forecast?: import("./budget").MissionBudgetForecast;
   perPhase: MissionPreflightPhaseEstimate[];
   note?: string;
 };

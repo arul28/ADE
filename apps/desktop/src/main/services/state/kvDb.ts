@@ -1657,6 +1657,147 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_worker_agent_cost_events_agent on worker_agent_cost_events(project_id, agent_id)");
   db.run("create index if not exists idx_worker_agent_cost_events_month on worker_agent_cost_events(project_id, agent_id, occurred_at)");
+
+  // Phase 4 W4: Linear sync loop state (heartbeat + health)
+  db.run(`
+    create table if not exists linear_sync_state (
+      project_id text primary key,
+      enabled integer not null default 0,
+      running integer not null default 0,
+      last_poll_at text,
+      last_success_at text,
+      last_error text,
+      health_json text not null default '{}',
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_linear_sync_state_updated on linear_sync_state(updated_at)");
+
+  // Phase 4 W4: Latest normalized Linear issue snapshots for de-dup/reconciliation.
+  db.run(`
+    create table if not exists linear_issue_snapshots (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      identifier text not null,
+      state_type text not null,
+      assignee_id text,
+      updated_at_linear text not null,
+      payload_json text not null,
+      hash text not null,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, issue_id)
+    )
+  `);
+  db.run("create index if not exists idx_linear_issue_snapshots_project_updated_linear on linear_issue_snapshots(project_id, updated_at_linear)");
+
+  // Phase 4 W4: Queue for dispatch/escalation/retry.
+  db.run(`
+    create table if not exists linear_dispatch_queue (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      identifier text not null,
+      title text not null,
+      status text not null,
+      action text not null,
+      worker_id text,
+      worker_slug text,
+      mission_id text,
+      route_json text not null default '{}',
+      attempt_count integer not null default 0,
+      next_attempt_at text,
+      last_error text,
+      note text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run(
+    "create index if not exists idx_linear_dispatch_queue_lookup on linear_dispatch_queue(project_id, status, next_attempt_at, created_at)"
+  );
+  db.run("create index if not exists idx_linear_dispatch_queue_issue on linear_dispatch_queue(project_id, issue_id, status)");
+
+  // Phase 4 W4: Atomic issue claim lock for dispatch.
+  db.run(`
+    create table if not exists linear_issue_claims (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      queue_item_id text,
+      worker_id text,
+      worker_slug text,
+      mission_id text,
+      linear_assignee_id text,
+      status text not null default 'active',
+      claimed_at text not null,
+      released_at text,
+      updated_at text not null
+    )
+  `);
+  db.run("drop index if exists idx_linear_issue_claims_unique");
+  db.run(
+    "create unique index if not exists idx_linear_issue_claims_active_unique on linear_issue_claims(project_id, issue_id) where status = 'active'"
+  );
+  db.run("create index if not exists idx_linear_issue_claims_lookup on linear_issue_claims(project_id, issue_id, status)");
+
+  // Phase 4 W4: Persistent issue workpad mapping (single comment per issue).
+  db.run(`
+    create table if not exists linear_workpads (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      comment_id text not null,
+      last_body_hash text,
+      last_body text,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, issue_id)
+    )
+  `);
+  db.run("create index if not exists idx_linear_workpads_project_issue on linear_workpads(project_id, issue_id)");
+
+  // Phase 4 W4: Sync event/audit log.
+  db.run(`
+    create table if not exists linear_sync_events (
+      id text primary key,
+      project_id text not null,
+      issue_id text,
+      queue_item_id text,
+      event_type text not null,
+      status text,
+      message text,
+      payload_json text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_linear_sync_events_project_created on linear_sync_events(project_id, created_at)");
+  db.run("create index if not exists idx_linear_sync_events_issue_created on linear_sync_events(project_id, issue_id, created_at)");
+
+  // Phase 4 W4: Active flow policy snapshot and immutable revision history.
+  db.run(`
+    create table if not exists cto_flow_policies (
+      project_id text primary key,
+      policy_json text not null,
+      active_revision_id text,
+      updated_at text not null,
+      updated_by text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_flow_policies_updated on cto_flow_policies(updated_at)");
+
+  db.run(`
+    create table if not exists cto_flow_policy_revisions (
+      id text primary key,
+      project_id text not null,
+      actor text not null,
+      policy_json text not null,
+      diff_json text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_flow_policy_revisions_project_created on cto_flow_policy_revisions(project_id, created_at)");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

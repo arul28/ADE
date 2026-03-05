@@ -7,7 +7,12 @@ import type {
   ClonePhaseProfileArgs,
   CreateMissionArgs,
   DeletePhaseProfileArgs,
+  DeletePhaseItemArgs,
+  ExportPhaseItemsArgs,
+  ExportPhaseItemsResult,
   ImportPhaseProfileArgs,
+  ImportPhaseItemsArgs,
+  ListPhaseItemsArgs,
   ListPhaseProfilesArgs,
   MissionConcurrencyCheckResult,
   MissionConcurrencyConfig,
@@ -36,6 +41,7 @@ import type {
   ThinkingLevel,
   PhaseCard,
   PhaseProfile,
+  SavePhaseItemArgs,
   SavePhaseProfileArgs,
   ExportPhaseProfileArgs,
   ExportPhaseProfileResult,
@@ -319,12 +325,13 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
 
 function toModelConfig(value: unknown): PhaseCard["model"] {
   const record = isRecord(value) ? value : {};
-  const modelId = typeof record.modelId === "string" && record.modelId.trim().length > 0
+  const rawModelId = typeof record.modelId === "string" && record.modelId.trim().length > 0
     ? record.modelId.trim()
     : typeof record.model === "string" && record.model.trim().length > 0
       ? record.model.trim()
       : "anthropic/claude-sonnet-4-6";
-  const descriptor = resolveModelDescriptor(modelId);
+  const descriptor = resolveModelDescriptor(rawModelId);
+  const modelId = descriptor?.id ?? rawModelId;
   const providerHint = typeof record.provider === "string" && record.provider.trim().length > 0
     ? record.provider.trim().toLowerCase()
     : descriptor?.family === "anthropic"
@@ -1091,6 +1098,92 @@ export function createMissionService({
       [projectId]
     );
 
+  const listPhaseCardRows = (includeArchived = false): PhaseCardRow[] =>
+    db.all<PhaseCardRow>(
+      `
+        select
+          id,
+          project_id,
+          phase_key,
+          name,
+          description,
+          instructions,
+          model_json,
+          budget_json,
+          ordering_constraints_json,
+          ask_questions_json,
+          validation_gate_json,
+          is_built_in,
+          is_custom,
+          position,
+          archived_at,
+          created_at,
+          updated_at
+        from phase_cards
+        where project_id = ?
+          ${includeArchived ? "" : "and archived_at is null"}
+        order by position asc, updated_at desc, name asc
+      `,
+      [projectId]
+    );
+
+  const getPhaseCardRowByKey = (phaseKey: string): PhaseCardRow | null =>
+    db.get<PhaseCardRow>(
+      `
+        select
+          id,
+          project_id,
+          phase_key,
+          name,
+          description,
+          instructions,
+          model_json,
+          budget_json,
+          ordering_constraints_json,
+          ask_questions_json,
+          validation_gate_json,
+          is_built_in,
+          is_custom,
+          position,
+          archived_at,
+          created_at,
+          updated_at
+        from phase_cards
+        where project_id = ?
+          and phase_key = ?
+        order by updated_at desc
+        limit 1
+      `,
+      [projectId, phaseKey]
+    );
+
+  const toPhaseCardFromRow = (row: PhaseCardRow): PhaseCard => {
+    const parsed = toPhaseCard(
+      {
+        id: row.id,
+        phaseKey: row.phase_key,
+        name: row.name,
+        description: row.description,
+        instructions: row.instructions,
+        model: safeJsonParse(row.model_json, null),
+        budget: safeJsonParse(row.budget_json, null),
+        orderingConstraints: safeJsonParse(row.ordering_constraints_json, null),
+        askQuestions: safeJsonParse(row.ask_questions_json, null),
+        validationGate: safeJsonParse(row.validation_gate_json, null),
+        isBuiltIn: Number(row.is_built_in) === 1,
+        isCustom: Number(row.is_custom) === 1,
+        position: row.position,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      },
+      row.position
+    );
+    if (!parsed) {
+      throw new Error(`Invalid phase card row for key: ${row.phase_key}`);
+    }
+    return parsed;
+  };
+
   const upsertPhaseCardRow = (card: PhaseCard) => {
     const existing = db.get<{ id: string }>(
       `
@@ -1186,121 +1279,155 @@ export function createMissionService({
     );
   };
 
+  const upsertBuiltInPhaseProfileRow = (profile: PhaseProfile, now: string) => {
+    const existing = db.get<{ id: string }>(
+      `
+        select id
+        from phase_profiles
+        where project_id = ?
+          and id = ?
+        limit 1
+      `,
+      [projectId, profile.id]
+    );
+    const normalizedPhases = normalizePhaseCards(profile.phases);
+    if (existing?.id) {
+      db.run(
+        `
+          update phase_profiles
+          set name = ?,
+              description = ?,
+              phases_json = ?,
+              is_built_in = 1,
+              is_default = ?,
+              archived_at = null,
+              updated_at = ?
+          where project_id = ?
+            and id = ?
+        `,
+        [
+          profile.name,
+          profile.description,
+          JSON.stringify(normalizedPhases),
+          profile.isDefault ? 1 : 0,
+          now,
+          projectId,
+          profile.id
+        ]
+      );
+      return;
+    }
+
+    db.run(
+      `
+        insert into phase_profiles(
+          id,
+          project_id,
+          name,
+          description,
+          phases_json,
+          is_built_in,
+          is_default,
+          archived_at,
+          created_at,
+          updated_at
+        ) values (?, ?, ?, ?, ?, 1, ?, null, ?, ?)
+      `,
+      [
+        profile.id,
+        projectId,
+        profile.name,
+        profile.description,
+        JSON.stringify(normalizedPhases),
+        profile.isDefault ? 1 : 0,
+        profile.createdAt,
+        now
+      ]
+    );
+  };
+
   const ensurePhaseStorageSeeded = () => {
     if (phaseStorageSeeded) return;
 
-    const cardCount = db.get<{ count: number }>(
-      `
-        select count(*) as count
-        from phase_cards
-        where project_id = ?
-          and archived_at is null
-      `,
-      [projectId]
-    )?.count ?? 0;
-    if (cardCount === 0) {
-      const builtInCards = createBuiltInPhaseCards(nowIso());
-      for (const card of builtInCards) {
-        upsertPhaseCardRow(card);
-      }
+    const now = nowIso();
+    const canonicalBuiltInCards = createBuiltInPhaseCards(now);
+    const canonicalBuiltInProfiles = createBuiltInPhaseProfiles(canonicalBuiltInCards, now);
+    const canonicalCardKeys = new Set(canonicalBuiltInCards.map((card) => card.phaseKey));
+    const canonicalProfileIds = new Set(canonicalBuiltInProfiles.map((profile) => profile.id));
+
+    // Always upsert current built-ins so legacy/stale rows are corrected.
+    for (const card of canonicalBuiltInCards) {
+      upsertPhaseCardRow({
+        ...card,
+        isBuiltIn: true,
+        isCustom: false,
+        updatedAt: now
+      });
     }
 
-    const profileCount = db.get<{ count: number }>(
+    for (const profile of canonicalBuiltInProfiles) {
+      upsertBuiltInPhaseProfileRow(profile, now);
+    }
+
+    // Archive legacy built-in cards that are no longer part of canonical defaults.
+    const activeBuiltInCards = db.all<{ phase_key: string }>(
       `
-        select count(*) as count
-        from phase_profiles
+        select phase_key
+        from phase_cards
         where project_id = ?
+          and is_built_in = 1
           and archived_at is null
       `,
       [projectId]
-    )?.count ?? 0;
-
-    if (profileCount === 0) {
-      const cards = db
-        .all<PhaseCardRow>(
-          `
-            select
-              id,
-              project_id,
-              phase_key,
-              name,
-              description,
-              instructions,
-              model_json,
-              budget_json,
-              ordering_constraints_json,
-              ask_questions_json,
-              validation_gate_json,
-              is_built_in,
-              is_custom,
-              position,
-              archived_at,
-              created_at,
-              updated_at
-            from phase_cards
-            where project_id = ?
-              and archived_at is null
-            order by position asc
-          `,
-          [projectId]
-        )
-        .map((row) =>
-          toPhaseCard(
-            {
-              id: row.id,
-              phaseKey: row.phase_key,
-              name: row.name,
-              description: row.description,
-              instructions: row.instructions,
-              model: safeParseRecord(row.model_json),
-              budget: safeParseRecord(row.budget_json),
-              orderingConstraints: safeParseRecord(row.ordering_constraints_json),
-              askQuestions: safeParseRecord(row.ask_questions_json),
-              validationGate: safeParseRecord(row.validation_gate_json),
-              isBuiltIn: Number(row.is_built_in) === 1,
-              isCustom: Number(row.is_custom) === 1,
-              position: row.position,
-              createdAt: row.created_at,
-              updatedAt: row.updated_at
-            },
-            row.position
-          )
-        )
-        .filter((entry): entry is PhaseCard => entry != null);
-
-      const builtInProfiles = createBuiltInPhaseProfiles(
-        cards.length > 0 ? cards : createBuiltInPhaseCards(nowIso()),
-        nowIso()
+    );
+    const legacyBuiltInCardKeys = activeBuiltInCards
+      .map((row) => row.phase_key)
+      .filter((phaseKey) => !canonicalCardKeys.has(phaseKey));
+    if (legacyBuiltInCardKeys.length > 0) {
+      const placeholders = legacyBuiltInCardKeys.map(() => "?").join(", ");
+      db.run(
+        `
+          update phase_cards
+          set archived_at = ?,
+              updated_at = ?
+          where project_id = ?
+            and is_built_in = 1
+            and archived_at is null
+            and phase_key in (${placeholders})
+        `,
+        [now, now, projectId, ...legacyBuiltInCardKeys]
       );
-      for (const profile of builtInProfiles) {
-        db.run(
-          `
-            insert into phase_profiles(
-              id,
-              project_id,
-              name,
-              description,
-              phases_json,
-              is_built_in,
-              is_default,
-              archived_at,
-              created_at,
-              updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, null, ?, ?)
-          `,
-          [
-            profile.id,
-            projectId,
-            profile.name,
-            profile.description,
-            JSON.stringify(normalizePhaseCards(profile.phases)),
-            1,
-            profile.isDefault ? 1 : 0,
-            profile.createdAt,
-            profile.updatedAt
-          ]
-        );
-      }
+    }
+
+    // Archive legacy built-in profiles that are no longer canonical.
+    const activeBuiltInProfiles = db.all<{ id: string }>(
+      `
+        select id
+        from phase_profiles
+        where project_id = ?
+          and is_built_in = 1
+          and archived_at is null
+      `,
+      [projectId]
+    );
+    const legacyBuiltInProfileIds = activeBuiltInProfiles
+      .map((row) => row.id)
+      .filter((id) => !canonicalProfileIds.has(id));
+    if (legacyBuiltInProfileIds.length > 0) {
+      const placeholders = legacyBuiltInProfileIds.map(() => "?").join(", ");
+      db.run(
+        `
+          update phase_profiles
+          set archived_at = ?,
+              is_default = 0,
+              updated_at = ?
+          where project_id = ?
+            and is_built_in = 1
+            and archived_at is null
+            and id in (${placeholders})
+        `,
+        [now, now, projectId, ...legacyBuiltInProfileIds]
+      );
     }
 
     const existingDefault = getDefaultPhaseProfileRow();
@@ -1310,7 +1437,7 @@ export function createMissionService({
           select id
           from phase_profiles
           where project_id = ?
-            and archived_at is null
+          and archived_at is null
           order by
             case when id = 'builtin:default' then 0 else 1 end,
             is_built_in desc,
@@ -1640,6 +1767,141 @@ export function createMissionService({
         interventions,
         phaseConfiguration: resolveMissionPhaseConfiguration(id)
       };
+    },
+
+    listPhaseItems(args: ListPhaseItemsArgs = {}): PhaseCard[] {
+      ensurePhaseStorageSeeded();
+      return listPhaseCardRows(args.includeArchived === true).map(toPhaseCardFromRow);
+    },
+
+    savePhaseItem(args: SavePhaseItemArgs): PhaseCard {
+      ensurePhaseStorageSeeded();
+      if (!args.item || typeof args.item !== "object") {
+        throw new Error("Phase item payload is required.");
+      }
+      const now = nowIso();
+      const normalized = toPhaseCard(
+        {
+          ...args.item,
+          isBuiltIn: false,
+          isCustom: true,
+          updatedAt: now,
+          createdAt: args.item.createdAt ?? now,
+        },
+        Number(args.item.position ?? 0)
+      );
+      if (!normalized) {
+        throw new Error("Invalid phase item payload.");
+      }
+      if (!normalized.phaseKey.trim().length) {
+        throw new Error("Phase item phaseKey is required.");
+      }
+      upsertPhaseCardRow(normalized);
+      const row = getPhaseCardRowByKey(normalized.phaseKey);
+      if (!row) throw new Error("Failed to save phase item.");
+      return toPhaseCardFromRow(row);
+    },
+
+    deletePhaseItem(args: DeletePhaseItemArgs): void {
+      ensurePhaseStorageSeeded();
+      const phaseKey = String(args.phaseKey ?? "").trim();
+      if (!phaseKey.length) throw new Error("phaseKey is required.");
+      const row = getPhaseCardRowByKey(phaseKey);
+      if (!row) throw new Error(`Phase item not found: ${phaseKey}`);
+      if (Number(row.is_built_in) === 1) {
+        throw new Error("Built-in phase items cannot be deleted.");
+      }
+      const now = nowIso();
+      db.run(
+        `
+          update phase_cards
+          set archived_at = ?,
+              updated_at = ?
+          where project_id = ?
+            and phase_key = ?
+            and archived_at is null
+        `,
+        [now, now, projectId, phaseKey]
+      );
+    },
+
+    exportPhaseItems(args: ExportPhaseItemsArgs = {}): ExportPhaseItemsResult {
+      ensurePhaseStorageSeeded();
+      const selectedKeys = Array.isArray(args.phaseKeys)
+        ? args.phaseKeys.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+        : [];
+      const selectedKeySet = selectedKeys.length ? new Set(selectedKeys) : null;
+      const items = listPhaseCardRows(false)
+        .filter((row) => !selectedKeySet || selectedKeySet.has(row.phase_key))
+        .map(toPhaseCardFromRow);
+
+      let savedPath: string | null = null;
+      if (profilesDir) {
+        fs.mkdirSync(profilesDir, { recursive: true });
+        const timestamp = nowIso().replace(/[:.]/g, "-");
+        const filePath = path.join(profilesDir, `phase-items-${timestamp}.json`);
+        const payload = {
+          schema: "ade.phase-items.v1",
+          exportedAt: nowIso(),
+          items,
+        };
+        fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+        savedPath = filePath;
+      }
+
+      return { items, savedPath };
+    },
+
+    importPhaseItems(args: ImportPhaseItemsArgs): PhaseCard[] {
+      ensurePhaseStorageSeeded();
+      const filePath = String(args.filePath ?? "").trim();
+      if (!filePath.length) throw new Error("filePath is required.");
+      const raw = fs.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      const itemsRaw = isRecord(parsed) && Array.isArray(parsed.items)
+        ? parsed.items
+        : Array.isArray(parsed)
+          ? parsed
+          : [];
+      const importedCards = toPhaseCards(itemsRaw);
+      if (importedCards.length === 0) {
+        throw new Error("Imported phase items payload is empty.");
+      }
+
+      const now = nowIso();
+      const usedKeys = new Set(
+        listPhaseCardRows(true).map((row) => String(row.phase_key).trim().toLowerCase()).filter((entry) => entry.length > 0)
+      );
+      const ensureUniqueKey = (seed: string): string => {
+        const base = seed.trim().length > 0 ? seed.trim() : `custom_${randomUUID().slice(0, 8)}`;
+        let candidate = base;
+        let suffix = 2;
+        while (usedKeys.has(candidate.toLowerCase())) {
+          candidate = `${base}_${suffix}`;
+          suffix += 1;
+        }
+        usedKeys.add(candidate.toLowerCase());
+        return candidate;
+      };
+
+      const saved: PhaseCard[] = [];
+      for (const card of importedCards) {
+        const nextKey = ensureUniqueKey(card.phaseKey);
+        const nextCard: PhaseCard = {
+          ...card,
+          id: `${card.id}:import:${randomUUID()}`,
+          phaseKey: nextKey,
+          isBuiltIn: false,
+          isCustom: true,
+          updatedAt: now,
+          createdAt: now,
+        };
+        upsertPhaseCardRow(nextCard);
+        const row = getPhaseCardRowByKey(nextKey);
+        if (!row) continue;
+        saved.push(toPhaseCardFromRow(row));
+      }
+      return saved;
     },
 
     listPhaseProfiles(args: ListPhaseProfilesArgs = {}): PhaseProfile[] {

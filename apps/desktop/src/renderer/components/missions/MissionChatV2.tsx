@@ -19,6 +19,7 @@ import type {
   OrchestratorChatTarget,
   ActiveAgentInfo,
   MissionStatus,
+  OrchestratorRunStatus,
 } from "../../../shared/types";
 import { MentionInput, type MentionParticipant } from "../shared/MentionInput";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -46,7 +47,7 @@ type MessageCategory = "all" | "coordinator" | "workers" | "system" | "user";
 
 const MESSAGE_CATEGORIES: { value: MessageCategory; label: string }[] = [
   { value: "all", label: "All Messages" },
-  { value: "coordinator", label: "Coordinator" },
+  { value: "coordinator", label: "Orchestrator" },
   { value: "workers", label: "Workers" },
   { value: "system", label: "System" },
   { value: "user", label: "User" },
@@ -79,6 +80,7 @@ type MissionChatV2Props = {
   missionId: string;
   missionStatus: MissionStatus | null;
   runId: string | null;
+  runStatus: OrchestratorRunStatus | null;
   jumpTarget: OrchestratorChatTarget | null;
   onJumpHandled: () => void;
 };
@@ -132,7 +134,7 @@ function workerStatusToParticipantStatus(state?: string): "active" | "completed"
   }
 }
 
-export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, missionStatus, runId, jumpTarget, onJumpHandled }: MissionChatV2Props) {
+export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, missionStatus, runId, runStatus, jumpTarget, onJumpHandled }: MissionChatV2Props) {
   // ── State ──
   const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
   const [globalMessages, setGlobalMessages] = useState<OrchestratorChatMessage[]>([]);
@@ -178,7 +180,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
       result.push({
         id: `thread:${coordThread.id}`,
         kind: "orchestrator",
-        label: "Coordinator",
+        label: "Orchestrator",
         threadId: coordThread.id,
         status: coordThread.status,
         stepKey: null,
@@ -503,10 +505,44 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     return map;
   }, [threads]);
 
+  const chatBlocked = useMemo(() => {
+    if (missionStatus === "completed" || missionStatus === "failed" || missionStatus === "canceled") {
+      return {
+        reason: "Mission run is closed.",
+        action: "Start or rerun the mission to continue chat.",
+      };
+    }
+    if (!runId || !runStatus) {
+      return {
+        reason: "Orchestrator runtime is offline.",
+        action: "Start the mission run to send directives.",
+      };
+    }
+    if (runStatus === "queued" || runStatus === "bootstrapping") {
+      return {
+        reason: "Orchestrator runtime is starting.",
+        action: "Wait for readiness, then send directives.",
+      };
+    }
+    if (runStatus === "paused" || missionStatus === "intervention_required") {
+      return {
+        reason: "Mission paused — intervention required.",
+        action: "Resolve intervention and resume the run first.",
+      };
+    }
+    if (runStatus === "succeeded" || runStatus === "failed" || runStatus === "canceled") {
+      return {
+        reason: "Run is in a terminal state.",
+        action: "Start a new run to continue chat.",
+      };
+    }
+    return null;
+  }, [missionStatus, runId, runStatus]);
+
   // ── Send message ──
   const handleSend = useCallback(
     async (message: string, mentions: string[]) => {
-      if (sending || !message.trim()) return;
+      if (sending || !message.trim() || chatBlocked) return;
       setSending(true);
       try {
         if (selectedChannel?.kind === "global" || mentions.length > 0) {
@@ -568,7 +604,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
         setSending(false);
       }
     },
-    [sending, selectedChannel, threads, missionId, runId, refreshThreads, refreshGlobalMessages, refreshThreadMessages]
+    [chatBlocked, sending, selectedChannel, threads, missionId, runId, refreshThreads, refreshGlobalMessages, refreshThreadMessages]
   );
 
   // ── Channel name for header ──
@@ -576,7 +612,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     ? selectedChannel.kind === "global"
       ? "Global"
       : selectedChannel.kind === "orchestrator"
-        ? "Coordinator"
+        ? "Orchestrator"
         : selectedChannel.label
     : "...";
 
@@ -799,8 +835,8 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
           </div>
         </div>
 
-        {/* Pause banner */}
-        {missionStatus === "intervention_required" && (
+        {/* Runtime availability banner */}
+        {chatBlocked && (
           <div
             style={{
               background: `${WARNING}12`,
@@ -815,7 +851,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
             }}
           >
             <span style={{ fontSize: "14px" }}>{"\u26A0"}</span>
-            <span>Mission paused — intervention required</span>
+            <span>{chatBlocked.reason} {chatBlocked.action}</span>
           </div>
         )}
 
@@ -876,12 +912,12 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
               selectedChannel?.kind === "global"
                 ? "Message global (use @mention to target)..."
                 : selectedChannel?.kind === "orchestrator"
-                  ? "Message the coordinator..."
+                  ? "Message the orchestrator..."
                   : selectedChannel?.kind === "teammate"
                     ? `Message teammate ${selectedChannel?.label ?? ""}...`
                     : `Message ${selectedChannel?.label ?? "worker"}...`
             }
-            disabled={sending}
+            disabled={sending || Boolean(chatBlocked)}
             autoFocus
           />
           {sending && (
