@@ -43,6 +43,11 @@ Automations is the canonical surface for creating and operating non-interactive 
 
 Mission chat and orchestrator messaging use structured message records and runtime IDs. Legacy metadata-only chat backfill is not part of current behavior.
 
+For mission detail:
+
+- Global chat is the high-signal summary/broadcast surface.
+- Worker and orchestrator channels are the detailed inspection surface and now reuse the shared chat message renderer patterns used by normal agent chat.
+
 ---
 
 ## Configuration Contract

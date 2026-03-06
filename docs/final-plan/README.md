@@ -90,14 +90,14 @@ Baseline derived from code in `apps/desktop`.
 - Team synthesis and recovery loops
 - Execution plan preview with approval gates
 - Inter-agent messaging (sendAgentMessage IPC, backend routing)
-- AgentChannels UI (Slack-style, replaces chat+transcript tabs)
+- Mission chat workspace with global summary plus per-thread orchestrator/worker views
 - Model selection per-mission with per-model thinking budgets
 - Activity feed with category dropdown (replaces 12+ filter buttons)
 - Mission workspace with missionId-filtered queries
 - **MCP Server Overhaul (shipped 2026-02-26):** MCP server expanded to 35 tools as full headless orchestration API -- mission lifecycle (8), observation (8), evaluation (3), plus 16 existing tools. Enables external evaluators and Claude Code integration.
 - **MCP Dual-Mode Architecture (shipped 2026-02-26):** Transport abstraction (WS8), headless AI integration (WS9), desktop socket embedding at `.ade/mcp.sock` (WS10), smart entry point auto-detection (WS11). Same 35 tools in headless (stdio) and embedded (socket) modes.
 - **Project Hivemind features (shipped 2026-02-25):**
-  - Slack-like mission chat with sidebar channels, global view, @mentions, real-time updates (`MissionChatV2.tsx`, `MentionInput.tsx`)
+  - Mission chat with sidebar channels, global summary view, @mentions, and detailed worker/orchestrator threads (`MissionChatV2.tsx`, shared thread renderer)
   - Inter-agent message delivery to PTY and SDK agents (`deliverMessageToAgent`, `teamMessageTool`)
   - Shared facts, project memories, and run narrative in agent prompts (`buildFullPrompt`, `appendRunNarrative`)
   - Smart fan-out via meta-reasoner: dynamic step injection, fan-out completion tracking, autopilot integration (`metaReasoner.ts`)

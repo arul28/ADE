@@ -48,11 +48,11 @@ AI orchestrator service with Claude leader session and MCP tools. Historical pre
 
 ### Wave 2: Project Hivemind (HW1-HW8, shipped 2026-02-25)
 
-Evolved the orchestrator into an intelligent multi-agent system. Slack-like mission chat (`MissionChatV2.tsx`) with sidebar channels, @mentions, real-time updates. Inter-agent message delivery to PTY and SDK agents. Shared facts, project memories, and run narrative injected into agent prompts. Smart fan-out via meta-reasoner with dynamic step injection. Context compaction engine (70% threshold, pre-compaction writeback, transcript JSONL, attempt resume). Memory architecture with promotion flow (candidate/promoted/archived), agent identities table, Context Budget Panel. Activity narrative in mission detail.
+Evolved the orchestrator into an intelligent multi-agent system. Mission chat (`MissionChatV2.tsx`) with sidebar channels, global summary view, per-thread worker/orchestrator detail, @mentions, and real-time updates. Inter-agent message delivery to PTY and SDK agents. Shared facts, project memories, and run narrative injected into agent prompts. Smart fan-out via meta-reasoner with dynamic step injection. Context compaction engine (70% threshold, pre-compaction writeback, transcript JSONL, attempt resume). Memory architecture with promotion flow (candidate/promoted/archived), agent identities table, Context Budget Panel. Activity narrative in mission detail.
 
 ### Wave 3: Model System & Dynamic Pricing (shipped 2026-03-01)
 
-Model registry expansion to 40+ models across 8 provider families with auth-type classification (`cli-subscription`, `api-key`, `openrouter`, `local`). Runtime enrichment via `enrichModelRegistry()` with models.dev API integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded pricing). Provider options rewrite to pure tier-string passthrough (`providerOptions.ts`) -- no more invented token budgets. Reasoning tiers standardized per provider (Claude CLI: low/medium/high; Claude API: low/medium/high/max; Codex: minimal/low/medium/high/xhigh). UnifiedModelSelector redesigned to group by auth type, hide unavailable models, and link to Settings. Universal tools (`universalTools.ts`) for API-key and local models with permission modes (plan/edit/full-auto). Middleware layer (`middleware.ts`) for logging, retry, cost guard, and reasoning extraction. GPT-5.3 Codex Spark model support. Orchestrator call types simplified from 6 to 2 (coordinator, chat_response).
+Model registry expansion to 40+ models across 8 provider families with auth-type classification (`cli-subscription`, `api-key`, `openrouter`, `local`). Runtime enrichment via `enrichModelRegistry()` with models.dev API integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded pricing). Provider options rewrite to pure tier-string passthrough (`providerOptions.ts`) -- no more invented token budgets. Reasoning tiers standardized per provider (Claude CLI: low/medium/high; Claude API: low/medium/high/max; Codex: minimal/low/medium/high/xhigh). UnifiedModelSelector redesigned to group by auth type, hide unavailable models, and link to Settings. Universal tools (`universalTools.ts`) remain the planning/coding tool surface for API-key and local models; CLI-backed providers rely primarily on provider-native permission modes plus ADE-owned MCP/coordinator tool exposure. Middleware layer (`middleware.ts`) for logging, retry, cost guard, and reasoning extraction. GPT-5.3 Codex Spark model support. Orchestrator call types simplified from 6 to 2 (coordinator, chat_response).
 
 ### Wave 4: Codebase Refactoring & Modularization (shipped 2026-03-02)
 
@@ -72,7 +72,7 @@ Major structural cleanup targeting long-term maintainability and extraction read
 
 1. **Strategic autonomy hardening**: Coordinator autonomy primitives are in place, but broader multi-hour soak coverage and regression gates are still pending.
 2. **Tiered validation**: Superseded by `docs/ORCHESTRATOR_OVERHAUL.md` — Phase 5 shipped strict runtime-enforced validation (`self` + `dedicated`, no sampled `spot-check`, no risk-bypass completion).
-3. **Reflection protocol**: Agents do not yet capture structured observations for system self-improvement (Task 7).
+3. **Reflection protocol**: Superseded by `docs/ORCHESTRATOR_OVERHAUL.md` — Phase 7 shipped structured reflections, retrospectives, and trend tracking.
 4. **Full integration soak coverage**: Task 8 multi-hour autonomy/overhaul validation is not complete yet.
 
 ---
@@ -849,7 +849,7 @@ Shown in the mission launch flow after phase configuration, before the Launch bu
 | Check | Logic | Fail Behavior |
 |---|---|---|
 | **Model detection** | Every model selected in any phase card + orchestrator must be detected and authenticated. If Claude Opus is selected for Development, Claude CLI must be present and authenticated. | Block launch. Show which model failed and how to fix. |
-| **Permissions** | Full-auto mode required for unattended execution. | Block launch with one-click fix to enable full-auto. |
+| **Permissions** | Selected runtime modes must be compatible with the configured phases and providers. Planning/read-only phases should stay read-only; mutating phases may require edit/full execution depending on provider/runtime. | Block launch when the configured mission/runtime profile is incompatible with required work. |
 | **Worktrees** | Sufficient lanes/worktrees available for expected worker count. | Warning if tight, block if zero available. |
 | **Phase config — structural** | All required fields present on every phase card. | Block launch. Highlight missing fields. |
 | **Phase config — ordering** | Constraint graph is satisfiable (no cycles, hard constraints respected). | Block launch. Show constraint violation. |
@@ -895,7 +895,7 @@ Human provides guidance → Coordinator resumes affected worker
 #### 5E: Task 5 Shipped Scope (2026-02-28)
 
 - Mission launch now has an explicit pre-flight gate in the create flow (`RUN PRE-FLIGHT` → `LAUNCH MISSION`) with pass/warning/fail checklist rendering and hard-fail launch blocking.
-- Pre-flight checks now validate model authentication, full-auto permissions, worktree capacity, phase structural/ordering constraints, custom-phase semantic clarity, and budget envelope compatibility.
+- Pre-flight checks now validate model authentication, phase-appropriate permission/runtime compatibility, worktree capacity, phase structural/ordering constraints, custom-phase semantic clarity, and budget envelope compatibility.
 - Manual-input escalation is now granular: coordinator and worker delivery interventions can open without forcing mission-wide pause (`pauseMission: false`), preserving worker/dependency-level autonomy.
 - Human escalation tooling now supports both `ask_user` and `request_user_input` with dedupe-aware intervention creation and timeline/runtime audit events.
 
@@ -1195,3 +1195,13 @@ After Phase 3 is complete, Phase 4 focuses on:
 - Memory architecture upgrade (vector search, composite scoring, consolidation, episodic/procedural memory)
 - Learning packs (auto-curated project knowledge from agent interactions)
 - External MCP consumption (agents consume external MCP servers)
+
+## Current Runtime Gaps (2026-03-06)
+
+These are directly observed gaps in the current Missions/orchestrator runtime and UI, even though this document is otherwise superseded:
+
+- **Planner-result hardening**: the planning worker contract still needs to fail fast and visibly unless it reports a usable plan/result before development unlocks.
+- **Worker live-stream parity**: worker/orchestrator thread panes now reuse the shared chat renderer, but some CLI worker output is still reconstructed from persisted mission messages instead of arriving as native structured chat events in real time.
+- **Global chat quality**: the Global channel still needs more summarization polish so it stays high-signal and avoids transcript/code-noise leakage.
+- **DAG/phase presentation polish**: task edges and phase/task visualization still need cleanup in some auto-created step flows so the graph matches backend dependency state more faithfully.
+- **Permission-surface cleanup**: provider-native permission modes vs ADE-owned tool exposure is now the right architecture, but the remaining launcher/documentation cleanup should keep simplifying around that split for every provider class.

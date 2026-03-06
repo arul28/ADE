@@ -1,6 +1,6 @@
 # ADE Orchestrator Overhaul (Rebased)
 
-Date: 2026-03-04  
+Date: 2026-03-06  
 Owner: Desktop orchestrator/runtime
 
 ## Scope Clarification
@@ -32,93 +32,16 @@ This document supersedes stale orchestrator planning details in older roadmap do
    - Mission status `partially_completed` removed.
 7. No migration/backfill behavior is provided for removed statuses or legacy team role model defaults.
 
-## Phase 6 Delivered (End-to-End, 2026-03-04)
+## Phase 6 Delivered (2026-03-04)
 
-### 1) Strict status model hard-cut (legacy removal)
 Delivered:
-- Removed run status `succeeded_with_risk` from runtime typing and execution/finalization branches.
-- Removed mission status `partially_completed` from mission typing, transitions, lifecycle, and UI helpers/banners.
-- Removed all active UI display branches for removed statuses.
 
-Primary files:
-- `apps/desktop/src/shared/types/orchestrator.ts`
-- `apps/desktop/src/main/services/orchestrator/executionPolicy.ts`
-- `apps/desktop/src/main/services/orchestrator/orchestratorService.ts`
-- `apps/desktop/src/main/services/orchestrator/aiOrchestratorService.ts`
-- `apps/desktop/src/main/services/orchestrator/orchestratorQueries.ts`
-- `apps/desktop/src/shared/types/missions.ts`
-- `apps/desktop/src/main/services/missions/missionService.ts`
-- `apps/desktop/src/main/services/orchestrator/missionLifecycle.ts`
-- `apps/desktop/src/main/services/orchestrator/orchestratorContext.ts`
-- `apps/desktop/src/renderer/components/missions/CompletionBanner.tsx`
-- `apps/desktop/src/renderer/components/missions/MissionsPage.tsx`
-- `apps/desktop/src/renderer/components/missions/missionHelpers.ts`
-
-### 2) Validation signal UX + gate-blocked observability
-Delivered:
-- Activity feed now renders explicit validation signal events with dedicated labels/severity:
-  - `validation_contract_unfulfilled`
-  - `validation_self_check_reminder`
-  - `validation_auto_spawned`
-  - `validation_gate_blocked`
-- Removed stale activity-feed display paths for dead events (`completion_risk`, `completion_diagnostic`).
-- `spawn_worker` now appends durable timeline event `validation_gate_blocked` when required validation gate blocks spawn.
-- Runtime bus now persists `validation_gate_blocked` and emits live run/step update reason `validation_gate_blocked`.
-- AI orchestrator emits explicit validation system chat messages for validation runtime reasons with normalized `metadata.systemSignal`.
-- Mission chat now renders dedicated “Validation System” bubble styling when `metadata.systemSignal` is present.
-
-Primary files:
-- `apps/desktop/src/renderer/components/missions/OrchestratorActivityFeed.tsx`
-- `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts`
-- `apps/desktop/src/main/services/orchestrator/orchestratorService.ts`
-- `apps/desktop/src/main/services/orchestrator/aiOrchestratorService.ts`
-- `apps/desktop/src/renderer/components/missions/MissionChatV2.tsx`
-
-### 3) Team/runtime visibility consolidation
-Delivered:
-- Added validator lineage panel in Work tab derived from step metadata.
-- Displays validator linkage + lifecycle signals:
-  - `autoSpawnedValidation`
-  - `targetStepKey`
-  - validator role/model
-  - validator step status and target status linkage
-- Validator entries are visually distinct from general worker/team entries.
-
-Primary file:
-- `apps/desktop/src/renderer/components/missions/WorkTab.tsx`
-
-### 4) Phase-only model routing hard cut (replacing old role override path)
-Delivered:
-- Coordinator tool model resolution now enforces:
-  - `explicit override -> current phase model` only.
-- Removed role-default and parent-model fallback routing from:
-  - `spawn_worker`
-  - `request_specialist`
-  - `delegate_to_subagent`
-  - `delegate_parallel`
-  - `revise_plan` new-step model resolution fallback path
-- Auto-spawn validator model selection now uses phase model path only (no role-default candidate).
-- Removed role `defaultModel` surface from team runtime template parsing/default config.
-
-Primary files:
-- `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts`
-- `apps/desktop/src/main/services/orchestrator/orchestratorService.ts`
-- `apps/desktop/src/shared/types/orchestrator.ts`
-- `apps/desktop/src/main/services/orchestrator/teamRuntimeConfig.ts`
-
-### 5) MCP observability hardening
-Delivered:
-- MCP runtime stream bridge now includes `validation_gate_blocked` alongside existing validation runtime signals.
-- `stream_events` runtime contract test coverage updated.
-
-Primary files:
-- `apps/mcp-server/src/bootstrap.ts`
-- `apps/mcp-server/src/mcpServer.test.ts`
-
-### 6) Dead code and compatibility branches removed
-Delivered:
-- Removed obsolete status branches, stale event rendering branches, and role-default routing behavior in active runtime code paths.
-- Legacy runtime paths are removed; minimal read-compat remains for historical mission rows (`plan_review` maps to `in_progress`).
+- hard removal of legacy statuses (`succeeded_with_risk`, `partially_completed`) from runtime and UI,
+- strict validation observability (`validation_contract_unfulfilled`, `validation_self_check_reminder`, `validation_auto_spawned`, `validation_gate_blocked`) across activity, timeline, runtime bus, and chat metadata,
+- validator lineage visibility in the Work tab,
+- phase-only worker model routing (`explicit override -> current phase model`),
+- MCP/runtime observability updates for validation gate blocking,
+- removal of stale compatibility branches and role-default fallback behavior.
 
 ## Active Contracts (Now Authoritative)
 
@@ -148,6 +71,16 @@ Delivered:
 - Validation system messages carry:
   - `metadata.systemSignal = "validation_*"`
 
+## Current Runtime Notes (2026-03-06)
+
+These notes reflect the current Missions/orchestrator UX and runtime behavior beyond the original phase checklist:
+
+- Planning is a built-in phase and should hand off quickly to a read-only planning worker; the coordinator should not spend long doing its own repo exploration first.
+- After delegation, coordinator wake-ups should be driven by actionable runtime events, steering input, or worker escalation rather than constant idle reasoning.
+- Missions chat is split by purpose: Global is the high-signal summary/broadcast thread, while worker and orchestrator channels are the detailed inspection surface.
+- Worker/orchestrator thread panes now reuse the shared agent chat renderer, so tool/thinking/status UI should converge with the normal chat experience instead of maintaining a separate Missions-only renderer.
+- Permission architecture is split: CLI-backed models rely primarily on provider-native permission modes for native behavior, while ADE separately scopes coordinator/MCP tool exposure; API-key and local models use ADE planning/coding tool profiles.
+
 ## Verification (Executed, 2026-03-04)
 
 ### Desktop tests
@@ -165,79 +98,27 @@ Delivered:
 - No active `partially_completed` in `apps/desktop/src` or `apps/mcp-server/src`.
 - No role-default model fallback branches remain in orchestrator routing code.
 
-## Phase 7 (Shipped): Reflection Protocol on Strict Baseline
-
-Status: Complete (2026-03-05).
-
-### 7.1 Reflection ingestion contract
-Build:
-- Introduce structured reflection ingestion tool contract (`reflection_add`) scoped by mission/run/step/role.
-- Persist to DB + append-only `.ade/reflections/*.jsonl` ledger.
-- Normalize schema versioning and required fields (timestamp, scope, signalType, observation, recommendation).
-
-Acceptance:
-- Reflections can be ingested deterministically from coordinator/runtime workflows.
-- Malformed reflections are rejected with typed errors (no silent coercion).
-
-### 7.2 Post-run retrospective synthesis
-Build:
-- On terminal run, synthesize retrospective artifact from:
-  - timeline
-  - runtime events
-  - structured reflections
-  - mission outcome/state doc
-- Persist retrospective artifact and emit runtime refresh signal.
-
-Acceptance:
-- Every terminal run can produce one deterministic retrospective artifact.
-- Retrospective contains explicit sections for wins, failures, unresolved risks, and follow-up actions.
-
-### 7.3 Cross-mission changelog
-Build:
-- Compare retrospectives across missions.
-- Classify prior pain points as:
-  - `resolved`
-  - `still_open`
-  - `worsened`
-- Persist trend records for mission dashboard consumption.
-
-Acceptance:
-- Cross-mission trend data is queryable and linkable to source retrospectives.
-
-### 7.4 Pattern promotion to memory candidates
-Build:
-- Promote repeated stable retrospective patterns to memory-candidate records with dedupe.
-- Gate promotion on confidence/repetition thresholds.
-
-Acceptance:
-- Duplicate/noisy patterns are not repeatedly promoted.
-- Promoted candidates are traceable to originating retrospectives.
-
-#
-
 ## Phase 7 Delivered (2026-03-05)
 
 Delivered:
-- Added strict reflection ingestion contract (`reflection_add`) with typed validation errors, required recommendation/context/timestamp fields, and run/mission/step/attempt scope enforcement.
-- Persisted reflections to DB (`orchestrator_reflections`) and append-only JSONL ledger under `.ade/reflections/<mission-id>.jsonl` with transaction rollback on ledger-write failure.
-- Added deterministic, idempotent post-run retrospective synthesis for terminal runs (including cancel/fallback finalization paths), persisted in DB (`orchestrator_retrospectives`) and JSON artifact files under `.ade/reflections/retrospectives/`.
-- Implemented cross-mission changelog persistence (`orchestrator_retrospective_trends`) including `resolved` / `still_open` / `worsened` classifications with source retrospective linkage.
-- Implemented pattern repetition tracking (`orchestrator_reflection_pattern_stats` + `orchestrator_reflection_pattern_sources`) with thresholded promotion to memory candidates and dedupe.
-- Emitted runtime observability signals (`reflection_added`, `retrospective_generated`) and projected reflection/retrospective state into mission state docs.
-- Added MCP observation coverage (`list_retrospectives`, `list_reflection_trends`, `list_reflection_pattern_stats`) and expanded runtime/migration test coverage for reflection protocol behavior.
+
+- strict reflection ingestion via `reflection_add`,
+- JSONL + DB persistence for reflections and retrospectives,
+- deterministic post-run retrospective synthesis,
+- cross-mission trend tracking (`resolved`, `still_open`, `worsened`),
+- thresholded promotion of repeated patterns to memory candidates,
+- runtime observability signals plus MCP observation coverage for retrospective data.
 
 ## Task 7 Operator Runbook
 
 ### What is generated automatically
-- During run execution, structured reflections are written to:
-  - `.ade/reflections/<mission-id>.jsonl`
-- On terminal run (`succeeded` / `failed` / `canceled`), one deterministic retrospective is generated per run:
-  - DB row in `orchestrator_retrospectives` (`id = retro:<run-id>`)
-  - Artifact file in `.ade/reflections/retrospectives/`
-  - Runtime event `retrospective_generated`
-  - Mission state projection in `.ade/mission-state-<run-id>.json` (`reflections`, `latestRetrospective`)
+
+- reflections in `.ade/reflections/<mission-id>.jsonl`,
+- one retrospective per terminal run in DB plus `.ade/reflections/retrospectives/`,
+- mission-state projection updates and `retrospective_generated` runtime signals.
 
 ### Fast verification after a mission
+
 1. Confirm reflection ledger writes:
    - `ls .ade/reflections`
    - `tail -n 20 .ade/reflections/<mission-id>.jsonl`

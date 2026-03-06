@@ -183,12 +183,12 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 | `CreateMissionDialog.tsx` | ~1,500 | Full mission creation wizard with model selection, budget, PR strategy |
 | `MissionSettingsDialog.tsx` | ~590 | Runtime settings adjustment for active missions |
 | `PlanTab.tsx` | ~190 | Plan DAG visualization tab |
-| `WorkTab.tsx` | ~210 | Worker activity and lane assignment tab |
+| `WorkTab.tsx` | ~210 | Worker runtime inspection, transcript-oriented follow mode, and validator lineage tab |
 | `StepDetailPanel.tsx` | ~270 | Sidebar panel for step inspection and attempt history |
 | `ActivityNarrativeHeader.tsx` | ~150 | Run narrative header for the Activity tab |
 | `MissionsHomeDashboard.tsx` | ~100 | Mission list/dashboard landing page |
 
-Other mission-scoped components that remain as standalone files: `MissionChatV2.tsx` (Slack-style chat), `AgentChannels.tsx`, `OrchestratorDAG.tsx`, `ModelSelector.tsx`, `ModelProfileSelector.tsx`, `SmartBudgetPanel.tsx`, `PolicyEditor.tsx`, `UsageDashboard.tsx`, `AgentPresencePanel.tsx`, `MissionComposer.tsx`, `MissionControlPage.tsx`, `PhaseProgressBar.tsx`.
+Other mission-scoped components that remain as standalone files: `MissionChatV2.tsx` (mission chat container), `MissionThreadMessageList.tsx` (shared renderer wrapper for worker/orchestrator threads), `OrchestratorDAG.tsx`, `ModelSelector.tsx`, `ModelProfileSelector.tsx`, `SmartBudgetPanel.tsx`, `PolicyEditor.tsx`, `UsageDashboard.tsx`, `AgentPresencePanel.tsx`, `MissionComposer.tsx`, `MissionControlPage.tsx`, `PhaseProgressBar.tsx`.
 
 ### WorkspaceGraphPage Decomposition
 
@@ -276,6 +276,7 @@ Renderer architecture is fully operational for the current desktop scope:
 - MissionsPage decomposed into 8 focused modules (60% size reduction).
 - WorkspaceGraphPage decomposed into sub-directories for nodes, edges, dialogs, and shared helpers (14% size reduction).
 - Shared utility layer established: `renderer/lib/` (format, shell, sessions), `renderer/hooks/` (useClickOutside, useThreadEventRefresh), `context/contextShared.ts`, `prs/shared/`, `lanes/laneDesignTokens.ts`.
-- Mission detail tabs: Chat (Slack-style MissionChatV2), Activity (category dropdown filter), Plan, Work, Details.
+- Mission detail tabs: Plan, Work, DAG, Chat, Activity, Details.
+- Mission chat is split by channel purpose: Global is the high-signal summary/broadcast view, while orchestrator and worker threads reuse the shared agent chat message renderer for detailed structured event/tool/thinking display.
 
 Future UI surfaces for Machines are planned in `docs/final-plan/README.md`.

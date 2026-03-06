@@ -54,7 +54,7 @@ Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product 
 
 ## 1. Product Overview
 
-ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its unified memory system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-worker missions through its AI Integration Layer -- native agent SDKs unified behind an AgentExecutor interface, a local MCP server, and an AI orchestrator that coordinates workers across configured providers (CLI subscriptions, API-key/OpenRouter, and local endpoints). Missions use a configurable phases model where users define the structure and constraints, and the orchestrator executes accordingly. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-worker communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across workers and missions. An always-on CTO agent provides persistent project awareness and serves as the intelligent entry point for both users and external systems.
+ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its unified memory system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-worker missions through its AI Integration Layer -- provider-native CLI/runtime paths, a local MCP server for ADE-owned tools, and an AI orchestrator that coordinates workers across configured providers (CLI subscriptions, API-key/OpenRouter, and local endpoints). Missions use a configurable phases model where users define the structure and constraints, and the orchestrator executes accordingly. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-worker communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across workers and missions. An always-on CTO agent provides persistent project awareness and serves as the intelligent entry point for both users and external systems.
 
 ADE is built with Electron and ships as a cross-platform desktop application for macOS, Windows, and Linux.
 
@@ -139,15 +139,15 @@ A terminal session within a lane, tracked with rich metadata including title, go
 
 The AI Integration Layer replaces the former cloud-based agent model with a fully local architecture. It consists of three components:
 
-- **Agent SDKs**: The execution layer uses native SDKs for each agent: `ai-sdk-provider-claude-code` (community Vercel AI SDK provider wrapping `@anthropic-ai/claude-agent-sdk`) for Claude and `@openai/codex-sdk` (official OpenAI SDK) for Codex, with unified runtime paths for API-key/OpenRouter/local endpoints. ADE's `AgentExecutor` interface unifies execution behind a common `execute()` / `resume()` contract.
+- **Unified runtime + native SDKs**: The execution layer uses provider-native SDK/runtime paths for Claude CLI, Codex CLI, and API/OpenRouter/local endpoints, normalized behind ADE's unified runtime contracts.
 - **MCP Server**: A local JSON-RPC 2.0 server (`apps/mcp-server`) that exposes ADE's infrastructure as tools to the AI orchestrator. Tools include `spawn_agent`, `read_context`, `create_lane`, `check_conflicts`, `merge_lane`, `ask_user`, `run_tests`, and others.
-- **AI Orchestrator**: A Claude session (via the AgentExecutor interface) connected to the MCP server. The orchestrator receives mission prompts and context packs, plans multi-step workflows, spawns agents in separate lanes, monitors progress, and routes interventions to the user through the ADE UI.
+- **AI Orchestrator**: A phase-aware coordinator runtime constrained to ADE coordinator tools. It receives mission prompts and context packs, hands off planning work, spawns agents in separate lanes, monitors progress, and routes interventions to the user through the ADE UI.
 
-The AI Integration Layer never mutates the repository directly. All file changes, git operations, and test runs are performed by the agents it spawns or by the user through the existing local core.
+The renderer never mutates the repository directly. File changes, git operations, and test runs happen through ADE's trusted local core services or through workers running inside ADE-managed worktrees under the selected permission model.
 
 ### Inter-Worker Communication
 
-Workers within a mission can communicate with each other in real time using @mention syntax. Messages are routed through the orchestrator's message bus and delivered via dual-path delivery: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. All inter-worker messages appear in the mission's Slack-like chat UI alongside orchestrator decisions and user messages.
+Workers within a mission can communicate with each other in real time using @mention syntax. Messages are routed through the orchestrator's message bus and delivered via dual-path delivery: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. Inter-worker messages surface in the mission Chat tab: high-signal updates in Global and detailed records in the relevant worker/orchestrator thread.
 
 ### AI Meta-Reasoner
 
@@ -187,7 +187,7 @@ ADE follows a strict trust boundary model with three process layers plus an AI I
 ADE Desktop (Electron)
 +-- Renderer (React UI)
 |   +-- Missions tab (AI orchestrator control center)
-|   |   +-- MissionChatV2 (Slack-like unified chat with @mentions)
+|   |   +-- MissionChatV2 (mission chat workspace with global summary + thread detail)
 |   |   +-- PhaseProgressBar (single progress indicator)
 |   |   +-- OrchestratorDAG (SVG animated step visualization)
 |   |   +-- Context Budget Panel (scoped memory visibility)
@@ -195,11 +195,11 @@ ADE Desktop (Electron)
 |   +-- All other tabs unchanged
 +-- Main Process (Node.js, trusted)
 |   +-- AI Integration Service
-|   |   +-- AgentExecutor Interface (execution abstraction)
-|   |   |   +-- ClaudeExecutor (ai-sdk-provider-claude-code, CLI subscription)
-|   |   |   +-- CodexExecutor (@openai/codex-sdk, CLI subscription)
-|   |   |   +-- Unified runtime adapters (API/OpenRouter/local)
-|   |   +-- AI Orchestrator (Claude session + MCP tools)
+|   |   +-- Unified runtime contracts (CLI subscriptions + API/OpenRouter/local)
+|   |   |   +-- Claude CLI runtime path
+|   |   |   +-- Codex CLI runtime path
+|   |   |   +-- In-process runtime adapters (API/OpenRouter/local)
+|   |   +-- AI Orchestrator (phase-aware coordinator + worker runtime)
 |   |   |   +-- AI Meta-Reasoner (dispatch strategy selection)
 |   |   |   +-- Inter-Worker Message Bus (@mention routing)
 |   |   |   +-- Context Compaction Engine (threshold-based summarization)
@@ -222,7 +222,7 @@ The Electron main process is the only component with filesystem and process acce
 - Job engine and pipeline execution
 - Local database (SQLite via sql.js)
 - Pack materialization and checkpoint capture
-- AI Integration Service (AgentExecutor interface, MCP server, orchestrator)
+- AI Integration Service (unified runtime contracts, MCP server, orchestrator)
 
 ### Renderer Process (Untrusted UI)
 
@@ -236,9 +236,9 @@ The preload script exposes a narrow, typed API surface to the renderer via Elect
 
 The AI Integration Layer runs within the main process and provides all AI capabilities. It consists of:
 
-- **Agent SDK executors**: ADE's `AgentExecutor` interface unifies CLI-backed and non-CLI runtimes behind a common `execute()` / `resume()` contract. `ClaudeExecutor` uses `ai-sdk-provider-claude-code` (community Vercel provider wrapping `@anthropic-ai/claude-agent-sdk`) for Claude CLI sessions, while `CodexExecutor` uses `@openai/codex-sdk` for Codex CLI sessions. Unified runtime adapters handle API-key/OpenRouter/local provider execution. All paths support streaming output, session management, and tool interception.
+- **Unified runtime contracts**: ADE normalizes CLI-backed and non-CLI runtimes behind one runtime surface. Claude CLI and Codex CLI use provider-native execution paths; API-key/OpenRouter/local models use in-process runtime adapters. All paths support streaming output, session management, and tool interception for ADE-owned tools.
 - **MCP Server**: A local server (`apps/mcp-server`) exposing ADE tools via JSON-RPC 2.0 over stdio transport. This gives the AI orchestrator programmatic access to ADE's lane management, context packs, conflict detection, test execution, and user intervention infrastructure.
-- **AI Orchestrator**: A long-running Claude session connected to the MCP server. The orchestrator receives mission prompts enriched with context packs, uses an AI meta-reasoner to select optimal dispatch strategy, decomposes them into steps, spawns agents in isolated lanes, facilitates inter-agent communication via @mentions, manages context lifecycle through compaction and scoped memory, monitors execution through checkpoints and session events, and escalates decisions to the user via the intervention panel.
+- **AI Orchestrator**: A phase-aware coordinator runtime constrained to ADE coordinator tools. The orchestrator receives mission prompts enriched with context packs, uses an AI meta-reasoner to select optimal dispatch strategy, enters the planning phase, hands off read-only planning work when enabled, decomposes execution into steps, spawns agents in isolated lanes, facilitates inter-agent communication via @mentions, manages context lifecycle through compaction and scoped memory, monitors execution through checkpoints and session events, and escalates decisions to the user via the intervention panel.
 
 ### Provider Model
 
@@ -414,7 +414,7 @@ The orchestrator reads phase configuration and executes accordingly -- it is AI-
 
 Before a mission starts, a **pre-flight checklist** validates readiness:
 - **Model detection**: Selected models for each phase are detected and authenticated
-- **Permission mode**: Full-auto permission mode is enforced (no interactive approval gates during execution)
+- **Permission/runtime compatibility**: Selected runtime modes must match the configured phases and providers (for example, read-only planning and mutating development when required)
 - **Worktree availability**: Git worktrees are available for parallel lane creation
 - **Phase configuration validity**: Phase cards pass structural validation (required fields, valid ordering constraints), semantic validation (instructions are coherent), and ordering validation (no circular dependencies, hard rules respected)
 - **Budget estimation**: Best-effort cost estimation based on phase budgets and selected models
@@ -432,7 +432,7 @@ Mission detail uses a sub-tab layout for different views into the running missio
 
 - **Plan**: Hierarchical task list showing milestones, tasks, and subtasks with real-time status updates. Each item shows its current state (pending, in-progress, completed, failed), assigned worker, and dependencies. This is the primary view for understanding mission progress at a glance.
 - **DAG**: Visual dependency graph showing task relationships, critical path, and execution flow. Uses SVG `animateTransform` for smooth node animations.
-- **Chat**: Slack-style unified chat view (MissionChatV2) that surfaces all mission activity in a single timeline: orchestrator decisions, worker output, user messages, and inter-worker @mentions. Messages are displayed with worker identity badges, timestamps, and @mention highlighting. Users can send messages to specific workers or broadcast to all workers in the mission. This is the "office talk" -- transparency into how workers coordinate.
+- **Chat**: Mission chat workspace (`MissionChatV2`) with channel-specific behavior. Global is the high-signal summary/broadcast thread for orchestrator decisions, system signals, and cross-agent updates. Worker and orchestrator channels provide detailed thread views, including structured tool/thinking/status rendering through the shared chat message renderer. Users can still send directed or broadcast messages with @mentions, but the UI no longer treats all mission activity as one mixed timeline.
 - **Work**: "Follow mode" -- select a running worker and see its live terminal output, files being edited, and tools being called. This is the raw worker output view, separate from the chat timeline. Users can switch between workers to observe any worker's real-time execution.
 - **Activity**: Timeline feed of orchestrator events including phase transitions, worker spawning, intervention requests, validation results, and milestone completions. Filterable by category.
 - **Details**: Usage metrics, phase progress indicators, budget consumption, model usage breakdown, and mission configuration summary.
@@ -448,7 +448,7 @@ Validation is structured as runtime-enforced contracts:
 #### Intervention and Permission Handling
 
 - **Granular pausing**: Only the stuck worker pauses when an intervention is needed, not the entire mission (unless the stuck worker is blocking a dependency that other workers need).
-- **Full-auto enforcement**: Pre-flight validates that permission mode is set to full-auto. Missions should not be interrupted by routine approval gates.
+- **Phase-aware permissions**: Pre-flight validates that the selected runtime/permission profile is compatible with the configured phases. Planning should remain read-only; mutating phases can use edit/full execution depending on the provider/runtime.
 - **Escalation chain**: Worker attempts self-resolution first, then escalates to the orchestrator, which either resolves autonomously or escalates to the human via the intervention panel.
 - **AI failure diagnostician**: When a worker fails, the orchestrator analyzes the failure and recommends one of: skip (mark task as non-blocking and continue), workaround (alternative approach), retry (with adjusted context or approach), or escalate (requires human input).
 
@@ -469,7 +469,7 @@ The orchestrator scales its approach based on mission complexity:
 
 #### Inter-Worker Communication
 
-Workers within a mission communicate in real time via @mentions. Messages are routed through the orchestrator's message bus and delivered via dual-path delivery: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. The orchestrator can broadcast messages to all workers or relay between specific pairs. All inter-worker messages appear in the Chat sub-tab.
+Workers within a mission communicate in real time via @mentions. Messages are routed through the orchestrator's message bus and delivered via dual-path delivery: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. The orchestrator can broadcast messages to all workers or relay between specific pairs. High-signal coordination appears in the Global chat channel, while detailed worker/orchestrator activity lives in thread-specific channels.
 
 #### Context Compaction Engine
 
@@ -536,7 +536,7 @@ Each architecture area is specified in detail in the following documents. These 
 | 3 | Data Model | [architecture/DATA_MODEL.md](architecture/DATA_MODEL.md) | Local SQLite schema covering projects, workspaces, lanes, stacks, sessions, processes, tests, operations, checkpoints, pack events, pack versions, pack heads, missions (mission/step/event/artifact/intervention), planning threads, plan versions, conflict predictions, orchestrator timeline events, and orchestrator gate reports. |
 | 4 | Git Engine | [architecture/GIT_ENGINE.md](architecture/GIT_ENGINE.md) | Git worktree management, drift status computation (ahead/behind/dirty), sync operations (merge and rebase with undo), dry-run conflict prediction, and stack-aware rebase operations. |
 | 5 | Job Engine | [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md) | Event-driven pipeline with coalescing rules. Covers all event types, idempotent job definitions, the lane refresh pipeline (checkpoint through AI augmentation), real-time conflict pass, re-plan pipeline, and failure handling. |
-| 6 | AI Integration | [architecture/AI_INTEGRATION.md](architecture/AI_INTEGRATION.md) | Local AI integration architecture. Covers the AgentExecutor interface, native agent SDK executors, MCP server tool surface, AI orchestrator session management, per-task-type model routing, CLI/API/local provider handling, and the safety contract for AI-generated proposals. |
+| 6 | AI Integration | [architecture/AI_INTEGRATION.md](architecture/AI_INTEGRATION.md) | Local AI integration architecture. Covers unified runtime contracts, provider-native CLI paths, ADE MCP/coordinator tool surfaces, AI orchestrator session management, per-task-type model routing, CLI/API/local provider handling, and the safety contract for AI-generated proposals. |
 | 7 | Configuration | [architecture/CONFIGURATION.md](architecture/CONFIGURATION.md) | `.ade/` folder structure, config layering (app defaults, `ade.yaml` shared baseline, `local.yaml` machine overrides), schemas for processes, stack buttons, test suites, lane profiles, overlay policies, validation rules, and trust/change confirmation. |
 | 8 | Security and Privacy | [architecture/SECURITY_AND_PRIVACY.md](architecture/SECURITY_AND_PRIVACY.md) | Default security posture. Covers the trust boundary model, terminal transcript privacy, process/test command trust confirmation, and the safety contract for proposals (diff review before apply, undo points). |
 | 9 | UI Framework | [architecture/UI_FRAMEWORK.md](architecture/UI_FRAMEWORK.md) | Locked UI technology decisions, visual direction (Clean Paper light and Bloomberg Terminal dark themes), app shell layout, typography system (serif headers, monospace data), and high-density console design principles. |
@@ -579,7 +579,7 @@ Mission workers are the agents that the orchestrator spawns to execute tasks wit
 
 **Context Window Optimization**: ADE separates business context from code context in worker prompts, inspired by the ZOE/CODEX split pattern. Business context (mission intent, acceptance criteria, architectural constraints, phase instructions) is injected as a structured preamble. Code context (diffs, file contents, test results) is streamed on-demand via MCP tools. This separation allows the orchestrator to maximize the useful information density within each worker's context window. Additional techniques include observation masking (filtering out irrelevant tool output before it enters context) and importance classification (tagging context entries by criticality so that compaction preserves the most valuable information).
 
-**Worker Autonomy**: Workers operate with full-auto permissions within their assigned lane. They can read and write files, run tests, execute git operations, and use MCP tools without human approval. The pre-flight checklist enforces full-auto mode before mission launch. If a worker encounters a situation it cannot resolve, it escalates to the orchestrator (not directly to the human).
+**Worker Autonomy**: Workers operate within their assigned lane under the permission mode appropriate to their phase and provider. Planning/read-only workers should stay non-mutating; implementation workers can read/write/run tools when their provider/runtime mode allows it. ADE separately scopes its own coordinator/MCP tools by role. If a worker encounters a situation it cannot resolve, it escalates to the orchestrator (not directly to the human).
 
 **Background Automations**: Autonomous background behaviors live in the dedicated Automations tab. Rules can be created there, simulated before activation, assigned to automation bots or persistent employees, routed through the CTO, or queued for Night Shift. Settings only holds defaults and integration credentials.
 
@@ -597,12 +597,9 @@ See: [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md)
 
 ### 10.5 AI Integration
 
-The AI Integration Layer provides narrative augmentation, conflict resolution proposals, mission orchestration, and PR description drafting -- all without ever directly mutating the repository.
+The AI Integration Layer provides narrative augmentation, conflict resolution proposals, mission orchestration, and PR description drafting, while keeping repository access inside ADE-managed runtime boundaries.
 
-**AgentExecutor Interface**: ADE's own thin abstraction that unifies both agent SDKs behind a common `execute()` / `resume()` contract. The orchestrator and all callers work against this interface, enabling provider-agnostic orchestration. Two executor implementations are used:
-
-- `ClaudeExecutor` (via `ai-sdk-provider-claude-code`): A community Vercel AI SDK provider that wraps `@anthropic-ai/claude-agent-sdk` to spawn the `claude` CLI as a subprocess. Inherits the user's Claude Pro/Max subscription authentication. This is a subscription auth workaround while Anthropic's policy on third-party tool usage is in flux. Supports streaming, session persistence, tool interception via `canUseTool`, and message injection for context pack delivery.
-- `CodexExecutor` (via `@openai/codex-sdk`): The official OpenAI SDK, used directly to spawn the `codex` CLI as a subprocess. Inherits the user's ChatGPT Plus subscription authentication. Subscription auth is natively supported.
+**Unified runtime contracts**: ADE routes work through provider-native Claude CLI / Codex CLI runtime paths plus in-process API/OpenRouter/local runtime adapters. The orchestrator and chat surfaces work against shared runtime contracts rather than keeping separate legacy executor classes as the primary architecture.
 
 - **Agent Chat Service**: Native interactive chat interface using the Codex App Server protocol (JSON-RPC 2.0), Claude community provider (multi-turn `streamText()`), and unified API/local runtimes. Provider-agnostic `AgentChatService` interface persists chat as first-class sessions (`codex-chat`, `claude-chat`, `ai-chat`) with delta tracking, pack integration, and approval flows.
 
@@ -616,21 +613,22 @@ The AI Integration Layer provides narrative augmentation, conflict resolution pr
 - `ask_user` -- route an intervention request to the ADE UI
 - `run_tests` -- execute test suites in a lane's worktree
 
-**AI Orchestrator**: A long-running Claude session (via the AgentExecutor interface) connected to the MCP server. The orchestrator:
+**AI Orchestrator**: A phase-aware coordinator runtime constrained to ADE coordinator tools. The orchestrator:
 
 1. Receives a mission prompt enriched with bounded context pack exports.
 2. Uses the AI meta-reasoner to determine optimal dispatch strategy (sequential, parallel, wave, or adaptive fan-out).
-3. Decomposes the mission into a step DAG with dependencies, join policies, and done criteria.
-4. Spawns workers (Claude Code, Codex) into isolated lanes via MCP tools.
-5. Monitors worker progress through session events, checkpoints, and pack updates.
-6. Facilitates inter-worker communication via @mention routing and the mission message bus.
-7. Manages context lifecycle through the compaction engine and scoped memory architecture.
-8. Routes human-in-the-loop decisions through the intervention panel.
-9. Advances the step DAG deterministically based on session outcomes (success/failure/canceled).
+3. Enters the built-in planning phase and hands planning work to a read-only planner when enabled.
+4. Decomposes the mission into a step DAG with dependencies, join policies, and done criteria.
+5. Spawns workers (Claude Code, Codex, or in-process models) into isolated lanes via ADE-managed runtime tooling.
+6. Monitors worker progress through session events, checkpoints, and pack updates.
+7. Facilitates inter-worker communication via @mention routing and the mission message bus.
+8. Manages context lifecycle through the compaction engine and scoped memory architecture.
+9. Routes human-in-the-loop decisions through the intervention panel.
+10. Advances the step DAG based on coordinator strategy plus runtime-enforced state/validation contracts.
 
 **AI Meta-Reasoner**: Before dispatching workers, the orchestrator's meta-reasoner analyzes the mission to select the best fan-out strategy. The four dispatch strategies are: sequential (workers execute one at a time, suitable for dependent tasks), parallel (all workers launch simultaneously, suitable for independent tasks), wave (workers launch in phased groups, balancing parallelism with coordination), and adaptive (strategy adjusts dynamically based on real-time progress and resource pressure). The meta-reasoner considers mission complexity, inter-step dependencies, available compute resources, and budget constraints.
 
-**Inter-Worker Communication**: Workers within a mission can communicate with each other in real time. Messages use @mention syntax and are routed through the orchestrator's message bus. Delivery is dual-path: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. The orchestrator can also broadcast messages to all workers or relay messages between specific pairs. All inter-worker messages are logged in the mission timeline and visible in the Slack-like chat UI.
+**Inter-Worker Communication**: Workers within a mission can communicate with each other in real time. Messages use @mention syntax and are routed through the orchestrator's message bus. Delivery is dual-path: PTY injection for CLI-based workers and SDK message API for SDK-managed workers. The orchestrator can also broadcast messages to all workers or relay messages between specific pairs. All inter-worker messages are logged in the mission timeline and surface through the mission chat workspace, with Global reserved for summary/broadcast traffic and per-thread views reserved for detailed worker/orchestrator activity.
 
 **Context Compaction Engine**: Long-running worker sessions accumulate context that can exceed model window limits. The compaction engine monitors context usage and triggers at a configurable threshold (default 70%). Before compaction, a writeback phase persists critical state (decisions, partial results, key findings) to the memory layer. The compacted context retains a summary of prior work plus the most recent detailed context. Sessions can resume from compacted state, enabling arbitrarily long missions without context overflow.
 
@@ -815,8 +813,8 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 
 **Trust boundaries**:
 
-- The local core (main process) is the only component that edits files, runs git operations, runs tests, and performs undo/rollback.
-- The AI Integration Layer spawns workers as subprocesses but never directly mutates the repository. All worker outputs (patches, proposals, narratives) are mediated through ADE's local core.
+- The local core (main process) is the trusted owner of filesystem access, git operations, tests, and undo/rollback.
+- CLI-backed workers may mutate files inside ADE-managed worktrees when their provider/runtime permission mode allows it; ADE-owned tool access still stays behind ADE permission boundaries.
 - The renderer is untrusted and communicates exclusively through a typed IPC allowlist.
 - Process and test commands execute only in the main process, never in the renderer.
 
@@ -950,7 +948,7 @@ This PRD intentionally focuses on product scope and behavior, while roadmap exec
 | **Electron performance at scale** | Many concurrent terminals, file watchers, and git operations could degrade performance | Lazy xterm rendering (only focused sessions get full rendering). Coalesced event processing. Incremental materializers keyed by checkpoint IDs. Git-native operations preferred over filesystem walks. |
 | **Scope creep toward IDE** | Pressure to add code intelligence, debugging, or full editing could dilute the product | Non-goals are explicitly documented. Monaco is scoped to focused edits and diff review. Users are expected to use their preferred IDE alongside ADE. |
 | **Multi-worker coordination complexity** | Orchestrator managing multiple concurrent workers across lanes introduces scheduling, conflict, and resource contention challenges | Phase-based execution with explicit ordering constraints. Session-backed attempts with clear success/failure/canceled outcomes. Conservative concurrency defaults with user-configurable limits. |
-| **Claude subscription auth policy uncertainty** | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; AgentExecutor interface enables quick switch to official SDK if policy changes. |
+| **Claude subscription auth policy uncertainty** | Anthropic may restrict subscription OAuth in third-party tools | Current Claude CLI/runtime integration keeps ADE flexible; runtime abstraction makes further provider-path changes survivable if policy changes. |
 | **Inter-worker message delivery reliability** | Messages between workers could be lost or delayed, causing coordination failures | Dual-path delivery (PTY + SDK API) with message acknowledgment. All messages logged to mission timeline for audit. Orchestrator monitors delivery status. |
 | **Context compaction information loss** | Aggressive compaction could discard critical context, causing workers to repeat work or make incorrect decisions | Pre-compaction writeback persists key state before summarization. Configurable threshold (default 70%). User can review and promote important context entries to higher memory layers. |
 | **Memory scope promotion accuracy** | Automatic promotion of context entries could surface irrelevant information or miss important findings | Conservative default (manual promotion). Relevance scoring based on reference frequency and recency. Users can review, confirm, or delete promoted entries via the Context Budget Panel. |

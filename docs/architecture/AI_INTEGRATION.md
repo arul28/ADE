@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-05
+> Last updated: 2026-03-06
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -55,7 +55,7 @@ ADE's AI integration is designed around three principles:
 
 1. **No mandatory credential management**: CLI users do not need to paste keys; `claude`/`codex` authentication is inherited. API-key/local provider configuration is optional for broader model access.
 2. **Local-first execution**: ADE runs AI flows from the local desktop process and supports CLI runtimes plus direct API/local endpoints, with no ADE-hosted backend.
-3. **Auditable tool access**: AI agents interact with ADE exclusively through an MCP server that enforces permissions, logs every call, and provides a clear boundary between what the AI can read versus what it can mutate.
+3. **Auditable ADE tool access**: ADE-owned tools are exposed through controlled runtime surfaces (MCP and coordinator tools), with durable logging and explicit permission profiles layered on top of provider-native model permissions.
 
 The AI integration layer consists of four subsystems:
 
@@ -80,7 +80,7 @@ Interactive lane development (`Terminals`, `Work` chat) remains direct user sess
 
 ### Key Contract
 
-AI agents **NEVER** directly mutate the repository. All filesystem writes, git commands, and process execution flow through ADE's Local Core Engine services. The MCP server provides tools that invoke these services on the agent's behalf, but every invocation passes through ADE's permission and policy layer. This preserves the same trust boundary that governed the previous hosted agent architecture: ADE is the single source of truth for repository state.
+The renderer never mutates the repository directly. Repository changes happen either through ADE's trusted main-process services or through CLI-backed model runtimes operating inside ADE-managed worktrees under the selected provider permission mode. ADE-owned capabilities still flow through ADE's own permission and policy layers, preserving an auditable boundary around mission state, orchestration, and local services.
 
 ---
 
@@ -120,10 +120,16 @@ AI agents need to interact with ADE's internal systems (lanes, packs, conflicts,
 
 ADE chose MCP because:
 
-- It provides a **natural permission boundary**: the MCP server is a separate process communicating via stdio, so AI agents cannot bypass the tool interface to access the filesystem directly.
+- It provides a **natural boundary for ADE-owned capabilities**: lane operations, mission control, context export, and related ADE services remain behind one structured tool surface.
 - It enables **call audit logging**: every tool invocation is a JSON-RPC message that can be logged, replayed, and analyzed.
 - It supports **resource providers**: AI agents can read ADE state (pack exports, lane status, conflict predictions) through a structured interface rather than parsing raw files.
 - It is **protocol-native** to Claude: the `claude` CLI has built-in MCP client support, so connecting to ADE's MCP server requires no custom integration code.
+
+Important nuance:
+
+- For **CLI-backed models** (Claude CLI, Codex CLI), native file/tool behavior is governed primarily by the provider runtime's own permission mode.
+- For **API-key and local models**, ADE's planning/coding tool profiles are the actual tool surface.
+- In both cases, ADE separately controls which ADE-owned tools are exposed.
 
 ### Why AI Orchestrator?
 
@@ -135,7 +141,7 @@ Simple AI tasks (generate a narrative, draft a PR description) still execute in 
 - **Failure handling**: Failed steps need retry logic, intervention routing, or graceful degradation.
 - **Conflict prevention**: Agents working in parallel must not create merge conflicts.
 
-The AI Orchestrator is a coordinator agent that plans execution strategy, spawns workers for each step, monitors progress through structured reports, and routes interventions to the user. Coordinator tools are exposed via the ADE MCP server — both the coordinator and workers connect to the same MCP server with different identity contexts.
+The AI Orchestrator is a coordinator agent that plans execution strategy, spawns workers for each step, monitors progress through structured reports, and routes interventions to the user. CLI-backed coordinators/workers use provider-native permission modes for native behavior, while ADE separately scopes coordinator/MCP tool exposure by role and phase.
 
 Autonomy boundary: the coordinator owns strategic decisions (spawn, replan, validation routing, lane transfer, escalation). The deterministic runtime only enforces state integrity and policy constraints.
 
@@ -192,7 +198,7 @@ All AI responses stream back to the renderer process via IPC push events (`webCo
 
 #### Session Management
 
-Sessions are ephemeral and scoped to a single orchestrator run. Session data includes conversation history (bounded by token budget), tool-use history, and context window contents.
+Mission worker/coordinator sessions are scoped to run/step/attempt lineage. Session data includes conversation history (bounded by token budget), tool-use history, context window contents, and transcript/state records used by Missions UI thread inspection.
 
 ### AI Integration Service
 
@@ -554,12 +560,13 @@ Planning is a first-class mission phase (`planning`) inside the orchestrator run
 Runtime flow with planning enabled:
 
 1. Mission run starts with `phaseRuntime.currentPhaseKey = "planning"`.
-2. Coordinator enters planning mode and gathers context.
+2. Coordinator enters planning mode, gathers mission context, and should hand planning work off quickly.
 3. If planning clarifications are enabled, coordinator can issue `ask_user` quiz interventions.
 4. While a planning quiz intervention is open, coordinator task/delegation tools are runtime-blocked.
-5. Coordinator runs planning work in read-only mode.
-6. Coordinator synthesizes execution strategy and transitions via `set_current_phase({ phaseKey: "development" })`.
-7. Coordinator proceeds with DAG/task orchestration through downstream phases.
+5. Planning work runs in read-only mode.
+6. Coordinator requires a usable planner result before downstream development unlocks.
+7. Coordinator transitions via `set_current_phase({ phaseKey: "development" })`.
+8. After delegation, coordinator should stay mostly event-driven until workers report actionable progress, failure, or escalation.
 
 Runtime flow with planning disabled:
 
@@ -578,10 +585,10 @@ For each step that enters the `claimed` state, the orchestrator spawns a worker 
 2. **Agent Profile Construction**: The worker receives:
    - A **system prompt** built from the step's description, the mission context, and any identity policy (Phase 4).
    - A **context pack** at the tier specified by `contextProfiles` (Lite/Standard/Deep).
-   - A **tool whitelist** — the worker's MCP tools are restricted to those appropriate for its step type. Implementation workers get `commit_changes`, `run_tests`; review workers get `read_context`, `check_conflicts`.
-   - A **permission mode** — read-only for review/planning steps, edit for implementation steps, configurable per step.
+   - An **ADE tool profile** — coordinator/MCP/reporting tools are restricted to those appropriate for the worker role and phase.
+   - A **permission mode** — for CLI-backed models this governs native behavior (`plan`/read-only vs edit/full execution); for API-key/local models it selects ADE's planning/coding tool profiles.
 
-3. **MCP Server Connection**: Each worker agent connects to the same ADE MCP server instance. The MCP permission layer enforces that workers can only access resources within their claimed scope (lane + file patterns). A worker cannot `commit_changes` in a lane it doesn't hold a claim on.
+3. **ADE Tool Connection**: Workers receive ADE-owned tools through the current runtime surface. CLI-backed workers commonly connect through the ADE MCP server, while API/local models use ADE's in-process planning/coding tools. In both cases, ADE enforces claimed scope (lane + file patterns) for ADE-owned actions.
 
 4. **Session Tracking**: Worker execution attempts are registered as tracked sessions/attempts for transcript capture, delta computation, and pack integration — the same lifecycle guarantees as interactive chat sessions.
 
@@ -1027,7 +1034,7 @@ Machine B: git pull → `.ade/ade.db` updated → memory retrieval reflects new 
 - Team synthesis and recovery loops
 - Execution plan preview with approval gates
 - Inter-agent messaging decomposed into `chatMessageService.ts` and `workerDeliveryService.ts`
-- Slack-style chat system (MissionChatV2, MentionInput, sidebar + main area layout)
+- Mission chat workspace (`MissionChatV2`) with global summary, worker/orchestrator threads, mentions, and shared-renderer-backed detailed thread views
 - Model selection per-mission with per-model thinking budgets
 - Activity feed with category dropdown and run narrative
 - missionId-filtered queries across all views
@@ -1626,7 +1633,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 
 The MCP server (`apps/mcp-server`) has been overhauled from a 16-tool agent interface into a full **headless orchestration API** with 35 tools. This enables external consumers -- Claude Code, CI/CD pipelines, evaluation harnesses, and custom scripts -- to create, drive, observe, and evaluate missions without the desktop UI.
 
-**Important architectural distinction**: The AI orchestrator does **not** use the MCP server. The orchestrator uses in-process Vercel AI SDK coordinator tools (in `coordinatorTools.ts`) registered directly with `streamText()`. The MCP server is the external-facing tool surface for:
+**Important architectural distinction**: The MCP server is the external/headless ADE tool surface and the common ADE tool bridge for spawned workers. The coordinator runtime itself is phase-aware and provider-routed; regardless of provider, it is constrained to the ADE coordinator tool surface rather than unconstrained repo exploration. The MCP server is the external-facing tool surface for:
 
 1. **Spawned worker agents** -- agents launched by the orchestrator that need to interact with ADE's lane, git, and context systems.
 2. **External observers** -- tools like Claude Code that want to monitor mission progress without participating.
@@ -1756,10 +1763,10 @@ Add to your Claude Code MCP configuration (`~/.claude/mcp.json` or project-level
 ### Launch
 
 ```bash
-claude --dangerously-skip-permissions
+claude --permission-mode plan
 ```
 
-The `--dangerously-skip-permissions` flag is required because ADE's MCP tools perform filesystem mutations (creating lanes, committing changes, writing files) that Claude Code's default permission model would block.
+Use a permission mode that matches the ADE workflow you are exposing. Read-only observation and planning flows can stay in `plan`; mutating ADE tool workflows may require a less restrictive mode depending on the exact ADE tool surface you enable.
 
 ### Usage
 

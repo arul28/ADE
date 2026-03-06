@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-05
+> Last updated: 2026-03-06
 >
 > Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan/README.md`.
 
@@ -27,7 +27,7 @@
 
 ## Overview
 
-ADE (Agentic Development Environment) is a desktop application designed to augment the developer workflow by providing deep integration between terminal sessions, git operations, and context-aware tooling. The system is built around two main components -- the Desktop UI and the Local Core Engine -- with an integrated AI layer that connects to configured providers (CLI subscriptions, API-key/OpenRouter, and local OpenAI-compatible endpoints) via native agent SDKs and an MCP server. Strict boundaries govern which layer is permitted to perform mutations on the repository and filesystem.
+ADE (Agentic Development Environment) is a desktop application designed to augment the developer workflow by providing deep integration between terminal sessions, git operations, and context-aware tooling. The system is built around two main components -- the Desktop UI and the Local Core Engine -- with an integrated AI layer that connects to configured providers (CLI subscriptions, API-key/OpenRouter, and local OpenAI-compatible endpoints) via native agent SDKs and an MCP server. The renderer remains untrusted; repository mutations occur either through main-process services or through AI runtimes operating inside controlled lane/worktree boundaries under the current permission model.
 
 The core insight behind ADE's architecture is that developer context -- the state of code changes, terminal output, test results, process health, and git history -- is fragmented across tools. ADE is moving that context toward a persistent memory system (three scopes: project, agent, mission; three tiers: pinned, hot, cold) that serves both humans and AI agents. Today that memory system is the canonical durable memory backend, while pack-based compatibility paths still remain for some orchestrator/MCP/context-doc flows.
 
@@ -41,7 +41,7 @@ The current baseline is no-legacy at runtime: provider mode is resolved from cur
 
 ### Local-First, Local-Only
 
-ADE's core product features operate fully offline. The Local Core Engine handles all repository mutations, file I/O, and process management without requiring network connectivity. AI functionality remains local-first and can execute through CLI subscriptions, API-key/OpenRouter providers, or local endpoints -- no ADE-hosted cloud backend is required.
+ADE's core product features operate fully offline. The Local Core Engine owns the trusted local services for file I/O, git, PTYs, process management, and mission state without requiring network connectivity. AI functionality remains local-first and can execute through CLI subscriptions, API-key/OpenRouter providers, or local endpoints -- no ADE-hosted cloud backend is required.
 
 ### Provider-Flexible AI
 
@@ -112,14 +112,14 @@ Key UI subsystems:
 | PRs | PR creation/linking, checks/reviews, stacked + integration flows |
 | History | Operation/checkpoint/event timeline |
 | Agents | Autonomous agent system: automation, Night Shift, watcher, and review agents with identity/policy profiles |
-| Missions | AI orchestrator control center: mission intake, lifecycle board, Slack-style chat (MissionChatV2 + MentionInput), Details tab, run narrative, interventions, artifacts, outcomes |
+| Missions | AI orchestrator control center: mission intake, lifecycle board, phase-aware mission detail tabs (Plan, Work, DAG, Chat, Activity, Details), global summary chat, detailed worker/orchestrator threads, interventions, artifacts, outcomes |
 | Settings | Provider config (CLI/API/local/OpenRouter), trust levels, keybindings, terminal profiles, and data controls |
 
 ### 2. Local Core Engine
 
 **Technology**: Node.js (Electron main process), sql.js (SQLite WASM), node-pty, child_process
 
-The Local Core Engine is the brain of ADE. It runs exclusively in Electron's main process and is the only component permitted to mutate the repository, filesystem, or spawn processes. It is organized as a set of services, each created via a factory function pattern. Large services have been decomposed into focused modules while preserving a single entry point per service boundary.
+The Local Core Engine is the brain of ADE. It runs exclusively in Electron's main process and is the trusted owner of repository access, filesystem services, process orchestration, and durable state. CLI-backed mission/chat workers may also mutate files inside their assigned worktrees when the selected provider permission mode allows it, but they do so within ADE-managed runtime boundaries rather than through the renderer. The engine is organized as a set of services, each created via a factory function pattern. Large services have been decomposed into focused modules while preserving a single entry point per service boundary.
 
 #### Type System
 
@@ -237,7 +237,7 @@ ADE uses each agent's native SDK rather than a single unified execution layer:
 - **Claude via `ai-sdk-provider-claude-code`**: A community Vercel AI SDK provider that wraps `@anthropic-ai/claude-agent-sdk` and spawns the `claude` CLI process, inheriting the user's Anthropic subscription. Used for planning, review, conflict resolution, and narrative generation tasks.
 - **Codex via `@openai/codex-sdk`**: The official OpenAI SDK that spawns the `codex` CLI process directly, inheriting the user's OpenAI subscription. Used for implementation, code generation, and structured output tasks.
 - **`AgentExecutor` interface**: ADE's own thin abstraction that unifies both SDKs behind a common contract for spawning, streaming, session management, and tool-use interception.
-- **`canUseTool` callback**: Intercepts tool-use requests from AI models, routing them through ADE's permission layer before execution.
+- **`canUseTool` callback**: Intercepts ADE-owned tool-use requests from AI models, routing them through ADE's permission layer before execution.
 - **Streaming support**: All AI responses stream back to the UI in real time, providing immediate feedback during long-running operations.
 - **Session management**: Maintains conversational context across multi-turn interactions within a mission.
 
@@ -263,11 +263,12 @@ The MCP server (`apps/mcp-server`) exposes ADE's internal tools to AI processes 
 
 #### AI Orchestrator
 
-The AI Orchestrator coordinates multi-step mission execution using a Claude session with **in-process Vercel AI SDK coordinator tools** (13 tools in `coordinatorTools.ts`), not the MCP server. The orchestrator codebase has been decomposed into a modular architecture: the core `aiOrchestratorService.ts` (~7.7K lines) delegates to domain-specific modules for chat messaging, worker delivery, worker tracking, mission lifecycle, recovery, model config resolution, and query/persistence. All modules share state through an `OrchestratorContext` object holding 22+ mutable Maps, with cross-module dependencies passed via typed deps objects.
+The AI Orchestrator coordinates multi-step mission execution through a phase-aware coordinator runtime plus spawned workers. Provider-native permission modes govern native behavior for CLI-backed models, while ADE separately controls its own coordinator/MCP tool exposure. The orchestrator codebase has been decomposed into a modular architecture: the core `aiOrchestratorService.ts` (~7.7K lines) delegates to domain-specific modules for chat messaging, worker delivery, worker tracking, mission lifecycle, recovery, model config resolution, and query/persistence. All modules share state through an `OrchestratorContext` object holding 22+ mutable Maps, with cross-module dependencies passed via typed deps objects.
 
 Key orchestrator responsibilities:
 
 - Receives mission prompt and context packs from the mission service.
+- Enters the built-in planning phase, hands planning work to a read-only planner when enabled, and transitions explicitly into downstream execution phases.
 - Plans execution strategy (sequential, parallel-lite, parallel-first) based on mission complexity.
 - Spawns agents in separate lanes via the orchestrator service's run/step/attempt state machine.
 - Manages context windows through token-budgeted pack exports (Lite/Standard/Deep).
@@ -276,6 +277,7 @@ Key orchestrator responsibilities:
 - Delivers inter-agent messages via `workerDeliveryService.ts` (PTY write for terminal agents, conversation injection for SDK agents).
 - Routes @mention-based messaging through `chatMessageService.ts` with `parseMentions()` and `routeMessage()`.
 - Resolves model configuration per call type with 30s TTL caching via `modelConfigResolver.ts`.
+- Stays mostly event-driven after delegation, waking back up for actionable worker/runtime signals rather than continuous idle reasoning.
 
 #### Per-Task-Type Routing
 
@@ -304,8 +306,9 @@ The primary data flow through ADE follows this pipeline:
 User creates mission (plain-English prompt)
   --> AI orchestrator starts run and enters planning phase (default profile)
     --> Meta-reasoner analyzes for fan-out opportunities (external/internal/hybrid parallel)
-      --> Orchestrator spawns agents in separate lane worktrees
-        --> Agents work in lanes using MCP tools (read context, run tests, commit, memory tools)
+      --> Orchestrator hands planning to a read-only planner and waits for a usable plan/result
+        --> Orchestrator transitions to development/validation phases as required
+          --> Agents work in separate lane worktrees using provider-native permissions plus ADE-owned tools
           --> Shared facts + project memories injected into agent prompts via buildFullPrompt()
             --> Compaction engine monitors token usage, self-summarizes at 70% threshold
               --> Run narrative appended after each step completion
@@ -495,6 +498,6 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
 | Compute backend abstraction (Phase 5.5) | Planned |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 and W6 are complete. Remaining Phase 4 workstreams execute in order W7→W5. Native sqlite-vec integration is deferred; current shipped retrieval is lexical/composite scoring, with embedding-backed retrieval still future work. Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 and W6 are complete. Remaining Phase 4 workstreams execute in order W7→W5. Native sqlite-vec integration is deferred; current shipped retrieval is lexical/composite scoring, with embedding-backed retrieval still future work. Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan/README.md`

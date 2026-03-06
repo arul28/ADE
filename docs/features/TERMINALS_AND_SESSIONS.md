@@ -746,5 +746,5 @@ Terminals will support connections to remote compute backends:
 
 With the Phase 3 missions overhaul:
 - Terminal sessions are associated with missions via missionId
-- Agent output streams are available in the AgentChannels UI (Slack-style)
-- Worker transcript tailing (planned) will provide real-time agent terminal output
+- Mission worker/orchestrator detail threads reuse the shared chat renderer for structured output inspection
+- Mission Work tab provides transcript-oriented worker inspection today; deeper live structured parity continues to improve in mission thread views
