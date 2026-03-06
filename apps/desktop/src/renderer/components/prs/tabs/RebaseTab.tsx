@@ -7,8 +7,9 @@ import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
 import { StatusDot } from "../shared/StatusDot";
-import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
+import { ResolverTerminalModal } from "../../shared/conflictResolver/ResolverTerminalModal";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
+import type { BackgroundResolverSession } from "../shared/prHelpers";
 
 type RebaseTabProps = {
   rebaseNeeds: RebaseNeed[];
@@ -22,14 +23,6 @@ type RebaseTabProps = {
 };
 
 type UrgencyCategory = "attention" | "clean" | "recent" | "upToDate";
-
-type BackgroundResolverSession = {
-  ptyId: string;
-  sessionId: string;
-  provider: "codex" | "claude";
-  startedAt: string;
-  exitCode: number | null;
-};
 
 function categorize(need: RebaseNeed): UrgencyCategory {
   if (need.dismissedAt) return "upToDate";

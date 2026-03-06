@@ -32,7 +32,7 @@ import {
 } from "./orchestratorConstants";
 
 import { getModelById } from "../../../shared/modelRegistry";
-import { TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+import { TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 
 // ─────────────────────────────────────────────────────
 // Default policy
@@ -162,12 +162,13 @@ export function evaluateRunCompletion(
   steps: OrchestratorStep[],
   policy: MissionExecutionPolicy
 ): RunCompletionEvaluation {
+  const relevantSteps = filterExecutionSteps(steps);
   const diagnostics: CompletionDiagnostic[] = [];
   const riskFactors: string[] = [];
 
   // Map steps to phases
   const phaseSteps = new Map<ExecutionPhase, OrchestratorStep[]>();
-  for (const step of steps) {
+  for (const step of relevantSteps) {
     const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
     const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
     const phase = stepTypeToPhase(stepType, taskType);
@@ -178,15 +179,15 @@ export function evaluateRunCompletion(
     }
   }
 
-  // Determine which phases are required
-  // NOTE: "planning" is NOT an execution phase — the pre-mission planner runs before execution.
+  // Determine which phases are required for completion evaluation.
+  // Planning runs as an in-mission phase, but completion still hinges on delivery/quality phases.
   const phaseRequired: Record<ExecutionPhase, boolean> = {
     implementation: true, // always required
     testing: policy.testing.mode !== "none",
     validation: policy.validation.mode === "required",
     codeReview: policy.codeReview.mode === "required",
     testReview: policy.testReview.mode === "required",
-    integration: !!policy.integrationPr && hasMultipleLanes(steps)
+    integration: !!policy.integrationPr && hasMultipleLanes(relevantSteps)
   };
 
   const allPhases: ExecutionPhase[] = [
@@ -258,7 +259,7 @@ export function evaluateRunCompletion(
     }
   }
 
-  const requiredValidationMissingStepKeys = steps
+  const requiredValidationMissingStepKeys = relevantSteps
     .filter((step) => step.status === "succeeded")
     .filter((step) => {
       const meta = step.metadata ?? {};
@@ -299,7 +300,7 @@ export function evaluateRunCompletion(
   const anyPhaseInProgress = diagnostics.some((d) => d.code === "phase_in_progress");
 
   // Also check raw step statuses as a final status gate.
-  const allStepStatuses = steps.map((s) => s.status);
+  const allStepStatuses = relevantSteps.map((s) => s.status);
   const allStepsTerminal = allStepStatuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
   const anyStepBlocked = allStepStatuses.some((s) => s === "blocked");
   const anyStepRunning = allStepStatuses.some((s) => s === "running" || s === "ready" || s === "pending");
@@ -349,6 +350,7 @@ export function validateRunCompletion(
   _runState: OrchestratorTeamRuntimeState | null,
   interventions?: Array<{ status: string }>
 ): RunCompletionValidation {
+  const relevantSteps = filterExecutionSteps(steps);
   const blockers: RunCompletionBlocker[] = [];
 
   // (a) No running or queued attempts
@@ -366,7 +368,7 @@ export function validateRunCompletion(
   // (b) No claimed-but-unstarted tasks
   // "claimed" comes from OrchestratorTaskStatus (team runtime); cast for
   // backward-compat with OrchestratorStepStatus which doesn't include it yet.
-  const claimedSteps = steps.filter((s) => (s.status as string) === "claimed");
+  const claimedSteps = relevantSteps.filter((s) => (s.status as string) === "claimed");
   const activeTaskClaims = claims.filter(
     (c) => c.state === "active" && c.scopeKind === "task"
   );
@@ -791,12 +793,13 @@ export function evaluateRunCompletionFromPhases(
   phases: PhaseCard[],
   settings: MissionLevelSettings
 ): RunCompletionEvaluation {
+  const relevantSteps = filterExecutionSteps(steps);
   const diagnostics: CompletionDiagnostic[] = [];
   const riskFactors: string[] = [];
 
   // Map steps to phases
   const phaseSteps = new Map<ExecutionPhase, OrchestratorStep[]>();
-  for (const step of steps) {
+  for (const step of relevantSteps) {
     const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
     const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
     const phase = stepTypeToPhase(stepType, taskType);
@@ -830,7 +833,7 @@ export function evaluateRunCompletionFromPhases(
   requiredPhases.add("implementation");
 
   // Integration is conditional on multi-lane
-  if (settings.integrationPr && hasMultipleLanes(steps)) {
+  if (settings.integrationPr && hasMultipleLanes(relevantSteps)) {
     enabledPhases.add("integration");
   }
 
@@ -901,7 +904,7 @@ export function evaluateRunCompletionFromPhases(
   }
 
   // Check validation contracts
-  const requiredValidationMissingStepKeys = steps
+  const requiredValidationMissingStepKeys = relevantSteps
     .filter((step) => step.status === "succeeded")
     .filter((step) => {
       const meta = step.metadata ?? {};
@@ -937,7 +940,7 @@ export function evaluateRunCompletionFromPhases(
   const anyPhaseFailed = diagnostics.some((d) => d.code === "phase_failed");
   const anyPhaseInProgress = diagnostics.some((d) => d.code === "phase_in_progress");
 
-  const allStepStatuses = steps.map((s) => s.status);
+  const allStepStatuses = relevantSteps.map((s) => s.status);
   const allStepsTerminal = allStepStatuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
   const anyStepBlocked = allStepStatuses.some((s) => s === "blocked");
   const anyStepRunning = allStepStatuses.some((s) => s === "running" || s === "ready" || s === "pending");

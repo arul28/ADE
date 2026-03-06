@@ -7,18 +7,13 @@ import {
   GitBranch,
   ChatCircle,
   Robot,
-  Shield,
   Hash,
-  CaretLeft,
-  CheckCircle,
   Warning,
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type {
   MissionAgentRuntimeConfig,
   MissionModelConfig,
-  MissionPreflightChecklistItem,
-  MissionPreflightResult,
   PhaseCard,
   PhaseProfile,
   PrStrategy,
@@ -155,23 +150,6 @@ function validatePhaseOrder(cards: PhaseCard[]): string[] {
   return [...new Set(errors)];
 }
 
-function preflightSeverityHex(severity: MissionPreflightChecklistItem["severity"]): string {
-  if (severity === "pass") return "#22C55E";
-  if (severity === "warning") return "#F59E0B";
-  return "#EF4444";
-}
-
-function formatPreflightDuration(ms: number | null): string {
-  if (ms == null || !Number.isFinite(ms) || ms <= 0) return "n/a";
-  const mins = Math.max(1, Math.round(ms / 60_000));
-  if (mins >= 60) {
-    const hours = Math.floor(mins / 60);
-    const rem = mins % 60;
-    return rem > 0 ? `${hours}h ${rem}m` : `${hours}h`;
-  }
-  return `${mins}m`;
-}
-
 const DLG_INPUT_STYLE: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 };
 const DLG_LABEL_STYLE: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
 
@@ -237,10 +215,6 @@ function CreateMissionDialogInner({
   const [currentUsage, setCurrentUsage] = useState<AggregatedUsageStats | null>(null);
   const [weeklyUsage, setWeeklyUsage] = useState<AggregatedUsageStats | null>(null);
   const [budgetTelemetry, setBudgetTelemetry] = useState<MissionBudgetTelemetrySnapshot | null>(null);
-  const [launchStage, setLaunchStage] = useState<"config" | "preflight">("config");
-  const [preflightRunning, setPreflightRunning] = useState(false);
-  const [preflightResult, setPreflightResult] = useState<MissionPreflightResult | null>(null);
-  const [preflightError, setPreflightError] = useState<string | null>(null);
   const [phaseItems, setPhaseItems] = useState<PhaseCard[]>([]);
   const [phaseItemsLoading, setPhaseItemsLoading] = useState(false);
   const [phaseItemsError, setPhaseItemsError] = useState<string | null>(null);
@@ -259,10 +233,6 @@ function CreateMissionDialogInner({
     setSelectedPhaseItemKey("");
     setExpandedPhases({});
     setDisabledPhases({});
-    setLaunchStage("config");
-    setPreflightRunning(false);
-    setPreflightResult(null);
-    setPreflightError(null);
     setTeamBudgetGuardrailConfirmed(false);
     setDraft(resetDraft);
 
@@ -350,19 +320,6 @@ function CreateMissionDialogInner({
 
     return () => { cancelled = true; cancelAnimationFrame(rafId); };
   }, [open]);
-
-  // Reset preflight when the user edits the draft (but NOT when launchStage
-  // itself transitions to "preflight" — that would immediately clear results).
-  const launchStageRef = React.useRef(launchStage);
-  launchStageRef.current = launchStage;
-  useEffect(() => {
-    if (!open) return;
-    if (launchStageRef.current !== "preflight") return;
-    setLaunchStage("config");
-    setPreflightResult(null);
-    setPreflightError(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, open]);
 
   const activePhases = useMemo(() => {
     const enabled = draft.phaseOverride
@@ -587,50 +544,11 @@ function CreateMissionDialogInner({
       if (!confirmed) return;
       setTeamBudgetGuardrailConfirmed(true);
     }
-    if (launchStage === "preflight") {
-      if (!preflightResult?.canLaunch) return;
-      onLaunch({ ...draft, laneId: resolvedLaneId, phaseOverride: activePhases });
-      return;
-    }
-    setPreflightError(null);
-    setPreflightRunning(true);
-    void window.ade.missions.preflight({
-      launch: {
-        title: draft.title.trim() || undefined,
-        prompt: draft.prompt.trim(),
-        laneId: resolvedLaneId || undefined,
-        priority: draft.priority,
-        teamRuntime: draft.teamRuntime,
-        executionPolicy: {
-          prStrategy: draft.prStrategy,
-          ...(draft.teamRuntime ? { teamRuntime: draft.teamRuntime } : {}),
-        },
-        modelConfig: {
-          ...draft.modelConfig,
-          decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
-        },
-        phaseProfileId: draft.phaseProfileId,
-        phaseOverride: activePhases,
-        permissionConfig: draft.permissionConfig,
-      }
-    })
-      .then((result) => {
-        setPreflightResult(result);
-        setLaunchStage("preflight");
-      })
-      .catch((err) => {
-        setPreflightError(err instanceof Error ? err.message : String(err));
-        setPreflightResult(null);
-      })
-      .finally(() => {
-        setPreflightRunning(false);
-      });
+    onLaunch({ ...draft, laneId: resolvedLaneId, phaseOverride: activePhases });
   }, [
     draft,
     activePhases,
-    launchStage,
     onLaunch,
-    preflightResult?.canLaunch,
     teamBudgetGuardrailActive,
     teamBudgetGuardrailConfirmed,
     teamBudgetGuardrailTeammateCount,
@@ -1437,210 +1355,18 @@ function CreateMissionDialogInner({
                 />
           </div>
 
-          {(preflightRunning || preflightResult || preflightError) ? (
-            <div className="space-y-2 p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-              <div className="flex items-center justify-between gap-2">
-                <span style={dlgLabelStyle}>PRE-FLIGHT CHECKLIST</span>
-                {preflightRunning ? (
-                  <span className="inline-flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <SpinnerGap size={12} className="animate-spin" />
-                    Checking...
-                  </span>
-                ) : null}
-              </div>
-
-              {preflightError ? (
-                <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
-                  {preflightError}
-                </div>
-              ) : null}
-
-              {preflightResult ? (
-                <div className="space-y-1.5">
-                  {preflightResult.checklist.map((item) => {
-                    const accent = preflightSeverityHex(item.severity);
-                    return (
-                      <div key={item.id} className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${accent}45` }}>
-                        <div className="flex items-start gap-2">
-                          {item.severity === "pass" ? (
-                            <CheckCircle size={14} weight="fill" style={{ color: accent, marginTop: 1 }} />
-                          ) : item.severity === "warning" ? (
-                            <Warning size={14} weight="fill" style={{ color: accent, marginTop: 1 }} />
-                          ) : (
-                            <X size={14} weight="bold" style={{ color: accent, marginTop: 1 }} />
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: accent, fontFamily: MONO_FONT }}>
-                              {item.title}
-                            </div>
-                            <div className="mt-0.5 text-[11px]" style={{ color: COLORS.textPrimary }}>
-                              {item.summary}
-                            </div>
-                            {item.details.length > 0 ? (
-                              <ul className="mt-1 space-y-0.5 pl-4 text-[10px]">
-                                {item.details.map((detail, idx) => (
-                                  <li key={`${item.id}:${idx}`} style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                    • {detail}
-                                  </li>
-                                ))}
-                              </ul>
-                            ) : null}
-                            {item.fixHint ? (
-                              <div className="mt-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                Fix: {item.fixHint}
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {preflightResult.budgetEstimate ? (
-                    <div className="mt-2 space-y-1.5">
-                      {(() => {
-                        const isSubscription = preflightResult.budgetEstimate.mode === "subscription";
-                        return (
-                      <div className="flex flex-wrap items-center gap-3 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        <span>Mode: {preflightResult.budgetEstimate.mode}</span>
-                        {!isSubscription ? (
-                          <span>
-                            {`Est. Cost: ${preflightResult.budgetEstimate.estimatedCostUsd != null ? `$${preflightResult.budgetEstimate.estimatedCostUsd.toFixed(2)}` : "n/a"}`}
-                          </span>
-                        ) : null}
-                        <span>Est. Time: {formatPreflightDuration(preflightResult.budgetEstimate.estimatedTimeMs)}</span>
-                        <span>Observed Spend: {preflightResult.budgetEstimate.actualSpendUsd != null ? `$${preflightResult.budgetEstimate.actualSpendUsd.toFixed(2)}` : "n/a"}</span>
-                        {!isSubscription ? (
-                          <span>Burn Rate: {preflightResult.budgetEstimate.burnRateUsdPerHour != null ? `$${preflightResult.budgetEstimate.burnRateUsdPerHour.toFixed(2)}/h` : "n/a"}</span>
-                        ) : null}
-                        <span>Hard fails: {preflightResult.hardFailures}</span>
-                        <span>Warnings: {preflightResult.warnings}</span>
-                      </div>
-                        );
-                      })()}
-                      {preflightResult.budgetEstimate.mode !== "subscription" && preflightResult.budgetEstimate.forecast ? (
-                        <div className="grid grid-cols-1 gap-0.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <div>
-                            Forecast cost (low/median/high): {
-                              [preflightResult.budgetEstimate.forecast.lowCostUsd, preflightResult.budgetEstimate.forecast.medianCostUsd, preflightResult.budgetEstimate.forecast.highCostUsd]
-                                .map((value) => value != null ? `$${value.toFixed(2)}` : "n/a")
-                                .join(" / ")
-                            }
-                          </div>
-                          <div>
-                            Forecast time (low/median/high): {
-                              [preflightResult.budgetEstimate.forecast.lowDurationMs, preflightResult.budgetEstimate.forecast.medianDurationMs, preflightResult.budgetEstimate.forecast.highDurationMs]
-                                .map((value) => formatPreflightDuration(value))
-                                .join(" / ")
-                            }
-                          </div>
-                          <div>
-                            Confidence: {preflightResult.budgetEstimate.forecast.confidence != null ? `${Math.round(preflightResult.budgetEstimate.forecast.confidence * 100)}%` : "n/a"}
-                            {" "}({preflightResult.budgetEstimate.forecast.sampleSize} samples, {preflightResult.budgetEstimate.forecast.basis})
-                          </div>
-                        </div>
-                      ) : null}
-                      {preflightResult.budgetEstimate.note ? (
-                        <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          {preflightResult.budgetEstimate.note}
-                        </div>
-                      ) : null}
-                      {(() => {
-                        const rows = preflightResult.budgetEstimate?.perPhase ?? [];
-                        const totalCost = rows.reduce((sum, phase) => sum + (phase.estimatedCostUsd ?? 0), 0);
-                        if (preflightResult.budgetEstimate.mode === "subscription" || !rows.length || totalCost <= 0) return null;
-                        return (
-                          <div className="space-y-1">
-                            <div className="text-[10px] uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                              Phase Cost Allocation
-                            </div>
-                            <div className="flex h-2 w-full overflow-hidden rounded-sm" style={{ border: `1px solid ${COLORS.border}` }}>
-                              {rows.map((phase, index) => {
-                                const cost = Math.max(0, phase.estimatedCostUsd ?? 0);
-                                const pct = Math.max(0, Math.min(100, (cost / totalCost) * 100));
-                                const hue = (index * 63) % 360;
-                                return (
-                                  <div
-                                    key={`phase-budget:${phase.phaseKey}`}
-                                    title={`${phase.phaseName}: $${cost.toFixed(2)} (${pct.toFixed(1)}%)`}
-                                    style={{ width: `${pct}%`, background: `hsl(${hue} 75% 52%)` }}
-                                  />
-                                );
-                              })}
-                            </div>
-                            <div className="grid grid-cols-1 gap-0.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                              {rows.map((phase, index) => {
-                                const cost = Math.max(0, phase.estimatedCostUsd ?? 0);
-                                const pct = Math.max(0, Math.min(100, (cost / totalCost) * 100));
-                                const hue = (index * 63) % 360;
-                                return (
-                                  <div key={`phase-budget-label:${phase.phaseKey}`} className="flex items-center justify-between gap-2">
-                                    <span className="inline-flex items-center gap-1 min-w-0 truncate">
-                                      <span className="inline-block h-2 w-2 rounded-full" style={{ background: `hsl(${hue} 75% 52%)` }} />
-                                      <span className="truncate">{phase.phaseName}</span>
-                                    </span>
-                                    <span>{`$${cost.toFixed(2)} (${pct.toFixed(0)}%)`}</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-5 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
-          {launchStage === "preflight" ? (
-            <>
-              <button
-                style={outlineButton()}
-                onClick={() => {
-                  setLaunchStage("config");
-                  setPreflightError(null);
-                }}
-                disabled={busy || preflightRunning}
-              >
-                <CaretLeft size={12} weight="bold" />
-                BACK
-              </button>
-              <button
-                style={outlineButton()}
-                onClick={() => {
-                  setLaunchStage("config");
-                  setPreflightResult(null);
-                  setPreflightError(null);
-                }}
-                disabled={busy || preflightRunning}
-              >
-                EDIT CONFIG
-              </button>
-              <button
-                style={primaryButton()}
-                onClick={handleLaunch}
-                disabled={busy || preflightRunning || !preflightResult?.canLaunch}
-              >
-                {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-                LAUNCH MISSION
-              </button>
-            </>
-          ) : (
-            <>
-              <button style={outlineButton()} onClick={onClose} disabled={busy || preflightRunning}>CANCEL</button>
-              <button
-                style={primaryButton()}
-                onClick={handleLaunch}
-                disabled={busy || preflightRunning || !draft.prompt.trim() || phaseValidationErrors.length > 0}
-              >
-                {preflightRunning ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Shield className="h-3.5 w-3.5" />}
-                RUN PRE-FLIGHT
-              </button>
-            </>
-          )}
+          <button style={outlineButton()} onClick={onClose} disabled={busy}>CANCEL</button>
+          <button
+            style={primaryButton()}
+            onClick={handleLaunch}
+            disabled={busy || !draft.prompt.trim() || phaseValidationErrors.length > 0}
+          >
+            {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+            LAUNCH MISSION
+          </button>
         </div>
       </motion.div>
     </div>

@@ -70,11 +70,7 @@ import type {
   ConflictProposalPreview,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
-  ContextPrepareDocGenArgs,
-  ContextPrepareDocGenResult,
-  ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
-  ContextInventorySnapshot,
   ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
@@ -145,7 +141,6 @@ import type {
   GetTestLogTailArgs,
   ExportHistoryArgs,
   ExportHistoryResult,
-  ExportConfigBundleResult,
   AgentTool,
   AgentChatApproveArgs,
   AgentChatCreateArgs,
@@ -160,6 +155,7 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatUpdateSessionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
@@ -407,7 +403,6 @@ contextBridge.exposeInMainWorld("ade", {
     openAdeFolder: async (): Promise<void> => ipcRenderer.invoke(IPC.projectOpenAdeFolder),
     clearLocalData: async (args: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> =>
       ipcRenderer.invoke(IPC.projectClearLocalData, args),
-    exportConfig: async (): Promise<ExportConfigBundleResult> => ipcRenderer.invoke(IPC.projectExportConfig),
     listRecent: async (): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectListRecent),
     closeCurrent: async (): Promise<void> => ipcRenderer.invoke(IPC.projectCloseCurrent),
     switchToPath: async (rootPath: string): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
@@ -449,8 +444,6 @@ contextBridge.exposeInMainWorld("ade", {
     detectDefaults: async (): Promise<OnboardingDetectionResult> => ipcRenderer.invoke(IPC.onboardingDetectDefaults),
     detectExistingLanes: async (): Promise<OnboardingExistingLaneCandidate[]> =>
       ipcRenderer.invoke(IPC.onboardingDetectExistingLanes),
-    generateInitialPacks: async (args: { laneIds?: string[] } = {}): Promise<void> =>
-      ipcRenderer.invoke(IPC.onboardingGenerateInitialPacks, args),
     complete: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingComplete)
   },
   ci: {
@@ -537,9 +530,6 @@ contextBridge.exposeInMainWorld("ade", {
     startRunFromMission: async (
       args: StartOrchestratorRunFromMissionArgs
     ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => ipcRenderer.invoke(IPC.orchestratorStartRunFromMission, args),
-    approveMissionPlan: async (
-      args: StartOrchestratorRunFromMissionArgs
-    ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => ipcRenderer.invoke(IPC.orchestratorApproveMissionPlan, args),
     startAttempt: async (args: StartOrchestratorAttemptArgs): Promise<OrchestratorAttempt> =>
       ipcRenderer.invoke(IPC.orchestratorStartAttempt, args),
     completeAttempt: async (args: CompleteOrchestratorAttemptArgs): Promise<OrchestratorAttempt> =>
@@ -691,7 +681,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsList, args),
     get: async (sessionId: string): Promise<TerminalSessionDetail | null> =>
       ipcRenderer.invoke(IPC.sessionsGet, { sessionId }),
-    updateMeta: async (args: { sessionId: string; pinned?: boolean; goal?: string | null; toolType?: string | null; resumeCommand?: string | null }): Promise<TerminalSessionSummary | null> =>
+    updateMeta: async (args: { sessionId: string; pinned?: boolean; title?: string; goal?: string | null; toolType?: string | null; resumeCommand?: string | null }): Promise<TerminalSessionSummary | null> =>
       ipcRenderer.invoke(IPC.sessionsUpdateMeta, args),
     readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
       ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
@@ -717,6 +707,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatModels, args),
     dispose: async (args: AgentChatDisposeArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatDispose, args),
+    updateSession: async (args: AgentChatUpdateSessionArgs): Promise<AgentChatSession> =>
+      ipcRenderer.invoke(IPC.agentChatUpdateSession, args),
     onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: AgentChatEventEnvelope) => cb(payload);
       ipcRenderer.on(IPC.agentChatEvent, listener);
@@ -857,72 +849,9 @@ contextBridge.exposeInMainWorld("ade", {
   },
   context: {
     getStatus: async (): Promise<ContextStatus> => ipcRenderer.invoke(IPC.contextGetStatus),
-    getInventory: async (): Promise<ContextInventorySnapshot> => ipcRenderer.invoke(IPC.contextGetInventory),
     generateDocs: async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
       ipcRenderer.invoke(IPC.contextGenerateDocs, args),
-    prepareDocGeneration: async (args: ContextPrepareDocGenArgs): Promise<ContextPrepareDocGenResult> =>
-      ipcRenderer.invoke(IPC.contextPrepareDocGeneration, args),
-    installGeneratedDocs: async (args: ContextInstallGeneratedDocsArgs): Promise<ContextGenerateDocsResult> =>
-      ipcRenderer.invoke(IPC.contextInstallGeneratedDocs, args),
     openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args)
-  },
-  packs: {
-    getProjectPack: async (): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetProjectPack),
-    getLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetLanePack, { laneId }),
-    getFeaturePack: async (featureKey: string): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsGetFeaturePack, { featureKey }),
-    getConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsGetConflictPack, args),
-    getPlanPack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetPlanPack, { laneId }),
-    getMissionPack: async (args: GetMissionPackArgs): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsGetMissionPack, args),
-    getProjectExport: async (args: GetProjectExportArgs): Promise<PackExport> =>
-      ipcRenderer.invoke(IPC.packsGetProjectExport, args),
-    getLaneExport: async (args: GetLaneExportArgs): Promise<PackExport> =>
-      ipcRenderer.invoke(IPC.packsGetLaneExport, args),
-    getConflictExport: async (args: GetConflictExportArgs): Promise<PackExport> =>
-      ipcRenderer.invoke(IPC.packsGetConflictExport, args),
-    getFeatureExport: async (args: GetFeatureExportArgs): Promise<PackExport> =>
-      ipcRenderer.invoke(IPC.packsGetFeatureExport, args),
-    getPlanExport: async (args: GetPlanExportArgs): Promise<PackExport> =>
-      ipcRenderer.invoke(IPC.packsGetPlanExport, args),
-    getMissionExport: async (args: GetMissionExportArgs): Promise<PackExport> =>
-      ipcRenderer.invoke(IPC.packsGetMissionExport, args),
-    refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId }),
-    refreshProjectPack: async (args: { laneId?: string | null } = {}): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsRefreshProjectPack, args),
-    refreshFeaturePack: async (featureKey: string): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsRefreshFeaturePack, { featureKey }),
-    refreshConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsRefreshConflictPack, args),
-    savePlanPack: async (args: { laneId: string; body: string }): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsSavePlanPack, args),
-    refreshMissionPack: async (args: RefreshMissionPackArgs): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsRefreshMissionPack, args),
-    refreshPlanPack: async (laneId: string): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsRefreshPlanPack, { laneId }),
-    listVersions: async (args: { packKey: string; limit?: number }): Promise<PackVersionSummary[]> =>
-      ipcRenderer.invoke(IPC.packsListVersions, args),
-    getVersion: async (versionId: string): Promise<PackVersion> => ipcRenderer.invoke(IPC.packsGetVersion, { versionId }),
-    diffVersions: async (args: { fromId: string; toId: string }): Promise<string> =>
-      ipcRenderer.invoke(IPC.packsDiffVersions, args),
-    updateNarrative: async (args: { packKey: string; narrative: string }): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsUpdateNarrative, args),
-    listEvents: async (args: { packKey: string; limit?: number }): Promise<PackEvent[]> =>
-      ipcRenderer.invoke(IPC.packsListEvents, args),
-    listEventsSince: async (args: ListPackEventsSinceArgs): Promise<PackEvent[]> =>
-      ipcRenderer.invoke(IPC.packsListEventsSince, args),
-    listCheckpoints: async (args: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> =>
-      ipcRenderer.invoke(IPC.packsListCheckpoints, args),
-    getHeadVersion: async (packKey: string): Promise<PackHeadVersion> =>
-      ipcRenderer.invoke(IPC.packsGetHeadVersion, { packKey }),
-    getDeltaDigest: async (args: PackDeltaDigestArgs): Promise<PackDeltaDigestV1> =>
-      ipcRenderer.invoke(IPC.packsGetDeltaDigest, args),
-    onEvent: (cb: (ev: PackEvent) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: PackEvent) => cb(payload);
-      ipcRenderer.on(IPC.packsEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.packsEvent, listener);
-    }
   },
   github: {
     getStatus: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubGetStatus),
@@ -1084,7 +1013,21 @@ contextBridge.exposeInMainWorld("ade", {
     getFactor: (): number => webFrame.getZoomFactor()
   },
   memory: {
-    getBudget: async (args: { projectId?: string; level?: string } = {}): Promise<unknown[]> =>
+    add: async (args: {
+      projectId?: string;
+      scope?: "user" | "project" | "lane" | "mission" | "agent";
+      scopeOwnerId?: string;
+      category: "fact" | "preference" | "pattern" | "decision" | "gotcha";
+      content: string;
+      importance?: "low" | "medium" | "high";
+      sourceRunId?: string;
+    }): Promise<unknown> =>
+      ipcRenderer.invoke(IPC.memoryAdd, args),
+    pin: async (args: { id: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.memoryPin, args),
+    updateCore: async (args: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> =>
+      ipcRenderer.invoke(IPC.memoryUpdateCore, args),
+    getBudget: async (args: { projectId?: string; level?: string; scope?: "user" | "project" | "lane" | "mission" | "agent"; scopeOwnerId?: string } = {}): Promise<unknown[]> =>
       ipcRenderer.invoke(IPC.memoryGetBudget, args),
     getCandidates: async (args: { projectId?: string; limit?: number } = {}): Promise<unknown[]> =>
       ipcRenderer.invoke(IPC.memoryGetCandidates, args),
@@ -1092,7 +1035,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.memoryPromote, args),
     archive: async (args: { id: string }): Promise<void> =>
       ipcRenderer.invoke(IPC.memoryArchive, args),
-    search: async (args: { query: string; projectId?: string; limit?: number }): Promise<unknown[]> =>
+    search: async (args: {
+      query: string;
+      projectId?: string;
+      scope?: "user" | "project" | "lane" | "mission" | "agent";
+      scopeOwnerId?: string;
+      limit?: number;
+      status?: "promoted" | "candidate" | "archived" | "all";
+    }): Promise<unknown[]> =>
       ipcRenderer.invoke(IPC.memorySearch, args)
   },
   cto: {

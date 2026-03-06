@@ -21,7 +21,6 @@ import type {
   MissionLaneClaimCheckResult,
   MissionPhaseConfiguration,
   MissionPhaseOverride,
-  MissionPlannerAttempt,
   MissionPlannerRun,
   ListMissionsArgs,
   MissionArtifact,
@@ -76,7 +75,7 @@ import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
 
-const ACTIVE_MISSION_STATUSES = new Set<MissionStatus>(["in_progress", "planning", "plan_review", "intervention_required"]);
+const ACTIVE_MISSION_STATUSES = new Set<MissionStatus>(["in_progress", "planning", "intervention_required"]);
 
 const DEFAULT_CONCURRENCY_CONFIG: MissionConcurrencyConfig = {
   maxConcurrentMissions: 3,
@@ -92,10 +91,9 @@ const PRIORITY_ORDER: Record<MissionPriority, number> = {
 
 const MISSION_TRANSITIONS: Record<MissionStatus, Set<MissionStatus>> = {
   queued: new Set(["queued", "planning", "in_progress", "canceled"]),
-  planning: new Set(["planning", "plan_review", "in_progress", "intervention_required", "failed", "canceled", "queued"]),
-  plan_review: new Set(["plan_review", "in_progress", "queued", "failed", "canceled", "intervention_required"]),
-  in_progress: new Set(["in_progress", "intervention_required", "completed", "failed", "canceled", "plan_review"]),
-  intervention_required: new Set(["intervention_required", "in_progress", "failed", "canceled", "plan_review"]),
+  planning: new Set(["planning", "in_progress", "intervention_required", "failed", "canceled", "queued"]),
+  in_progress: new Set(["in_progress", "intervention_required", "completed", "failed", "canceled"]),
+  intervention_required: new Set(["intervention_required", "in_progress", "failed", "canceled"]),
   completed: new Set(["completed", "queued"]),
   failed: new Set(["failed", "queued", "planning", "in_progress", "canceled"]),
   canceled: new Set(["canceled", "queued", "planning", "in_progress"])
@@ -462,10 +460,10 @@ function sanitizeFilePart(value: string): string {
 }
 
 export function normalizeMissionStatus(value: string): MissionStatus {
+  if (value === "plan_review") return "in_progress";
   if (
     value === "queued" ||
     value === "planning" ||
-    value === "plan_review" ||
     value === "in_progress" ||
     value === "intervention_required" ||
     value === "completed" ||
@@ -838,7 +836,7 @@ export function createMissionService({
     let startedAt = row.started_at;
     let completedAt = row.completed_at;
 
-    if (next === "planning" || next === "plan_review" || next === "in_progress") {
+    if (next === "planning" || next === "in_progress") {
       if (!startedAt) startedAt = updatedAt;
       completedAt = null;
     } else if (next === "queued") {
@@ -1623,6 +1621,8 @@ export function createMissionService({
 
       if (args.status === "active") {
         where.push("m.status in ('queued', 'planning', 'plan_review', 'in_progress', 'intervention_required')");
+      } else if (args.status === "in_progress") {
+        where.push("m.status in ('in_progress', 'plan_review')");
       } else if (args.status) {
         where.push("m.status = ?");
         params.push(args.status);
@@ -1637,11 +1637,11 @@ export function createMissionService({
            case m.status
              when 'intervention_required' then 0
              when 'in_progress' then 1
-             when 'plan_review' then 2
-             when 'planning' then 3
-             when 'queued' then 4
-             when 'failed' then 5
-             when 'completed' then 6
+             when 'plan_review' then 1
+             when 'planning' then 2
+             when 'queued' then 3
+             when 'failed' then 4
+             when 'completed' then 5
              else 7
            end,
            m.updated_at desc,
@@ -2623,6 +2623,7 @@ export function createMissionService({
         });
       }
 
+      db.flushNow();
       emit({ missionId: id, reason: "created" });
       const detail = this.get(id);
       if (!detail) throw new Error("Mission creation failed");
@@ -2779,10 +2780,29 @@ export function createMissionService({
         }
       }
 
+      db.flushNow();
       emit({ missionId, reason: "updated" });
       const detail = this.get(missionId);
       if (!detail) throw new Error("Mission update failed");
       return detail;
+    },
+
+    patchMetadata(missionId: string, patch: Record<string, unknown>): void {
+      const id = missionId.trim();
+      if (!id.length) throw new Error("Mission id is required.");
+      if (!getMissionRow(id)) throw new Error(`Mission not found: ${id}`);
+
+      const row = db.get<{ metadata_json: string | null }>(
+        `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+        [id, projectId]
+      );
+      const base = safeParseRecord(row?.metadata_json ?? null);
+      const next = { ...base, ...patch };
+      db.run(
+        `update missions set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
+        [JSON.stringify(next), nowIso(), id, projectId]
+      );
+      db.flushNow();
     },
 
     delete(args: DeleteMissionArgs): void {
@@ -3083,6 +3103,7 @@ export function createMissionService({
         [projectId, missionId]
       );
 
+      db.flushNow();
       emit({ missionId, reason: "deleted" });
     },
 
@@ -3281,9 +3302,7 @@ export function createMissionService({
     addIntervention(args: AddMissionInterventionArgs): MissionIntervention {
       const missionId = args.missionId.trim();
       if (!missionId.length) throw new Error("missionId is required.");
-      const missionRow = getMissionRow(missionId);
-      if (!missionRow) throw new Error(`Mission not found: ${missionId}`);
-      const missionStatus = normalizeMissionStatus(missionRow.status);
+      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
 
       const intervention = insertIntervention({
         missionId,
@@ -3306,12 +3325,8 @@ export function createMissionService({
         }
       });
 
-      const keepPlanReview =
-        missionStatus === "plan_review" &&
-        intervention.status === "open" &&
-        intervention.interventionType === "approval_required";
       const shouldPauseMission = args.pauseMission !== false;
-      if (!keepPlanReview && shouldPauseMission) {
+      if (shouldPauseMission) {
         upsertMissionStatus({
           missionId,
           nextStatus: "intervention_required",

@@ -12,6 +12,7 @@ function mockSession(overrides: Partial<AgentChatSessionSummary> = {}): AgentCha
     provider: "codex",
     model: "gpt-5.3-codex",
     modelId: "openai/gpt-5.3-codex",
+    title: "Initial chat",
     reasoningEffort: "medium",
     status: "idle",
     startedAt: "2026-02-20T10:00:00Z",
@@ -46,6 +47,10 @@ function setupWindowAde(overrides: {
           codex: codexAvailable ? [{ id: "gpt-5.3-codex", label: "GPT-5.3 Codex" }] : [],
           claude: claudeAvailable ? [{ id: "sonnet", label: "Claude Sonnet" }] : [],
         },
+        availableModelIds: [
+          ...(codexAvailable ? ["openai/gpt-5.3-codex"] : []),
+          ...(claudeAvailable ? ["anthropic/claude-sonnet-4-6"] : []),
+        ],
         detectedAuth: [
           ...(codexAvailable ? [{ type: "cli-subscription", cli: "codex", authenticated: true, verified: true }] : []),
           ...(claudeAvailable ? [{ type: "cli-subscription", cli: "claude", authenticated: true, verified: true }] : []),
@@ -80,6 +85,18 @@ function setupWindowAde(overrides: {
       interrupt: vi.fn(async () => {}),
       approve: vi.fn(async () => {}),
       changePermissionMode: vi.fn(async () => {}),
+      updateSession: vi.fn(async ({ sessionId, modelId, reasoningEffort, permissionMode }: any) => ({
+        id: sessionId,
+        laneId: "lane-1",
+        provider: modelId === "anthropic/claude-sonnet-4-6" ? "claude" : "codex",
+        model: modelId === "anthropic/claude-sonnet-4-6" ? "sonnet" : "gpt-5.3-codex",
+        modelId,
+        reasoningEffort: reasoningEffort ?? "medium",
+        permissionMode,
+        status: "idle",
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString()
+      })),
       onEvent: vi.fn((cb: (envelope: AgentChatEventEnvelope) => void) => {
         eventCallback = cb;
         return () => { eventCallback = null; };
@@ -167,6 +184,45 @@ describe("AgentChatPane", () => {
       // New API passes modelId
       expect(ade.agentChat.create).toHaveBeenCalledWith(
         expect.objectContaining({ modelId: expect.any(String) })
+      );
+    });
+  });
+
+  it("retargets a locked empty session when the model changes before the first send", async () => {
+    const session = mockSession();
+    setupWindowAde({ sessions: [session] });
+    render(<AgentChatPane laneId="lane-1" lockSessionId="session-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Select model")).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Select model"));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.6/i }));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
+        target: { value: "hello" },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
+    });
+
+    await waitFor(() => {
+      const ade = (window as any).ade;
+      expect(ade.agentChat.updateSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-1",
+          modelId: "anthropic/claude-sonnet-4-6"
+        })
+      );
+      expect(ade.agentChat.create).not.toHaveBeenCalled();
+      expect(ade.agentChat.send).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "session-1" })
       );
     });
   });
@@ -327,7 +383,7 @@ describe("AgentChatPane", () => {
     });
   });
 
-  it("creates a new session when switching to a different model family from an active session", async () => {
+  it("retargets an untouched active session when switching to a different model family", async () => {
     const session = mockSession({
       sessionId: "existing-session",
       provider: "codex",
@@ -376,15 +432,168 @@ describe("AgentChatPane", () => {
 
     await waitFor(() => {
       const ade = (window as any).ade;
-      expect(ade.agentChat.create).toHaveBeenCalledWith(expect.objectContaining({
+      expect(ade.agentChat.updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "existing-session",
+        modelId: "anthropic/claude-sonnet-4-6",
+      }));
+      expect(ade.agentChat.send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "existing-session",
+      }));
+      expect(ade.agentChat.create).not.toHaveBeenCalled();
+    });
+  });
+
+  it("re-syncs the composer model when the user re-selects the active session tab", async () => {
+    const session = mockSession({
+      sessionId: "existing-session",
+      title: "Claude debugging chat",
+    });
+    setupWindowAde({ sessions: [session], codexAvailable: true, claudeAvailable: true });
+
+    render(<AgentChatPane laneId="lane-1" />);
+
+    const modelButton = await screen.findByLabelText("Select model");
+    await waitFor(() => {
+      expect(modelButton.textContent).toContain("GPT-5.3 Codex");
+    });
+
+    await act(async () => {
+      fireEvent.click(modelButton);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.6/i }));
+    });
+
+    await waitFor(() => {
+      expect(modelButton.textContent).toContain("Claude Sonnet 4.6");
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Claude debugging chat/i }));
+    });
+
+    await waitFor(() => {
+      expect(modelButton.textContent).toContain("GPT-5.3 Codex");
+    });
+  });
+
+  it("falls back to the model label when saved titles and summaries are low-signal", async () => {
+    const session = mockSession({
+      sessionId: "existing-session",
+      title: "completed: .",
+      summary: "completed: OK",
+    });
+    setupWindowAde({ sessions: [session] });
+
+    render(<AgentChatPane laneId="lane-1" />);
+
+    const sessionTab = await screen.findByRole("button", { name: /GPT-5\.3 Codex/i });
+    expect(sessionTab.textContent).toContain("GPT-5.3 Codex");
+    expect(sessionTab.textContent?.toLowerCase()).not.toContain("completed");
+  });
+
+  it("keeps the newly created chat selected while the session list catches up", async () => {
+    const session = mockSession({
+      sessionId: "existing-session",
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      modelId: "openai/gpt-5.3-codex",
+      title: "Existing codex chat",
+    });
+    setupWindowAde({ sessions: [session], codexAvailable: true, claudeAvailable: true });
+
+    render(<AgentChatPane laneId="lane-1" initialSessionId="existing-session" />);
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.list).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("New chat"));
+    });
+
+    const modelButton = screen.getByLabelText("Select model");
+    await act(async () => {
+      fireEvent.click(modelButton);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.6/ }));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
+        target: { value: "Give this a better title" },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
+    });
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.create).toHaveBeenCalled();
+      expect((window as any).ade.agentChat.send).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "new-session-1" }),
+      );
+    });
+
+    expect(modelButton.textContent).toContain("Claude Sonnet 4.6");
+  });
+
+  it("does not let an initial session override a newly created chat after refresh", async () => {
+    const session = mockSession({
+      sessionId: "existing-session",
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      modelId: "openai/gpt-5.3-codex",
+      title: "Existing codex chat",
+    });
+    setupWindowAde({ sessions: [session], codexAvailable: true, claudeAvailable: true });
+
+    render(<AgentChatPane laneId="lane-1" initialSessionId="existing-session" />);
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.list).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
+
+    const modelButton = screen.getByLabelText("Select model");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("New chat"));
+    });
+
+    await act(async () => {
+      fireEvent.click(modelButton);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.6/ }));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
+        target: { value: "Stay on the new chat" },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
+    });
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.create).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
         modelId: "anthropic/claude-sonnet-4-6",
       }));
-      expect(ade.agentChat.send).toHaveBeenCalledWith(expect.objectContaining({
+      expect((window as any).ade.agentChat.send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "new-session-1",
       }));
     });
+
+    expect(modelButton.textContent).toContain("Claude Sonnet 4.6");
   });
 });

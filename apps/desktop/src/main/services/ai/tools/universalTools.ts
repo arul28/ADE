@@ -12,9 +12,8 @@ import { globSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
 import { createMemoryTools } from "./memoryTools";
-import type { createMemoryService } from "../../memory/memoryService";
-import type { WorkerSandboxConfig } from "../../../../shared/types";
-import type { CtoCoreMemory } from "../../../../shared/types";
+import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
+import type { WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
 import { isWithinDir } from "../../shared/utils";
 
@@ -24,8 +23,11 @@ export type PermissionMode = "plan" | "edit" | "full-auto";
 
 export interface UniversalToolSetOptions {
   permissionMode: PermissionMode;
-  memoryService?: ReturnType<typeof createMemoryService>;
+  memoryService?: ReturnType<typeof createUnifiedMemoryService>;
   projectId?: string;
+  runId?: string;
+  stepId?: string;
+  agentScopeOwnerId?: string;
   /** Optional CTO core-memory updater for fallback/unified runtimes. */
   onMemoryUpdateCore?: (patch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>) => {
     version: number;
@@ -580,7 +582,7 @@ export function createUniversalToolSet(
   cwd: string,
   opts: UniversalToolSetOptions
 ): Record<string, Tool> {
-  const { permissionMode, memoryService, projectId, onAskUser, onMemoryUpdateCore, sandboxConfig } = opts;
+  const { permissionMode, memoryService, projectId, runId, stepId, agentScopeOwnerId, onAskUser, onMemoryUpdateCore, sandboxConfig } = opts;
   const effectiveSandboxConfig = sandboxConfig ?? DEFAULT_WORKER_SANDBOX_CONFIG;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -610,7 +612,7 @@ export function createUniversalToolSet(
 
   // Conditionally add memory tools
   if (memoryService && projectId) {
-    const memTools = createMemoryTools(memoryService, projectId);
+    const memTools = createMemoryTools(memoryService, projectId, { runId, stepId, agentScopeOwnerId });
     Object.assign(tools, memTools);
   }
 

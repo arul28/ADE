@@ -161,6 +161,8 @@ export type AgentChatSessionSummary = {
   provider: AgentChatProvider;
   model: string;
   modelId?: ModelId;
+  title?: string | null;
+  goal?: string | null;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
@@ -240,6 +242,13 @@ export type AgentChatDisposeArgs = {
 export type AgentChatChangePermissionModeArgs = {
   sessionId: string;
   permissionMode: AgentChatPermissionMode;
+};
+
+export type AgentChatUpdateSessionArgs = {
+  sessionId: string;
+  modelId?: ModelId;
+  reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
 };
 
 export type ContextPackScope = "project" | "lane" | "conflict" | "plan" | "mission" | "feature";

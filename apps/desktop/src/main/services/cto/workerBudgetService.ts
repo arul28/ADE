@@ -11,7 +11,7 @@ import type {
 import type { AdeDb } from "../state/kvDb";
 import type { WorkerAgentService } from "./workerAgentService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import { safeJsonParse } from "../shared/utils";
+import { safeJsonParse, nowIso, toOptionalString } from "../shared/utils";
 
 type WorkerBudgetServiceArgs = {
   db: AdeDb;
@@ -40,10 +40,6 @@ type SumRow = {
   exact_cents: number;
   estimated_cents: number;
 };
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
 
 function monthKeyFor(date: Date): string {
   const year = date.getUTCFullYear();
@@ -357,37 +353,36 @@ export function createWorkerBudgetService(args: WorkerBudgetServiceArgs) {
     const monthKey = normalizeMonthKey(input.monthKey);
     const { startIso, endIso } = monthBounds(monthKey);
     const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 200)));
-    const rows = input.agentId
-      ? args.db.all<Record<string, unknown>>(
-          `
-            select * from worker_agent_cost_events
-            where project_id = ? and agent_id = ?
-              and datetime(occurred_at) >= datetime(?)
-              and datetime(occurred_at) < datetime(?)
-            order by datetime(occurred_at) desc
-            limit ?
-          `,
-          [args.projectId, input.agentId, startIso, endIso, limit]
-        )
-      : args.db.all<Record<string, unknown>>(
-          `
-            select * from worker_agent_cost_events
-            where project_id = ?
-              and datetime(occurred_at) >= datetime(?)
-              and datetime(occurred_at) < datetime(?)
-            order by datetime(occurred_at) desc
-            limit ?
-          `,
-          [args.projectId, startIso, endIso, limit]
-        );
+
+    const clauses = ["project_id = ?"];
+    const params: Array<string | number> = [args.projectId];
+    if (input.agentId) {
+      clauses.push("agent_id = ?");
+      params.push(input.agentId);
+    }
+    clauses.push("datetime(occurred_at) >= datetime(?)");
+    params.push(startIso);
+    clauses.push("datetime(occurred_at) < datetime(?)");
+    params.push(endIso);
+    params.push(limit);
+
+    const rows = args.db.all<Record<string, unknown>>(
+      `
+        select * from worker_agent_cost_events
+        where ${clauses.join(" and ")}
+        order by datetime(occurred_at) desc
+        limit ?
+      `,
+      params
+    );
 
     return rows.map((row) => ({
       id: String(row.id ?? ""),
       agentId: String(row.agent_id ?? ""),
-      runId: typeof row.run_id === "string" && row.run_id.trim().length ? row.run_id.trim() : null,
-      sessionId: typeof row.session_id === "string" && row.session_id.trim().length ? row.session_id.trim() : null,
+      runId: toOptionalString(row.run_id),
+      sessionId: toOptionalString(row.session_id),
       provider: String(row.provider ?? ""),
-      modelId: typeof row.model_id === "string" && row.model_id.trim().length ? row.model_id.trim() : null,
+      modelId: toOptionalString(row.model_id),
       inputTokens: Number.isFinite(Number(row.input_tokens)) ? Number(row.input_tokens) : null,
       outputTokens: Number.isFinite(Number(row.output_tokens)) ? Number(row.output_tokens) : null,
       costCents: Math.max(0, Math.floor(Number(row.cost_cents ?? 0))),

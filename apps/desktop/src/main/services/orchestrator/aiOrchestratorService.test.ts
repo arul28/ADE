@@ -6,7 +6,13 @@ import type { PackDeltaDigestV1, PackExport, PackType } from "../../../shared/ty
 import { openKvDb } from "../state/kvDb";
 import { createMissionService } from "../missions/missionService";
 import { createOrchestratorService } from "./orchestratorService";
-import { createAiOrchestratorService, deriveFallbackLaneStrategyDecision } from "./aiOrchestratorService";
+import {
+  buildCoordinatorEvaluationActionHints,
+  createAiOrchestratorService,
+  deriveFallbackLaneStrategyDecision,
+  deriveMissionPhaseSyncTarget,
+  normalizeCoordinatorUpdateForChat,
+} from "./aiOrchestratorService";
 
 function createLogger() {
   return {
@@ -162,6 +168,232 @@ function buildDefaultDecisionStructuredOutput(prompt: string): Record<string, un
   }
   return null;
 }
+
+describe("buildCoordinatorEvaluationActionHints", () => {
+  it("nudges the coordinator to leave planning after planning work completes", () => {
+    const hints = buildCoordinatorEvaluationActionHints({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+          },
+        },
+      },
+      steps: [
+        {
+          id: "step-1",
+          stepKey: "worker-plan",
+          title: "Planning worker",
+          status: "succeeded",
+          metadata: {
+            phaseKey: "planning",
+            phaseName: "Planning",
+            stepType: "planning",
+          },
+        },
+      ],
+      attempts: [],
+      runtimeEvents: [],
+      timeline: [],
+    } as any);
+
+    expect(hints).toContain(
+      "REQUIRED NEXT ACTION: Planning work is complete. Call set_current_phase with phaseKey \"development\" before spawning any implementation workers."
+    );
+    expect(hints).toContain(
+      "REQUIRED NEXT ACTION: The run has no executable work left but is still in planning. Advance to the next phase and spawn the implementation work, or call fail_mission if the mission cannot proceed."
+    );
+  });
+
+  it("nudges the coordinator to finalize once executable work is done outside planning", () => {
+    const hints = buildCoordinatorEvaluationActionHints({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "development",
+            currentPhaseName: "Development",
+          },
+        },
+      },
+      steps: [
+        {
+          id: "step-1",
+          stepKey: "worker-impl",
+          title: "Implementation worker",
+          status: "succeeded",
+          metadata: {
+            phaseKey: "development",
+            phaseName: "Development",
+            stepType: "implementation",
+          },
+        },
+      ],
+      attempts: [],
+      runtimeEvents: [],
+      timeline: [],
+    } as any);
+
+    expect(hints).toEqual([
+      "REQUIRED NEXT ACTION: All executable steps are terminal. If the mission goal is satisfied, call complete_mission with a concise summary. Otherwise create or spawn the missing follow-up work now."
+    ]);
+  });
+});
+
+describe("deriveMissionPhaseSyncTarget", () => {
+  it("auto-advances to the next configured phase when planning execution is complete", () => {
+    const target = deriveMissionPhaseSyncTarget({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+          },
+          phaseOverride: [
+            {
+              phaseKey: "planning",
+              name: "Planning",
+              position: 0,
+              model: { modelId: "anthropic/claude-sonnet-4-6" },
+              instructions: "Plan first",
+              validationGate: { tier: "self", required: false },
+              budget: {},
+            },
+            {
+              phaseKey: "development",
+              name: "Development",
+              position: 1,
+              model: { modelId: "openai/gpt-5.3-codex" },
+              instructions: "Implement the work",
+              validationGate: { tier: "self", required: false },
+              budget: {},
+            },
+          ],
+        },
+      },
+      steps: [
+        {
+          id: "display-1",
+          stepIndex: 0,
+          stepKey: "implement-test-tab",
+          title: "Implement Test tab",
+          status: "ready",
+          metadata: {
+            displayOnlyTask: true,
+            phaseKey: "planning",
+            phaseName: "Planning",
+            phasePosition: 0,
+            stepType: "planning",
+          },
+        },
+        {
+          id: "worker-1",
+          stepIndex: 1,
+          stepKey: "plan-test-tab",
+          title: "Plan Test tab",
+          status: "succeeded",
+          metadata: {
+            phaseKey: "planning",
+            phaseName: "Planning",
+            phasePosition: 0,
+            stepType: "planning",
+            phaseModel: { modelId: "anthropic/claude-sonnet-4-6" },
+            phaseInstructions: "Plan first",
+            phaseValidation: { tier: "self", required: false },
+            phaseBudget: {},
+          },
+        },
+      ],
+      attempts: [],
+      runtimeEvents: [],
+      timeline: [],
+    } as any);
+
+    expect(target).toMatchObject({
+      phaseKey: "development",
+      phaseName: "Development",
+      phaseInstructions: "Implement the work",
+      sourceStepId: "worker-1",
+    });
+  });
+
+  it("follows the active executable worker phase when work is still running", () => {
+    const target = deriveMissionPhaseSyncTarget({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "development",
+            currentPhaseName: "Development",
+          },
+        },
+      },
+      steps: [
+        {
+          id: "display-1",
+          stepIndex: 0,
+          stepKey: "implement-test-tab",
+          title: "Implement Test tab",
+          status: "ready",
+          metadata: {
+            displayOnlyTask: true,
+            phaseKey: "planning",
+            phaseName: "Planning",
+            phasePosition: 0,
+          },
+        },
+        {
+          id: "worker-1",
+          stepIndex: 1,
+          stepKey: "worker-impl",
+          title: "Implementation worker",
+          status: "running",
+          metadata: {
+            phaseKey: "development",
+            phaseName: "Development",
+            phasePosition: 1,
+            phaseModel: { modelId: "openai/gpt-5.3-codex" },
+            phaseInstructions: "Write the code",
+            phaseValidation: { tier: "self", required: false },
+            phaseBudget: {},
+          },
+        },
+      ],
+      attempts: [],
+      runtimeEvents: [],
+      timeline: [],
+    } as any);
+
+    expect(target).toMatchObject({
+      phaseKey: "development",
+      phaseName: "Development",
+      phaseInstructions: "Write the code",
+      sourceStepId: "worker-1",
+    });
+  });
+});
+
+describe("normalizeCoordinatorUpdateForChat", () => {
+  it("turns raw coordinator monologue into a short readable progress update", () => {
+    expect(
+      normalizeCoordinatorUpdateForChat(
+        "I have prior memory about this. Let me read the key files directly.I have all the context needed. The mission is clear and well-scoped.",
+      ),
+    ).toBe("I’m reviewing the relevant files and mapping out the next step.");
+  });
+
+  it("drops tool-shaped coordinator chatter", () => {
+    expect(normalizeCoordinatorUpdateForChat("{\"ok\":true}")).toBeNull();
+    expect(normalizeCoordinatorUpdateForChat("tool ade.spawn_worker")).toBeNull();
+  });
+});
 
 function createAiTaskResult(structuredOutput: Record<string, unknown> | null, textFallback = "{}") {
   return {
@@ -339,7 +571,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
 }
 
 async function createFixture(args: {
-  requirePlanReview?: boolean;
   aiIntegrationService?: any;
   laneService?: any;
   agentChatService?: any;
@@ -415,7 +646,6 @@ async function createFixture(args: {
       effective: {
         ai: {
           orchestrator: {
-            requirePlanReview: args.requirePlanReview === true,
             ...(args.orchestratorConfig ?? {})
           }
         }
@@ -545,8 +775,8 @@ async function createFixture(args: {
 }
 
 describe("aiOrchestratorService", () => {
-  it("starts mission directly without opening plan-review intervention when requirePlanReview is true", async () => {
-    const fixture = await createFixture({ requirePlanReview: true });
+  it("starts mission directly without opening a pre-run approval gate", async () => {
+    const fixture = await createFixture();
     let started: any;
     try {
       const mission = fixture.missionService.create({
@@ -559,8 +789,7 @@ describe("aiOrchestratorService", () => {
         runMode: "autopilot",
         defaultExecutorKind: "unified"
       });
-      // In the AI-first flow, there is no plan review gate — the coordinator handles everything.
-      // The mission goes directly to in_progress.
+      // The mission now starts directly in orchestrator runtime.
       expect(started.started).toBeTruthy();
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("in_progress");
@@ -571,16 +800,15 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("starts mission directly in the AI-first flow without plan review gate", async () => {
-    const fixture = await createFixture({ requirePlanReview: true });
+  it("starts mission directly in AI-first flow", async () => {
+    const fixture = await createFixture();
     try {
       const mission = fixture.missionService.create({
         prompt: "Plan and implement runtime resiliency improvements.",
         laneId: fixture.laneId
       });
 
-      // In the AI-first flow, startMissionRun goes directly to in_progress
-      // regardless of requirePlanReview — the coordinator handles everything.
+      // In AI-first flow, startMissionRun goes directly to in_progress.
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
@@ -740,6 +968,46 @@ describe("aiOrchestratorService", () => {
 
       const updatedRun = fixture.orchestratorService.listRuns({ missionId: mission.id }).find((run) => run.id === started.run.id);
       expect(updatedRun?.status).toBe("paused");
+      expect(fixture.orchestratorService.listAttempts({ runId: started.run.id })).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("ignores queued run updates while coordinator startup is still in progress", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Do not treat coordinator startup as coordinator loss.",
+        laneId: fixture.laneId,
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "unified",
+            ownerId: "autopilot-owner",
+            parallelismCap: 1,
+          },
+        },
+        steps: [],
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-run-updated",
+        runId: started.run.id,
+        at: new Date().toISOString(),
+        reason: "bootstrapping",
+      });
+
+      const updatedRun = fixture.orchestratorService
+        .listRuns({ missionId: mission.id })
+        .find((run) => run.id === started.run.id);
+      expect(updatedRun?.status).toBe("bootstrapping");
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.interventions ?? []).toHaveLength(0);
       expect(fixture.orchestratorService.listAttempts({ runId: started.run.id })).toHaveLength(0);
     } finally {
       fixture.dispose();
@@ -2185,6 +2453,341 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("turns readable runtime previews into worker chat updates without duplicating identical signals", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Surface worker progress in chat.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "implement-changes", title: "Implement requested changes", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const sessionId = "session-worker-progress-chat-1";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'unified',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id]
+      );
+
+      const preview = "- Updated [AppShell.tsx](/Users/admin/Projects/ADE/apps/desktop/src/renderer/components/app/AppShell.tsx)";
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "running",
+        lastOutputPreview: preview,
+        at: new Date().toISOString()
+      });
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "running",
+        lastOutputPreview: preview,
+        at: new Date(Date.now() + 1000).toISOString()
+      });
+
+      await waitFor(() => {
+        const thread = fixture.aiOrchestratorService
+          .listChatThreads({ missionId: mission.id, includeClosed: true })
+          .find((entry) => entry.attemptId === attempt.id);
+        if (!thread) return false;
+        const messages = fixture.aiOrchestratorService.getThreadMessages({
+          missionId: mission.id,
+          threadId: thread.id
+        });
+        return messages.filter((entry) => entry.role === "worker" && entry.content === "Updated AppShell.tsx.").length === 1;
+      });
+
+      const thread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((entry) => entry.attemptId === attempt.id);
+      if (!thread) throw new Error("Expected worker thread");
+
+      const messages = fixture.aiOrchestratorService.getThreadMessages({
+        missionId: mission.id,
+        threadId: thread.id
+      });
+      expect(messages.filter((entry) => entry.role === "worker" && entry.content === "Updated AppShell.tsx.")).toHaveLength(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("ignores noisy runtime previews that are just prompt/bootstrap or tool payload leakage", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Ignore noisy worker runtime previews in chat.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "implement-changes", title: "Implement requested changes", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const sessionId = "session-worker-progress-chat-noise";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'unified',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id]
+      );
+
+      const noisyPreviews = [
+        "You are an ADE orchestrator worker executing step \"implement-changes\".",
+        "Mission goal: Ignore noisy worker runtime previews in chat.",
+        "Mission Plan:",
+        "Referenced docs: .ade/context/PRD.ade.md (abc123), .ade/context/ARCHITECTURE.ade.md (def456)",
+        "tool ade.report_result({\"workerId\":\"worker_1\"})",
+        "\"text\": \"{\\n \\\"ok\\\": true }\"",
+        "admin@Mac test1-30b1aa3d %",
+        "-p \"$(cat '/Users/admin/Projects/ADE/.ade/orchestrator/worker-prompts/worker-123.txt')\"",
+        "cp '/tmp/worker-123.json' '.ade-worker-mcp-123.json' && exec codex --model gpt-5.3-codex",
+        "12f2b.txt')\"",
+        "ADE_MISSION_ID='mission-1' exec claude --model 'sonnet' --permission-mode 'plan'",
+        "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh",
+        "/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef",
+      ];
+
+      for (const preview of noisyPreviews) {
+        fixture.aiOrchestratorService.onSessionRuntimeSignal({
+          laneId: fixture.laneId,
+          sessionId,
+          runtimeState: "running",
+          lastOutputPreview: preview,
+          at: new Date().toISOString()
+        });
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const thread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((entry) => entry.attemptId === attempt.id);
+
+      if (!thread) {
+        expect(thread).toBeUndefined();
+      } else {
+        const messages = fixture.aiOrchestratorService.getThreadMessages({
+          missionId: mission.id,
+          threadId: thread.id
+        });
+        expect(
+          messages.filter((entry) => String(entry.metadata?.source ?? "") === "runtime_signal_progress")
+        ).toHaveLength(0);
+      }
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("creates a worker thread as soon as an attempt is attached, before any progress messages arrive", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Create worker chat threads immediately when attempts start.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "implement-changes", title: "Implement requested changes", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'unified',
+              executor_session_id = ?
+          where id = ?
+        `,
+        ["session-worker-bootstrap", attempt.id]
+      );
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: readyStep.id,
+        attemptId: attempt.id,
+        reason: "session_attached",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const thread = fixture.aiOrchestratorService
+          .listChatThreads({ missionId: mission.id, includeClosed: true })
+          .find((entry) => entry.attemptId === attempt.id);
+        return Boolean(thread?.threadType === "worker" && thread.sessionId === "session-worker-bootstrap");
+      });
+
+      const thread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((entry) => entry.attemptId === attempt.id);
+
+      expect(thread?.title).toBe("Worker: implement-changes");
+      expect(thread?.status).toBe("active");
+      await waitFor(() => {
+        const messages = fixture.aiOrchestratorService.getThreadMessages({
+          missionId: mission.id,
+          threadId: thread?.id ?? ""
+        });
+        return messages.some((entry) => String(entry.metadata?.source ?? "") === "worker_lifecycle_started");
+      });
+      expect(
+        fixture.aiOrchestratorService.getThreadMessages({
+          missionId: mission.id,
+          threadId: thread?.id ?? ""
+        }).some((entry) =>
+          entry.role === "worker"
+          && String(entry.metadata?.source ?? "") === "worker_lifecycle_started"
+          && entry.content.includes("starting this task now"),
+        )
+      ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("creates a placeholder worker thread on started events even when the run graph has not surfaced the attempt yet", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Create worker chat threads immediately when attempts start.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "implement-changes", title: "Implement requested changes", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const originalGetRunGraph = fixture.orchestratorService.getRunGraph.bind(fixture.orchestratorService);
+      const getRunGraphSpy = vi.spyOn(fixture.orchestratorService, "getRunGraph").mockImplementation((args) => {
+        const currentGraph = originalGetRunGraph(args);
+        return {
+          ...currentGraph,
+          attempts: [],
+        };
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: readyStep.id,
+        attemptId: attempt.id,
+        reason: "started",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const thread = fixture.aiOrchestratorService
+          .listChatThreads({ missionId: mission.id, includeClosed: true })
+          .find((entry) => entry.attemptId === attempt.id);
+        return Boolean(thread?.threadType === "worker");
+      });
+
+      getRunGraphSpy.mockRestore();
+
+      const thread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((entry) => entry.attemptId === attempt.id);
+
+      expect(thread?.title).toBe("Worker: implement-changes");
+      expect(thread?.status).toBe("active");
+      expect(thread?.sessionId ?? null).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+      fixture.dispose();
+    }
+  });
+
   it("reconciles attempts immediately on terminal runtime end signals", async () => {
     const fixture = await createFixture();
     try {
@@ -2547,7 +3150,7 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("clips chat context before calling AI so orchestrator prompts stay compact", async () => {
+  it("emits an offline coordinator notice when no active run is available", async () => {
     const mockAi = createMockAiIntegrationService({
       executeTask: vi.fn().mockResolvedValue({
         text: "Acknowledged.",
@@ -2573,13 +3176,11 @@ describe("aiOrchestratorService", () => {
         content: hugeMessage
       });
 
-      await waitFor(() => (mockAi.executeTask as any).mock.calls.length > 0);
-      const firstCallArgs = (mockAi.executeTask as any).mock.calls[0]?.[0];
-      expect(firstCallArgs).toBeTruthy();
-      expect(typeof firstCallArgs.prompt).toBe("string");
-      expect(firstCallArgs.prompt.length).toBeLessThan(9_000);
-      expect(firstCallArgs.prompt).toContain("... (truncated)");
-      expect(firstCallArgs.prompt.includes("x".repeat(5_000))).toBe(false);
+      await waitFor(() =>
+        fixture.aiOrchestratorService.getChat({ missionId: mission.id })
+          .some((entry) => entry.role === "orchestrator" && entry.content.includes("runtime is not currently online"))
+      );
+      expect((mockAi.executeTask as any).mock.calls.length).toBe(0);
     } finally {
       fixture.dispose();
     }
@@ -2812,7 +3413,7 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("reuses persisted mission lane on plan-review re-entry instead of creating duplicates", async () => {
+  it("allocates distinct mission lanes when starting multiple runs for the same mission", async () => {
     let laneCounter = 0;
     const laneService = {
       list: vi.fn(async () => [
@@ -2845,15 +3446,26 @@ describe("aiOrchestratorService", () => {
       const metadata = metadataRow?.metadata_json ? JSON.parse(metadataRow.metadata_json) : {};
       expect(metadata.missionLaneId).toBe("mission-lane-1");
 
-      const reentryStart = await fixture.aiOrchestratorService.startMissionRun({
+      const secondStart = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
-        forcePlanReviewBypass: true,
         runMode: "manual",
         defaultExecutorKind: "manual",
       });
 
-      expect(reentryStart.started?.run.id).toBe(firstRunId);
-      expect(laneService.createChild).toHaveBeenCalledTimes(1);
+      const secondRunId = secondStart.started?.run.id;
+      expect(secondRunId).toBeTruthy();
+      expect(secondRunId).not.toBe(firstRunId);
+      expect(laneService.createChild).toHaveBeenCalledTimes(2);
+      if (!secondRunId) {
+        throw new Error("Expected second run id");
+      }
+
+      const secondMetadataRow = fixture.db.get<{ metadata_json: string | null }>(
+        `select metadata_json from orchestrator_runs where id = ? limit 1`,
+        [secondRunId]
+      );
+      const secondMetadata = secondMetadataRow?.metadata_json ? JSON.parse(secondMetadataRow.metadata_json) : {};
+      expect(secondMetadata.missionLaneId).toBe("mission-lane-2");
     } finally {
       fixture.dispose();
     }
@@ -3502,6 +4114,52 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("can target a single manual-input intervention when steering from a focused reply modal", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Handle one clarification without clearing unrelated input requests.",
+        laneId: fixture.laneId
+      });
+
+      const first = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "manual_input",
+        title: "Coordinator clarification",
+        body: "Question A",
+        pauseMission: false,
+        metadata: {
+          runId: "run-1",
+          canProceedWithoutAnswer: false,
+        }
+      });
+      const second = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "manual_input",
+        title: "Worker waiting",
+        body: "Question B",
+        pauseMission: false,
+        metadata: {
+          runId: "run-1",
+          canProceedWithoutAnswer: false,
+        }
+      });
+
+      fixture.aiOrchestratorService.steerMission({
+        missionId: mission.id,
+        interventionId: first.id,
+        directive: "Use a normal navigable tab.",
+        priority: "instruction"
+      });
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.interventions.find((entry) => entry.id === first.id)?.status).toBe("resolved");
+      expect(refreshed?.interventions.find((entry) => entry.id === second.id)?.status).toBe("open");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("persists chat and steering directives and hydrates them after service recreation", async () => {
     const fixture = await createFixture({ aiIntegrationService: null });
     try {
@@ -3580,7 +4238,7 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("reuses persisted orchestrator chat session ids across mission chat turns", async () => {
+  it("does not invoke one-shot chat responses when no active run is available", async () => {
     const executeTask = vi
       .fn()
       .mockResolvedValueOnce({
@@ -3623,7 +4281,7 @@ describe("aiOrchestratorService", () => {
 
       await waitFor(() =>
         fixture.aiOrchestratorService.getChat({ missionId: mission.id })
-          .some((entry) => entry.role === "orchestrator" && entry.content.includes("Hello. I can help"))
+          .some((entry) => entry.role === "orchestrator" && entry.content.includes("runtime is not currently online"))
       );
 
       fixture.aiOrchestratorService.sendChat({
@@ -3633,13 +4291,11 @@ describe("aiOrchestratorService", () => {
 
       await waitFor(() =>
         fixture.aiOrchestratorService.getChat({ missionId: mission.id })
-          .some((entry) => entry.role === "orchestrator" && entry.content.includes("Second response on the same thread"))
+          .filter((entry) => entry.role === "orchestrator" && entry.content.includes("runtime is not currently online"))
+          .length >= 2
       );
 
-      expect(executeTask).toHaveBeenCalledTimes(2);
-      // The fallback one-shot chat response path no longer passes sessionId
-      expect(executeTask.mock.calls[0]?.[0]?.sessionId).toBeUndefined();
-      expect(executeTask.mock.calls[1]?.[0]?.sessionId).toBeUndefined();
+      expect(executeTask).toHaveBeenCalledTimes(0);
     } finally {
       fixture.dispose();
     }

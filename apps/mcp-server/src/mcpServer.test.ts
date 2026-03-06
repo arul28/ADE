@@ -220,14 +220,25 @@ function createRuntime() {
     memoryService: {
       addMemory: vi.fn(() => ({
         id: "memory-1",
+        scope: "project",
+        status: "promoted",
         category: "fact",
         content: "x",
         importance: "medium",
+        confidence: 1,
+        promotedAt: new Date().toISOString(),
+        sourceRunId: null,
         createdAt: new Date().toISOString()
       })),
       addSharedFact: vi.fn(() => ({
         id: "shared-fact-1"
       })),
+      pinMemory: vi.fn(() => ({
+        id: "memory-1",
+        pinned: true,
+        tier: 1
+      })),
+      promoteMemory: vi.fn(),
       searchMemories: vi.fn(() => [])
     } as any,
     ctoStateService: {
@@ -382,18 +393,12 @@ function createRuntime() {
     } as any,
     aiOrchestratorService: {
       startMissionRun: vi.fn(async ({ missionId }: any) => ({
-        blockedByPlanReview: false,
         started: { run: { id: "run-1", missionId, status: "running" }, steps: [] },
         mission: { id: missionId }
       })),
       finalizeRun: vi.fn(() => ({ finalized: true, blockers: [], finalStatus: "succeeded" })),
       cancelRunGracefully: vi.fn(async ({ runId }: any) => ({ cancelled: true, runId })),
       steerMission: vi.fn(({ missionId }: any) => ({ acknowledged: true, appliedAt: new Date().toISOString() })),
-      approveMissionPlan: vi.fn(async ({ missionId }: any) => ({
-        blockedByPlanReview: false,
-        started: { run: { id: "run-1", missionId, status: "running" }, steps: [] },
-        mission: { id: missionId }
-      })),
       getWorkerStates: vi.fn(({ runId }: any) => [
         { attemptId: "a-1", stepId: "s-1", runId, state: "running" }
       ]),
@@ -501,6 +506,7 @@ describe("mcpServer", () => {
         "merge_lane",
         "ask_user",
         "memory_add",
+        "memory_pin",
         "memory_update_core",
         "reflection_add",
         "memory_search",
@@ -514,7 +520,6 @@ describe("mcpServer", () => {
         "resume_mission",
         "cancel_mission",
         "steer_mission",
-        "approve_plan",
         "resolve_intervention",
         "get_mission",
         "get_run_graph",
@@ -1188,6 +1193,73 @@ describe("mcpServer", () => {
     );
   });
 
+  it("infers workerId for report_result from initialized worker identity", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        {
+          id: "step-parent",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "parent-worker",
+          stepIndex: 0,
+          title: "Parent Worker",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-parent",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        }
+      ],
+      attempts: [
+        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
+      ],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "attempt-parent",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-parent",
+      attemptId: "attempt-parent"
+    });
+
+    const response = await callTool(handler, "report_result", {
+      outcome: "succeeded",
+      summary: "Finished without explicitly sending workerId.",
+      artifacts: [],
+      filesChanged: [],
+      testsRun: null
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      report: expect.objectContaining({
+        workerId: "parent-worker",
+        stepId: "step-parent",
+        outcome: "succeeded",
+      }),
+    }));
+  });
+
   it("uses initialize identity context for shared-fact writes (proxy-mode identity forwarding path)", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -1207,6 +1279,12 @@ describe("mcpServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.memoryService.addMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "mission",
+        scopeOwnerId: "run-from-identity",
+      })
+    );
     expect(fixture.runtime.memoryService.addSharedFact).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: "run-from-identity",
@@ -1214,6 +1292,70 @@ describe("mcpServer", () => {
       })
     );
     expect(response.structuredContent.sharedFact.written).toBe(true);
+  });
+
+  it("supports memory_search scope/status filters and returns enriched memory rows", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.memoryService.searchMemories = vi.fn(() => ([
+      {
+        id: "memory-42",
+        scope: "mission",
+        status: "candidate",
+        category: "pattern",
+        content: "Service B can lag by ~90s after deploy.",
+        importance: "high",
+        confidence: 0.82,
+        createdAt: "2026-03-01T10:00:00.000Z",
+        promotedAt: null,
+        sourceRunId: "run-1",
+      }
+    ]));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+    });
+    const response = await callTool(handler, "memory_search", {
+      query: "deploy lag",
+      scope: "mission",
+      status: "candidate",
+      limit: 7,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.memoryService.searchMemories).toHaveBeenCalledWith(
+      "deploy lag",
+      "project-1",
+      "mission",
+      7,
+      "candidate",
+      "run-1",
+    );
+    expect(response.structuredContent.scope).toBe("mission");
+    expect(response.structuredContent.status).toBe("candidate");
+    expect(response.structuredContent.memories[0]).toEqual(
+      expect.objectContaining({
+        id: "memory-42",
+        scope: "mission",
+        status: "candidate",
+        confidence: 0.82,
+      })
+    );
+  });
+
+  it("pins memory entries through memory_pin", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "worker-1", role: "agent" });
+    const response = await callTool(handler, "memory_pin", { id: "memory-42" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.memoryService.pinMemory).toHaveBeenCalledWith("memory-42");
+    expect(response.structuredContent.pinned).toBe(true);
   });
 
   it("exposes memory_update_core and writes CTO core memory", async () => {
@@ -1772,46 +1914,6 @@ describe("mcpServer", () => {
         directive: "Focus on API layer first",
         priority: "instruction",
         targetStepKey: "step-a"
-      })
-    );
-  });
-
-  it("routes approve_plan for approved plans", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "approve_plan", {
-      missionId: "mission-1",
-      approved: true
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.approved).toBe(true);
-    expect(fixture.runtime.aiOrchestratorService.approveMissionPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ missionId: "mission-1" })
-    );
-  });
-
-  it("routes approve_plan rejection with feedback", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "approve_plan", {
-      missionId: "mission-1",
-      approved: false,
-      feedback: "Plan needs more detail"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.approved).toBe(false);
-    expect(response.structuredContent.intervention).toBeDefined();
-    expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(
-      expect.objectContaining({
-        missionId: "mission-1",
-        title: "Plan rejected",
-        body: "Plan needs more detail"
       })
     );
   });

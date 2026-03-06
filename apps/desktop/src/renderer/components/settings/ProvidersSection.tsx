@@ -25,6 +25,8 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import { deriveConfiguredModelOptions, includeSelectedModelOption } from "../../lib/modelOptions";
+import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 
 type CliName = "claude" | "codex" | "gemini";
 type ApiKeySource = "config" | "env" | "store";
@@ -61,6 +63,12 @@ function readString(primary: unknown, fallback: unknown, defaultValue: string): 
   if (typeof primary === "string" && primary.length > 0) return primary;
   if (typeof fallback === "string" && fallback.length > 0) return fallback;
   return defaultValue;
+}
+
+function normalizeModelSetting(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw.length) return "";
+  return getModelById(raw)?.id ?? resolveModelAlias(raw)?.id ?? raw;
 }
 
 const sectionLabelStyle: React.CSSProperties = {
@@ -210,7 +218,10 @@ export function ProvidersSection() {
     cliSandboxPermissions: "workspace-write" as string,
     inProcessMode: "full-auto" as string,
   });
-  const [summaryModel, setSummaryModel] = useState("haiku");
+  const [summaryModel, setSummaryModel] = useState("anthropic/claude-haiku-4-5");
+  const [chatAutoTitleEnabled, setChatAutoTitleEnabled] = useState(false);
+  const [chatAutoTitleModel, setChatAutoTitleModel] = useState("");
+  const [chatAutoTitleRefresh, setChatAutoTitleRefresh] = useState(true);
 
   const refreshStatus = useCallback(async () => {
     setLoading(true);
@@ -228,7 +239,10 @@ export function ProvidersSection() {
 
       const effectiveAiRaw = snapshot.effective?.ai;
       const effectiveAiConfig = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
-      setSummaryModel((effectiveAiConfig?.featureModelOverrides?.terminal_summaries) ?? "haiku");
+      setSummaryModel(normalizeModelSetting(effectiveAiConfig?.featureModelOverrides?.terminal_summaries) || "anthropic/claude-haiku-4-5");
+      setChatAutoTitleEnabled(effectiveAiConfig?.chat?.autoTitleEnabled === true);
+      setChatAutoTitleModel(normalizeModelSetting(effectiveAiConfig?.chat?.autoTitleModelId));
+      setChatAutoTitleRefresh(effectiveAiConfig?.chat?.autoTitleRefreshOnComplete !== false);
 
       const effectiveAi = isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
       const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
@@ -256,6 +270,45 @@ export function ProvidersSection() {
   }, [refreshStatus]);
 
   const detectedAuth = status?.detectedAuth ?? [];
+  const configuredModelOptions = useMemo(
+    () => deriveConfiguredModelOptions(status),
+    [status],
+  );
+  const summaryModelOptions = useMemo(
+    () => includeSelectedModelOption(configuredModelOptions, summaryModel),
+    [configuredModelOptions, summaryModel],
+  );
+  const autoTitleModelOptions = useMemo(
+    () => includeSelectedModelOption(configuredModelOptions, chatAutoTitleModel),
+    [configuredModelOptions, chatAutoTitleModel],
+  );
+
+  const saveChatTitleSettings = useCallback(async (patch: Partial<NonNullable<AiConfig["chat"]>>) => {
+    const nextModelId =
+      patch.autoTitleModelId !== undefined
+        ? patch.autoTitleModelId
+        : chatAutoTitleModel || autoTitleModelOptions[0]?.id || "";
+    const nextEnabled =
+      patch.autoTitleEnabled !== undefined ? patch.autoTitleEnabled : chatAutoTitleEnabled;
+    const nextRefresh =
+      patch.autoTitleRefreshOnComplete !== undefined
+        ? patch.autoTitleRefreshOnComplete
+        : chatAutoTitleRefresh;
+
+    const nextChat = {
+      autoTitleEnabled: nextEnabled,
+      autoTitleModelId: nextModelId || undefined,
+      autoTitleRefreshOnComplete: nextRefresh,
+    } satisfies Partial<NonNullable<AiConfig["chat"]>>;
+
+    await window.ade.ai.updateConfig({
+      chat: nextChat as AiConfig["chat"],
+    });
+
+    setChatAutoTitleEnabled(nextEnabled);
+    setChatAutoTitleModel(nextModelId || "");
+    setChatAutoTitleRefresh(nextRefresh);
+  }, [autoTitleModelOptions, chatAutoTitleEnabled, chatAutoTitleModel, chatAutoTitleRefresh]);
 
   const cliAuthMap = useMemo(() => {
     const map = new Map<CliName, AiDetectedAuth>();
@@ -842,8 +895,8 @@ export function ProvidersSection() {
             });
           }}
           options={
-            status
-              ? [...status.models.claude, ...status.models.codex].map((m) => ({ value: m.id, label: m.label }))
+            summaryModelOptions.length > 0
+              ? summaryModelOptions.map((m) => ({ value: m.id, label: m.label }))
               : [
                   { value: "haiku", label: "Haiku" },
                   { value: "sonnet", label: "Sonnet" },
@@ -851,6 +904,76 @@ export function ProvidersSection() {
                 ]
           }
         />
+      </section>
+
+      <section style={{ marginTop: 24 }}>
+        <div style={{ ...LABEL_STYLE, fontSize: 11, marginBottom: 6 }}>CHAT TITLES</div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 10 }}>
+          Generate concise names for chat tabs after the first prompt, then refresh them when a session closes.
+        </div>
+        <div style={cardStyle({ padding: 16, display: "grid", gap: 14 })}>
+          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={chatAutoTitleEnabled}
+              onChange={(event) => {
+                const nextEnabled = event.target.checked;
+                const fallbackModelId = chatAutoTitleModel || autoTitleModelOptions[0]?.id || "";
+                void saveChatTitleSettings({
+                  autoTitleEnabled: nextEnabled,
+                  autoTitleModelId: fallbackModelId || undefined,
+                });
+              }}
+            />
+            <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 600 }}>
+              Auto-name chat tabs
+            </span>
+          </label>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr",
+              gap: 12,
+              opacity: chatAutoTitleEnabled ? 1 : 0.55,
+              pointerEvents: chatAutoTitleEnabled ? "auto" : "none",
+            }}
+          >
+            <SelectField
+              label="MODEL"
+              value={chatAutoTitleModel || autoTitleModelOptions[0]?.id || ""}
+              onChange={(value) => {
+                void saveChatTitleSettings({ autoTitleModelId: value });
+              }}
+              options={
+                autoTitleModelOptions.length > 0
+                  ? autoTitleModelOptions.map((m) => ({ value: m.id, label: m.label }))
+                  : [{ value: "", label: "No configured model available" }]
+              }
+              disabled={autoTitleModelOptions.length === 0}
+            />
+
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={chatAutoTitleRefresh}
+                onChange={(event) => {
+                  void saveChatTitleSettings({
+                    autoTitleRefreshOnComplete: event.target.checked,
+                  });
+                }}
+              />
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 600 }}>
+                  Refresh title when session closes
+                </span>
+                <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  Helpful when the work shifts after the initial prompt.
+                </span>
+              </div>
+            </label>
+          </div>
+        </div>
       </section>
     </div>
   );

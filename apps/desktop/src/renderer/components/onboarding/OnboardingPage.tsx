@@ -24,7 +24,6 @@ type StepId =
   | "configure-ai"
   | "detect-branches"
   | "import-branches"
-  | "generate-packs"
   | "complete";
 
 type DraftRow = {
@@ -90,9 +89,6 @@ function stepMeta(id: StepId): { title: string; subtitle: string } {
   if (id === "import-branches") {
     return { title: "Import Branches", subtitle: "Create worktrees for selected branches" };
   }
-  if (id === "generate-packs") {
-    return { title: "Generate Packs", subtitle: "Create initial context + conflict packs" };
-  }
   return { title: "Complete", subtitle: "Finish onboarding" };
 }
 
@@ -133,10 +129,6 @@ export function OnboardingPage() {
   const [importResults, setImportResults] = React.useState<
     Record<string, { status: "pending" | "imported" | "skipped" | "failed"; lane?: LaneSummary; error?: string }>
   >({});
-
-  const [packsBusy, setPacksBusy] = React.useState(false);
-  const [packsError, setPacksError] = React.useState<string | null>(null);
-  const [packsDoneAt, setPacksDoneAt] = React.useState<string | null>(null);
 
   const [aiStatus, setAiStatus] = React.useState<import("../../../shared/types").AiSettingsStatus | null>(null);
   const [aiToggles, setAiToggles] = React.useState<Record<string, boolean>>({
@@ -180,7 +172,7 @@ export function OnboardingPage() {
   }, [step]);
 
   const steps: StepId[] = React.useMemo(
-    () => ["welcome", "detect-defaults", "review-config", "configure-ai", "detect-branches", "import-branches", "generate-packs", "complete"],
+    () => ["welcome", "detect-defaults", "review-config", "configure-ai", "detect-branches", "import-branches", "complete"],
     []
   );
 
@@ -416,22 +408,6 @@ export function OnboardingPage() {
     }
   };
 
-  const generatePacks = async () => {
-    setPacksBusy(true);
-    setPacksError(null);
-    try {
-      const importedLaneIds = Object.values(importResults)
-        .map((r) => r.lane?.id ?? null)
-        .filter((id): id is string => Boolean(id));
-      await window.ade.onboarding.generateInitialPacks({ laneIds: importedLaneIds.length ? importedLaneIds : undefined });
-      setPacksDoneAt(new Date().toISOString());
-    } catch (err) {
-      setPacksError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPacksBusy(false);
-    }
-  };
-
   const complete = async () => {
     setConfigError(null);
     try {
@@ -554,7 +530,7 @@ export function OnboardingPage() {
                       <div className="min-w-0">
                         <div className="text-sm font-semibold">Start quickly</div>
                         <div className="mt-1 text-xs text-muted-fg">
-                          Onboarding is optional. You can jump straight into Lanes and come back later to auto-detect commands, import branches as lanes, and generate initial packs.
+                          Onboarding is optional. You can jump straight into Lanes and come back later to auto-detect commands, import branches as lanes, and review AI/config defaults.
                         </div>
                         <div className="mt-3 flex flex-wrap items-center gap-2">
                           <Button size="sm" disabled={skipBusy} onClick={() => void skipOnboarding()}>
@@ -575,8 +551,7 @@ export function OnboardingPage() {
                       {previewLines("High-level steps", [
                         "Detect defaults from common repo markers (no commands are executed).",
                         "Draft and review `.ade/ade.yaml` before saving.",
-                        "Optionally import existing branches as lanes (creates worktrees under `.ade/worktrees`).",
-                        "Generate initial packs for quick context + conflict prediction."
+                        "Optionally import existing branches as lanes (creates worktrees under `.ade/worktrees`)."
                       ])}
                       <div className="grid gap-2 md:grid-cols-2">
                         <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 text-xs">
@@ -589,9 +564,9 @@ export function OnboardingPage() {
                         <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 text-xs">
                           <div className="flex items-center gap-2 font-semibold text-fg">
                             <Package size={16} weight="regular" className="text-muted-fg" />
-                            Packs + conflict radar
+                            Context + conflict radar
                           </div>
-                          <div className="mt-1 text-muted-fg">Packs capture deterministic context; conflict radar predicts overlaps so you can fix issues early.</div>
+                          <div className="mt-1 text-muted-fg">ADE builds deterministic context summaries; conflict radar predicts overlaps so you can fix issues early.</div>
                         </div>
                       </div>
                     </div>
@@ -1283,28 +1258,6 @@ export function OnboardingPage() {
                 </div>
               ) : null}
 
-              {step === "generate-packs" ? (
-                <div className="space-y-3">
-                  {previewLines("What ADE will do", [
-                    "Refresh project pack and lane packs for imported lanes.",
-                    "Generate baseline conflict packs using merge-tree (no AI calls)."
-                  ])}
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button size="sm" disabled={packsBusy} onClick={() => void generatePacks()}>
-                      {packsBusy ? "Generating..." : "Generate initial packs"}
-                    </Button>
-                    {packsDoneAt ? <Chip>done {formatDate(packsDoneAt)}</Chip> : null}
-                  </div>
-
-                  {packsError ? (
-                    <div className="rounded border border-red-800 bg-red-900/25 px-3 py-2 text-xs text-red-200">
-                      {packsError}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
               {step === "complete" ? (
                 <div className="space-y-3">
                   {previewLines("What ADE will do", [
@@ -1396,11 +1349,6 @@ export function OnboardingPage() {
                       <Sparkle size={16} weight="regular" />
                     </Button>
                   ) : step === "import-branches" ? (
-                    <Button size="sm" onClick={goNext}>
-                      Next
-                      <Sparkle size={16} weight="regular" />
-                    </Button>
-                  ) : step === "generate-packs" ? (
                     <Button size="sm" onClick={goNext}>
                       Next
                       <Sparkle size={16} weight="regular" />

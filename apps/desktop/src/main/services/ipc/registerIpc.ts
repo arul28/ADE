@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -120,7 +120,6 @@ import type {
   GetTestLogTailArgs,
   ExportHistoryArgs,
   ExportHistoryResult,
-  ExportConfigBundleResult,
   AgentChatApproveArgs,
   AgentChatChangePermissionModeArgs,
   AgentChatCreateArgs,
@@ -134,6 +133,7 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatUpdateSessionArgs,
   ContextPackListArgs,
   ContextPackOption,
   ContextPackFetchArgs,
@@ -164,7 +164,6 @@ import type {
   PackEvent,
   PackHeadVersion,
   PackSummary,
-  PackType,
   PackVersion,
   PackVersionSummary,
   Checkpoint,
@@ -176,11 +175,7 @@ import type {
   RefreshMissionPackArgs,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
-  ContextPrepareDocGenArgs,
-  ContextPrepareDocGenResult,
-  ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
-  ContextInventorySnapshot,
   ContextStatus,
   ListPackEventsSinceArgs,
   ProcessActionArgs,
@@ -237,7 +232,6 @@ import type {
   MissionArtifact,
   MissionStep,
   MissionStatus,
-  MissionStepHandoff,
   MissionSummary,
   PhaseCard,
   PhaseProfile,
@@ -380,7 +374,9 @@ import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
+import type { ContextDocService } from "../context/contextDocService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { SessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createDiffService } from "../diffs/diffService";
 import type { createFileService } from "../files/fileService";
@@ -406,14 +402,13 @@ import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
-import { normalizeMissionStatus, type createMissionService } from "../missions/missionService";
+import { type createMissionService } from "../missions/missionService";
 import type { createMissionPreflightService } from "../missions/missionPreflightService";
 
 import type { createMissionBudgetService } from "../orchestrator/missionBudgetService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
-import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -426,7 +421,7 @@ import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearRoutingService } from "../cto/linearRoutingService";
 import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
-import { getErrorMessage, isRecord, nowIso, safeJsonParse } from "../shared/utils";
+import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
 
 export type AppContext = {
   db: AdeDb;
@@ -466,9 +461,11 @@ export type AppContext = {
   missionBudgetService: ReturnType<typeof createMissionBudgetService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   packService: ReturnType<typeof createPackService>;
+  contextDocService?: ContextDocService | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
   testService: ReturnType<typeof createTestService>;
+  sessionDeltaService?: SessionDeltaService | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
@@ -499,11 +496,6 @@ function escapeCsvCell(value: string | null | undefined): string {
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, "\"\"")}"` : input;
 }
 
-function parseRecord(raw: string | null | undefined): Record<string, unknown> | null {
-  const parsed = safeJsonParse(raw, null);
-  return isRecord(parsed) ? parsed : null;
-}
-
 const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
@@ -514,48 +506,6 @@ const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "initial_context"
 ];
 
-function normalizePackType(value: string): PackType {
-  if (value === "project" || value === "lane" || value === "feature" || value === "conflict" || value === "plan" || value === "mission") {
-    return value;
-  }
-  return "project";
-}
-
-function sha256Utf8(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function buildMissionPlannerDocsDigest(projectRoot: string): Array<{ path: string; sha256: string; bytes: number }> {
-  const roots = readDocPaths(projectRoot);
-  const docs: Array<{ path: string; sha256: string; bytes: number }> = [];
-
-  const visit = (candidatePath: string) => {
-    if (!fs.existsSync(candidatePath)) return;
-    const stat = fs.statSync(candidatePath);
-    if (stat.isDirectory()) {
-      const entries = fs.readdirSync(candidatePath, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.name.startsWith(".")) continue;
-        visit(path.join(candidatePath, entry.name));
-      }
-      return;
-    }
-    if (!stat.isFile()) return;
-    if (!candidatePath.toLowerCase().endsWith(".md")) return;
-    const content = fs.readFileSync(candidatePath, "utf8");
-    docs.push({
-      path: path.relative(projectRoot, candidatePath).replace(/\\/g, "/"),
-      sha256: sha256Utf8(content),
-      bytes: Buffer.byteLength(content, "utf8")
-    });
-  };
-
-  for (const root of roots) {
-    visit(root);
-  }
-  docs.sort((a, b) => a.path.localeCompare(b.path));
-  return docs.slice(0, 60);
-}
 
 async function safeRefreshMissionPack(
   ctx: AppContext,
@@ -579,357 +529,6 @@ function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
   return "unified";
 }
 
-
-function buildMissionPlanningContextBundle(args: {
-  ctx: AppContext;
-  laneId: string | null;
-  executionMode: string;
-  targetMachineId: string | null;
-}) {
-  const operationRows = args.ctx.db.all<{ kind: string; status: string; ended_at: string | null }>(
-    `
-      select kind, status, ended_at
-      from operations
-      where project_id = ?
-      order by coalesce(ended_at, started_at) desc
-      limit 24
-    `,
-    [args.ctx.projectId]
-  );
-  return {
-    missionProfile: {
-      projectId: args.ctx.projectId,
-      projectRoot: args.ctx.project.rootPath,
-      laneId: args.laneId,
-      executionMode: args.executionMode,
-      targetMachineId: args.targetMachineId
-    },
-    operationSummary: {
-      total: operationRows.length,
-      recent: operationRows
-    },
-    docsDigest: buildMissionPlannerDocsDigest(args.ctx.project.rootPath),
-    constraints: [
-      "no user interaction unless blocked",
-      "no arbitrary shell",
-      "prefer minimal parallelism unless independent",
-      "runtime must be deterministic from validated plan artifact"
-    ]
-  };
-}
-
-function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapshot {
-  const generatedAt = nowIso();
-
-  const packCountsRows = ctx.db.all<{ pack_type: string; count: number }>(
-    `
-      select pack_type, count(*) as count
-      from packs_index
-      where project_id = ?
-      group by pack_type
-    `,
-    [ctx.projectId]
-  );
-  const packByType: Partial<Record<PackType, number>> = {};
-  for (const row of packCountsRows) {
-    packByType[normalizePackType(row.pack_type)] = Number(row.count ?? 0);
-  }
-
-  const recentPacks = ctx.db
-    .all<{
-      pack_key: string;
-      pack_type: string;
-      lane_id: string | null;
-      deterministic_updated_at: string | null;
-      narrative_updated_at: string | null;
-      last_head_sha: string | null;
-      metadata_json: string | null;
-      version_id: string | null;
-      version_number: number | null;
-      content_hash: string | null;
-    }>(
-      `
-        select
-          p.pack_key,
-          p.pack_type,
-          p.lane_id,
-          p.deterministic_updated_at,
-          p.narrative_updated_at,
-          p.last_head_sha,
-          p.metadata_json,
-          pv.id as version_id,
-          pv.version_number as version_number,
-          pv.content_hash as content_hash
-        from packs_index p
-        left join pack_heads ph
-          on ph.project_id = p.project_id
-         and ph.pack_key = p.pack_key
-        left join pack_versions pv
-          on pv.id = ph.current_version_id
-        where p.project_id = ?
-        order by coalesce(p.deterministic_updated_at, p.narrative_updated_at, '') desc
-        limit 30
-      `,
-      [ctx.projectId]
-    )
-    .map((row) => {
-      const metadata = parseRecord(row.metadata_json);
-      return {
-        packKey: row.pack_key,
-        packType: normalizePackType(row.pack_type),
-        laneId: row.lane_id,
-        deterministicUpdatedAt: row.deterministic_updated_at,
-        narrativeUpdatedAt: row.narrative_updated_at,
-        lastHeadSha: row.last_head_sha,
-        versionId: row.version_id ?? (typeof metadata?.versionId === "string" ? metadata.versionId : null),
-        versionNumber:
-          row.version_number != null
-            ? Number(row.version_number)
-            : Number.isFinite(Number(metadata?.versionNumber))
-              ? Number(metadata?.versionNumber)
-              : null,
-        contentHash: row.content_hash ?? (typeof metadata?.contentHash === "string" ? metadata.contentHash : null)
-      };
-    });
-
-  const checkpointsTotal = Number(
-    ctx.db.get<{ count: number }>("select count(*) as count from checkpoints where project_id = ?", [ctx.projectId])?.count ?? 0
-  );
-  const recentCheckpoints = ctx.db
-    .all<{
-      id: string;
-      lane_id: string;
-      session_id: string | null;
-      created_at: string;
-      sha: string;
-    }>(
-      `
-        select id, lane_id, session_id, created_at, sha
-        from checkpoints
-        where project_id = ?
-        order by created_at desc
-        limit 25
-      `,
-      [ctx.projectId]
-    )
-    .map((row) => ({
-      id: row.id,
-      laneId: row.lane_id,
-      sessionId: row.session_id,
-      createdAt: row.created_at,
-      sha: row.sha
-    }));
-
-  const sessionCounts = ctx.db.get<{
-    tracked_sessions: number;
-    untracked_sessions: number;
-    running_sessions: number;
-  }>(
-    `
-      select
-        sum(case when s.tracked = 1 then 1 else 0 end) as tracked_sessions,
-        sum(case when s.tracked = 0 then 1 else 0 end) as untracked_sessions,
-        sum(case when s.status = 'running' then 1 else 0 end) as running_sessions
-      from terminal_sessions s
-      join lanes l on l.id = s.lane_id
-      where l.project_id = ?
-    `,
-    [ctx.projectId]
-  );
-
-  const recentDeltas = ctx.db
-    .all<{
-      session_id: string;
-      lane_id: string;
-      started_at: string;
-      ended_at: string | null;
-      files_changed: number;
-      insertions: number;
-      deletions: number;
-      computed_at: string | null;
-    }>(
-      `
-        select
-          session_id,
-          lane_id,
-          started_at,
-          ended_at,
-          files_changed,
-          insertions,
-          deletions,
-          computed_at
-        from session_deltas
-        where project_id = ?
-        order by computed_at desc
-        limit 25
-      `,
-      [ctx.projectId]
-    )
-    .map((row) => ({
-      sessionId: row.session_id,
-      laneId: row.lane_id,
-      startedAt: row.started_at,
-      endedAt: row.ended_at,
-      filesChanged: Number(row.files_changed ?? 0),
-      insertions: Number(row.insertions ?? 0),
-      deletions: Number(row.deletions ?? 0),
-      computedAt: row.computed_at
-    }));
-
-  const missionTotal = Number(
-    ctx.db.get<{ count: number }>("select count(*) as count from missions where project_id = ?", [ctx.projectId])?.count ?? 0
-  );
-  const missionStatusRows = ctx.db.all<{ status: string; count: number }>(
-    `
-      select status, count(*) as count
-      from missions
-      where project_id = ?
-      group by status
-    `,
-    [ctx.projectId]
-  );
-  const missionsByStatus: Partial<Record<MissionStatus, number>> = {};
-  for (const row of missionStatusRows) {
-    missionsByStatus[normalizeMissionStatus(row.status)] = Number(row.count ?? 0);
-  }
-  const openInterventions = Number(
-    ctx.db.get<{ count: number }>(
-      "select count(*) as count from mission_interventions where project_id = ? and status = 'open'",
-      [ctx.projectId]
-    )?.count ?? 0
-  );
-  const recentMissionHandoffs = ctx.db
-    .all<{
-      id: string;
-      mission_id: string;
-      mission_step_id: string | null;
-      run_id: string | null;
-      step_id: string | null;
-      attempt_id: string | null;
-      handoff_type: string;
-      producer: string;
-      payload_json: string;
-      created_at: string;
-    }>(
-      `
-        select
-          id,
-          mission_id,
-          mission_step_id,
-          run_id,
-          step_id,
-          attempt_id,
-          handoff_type,
-          producer,
-          payload_json,
-          created_at
-        from mission_step_handoffs
-        where project_id = ?
-        order by created_at desc
-        limit 20
-      `,
-      [ctx.projectId]
-    )
-    .map(
-      (row): MissionStepHandoff => ({
-        id: row.id,
-        missionId: row.mission_id,
-        missionStepId: row.mission_step_id,
-        runId: row.run_id,
-        stepId: row.step_id,
-        attemptId: row.attempt_id,
-        handoffType: row.handoff_type,
-        producer: row.producer,
-        payload: parseRecord(row.payload_json) ?? {},
-        createdAt: row.created_at
-      })
-    );
-
-  const orchestratorCounts = ctx.db.get<{
-    active_runs: number;
-    running_steps: number;
-    running_attempts: number;
-    active_claims: number;
-    expired_claims: number;
-    snapshots: number;
-    handoffs: number;
-    timeline_events: number;
-  }>(
-    `
-      select
-        (select count(*) from orchestrator_runs where project_id = ? and status in ('queued', 'running', 'paused')) as active_runs,
-        (select count(*) from orchestrator_steps where project_id = ? and status = 'running') as running_steps,
-        (select count(*) from orchestrator_attempts where project_id = ? and status = 'running') as running_attempts,
-        (select count(*) from orchestrator_claims where project_id = ? and state = 'active') as active_claims,
-        (select count(*) from orchestrator_claims where project_id = ? and state = 'expired') as expired_claims,
-        (select count(*) from orchestrator_context_snapshots where project_id = ?) as snapshots,
-        (select count(*) from mission_step_handoffs where project_id = ? and run_id is not null) as handoffs,
-        (select count(*) from orchestrator_timeline_events where project_id = ?) as timeline_events
-    `,
-    [ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId]
-  );
-  const recentRunIds = ctx.db
-    .all<{ id: string }>(
-      `
-        select id
-        from orchestrator_runs
-        where project_id = ?
-        order by updated_at desc, created_at desc
-        limit 12
-      `,
-      [ctx.projectId]
-    )
-    .map((row) => row.id);
-  const recentAttemptIds = ctx.db
-    .all<{ id: string }>(
-      `
-        select id
-        from orchestrator_attempts
-        where project_id = ?
-        order by created_at desc
-        limit 20
-      `,
-      [ctx.projectId]
-    )
-    .map((row) => row.id);
-
-  return {
-    generatedAt,
-    packs: {
-      total: Object.values(packByType).reduce((sum, value) => sum + Number(value ?? 0), 0),
-      byType: packByType,
-      recent: recentPacks
-    },
-    checkpoints: {
-      total: checkpointsTotal,
-      recent: recentCheckpoints
-    },
-    sessionTracking: {
-      trackedSessions: Number(sessionCounts?.tracked_sessions ?? 0),
-      untrackedSessions: Number(sessionCounts?.untracked_sessions ?? 0),
-      runningSessions: Number(sessionCounts?.running_sessions ?? 0),
-      recentDeltas
-    },
-    missions: {
-      total: missionTotal,
-      byStatus: missionsByStatus,
-      openInterventions,
-      recentHandoffs: recentMissionHandoffs
-    },
-    orchestrator: {
-      activeRuns: Number(orchestratorCounts?.active_runs ?? 0),
-      runningSteps: Number(orchestratorCounts?.running_steps ?? 0),
-      runningAttempts: Number(orchestratorCounts?.running_attempts ?? 0),
-      activeClaims: Number(orchestratorCounts?.active_claims ?? 0),
-      expiredClaims: Number(orchestratorCounts?.expired_claims ?? 0),
-      snapshots: Number(orchestratorCounts?.snapshots ?? 0),
-      handoffs: Number(orchestratorCounts?.handoffs ?? 0),
-      timelineEvents: Number(orchestratorCounts?.timeline_events ?? 0),
-      recentRunIds,
-      recentAttemptIds
-    }
-  };
-}
 
 function isChatToolType(toolType: string | null | undefined): boolean {
   return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
@@ -1041,8 +640,9 @@ export function registerIpc({
     ctx: AppContext,
     args: { trigger: "per_mission" | "per_pr" | "per_lane_refresh"; reason: string }
   ): void => {
-    void ctx.packService
-      .maybeAutoRefreshContextDocs({
+    if (!ctx.contextDocService) return;
+    void ctx.contextDocService
+      .maybeAutoRefreshDocs({
         trigger: args.trigger,
         reason: args.reason
       })
@@ -1304,85 +904,6 @@ export function registerIpc({
     return { deletedPaths, clearedAt };
   });
 
-  ipcMain.handle(IPC.projectExportConfig, async (event): Promise<ExportConfigBundleResult> => {
-    const ctx = getCtx();
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-
-    const snapshot = ctx.projectConfigService.get();
-    const sharedPath = snapshot.paths.sharedPath;
-    const localPath = snapshot.paths.localPath;
-
-    const readText = (p: string): string => {
-      try {
-        return fs.readFileSync(p, "utf8");
-      } catch {
-        return "";
-      }
-    };
-
-    const redactSecrets = (input: string): string => {
-      let output = input;
-      output = output.replace(
-        /((?:api[_-]?key|token|secret|password|refreshToken|accessToken|idToken)\s*:\s*)(["']?)[^\s"']{6,}\2/gi,
-        "$1<redacted>"
-      );
-      output = output.replace(
-        /-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g,
-        "<redacted-private-key>"
-      );
-      output = output.replace(
-        /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
-        "<redacted-token>"
-      );
-      return output;
-    };
-
-    const defaultName = `ade-config-${ctx.project.displayName.replace(/[^a-zA-Z0-9._-]+/g, "_")}-${new Date()
-      .toISOString()
-      .slice(0, 10)}.json`;
-    const defaultPath = path.join(ctx.project.rootPath, defaultName);
-
-    const result = win
-      ? await dialog.showSaveDialog(win, {
-          title: "Export ADE config",
-          defaultPath,
-          buttonLabel: "Export",
-          filters: [{ name: "JSON", extensions: ["json"] }]
-        })
-      : await dialog.showSaveDialog({
-          title: "Export ADE config",
-          defaultPath,
-          buttonLabel: "Export",
-          filters: [{ name: "JSON", extensions: ["json"] }]
-        });
-
-    if (result.canceled || !result.filePath) {
-      return { cancelled: true };
-    }
-
-    const exportedAt = nowIso();
-    const bundle = {
-      exportedAt,
-      project: ctx.project,
-      config: {
-        sharedPath,
-        localPath,
-        sharedYaml: readText(sharedPath),
-        localYamlRedacted: redactSecrets(readText(localPath))
-      }
-    };
-
-    const content = `${JSON.stringify(bundle, null, 2)}\n`;
-    fs.writeFileSync(result.filePath, content, "utf8");
-
-    return {
-      cancelled: false,
-      savedPath: result.filePath,
-      bytesWritten: Buffer.byteLength(content, "utf8"),
-      exportedAt
-    };
-  });
-
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> => {
     const state = readGlobalState(globalStatePath);
     return (state.recentProjects ?? []).map((entry) => ({
@@ -1523,26 +1044,43 @@ export function registerIpc({
 
   ipcMain.handle(IPC.onboardingGetStatus, async (): Promise<OnboardingStatus> => {
     const ctx = getCtx();
+    if (!ctx.onboardingService) {
+      return { completedAt: null };
+    }
     return ctx.onboardingService.getStatus();
   });
 
   ipcMain.handle(IPC.onboardingDetectDefaults, async (): Promise<OnboardingDetectionResult> => {
     const ctx = getCtx();
+    if (!ctx.onboardingService) {
+      return {
+        projectTypes: [],
+        indicators: [],
+        suggestedConfig: {
+          version: 1,
+          processes: [],
+          stackButtons: [],
+          testSuites: [],
+          laneOverlayPolicies: [],
+          automations: []
+        },
+        suggestedWorkflows: []
+      };
+    }
     return await ctx.onboardingService.detectDefaults();
   });
 
   ipcMain.handle(IPC.onboardingDetectExistingLanes, async (): Promise<OnboardingExistingLaneCandidate[]> => {
     const ctx = getCtx();
+    if (!ctx.onboardingService) return [];
     return await ctx.onboardingService.detectExistingLanes();
-  });
-
-  ipcMain.handle(IPC.onboardingGenerateInitialPacks, async (_event, arg: { laneIds?: string[] } = {}): Promise<void> => {
-    const ctx = getCtx();
-    await ctx.onboardingService.generateInitialPacks({ laneIds: arg.laneIds });
   });
 
   ipcMain.handle(IPC.onboardingComplete, async (): Promise<OnboardingStatus> => {
     const ctx = getCtx();
+    if (!ctx.onboardingService) {
+      return { completedAt: null };
+    }
     return ctx.onboardingService.complete();
   });
 
@@ -1852,31 +1390,7 @@ export function registerIpc({
         plannerProvider: arg.plannerProvider ?? undefined
       });
       if (!started.started) {
-        throw new Error("Mission run is blocked pending plan review approval.");
-      }
-      return started.started;
-    }
-  );
-
-  ipcMain.handle(
-    IPC.orchestratorApproveMissionPlan,
-    async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
-      const ctx = getCtx();
-      triggerAutoContextDocs(ctx, {
-        trigger: "per_mission",
-        reason: `orchestrator_approve_mission_plan:${arg.missionId}`
-      });
-      const started = await ctx.aiOrchestratorService.approveMissionPlan({
-        missionId: arg.missionId,
-        runMode: arg.runMode,
-        autopilotOwnerId: arg.autopilotOwnerId,
-        defaultExecutorKind: arg.defaultExecutorKind,
-        defaultRetryLimit: arg.defaultRetryLimit,
-        metadata: arg.metadata ?? null,
-        plannerProvider: arg.plannerProvider ?? undefined
-      });
-      if (!started.started) {
-        throw new Error("Mission plan approval did not produce a runnable mission execution.");
+        throw new Error("Mission run did not produce a runnable execution.");
       }
       return started.started;
     }
@@ -2441,7 +1955,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsGetDelta, async (_event, arg: { sessionId: string }): Promise<SessionDeltaSummary | null> => {
     const ctx = getCtx();
-    return ctx.packService.getSessionDelta(arg.sessionId);
+    return ctx.sessionDeltaService?.getSessionDelta(arg.sessionId) ?? null;
   });
 
   ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
@@ -2488,6 +2002,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatDispose, async (_event, arg: AgentChatDisposeArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.dispose(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.updateSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatListContextPacks, async (_event, arg: ContextPackListArgs = {}): Promise<ContextPackOption[]> => {
@@ -2810,7 +2329,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.conflictsListProposals, async (_event, arg: { laneId: string }): Promise<ConflictProposal[]> => {
     const ctx = getCtx();
-    return await ctx.conflictService.listProposals({ laneId: arg.laneId });
+    return await ctx.conflictService.listProposals(arg);
   });
 
   ipcMain.handle(IPC.conflictsPrepareProposal, async (_event, arg: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> => {
@@ -2865,221 +2384,28 @@ export function registerIpc({
 
   ipcMain.handle(IPC.contextGetStatus, async (): Promise<ContextStatus> => {
     const ctx = getCtx();
-    return ctx.packService.getContextStatus();
-  });
-
-  ipcMain.handle(IPC.contextGetInventory, async (): Promise<ContextInventorySnapshot> => {
-    const ctx = getCtx();
-    return buildContextInventorySnapshot(ctx);
+    if (!ctx.contextDocService) {
+      throw new Error("Context doc service is not available.");
+    }
+    return ctx.contextDocService.getStatus();
   });
 
   ipcMain.handle(IPC.contextGenerateDocs, async (_event, arg: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
     const ctx = getCtx();
-    return ctx.packService.generateContextDocs(arg);
-  });
-
-  ipcMain.handle(IPC.contextPrepareDocGeneration, async (_event, arg: ContextPrepareDocGenArgs): Promise<ContextPrepareDocGenResult> => {
-    const ctx = getCtx();
-    return ctx.packService.prepareContextDocGeneration(arg);
-  });
-
-  ipcMain.handle(IPC.contextInstallGeneratedDocs, async (_event, arg: ContextInstallGeneratedDocsArgs): Promise<ContextGenerateDocsResult> => {
-    const ctx = getCtx();
-    return ctx.packService.installGeneratedDocs(arg);
+    if (!ctx.contextDocService) {
+      throw new Error("Context doc service is not available.");
+    }
+    return ctx.contextDocService.generateDocs(arg);
   });
 
   ipcMain.handle(IPC.contextOpenDoc, async (_event, arg: ContextOpenDocArgs): Promise<void> => {
     const ctx = getCtx();
     const explicitPath = typeof arg.path === "string" ? arg.path.trim() : "";
-    const target = explicitPath || (arg.docId ? ctx.packService.getContextDocPath(arg.docId) : "");
+    const target = explicitPath || (arg.docId ? ctx.contextDocService?.getDocPath(arg.docId) ?? "" : "");
     if (!target) {
       throw new Error("contextOpenDoc requires docId or path");
     }
     await shell.openPath(target);
-  });
-
-  ipcMain.handle(IPC.packsGetProjectPack, async (): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return ctx.packService.getProjectPack();
-  });
-
-  ipcMain.handle(IPC.packsGetLanePack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return ctx.packService.getLanePack(arg.laneId);
-  });
-
-  ipcMain.handle(IPC.packsRefreshLanePack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
-    const ctx = getCtx();
-    const lanePack = await ctx.packService.refreshLanePack({
-      laneId: arg.laneId,
-      reason: "manual_refresh"
-    });
-    await ctx.packService.refreshProjectPack({
-      reason: "manual_refresh",
-      laneId: arg.laneId
-    });
-    triggerAutoContextDocs(ctx, {
-      trigger: "per_lane_refresh",
-      reason: `packs_refresh_lane:${arg.laneId}:manual_refresh`
-    });
-    return lanePack;
-  });
-
-  ipcMain.handle(IPC.packsRefreshProjectPack, async (_event, arg: { laneId?: string | null } = {}): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return await ctx.packService.refreshProjectPack({
-      reason: "manual_refresh",
-      ...(arg.laneId ? { laneId: arg.laneId } : {})
-    });
-  });
-
-  ipcMain.handle(IPC.packsRefreshPlanPack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return await ctx.packService.refreshPlanPack({ laneId: arg.laneId, reason: "manual_refresh" });
-  });
-
-  ipcMain.handle(IPC.packsGetFeaturePack, async (_event, arg: { featureKey: string }): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return ctx.packService.getFeaturePack(arg.featureKey);
-  });
-
-  ipcMain.handle(
-    IPC.packsGetConflictPack,
-    async (_event, arg: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> => {
-      const ctx = getCtx();
-      return ctx.packService.getConflictPack({ laneId: arg.laneId, peerLaneId: arg.peerLaneId ?? null });
-    }
-  );
-
-  ipcMain.handle(IPC.packsGetPlanPack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return ctx.packService.getPlanPack(arg.laneId);
-  });
-
-  ipcMain.handle(IPC.packsGetMissionPack, async (_event, arg: GetMissionPackArgs): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return ctx.packService.getMissionPack(arg.missionId);
-  });
-
-  ipcMain.handle(IPC.packsGetProjectExport, async (_event, arg: GetProjectExportArgs): Promise<PackExport> => {
-    const ctx = getCtx();
-    return await ctx.packService.getProjectExport(arg);
-  });
-
-  ipcMain.handle(IPC.packsGetLaneExport, async (_event, arg: GetLaneExportArgs): Promise<PackExport> => {
-    const ctx = getCtx();
-    return await ctx.packService.getLaneExport(arg);
-  });
-
-  ipcMain.handle(IPC.packsGetConflictExport, async (_event, arg: GetConflictExportArgs): Promise<PackExport> => {
-    const ctx = getCtx();
-    return await ctx.packService.getConflictExport(arg);
-  });
-
-  ipcMain.handle(IPC.packsGetFeatureExport, async (_event, arg: { featureKey: string; level: ContextExportLevel }): Promise<PackExport> => {
-    const ctx = getCtx();
-    return await ctx.packService.getFeatureExport(arg);
-  });
-
-  ipcMain.handle(IPC.packsGetPlanExport, async (_event, arg: { laneId: string; level: ContextExportLevel }): Promise<PackExport> => {
-    const ctx = getCtx();
-    return await ctx.packService.getPlanExport(arg);
-  });
-
-  ipcMain.handle(IPC.packsGetMissionExport, async (_event, arg: { missionId: string; level: ContextExportLevel }): Promise<PackExport> => {
-    const ctx = getCtx();
-    return await ctx.packService.getMissionExport(arg);
-  });
-
-  ipcMain.handle(IPC.packsGetDeltaDigest, async (_event, arg: PackDeltaDigestArgs): Promise<PackDeltaDigestV1> => {
-    const ctx = getCtx();
-    return await ctx.packService.getDeltaDigest(arg);
-  });
-
-  ipcMain.handle(IPC.packsRefreshFeaturePack, async (_event, arg: { featureKey: string }): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return await ctx.packService.refreshFeaturePack({ featureKey: arg.featureKey, reason: "manual_refresh" });
-  });
-
-  ipcMain.handle(
-    IPC.packsRefreshConflictPack,
-    async (_event, arg: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> => {
-      const ctx = getCtx();
-      return await ctx.packService.refreshConflictPack({
-        laneId: arg.laneId,
-        peerLaneId: arg.peerLaneId ?? null,
-        reason: "manual_refresh"
-      });
-    }
-  );
-
-  ipcMain.handle(IPC.packsSavePlanPack, async (_event, arg: { laneId: string; body: string }): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return await ctx.packService.savePlanPack({ laneId: arg.laneId, body: arg.body, reason: "manual_save" });
-  });
-
-  ipcMain.handle(IPC.packsRefreshMissionPack, async (_event, arg: RefreshMissionPackArgs): Promise<PackSummary> => {
-    const ctx = getCtx();
-    return await ctx.packService.refreshMissionPack({
-      missionId: arg.missionId,
-      reason: arg.reason ?? "manual_refresh",
-      runId: arg.runId ?? null
-    });
-  });
-
-  ipcMain.handle(IPC.packsListVersions, async (_event, arg: { packKey: string; limit?: number }): Promise<PackVersionSummary[]> => {
-    const ctx = getCtx();
-    return ctx.packService.listVersions({ packKey: arg.packKey, limit: arg.limit });
-  });
-
-  ipcMain.handle(IPC.packsGetVersion, async (_event, arg: { versionId: string }): Promise<PackVersion> => {
-    const ctx = getCtx();
-    return ctx.packService.getVersion(arg.versionId);
-  });
-
-  ipcMain.handle(
-    IPC.packsDiffVersions,
-    async (_event, arg: { fromId: string; toId: string }): Promise<string> => {
-      const ctx = getCtx();
-      return await ctx.packService.diffVersions(arg);
-    }
-  );
-
-  ipcMain.handle(
-    IPC.packsUpdateNarrative,
-    async (_event, arg: { packKey: string; narrative: string }): Promise<PackSummary> => {
-      const ctx = getCtx();
-      return ctx.packService.updateNarrative({ packKey: arg.packKey, narrative: arg.narrative, source: "user" });
-    }
-  );
-
-  ipcMain.handle(
-    IPC.packsListEvents,
-    async (_event, arg: { packKey: string; limit?: number }): Promise<PackEvent[]> => {
-      const ctx = getCtx();
-      return ctx.packService.listEvents({ packKey: arg.packKey, limit: arg.limit });
-    }
-  );
-
-  ipcMain.handle(
-    IPC.packsListEventsSince,
-    async (_event, arg: ListPackEventsSinceArgs): Promise<PackEvent[]> => {
-      const ctx = getCtx();
-      return ctx.packService.listEventsSince(arg);
-    }
-  );
-
-  ipcMain.handle(
-    IPC.packsListCheckpoints,
-    async (_event, arg: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> => {
-      const ctx = getCtx();
-      return ctx.packService.listCheckpoints({ laneId: arg.laneId, limit: arg.limit });
-    }
-  );
-
-  ipcMain.handle(IPC.packsGetHeadVersion, async (_event, arg: { packKey: string }): Promise<PackHeadVersion> => {
-    const ctx = getCtx();
-    return ctx.packService.getHeadVersion({ packKey: arg.packKey });
   });
 
   ipcMain.handle(IPC.githubGetStatus, async (): Promise<GitHubStatus> => {
@@ -3740,12 +3066,91 @@ export function registerIpc({
 
   // ── Memory service IPC ──────────────────────────────────────────────
 
-  ipcMain.handle(IPC.memoryGetBudget, async (_event, arg: { projectId?: string; level?: string }) => {
+  ipcMain.handle(
+    IPC.memoryAdd,
+    async (
+      _event,
+      arg: {
+        projectId?: string;
+        scope?: "user" | "project" | "lane" | "mission" | "agent";
+        scopeOwnerId?: string;
+        category: "fact" | "preference" | "pattern" | "decision" | "gotcha";
+        content: string;
+        importance?: "low" | "medium" | "high";
+        sourceRunId?: string;
+      }
+    ) => {
+      const ctx = getCtx();
+      if (!ctx.memoryService) return null;
+      const pid = arg?.projectId ?? ctx.projectId;
+      const rawScope = typeof arg?.scope === "string" ? arg.scope.trim() : "";
+      const scope = rawScope === "agent"
+        ? "user"
+        : (rawScope === "user" || rawScope === "project" || rawScope === "lane" || rawScope === "mission")
+          ? rawScope
+          : "project";
+      const content = typeof arg?.content === "string" ? arg.content.trim() : "";
+      if (!content) {
+        throw new Error("memory.add requires non-empty content.");
+      }
+      const category = arg?.category;
+      if (!category) {
+        throw new Error("memory.add requires category.");
+      }
+      const importance = arg?.importance === "low" || arg?.importance === "medium" || arg?.importance === "high"
+        ? arg.importance
+        : "medium";
+      const scopeOwnerIdRaw = typeof arg?.scopeOwnerId === "string" ? arg.scopeOwnerId.trim() : "";
+      const scopeOwnerId =
+        scopeOwnerIdRaw.length > 0
+          ? scopeOwnerIdRaw
+          : scope === "mission" && typeof arg?.sourceRunId === "string" && arg.sourceRunId.trim().length > 0
+            ? arg.sourceRunId.trim()
+            : undefined;
+      return ctx.memoryService.addMemory({
+        projectId: pid,
+        scope,
+        ...(scopeOwnerId ? { scopeOwnerId } : {}),
+        category,
+        content,
+        importance,
+        ...(arg?.sourceRunId ? { sourceRunId: arg.sourceRunId } : {}),
+      });
+    }
+  );
+
+  ipcMain.handle(IPC.memoryPin, async (_event, arg: { id: string }) => {
+    const ctx = getCtx();
+    if (!ctx.memoryService) return;
+    ctx.memoryService.pinMemory(arg.id);
+  });
+
+  ipcMain.handle(IPC.memoryUpdateCore, async (_event, arg: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) {
+      throw new Error("CTO state service is not available.");
+    }
+    return ctx.ctoStateService.updateCoreMemory(arg.patch ?? {});
+  });
+
+  ipcMain.handle(IPC.memoryGetBudget, async (_event, arg: { projectId?: string; level?: string; scope?: "user" | "project" | "lane" | "mission" | "agent"; scopeOwnerId?: string }) => {
     const ctx = getCtx();
     if (!ctx.memoryService) return [];
     const pid = arg?.projectId ?? ctx.projectId;
     const level = (arg?.level === "lite" || arg?.level === "standard" || arg?.level === "deep") ? arg.level : "standard";
-    return ctx.memoryService.getMemoryBudget(pid, level);
+    const rawScope = typeof arg?.scope === "string" ? arg.scope.trim() : "";
+    const scope = rawScope === "agent"
+      ? "user"
+      : (rawScope === "user" || rawScope === "project" || rawScope === "lane" || rawScope === "mission")
+        ? rawScope
+        : undefined;
+    const scopeOwnerId = typeof arg?.scopeOwnerId === "string" && arg.scopeOwnerId.trim().length > 0
+      ? arg.scopeOwnerId.trim()
+      : undefined;
+    return ctx.memoryService.getMemoryBudget(pid, level, {
+      ...(scope ? { scope } : {}),
+      ...(scopeOwnerId ? { scopeOwnerId } : {})
+    });
   });
 
   ipcMain.handle(IPC.memoryGetCandidates, async (_event, arg: { projectId?: string; limit?: number }) => {
@@ -3767,12 +3172,39 @@ export function registerIpc({
     ctx.memoryService.archiveMemory(arg.id);
   });
 
-  ipcMain.handle(IPC.memorySearch, async (_event, arg: { query: string; projectId?: string; limit?: number }) => {
+  ipcMain.handle(
+    IPC.memorySearch,
+    async (
+      _event,
+      arg: {
+        query: string;
+        projectId?: string;
+        scope?: "user" | "project" | "lane" | "mission" | "agent";
+        scopeOwnerId?: string;
+        limit?: number;
+        status?: "promoted" | "candidate" | "archived" | "all";
+      }
+    ) => {
     const ctx = getCtx();
     if (!ctx.memoryService) return [];
     const pid = arg?.projectId ?? ctx.projectId;
-    return ctx.memoryService.searchMemories(arg.query, pid, undefined, arg?.limit ?? 10);
-  });
+    const rawScope = typeof arg?.scope === "string" ? arg.scope.trim() : "";
+    const scope = rawScope === "agent"
+      ? "user"
+      : (rawScope === "user" || rawScope === "project" || rawScope === "lane" || rawScope === "mission")
+        ? rawScope
+        : undefined;
+    const scopeOwnerId = typeof arg?.scopeOwnerId === "string" && arg.scopeOwnerId.trim().length > 0
+      ? arg.scopeOwnerId.trim()
+      : undefined;
+    const status = arg?.status === "all"
+      ? (["promoted", "candidate", "archived"] as const)
+      : (arg?.status === "promoted" || arg?.status === "candidate" || arg?.status === "archived")
+        ? arg.status
+        : "promoted";
+    return ctx.memoryService.searchMemories(arg.query, pid, scope, arg?.limit ?? 10, status, scopeOwnerId);
+    }
+  );
 
   // ── CTO state IPC ─────────────────────────────────────────────────
 

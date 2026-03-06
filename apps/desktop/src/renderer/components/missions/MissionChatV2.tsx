@@ -30,7 +30,6 @@ const MONO = MONO_FONT;
 const SANS = SANS_FONT;
 const BG_MAIN = COLORS.cardBg;
 const BG_SIDEBAR = "#1a1625";
-const BG_INPUT = COLORS.recessedBg;
 const BG_PAGE = COLORS.pageBg;
 const ACCENT = COLORS.accent;
 const BORDER = "#2a2535";
@@ -42,26 +41,6 @@ const STATUS_GREEN = COLORS.success;
 const STATUS_GRAY = "#6b7280";
 const STATUS_RED = COLORS.danger;
 const WARNING = COLORS.warning;
-
-type MessageCategory = "all" | "coordinator" | "workers" | "system" | "user";
-
-const MESSAGE_CATEGORIES: { value: MessageCategory; label: string }[] = [
-  { value: "all", label: "All Messages" },
-  { value: "coordinator", label: "Orchestrator" },
-  { value: "workers", label: "Workers" },
-  { value: "system", label: "System" },
-  { value: "user", label: "User" },
-];
-
-function classifyMessage(msg: OrchestratorChatMessage): MessageCategory {
-  if (msg.role === "user") return "user";
-  if (msg.role === "orchestrator") return "system";
-  if (msg.role === "worker") return "workers";
-  // role === "agent": could be coordinator or worker depending on source
-  if (msg.target?.kind === "agent") return "workers"; // inter-agent
-  if (msg.stepKey) return "workers";
-  return "coordinator";
-}
 
 type ChannelKind = "global" | "orchestrator" | "teammate" | "worker";
 
@@ -146,7 +125,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
   const [sending, setSending] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [completedCollapsed, setCompletedCollapsed] = useState(false);
-  const [messageFilter, setMessageFilter] = useState<MessageCategory>("all");
+  const [jumpNotice, setJumpNotice] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const selectedChannelIdRef = useRef<string>("global");
@@ -293,7 +272,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
   // ── Data fetching ──
   const refreshThreads = useCallback(async () => {
     try {
-      const nextThreads = await window.ade.orchestrator.listChatThreads({ missionId });
+      const nextThreads = await window.ade.orchestrator.listChatThreads({ missionId, includeClosed: true });
       setThreads(nextThreads);
     } catch {
       // ignore
@@ -429,6 +408,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
   // ── Jump target handling ──
   useEffect(() => {
     if (!jumpTarget) return;
+    setJumpNotice(null);
 
     if (jumpTarget.kind === "worker") {
       const workerThread = threads.find(
@@ -440,9 +420,13 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
       if (workerThread) {
         setSelectedChannelId(`thread:${workerThread.id}`);
       } else {
-        // Fallback to coordinator if no matching worker thread (e.g. planner step)
         const coordThread = threads.find((t) => t.threadType === "coordinator");
-        if (coordThread) setSelectedChannelId(`thread:${coordThread.id}`);
+        if (coordThread) {
+          setSelectedChannelId(`thread:${coordThread.id}`);
+        } else {
+          setSelectedChannelId("global");
+        }
+        setJumpNotice(`No worker conversation is available for ${jumpTarget.stepKey ? `"${jumpTarget.stepKey}"` : "that step"} yet.`);
       }
     } else if (jumpTarget.kind === "teammate") {
       const teammateThread = threads.find((t) => t.threadType === "teammate");
@@ -488,18 +472,15 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     } else {
       msgs = threadMessages;
     }
-    if (messageFilter !== "all") {
-      msgs = msgs.filter((m) => classifyMessage(m) === messageFilter);
-    }
     return msgs;
-  }, [selectedChannel, globalMessages, threadMessages, messageFilter]);
+  }, [selectedChannel, globalMessages, threadMessages]);
 
   // ── Attempt name map ──
   const attemptNameMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const t of threads) {
       if (t.attemptId) {
-        map.set(t.attemptId, t.title || (t.threadType === "coordinator" ? "Coordinator" : "Worker"));
+        map.set(t.attemptId, t.title || (t.threadType === "coordinator" ? "Orchestrator" : "Worker"));
       }
     }
     return map;
@@ -638,13 +619,13 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
             unreadCount={0}
           />
 
-          {/* Coordinator section */}
+          {/* Orchestrator section */}
           {orchestratorChannel && (
             <>
-              <SectionLabel>COORDINATOR</SectionLabel>
+              <SectionLabel>ORCHESTRATOR</SectionLabel>
               <ChannelButton
                 icon={<Crown size={12} weight="fill" />}
-                label="Coordinator"
+                label="Orchestrator"
                 statusColor={STATUS_DOT[orchestratorChannel.status] ?? STATUS_GRAY}
                 isSelected={selectedChannelId === orchestratorChannel.id}
                 onClick={() => setSelectedChannelId(orchestratorChannel.id)}
@@ -770,7 +751,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
               style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" }}
             >
               <Crown size={10} weight="fill" />
-              Coordinator
+              Orchestrator
             </span>
           )}
           {selectedChannel?.kind === "teammate" && (
@@ -800,40 +781,16 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
               All Messages
             </span>
           )}
-          <div className="ml-auto flex items-center gap-2">
-            <select
-              value={messageFilter}
-              onChange={(e) => setMessageFilter(e.target.value as MessageCategory)}
-              className="h-6 px-2 text-[10px] outline-none"
-              style={{
-                background: BG_INPUT,
-                border: `1px solid ${BORDER}`,
-                color: TEXT_PRIMARY,
-                fontFamily: MONO,
-                fontSize: "10px",
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-                borderRadius: 0,
-              }}
-            >
-              {MESSAGE_CATEGORIES.map((cat) => (
-                <option key={cat.value} value={cat.value}>
-                  {cat.label}
-                </option>
-              ))}
-            </select>
-            {messageFilter !== "all" && (
-              <button
-                onClick={() => setMessageFilter("all")}
-                className="text-[10px] transition-colors hover:text-white"
-                style={{ color: TEXT_MUTED, fontFamily: MONO }}
-              >
-                Clear
-              </button>
-            )}
-          </div>
         </div>
+
+        {jumpNotice && (
+          <div
+            className="px-4 py-2 text-[11px]"
+            style={{ borderBottom: `1px solid ${WARNING}30`, background: `${WARNING}12`, color: WARNING }}
+          >
+            {jumpNotice}
+          </div>
+        )}
 
         {/* Runtime availability banner */}
         {chatBlocked && (
@@ -1259,17 +1216,26 @@ const MessageBubble = React.memo(function MessageBubble({
       : isWorker
         ? "#A78BFA10"
         : BG_MAIN;
+  const bubbleStyle: React.CSSProperties = isBudgetWarning
+    ? {
+        background: bubbleBg,
+        borderTop: `1px solid ${WARNING}30`,
+        borderRight: `1px solid ${WARNING}30`,
+        borderBottom: `1px solid ${WARNING}30`,
+        borderLeft: `3px solid ${WARNING}`,
+        color: TEXT_PRIMARY,
+      }
+    : {
+        background: bubbleBg,
+        border: bubbleBorder,
+        color: TEXT_PRIMARY,
+      };
 
   return (
     <div className="flex justify-start">
       <div
         className="max-w-[80%] px-3 py-2 text-xs"
-        style={{
-          background: bubbleBg,
-          border: bubbleBorder,
-          borderLeft: isBudgetWarning ? `3px solid ${WARNING}` : undefined,
-          color: TEXT_PRIMARY,
-        }}
+        style={bubbleStyle}
       >
         <div className="mb-1 flex items-center gap-1 text-[10px]" style={{ color: isBudgetWarning ? WARNING : TEXT_MUTED }}>
           {isBudgetWarning && <span style={{ fontSize: "12px" }}>{"\u26A0"}</span>}

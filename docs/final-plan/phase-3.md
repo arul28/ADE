@@ -44,7 +44,7 @@ Phase 3 has already delivered 20+ workstreams across four waves. The orchestrato
 
 ### Wave 1: Core Orchestrator (W1-W12)
 
-AI orchestrator service with Claude leader session and MCP tools. Fail-hard planner (300s timeout, no deterministic fallback). PR strategies replacing the old merge phase (`integration` | `per-lane` | `queue` | `manual`). Multi-agent team synthesis with parallel lane provisioning. Recovery loops with heartbeat monitoring and stale attempt detection. Gate evaluator for step/mission completion. Execution plan preview with approval gates. Inter-agent messaging (`sendAgentMessage` IPC). Activity feed with category dropdown. Mission workspace with missionId-filtered queries. Per-mission model selection with thinking budgets. Context packs for progressive orchestrator memory.
+AI orchestrator service with Claude leader session and MCP tools. Historical pre-mission planner references in this section are superseded by the current built-in planning phase runtime. PR strategies replacing the old merge phase (`integration` | `per-lane` | `queue` | `manual`). Multi-agent team synthesis with parallel lane provisioning. Recovery loops with heartbeat monitoring and stale attempt detection. Gate evaluator for step/mission completion. Execution plan preview with approval gates. Inter-agent messaging (`sendAgentMessage` IPC). Activity feed with category dropdown. Mission workspace with missionId-filtered queries. Per-mission model selection with thinking budgets. Context packs for progressive orchestrator memory.
 
 ### Wave 2: Project Hivemind (HW1-HW8, shipped 2026-02-25)
 
@@ -249,7 +249,7 @@ interface PhaseCard {
 
 ### Pre-Mission Planning
 
-Before any execution phases run, a dedicated **pre-mission planner** performs deep research on the codebase (reading files, searching code, tracing dependencies) and generates a structured step graph. This is NOT a phase card — it runs before the phase pipeline starts. The planner gets a full agent session with read-only tools to thoroughly understand the codebase.
+Historical note (superseded): this document originally described a dedicated pre-mission planner. The active runtime model now treats planning as a built-in mission phase (`planning`) that runs inside orchestrator execution and transitions explicitly to `development`.
 
 ### Built-In Phases
 

@@ -1,9 +1,5 @@
 import type { Logger } from "../logging/logger";
-import type { createPackService } from "../packs/packService";
 import type { createConflictService } from "../conflicts/conflictService";
-import type { createProjectConfigService } from "../config/projectConfigService";
-import type { createAiIntegrationService } from "../ai/aiIntegrationService";
-import type { createLaneService } from "../lanes/laneService";
 
 type RefreshRequest = {
   laneId: string;
@@ -19,18 +15,10 @@ type LaneQueueState = {
 
 export function createJobEngine({
   logger,
-  packService,
   conflictService,
-  aiIntegrationService: _aiIntegrationService,
-  laneService: _laneService,
-  projectConfigService: _projectConfigService,
 }: {
   logger: Logger;
-  packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
-  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
-  laneService?: ReturnType<typeof createLaneService>;
-  projectConfigService?: ReturnType<typeof createProjectConfigService>;
 }) {
   const laneQueue = new Map<string, LaneQueueState>();
   const dirtyLaneQueue = new Set<string>();
@@ -59,17 +47,8 @@ export function createJobEngine({
 
       try {
         logger.info("jobs.refresh_lane.begin", payload);
-
-        await packService.refreshLanePack({
-          laneId: payload.laneId,
-          reason: payload.reason,
-          sessionId: payload.sessionId
-        });
-
-        await packService.refreshProjectPack({
-          reason: payload.reason,
-          laneId: payload.laneId
-        });
+        // Pack refresh pipeline removed in W6. Lane refresh job remains as a
+        // scheduling hook for downstream memory/conflict upkeep.
 
         logger.info("jobs.refresh_lane.done", payload);
       } catch (error) {

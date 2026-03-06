@@ -2,12 +2,9 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   GearSix,
   X,
-  Warning,
-  Plus,
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
-import type { PhaseProfile, PhaseCard, MissionPermissionConfig } from "../../../shared/types";
-import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
+import type { PhaseProfile, PhaseCard } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import {
@@ -376,7 +373,7 @@ export function MissionSettingsDialog({
                 Execution policy is derived from your Phase Profiles below. Customize phases to control planning, testing, validation, and review behavior.
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="text-xs">
                 <div style={settingsLabelStyle}>DEFAULT ORCHESTRATOR MODEL</div>
                 <div className="mt-1">
@@ -398,14 +395,6 @@ export function MissionSettingsDialog({
                   <option value="off">Off</option>
                   <option value="required">Required</option>
                 </select>
-              </label>
-              <label className="flex items-center gap-2 text-xs pt-5" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
-                <input
-                  type="checkbox"
-                  checked={draft.requirePlanReview}
-                  onChange={(e) => onDraftChange({ requirePlanReview: e.target.checked })}
-                />
-                Require plan review
               </label>
             </div>
           </div>

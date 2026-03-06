@@ -79,7 +79,7 @@ Goal: Consolidate AI execution on local-first agent SDK runtimes unified behind 
 - Route conflict proposal generation through `AgentExecutor.execute()`.
 - Default: Claude with `sonnet` model, `read-only` permissions, 60s timeout.
 - One-shot pattern: build prompt from `LaneExportLite` × 2 + `ConflictExportStandard`, receive resolution diff + confidence + explanation.
-- **New user configuration options** (added to Conflicts tab resolution UI):
+- **New user configuration options** (added to the historical conflict-resolution UI, now represented across Graph/Lanes/PRs surfaces):
   - **Where to apply changes**: target branch / source branch / AI decides optimal location.
   - **Post-resolution action**: apply changes unstaged / stage changes / commit with generated message.
   - **PR behavior**: do nothing / open PR if not already open / add to existing PR.

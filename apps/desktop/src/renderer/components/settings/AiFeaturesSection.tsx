@@ -12,6 +12,7 @@ import {
   LABEL_STYLE,
   cardStyle,
 } from "../lanes/laneDesignTokens";
+import { deriveConfiguredModelOptions } from "../../lib/modelOptions";
 
 type FeatureInfo = {
   key: AiFeatureKey;
@@ -21,13 +22,13 @@ type FeatureInfo = {
 };
 
 const FEATURES: FeatureInfo[] = [
-  { key: "terminal_summaries", label: "Terminal Summaries", description: "Summarize terminal sessions when they close", defaultModel: "haiku" },
-  { key: "pr_descriptions", label: "PR Descriptions", description: "Auto-draft PR descriptions from lane changes", defaultModel: "haiku" },
-  { key: "narratives", label: "Narratives", description: "Generate work narratives for completed tasks", defaultModel: "haiku" },
-  { key: "conflict_proposals", label: "Conflict Proposals", description: "Suggest resolutions for merge conflicts", defaultModel: "sonnet" },
-  { key: "mission_planning", label: "Mission Planning", description: "AI-powered mission planning", defaultModel: "sonnet" },
-  { key: "orchestrator", label: "Orchestrator", description: "AI orchestrator for mission execution", defaultModel: "sonnet" },
-  { key: "initial_context", label: "Initial Context", description: "Generate initial project context", defaultModel: "sonnet" },
+  { key: "terminal_summaries", label: "Terminal Summaries", description: "Summarize terminal sessions when they close", defaultModel: "anthropic/claude-haiku-4-5" },
+  { key: "pr_descriptions", label: "PR Descriptions", description: "Auto-draft PR descriptions from lane changes", defaultModel: "anthropic/claude-haiku-4-5" },
+  { key: "narratives", label: "Narratives", description: "Generate work narratives for completed tasks", defaultModel: "anthropic/claude-haiku-4-5" },
+  { key: "conflict_proposals", label: "Conflict Proposals", description: "Suggest resolutions for merge conflicts", defaultModel: "anthropic/claude-sonnet-4-6" },
+  { key: "mission_planning", label: "Mission Planning", description: "AI-powered mission planning", defaultModel: "anthropic/claude-sonnet-4-6" },
+  { key: "orchestrator", label: "Orchestrator", description: "AI orchestrator for mission execution", defaultModel: "anthropic/claude-sonnet-4-6" },
+  { key: "initial_context", label: "Initial Context", description: "Generate initial project context", defaultModel: "anthropic/claude-sonnet-4-6" },
 ];
 
 const sectionLabelStyle: React.CSSProperties = {
@@ -105,18 +106,7 @@ export function AiFeaturesSection() {
   }, [loadStatus]);
 
   const allModels: AiModelDescriptor[] = React.useMemo(() => {
-    if (!status) return [];
-    const seen = new Set<string>();
-    const result: AiModelDescriptor[] = [];
-    for (const list of Object.values(status.models)) {
-      for (const m of list) {
-        if (!seen.has(m.id)) {
-          seen.add(m.id);
-          result.push(m);
-        }
-      }
-    }
-    return result;
+    return deriveConfiguredModelOptions(status);
   }, [status]);
 
   // Track per-feature model overrides locally (loaded from config)

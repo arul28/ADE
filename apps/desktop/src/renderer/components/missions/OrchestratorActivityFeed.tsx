@@ -29,7 +29,6 @@ const EVENT_CONFIG: Record<string, { icon: string; color: string; label: string;
   claim_heartbeat: { icon: "\u25A1", color: "text-amber-200", label: "Heartbeat", category: "Workers" },
   context_snapshot_created: { icon: "\u25C6", color: "text-cyan-400", label: "Snapshot", category: "Quality" },
   context_pressure_warning: { icon: "\u26A0", color: "text-red-400", label: "Pressure", category: "Quality" },
-  context_pack_bootstrap: { icon: "\u25C6", color: "text-cyan-300", label: "Bootstrap", category: "Quality" },
   validation_contract_unfulfilled: { icon: "\u26A0", color: "text-red-400", label: "Validation", category: "Quality" },
   validation_self_check_reminder: { icon: "\u2611", color: "text-amber-300", label: "Validation", category: "Quality" },
   validation_auto_spawned: { icon: "\u2699", color: "text-cyan-300", label: "Validation", category: "Quality" },
@@ -81,7 +80,6 @@ const HIDDEN_MAINTENANCE_EVENT_TYPES = new Set([
   "dynamic_cap",
   "autopilot_parallelism_cap_adjusted",
   "claim_heartbeat",
-  "context_pack_bootstrap",
 ]);
 
 function sortTimeline(events: OrchestratorTimelineEvent[]): OrchestratorTimelineEvent[] {

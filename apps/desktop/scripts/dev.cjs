@@ -92,14 +92,22 @@ function spawnProcess(name, cmd, args, extraEnv = {}) {
 async function main() {
   const devPort = await choosePort(5173, 32);
   const devServerUrl = `http://localhost:${devPort}`;
+  const remoteDebugPort = Number.parseInt(process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT || "9222", 10);
+  if (!Number.isFinite(remoteDebugPort) || remoteDebugPort <= 0) {
+    throw new Error(`Invalid ADE_ELECTRON_REMOTE_DEBUGGING_PORT: ${process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT ?? ""}`);
+  }
   process.stdout.write(`[ade] dev launcher using ${devServerUrl}\n`);
+  process.stdout.write(`[ade] electron CDP endpoint: http://127.0.0.1:${remoteDebugPort}/json/version\n`);
 
   const children = new Set();
   let shuttingDown = false;
+  let electron = null;
+  let electronRestartPending = false;
 
   const teardown = (signal = "SIGTERM") => {
     if (shuttingDown) return;
     shuttingDown = true;
+    fs.unwatchFile(distMainFile);
     for (const child of children) {
       if (!child.killed) {
         try {
@@ -134,18 +142,50 @@ async function main() {
 
   await Promise.all([waitForPort(devPort, 30_000), waitForFile(distMainFile, 30_000)]);
 
-  const electron = spawnProcess("electron", "npx", ["electron", ".", "--remote-debugging-port=9222"], {
-    VITE_DEV_SERVER_URL: devServerUrl
-  });
-  children.add(electron);
+  const electronEnv = { VITE_DEV_SERVER_URL: devServerUrl };
+  const launchElectron = () => {
+    const child = spawnProcess("electron", "npx", ["electron", ".", `--remote-debugging-port=${remoteDebugPort}`], electronEnv);
+    electron = child;
+    children.add(child);
+    child.on("exit", (code, signal) => {
+      children.delete(child);
+      if (shuttingDown) return;
+      if (electron !== child) return;
+      electron = null;
+      if (electronRestartPending) {
+        electronRestartPending = false;
+        process.stdout.write("[ade] electron restarted with updated main bundle\n");
+        launchElectron();
+        return;
+      }
+      process.stdout.write(
+        `[ade] electron exited (code=${code ?? "null"}, signal=${signal ?? "null"}); stopping dev launcher.\n`
+      );
+      teardown("SIGTERM");
+      process.exit(code ?? 0);
+    });
+  };
 
-  electron.on("exit", (code, signal) => {
+  const requestElectronRestart = (reason) => {
+    if (shuttingDown || !electron) return;
+    if (electronRestartPending) return;
+    electronRestartPending = true;
+    process.stdout.write(`[ade] restarting electron (${reason})\n`);
+    try {
+      electron.kill("SIGTERM");
+    } catch {
+      electronRestartPending = false;
+    }
+  };
+
+  launchElectron();
+
+  let lastMainBundleMtimeMs = fs.statSync(distMainFile).mtimeMs;
+  fs.watchFile(distMainFile, { interval: 250 }, (curr) => {
     if (shuttingDown) return;
-    process.stdout.write(
-      `[ade] electron exited (code=${code ?? "null"}, signal=${signal ?? "null"}); stopping dev launcher.\n`
-    );
-    teardown("SIGTERM");
-    process.exit(code ?? 0);
+    if (!curr || curr.mtimeMs <= lastMainBundleMtimeMs) return;
+    lastMainBundleMtimeMs = curr.mtimeMs;
+    requestElectronRestart("main bundle updated");
   });
 }
 

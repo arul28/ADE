@@ -6,8 +6,6 @@ import type { ProviderMode } from "./core";
 import type { LaneType, LaneStatus } from "./lanes";
 import type { ConflictStatusValue, ConflictRiskLevel } from "./conflicts";
 import type { GitConflictState } from "./git";
-import type { MissionStatus } from "./missions";
-import type { MissionStepHandoff } from "./missions";
 
 export type PackType = "project" | "lane" | "feature" | "conflict" | "plan" | "mission";
 
@@ -411,76 +409,6 @@ export type ContextStatus = {
   warnings: ContextDocGenerationWarning[];
 };
 
-export type ContextInventoryPackEntry = {
-  packKey: string;
-  packType: PackType;
-  laneId: string | null;
-  deterministicUpdatedAt: string | null;
-  narrativeUpdatedAt: string | null;
-  lastHeadSha: string | null;
-  versionId: string | null;
-  versionNumber: number | null;
-  contentHash: string | null;
-};
-
-export type ContextInventoryCheckpointEntry = {
-  id: string;
-  laneId: string;
-  sessionId: string | null;
-  createdAt: string;
-  sha: string;
-};
-
-export type ContextInventorySessionDeltaEntry = {
-  sessionId: string;
-  laneId: string;
-  startedAt: string;
-  endedAt: string | null;
-  filesChanged: number;
-  insertions: number;
-  deletions: number;
-  computedAt: string | null;
-};
-
-export type ContextInventoryOrchestratorSummary = {
-  activeRuns: number;
-  runningSteps: number;
-  runningAttempts: number;
-  activeClaims: number;
-  expiredClaims: number;
-  snapshots: number;
-  handoffs: number;
-  timelineEvents: number;
-  recentRunIds: string[];
-  recentAttemptIds: string[];
-};
-
-export type ContextInventorySnapshot = {
-  generatedAt: string;
-  packs: {
-    total: number;
-    byType: Partial<Record<PackType, number>>;
-    recent: ContextInventoryPackEntry[];
-  };
-  checkpoints: {
-    total: number;
-    recent: ContextInventoryCheckpointEntry[];
-  };
-  sessionTracking: {
-    trackedSessions: number;
-    untrackedSessions: number;
-    runningSessions: number;
-    recentDeltas: ContextInventorySessionDeltaEntry[];
-  };
-  missions: {
-    total: number;
-    byStatus: Partial<Record<MissionStatus, number>>;
-    openInterventions: number;
-    recentHandoffs: MissionStepHandoff[];
-  };
-  orchestrator: ContextInventoryOrchestratorSummary;
-};
-
 export type ContextDocProvider = "codex" | "claude" | "unified";
 
 export type ContextRefreshTrigger = "manual" | "per_mission" | "per_pr" | "per_lane_refresh";
@@ -491,25 +419,6 @@ export type ContextGenerateDocsArgs = {
   reasoningEffort?: string | null;
   trigger?: ContextRefreshTrigger;
   force?: boolean;
-};
-
-export type ContextPrepareDocGenArgs = {
-  provider: ContextDocProvider;
-  laneId: string;
-};
-
-export type ContextPrepareDocGenResult = {
-  promptFilePath: string;
-  outputPrdPath: string;
-  outputArchPath: string;
-  cwd: string;
-  provider: ContextDocProvider;
-};
-
-export type ContextInstallGeneratedDocsArgs = {
-  provider: ContextDocProvider;
-  outputPrdPath: string;
-  outputArchPath: string;
 };
 
 export type ContextGenerateDocsResult = {

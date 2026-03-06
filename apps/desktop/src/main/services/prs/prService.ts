@@ -53,12 +53,12 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
-import type { createPackService } from "../packs/packService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import { runGit, runGitOrThrow } from "../git/git";
+import { extractFirstJsonObject } from "../ai/utils";
 import { asNumber, asString, nowIso } from "../shared/utils";
 
 type PullRequestRow = {
@@ -228,25 +228,6 @@ function readPrTemplate(projectRoot: string): string | null {
   }
 }
 
-function extractFirstJsonObject(text: string): string | null {
-  const raw = text.trim();
-  if (!raw) return null;
-  if (raw.startsWith("{") && raw.endsWith("}")) return raw;
-
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) {
-    const inner = fenced[1].trim();
-    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
-  }
-
-  const first = raw.indexOf("{");
-  const last = raw.lastIndexOf("}");
-  if (first >= 0 && last > first) {
-    const candidate = raw.slice(first, last + 1).trim();
-    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
-  }
-  return null;
-}
 
 function parsePrDraftJson(text: string): { title: string; body: string } | null {
   const candidate = extractFirstJsonObject(text);
@@ -468,7 +449,6 @@ export function createPrService({
   laneService,
   operationService,
   githubService,
-  packService,
   aiIntegrationService,
   projectConfigService,
   conflictService,
@@ -481,7 +461,6 @@ export function createPrService({
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   githubService: ReturnType<typeof createGithubService>;
-  packService: ReturnType<typeof createPackService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   conflictService?: ReturnType<typeof createConflictService>;
@@ -660,18 +639,20 @@ export function createPrService({
       query: { per_page: 100 }
     });
 
-    return (data ?? []).map((entry: any) => ({
-      reviewer: asString(entry?.user?.login) || "unknown",
-      state: (asString(entry?.state).toLowerCase() === "approved"
-        ? "approved"
-        : asString(entry?.state).toLowerCase() === "changes_requested"
-          ? "changes_requested"
-          : asString(entry?.state).toLowerCase() === "dismissed"
-            ? "dismissed"
-            : "commented") as PrReview["state"],
-      body: asString(entry?.body) || null,
-      submittedAt: asString(entry?.submitted_at) || null
-    }));
+    return (data ?? []).map((entry: any) => {
+      const rawState = asString(entry?.state).toLowerCase();
+      let state: PrReview["state"];
+      if (rawState === "approved") state = "approved";
+      else if (rawState === "changes_requested") state = "changes_requested";
+      else if (rawState === "dismissed") state = "dismissed";
+      else state = "commented";
+      return {
+        reviewer: asString(entry?.user?.login) || "unknown",
+        state,
+        body: asString(entry?.body) || null,
+        submittedAt: asString(entry?.submitted_at) || null
+      };
+    });
   };
 
   const fetchIssueComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
@@ -886,18 +867,13 @@ export function createPrService({
       const status: PrCheck["status"] =
         statusRaw === "queued" ? "queued" : statusRaw === "in_progress" ? "in_progress" : "completed";
       const conclusionRaw = asString(run?.conclusion).toLowerCase();
-      const conclusion: PrCheck["conclusion"] =
-        conclusionRaw === "success"
-          ? "success"
-          : conclusionRaw === "failure" || conclusionRaw === "timed_out" || conclusionRaw === "action_required"
-            ? "failure"
-            : conclusionRaw === "neutral"
-              ? "neutral"
-              : conclusionRaw === "skipped"
-                ? "skipped"
-                : conclusionRaw === "cancelled"
-                  ? "cancelled"
-                  : null;
+      let conclusion: PrCheck["conclusion"];
+      if (conclusionRaw === "success") conclusion = "success";
+      else if (conclusionRaw === "failure" || conclusionRaw === "timed_out" || conclusionRaw === "action_required") conclusion = "failure";
+      else if (conclusionRaw === "neutral") conclusion = "neutral";
+      else if (conclusionRaw === "skipped") conclusion = "skipped";
+      else if (conclusionRaw === "cancelled") conclusion = "cancelled";
+      else conclusion = null;
       out.push({
         name,
         status,
@@ -1035,12 +1011,16 @@ export function createPrService({
 
     const template = readPrTemplate(projectRoot);
     const packBody = await (async () => {
-      // Use a bounded lane export for AI providers (keeps payload compact + deterministic, and avoids feeding prior narrative).
-      try {
-        return (await packService.getLaneExport({ laneId, level: "standard" })).content;
-      } catch {
-        return packService.getLanePack(laneId).body;
+      // W6: pack-based context removed. Provide a bounded git-native lane change summary instead.
+      const diff = await runGit(
+        ["diff", "--name-status", `${lane.baseRef}...HEAD`],
+        { cwd: lane.worktreePath, timeoutMs: 15_000 }
+      );
+      if (diff.exitCode === 0) {
+        return diff.stdout.trim() || "(no changed files)";
       }
+      const status = await runGit(["status", "--short"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+      return status.exitCode === 0 ? status.stdout.trim() || "(no changed files)" : "(unable to compute lane change summary)";
     })();
 
     const commits = await runGit(

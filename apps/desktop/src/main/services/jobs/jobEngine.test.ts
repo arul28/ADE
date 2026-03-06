@@ -6,30 +6,11 @@ function flush(): Promise<void> {
 }
 
 describe("jobEngine deterministic refresh", () => {
-  it("refreshes lane and project packs without AI narrative generation", async () => {
-    const refreshLanePack = vi.fn(async () => ({
-      packKey: "lane:lane-1",
-      deterministicUpdatedAt: "2026-02-16T00:00:00.000Z",
-      contentHash: "abc"
-    }));
-    const refreshProjectPack = vi.fn(async () => ({}));
-    const generateNarrative = vi.fn();
+  it("queues lane refresh hooks without pack refresh side effects", async () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any;
 
     const engine = createJobEngine({
-      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
-      packService: {
-        refreshLanePack,
-        refreshProjectPack,
-      } as any,
-      aiIntegrationService: {
-        generateNarrative
-      } as any,
-      laneService: {
-        getLaneBaseAndBranch: () => ({ worktreePath: "/tmp/demo" })
-      } as any,
-      projectConfigService: {
-        get: () => ({ effective: { providerMode: "subscription" } })
-      } as any
+      logger,
     });
 
     engine.onSessionEnded({ laneId: "lane-1", sessionId: "session-1" });
@@ -37,20 +18,13 @@ describe("jobEngine deterministic refresh", () => {
     await flush();
     await flush();
 
-    expect(refreshLanePack).toHaveBeenCalledTimes(1);
-    expect(refreshLanePack).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      sessionId: "session-1",
-      reason: "session_end"
-    });
-
-    expect(refreshProjectPack).toHaveBeenCalledTimes(1);
-    expect(refreshProjectPack).toHaveBeenCalledWith({
-      reason: "session_end",
-      laneId: "lane-1"
-    });
-
-    // AI narrative generation should NOT be called - packs are purely deterministic
-    expect(generateNarrative).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      "jobs.refresh_lane.begin",
+      expect.objectContaining({ laneId: "lane-1", sessionId: "session-1", reason: "session_end" })
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "jobs.refresh_lane.done",
+      expect.objectContaining({ laneId: "lane-1", sessionId: "session-1", reason: "session_end" })
+    );
   });
 });

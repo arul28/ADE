@@ -2,15 +2,15 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-03
+> Last updated: 2026-03-05
 
 ---
 
 ## Overview
 
-Onboarding initializes ADE in an existing repository. Settings controls ongoing behavior across config, automations, context generation, and AI runtime mode.
+Onboarding initializes ADE in an existing repository. Settings controls ongoing behavior across config, automation defaults/integrations, context generation, and AI runtime mode.
 
-This document reflects the current no-legacy baseline, including `ai.mode`-driven provider behavior and removal of legacy `providers.mode` migration paths.
+This document reflects the current provider/config baseline, including `ai.mode`-driven behavior and removal of legacy `providers.mode` migration paths. It does **not** mean all historical context-pack/runtime compatibility paths are gone; those still exist where documented elsewhere. It also treats Automations as a separate first-class surface: Settings owns defaults and integrations, while `/automations` owns authoring and operations.
 
 ---
 
@@ -21,7 +21,7 @@ On first open (or when `.ade/` is missing), onboarding guides users through:
 1. project defaults detection,
 2. config review/edit,
 3. optional existing-branch import as lanes,
-4. initial project/lane pack refresh,
+4. initial context baseline preparation (project/lane summaries + conflict seeds),
 5. optional initial context doc generation.
 
 ### Defaults detection
@@ -38,9 +38,9 @@ Suggested config writes into ADE config structure with:
 - automations,
 - provider context tool generators.
 
-### Initial pack/context generation
+### Initial context baseline generation
 
-Onboarding always refreshes project and selected lane packs.
+Onboarding prepares deterministic project/lane context summaries and seeds conflict prediction state.
 
 Initial context doc generation runs only when effective provider mode is not guest.
 
@@ -98,21 +98,23 @@ Provider-specific execution permissions are controlled from `ai.permissions` and
 
 ### Automations
 
-Automations are configured from effective config (`effective.automations`) and run trigger-action flows (`session-end`, `commit`, `schedule`, `manual`) with actions like:
+Settings does not serve as the primary automation builder. Instead, it provides the defaults and infrastructure that power the dedicated `/automations` tab.
 
-- `update-packs`
-- `predict-conflicts`
-- `run-tests`
-- `run-command`
+Settings-owned automation concerns include:
+
+- default model/provider, budget, and approval policies for new automations
+- connector auth and health for GitHub, Linear, and webhook integrations
+- shared Night Shift defaults such as active window, notification delivery, and reserve policies
+- team-shared templates and preset tool palettes
 
 ### Context controls
 
-Settings expose context doc generation and install flows tied to `.ade/context/PRD.ade.md` and `.ade/context/ARCHITECTURE.ade.md`.
+Settings expose context doc status, generation, and open flows tied to `.ade/context/PRD.ade.md` and `.ade/context/ARCHITECTURE.ade.md`.
 
 ---
 
 ## Operational Notes
 
-- Onboarding can seed useful deterministic context even before AI narratives are available.
+- Onboarding can seed useful deterministic context even before AI generation is available.
 - `ai.mode` is the authoritative knob for guest vs subscription behavior.
 - Legacy provider mode keys are not part of the current contract.

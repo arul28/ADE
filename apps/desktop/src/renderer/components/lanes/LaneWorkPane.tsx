@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
-import { ChatCircle, Terminal } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { LaneTerminalsPanel } from "./LaneTerminalsPanel";
 import { AgentChatPane } from "../chat/AgentChatPane";
-import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { MONO_FONT } from "./laneDesignTokens";
 import { isChatToolType } from "../../lib/sessions";
+import { AiChatLogo, ShellLogo } from "../terminals/ToolLogos";
 
 const WORK_TABS = [
-  { id: "terminal" as const, num: "01", label: "TERMINAL", Icon: Terminal },
-  { id: "chat" as const, num: "02", label: "CHAT", Icon: ChatCircle },
+  { id: "terminal" as const, num: "01", label: "Workspace sessions", Logo: ShellLogo },
+  { id: "chat" as const, num: "02", label: "AI chats", Logo: AiChatLogo },
 ];
 
 export function LaneWorkPane({
@@ -16,6 +16,17 @@ export function LaneWorkPane({
 }: {
   laneId: string | null;
 }) {
+  const themeSurface = "var(--color-surface)";
+  const themeRaised = "var(--color-surface-raised)";
+  const themeRecessed = "var(--color-surface-recessed)";
+  const themeBorder = "color-mix(in srgb, var(--color-border) 72%, transparent)";
+  const themeAccent = "var(--color-accent)";
+  const themeAccentMuted = "color-mix(in srgb, var(--color-accent) 12%, transparent)";
+  const themeText = "var(--color-fg)";
+  const themeTextMuted = "var(--color-muted-fg)";
+  const themeTextDim = "color-mix(in srgb, var(--color-muted-fg) 72%, var(--color-fg) 28%)";
+  const themeTextSecondary = "color-mix(in srgb, var(--color-muted-fg) 60%, var(--color-fg) 40%)";
+
   const focusedSessionId = useAppStore((state) => state.focusedSessionId);
   const [view, setView] = useState<"terminal" | "chat">("terminal");
   const [focusedChatSessionId, setFocusedChatSessionId] = useState<string | null>(null);
@@ -52,10 +63,10 @@ export function LaneWorkPane({
   }, [focusedSessionId, laneId]);
 
   return (
-    <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
+    <div className="flex h-full flex-col" style={{ background: themeSurface }}>
       <div
         className="flex items-center shrink-0"
-        style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg, gap: 8 }}
+        style={{ borderBottom: `1px solid ${themeBorder}`, background: themeRaised, gap: 8 }}
       >
         {WORK_TABS.map((tab) => {
           const isActive = view === tab.id;
@@ -71,37 +82,40 @@ export function LaneWorkPane({
                 textTransform: "uppercase",
                 letterSpacing: "1px",
                 height: 40,
-                padding: "10px 16px",
+                padding: "10px 14px",
                 gap: 8,
                 ...(isActive
                   ? {
-                      background: `${COLORS.accent}18`,
-                      borderLeft: `2px solid ${COLORS.accent}`,
-                      color: COLORS.textPrimary,
+                      background: themeAccentMuted,
+                      borderLeft: `2px solid ${themeAccent}`,
+                      color: themeText,
                     }
                   : {
                       background: "transparent",
                       borderLeft: "2px solid transparent",
-                      color: COLORS.textMuted,
+                      color: themeTextMuted,
                     }),
               }}
               onClick={() => setView(tab.id)}
               onMouseEnter={(e) => {
-                if (!isActive) e.currentTarget.style.color = COLORS.textSecondary;
+                if (!isActive) e.currentTarget.style.color = themeTextSecondary;
               }}
               onMouseLeave={(e) => {
-                if (!isActive) e.currentTarget.style.color = COLORS.textMuted;
+                if (!isActive) e.currentTarget.style.color = themeTextMuted;
               }}
+              title={tab.label}
             >
-              <span style={{ color: isActive ? COLORS.accent : COLORS.textDim }}>{tab.num}</span>
-              <tab.Icon size={14} style={{ color: isActive ? COLORS.accent : COLORS.textMuted }} />
-              <span>{tab.label}</span>
+              <span style={{ color: isActive ? themeAccent : themeTextDim }}>{tab.num}</span>
+              <tab.Logo size={14} className={isActive ? "" : "opacity-70"} />
             </button>
           );
         })}
       </div>
       <div className="relative flex-1 min-h-0">
-        <div className="absolute inset-0" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: 16, gap: 3 }}>
+        <div
+          className="absolute inset-0"
+          style={{ background: themeRecessed, border: `1px solid ${themeBorder}`, padding: 16, gap: 3 }}
+        >
           {view === "terminal" ? (
             <LaneTerminalsPanel overrideLaneId={laneId} />
           ) : (

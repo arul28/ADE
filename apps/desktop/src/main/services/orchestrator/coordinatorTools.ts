@@ -34,7 +34,13 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
-import { asRecord, nowIso, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+import {
+  asRecord,
+  filterExecutionSteps,
+  isDisplayOnlyTaskStep,
+  nowIso,
+  TERMINAL_STEP_STATUSES,
+} from "./orchestratorContext";
 import { readMissionStateDocument, updateMissionStateDocument } from "./missionStateDoc";
 import { isWithinDir } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
@@ -165,7 +171,8 @@ function resolveCurrentPhase(graph: OrchestratorRunGraph): string {
   if (phaseName.length > 0) return phaseName;
   const phaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
   if (phaseKey.length > 0) return phaseKey;
-  const activeStep = graph.steps.find((step) => !TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
+  const relevantSteps = filterExecutionSteps(graph.steps);
+  const activeStep = relevantSteps.find((step) => !TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
   const stepMeta = asRecord(activeStep?.metadata);
   const fromStepName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
   if (fromStepName.length > 0) return fromStepName;
@@ -175,15 +182,75 @@ function resolveCurrentPhase(graph: OrchestratorRunGraph): string {
 }
 
 function buildMissionStateProgress(graph: OrchestratorRunGraph): MissionStateProgress {
-  const completedSteps = graph.steps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status)).length;
+  const relevantSteps = filterExecutionSteps(graph.steps);
+  const completedSteps = relevantSteps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status)).length;
   return {
     currentPhase: resolveCurrentPhase(graph),
     completedSteps,
-    totalSteps: graph.steps.length,
-    activeWorkers: graph.steps.filter((step) => step.status === "running").map((step) => step.stepKey),
-    blockedSteps: graph.steps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
-    failedSteps: graph.steps.filter((step) => step.status === "failed").map((step) => step.stepKey),
+    totalSteps: relevantSteps.length,
+    activeWorkers: relevantSteps.filter((step) => step.status === "running").map((step) => step.stepKey),
+    blockedSteps: relevantSteps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
+    failedSteps: relevantSteps.filter((step) => step.status === "failed").map((step) => step.stepKey),
   };
+}
+
+function resolveDependencyStepKeys(graph: OrchestratorRunGraph, step: OrchestratorStep): string[] {
+  return step.dependencyStepIds
+    .map((depId) => graph.steps.find((candidate) => candidate.id === depId)?.stepKey ?? "")
+    .filter((depKey): depKey is string => depKey.length > 0);
+}
+
+function dedupeKeys(keys: readonly unknown[] | null | undefined): string[] {
+  if (!Array.isArray(keys)) return [];
+  return [
+    ...new Set(
+      keys
+        .map((key) => String(key ?? "").trim())
+        .filter((key) => key.length > 0),
+    ),
+  ];
+}
+
+function normalizeText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function resolveExecutableDependencyKeys(graph: OrchestratorRunGraph, dependencyKeys: string[]): string[] {
+  const visited = new Set<string>();
+  const resolved: string[] = [];
+
+  const visit = (stepKey: string) => {
+    const normalizedKey = stepKey.trim();
+    if (!normalizedKey || visited.has(normalizedKey)) return;
+    visited.add(normalizedKey);
+
+    const step = resolveStep(graph, normalizedKey);
+    if (!step) {
+      resolved.push(normalizedKey);
+      return;
+    }
+    if (!isDisplayOnlyTaskStep(step)) {
+      resolved.push(step.stepKey);
+      return;
+    }
+
+    const meta = asRecord(step.metadata) ?? {};
+    const assignedTo = typeof meta.assignedTo === "string" ? meta.assignedTo.trim() : "";
+    if (assignedTo.length > 0) {
+      visit(assignedTo);
+      return;
+    }
+
+    for (const dependencyKey of resolveDependencyStepKeys(graph, step)) {
+      visit(dependencyKey);
+    }
+  };
+
+  for (const dependencyKey of dependencyKeys) {
+    visit(dependencyKey);
+  }
+
+  return dedupeKeys(resolved);
 }
 
 function resolveTeamRuntimeConfig(graph: OrchestratorRunGraph): TeamRuntimeConfig | null {
@@ -290,7 +357,8 @@ function resolveValidationStateFromStepMetadata(metadata: Record<string, unknown
 function buildStalenessSignals(graph: OrchestratorRunGraph): string[] {
   const signals: string[] = [];
   const nowMs = Date.now();
-  const repeatedFailures = graph.steps.filter((step) => step.status === "failed" && step.retryCount >= step.retryLimit && step.retryLimit > 0);
+  const relevantSteps = filterExecutionSteps(graph.steps);
+  const repeatedFailures = relevantSteps.filter((step) => step.status === "failed" && step.retryCount >= step.retryLimit && step.retryLimit > 0);
   if (repeatedFailures.length > 0) {
     signals.push(`${repeatedFailures.length} step(s) exhausted retries`);
   }
@@ -299,11 +367,11 @@ function buildStalenessSignals(graph: OrchestratorRunGraph): string[] {
   if (staleRunning.length > 0) {
     signals.push(`${staleRunning.length} running attempt(s) older than 10 minutes`);
   }
-  const blockedSteps = graph.steps.filter((step) => step.status === "blocked");
+  const blockedSteps = relevantSteps.filter((step) => step.status === "blocked");
   if (blockedSteps.length > 0) {
     signals.push(`${blockedSteps.length} blocked step(s)`);
   }
-  const validationEscalations = graph.steps.filter(
+  const validationEscalations = relevantSteps.filter(
     (step) => asRecord(step.metadata)?.validationEscalationRequired === true
   );
   if (validationEscalations.length > 0) {
@@ -572,7 +640,7 @@ export function createCoordinatorToolSet(deps: {
     name: string;
     modelId: string;
     prompt: string;
-    dependsOn: string[];
+    dependsOn?: string[] | null;
     roleName?: string | null;
     laneId?: string | null;
     validationContract?: ValidationContract | null;
@@ -587,6 +655,12 @@ export function createCoordinatorToolSet(deps: {
     toolProfile: Record<string, unknown> | null;
   } => {
     const g = graph();
+    const requestedDependencyStepKeys = dedupeKeys(args.dependsOn);
+    const executableDependencyStepKeys = resolveExecutableDependencyKeys(g, requestedDependencyStepKeys);
+    const displayDependencyTaskKeys = requestedDependencyStepKeys.filter((dependencyKey) => {
+      const dependencyStep = resolveStep(g, dependencyKey);
+      return Boolean(dependencyStep && isDisplayOnlyTaskStep(dependencyStep));
+    });
     const teamRuntime = resolveTeamRuntimeConfig(g);
     const roleDef = args.roleName ? resolveRoleDefinition(teamRuntime, args.roleName) : null;
     const roleName = roleDef?.name ?? (args.roleName?.trim().length ? args.roleName.trim() : null);
@@ -623,6 +697,8 @@ export function createCoordinatorToolSet(deps: {
       explicitStepKey.length > 0
         ? explicitStepKey
         : `worker_${args.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`;
+    const missionPhases = resolveMissionPhases();
+    const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
     const created = orchestratorService.addSteps({
       runId,
       steps: [
@@ -631,11 +707,14 @@ export function createCoordinatorToolSet(deps: {
           title: args.name,
           stepIndex: maxIndex + 1,
           laneId: effectiveLaneId,
-          dependencyStepKeys: args.dependsOn,
+          dependencyStepKeys: executableDependencyStepKeys,
           executorKind: "unified",
           metadata: {
+            ...phaseMetadata,
             instructions: args.prompt,
             workerName: args.name,
+            requestedDependencyStepKeys,
+            planningTaskDependencies: displayDependencyTaskKeys,
             spawnedByCoordinator: true,
             modelId: resolvedModelId,
             modelProviderHint: resolvedProvider,
@@ -771,6 +850,98 @@ export function createCoordinatorToolSet(deps: {
     }
   }
 
+  function resolvePhaseStepType(phaseKey: string): string {
+    const normalized = phaseKey.trim().toLowerCase();
+    if (normalized === "planning" || normalized === "analysis") return "planning";
+    if (normalized === "development" || normalized === "implementation") return "implementation";
+    if (normalized === "testing" || normalized === "test") return "testing";
+    if (normalized === "validation") return "validation";
+    if (normalized === "code_review" || normalized === "review") return "review";
+    if (normalized === "test_review") return "test_review";
+    if (normalized === "integration" || normalized === "merge") return "integration";
+    return normalized || "implementation";
+  }
+
+  function resolveCurrentPhaseCard(
+    g: OrchestratorRunGraph,
+    phases: PhaseCard[]
+  ): PhaseCard | null {
+    if (phases.length === 0) return null;
+    const runMeta = asRecord(g.run.metadata);
+    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+    const runtimePhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const runtimePhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    const sorted = [...phases].sort((a, b) => a.position - b.position);
+    if (runtimePhaseKey.length > 0) {
+      const byKey = sorted.find((phase) => phase.phaseKey === runtimePhaseKey);
+      if (byKey) return byKey;
+    }
+    if (runtimePhaseName.length > 0) {
+      const byName = sorted.find((phase) => phase.name === runtimePhaseName);
+      if (byName) return byName;
+    }
+    return sorted[0] ?? null;
+  }
+
+  function buildPhaseMetadataForNewStep(
+    g: OrchestratorRunGraph,
+    phases: PhaseCard[]
+  ): Record<string, unknown> {
+    const current = resolveCurrentPhaseCard(g, phases);
+    if (!current) return {};
+    const stepType = resolvePhaseStepType(current.phaseKey);
+    return {
+      phaseKey: current.phaseKey,
+      phaseName: current.name,
+      phasePosition: current.position,
+      phaseModel: current.model,
+      phaseInstructions: current.instructions,
+      phaseValidation: current.validationGate,
+      phaseBudget: current.budget ?? {},
+      stepType,
+      taskType: stepType,
+      readOnlyExecution: stepType === "planning"
+    };
+  }
+
+  function getPlanningInputBlockReason(g: OrchestratorRunGraph): string | null {
+    const phases = resolveMissionPhases();
+    const current = resolveCurrentPhaseCard(g, phases);
+    const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
+    const currentName = current?.name.trim().toLowerCase() ?? "";
+    if (currentKey !== "planning" && currentName !== "planning") return null;
+    const mission = missionService.get(missionId);
+    if (!mission) return null;
+    const blocking = mission.interventions.filter((entry) => {
+      if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
+      const metadata = asRecord(entry.metadata);
+      if (metadata?.canProceedWithoutAnswer === true) return false;
+      const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
+      return phase.length === 0 || phase === "planning" || phase === currentKey || phase === currentName;
+    });
+    if (blocking.length === 0) return null;
+    return `Planning input is still pending. Resolve ${blocking.length === 1 ? "the open clarification" : "the open clarifications"} before executing planning actions.`;
+  }
+
+  function promptContainsImplementationDirectives(prompt: string): boolean {
+    const compact = prompt.trim();
+    if (!compact.length) return false;
+    const normalized = compact.toLowerCase();
+    return (
+      normalized.includes("all file edits must")
+      || normalized.includes("files to edit")
+      || normalized.includes("create new file")
+      || normalized.includes("run `git add")
+      || normalized.includes("run `git commit")
+      || normalized.includes("done criteria")
+      || normalized.includes("apply in the worktree")
+      || /(?:^|\n)###\s*\d+\.\s*(?:create|edit)\b/i.test(compact)
+      || /(?:^|\n)-\s*add\b.+\bimport\b/i.test(compact)
+      || /(?:^|\n)-\s*add\b.+\broute\b/i.test(compact)
+      || /(?:^|\n)-\s*edit\s+`[^`]+`/i.test(compact)
+    );
+  }
+
   /**
    * Validate that spawning a worker for the current phase respects ordering constraints.
    *
@@ -822,6 +993,24 @@ export function createCoordinatorToolSet(deps: {
 
     const phaseHasNonTerminalStep = (phase: PhaseCard): boolean =>
       stepsForPhase(phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+
+    const currentPhaseKeyNormalized = currentPhase.phaseKey.trim().toLowerCase();
+    const currentPhaseNameNormalized = currentPhase.name.trim().toLowerCase();
+    if (currentPhaseKeyNormalized === "planning" || currentPhaseNameNormalized === "planning") {
+      const planningExecutionSteps = filterExecutionSteps(stepsForPhase(currentPhase));
+      if (planningExecutionSteps.some((step) => !TERMINAL_STEP_STATUSES.has(step.status))) {
+        return {
+          valid: false,
+          reason: "Planning already has an active worker. Wait for it to finish before spawning another planning worker.",
+        };
+      }
+      if (planningExecutionSteps.some((step) => TERMINAL_STEP_STATUSES.has(step.status))) {
+        return {
+          valid: false,
+          reason: 'Planning phase already produced a completed worker result. Call set_current_phase with phaseKey "development" before spawning more workers.',
+        };
+      }
+    }
 
     // Check mustFollow constraints
     const mustFollow = currentPhase.orderingConstraints.mustFollow;
@@ -952,6 +1141,30 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ name, modelId, role, prompt, laneId, replacementForWorkerId, replacementReason, validationContract, dependsOn }) => {
       try {
         const g = graph();
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
+        }
+        const normalizedName = normalizeText(name);
+        if (!normalizedName.length) {
+          return { ok: false, error: "Worker name is required." };
+        }
+        const normalizedPrompt = normalizeText(prompt);
+        if (!normalizedPrompt.length) {
+          return { ok: false, error: "Worker prompt is required." };
+        }
+        const missionPhases = resolveMissionPhases();
+        const currentPhaseForPromptGuard = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const currentPhaseKeyForPromptGuard = currentPhaseForPromptGuard?.phaseKey.trim().toLowerCase() ?? "";
+        if (currentPhaseKeyForPromptGuard === "planning" && promptContainsImplementationDirectives(normalizedPrompt)) {
+          return {
+            ok: false,
+            error:
+              'Current phase is "planning". Planning workers must stay read-only and produce research/plan output only. ' +
+              'This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
+          };
+        }
+        const normalizedDependsOn = dedupeKeys(dependsOn);
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const normalizedRole = typeof role === "string" ? role.trim() : "";
         if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
@@ -984,8 +1197,23 @@ export function createCoordinatorToolSet(deps: {
           resolvedDescriptor.family === "anthropic"
             ? "claude"
             : resolvedDescriptor.family === "openai"
-              ? "codex"
-              : resolvedDescriptor.family;
+            ? "codex"
+            : resolvedDescriptor.family;
+        const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const currentPhaseModelId =
+          typeof currentPhase?.model?.modelId === "string" ? currentPhase.model.modelId.trim() : "";
+        if (explicitModelId.length > 0 && currentPhase && currentPhaseModelId.length > 0) {
+          const currentPhaseDescriptor = resolveModelDescriptor(currentPhaseModelId);
+          const normalizedPhaseModelId = currentPhaseDescriptor?.id ?? currentPhaseModelId;
+          if (resolvedDescriptor.id !== normalizedPhaseModelId) {
+            return {
+              ok: false,
+              error:
+                `Current phase "${currentPhase.name}" is configured for model "${normalizedPhaseModelId}". ` +
+                `Omit modelId to use the phase model, or call set_current_phase before switching models.`
+            };
+          }
+        }
 
         // Hard cap check: refuse to spawn if budget hard caps are triggered
         const budgetCheck = await checkBudgetHardCaps({
@@ -1033,7 +1261,6 @@ export function createCoordinatorToolSet(deps: {
         }
 
         // Phase ordering enforcement: validate the current phase respects constraints
-        const missionPhases = resolveMissionPhases();
         if (missionPhases.length > 0) {
           const phaseCheck = validatePhaseOrdering(missionPhases, g);
           if (!phaseCheck.valid) {
@@ -1050,7 +1277,12 @@ export function createCoordinatorToolSet(deps: {
               reason: validationGateCheck.reason,
             });
             const gateBlockedAt = nowIso();
-            const graphStep = resolveStep(g, replacementSourceWorkerId.length > 0 ? replacementSourceWorkerId : dependsOn[dependsOn.length - 1] ?? "");
+            const graphStep = resolveStep(
+              g,
+              replacementSourceWorkerId.length > 0
+                ? replacementSourceWorkerId
+                : normalizedDependsOn[normalizedDependsOn.length - 1] ?? "",
+            );
             const gateBlockedDetail = {
               workerName: name,
               requestedRole: normalizedRole.length > 0 ? normalizedRole : null,
@@ -1082,13 +1314,33 @@ export function createCoordinatorToolSet(deps: {
             });
             return { ok: false, error: validationGateCheck.reason };
           }
+
+          const currentPhase = resolveCurrentPhaseCard(g, missionPhases);
+          const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+          if (currentPhaseKey === "planning") {
+            const completedPlanningWorker = g.steps.some((step) => {
+              const stepMeta = asRecord(step.metadata);
+              const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+              const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
+              const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
+              return !isDisplayOnly
+                && (stepPhaseKey === "planning" || stepPhaseName === "planning")
+                && TERMINAL_STEP_STATUSES.has(step.status);
+            });
+            if (completedPlanningWorker) {
+              return {
+                ok: false,
+                error: "Planning phase already produced a completed worker result. Call set_current_phase with phaseKey \"development\" before spawning more workers."
+              };
+            }
+          }
         }
 
         const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
-          name,
+          name: normalizedName,
           modelId: resolvedModelId,
-          prompt,
-          dependsOn,
+          prompt: normalizedPrompt,
+          dependsOn: normalizedDependsOn,
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
           laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
           replacementForWorkerId: replacementSourceWorkerId || null,
@@ -1149,7 +1401,7 @@ export function createCoordinatorToolSet(deps: {
         });
 
         logger.info("coordinator.spawn_worker", {
-          name,
+          name: normalizedName,
           workerId,
           provider: resolvedProvider,
           role: roleName,
@@ -1163,7 +1415,7 @@ export function createCoordinatorToolSet(deps: {
           ...(launchNote ? { launchNote } : {}),
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
-          name,
+          name: normalizedName,
           modelId: spawnedModelId,
           provider: resolvedProvider,
           role: roleName,
@@ -1196,18 +1448,16 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ name, dependsOn, validationCriteria, gatesSteps }) => {
       try {
         const g = graph();
-        const normalizedName = name.trim();
+        const normalizedName = normalizeText(name);
         if (!normalizedName.length) {
           return { ok: false, error: "Milestone name is required." };
         }
-        const normalizedCriteria = validationCriteria.trim();
+        const normalizedCriteria = normalizeText(validationCriteria);
         if (!normalizedCriteria.length) {
           return { ok: false, error: "validationCriteria is required for insert_milestone." };
         }
 
-        const normalizedDependsOn = [...new Set(
-          dependsOn.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-        )];
+        const normalizedDependsOn = dedupeKeys(dependsOn);
         const unknownDependsOn = normalizedDependsOn.filter((entry) => !resolveStep(g, entry));
         if (unknownDependsOn.length > 0) {
           return {
@@ -1216,9 +1466,7 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        const normalizedGatesSteps = [...new Set(
-          (gatesSteps ?? []).map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-        )];
+        const normalizedGatesSteps = dedupeKeys(gatesSteps);
         const unknownGates = normalizedGatesSteps.filter((entry) => !resolveStep(g, entry));
         if (unknownGates.length > 0) {
           return {
@@ -1368,14 +1616,21 @@ export function createCoordinatorToolSet(deps: {
       try {
         const g = graph();
         const teamRuntime = resolveTeamRuntimeConfig(g);
-        const roleDef = resolveRoleDefinition(teamRuntime, role);
+        const normalizedRole = normalizeText(role);
+        const roleDef = resolveRoleDefinition(teamRuntime, normalizedRole);
         if (!roleDef) {
-          return { ok: false, error: `Unknown specialist role '${role}'.` };
+          return { ok: false, error: `Unknown specialist role '${normalizedRole || role}'.` };
         }
-        if (!reason.trim().length) {
+        const normalizedReason = normalizeText(reason);
+        if (!normalizedReason.length) {
           return { ok: false, error: "Specialist request requires a non-empty reason." };
         }
-        const workerName = (name?.trim().length ? name.trim() : `${roleDef.name}-specialist`).slice(0, 80);
+        const normalizedObjective = normalizeText(objective);
+        if (!normalizedObjective.length) {
+          return { ok: false, error: "Specialist request requires a non-empty objective." };
+        }
+        const normalizedDependsOn = dedupeKeys(dependsOn);
+        const workerName = (normalizeText(name) || `${roleDef.name}-specialist`).slice(0, 80);
         const parsedLaneId = laneId?.trim().length ? laneId.trim() : null;
         const replacementSourceWorkerId = replacementForWorkerId?.trim().length ? replacementForWorkerId.trim() : null;
         if (replacementSourceWorkerId && !resolveStep(g, replacementSourceWorkerId)) {
@@ -1388,7 +1643,7 @@ export function createCoordinatorToolSet(deps: {
           operation: "request_specialist",
         });
         if (budgetCheck.blocked) {
-          logger.warn("coordinator.request_specialist.hard_cap_blocked", { role, detail: budgetCheck.detail });
+          logger.warn("coordinator.request_specialist.hard_cap_blocked", { role: normalizedRole, detail: budgetCheck.detail });
           return {
             ok: false,
             error: `Cannot spawn specialist: ${budgetCheck.detail}. Mission pausing.`,
@@ -1406,15 +1661,15 @@ export function createCoordinatorToolSet(deps: {
         const { workerId, step, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: workerName,
           modelId: specialistModelId,
-          prompt: objective,
-          dependsOn,
+          prompt: normalizedObjective,
+          dependsOn: normalizedDependsOn,
           roleName: roleDef.name,
           laneId: parsedLaneId,
           replacementForWorkerId: replacementSourceWorkerId,
-          replacementReason: replacementReason?.trim() || reason.trim(),
+          replacementReason: replacementReason?.trim() || normalizedReason,
           specialistRequest: {
             requestedBy: requestedByWorkerId?.trim() || null,
-            reason: reason.trim()
+            reason: normalizedReason
           }
         });
 
@@ -1450,7 +1705,7 @@ export function createCoordinatorToolSet(deps: {
             type: "specialist_requested",
             requestedByWorkerId: requestedByWorkerId ?? null,
             role: roleDef.name,
-            reason: reason.trim(),
+            reason: normalizedReason,
             workerId
           }
         });
@@ -1905,18 +2160,25 @@ export function createCoordinatorToolSet(deps: {
         const g = graph();
         const step = resolveStep(g, workerId);
         if (!step) return { ok: false, error: `Worker not found: ${workerId}` };
+        const normalizedProgressPct = Math.max(0, Math.min(100, Math.round(Number(progressPct) || 0)));
+        const normalizedBlockers = Array.isArray(blockers)
+          ? blockers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+          : [];
+        const normalizedConfidence = Number(confidence);
+        const normalizedNextAction = typeof nextAction === "string" ? nextAction.trim() : "";
+        const normalizedDetails = typeof details === "string" ? details : details == null ? null : String(details);
         const report: WorkerStatusReport = {
           workerId,
           stepId: step.id,
           stepKey: step.stepKey,
           runId,
           missionId,
-          progressPct: Math.max(0, Math.min(100, Math.round(progressPct))),
-          blockers: blockers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0),
-          confidence: confidence == null ? null : Math.max(0, Math.min(1, Number(confidence))),
-          nextAction: nextAction.trim(),
+          progressPct: normalizedProgressPct,
+          blockers: normalizedBlockers,
+          confidence: Number.isFinite(normalizedConfidence) ? Math.max(0, Math.min(1, normalizedConfidence)) : null,
+          nextAction: normalizedNextAction || "continue working",
           laneId: laneId ?? step.laneId,
-          details: details ?? null,
+          details: normalizedDetails,
           reportedAt: nowIso()
         };
         const existingMeta = asRecord(step.metadata) ?? {};
@@ -2035,6 +2297,9 @@ export function createCoordinatorToolSet(deps: {
         const g = graph();
         const step = resolveStep(g, workerId);
         if (!step) return { ok: false, error: `Worker not found: ${workerId}` };
+        const normalizedArtifacts = Array.isArray(artifacts) ? artifacts : [];
+        const normalizedFilesChanged = Array.isArray(filesChanged) ? filesChanged : [];
+        const normalizedSummary = typeof summary === "string" ? summary.trim() : "";
         const report: WorkerResultReport = {
           workerId,
           stepId: step.id,
@@ -2042,14 +2307,14 @@ export function createCoordinatorToolSet(deps: {
           runId,
           missionId,
           outcome,
-          summary: summary.trim(),
-          artifacts: artifacts.map((artifact) => ({
-            type: artifact.type,
-            title: artifact.title,
+          summary: normalizedSummary || "Worker completed without a structured summary.",
+          artifacts: normalizedArtifacts.map((artifact) => ({
+            type: typeof artifact?.type === "string" ? artifact.type : "artifact",
+            title: typeof artifact?.title === "string" ? artifact.title : "Untitled artifact",
             uri: artifact.uri ?? null,
             metadata: artifact.metadata
           })),
-          filesChanged: filesChanged.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0),
+          filesChanged: normalizedFilesChanged.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0),
           testsRun: testsRun
             ? {
                 ...(testsRun.command ? { command: testsRun.command } : {}),
@@ -2347,9 +2612,10 @@ export function createCoordinatorToolSet(deps: {
     execute: async () => {
       try {
         const g = graph();
-        const activeSteps = g.steps.filter((step) => !TERMINAL_STEP_STATUSES.has(step.status));
-        const completedSteps = g.steps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status));
-        const openObligations = g.steps.flatMap((step) => {
+        const relevantSteps = filterExecutionSteps(g.steps);
+        const activeSteps = relevantSteps.filter((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+        const completedSteps = relevantSteps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status));
+        const openObligations = relevantSteps.flatMap((step) => {
           const stepMeta = asRecord(step.metadata) ?? {};
           const lastStatusReport = asRecord(stepMeta.lastStatusReport);
           const lastResultReport = asRecord(stepMeta.lastResultReport);
@@ -2414,7 +2680,7 @@ export function createCoordinatorToolSet(deps: {
           }
           return obligations;
         });
-        const workerReports = g.steps
+        const workerReports = relevantSteps
           .map((step) => ({
             workerId: step.stepKey,
             stepId: step.id,
@@ -2431,7 +2697,7 @@ export function createCoordinatorToolSet(deps: {
           runId,
           runStatus: g.run.status,
           counts: {
-            total: g.steps.length,
+            total: relevantSteps.length,
             active: activeSteps.length,
             completed: completedSteps.length,
             runningAttempts: g.attempts.filter((attempt) => attempt.status === "running").length
@@ -2594,6 +2860,11 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ mode, replaceStepKeys, replacementMap, dependencyPatches, reason, newSteps }) => {
       try {
         const initialGraph = graph();
+        const normalizedReason = normalizeText(reason) || "Plan revision requested.";
+        const normalizedNewSteps = Array.isArray(newSteps) ? newSteps : [];
+        const normalizedReplacementMap = Array.isArray(replacementMap) ? replacementMap : [];
+        const normalizedDependencyPatches = Array.isArray(dependencyPatches) ? dependencyPatches : [];
+        const normalizedReplaceStepKeys = dedupeKeys(replaceStepKeys);
         const replacementTargets = (() => {
           if (mode === "full") {
             return initialGraph.steps
@@ -2601,18 +2872,20 @@ export function createCoordinatorToolSet(deps: {
               .map((step) => step.stepKey);
           }
           return [
-            ...replaceStepKeys.map((entry) => entry.trim()),
-            ...replacementMap.map((entry) => entry.oldStepKey.trim()),
-            ...newSteps.flatMap((entry) => entry.replaces.map((candidate) => candidate.trim()))
+            ...normalizedReplaceStepKeys,
+            ...normalizedReplacementMap
+              .map((entry) => normalizeText((entry as { oldStepKey?: unknown }).oldStepKey))
+              .filter((entry) => entry.length > 0),
+            ...normalizedNewSteps.flatMap((entry) => dedupeKeys((entry as { replaces?: unknown[] }).replaces))
           ].filter((entry) => entry.length > 0);
         })();
         const uniqueTargets = [...new Set(replacementTargets)];
-        if (!uniqueTargets.length && newSteps.length === 0 && dependencyPatches.length === 0) {
+        if (!uniqueTargets.length && normalizedNewSteps.length === 0 && normalizedDependencyPatches.length === 0) {
           return { ok: false, error: "No steps selected for replacement." };
         }
 
         // Hard cap check: refuse to spawn replacement workers if budget hard caps are triggered
-        if (newSteps.length > 0) {
+        if (normalizedNewSteps.length > 0) {
           const budgetCheck = await checkBudgetHardCaps({
             failClosedOnTelemetryError: true,
             operation: "revise_plan",
@@ -2654,15 +2927,23 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
-        for (const entry of newSteps) {
-          const normalizedKey = entry.key.trim();
+        for (const entry of normalizedNewSteps) {
+          const normalizedKey = normalizeText(entry.key);
           if (!normalizedKey.length) {
             return { ok: false, error: "Each new plan step requires a non-empty key." };
+          }
+          const normalizedTitle = normalizeText(entry.title);
+          if (!normalizedTitle.length) {
+            return { ok: false, error: `New step '${normalizedKey}' requires a non-empty title.` };
+          }
+          const normalizedDescription = normalizeText(entry.description);
+          if (!normalizedDescription.length) {
+            return { ok: false, error: `New step '${normalizedKey}' requires a non-empty description.` };
           }
           if (requestNewStepKeys.has(normalizedKey)) {
             return { ok: false, error: `Duplicate new step key '${normalizedKey}' in revise_plan request.` };
           }
-          const replaces = [...new Set(entry.replaces.map((candidate) => candidate.trim()).filter((candidate) => candidate.length > 0))];
+          const replaces = dedupeKeys(entry.replaces);
           const unknownReplacements = replaces.filter((candidate) => !stepByKey.has(candidate));
           if (unknownReplacements.length > 0) {
             return {
@@ -2677,7 +2958,7 @@ export function createCoordinatorToolSet(deps: {
           ) {
             return { ok: false, error: `Step key '${normalizedKey}' already exists.` };
           }
-          const normalizedRole = entry.role?.trim() ?? "";
+          const normalizedRole = normalizeText(entry.role);
           const roleDef = normalizedRole.length > 0 ? resolveRoleDefinition(teamRuntime, normalizedRole) : null;
           if (normalizedRole.length > 0 && !roleDef) {
             return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
@@ -2686,10 +2967,10 @@ export function createCoordinatorToolSet(deps: {
           if (entry.validationContract && !parsedContract) {
             return { ok: false, error: `Invalid validation contract for step '${entry.key}'.` };
           }
-          const dependsOn = [...new Set(entry.dependsOn.map((candidate) => candidate.trim()).filter((candidate) => candidate.length > 0))];
+          const dependsOn = dedupeKeys(entry.dependsOn);
           const replacementSourceStep = replaces.length > 0 ? (stepByKey.get(replaces[0]) ?? null) : null;
           const phaseModelResolution = resolveModelFromPhaseModel(initialGraph);
-          const modelOverride = typeof entry.modelId === "string" ? entry.modelId.trim() : "";
+          const modelOverride = normalizeText(entry.modelId);
           const resolvedModel =
             modelOverride.length > 0
               ? modelOverride
@@ -2706,8 +2987,8 @@ export function createCoordinatorToolSet(deps: {
           }
           parsedNewSteps.push({
             key: normalizedKey,
-            title: entry.title,
-            description: entry.description,
+            title: normalizedTitle,
+            description: normalizedDescription,
             modelId: descriptor.id,
             roleName: normalizedRole.length > 0 ? normalizedRole : null,
             laneId: entry.laneId ?? replacementSourceStep?.laneId ?? null,
@@ -2733,13 +3014,13 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
-        for (const entry of replacementMap) {
-          const oldStepKey = entry.oldStepKey.trim();
+        for (const entry of normalizedReplacementMap) {
+          const oldStepKey = normalizeText(entry.oldStepKey);
           if (!oldStepKey.length) continue;
           if (!stepByKey.has(oldStepKey)) {
             return { ok: false, error: `replacementMap references unknown oldStepKey '${oldStepKey}'.` };
           }
-          const newStepKey = entry.newStepKey?.trim() ?? "";
+          const newStepKey = normalizeText(entry.newStepKey);
           if (!newStepKey.length) {
             replacementPlanByOldStepKey.set(oldStepKey, null);
             continue;
@@ -2750,13 +3031,13 @@ export function createCoordinatorToolSet(deps: {
           replacementPlanByOldStepKey.set(oldStepKey, newStepKey);
         }
 
-        for (const patch of dependencyPatches) {
-          const stepKey = patch.stepKey.trim();
+        for (const patch of normalizedDependencyPatches) {
+          const stepKey = normalizeText(patch.stepKey);
           if (!stepKey.length) continue;
           if (!knownStepKeysAfterCreation.has(stepKey)) {
             return { ok: false, error: `dependencyPatches references unknown step '${stepKey}'.` };
           }
-          const nextDeps = [...new Set(patch.dependencyStepKeys.map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
+          const nextDeps = dedupeKeys(patch.dependencyStepKeys);
           const unknownDeps = nextDeps.filter((depKey) => !knownStepKeysAfterCreation.has(depKey));
           if (unknownDeps.length > 0) {
             return {
@@ -2779,7 +3060,7 @@ export function createCoordinatorToolSet(deps: {
             roleName: plannedStep.roleName,
             laneId: plannedStep.laneId,
             replacementForWorkerId: plannedStep.replacementSourceStep?.stepKey ?? null,
-            replacementReason: `Plan revised: ${reason.trim()}`,
+            replacementReason: `Plan revised: ${normalizedReason}`,
             validationContract: plannedStep.parsedContract
           });
           if (spawnResult.step) {
@@ -2819,7 +3100,7 @@ export function createCoordinatorToolSet(deps: {
             stepId: targetStep.id,
             replacementStepId: replacement?.id ?? null,
             replacementStepKey: replacement?.stepKey ?? null,
-            reason
+            reason: normalizedReason
           });
           superseded.push({
             stepKey: targetStep.stepKey,
@@ -2871,10 +3152,10 @@ export function createCoordinatorToolSet(deps: {
           eventType: "plan_revised",
           payload: {
             mode,
-            reason,
+            reason: normalizedReason,
             replacedStepKeys: uniqueTargets,
             newStepKeys: createdSteps.map((step) => step.stepKey),
-            dependencyPatchesApplied: dependencyPatches.length,
+            dependencyPatchesApplied: normalizedDependencyPatches.length,
             warnings
           }
         });
@@ -2884,10 +3165,10 @@ export function createCoordinatorToolSet(deps: {
           reason: "revise_plan",
           detail: {
             mode,
-            reason,
+            reason: normalizedReason,
             superseded,
             newStepKeys: createdSteps.map((step) => step.stepKey),
-            dependencyPatchesApplied: dependencyPatches.length,
+            dependencyPatchesApplied: normalizedDependencyPatches.length,
             warnings
           }
         });
@@ -2907,10 +3188,10 @@ export function createCoordinatorToolSet(deps: {
         return {
           ok: true,
           mode,
-          reason,
+          reason: normalizedReason,
           superseded,
           newStepKeys: createdSteps.map((step) => step.stepKey),
-          dependencyPatchesApplied: dependencyPatches.length,
+          dependencyPatchesApplied: normalizedDependencyPatches.length,
           warnings
         };
       } catch (err) {
@@ -2941,16 +3222,19 @@ export function createCoordinatorToolSet(deps: {
         const metadata = runRow.metadata_json ? (JSON.parse(runRow.metadata_json) as Record<string, unknown>) : {};
         const teamRuntime = asRecord(metadata.teamRuntime) ?? {};
         const currentProfiles = asRecord(teamRuntime.toolProfiles) ?? {};
-        const normalizedRole = role.trim().toLowerCase();
+        const normalizedRole = normalizeText(role).toLowerCase();
+        if (!normalizedRole.length) {
+          return { ok: false, error: "Role is required." };
+        }
         currentProfiles[normalizedRole] = {
-          allowedTools: allowedTools.map((entry) => entry.trim()).filter((entry) => entry.length > 0),
-          ...(blockedTools && blockedTools.length > 0
-            ? { blockedTools: blockedTools.map((entry) => entry.trim()).filter((entry) => entry.length > 0) }
+          allowedTools: dedupeKeys(allowedTools),
+          ...(Array.isArray(blockedTools) && blockedTools.length > 0
+            ? { blockedTools: dedupeKeys(blockedTools) }
             : {}),
-          ...(mcpServers && mcpServers.length > 0
-            ? { mcpServers: mcpServers.map((entry) => entry.trim()).filter((entry) => entry.length > 0) }
+          ...(Array.isArray(mcpServers) && mcpServers.length > 0
+            ? { mcpServers: dedupeKeys(mcpServers) }
             : {}),
-          ...(notes && notes.trim().length > 0 ? { notes: notes.trim() } : {})
+          ...(normalizeText(notes).length > 0 ? { notes: normalizeText(notes) } : {})
         };
         metadata.teamRuntime = {
           ...teamRuntime,
@@ -3058,6 +3342,169 @@ export function createCoordinatorToolSet(deps: {
 
   // ─── Task Management ──────────────────────────────────────────
 
+  const set_current_phase = tool({
+    description:
+      "Set the active mission phase. Use after planning is complete to transition into implementation/testing/validation phases.",
+    inputSchema: z.object({
+      phaseKey: z.string().describe("Phase key to activate, for example: planning, development, testing, validation"),
+      reason: z.string().optional().describe("Optional reason for the phase transition"),
+    }),
+    execute: async ({ phaseKey, reason }) => {
+      try {
+        const g = graph();
+        const missionPhases = [...resolveMissionPhases()].sort((a, b) => a.position - b.position);
+        if (missionPhases.length === 0) {
+          return { ok: false, error: "Mission phase configuration is unavailable." };
+        }
+        const normalizedKey = phaseKey.trim();
+        if (!normalizedKey.length) {
+          return { ok: false, error: "phaseKey is required." };
+        }
+        const targetPhase = missionPhases.find((phase) => phase.phaseKey === normalizedKey);
+        if (!targetPhase) {
+          return {
+            ok: false,
+            error: `Unknown phase '${normalizedKey}'. Available phases: ${missionPhases.map((phase) => phase.phaseKey).join(", ")}`
+          };
+        }
+
+        const currentPhase = resolveCurrentPhaseCard(g, missionPhases);
+        if (currentPhase?.phaseKey === targetPhase.phaseKey) {
+          return {
+            ok: true,
+            changed: false,
+            currentPhaseKey: currentPhase.phaseKey,
+            currentPhaseName: currentPhase.name,
+          };
+        }
+
+        const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
+          g.steps.filter((step) => {
+            const meta = asRecord(step.metadata);
+            const stepPhaseKey = typeof meta?.phaseKey === "string" ? meta.phaseKey.trim() : "";
+            const stepPhaseName = typeof meta?.phaseName === "string" ? meta.phaseName.trim() : "";
+            return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+          });
+        const hasTerminalStep = (phase: PhaseCard): boolean =>
+          stepsForPhase(phase).some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+
+        const targetIndex = missionPhases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
+        if (targetIndex < 0) {
+          return { ok: false, error: `Could not resolve target phase index for '${targetPhase.phaseKey}'.` };
+        }
+
+        if (currentPhase?.phaseKey === "planning" && targetPhase.phaseKey !== "planning" && !hasTerminalStep(currentPhase)) {
+          return {
+            ok: false,
+            error: "Planning phase has not completed yet. Complete at least one planning step before transitioning."
+          };
+        }
+
+        for (let i = 0; i < targetIndex; i += 1) {
+          const earlier = missionPhases[i]!;
+          const mustComplete = earlier.validationGate.required || earlier.orderingConstraints.mustBeFirst;
+          if (mustComplete && !hasTerminalStep(earlier)) {
+            return {
+              ok: false,
+              error: `Cannot enter phase '${targetPhase.name}' before '${earlier.name}' has completed.`
+            };
+          }
+        }
+
+        const mustFollow = targetPhase.orderingConstraints.mustFollow ?? [];
+        for (const rawPredecessor of mustFollow) {
+          const predecessorKey = rawPredecessor.trim();
+          if (!predecessorKey.length) continue;
+          const predecessor = missionPhases.find((phase) => phase.phaseKey === predecessorKey || phase.name === predecessorKey);
+          if (predecessor && !hasTerminalStep(predecessor)) {
+            return {
+              ok: false,
+              error: `Cannot enter phase '${targetPhase.name}' until '${predecessor.name}' completes (mustFollow).`
+            };
+          }
+        }
+
+        const now = nowIso();
+        const runRow = db.get<{ metadata_json: string | null }>(
+          `select metadata_json from orchestrator_runs where id = ? limit 1`,
+          [runId]
+        );
+        const metadata = (() => {
+          try {
+            const parsed = runRow?.metadata_json ? JSON.parse(runRow.metadata_json) : {};
+            return asRecord(parsed) ?? {};
+          } catch {
+            return {} as Record<string, unknown>;
+          }
+        })();
+        const phaseRuntimeSource = asRecord(metadata.phaseRuntime);
+        const phaseRuntime: Record<string, unknown> = phaseRuntimeSource ? { ...phaseRuntimeSource } : {};
+        const previousPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey : null;
+        const previousPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName : null;
+        const transitions = Array.isArray(phaseRuntime.transitions) ? [...phaseRuntime.transitions] : [];
+        const transitionReason = typeof reason === "string" && reason.trim().length > 0
+          ? reason.trim()
+          : "coordinator_set_current_phase";
+        transitions.unshift({
+          fromPhaseKey: previousPhaseKey,
+          fromPhaseName: previousPhaseName,
+          toPhaseKey: targetPhase.phaseKey,
+          toPhaseName: targetPhase.name,
+          at: now,
+          reason: transitionReason
+        });
+        phaseRuntime.transitions = transitions.slice(0, 64);
+        phaseRuntime.currentPhaseKey = targetPhase.phaseKey;
+        phaseRuntime.currentPhaseName = targetPhase.name;
+        phaseRuntime.currentPhaseModel = targetPhase.model;
+        phaseRuntime.currentPhaseInstructions = targetPhase.instructions;
+        phaseRuntime.currentPhaseValidation = targetPhase.validationGate;
+        phaseRuntime.currentPhaseBudget = targetPhase.budget ?? {};
+        phaseRuntime.transitionedAt = now;
+        metadata.phaseRuntime = phaseRuntime;
+
+        db.run(
+          `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ?`,
+          [JSON.stringify(metadata), now, runId]
+        );
+
+        orchestratorService.appendTimelineEvent({
+          runId,
+          eventType: "phase_transition",
+          reason: transitionReason,
+          detail: {
+            fromPhaseKey: previousPhaseKey,
+            fromPhaseName: previousPhaseName,
+            toPhaseKey: targetPhase.phaseKey,
+            toPhaseName: targetPhase.name,
+            phaseModel: targetPhase.model,
+            phaseValidation: targetPhase.validationGate,
+            phaseBudget: targetPhase.budget ?? {},
+            transitionedAt: now,
+            source: "coordinator_set_current_phase"
+          }
+        });
+        orchestratorService.emitRuntimeUpdate({
+          runId,
+          reason: "phase_transition"
+        });
+
+        return {
+          ok: true,
+          changed: true,
+          previousPhaseKey,
+          previousPhaseName,
+          currentPhaseKey: targetPhase.phaseKey,
+          currentPhaseName: targetPhase.name
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.set_current_phase.error", { phaseKey, error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
   const create_task = tool({
     description:
       "Create a task in the mission DAG. Tasks show up in the UI as a visual work breakdown. Use this to plan the work before spawning workers.",
@@ -3073,6 +3520,25 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ key, title, description, dependsOn }) => {
       try {
         const g = graph();
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
+        }
+        const normalizedKey = String(key ?? "").trim();
+        const normalizedTitle = String(title ?? "").trim();
+        const normalizedDescription = String(description ?? "").trim();
+        const normalizedDependsOn = dedupeKeys(dependsOn);
+        if (!normalizedKey.length) {
+          return { ok: false, error: "Task key is required." };
+        }
+        if (!normalizedTitle.length) {
+          return { ok: false, error: "Task title is required." };
+        }
+        if (!normalizedDescription.length) {
+          return { ok: false, error: "Task description is required." };
+        }
+        const missionPhases = resolveMissionPhases();
+        const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
         const maxIndex = g.steps.reduce(
           (max, s) => Math.max(max, s.stepIndex),
           -1,
@@ -3081,12 +3547,17 @@ export function createCoordinatorToolSet(deps: {
           runId,
           steps: [
             {
-              stepKey: key,
-              title,
+              stepKey: normalizedKey,
+              title: normalizedTitle,
               stepIndex: maxIndex + 1,
-              dependencyStepKeys: dependsOn,
-              executorKind: "unified",
-              metadata: { instructions: description, isTask: true },
+              dependencyStepKeys: normalizedDependsOn,
+              executorKind: "manual",
+              metadata: {
+                ...phaseMetadata,
+                instructions: normalizedDescription,
+                isTask: true,
+                displayOnlyTask: true,
+              },
             },
           ],
         });
@@ -3099,10 +3570,10 @@ export function createCoordinatorToolSet(deps: {
             source: "coordinator",
           });
         }
-        logger.info("coordinator.create_task", { key, title });
+        logger.info("coordinator.create_task", { key: normalizedKey, title: normalizedTitle });
         return {
           ok: true,
-          taskKey: key,
+          taskKey: normalizedKey,
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
         };
@@ -3194,9 +3665,10 @@ export function createCoordinatorToolSet(deps: {
     execute: async () => {
       try {
         const g = graph();
-        const total = g.steps.length;
+        const relevantSteps = filterExecutionSteps(g.steps);
+        const total = relevantSteps.length;
         const byStatus: Record<string, number> = {};
-        for (const step of g.steps) {
+        for (const step of relevantSteps) {
           byStatus[step.status] = (byStatus[step.status] ?? 0) + 1;
         }
         const terminal =
@@ -3216,6 +3688,7 @@ export function createCoordinatorToolSet(deps: {
             assignedTo: meta.assignedTo ?? null,
             hasRunningWorker: !!attempt,
             retryCount: s.retryCount,
+            displayOnly: isDisplayOnlyTaskStep(s),
           };
         });
         return {
@@ -3492,7 +3965,8 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ summary }) => {
       try {
         const g = graph();
-        const blockers = g.steps
+        const relevantSteps = filterExecutionSteps(g.steps);
+        const blockers = relevantSteps
           .filter((step) => step.status === "succeeded")
           .flatMap((step) => {
             const stepMeta = asRecord(step.metadata) ?? {};
@@ -3523,7 +3997,7 @@ export function createCoordinatorToolSet(deps: {
           payload: { summary, completedBy: "coordinator" },
         });
         // Mark all remaining ready/blocked steps as skipped
-        for (const step of g.steps) {
+        for (const step of relevantSteps) {
           if (step.status === "ready" || step.status === "blocked" || step.status === "pending") {
             orchestratorService.skipStep({
               runId,
@@ -3620,6 +4094,7 @@ export function createCoordinatorToolSet(deps: {
     if (!mission) {
       return { ok: false as const, error: `Mission not found: ${missionId}` };
     }
+    const currentPhase = resolveCurrentPhaseCard(graph(), resolveMissionPhases());
 
     const existing = mission.interventions.find((entry) => {
       if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
@@ -3658,7 +4133,9 @@ export function createCoordinatorToolSet(deps: {
         question,
         context: context.length > 0 ? context : null,
         urgency,
-        canProceedWithoutAnswer: args.canProceedWithoutAnswer === true
+        canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+        phase: currentPhase?.phaseKey ?? null,
+        phaseName: currentPhase?.name ?? null
       }
     });
 
@@ -3672,7 +4149,9 @@ export function createCoordinatorToolSet(deps: {
         source: args.source,
         question,
         context: context.length > 0 ? context : null,
-        urgency
+        urgency,
+        canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+        phase: currentPhase?.phaseKey ?? null
       },
     });
     orchestratorService.appendTimelineEvent({
@@ -3908,6 +4387,7 @@ export function createCoordinatorToolSet(deps: {
             source: "ask_user",
             runId,
             quizMode: true,
+            canProceedWithoutAnswer: false,
             questions,
             phase: phase ?? null,
             questionCount: questions.length,
@@ -4192,6 +4672,10 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ parentWorkerId, name, prompt, modelId, role }) => {
       try {
         const g = graph();
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
+        }
         const teamRuntime = resolveTeamRuntimeConfig(g);
 
         // Hard constraint: allowSubAgents must be enabled
@@ -4386,6 +4870,10 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ parentWorkerId, tasks }) => {
       try {
         const g = graph();
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
+        }
         const teamRuntime = resolveTeamRuntimeConfig(g);
 
         if (teamRuntime?.allowSubAgents === false) {
@@ -4631,6 +5119,7 @@ export function createCoordinatorToolSet(deps: {
     update_tool_profiles,
     transfer_lane,
     provision_lane,
+    set_current_phase,
     create_task,
     update_task,
     assign_task,

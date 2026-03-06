@@ -15,7 +15,7 @@ import { createDiffService } from "../../desktop/src/main/services/diffs/diffSer
 import { createMissionService } from "../../desktop/src/main/services/missions/missionService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
-import { createPrService } from "../../desktop/src/main/services/prs/prService";
+import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createOrchestratorService } from "../../desktop/src/main/services/orchestrator/orchestratorService";
@@ -201,7 +201,6 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     projectRoot,
     laneService,
     projectConfigService,
-    packService,
     operationService,
     conflictPacksDir: path.join(paths.packsDir, "conflicts"),
     onEvent: () => {}

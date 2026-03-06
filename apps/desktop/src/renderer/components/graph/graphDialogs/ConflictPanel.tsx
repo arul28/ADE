@@ -10,8 +10,7 @@ export function ConflictPanel({
   laneById,
   overlapFilesByPair,
   refreshRiskBatch,
-  refreshLanes,
-  navigate
+  refreshLanes
 }: {
   conflictPanel: ConflictPanelState;
   setConflictPanel: React.Dispatch<React.SetStateAction<ConflictPanelState | null>>;
@@ -19,7 +18,6 @@ export function ConflictPanel({
   overlapFilesByPair: Map<string, string[]>;
   refreshRiskBatch: () => Promise<void>;
   refreshLanes: () => Promise<void>;
-  navigate: (path: string) => void;
 }) {
   return (
     <div className="absolute right-3 top-[66px] z-[89] w-[420px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-3 text-xs shadow-float">
@@ -90,9 +88,6 @@ export function ConflictPanel({
           </select>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => navigate("/conflicts")}>
-            Open Conflicts Tab
-          </Button>
           <Button
             size="sm"
             variant="primary"

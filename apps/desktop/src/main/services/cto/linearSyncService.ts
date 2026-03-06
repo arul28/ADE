@@ -20,14 +20,19 @@ import type { WorkerAgentService } from "./workerAgentService";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
-import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
+import { isRecord, nowIso, safeJsonParse, toOptionalString as asString, getErrorMessage } from "../shared/utils";
 
 const ACTIVE_CLAIM_STATUS = "active";
 const DEFAULT_RETRY_BASE_SECONDS = 30;
 const MAX_RETRY_DELAY_SECONDS = 60 * 60;
 const TEAM_STATE_CACHE_TTL_MS = 5 * 60_000;
 
-const ACTIVE_MISSION_STATUSES = new Set(["queued", "planning", "plan_review", "in_progress", "intervention_required"]);
+/** Statuses that indicate a mission is not yet terminal — includes "queued" because
+ *  a queued mission should still be canceled if the Linear issue is closed/reassigned. */
+const NON_TERMINAL_MISSION_STATUSES = new Set(["queued", "planning", "in_progress", "intervention_required"]);
+
+const QUEUE_COLUMNS = `id, issue_id, identifier, title, status, action, worker_id, worker_slug, mission_id, route_json,
+               attempt_count, next_attempt_at, last_error, created_at, updated_at`;
 
 type QueueRow = {
   id: string;
@@ -65,10 +70,6 @@ type TeamState = {
   teamId: string;
   teamKey: string;
 };
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
 
 function mapMissionPriority(priorityLabel: NormalizedLinearIssue["priorityLabel"]): MissionPriority {
   if (priorityLabel === "urgent") return "urgent";
@@ -229,6 +230,16 @@ export function createLinearSyncService(args: {
     );
   };
 
+  const EVENT_RETENTION_DAYS = 30;
+
+  const pruneOldEvents = (): void => {
+    const cutoff = new Date(Date.now() - EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    args.db.run(
+      `delete from linear_sync_events where project_id = ? and created_at < ?`,
+      [args.projectId, cutoff]
+    );
+  };
+
   const scheduleNext = (delayMs: number): void => {
     if (disposed) return;
     if (timer) {
@@ -347,8 +358,7 @@ export function createLinearSyncService(args: {
 
     return args.db.all<QueueRow>(
       `
-        select id, issue_id, identifier, title, status, action, worker_id, worker_slug, mission_id, route_json,
-               attempt_count, next_attempt_at, last_error, created_at, updated_at
+        select ${QUEUE_COLUMNS}
         from linear_dispatch_queue
         where ${clauses.join(" and ")}
         order by created_at asc
@@ -361,8 +371,7 @@ export function createLinearSyncService(args: {
   const getQueueRow = (queueItemId: string): QueueRow | null =>
     args.db.get<QueueRow>(
       `
-        select id, issue_id, identifier, title, status, action, worker_id, worker_slug, mission_id, route_json,
-               attempt_count, next_attempt_at, last_error, created_at, updated_at
+        select ${QUEUE_COLUMNS}
         from linear_dispatch_queue
         where project_id = ? and id = ?
         limit 1
@@ -373,8 +382,7 @@ export function createLinearSyncService(args: {
   const findOpenQueueForIssue = (issueId: string): QueueRow | null =>
     args.db.get<QueueRow>(
       `
-        select id, issue_id, identifier, title, status, action, worker_id, worker_slug, mission_id, route_json,
-               attempt_count, next_attempt_at, last_error, created_at, updated_at
+        select ${QUEUE_COLUMNS}
         from linear_dispatch_queue
         where project_id = ?
           and issue_id = ?
@@ -500,11 +508,7 @@ export function createLinearSyncService(args: {
     }
 
     const status: LinearSyncQueueStatus =
-      decision.action === "auto"
-        ? "queued"
-        : decision.action === "queue-night-shift"
-          ? "escalated"
-          : "escalated";
+      decision.action === "auto" ? "queued" : "escalated";
 
     const queueId = randomUUID();
     const timestamp = nowIso();
@@ -626,19 +630,7 @@ export function createLinearSyncService(args: {
   };
 
   const attachMissionLinearMetadata = (missionId: string, issue: NormalizedLinearIssue, decision: LinearRouteDecision): void => {
-    const row = args.db.get<{ metadata_json: string | null }>(
-      `
-        select metadata_json
-        from missions
-        where id = ?
-          and project_id = ?
-        limit 1
-      `,
-      [missionId, args.projectId]
-    );
-    const base = safeJsonParse<Record<string, unknown>>(row?.metadata_json ?? "{}", {});
-    const next = {
-      ...base,
+    args.missionService.patchMetadata(missionId, {
       linearSync: {
         issueId: issue.id,
         issueIdentifier: issue.identifier,
@@ -648,17 +640,7 @@ export function createLinearSyncService(args: {
         matchedRuleId: decision.matchedRuleId,
         updatedAt: nowIso(),
       },
-    };
-    args.db.run(
-      `
-        update missions
-        set metadata_json = ?,
-            updated_at = ?
-        where id = ?
-          and project_id = ?
-      `,
-      [JSON.stringify(next), nowIso(), missionId, args.projectId]
-    );
+    });
   };
 
   const maybeAssignIssue = async (queueItem: QueueRow, issue: NormalizedLinearIssue): Promise<void> => {
@@ -807,7 +789,7 @@ export function createLinearSyncService(args: {
 
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       releaseClaim(issue.id, "released");
       markRetryWait(queueItem, `Dispatch failed: ${message}`);
       logWarn("dispatch_failed", {
@@ -898,8 +880,15 @@ export function createLinearSyncService(args: {
   const reconcileDispatchedQueue = async (): Promise<void> => {
     const policy = args.flowPolicyService.getPolicy();
     const stallTimeoutSec = Math.max(30, policy.reconciliation?.stalledTimeoutSec ?? 300);
+    const artifactMode = policy.artifacts?.mode ?? "links";
 
     const dispatched = listQueueRows({ statuses: ["dispatched"], limit: 500 });
+    if (!dispatched.length) return;
+
+    // Batch-fetch all issues in one API call instead of N+1
+    const issueIds = [...new Set(dispatched.map((q) => q.issue_id))];
+    const issueMap = await args.issueTracker.fetchIssuesByIds(issueIds);
+
     for (const queueItem of dispatched) {
       if (!queueItem.mission_id) {
         updateQueueRow(queueItem.id, { status: "failed", lastError: "Dispatched queue item is missing mission id." });
@@ -907,7 +896,7 @@ export function createLinearSyncService(args: {
         continue;
       }
 
-      const issue = await args.issueTracker.fetchIssueById(queueItem.issue_id);
+      const issue = issueMap.get(queueItem.issue_id) ?? null;
       if (!issue) {
         updateQueueRow(queueItem.id, { status: "failed", lastError: "Issue disappeared during reconciliation." });
         releaseClaim(queueItem.issue_id, "released", queueItem.mission_id);
@@ -930,14 +919,14 @@ export function createLinearSyncService(args: {
           missionId: mission.id,
           status: "canceled",
           summary: "Mission canceled because the Linear issue was reassigned externally.",
-          artifactMode: policy.artifacts?.mode ?? "links",
+          artifactMode,
         });
         updateQueueRow(queueItem.id, { status: "cancelled", lastError: "Issue reassigned externally." });
         releaseClaim(queueItem.issue_id, "cancelled", mission.id);
         continue;
       }
 
-      if ((issue.stateType === "completed" || issue.stateType === "canceled") && ACTIVE_MISSION_STATUSES.has(mission.status)) {
+      if ((issue.stateType === "completed" || issue.stateType === "canceled") && NON_TERMINAL_MISSION_STATUSES.has(mission.status)) {
         await cancelActiveRunsForMission(mission.id, `Linear issue moved to ${issue.stateType}.`);
         args.missionService.update({
           missionId: mission.id,
@@ -949,14 +938,14 @@ export function createLinearSyncService(args: {
           missionId: mission.id,
           status: "canceled",
           summary: `Mission canceled because issue moved to ${issue.stateType} in Linear.`,
-          artifactMode: policy.artifacts?.mode ?? "links",
+          artifactMode,
         });
         updateQueueRow(queueItem.id, { status: "cancelled", lastError: `Issue moved to ${issue.stateType}.` });
         releaseClaim(queueItem.issue_id, "cancelled", mission.id);
         continue;
       }
 
-      if (ACTIVE_MISSION_STATUSES.has(mission.status)) {
+      if (NON_TERMINAL_MISSION_STATUSES.has(mission.status)) {
         const missionUpdatedAtMs = Date.parse(mission.updatedAt);
         const ageMs = Date.now() - (Number.isFinite(missionUpdatedAtMs) ? missionUpdatedAtMs : Date.now());
         if (ageMs > stallTimeoutSec * 1000) {
@@ -991,21 +980,21 @@ export function createLinearSyncService(args: {
         }
         await args.issueTracker.addLabel(issue.id, "ade");
 
-        const artifacts = mission.artifacts
+        const validUri = (uri: unknown): uri is string => typeof uri === "string" && uri.trim().length > 0;
+        const allUris = mission.artifacts.map((artifact) => artifact.uri).filter(validUri);
+        const prLinks = mission.artifacts
+          .filter((artifact) => artifact.artifactType === "pr")
           .map((artifact) => artifact.uri)
-          .filter((uri): uri is string => typeof uri === "string" && uri.trim().length > 0);
+          .filter(validUri);
 
         await args.outboundService.publishMissionCloseout({
           issue,
           missionId: mission.id,
           status: "completed",
           summary: mission.outcomeSummary ?? "Mission completed successfully.",
-          prLinks: mission.artifacts
-            .filter((artifact) => artifact.artifactType === "pr")
-            .map((artifact) => artifact.uri)
-            .filter((uri): uri is string => typeof uri === "string" && uri.trim().length > 0),
-          artifactPaths: artifacts,
-          artifactMode: policy.artifacts?.mode ?? "links",
+          prLinks,
+          artifactPaths: allUris,
+          artifactMode,
         });
 
         updateQueueRow(queueItem.id, {
@@ -1029,7 +1018,7 @@ export function createLinearSyncService(args: {
           missionId: mission.id,
           status: mission.status === "canceled" ? "canceled" : "failed",
           summary,
-          artifactMode: policy.artifacts?.mode ?? "links",
+          artifactMode,
         });
 
         releaseClaim(queueItem.issue_id, mission.status === "canceled" ? "cancelled" : "released", mission.id);
@@ -1083,9 +1072,10 @@ export function createLinearSyncService(args: {
       processRetryQueue();
       await processQueue();
       await reconcileDispatchedQueue();
+      pruneOldEvents();
       setSyncState({ running: false, lastSuccessAt: nowIso(), lastError: null, health: { lastTrigger: trigger } });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       setSyncState({ running: false, lastError: message, health: { lastTrigger: trigger } });
       appendSyncEvent("cycle.error", { status: "failed", message });
       logWarn("cycle_failed", { trigger, error: message });
@@ -1113,7 +1103,8 @@ export function createLinearSyncService(args: {
         nextAttemptAt: null,
       });
       releaseClaim(queueItem.issue_id, "cancelled", queueItem.mission_id);
-      return getQueueRow(queueItem.id) ? toQueueItem(getQueueRow(queueItem.id)!) : null;
+      const row1 = getQueueRow(queueItem.id);
+      return row1 ? toQueueItem(row1) : null;
     }
 
     if (input.action === "approve") {
@@ -1124,7 +1115,8 @@ export function createLinearSyncService(args: {
         lastError: input.note ?? null,
       });
       await processQueue();
-      return getQueueRow(queueItem.id) ? toQueueItem(getQueueRow(queueItem.id)!) : null;
+      const row2 = getQueueRow(queueItem.id);
+      return row2 ? toQueueItem(row2) : null;
     }
 
     updateQueueRow(queueItem.id, {
@@ -1133,7 +1125,8 @@ export function createLinearSyncService(args: {
       lastError: input.note ?? null,
     });
     await processQueue();
-    return getQueueRow(queueItem.id) ? toQueueItem(getQueueRow(queueItem.id)!) : null;
+    const row3 = getQueueRow(queueItem.id);
+    return row3 ? toQueueItem(row3) : null;
   };
 
   const getDashboard = (): LinearSyncDashboard => {

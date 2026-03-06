@@ -7,7 +7,9 @@ import { openKvDb } from "./services/state/kvDb";
 import { ensureAdeDirs } from "./services/state/projectState";
 import { readGlobalState, upsertRecentProject, writeGlobalState } from "./services/state/globalState";
 import { createLaneService } from "./services/lanes/laneService";
+import { createContextDocService } from "./services/context/contextDocService";
 import { createSessionService } from "./services/sessions/sessionService";
+import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createFileService } from "./services/files/fileService";
@@ -45,7 +47,7 @@ import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestion
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
-import { createMemoryService } from "./services/memory/memoryService";
+import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createWorkerAgentService } from "./services/cto/workerAgentService";
 import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
@@ -575,7 +577,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       operationService,
       aiIntegrationService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.packsEvent, event)
+      onEvent: () => {}
     });
 
     const onboardingService = createOnboardingService({
@@ -585,7 +587,6 @@ app.whenReady().then(async () => {
       projectId,
       baseRef,
       laneService,
-      packService,
       projectConfigService
     });
 
@@ -621,7 +622,6 @@ app.whenReady().then(async () => {
       projectRoot,
       laneService,
       projectConfigService,
-      packService,
       operationService,
       aiIntegrationService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
@@ -647,10 +647,7 @@ app.whenReady().then(async () => {
 
     jobEngine = createJobEngine({
       logger,
-      packService,
       conflictService,
-      projectConfigService,
-      aiIntegrationService
     });
 
     const prService = createPrService({
@@ -661,7 +658,6 @@ app.whenReady().then(async () => {
       laneService,
       operationService,
       githubService,
-      packService,
       aiIntegrationService,
       projectConfigService,
       conflictService,
@@ -725,7 +721,24 @@ app.whenReady().then(async () => {
       loadPty
     });
 
-    const memoryService = createMemoryService(db);
+    const sessionDeltaService = createSessionDeltaService({
+      db,
+      projectId,
+      laneService,
+      sessionService
+    });
+
+    const memoryService = createUnifiedMemoryService(db);
+    const contextDocService = createContextDocService({
+      db,
+      logger,
+      projectRoot,
+      projectId,
+      packsDir: adePaths.packsDir,
+      laneService,
+      projectConfigService,
+      aiIntegrationService
+    });
 
     const ctoStateService = createCtoStateService({
       db,
@@ -808,6 +821,7 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       projectId,
       memoryService,
+      packService,
       laneService,
       sessionService,
       projectConfigService,
@@ -861,7 +875,6 @@ app.whenReady().then(async () => {
       projectRoot,
       laneService,
       projectConfigService,
-      packService,
       conflictService,
       testService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.automationsEvent, event)
@@ -1076,11 +1089,6 @@ app.whenReady().then(async () => {
     });
     writeGlobalState(globalStatePath, state);
 
-    // Keep project pack initialized even before first terminal session.
-    void packService.refreshProjectPack({ reason: "project_init" }).catch((err: unknown) => {
-      logger.warn("packs.project_init_failed", { err: String(err) });
-    });
-
     // ── MCP Socket Server (embedded mode) ─────────────────────────
     const mcpEventBuffer = createEventBuffer();
     const mcpRuntime: AdeMcpRuntime = {
@@ -1182,8 +1190,10 @@ app.whenReady().then(async () => {
       ciService,
       agentChatService,
       packService,
+      contextDocService,
       projectConfigService,
       processService,
+      sessionDeltaService,
       testService,
       memoryService,
       ctoStateService,
@@ -1249,8 +1259,10 @@ app.whenReady().then(async () => {
       missionBudgetService: null,
       aiOrchestratorService: null,
       packService: null,
+      contextDocService: null,
       projectConfigService: null,
       processService: null,
+      sessionDeltaService: null,
       testService: null,
       memoryService: null,
       ctoStateService: null,

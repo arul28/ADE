@@ -113,7 +113,6 @@ describe("projectConfigService AI mode normalization", () => {
         ai: {
           orchestrator: {
             teammatePlanMode: "required",
-            requirePlanReview: true,
             maxParallelWorkers: 9,
             contextPressureThreshold: 0.82,
             progressiveLoading: false,
@@ -142,7 +141,6 @@ describe("projectConfigService AI mode normalization", () => {
 
     const orchestrator = service.get().effective.ai?.orchestrator;
     expect(orchestrator?.teammatePlanMode).toBe("required");
-    expect(orchestrator?.requirePlanReview).toBe(true);
     expect(orchestrator?.maxParallelWorkers).toBe(9);
     expect(orchestrator?.contextPressureThreshold).toBe(0.82);
     expect(orchestrator?.progressiveLoading).toBe(false);

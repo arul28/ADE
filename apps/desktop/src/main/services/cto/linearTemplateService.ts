@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import type { NormalizedLinearIssue } from "../../../shared/types";
-import { isRecord } from "../shared/utils";
+import { isRecord, toOptionalString as asString } from "../shared/utils";
 
 export type LinearMissionTemplate = {
   id: string;
@@ -40,10 +40,6 @@ const FALLBACK_TEMPLATE: LinearMissionTemplate = {
   ].join("\n"),
 };
 
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -79,13 +75,17 @@ function parseTemplateFile(filePath: string): LinearMissionTemplate | null {
   const budgetCentsRaw = Number(parsed.budgetCents);
   const budgetCents = Number.isFinite(budgetCentsRaw) ? Math.max(0, Math.floor(budgetCentsRaw)) : undefined;
 
+  const defaultWorker = asString(parsed.defaultWorker);
+  const prStrategy = asString(parsed.prStrategy);
+  const phases = asStringArray(parsed.phases);
+
   return {
     id,
     name,
     promptTemplate,
-    ...(asString(parsed.defaultWorker) ? { defaultWorker: asString(parsed.defaultWorker)! } : {}),
-    ...(asString(parsed.prStrategy) ? { prStrategy: asString(parsed.prStrategy)! } : {}),
-    ...(asStringArray(parsed.phases).length ? { phases: asStringArray(parsed.phases) } : {}),
+    ...(defaultWorker ? { defaultWorker } : {}),
+    ...(prStrategy ? { prStrategy } : {}),
+    ...(phases.length ? { phases } : {}),
     ...(budgetCents != null ? { budgetCents } : {}),
   };
 }

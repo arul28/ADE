@@ -8,16 +8,22 @@ import { MonacoDiffView, type MonacoDiffHandle } from "./MonacoDiffView";
 import type { FileDiff, GitCommitSummary } from "../../../shared/types";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton } from "./laneDesignTokens";
 
+function normalizePath(pathValue: string): string {
+  return pathValue.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
 export function LaneDiffPane({
   laneId,
   selectedPath,
   selectedFileMode,
-  selectedCommit
+  selectedCommit,
+  liveSync = false
 }: {
   laneId: string | null;
   selectedPath: string | null;
   selectedFileMode: "staged" | "unstaged" | null;
   selectedCommit: GitCommitSummary | null;
+  liveSync?: boolean;
 }) {
   const navigate = useNavigate();
   const diffRef = useRef<MonacoDiffHandle | null>(null);
@@ -28,14 +34,87 @@ export function LaneDiffPane({
   const [commitDiff, setCommitDiff] = useState<FileDiff | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
+  const refreshWorkingDiff = React.useCallback(() => {
+    if (!laneId || !selectedPath || !selectedFileMode) {
+      setDiff(null);
+      return Promise.resolve();
+    }
+
+    return window.ade.diff
+      .getFile({ laneId, path: selectedPath, mode: selectedFileMode })
+      .then((value) => {
+        setDiff(value);
+      })
+      .catch(() => {
+        setDiff(null);
+      });
+  }, [laneId, selectedPath, selectedFileMode]);
+
   useEffect(() => {
     setDiff(null);
     if (!laneId || !selectedPath || !selectedFileMode) return;
-    window.ade.diff
-      .getFile({ laneId, path: selectedPath, mode: selectedFileMode })
-      .then((value) => setDiff(value))
-      .catch(() => setDiff(null));
-  }, [laneId, selectedPath, selectedFileMode]);
+    void refreshWorkingDiff();
+  }, [laneId, selectedPath, selectedFileMode, refreshWorkingDiff]);
+
+  useEffect(() => {
+    if (!liveSync) return;
+    if (!laneId || !selectedPath || !selectedFileMode || selectedCommit) return;
+
+    let cancelled = false;
+    let watchedWorkspaceId: string | null = null;
+    let refreshTimer: number | null = null;
+    let unsubscribe = () => {};
+
+    const selectedPathNormalized = normalizePath(selectedPath);
+
+    const scheduleRefresh = () => {
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        if (document.visibilityState !== "visible") return;
+        void refreshWorkingDiff();
+      }, 120);
+    };
+
+    void window.ade.files
+      .listWorkspaces()
+      .then((workspaces) => {
+        if (cancelled) return;
+        const workspace = workspaces.find((candidate) => candidate.laneId === laneId);
+        if (!workspace) return;
+        watchedWorkspaceId = workspace.id;
+        void window.ade.files.watchChanges({ workspaceId: workspace.id }).catch(() => {
+          // best effort
+        });
+        unsubscribe = window.ade.files.onChange((event) => {
+          if (event.workspaceId !== workspace.id) return;
+          const nextPath = normalizePath(event.path);
+          const oldPath = normalizePath(event.oldPath ?? "");
+          if (
+            nextPath !== selectedPathNormalized &&
+            oldPath !== selectedPathNormalized &&
+            !selectedPathNormalized.startsWith(`${oldPath}/`)
+          ) {
+            return;
+          }
+          scheduleRefresh();
+        });
+      })
+      .catch(() => {
+        // no-op: live sync is best effort
+      });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      if (watchedWorkspaceId) {
+        void window.ade.files.stopWatching({ workspaceId: watchedWorkspaceId }).catch(() => {
+          // best effort
+        });
+      }
+    };
+  }, [liveSync, laneId, selectedPath, selectedFileMode, selectedCommit, refreshWorkingDiff]);
 
   useEffect(() => {
     setCommitFiles([]);
@@ -233,9 +312,8 @@ export function LaneDiffPane({
                   window.ade.files
                     .writeTextAtomic({ laneId, path: selectedPath, text })
                     .then(() => {
-                      return window.ade.diff.getFile({ laneId, path: selectedPath, mode: "unstaged" });
+                      return refreshWorkingDiff();
                     })
-                    .then((value) => setDiff(value))
                     .catch(() => {})
                     .finally(() => setBusyAction(null));
                 }}

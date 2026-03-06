@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Clock,
   SpinnerGap,
@@ -7,7 +8,6 @@ import {
   ArrowsClockwise,
   Rocket,
   MagnifyingGlass,
-  PaperPlaneTilt,
   Stop,
   TerminalWindow,
   X,
@@ -34,7 +34,6 @@ import type {
   OrchestratorRunGraph,
   ProjectConfigSnapshot,
   StartOrchestratorRunFromMissionArgs,
-  SteerMissionResult,
   MissionDashboardSnapshot,
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
@@ -43,10 +42,9 @@ import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
 import { MissionPhaseBadge } from "./MissionPhaseBadge";
 import { CompletionBanner } from "./CompletionBanner";
-import { PhaseProgressBar } from "./PhaseProgressBar";
 import { UsageDashboard } from "./UsageDashboard";
 import { MissionChatV2 } from "./MissionChatV2";
-import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
 
 /* ── Extracted modules ── */
@@ -61,7 +59,6 @@ import {
   DEFAULT_ORCHESTRATOR_MODEL,
   DEFAULT_PERMISSION_CONFIG,
   isRecord,
-  readBool,
   readString,
   toPlannerProvider,
   plannerProviderToModelConfig,
@@ -71,9 +68,9 @@ import {
   toCliSandboxPermissions,
   toInProcessMode,
   ElapsedTime,
+  filterExecutionSteps,
   type WorkspaceTab,
   type MissionListViewMode,
-  type SteeringEntry,
   type MissionSettingsDraft,
 } from "./missionHelpers";
 import { CreateMissionDialog, type CreateDraft, type CreateMissionDefaults } from "./CreateMissionDialog";
@@ -84,10 +81,10 @@ import { StepDetailPanel } from "./StepDetailPanel";
 import { ActivityNarrativeHeader } from "./ActivityNarrativeHeader";
 import { MissionsHomeDashboard } from "./MissionsHomeDashboard";
 import { MissionStateSummary } from "./MissionStateSummary";
-import { PlanReviewInterventions } from "./PlanReviewInterventions";
 import { ClarificationQuizModal } from "./ClarificationQuizModal";
+import { ManualInputResponseModal } from "./ManualInputResponseModal";
 import { MissionLogsTab } from "./MissionLogsTab";
-import type { ClarificationQuestion, ClarificationQuiz } from "../../../shared/types";
+import type { ClarificationQuestion, ClarificationQuiz, MissionIntervention } from "../../../shared/types";
 
 /* Re-export helpers used by tests */
 export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./missionHelpers";
@@ -100,9 +97,40 @@ type OrchestratorCheckpointStatus = {
   compactionCount: number;
 };
 
+function isQuizIntervention(intervention: MissionIntervention | null | undefined): intervention is MissionIntervention & {
+  metadata: Record<string, unknown> & { quizMode: true; questions: ClarificationQuestion[] };
+} {
+  return Boolean(
+    intervention
+      && intervention.interventionType === "manual_input"
+      && intervention.status === "open"
+      && intervention.metadata?.quizMode === true
+      && Array.isArray(intervention.metadata?.questions)
+  );
+}
+
+function isBlockingManualInputIntervention(intervention: MissionIntervention): boolean {
+  if (intervention.interventionType !== "manual_input" || intervention.status !== "open") return false;
+  return intervention.metadata?.canProceedWithoutAnswer !== true;
+}
+
+function buildQuizDirective(quiz: ClarificationQuiz): string {
+  const answerLines = quiz.answers.map((answer, index) => {
+    const question = quiz.questions[index]?.question?.trim() || `Question ${index + 1}`;
+    const source = answer.source === "default_assumption" ? "default assumption" : "user answer";
+    return `- ${question}: ${answer.answer} (${source})`;
+  });
+  return [
+    "Coordinator clarification answers:",
+    ...answerLines,
+    "Proceed using these answers.",
+  ].join("\n");
+}
+
 /* ════════════════════ MAIN COMPONENT ════════════════════ */
 
 export default function MissionsPage() {
+  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const mappedLanes = useMemo(() => lanes.map((l) => ({ id: l.id, name: l.name })), [lanes]);
@@ -139,15 +167,16 @@ export default function MissionsPage() {
   const [activityPanelMode, setActivityPanelMode] = useState<"signal" | "logs">("signal");
 
   /* ── Steering state ── */
-  const [steerInput, setSteerInput] = useState("");
   const [steerBusy, setSteerBusy] = useState(false);
-  const [steerAck, setSteerAck] = useState<string | null>(null);
-  const [steeringLog, setSteeringLog] = useState<SteeringEntry[]>([]);
+  const steeringLog = useMemo<Array<{ directive: string; appliedAt: string }>>(() => [], []);
   const graphRefreshTimerRef = useRef<number | null>(null);
 
 
-  /* ── Clarification quiz modal state ── */
-  const [quizInterventionId, setQuizInterventionId] = useState<string | null>(null);
+  /* ── Intervention modal state ── */
+  const [activeInterventionId, setActiveInterventionId] = useState<string | null>(null);
+  const autoOpenedInterventionIdsRef = useRef<Set<string>>(new Set());
+  const [detailsAdvancedOpen, setDetailsAdvancedOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
 
   /* ── Track original step count for dynamic step indicator ── */
   const [originalStepCount, setOriginalStepCount] = useState<number | null>(null);
@@ -157,6 +186,19 @@ export default function MissionsPage() {
   const runAttempts = useMemo(() => runGraph?.attempts ?? [], [runGraph?.attempts]);
   const runClaims = useMemo(() => runGraph?.claims ?? [], [runGraph?.claims]);
   const runTimeline = useMemo(() => runGraph?.timeline ?? [], [runGraph?.timeline]);
+  const executionSteps = useMemo(() => filterExecutionSteps(runSteps), [runSteps]);
+
+  const executionProgress = useMemo(() => {
+    const completed = executionSteps.filter((step) =>
+      step.status === "succeeded" || step.status === "skipped" || step.status === "superseded" || step.status === "canceled"
+    ).length;
+    const running = executionSteps.filter((step) => step.status === "running").length;
+    const blocked = executionSteps.filter((step) => step.status === "blocked").length;
+    const failed = executionSteps.filter((step) => step.status === "failed").length;
+    const total = executionSteps.length;
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+    return { completed, running, blocked, failed, total, pct };
+  }, [executionSteps]);
 
   /* ── Derived data ── */
   const filteredMissions = useMemo(() => {
@@ -177,6 +219,20 @@ export default function MissionsPage() {
       executor: typeof autopilot?.executorKind === "string" ? autopilot.executorKind : null
     };
   }, [runGraph]);
+
+  const missionPhaseBadge = useMemo(() => {
+    const runMeta = isRecord(runGraph?.run?.metadata) ? runGraph.run.metadata : null;
+    const runPhaseOverride = Array.isArray(runMeta?.phaseOverride)
+      ? runMeta.phaseOverride as import("../../../shared/types").PhaseCard[]
+      : null;
+    const missionPhaseOverride = Array.isArray(selectedMission?.phaseConfiguration?.selectedPhases)
+      ? selectedMission.phaseConfiguration.selectedPhases
+      : null;
+    return {
+      phases: runPhaseOverride && runPhaseOverride.length > 0 ? runPhaseOverride : missionPhaseOverride,
+      profileName: typeof runMeta?.phaseProfileName === "string" ? runMeta.phaseProfileName : null,
+    };
+  }, [runGraph?.run?.metadata, selectedMission?.phaseConfiguration]);
 
   const canStartOrRerun = !runGraph || runGraph.run.status === "succeeded" || runGraph.run.status === "failed" || runGraph.run.status === "canceled";
   const canCancelRun = Boolean(
@@ -208,12 +264,6 @@ export default function MissionsPage() {
   const checkpointIndicatorTooltip = checkpointStatus
     ? `Last checkpoint: ${relativeWhen(checkpointStatus.savedAt)} | ${checkpointStatus.turnCount} turns | ${checkpointStatus.compactionCount} compactions`
     : "Last checkpoint: pending";
-
-  const isActiveMission = selectedMission && (
-    selectedMission.status === "in_progress" ||
-    selectedMission.status === "planning" ||
-    selectedMission.status === "intervention_required"
-  );
   const defaultCreateLaneId = useMemo(
     () => lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null,
     [lanes]
@@ -282,7 +332,6 @@ export default function MissionsPage() {
       teammatePlanMode: toTeammatePlanMode(
         readString(localOrchestrator.teammatePlanMode, effectiveOrchestrator.teammatePlanMode, "auto")
       ),
-      requirePlanReview: readBool(localOrchestrator.requirePlanReview, effectiveOrchestrator.requirePlanReview, false),
       cliMode: toCliMode(readString(localCli.mode, effectiveCli.mode, "full-auto")),
       cliSandboxPermissions: toCliSandboxPermissions(readString(localCli.sandboxPermissions, effectiveCli.sandboxPermissions, "workspace-write")),
       inProcessMode: toInProcessMode(readString(localInProcess.mode, effectiveInProcess.mode, "full-auto")),
@@ -321,9 +370,9 @@ export default function MissionsPage() {
         ...localOrchestrator,
         defaultOrchestratorModel: normalizedOrchestratorModel,
         defaultPlannerProvider: normalizedPlannerProvider,
-        teammatePlanMode: toTeammatePlanMode(missionSettingsDraft.teammatePlanMode),
-        requirePlanReview: missionSettingsDraft.requirePlanReview
+        teammatePlanMode: toTeammatePlanMode(missionSettingsDraft.teammatePlanMode)
       };
+      delete nextOrchestrator.requirePlanReview;
       delete nextOrchestrator.defaultDepthTier;
       delete nextOrchestrator.default_depth_tier;
 
@@ -459,14 +508,12 @@ export default function MissionsPage() {
       }
       setSelectedMission(null);
       setRunGraph(null);
-      setSteeringLog([]);
       setChatJumpTarget(null);
       setLogsFocusInterventionId(null);
       setActivityPanelMode("signal");
       setOriginalStepCount(null);
       return;
     }
-    setSteeringLog([]);
     setChatJumpTarget(null);
     setLogsFocusInterventionId(null);
     setActivityPanelMode("signal");
@@ -562,14 +609,9 @@ export default function MissionsPage() {
       laneId?: string | null;
       executorKind: OrchestratorExecutorKind;
       plannerProvider?: "claude" | "codex" | null;
-      approveExistingPlan?: boolean;
     }) => {
       const missionId = args.missionId.trim();
       if (!missionId) return;
-      if (args.laneId) {
-        try { await window.ade.packs.refreshLanePack(args.laneId); } catch { /* non-fatal */ }
-      }
-      try { await window.ade.packs.refreshProjectPack({ laneId: args.laneId ?? undefined }); } catch { /* non-fatal */ }
 
       const startArgs = {
         missionId,
@@ -579,9 +621,7 @@ export default function MissionsPage() {
         defaultRetryLimit: 1,
         plannerProvider: args.plannerProvider ?? null
       } satisfies StartOrchestratorRunFromMissionArgs;
-      return args.approveExistingPlan
-        ? await window.ade.orchestrator.approveMissionPlan(startArgs)
-        : await window.ade.orchestrator.startRunFromMission(startArgs);
+      return await window.ade.orchestrator.startRunFromMission(startArgs);
     },
     []
   );
@@ -642,8 +682,7 @@ export default function MissionsPage() {
         missionId: selectedMission.id,
         laneId: selectedMission.laneId,
         executorKind: fallbackExecutor,
-        plannerProvider,
-        approveExistingPlan: selectedMission.status === "plan_review"
+        plannerProvider
       });
       await loadOrchestratorGraph(selectedMission.id);
       await loadMissionDetail(selectedMission.id);
@@ -728,26 +767,26 @@ export default function MissionsPage() {
     }
   }, [runGraph, selectedMission, refreshLanes]);
 
-  const handleSteer = useCallback(async () => {
-    if (!selectedMission || !steerInput.trim()) return;
-    const directiveText = steerInput.trim();
+  const handleInterventionResponse = useCallback(async (interventionId: string, directiveText: string) => {
+    if (!selectedMission) return;
     setSteerBusy(true);
-    setSteerAck(null);
     try {
-      const result: SteerMissionResult = await window.ade.orchestrator.steerMission({
+      await window.ade.orchestrator.steerMission({
         missionId: selectedMission.id,
+        interventionId,
         directive: directiveText,
         priority: "instruction"
       });
-      setSteerAck(result.response ?? "Directive acknowledged.");
-      setSteeringLog((prev) => [...prev, { directive: directiveText, appliedAt: new Date().toISOString() }]);
-      setSteerInput("");
+      setActiveInterventionId(null);
+      await refreshMissionList({ preserveSelection: true, silent: true });
+      await loadMissionDetail(selectedMission.id);
+      await loadOrchestratorGraph(selectedMission.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSteerBusy(false);
     }
-  }, [selectedMission, steerInput]);
+  }, [loadMissionDetail, loadOrchestratorGraph, refreshMissionList, selectedMission]);
 
   const attemptsByStep = useMemo(() => {
     const map = new Map<string, OrchestratorAttempt[]>();
@@ -787,6 +826,73 @@ export default function MissionsPage() {
     }
     return Array.from(map.values());
   }, [selectedMission]);
+
+  const failedExecutionSteps = useMemo(
+    () => executionSteps.filter((step) => step.status === "failed"),
+    [executionSteps]
+  );
+
+  const missionFileChanges = useMemo(() => {
+    const files = new Set<string>();
+    for (const event of runGraph?.runtimeEvents ?? []) {
+      const payload = isRecord(event.payload) ? event.payload : {};
+      for (const candidate of [payload.filePath, payload.path, payload.file]) {
+        if (typeof candidate === "string" && candidate.trim().length > 0) {
+          files.add(candidate.trim());
+        }
+      }
+    }
+    return [...files].sort();
+  }, [runGraph?.runtimeEvents]);
+
+  const missionLaneLabels = useMemo(() => {
+    const labels = new Set<string>();
+    if (selectedMission?.laneName) labels.add(selectedMission.laneName);
+    for (const step of runSteps) {
+      if (step.laneId) labels.add(step.laneId);
+    }
+    return [...labels];
+  }, [runSteps, selectedMission?.laneName]);
+
+  const handleViewWorkSession = useCallback((sessionId: string) => {
+    navigate(`/work?sessionId=${encodeURIComponent(sessionId)}`);
+  }, [navigate]);
+
+  const openManualInputInterventions = useMemo(
+    () =>
+      selectedMission?.interventions.filter(
+        (intervention) => intervention.interventionType === "manual_input" && intervention.status === "open"
+      ) ?? [],
+    [selectedMission]
+  );
+
+  const blockingManualInputInterventions = useMemo(
+    () => openManualInputInterventions.filter((intervention) => isBlockingManualInputIntervention(intervention)),
+    [openManualInputInterventions]
+  );
+
+  useEffect(() => {
+    if (!selectedMission || activeInterventionId) return;
+    const nextBlocking = blockingManualInputInterventions.find(
+      (intervention) => !autoOpenedInterventionIdsRef.current.has(intervention.id)
+    );
+    if (!nextBlocking) return;
+    autoOpenedInterventionIdsRef.current.add(nextBlocking.id);
+    setActiveInterventionId(nextBlocking.id);
+  }, [activeInterventionId, blockingManualInputInterventions, selectedMission]);
+
+  useEffect(() => {
+    if (!activeInterventionId) return;
+    const stillExists = selectedMission?.interventions.some((intervention) => intervention.id === activeInterventionId) ?? false;
+    if (!stillExists) {
+      setActiveInterventionId(null);
+    }
+  }, [activeInterventionId, selectedMission]);
+
+  useEffect(() => {
+    setDetailsAdvancedOpen(false);
+    setUsageOpen(false);
+  }, [selectedMissionId]);
 
   // Reconcile selection only against displayed cards — no auto-reset mismatch
   useEffect(() => {
@@ -936,7 +1042,13 @@ export default function MissionsPage() {
                             onClick={() => setSelectedMissionId(m.id)}
                             className="w-full text-left p-2.5 transition-colors"
                             style={m.id === selectedMissionId
-                              ? { background: "#A78BFA12", border: `1px solid ${COLORS.accent}30`, borderLeft: `3px solid ${COLORS.accent}` }
+                              ? {
+                                  background: "#A78BFA12",
+                                  borderTop: `1px solid ${COLORS.accent}30`,
+                                  borderRight: `1px solid ${COLORS.accent}30`,
+                                  borderBottom: `1px solid ${COLORS.accent}30`,
+                                  borderLeft: `3px solid ${COLORS.accent}`
+                                }
                               : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
                             }
                           >
@@ -944,13 +1056,13 @@ export default function MissionsPage() {
                               <div className="text-xs font-medium truncate flex-1" style={{ color: COLORS.textPrimary }}>{m.title}</div>
                               {m.openInterventions > 0 && (
                                 <span
-                                  className="shrink-0 px-1 py-0.5 text-[9px] font-bold"
-                                  style={{ color: COLORS.warning, background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30`, fontFamily: MONO_FONT }}
-                                  title="Has pending interventions"
-                                >
-                                  {m.status === "plan_review" ? "?" : "!"}
-                                </span>
-                              )}
+                                className="shrink-0 px-1 py-0.5 text-[9px] font-bold"
+                                style={{ color: COLORS.warning, background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30`, fontFamily: MONO_FONT }}
+                                title="Has pending interventions"
+                              >
+                                  !
+                              </span>
+                            )}
                             </div>
                             <div className="mt-1 text-[11px] truncate" style={{ color: COLORS.textMuted }}>{m.prompt}</div>
                             <div className="mt-1.5 flex items-center gap-2">
@@ -983,7 +1095,13 @@ export default function MissionsPage() {
                         isActive && !isSelected && "ade-glow-pulse-blue"
                       )}
                       style={isSelected
-                        ? { background: "#A78BFA12", border: `1px solid ${COLORS.accent}30`, borderLeft: `3px solid ${COLORS.accent}` }
+                        ? {
+                            background: "#A78BFA12",
+                            borderTop: `1px solid ${COLORS.accent}30`,
+                            borderRight: `1px solid ${COLORS.accent}30`,
+                            borderBottom: `1px solid ${COLORS.accent}30`,
+                            borderLeft: `3px solid ${COLORS.accent}`
+                          }
                         : { border: "1px solid transparent" }
                       }
                     >
@@ -1001,7 +1119,7 @@ export default function MissionsPage() {
                                 style={{ color: COLORS.warning, background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30`, fontFamily: MONO_FONT }}
                                 title="Has pending interventions"
                               >
-                                {m.status === "plan_review" ? "?" : "!"}
+                                !
                               </span>
                             )}
                           </div>
@@ -1039,7 +1157,7 @@ export default function MissionsPage() {
           ) : (
             <>
               {/* ── Header Bar ── */}
-              <div className="flex items-center gap-3 shrink-0 h-16 px-6" style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
+              <div className="flex items-center gap-3 shrink-0 px-6 py-3" style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <h2 className="truncate text-sm font-bold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
@@ -1061,10 +1179,10 @@ export default function MissionsPage() {
                         </span>
                       );
                     })()}
-                    {runGraph?.run?.metadata && (
+                    {(runGraph?.run?.metadata || selectedMission?.phaseConfiguration) && (
                       <MissionPhaseBadge
-                        phases={(runGraph.run.metadata as Record<string, unknown>).phaseOverride as import("../../../shared/types").PhaseCard[] | undefined}
-                        profileName={(runGraph.run.metadata as Record<string, unknown>).phaseProfileName as string | undefined}
+                        phases={missionPhaseBadge.phases}
+                        profileName={missionPhaseBadge.profileName}
                       />
                     )}
                   </div>
@@ -1076,6 +1194,25 @@ export default function MissionsPage() {
                     {runGraph && (
                       <span>Run: {runGraph.run.status}</span>
                     )}
+                    {executionProgress.total > 0 && (
+                      <span>
+                        Progress: {executionProgress.completed}/{executionProgress.total}
+                        {executionProgress.failed > 0 ? `, ${executionProgress.failed} failed` : ""}
+                        {executionProgress.running > 0 ? `, ${executionProgress.running} running` : ""}
+                        {executionProgress.blocked > 0 ? `, ${executionProgress.blocked} blocked` : ""}
+                      </span>
+                    )}
+                  </div>
+                  {executionProgress.total > 0 && (
+                    <div className="mt-2 h-1.5 w-full overflow-hidden" style={{ background: COLORS.recessedBg }}>
+                      <div
+                        className="h-full transition-all"
+                        style={{ width: `${executionProgress.pct}%`, background: COLORS.accent }}
+                      />
+                    </div>
+                  )}
+                  <div className="mt-1 text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                    Canonical progress tracks executable work only. Planning-only nodes stay visible in the DAG but do not affect this summary.
                   </div>
                 </div>
 
@@ -1146,55 +1283,73 @@ export default function MissionsPage() {
                 )}
               </AnimatePresence>
 
-              {/* ── Plan Review: Planner Clarifying Questions ── */}
-              {selectedMission?.status === "plan_review" &&
-                selectedMission.interventions.some(
-                  (iv) =>
-                    iv.interventionType === "manual_input" &&
-                    iv.status === "open" &&
-                    iv.metadata?.source === "planner_clarifying_question"
-                ) && (
-                  <PlanReviewInterventions
-                    mission={selectedMission}
-                    onAllResolved={() => { void handleStartRun(); }}
-                  />
-                )}
-
-              {/* ── Coordinator Clarification Quiz Banner ── */}
-              {selectedMission && (() => {
-                const quizInterventions = selectedMission.interventions.filter(
-                  (iv) =>
-                    iv.interventionType === "manual_input" &&
-                    iv.status === "open" &&
-                    iv.metadata?.quizMode === true &&
-                    Array.isArray(iv.metadata?.questions)
-                );
-                if (quizInterventions.length === 0) return null;
+              {/* ── Coordinator Manual Input Banner ── */}
+              {selectedMission && openManualInputInterventions.length > 0 && (() => {
+                const blockingCount = blockingManualInputInterventions.length;
+                const optionalCount = openManualInputInterventions.length - blockingCount;
+                const primaryIntervention = blockingManualInputInterventions[0] ?? openManualInputInterventions[0];
+                if (!primaryIntervention) return null;
+                const label = blockingCount > 0
+                  ? blockingCount === 1
+                    ? "Coordinator is waiting on 1 answer"
+                    : `Coordinator is waiting on ${blockingCount} answers`
+                  : optionalCount === 1
+                    ? "Coordinator has 1 optional clarification"
+                    : `Coordinator has ${optionalCount} optional clarifications`;
+                const detail = isQuizIntervention(primaryIntervention)
+                  ? `${primaryIntervention.metadata.questions.length} question${primaryIntervention.metadata.questions.length === 1 ? "" : "s"} ready to answer`
+                  : primaryIntervention.title;
                 return (
                   <div
                     style={{
                       background: COLORS.cardBg,
-                      border: `1px solid ${COLORS.accentBorder}`,
+                      border: `1px solid ${blockingCount > 0 ? COLORS.warning : COLORS.accentBorder}`,
                       margin: "12px 16px",
                       padding: "12px 16px",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
+                      gap: 12,
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <ChatCircle weight="bold" style={{ color: COLORS.accent, width: 14, height: 14 }} />
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.accent }}>
-                        {quizInterventions.length === 1
-                          ? `Coordinator has ${(quizInterventions[0].metadata?.questions as ClarificationQuestion[]).length} question${(quizInterventions[0].metadata?.questions as ClarificationQuestion[]).length === 1 ? "" : "s"}`
-                          : `${quizInterventions.length} clarification requests pending`}
-                      </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <ChatCircle
+                        weight="bold"
+                        style={{ color: blockingCount > 0 ? COLORS.warning : COLORS.accent, width: 14, height: 14, flexShrink: 0 }}
+                      />
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontFamily: MONO_FONT,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            textTransform: "uppercase",
+                            letterSpacing: "1px",
+                            color: blockingCount > 0 ? COLORS.warning : COLORS.accent,
+                          }}
+                        >
+                          {label}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 4,
+                            fontFamily: SANS_FONT,
+                            fontSize: 12,
+                            color: COLORS.textSecondary,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {detail}
+                        </div>
+                      </div>
                     </div>
                     <button
                       style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                      onClick={() => setQuizInterventionId(quizInterventions[0].id)}
+                      onClick={() => setActiveInterventionId(primaryIntervention.id)}
                     >
-                      ANSWER QUESTIONS
+                      {isQuizIntervention(primaryIntervention) ? "ANSWER NOW" : "OPEN REQUEST"}
                     </button>
                   </div>
                 );
@@ -1229,36 +1384,7 @@ export default function MissionsPage() {
                 })}
               </div>
 
-              {/* ── Original Mission Prompt ── */}
-              {selectedMission?.prompt && (
-                <div style={{
-                  background: COLORS.cardBg,
-                  border: `1px solid ${COLORS.border}`,
-                  padding: '12px 16px',
-                  margin: '12px 16px 0',
-                }}>
-                  <div style={{
-                    ...LABEL_STYLE,
-                    color: COLORS.textMuted,
-                    marginBottom: 6,
-                  }}>
-                    MISSION PROMPT
-                  </div>
-                  <div style={{
-                    fontFamily: MONO_FONT,
-                    fontSize: 12,
-                    color: COLORS.textPrimary,
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    maxHeight: 200,
-                    overflowY: 'auto',
-                  }}>
-                    {selectedMission.prompt}
-                  </div>
-                </div>
-              )}
-
-              {/* ── Completion Banner + Phase Progress + Execution Plan Preview ── */}
+              {/* ── Completion Banner ── */}
               {runGraph && (
                 <div className="px-4 pt-3 space-y-2">
                   <CompletionBanner
@@ -1266,7 +1392,6 @@ export default function MissionsPage() {
                     evaluation={runGraph.completionEvaluation}
                     runId={runGraph.run.id}
                   />
-                  <PhaseProgressBar steps={runGraph.steps} />
                 </div>
               )}
 
@@ -1299,6 +1424,7 @@ export default function MissionsPage() {
                         setChatJumpTarget(target);
                         setActiveTab("chat");
                       }}
+                      onViewWorkSession={handleViewWorkSession}
                     />
                   </div>
                 )}
@@ -1328,6 +1454,7 @@ export default function MissionsPage() {
                         setChatJumpTarget(target);
                         setActiveTab("chat");
                       }}
+                      onViewWorkSession={handleViewWorkSession}
                     />
                   </div>
                 )}
@@ -1344,7 +1471,7 @@ export default function MissionsPage() {
                           : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
                         }
                       >
-                        Signal
+                        Timeline
                       </button>
                       <button
                         type="button"
@@ -1355,7 +1482,7 @@ export default function MissionsPage() {
                           : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
                         }
                       >
-                        Logs
+                        Raw Logs
                       </button>
                     </div>
                     {activityPanelMode === "signal" ? (
@@ -1412,104 +1539,162 @@ export default function MissionsPage() {
                   <div className="space-y-3">
                     <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
                       <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        Phase Profile
+                        Mission prompt
                       </div>
-                      <div className="mt-1 text-xs" style={{ color: COLORS.textPrimary }}>
-                        {selectedMission.phaseConfiguration?.profile?.name ?? "Default"}
+                      <div className="mt-2 text-[12px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        {selectedMission.prompt}
                       </div>
-                      {missionPhaseRows.length > 0 ? (
+                    </div>
+
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          Mission metadata
+                        </div>
+                        <div className="mt-2 space-y-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                          <div>Status: <span style={{ color: COLORS.textPrimary }}>{selectedMission.status}</span></div>
+                          <div>Priority: <span style={{ color: COLORS.textPrimary }}>{selectedMission.priority}</span></div>
+                          <div>Phase profile: <span style={{ color: COLORS.textPrimary }}>{selectedMission.phaseConfiguration?.profile?.name ?? "Default"}</span></div>
+                          <div>Lanes: <span style={{ color: COLORS.textPrimary }}>{missionLaneLabels.length > 0 ? missionLaneLabels.join(", ") : "None"}</span></div>
+                        </div>
+                        {missionPhaseRows.length > 0 ? (
+                          <div className="mt-3 space-y-1">
+                            {missionPhaseRows.map((row) => (
+                              <div key={row.key} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
+                                <span style={{ color: COLORS.textSecondary }}>{row.name}</span>
+                                <span style={{ color: COLORS.textMuted }}>{row.completed}/{row.total}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          Failure summary
+                        </div>
                         <div className="mt-2 space-y-1">
-                          {missionPhaseRows.map((row) => (
-                            <div key={row.key} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
-                              <span style={{ color: COLORS.textSecondary }}>{row.name}</span>
-                              <span style={{ color: COLORS.textMuted }}>{row.completed}/{row.total}</span>
+                          {failedExecutionSteps.length === 0 ? (
+                            <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                              No executable steps are currently failed.
+                            </div>
+                          ) : failedExecutionSteps.map((step) => (
+                            <div key={step.id} className="px-2 py-1.5 text-[11px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                              <div style={{ color: COLORS.textPrimary }}>{step.title}</div>
+                              <div className="mt-1" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{step.stepKey}</div>
                             </div>
                           ))}
                         </div>
-                      ) : null}
+                      </div>
                     </div>
-                    {selectedMission.interventions.length > 0 ? (
-                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          Interventions
-                        </div>
-                        <div className="mt-2 space-y-2">
-                          {selectedMission.interventions.slice(0, 10).map((iv) => {
-                            const isOpen = iv.status === "open";
-                            return (
-                              <div key={iv.id} className="px-2 py-1.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-                                <div className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                  <span style={{ color: isOpen ? COLORS.warning : COLORS.success }}>{isOpen ? "OPEN" : "RESOLVED"}</span>
-                                  <span>{iv.interventionType.replace(/_/g, " ")}</span>
-                                </div>
-                                <div className="mt-1 text-[11px]" style={{ color: COLORS.textPrimary }}>
-                                  {iv.title}
-                                </div>
-                                <div className="mt-1 flex items-center gap-2">
+
+                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                      <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        Modified files
+                      </div>
+                      <div className="mt-2 space-y-1">
+                        {missionFileChanges.length === 0 ? (
+                          <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                            No file activity recorded yet.
+                          </div>
+                        ) : missionFileChanges.slice(0, 30).map((file) => (
+                          <div key={file} className="text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
+                            {file}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                      <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        Interventions
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {selectedMission.interventions.length === 0 ? (
+                          <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                            No interventions on this mission.
+                          </div>
+                        ) : selectedMission.interventions.slice(0, 10).map((iv) => {
+                          const isOpen = iv.status === "open";
+                          return (
+                            <div key={iv.id} className="px-2 py-1.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                              <div className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                                <span style={{ color: isOpen ? COLORS.warning : COLORS.success }}>{isOpen ? "OPEN" : "RESOLVED"}</span>
+                                <span>{iv.interventionType.replace(/_/g, " ")}</span>
+                              </div>
+                              <div className="mt-1 text-[11px]" style={{ color: COLORS.textPrimary }}>
+                                {iv.title}
+                              </div>
+                              <div className="mt-1 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
+                                  onClick={() => {
+                                    setLogsFocusInterventionId(iv.id);
+                                    setActivityPanelMode("logs");
+                                    setActiveTab("activity");
+                                  }}
+                                >
+                                  VIEW LOGS
+                                </button>
+                                {isOpen ? (
                                   <button
                                     type="button"
                                     style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
                                     onClick={() => {
-                                      setLogsFocusInterventionId(iv.id);
-                                      setActivityPanelMode("logs");
-                                      setActiveTab("activity");
+                                      if (iv.interventionType === "manual_input") {
+                                        setActiveInterventionId(iv.id);
+                                        return;
+                                      }
+                                      setActiveTab("chat");
                                     }}
                                   >
-                                    VIEW LOGS
+                                    {iv.interventionType === "manual_input" ? "ANSWER" : "OPEN CHAT"}
                                   </button>
-                                  {isOpen ? (
-                                    <button
-                                      type="button"
-                                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
-                                      onClick={() => setActiveTab("chat")}
-                                    >
-                                      OPEN CHAT
-                                    </button>
-                                  ) : null}
-                                </div>
+                                ) : null}
                               </div>
-                            );
-                          })}
-                        </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ) : null}
-                    <MissionStateSummary runId={runGraph?.run.id ?? null} />
-                    <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
+                    </div>
+
+                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                      <button
+                        type="button"
+                        onClick={() => setDetailsAdvancedOpen((prev) => !prev)}
+                        className="flex w-full items-center justify-between text-[10px] font-bold uppercase tracking-[1px]"
+                        style={{ color: detailsAdvancedOpen ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+                      >
+                        <span>Advanced mission state</span>
+                        <span>{detailsAdvancedOpen ? "Hide" : "Show"}</span>
+                      </button>
+                      {detailsAdvancedOpen && (
+                        <div className="mt-3">
+                          <MissionStateSummary runId={runGraph?.run.id ?? null} />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                      <button
+                        type="button"
+                        onClick={() => setUsageOpen((prev) => !prev)}
+                        className="flex w-full items-center justify-between text-[10px] font-bold uppercase tracking-[1px]"
+                        style={{ color: usageOpen ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+                      >
+                        <span>Usage and budget</span>
+                        <span>{usageOpen ? "Hide" : "Show"}</span>
+                      </button>
+                      {usageOpen && (
+                        <div className="mt-3">
+                          <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
-
-              {/* ── Bottom Steering Bar (hidden on Chat tab since chat includes steering + control) ── */}
-              {isActiveMission && activeTab !== "chat" && (
-                <div className="px-4 py-2.5" style={{ borderTop: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
-                  {steerAck && (
-                    <div className="mb-2 px-3 py-1.5 text-[10px] flex items-center justify-between" style={{ background: `${COLORS.success}18`, border: `1px solid ${COLORS.success}30`, color: COLORS.success }}>
-                      <span>{steerAck}</span>
-                      <button onClick={() => setSteerAck(null)} style={{ color: COLORS.success }}>
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <input
-                      value={steerInput}
-                      onChange={(e) => setSteerInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSteer(); } }}
-                      placeholder="Type a directive to steer this mission..."
-                      className="h-8 flex-1 px-3 text-xs outline-none"
-                      style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT }}
-                    />
-                    <button
-                      style={primaryButton()}
-                      onClick={() => void handleSteer()}
-                      disabled={steerBusy || !steerInput.trim()}
-                    >
-                      {steerBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <PaperPlaneTilt className="h-3 w-3" />}
-                      SEND
-                    </button>
-                  </div>
-                </div>
-              )}
             </>
           )}
         </div>
@@ -1549,33 +1734,33 @@ export default function MissionsPage() {
         )}
       </AnimatePresence>
 
-      {/* ════════════ CLARIFICATION QUIZ MODAL ════════════ */}
-      {quizInterventionId && selectedMission && (() => {
-        const iv = selectedMission.interventions.find((i) => i.id === quizInterventionId);
-        if (!iv || !iv.metadata?.quizMode || !Array.isArray(iv.metadata?.questions)) {
+      {/* ════════════ MANUAL INPUT MODALS ════════════ */}
+      {activeInterventionId && selectedMission && (() => {
+        const iv = selectedMission.interventions.find((intervention) => intervention.id === activeInterventionId);
+        if (!iv || iv.status !== "open" || iv.interventionType !== "manual_input") {
           return null;
         }
-        const questions = iv.metadata.questions as ClarificationQuestion[];
-        const phase = typeof iv.metadata.phase === "string" ? iv.metadata.phase : null;
+        if (isQuizIntervention(iv)) {
+          const phase = typeof iv.metadata.phase === "string" ? iv.metadata.phase : null;
+          return (
+            <ClarificationQuizModal
+              interventionId={iv.id}
+              missionId={selectedMission.id}
+              questions={iv.metadata.questions}
+              phase={phase}
+              onClose={() => setActiveInterventionId(null)}
+              onSubmit={async (quiz: ClarificationQuiz) => {
+                await handleInterventionResponse(iv.id, buildQuizDirective(quiz));
+              }}
+            />
+          );
+        }
         return (
-          <ClarificationQuizModal
-            interventionId={iv.id}
-            missionId={selectedMission.id}
-            questions={questions}
-            phase={phase}
-            onClose={() => setQuizInterventionId(null)}
-            onSubmit={async (quiz: ClarificationQuiz) => {
-              await window.ade.missions.resolveIntervention({
-                missionId: selectedMission.id,
-                interventionId: iv.id,
-                status: "resolved",
-                note: JSON.stringify(quiz),
-              });
-              setQuizInterventionId(null);
-              await refreshMissionList({ preserveSelection: true, silent: true });
-              if (selectedMission.id) {
-                await loadMissionDetail(selectedMission.id);
-              }
+          <ManualInputResponseModal
+            intervention={iv}
+            onClose={() => setActiveInterventionId(null)}
+            onSubmit={async (answer) => {
+              await handleInterventionResponse(iv.id, answer);
             }}
           />
         );

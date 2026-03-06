@@ -168,10 +168,10 @@ export function buildLaneExport(args: {
 
   const taskSpecRaw =
     extractBetweenMarkers(body, args.markers.taskSpecStart, args.markers.taskSpecEnd) ??
-    "(task spec missing; refresh lane pack to upgrade markers)";
+    "(task spec missing; lane context markers unavailable)";
   const intentRaw =
     extractBetweenMarkers(body, args.markers.intentStart, args.markers.intentEnd) ??
-    "(intent missing; refresh lane pack to upgrade markers)";
+    "(intent missing; lane context markers unavailable)";
   const todosRaw = extractBetweenMarkers(body, args.markers.todosStart, args.markers.todosEnd) ?? "";
   const narrativeRaw = extractBetweenMarkers(body, args.markers.narrativeStart, args.markers.narrativeEnd) ?? "";
 
@@ -511,7 +511,7 @@ export function buildProjectExport(args: {
     lines.push("");
   } else {
     lines.push("## Snapshot");
-    lines.push("- Project pack is empty. Refresh deterministic packs first.");
+    lines.push("- Project context is currently unavailable.");
     lines.push("");
     omissionsBase.push({ sectionId: "snapshot", reason: "data_unavailable", detail: "Snapshot unavailable." });
   }
@@ -625,12 +625,12 @@ export function buildConflictExport(args: {
 
   lines.push("## Overlapping Files");
   if (overlapLines.lines.length) lines.push(...overlapLines.lines);
-  else lines.push("- (none listed; refresh conflict pack)");
+  else lines.push("- (none listed; live conflict context is unavailable)");
   lines.push("");
 
   lines.push("## Conflicts (merge-tree)");
   if (conflictsLines.lines.length) lines.push(...conflictsLines.lines);
-  else lines.push("- (none listed; refresh conflict pack)");
+  else lines.push("- (none listed; live conflict context is unavailable)");
   lines.push("");
 
   const buildContent = (omissions: ExportOmissionV1[]) => {

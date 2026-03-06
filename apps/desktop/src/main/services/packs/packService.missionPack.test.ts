@@ -184,7 +184,27 @@ describe("packService mission pack", () => {
       projectId,
       packsDir,
       laneService: {
-        list: async () => [],
+        list: async () => [
+          {
+            id: laneId,
+            name: "Lane 1",
+            description: null,
+            laneType: "worktree",
+            baseRef: "main",
+            branchRef: "feature/lane-1",
+            worktreePath: projectRoot,
+            attachedRootPath: null,
+            isEditProtected: false,
+            parentLaneId: null,
+            color: null,
+            icon: null,
+            tags: [],
+            status: { dirty: false, ahead: 0, behind: 0 },
+            createdAt: now,
+            archivedAt: null,
+            stackDepth: 0
+          }
+        ],
         getLaneBaseAndBranch: () => ({ worktreePath: projectRoot, baseRef: "main", branchRef: "feature/lane-1" })
       } as any,
       sessionService: { readTranscriptTail: () => "" } as any,
@@ -229,12 +249,17 @@ describe("packService mission pack", () => {
     expect(fetched.versionId).toBe(refreshed.versionId);
     expect(fetched.versionNumber).toBe(refreshed.versionNumber);
 
-    const versions = packService.listVersions({ packKey: `mission:${missionId}` });
-    expect(versions.length).toBeGreaterThan(0);
-    expect(versions[0]?.packType).toBe("mission");
+    const versionCount = db.get<{ count: number }>(
+      "select count(*) as count from pack_versions where project_id = ? and pack_key = ?",
+      [projectId, `mission:${missionId}`]
+    );
+    expect(Number(versionCount?.count ?? 0)).toBeGreaterThan(0);
 
-    const events = packService.listEvents({ packKey: `mission:${missionId}` });
-    expect(events.some((event) => event.eventType === "refresh_triggered")).toBe(true);
+    const refreshEventCount = db.get<{ count: number }>(
+      "select count(*) as count from pack_events where project_id = ? and pack_key = ? and event_type = ?",
+      [projectId, `mission:${missionId}`, "refresh_triggered"]
+    );
+    expect(Number(refreshEventCount?.count ?? 0)).toBeGreaterThan(0);
 
     const indexRow = db.get<{ metadata_json: string | null; pack_type: string }>(
       "select metadata_json, pack_type from packs_index where project_id = ? and pack_key = ? limit 1",

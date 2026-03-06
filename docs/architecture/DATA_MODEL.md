@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-04
+> Last updated: 2026-03-05
 
 ---
 
@@ -27,9 +27,9 @@
 
 ## Overview
 
-ADE uses a dual persistence strategy: structured data lives in a SQLite database (via sql.js, an in-process WASM implementation), while large artifacts (terminal transcripts, pack files, process logs, test logs) are stored as files on the filesystem. This split balances the need for efficient querying of metadata with the practical reality that large text blobs are better served by filesystem storage.
+ADE uses a dual persistence strategy: structured data lives in a SQLite database (via sql.js, an in-process WASM implementation), while large artifacts (terminal transcripts, logs, generated docs, and compatibility/history artifacts) are stored as files on the filesystem. This split balances the need for efficient querying of metadata with the practical reality that large text blobs are better served by filesystem storage.
 
-All persistence is local to the project. The primary database and all artifact files reside under the `.ade/` directory within the project root, ensuring that ADE's state travels with the repository and can be included or excluded from version control as desired. A separate global state file tracks the user's recent project list.
+All persistence is local to the project. The primary database and all artifact files reside under the `.ade/` directory within the project root, ensuring that ADE's state travels with the repository and can be included or excluded from version control as desired. Unified memory in SQLite is the canonical durable memory backend. Persisted `.ade/packs/...` files may still exist for compatibility/history, but live runtime exports are generated from current local state rather than loaded from pre-refreshed pack files. A separate global state file tracks the user's recent project list.
 
 ---
 
@@ -232,7 +232,7 @@ CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status  ON terminal_sessions(st
 ```
 
 Records every terminal session within a lane. `head_sha_start` and `head_sha_end` capture the git HEAD at session creation and termination, enabling diff computation for what changed during the session. `transcript_path` points to the raw terminal output log file. Additional metadata:
-- `tracked`: Whether the session is included in pack generation (default: yes).
+- `tracked`: Whether the session is included in compatibility pack generation and live export synthesis (default: yes).
 - `goal`: User-provided or inferred session intent description.
 - `tool_type`: Session tool identifier (e.g., `shell`, `codex`, `claude`, `codex-chat`, `claude-chat`, `ai-chat`, `cursor`) used for filtering, badges, and lifecycle semantics.
 - `pinned`: Whether the session is pinned for retention.
@@ -263,7 +263,7 @@ CREATE INDEX IF NOT EXISTS idx_session_deltas_lane_started    ON session_deltas(
 CREATE INDEX IF NOT EXISTS idx_session_deltas_project_started ON session_deltas(project_id, started_at);
 ```
 
-Computed after session end by the pack service. Contains the diff statistics (files changed, insertions, deletions), the list of touched files, and any failure lines extracted from the terminal transcript. This is the primary input for pack generation.
+Computed after session end by the pack service. Contains the diff statistics (files changed, insertions, deletions), the list of touched files, and any failure lines extracted from the terminal transcript. This is a primary input for compatibility pack generation and live export synthesis.
 
 #### Operations
 
@@ -443,7 +443,7 @@ CREATE INDEX IF NOT EXISTS idx_packs_index_project ON packs_index(project_id);
 CREATE INDEX IF NOT EXISTS idx_packs_index_lane    ON packs_index(lane_id);
 ```
 
-Index table for pack files. `pack_key` is scoped by pack type (`project`, `lane:<lane_id>`, `feature:<feature_key>`, `conflict:<lane_id>:<peer_key>`, `plan:<lane_id>`, `mission:<mission_id>`). Tracks when deterministic/narrative sections were last updated and the HEAD SHA at generation time.
+Index table for persisted pack-compatible artifacts. `pack_key` is scoped by pack type (`project`, `lane:<lane_id>`, `feature:<feature_key>`, `conflict:<lane_id>:<peer_key>`, `plan:<lane_id>`, `mission:<mission_id>`). Tracks when deterministic/narrative sections were last updated and the HEAD SHA at generation time. Live runtime exports may be generated without reading these files first.
 
 #### Conflict Predictions (Phase 5)
 
@@ -1026,18 +1026,20 @@ All ADE artifacts live under `.ade/` in the project root:
     │   └── <lane-slug-2>-<uuid>/        # Git worktree for lane 2
     ├── transcripts/
     │   └── <session-uuid>.log           # Raw terminal output capture
-    ├── packs/
-    │   ├── project_pack.md              # Project-level context pack
+    ├── packs/                           # Compatibility pack artifacts + export history
+    │   ├── project_pack.md              # Optional persisted project context artifact
     │   ├── versions/                    # Immutable pack version snapshots
     │   │   └── <pack-key>/
     │   │       └── v<N>.md
     │   ├── conflicts/
     │   │   └── predictions/
     │   │       └── <lane-id>.json       # Deterministic conflict prediction summary
+    │   ├── external-resolver-runs/
+    │   │   └── <run-id>/                # Generated per-run resolver context files + prompt/log/patch
     │   └── lanes/
     │       └── <lane-uuid>/
-    │           ├── lane_pack.md         # Lane-level context pack
-    │           └── plan_pack.md         # Lane plan pack (optional)
+    │           ├── lane_pack.md         # Optional persisted lane context artifact
+    │           └── plan_pack.md         # Optional persisted lane plan artifact
     ├── process-logs/
     │   └── <process-key>-<run-uuid>.log # Process stdout/stderr
     └── test-logs/
@@ -1045,6 +1047,8 @@ All ADE artifacts live under `.ade/` in the project root:
 ```
 
 The `.ade/` directory is excluded from git tracking via `.git/info/exclude` (added automatically by `ensureAdeExcluded()` on project initialization). The `ade.yaml` file is the exception -- it is intended to be committed to the repository for shared configuration.
+
+Runtime note: the canonical W6 context path is live local state plus unified memory. `.ade/packs/` is retained for compatibility exports, history, and audit artifacts rather than as the primary runtime source of truth.
 
 ### Global State
 
@@ -1073,11 +1077,11 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - **KV Store** --> Layout persistence, config trust hashes, tiling tree state, graph state
 - **Projects table** --> Lane service (foreign key), operation service (scoping)
 - **Lanes table** --> Session service, pack service, git service, diff service, conflict service, PR service
-- **Terminal Sessions** --> Session delta computation, pack generation
-- **Session Deltas** --> Lane pack body, project pack body
+- **Terminal Sessions** --> Session delta computation, live export synthesis, compatibility artifact generation
+- **Session Deltas** --> Lane/project export synthesis, compatibility artifact generation
 - **Operations** --> History page, proposal undo tracking
 - **Packs Index** --> Pack viewer UI, relay sync
-- **Conflict Predictions** --> Conflict radar UI, conflict pack generation, risk matrix
+- **Conflict Predictions** --> Conflict radar UI, live conflict exports, risk matrix
 - **Conflict Proposals** --> Conflict resolution UI, proposal apply/undo flow
 - **Pull Requests** --> PR page UI, PR polling service, lane status indicators
 - **Checkpoints** --> Pack checkpoint viewer, session boundary snapshots
@@ -1189,8 +1193,8 @@ New Phase 2 tables (implemented):
 
 Phase 1.5 gate reporting snapshots now persist evaluation outputs for:
 
-- tracked session -> delta -> checkpoint -> lane pack latency,
-- pack freshness by type,
+- tracked session -> delta/checkpoint latency,
+- live context snapshot freshness,
 - context completeness rate for orchestrated attempts,
 - blocked-run rate due to insufficient context (with reason metadata).
 
@@ -1200,7 +1204,61 @@ Phase 1.5 gate reporting snapshots now persist evaluation outputs for:
 
 ### New Tables
 
-#### Memories (with schema extensions)
+#### Unified Memories (canonical backend)
+
+```sql
+CREATE TABLE IF NOT EXISTS unified_memories (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL,
+  scope             TEXT NOT NULL,
+  scope_owner_id    TEXT,
+  tier              INTEGER NOT NULL DEFAULT 2,
+  category          TEXT NOT NULL,
+  content           TEXT NOT NULL,
+  importance        TEXT NOT NULL DEFAULT 'medium',
+  confidence        REAL NOT NULL DEFAULT 1.0,
+  observation_count INTEGER NOT NULL DEFAULT 1,
+  status            TEXT NOT NULL DEFAULT 'promoted',
+  source_type       TEXT NOT NULL DEFAULT 'agent',
+  source_id         TEXT,
+  source_session_id TEXT,
+  source_pack_key   TEXT,
+  source_run_id     TEXT,
+  file_scope_pattern TEXT,
+  agent_id          TEXT,
+  pinned            INTEGER NOT NULL DEFAULT 0,
+  composite_score   REAL NOT NULL DEFAULT 0,
+  write_gate_reason TEXT,
+  dedupe_key        TEXT NOT NULL DEFAULT '',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  last_accessed_at  TEXT NOT NULL,
+  access_count      INTEGER NOT NULL DEFAULT 0,
+  promoted_at       TEXT
+);
+```
+
+Canonical durable memory store for project-, mission-, and agent-scoped memories. Current retrieval is lexical/composite over `unified_memories`; vector/embedding retrieval is not active in this branch.
+
+#### Unified Memory Embeddings (reserved/future)
+
+```sql
+CREATE TABLE IF NOT EXISTS unified_memory_embeddings (
+  id              TEXT PRIMARY KEY,
+  memory_id       TEXT NOT NULL,
+  project_id      TEXT NOT NULL,
+  embedding_model TEXT NOT NULL,
+  embedding_blob  BLOB NOT NULL,
+  dimensions      INTEGER NOT NULL,
+  norm            REAL,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+```
+
+Reserved for future embedding-backed retrieval. The table exists in the schema, but current retrieval does not use it.
+
+#### Legacy Memories (migration/backfill compatibility)
 
 ```sql
 CREATE TABLE IF NOT EXISTS memories (
@@ -1226,7 +1284,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
 CREATE INDEX IF NOT EXISTS idx_memories_project_status ON memories(project_id, status);
 ```
 
-Stores project-level memories with a lifecycle: `candidate` (discovered by agents), `promoted` (confirmed as valuable), `archived` (superseded or incorrect). New columns support the memory promotion flow: agents create candidate memories during runs, high-confidence facts are auto-promoted on run completion, and users can manually promote/archive via the Context Budget Panel.
+Retained for safe backfill into `unified_memories`. New runtime reads and writes should be described in terms of unified memory, not this legacy table.
 
 #### Agent Identities (Schema Placeholder)
 

@@ -4,10 +4,8 @@ import YAML from "yaml";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
-import type { createPackService } from "../packs/packService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type {
-  ContextDocProvider,
   OnboardingDetectionIndicator,
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
@@ -15,7 +13,6 @@ import type {
   ProjectConfigFile
 } from "../../../shared/types";
 import { runGit, runGitOrThrow } from "../git/git";
-import { isRecord } from "../shared/utils";
 
 const STATUS_KEY = "onboarding:status";
 
@@ -76,7 +73,7 @@ function parseGithubWorkflowRuns(absPath: string): string[] {
       if (!Array.isArray(steps)) continue;
       for (const step of steps) {
         const runRaw = (step as any)?.run;
-        const run = typeof runRaw === "string" ? String(runRaw).trim() : "";
+        const run = typeof runRaw === "string" ? runRaw.trim() : "";
         if (!run) continue;
         // Keep it light: capture only single-line commands; multi-line gets noisy.
         const first = run.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0];
@@ -223,10 +220,9 @@ export function createOnboardingService(args: {
   projectId: string;
   baseRef: string;
   laneService: ReturnType<typeof createLaneService>;
-  packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
 }) {
-  const { db, logger, projectRoot, baseRef, laneService, packService, projectConfigService } = args;
+  const { db, logger, projectRoot, baseRef, laneService, projectConfigService } = args;
 
   const nowIso = () => new Date().toISOString();
 
@@ -346,70 +342,11 @@ export function createOnboardingService(args: {
     return candidates;
   };
 
-  const generateInitialPacks = async (args: { laneIds?: string[] } = {}): Promise<void> => {
-    const lanes = await laneService.list({ includeArchived: false });
-    const laneIds = args.laneIds?.length ? args.laneIds : lanes.map((lane) => lane.id);
-
-    logger.info("onboarding.generateInitialPacks.begin", { laneCount: laneIds.length });
-
-    await packService.refreshProjectPack({ reason: "onboarding_init" });
-    for (const laneId of laneIds) {
-      await packService.refreshLanePack({ laneId, reason: "onboarding_init" });
-    }
-
-    const snapshot = projectConfigService.get() as {
-      effective?: Record<string, unknown>;
-      local?: Record<string, unknown>;
-    };
-    const effective = isRecord(snapshot.effective) ? snapshot.effective : {};
-    const providerMode = typeof effective.providerMode === "string" ? effective.providerMode : "guest";
-    if (providerMode !== "guest") {
-      const ai = isRecord(effective.ai) ? (effective.ai as Record<string, unknown>) : {};
-      const taskRouting = isRecord(ai.taskRouting) ? (ai.taskRouting as Record<string, unknown>) : {};
-      const initialContextRule = isRecord(taskRouting.initial_context) ? (taskRouting.initial_context as Record<string, unknown>) : {};
-      const preferredProviderRaw =
-        typeof initialContextRule.provider === "string"
-          ? initialContextRule.provider
-          : typeof ai.defaultProvider === "string"
-            ? ai.defaultProvider
-            : "auto";
-      const preferredProvider = preferredProviderRaw === "codex" || preferredProviderRaw === "claude" ? preferredProviderRaw : "auto";
-      const providerOrder: ContextDocProvider[] =
-        preferredProvider === "codex"
-          ? ["codex", "claude"]
-          : preferredProvider === "claude"
-            ? ["claude", "codex"]
-            : ["claude", "codex"];
-
-      let generated = false;
-      for (const provider of providerOrder) {
-        try {
-          await packService.generateContextDocs({ provider });
-          logger.info("onboarding.generateInitialPacks.contextDocsGenerated", { provider });
-          generated = true;
-          break;
-        } catch (error) {
-          logger.warn("onboarding.generateInitialPacks.contextDocsFailed", {
-            provider,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-
-      if (!generated) {
-        logger.warn("onboarding.generateInitialPacks.contextDocsUnavailable");
-      }
-    }
-
-    logger.info("onboarding.generateInitialPacks.done", { laneCount: laneIds.length });
-  };
-
   return {
     getStatus,
     complete,
     detectDefaults,
     detectExistingLanes,
-    generateInitialPacks,
 
     // Convenience hook for UI flows: apply suggested config as local draft.
     applySuggestedConfig: async (suggestedConfig: ProjectConfigFile): Promise<void> => {

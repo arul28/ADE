@@ -13,7 +13,7 @@ const CADENCE_HELP: Record<RefreshCadence, string> = {
   manual: "Runs only when you click generate.",
   per_mission: "Runs automatically when missions launch (min spacing applies).",
   per_pr: "Runs automatically on PR write events like create/update/land (min spacing applies).",
-  per_lane_refresh: "Runs automatically on lane pack refreshes (min spacing applies)."
+  per_lane_refresh: "Runs automatically after lane context refresh-worthy changes (min spacing applies)."
 };
 
 const STORAGE_MODEL_KEY = "ade.contextDocs.modelId";
@@ -188,7 +188,7 @@ export function GenerateDocsModal({
                   <option value="manual">Manual only</option>
                   <option value="per_mission">Every mission launch</option>
                   <option value="per_pr">Every PR cycle</option>
-                  <option value="per_lane_refresh">Every lane refresh</option>
+                  <option value="per_lane_refresh">On lane context changes</option>
                 </select>
                 <p className="mt-1 text-[11px] text-muted-fg">
                   {CADENCE_HELP[cadence]}

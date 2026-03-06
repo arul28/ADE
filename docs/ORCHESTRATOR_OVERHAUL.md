@@ -118,7 +118,7 @@ Primary files:
 ### 6) Dead code and compatibility branches removed
 Delivered:
 - Removed obsolete status branches, stale event rendering branches, and role-default routing behavior in active runtime code paths.
-- Legacy compatibility behavior intentionally not retained (single-user dev environment, no migration/backfill requirement).
+- Legacy runtime paths are removed; minimal read-compat remains for historical mission rows (`plan_review` maps to `in_progress`).
 
 ## Active Contracts (Now Authoritative)
 
@@ -126,7 +126,7 @@ Delivered:
 - `OrchestratorRunStatus`:
   - `queued | bootstrapping | active | paused | completing | succeeded | failed | canceled`
 - `MissionStatus`:
-  - `queued | planning | plan_review | in_progress | intervention_required | completed | failed | canceled`
+  - `queued | planning | in_progress | intervention_required | completed | failed | canceled`
 
 ### Timeline events (validation)
 - `validation_contract_unfulfilled`

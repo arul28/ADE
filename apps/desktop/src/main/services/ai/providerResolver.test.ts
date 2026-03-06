@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DetectedAuth } from "./authDetector";
-import { resolveModel } from "./providerResolver";
+import { normalizeCliMcpServers, resolveModel } from "./providerResolver";
 
 const { createCodexCliMock } = vi.hoisted(() => ({
   createCodexCliMock: vi.fn(),
@@ -52,6 +52,7 @@ describe("providerResolver codex CLI", () => {
           cwd: "/tmp/worktree",
           mcpServers: {
             ade: {
+              transport: "stdio",
               command: "node",
               args: ["/tmp/mcp-server.js"],
               env: {
@@ -76,5 +77,42 @@ describe("providerResolver codex CLI", () => {
     ).rejects.toThrow("Codex CLI is required");
 
     expect(createCodexCliMock).not.toHaveBeenCalled();
+  });
+
+  it("normalizes ADE MCP server config for both Claude and Codex CLI providers", () => {
+    const raw = {
+      ade: {
+        command: "node",
+        args: ["/tmp/mcp-server.js"],
+        env: { ADE_RUN_ID: "run-1" },
+      },
+    };
+
+    expect(normalizeCliMcpServers("codex", raw)).toEqual({
+      ade: {
+        transport: "stdio",
+        command: "node",
+        args: ["/tmp/mcp-server.js"],
+        env: { ADE_RUN_ID: "run-1" },
+      },
+    });
+
+    expect(
+      normalizeCliMcpServers("claude", {
+        ade: {
+          transport: "stdio",
+          command: "node",
+          args: ["/tmp/mcp-server.js"],
+          env: { ADE_RUN_ID: "run-1" },
+        },
+      }),
+    ).toEqual({
+      ade: {
+        type: "stdio",
+        command: "node",
+        args: ["/tmp/mcp-server.js"],
+        env: { ADE_RUN_ID: "run-1" },
+      },
+    });
   });
 });

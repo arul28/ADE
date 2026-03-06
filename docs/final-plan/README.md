@@ -25,7 +25,7 @@ The following phase files are superseded by the new roadmap and should be consid
 
 ---
 
-Last updated: 2026-03-04
+Last updated: 2026-03-05
 Owner: ADE
 Status: Active
 
@@ -60,13 +60,12 @@ Baseline derived from code in `apps/desktop`.
 - Play (`/project`)
 - Lanes (`/lanes`)
 - Files (`/files`)
-- Terminals (`/terminals`)
-- Conflicts (`/conflicts`)
-- Context (`/context`)
+- Work (`/work`)
 - Graph (`/graph`)
 - PRs (`/prs`)
 - History (`/history`)
 - Automations (`/automations`)
+- CTO (`/cto`)
 - Missions (`/missions`)
 - Settings (`/settings`)
 
@@ -126,7 +125,7 @@ Not implemented yet:
 
 - Phase 3 orchestrator overhaul complete (Phases 1-7 shipped; reflection protocol included).
 - CTO agent + org chart (persistent project-aware org with worker agents, Linear sync, auto-dispatch)
-- Night Shift mode in Automations (overnight execution with morning briefing)
+- Automations platform + Night Shift in Automations (templates, external triggers, executor routing, overnight execution)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
 - Multi-device sync (cr-sqlite + WebSocket real-time replication)
 - Device registry and brain management (which machine runs agents)
@@ -199,7 +198,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Planned |
-| Night Shift Mode (in Automations) | Phase 4 | Phase 3 | Planned |
+| Automations Platform + Night Shift | Phase 4 | Phase 3 | Planned |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Planned |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Planned (covered in Phase 4 W6) |

@@ -110,11 +110,9 @@ import type {
   SessionRuntimeSignal,
   AttemptRuntimeTracker,
   OrchestratorChatSessionState,
-  PlannerAgentSessionState,
   WorkerDeliveryContext,
   ParallelMissionStepDescriptor,
   ResolvedCallTypeConfig,
-  PlannerTurnCompletionStatus,
 } from "./orchestratorContext";
 
 // Re-export all types
@@ -122,7 +120,6 @@ export type { OrchestratorContext } from "./orchestratorContext";
 
 // Import all constants, helpers, and utility functions from orchestratorContext
 import {
-  PLAN_REVIEW_INTERVENTION_TITLE,
   STEERING_DIRECTIVES_METADATA_KEY,
   MAX_PERSISTED_STEERING_DIRECTIVES,
   HEALTH_SWEEP_INTERVAL_MS,
@@ -142,17 +139,12 @@ import {
   MAX_STEERING_DIRECTIVES_PER_STEP,
   MAX_RUNTIME_SIGNAL_PREVIEW_CHARS,
   ACTIVE_ATTEMPT_STATUSES,
-  PLANNER_THREAD_TITLE,
-  PLANNER_THREAD_STEP_KEY,
-  PLANNER_STREAM_FLUSH_CHARS,
-  PLANNER_STREAM_FLUSH_INTERVAL_MS,
-  PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS,
-  MAX_PLANNER_RAW_OUTPUT_CHARS,
   CALL_TYPE_DEFAULTS,
   // Utility functions
   nowIso,
   runBestEffortWithTimeout,
   isRecord,
+  asRecord,
   asBool,
   digestSignalText,
   buildQuestionThreadLink,
@@ -162,7 +154,6 @@ import {
   clipTextForContext,
   workerStateFromRuntimeSignal,
   parseTerminalRuntimeState,
-  plannerThreadId,
   toOptionalString,
   readConfig,
   mapOrchestratorStepStatus,
@@ -170,6 +161,8 @@ import {
   buildOutcomeSummary,
   buildConflictResolutionInstructions,
   extractRunFailureMessage,
+  filterExecutionSteps,
+  isDisplayOnlyTaskStep,
   runOrchestratorHookCommand,
   getModelCapabilities,
 } from "./orchestratorContext";
@@ -190,7 +183,6 @@ import {
 // Import from mission lifecycle module
 import {
   inferRoleFromStepMetadata,
-  slugify,
   isParallelCandidateStepType,
   stepTitleForMessage,
   resolveAttemptOwnerId,
@@ -239,6 +231,239 @@ function buildInterventionResolverPrompt(args: {
     `  "retryInstructions": string (if action is retry)`,
     `}`
   ].join("\n");
+}
+
+export function buildCoordinatorEvaluationActionHints(graph: OrchestratorRunGraph): string[] {
+  const hints: string[] = [];
+  const executionSteps = filterExecutionSteps(graph.steps);
+  if (executionSteps.length === 0) return hints;
+
+  const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : null;
+  const phaseRuntime = isRecord(runMeta?.phaseRuntime) ? runMeta.phaseRuntime : null;
+  const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim().toLowerCase() : "";
+  const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim().toLowerCase() : "";
+
+  const stepsInCurrentPhase = executionSteps.filter((step) => {
+    const stepMeta = isRecord(step.metadata) ? step.metadata : null;
+    const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+    const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
+    if (currentPhaseKey.length > 0 && stepPhaseKey === currentPhaseKey) return true;
+    if (currentPhaseName.length > 0 && stepPhaseName === currentPhaseName) return true;
+    return false;
+  });
+  const currentPhaseTerminal = stepsInCurrentPhase.filter((step) => TERMINAL_PHASE_STEP_STATUSES.has(step.status));
+  const currentPhaseNonTerminal = stepsInCurrentPhase.filter((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status));
+  const remainingExecution = executionSteps.filter((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status));
+
+  if ((currentPhaseKey === "planning" || currentPhaseName === "planning") && currentPhaseTerminal.length > 0 && currentPhaseNonTerminal.length === 0) {
+    hints.push("REQUIRED NEXT ACTION: Planning work is complete. Call set_current_phase with phaseKey \"development\" before spawning any implementation workers.");
+  }
+
+  if (remainingExecution.length === 0) {
+    if (currentPhaseKey === "planning" || currentPhaseName === "planning") {
+      hints.push("REQUIRED NEXT ACTION: The run has no executable work left but is still in planning. Advance to the next phase and spawn the implementation work, or call fail_mission if the mission cannot proceed.");
+    } else {
+      hints.push("REQUIRED NEXT ACTION: All executable steps are terminal. If the mission goal is satisfied, call complete_mission with a concise summary. Otherwise create or spawn the missing follow-up work now.");
+    }
+  }
+
+  return hints;
+}
+
+type PhaseSyncTarget = {
+  phaseKey: string;
+  phaseName: string;
+  phaseModel: Record<string, unknown> | null;
+  phaseInstructions: string | null;
+  phaseValidation: Record<string, unknown> | null;
+  phaseBudget: Record<string, unknown> | null;
+  sourceStepId: string | null;
+};
+
+type PhaseSyncCard = {
+  phaseKey: string;
+  name: string;
+  position: number;
+  model: Record<string, unknown> | null;
+  instructions: string | null;
+  validationGate: Record<string, unknown> | null;
+  budget: Record<string, unknown> | null;
+};
+
+function sortStepsForPhaseSync(steps: OrchestratorStep[]): OrchestratorStep[] {
+  return [...steps].sort((a, b) => {
+    const aMeta = isRecord(a.metadata) ? a.metadata : {};
+    const bMeta = isRecord(b.metadata) ? b.metadata : {};
+    const aPhasePos = Number(aMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
+    const bPhasePos = Number(bMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
+    if (Number.isFinite(aPhasePos) && Number.isFinite(bPhasePos) && aPhasePos !== bPhasePos) {
+      return aPhasePos - bPhasePos;
+    }
+    if (a.stepIndex !== b.stepIndex) return a.stepIndex - b.stepIndex;
+    return a.title.localeCompare(b.title);
+  });
+}
+
+function deriveConfiguredPhasesForSync(graph: OrchestratorRunGraph): PhaseSyncCard[] {
+  const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
+  const rawPhases = Array.isArray(runMeta.phaseOverride) ? runMeta.phaseOverride : [];
+  return rawPhases
+    .map((entry) => {
+      const phase = asRecord(entry);
+      if (!phase) return null;
+      const phaseKey = typeof phase.phaseKey === "string" ? phase.phaseKey.trim() : "";
+      const name = typeof phase.name === "string" ? phase.name.trim() : "";
+      if (!phaseKey.length || !name.length) return null;
+      const positionRaw = Number(phase.position ?? Number.MAX_SAFE_INTEGER);
+      return {
+        phaseKey,
+        name,
+        position: Number.isFinite(positionRaw) ? positionRaw : Number.MAX_SAFE_INTEGER,
+        model: asRecord(phase.model),
+        instructions: typeof phase.instructions === "string" && phase.instructions.trim().length > 0
+          ? phase.instructions.trim()
+          : null,
+        validationGate: asRecord(phase.validationGate),
+        budget: asRecord(phase.budget),
+      } satisfies PhaseSyncCard;
+    })
+    .filter((phase): phase is PhaseSyncCard => phase !== null)
+    .sort((a, b) => a.position - b.position);
+}
+
+function stepMatchesPhaseForSync(step: OrchestratorStep, phase: PhaseSyncCard): boolean {
+  const meta = isRecord(step.metadata) ? step.metadata : {};
+  const stepPhaseKey = typeof meta.phaseKey === "string" ? meta.phaseKey.trim() : "";
+  const stepPhaseName = typeof meta.phaseName === "string" ? meta.phaseName.trim() : "";
+  return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+}
+
+function buildPhaseSyncTargetFromCard(card: PhaseSyncCard, sourceStepId: string | null): PhaseSyncTarget {
+  return {
+    phaseKey: card.phaseKey,
+    phaseName: card.name,
+    phaseModel: card.model,
+    phaseInstructions: card.instructions,
+    phaseValidation: card.validationGate,
+    phaseBudget: card.budget,
+    sourceStepId,
+  };
+}
+
+export function deriveMissionPhaseSyncTarget(graph: OrchestratorRunGraph): PhaseSyncTarget | null {
+  const executionSteps = sortStepsForPhaseSync(filterExecutionSteps(graph.steps));
+  const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
+  const phaseRuntime = isRecord(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
+  const currentPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+  const currentPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+  const configuredPhases = deriveConfiguredPhasesForSync(graph);
+
+  if (configuredPhases.length > 0) {
+    const currentPhaseIndex = configuredPhases.findIndex((phase) =>
+      phase.phaseKey === currentPhaseKey || phase.name === currentPhaseName,
+    );
+    if (currentPhaseIndex >= 0) {
+      const currentPhase = configuredPhases[currentPhaseIndex]!;
+      const currentPhaseExecutionSteps = executionSteps.filter((step) => stepMatchesPhaseForSync(step, currentPhase));
+      if (
+        currentPhaseExecutionSteps.length > 0
+        && currentPhaseExecutionSteps.every((step) => TERMINAL_PHASE_STEP_STATUSES.has(step.status))
+      ) {
+        const nextPhase = configuredPhases[currentPhaseIndex + 1];
+        if (nextPhase) {
+          const sourceStepId = currentPhaseExecutionSteps[currentPhaseExecutionSteps.length - 1]?.id ?? null;
+          return buildPhaseSyncTargetFromCard(nextPhase, sourceStepId);
+        }
+      }
+    }
+  }
+
+  const activeExecutionStep =
+    executionSteps.find((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status))
+    ?? executionSteps[executionSteps.length - 1]
+    ?? null;
+  if (!activeExecutionStep) return null;
+
+  const stepMeta = isRecord(activeExecutionStep.metadata) ? activeExecutionStep.metadata : {};
+  return {
+    phaseKey: typeof stepMeta.phaseKey === "string" && stepMeta.phaseKey.trim().length > 0
+      ? stepMeta.phaseKey.trim()
+      : "development",
+    phaseName: typeof stepMeta.phaseName === "string" && stepMeta.phaseName.trim().length > 0
+      ? stepMeta.phaseName.trim()
+      : "Development",
+    phaseModel: asRecord(stepMeta.phaseModel),
+    phaseInstructions:
+      typeof stepMeta.phaseInstructions === "string" && stepMeta.phaseInstructions.trim().length > 0
+        ? stepMeta.phaseInstructions.trim()
+        : null,
+    phaseValidation: asRecord(stepMeta.phaseValidation),
+    phaseBudget: asRecord(stepMeta.phaseBudget),
+    sourceStepId: activeExecutionStep.id,
+  };
+}
+
+export function normalizeCoordinatorUpdateForChat(message: string): string | null {
+  const compact = message
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(/^\[Coordinator\]\s*/i, "")
+    .replace(/([.!?])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!compact.length) return null;
+
+  if (
+    /^\{/.test(compact)
+    || /^tool\s+/i.test(compact)
+    || /^mcp__/i.test(compact)
+    || /^assistant:/i.test(compact)
+    || /^user:/i.test(compact)
+  ) {
+    return null;
+  }
+
+  const lowerCompact = compact.toLowerCase();
+  if (lowerCompact.includes("read the key files") || lowerCompact.includes("review the key files")) {
+    return "I’m reviewing the relevant files and mapping out the next step.";
+  }
+  if (lowerCompact.includes("look at the router") || lowerCompact.includes("look at the route")) {
+    return "I’m checking the routing setup so I can line up the next task cleanly.";
+  }
+  if (lowerCompact.includes("planning task") || lowerCompact.includes("planning tasks")) {
+    return "I’m turning the mission into concrete planning tasks now.";
+  }
+  if (lowerCompact.includes("spawn the planning worker")) {
+    return "I’ve prepared the planning task and I’m starting the worker now.";
+  }
+  if (lowerCompact.includes("spawn") && lowerCompact.includes("worker")) {
+    return "I’ve prepared the next task and I’m starting the worker now.";
+  }
+  if (lowerCompact.includes("transition") && lowerCompact.includes("phase")) {
+    return "I’m wrapping up this phase and moving the run to the next one.";
+  }
+
+  const normalized = compact
+    .split(/(?<=[.!?])\s+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => {
+      const lowered = entry.toLowerCase();
+      return entry.length > 0
+        && !/^i have (?:all|enough|the)\b/.test(lowered)
+        && !/^i now have\b/.test(lowered)
+        && !/^the mission is clear\b/.test(lowered)
+        && !/^the implementation is clear\b/.test(lowered);
+    })
+    .slice(0, 2)
+    .join(" ")
+    .replace(/\b(?:Now\s+)?I need to\b.*$/i, "")
+    .replace(/\b(?:Next,\s*)?I should\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized.length) return null;
+
+  const alphaChars = normalized.match(/[A-Za-z]/g)?.length ?? 0;
+  if (alphaChars < 12) return null;
+  return clipTextForContext(normalized, 220);
 }
 
 // Quality gate module imports removed — quality evaluation is the coordinator's domain
@@ -466,8 +691,6 @@ export function createAiOrchestratorService(args: {
   const chatMessages = new Map<string, OrchestratorChatMessage[]>();
   const activeChatSessions = new Map<string, OrchestratorChatSessionState>();
   const chatTurnQueues = new Map<string, Promise<void>>();
-  const plannerSessionByMissionId = new Map<string, PlannerAgentSessionState>();
-  const plannerSessionBySessionId = new Map<string, PlannerAgentSessionState>();
   const activeHealthSweepRuns = new Set<string>();
   const sessionRuntimeSignals = new Map<string, SessionRuntimeSignal>();
   const attemptRuntimeTrackers = new Map<string, AttemptRuntimeTracker>();
@@ -482,6 +705,8 @@ export function createAiOrchestratorService(args: {
   const runWatchdogTimers = new Map<string, Set<NodeJS.Timeout>>();
   const subagentCompletionRollupSent = new Set<string>();
   const validationSystemSignalDedupe = new Set<string>();
+  const workerProgressChatState = new Map<string, { lastDigest: string | null; lastEmittedAtMs: number }>();
+  const coordinatorProgressChatState = new Map<string, { lastDigest: string | null; lastEmittedAtMs: number }>();
 
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
@@ -523,8 +748,6 @@ export function createAiOrchestratorService(args: {
     chatMessages,
     activeChatSessions,
     chatTurnQueues,
-    plannerSessionByMissionId,
-    plannerSessionBySessionId,
     activeHealthSweepRuns,
     sessionRuntimeSignals,
     attemptRuntimeTrackers,
@@ -554,6 +777,7 @@ export function createAiOrchestratorService(args: {
     runRecoveryLoopStates.delete(runId);
     pendingIntegrations.delete(runId);
     teamRuntimeStates.delete(runId);
+    coordinatorProgressChatState.delete(runId);
     for (const key of milestoneReadyNotificationSignatures.keys()) {
       if (key.startsWith(`${runId}::`)) {
         milestoneReadyNotificationSignatures.delete(key);
@@ -602,6 +826,200 @@ export function createAiOrchestratorService(args: {
 
   const appendChatMessage = (message: OrchestratorChatMessage): OrchestratorChatMessage =>
     appendChatMessageCtx(ctx, message);
+
+  const WORKER_PROGRESS_CHAT_MIN_INTERVAL_MS = 12_000;
+  const WORKER_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 45_000;
+  const COORDINATOR_PROGRESS_CHAT_MIN_INTERVAL_MS = 10_000;
+  const COORDINATOR_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 30_000;
+
+  const emitWorkerThreadMessage = (args: {
+    missionId: string;
+    runId: string;
+    step: OrchestratorStep;
+    attemptId: string | null;
+    sessionId: string | null;
+    laneId: string | null;
+    content: string;
+    metadata?: Record<string, unknown> | null;
+  }): OrchestratorChatMessage => {
+    const threadId =
+      typeof args.attemptId === "string" && args.attemptId.trim().length > 0
+        ? `worker:${args.missionId}:${args.attemptId.trim()}`
+        : null;
+    if (threadId) {
+      upsertThread({
+        missionId: args.missionId,
+        threadId,
+        threadType: "worker",
+        title: `Worker: ${args.step.stepKey}`,
+        target: {
+          kind: "worker",
+          runId: args.runId,
+          stepId: args.step.id,
+          stepKey: args.step.stepKey,
+          attemptId: args.attemptId,
+          sessionId: args.sessionId,
+          laneId: args.laneId ?? args.step.laneId ?? null,
+        },
+        status: "active",
+      });
+    }
+    return appendChatMessage({
+      id: randomUUID(),
+      missionId: args.missionId,
+      threadId,
+      role: "worker",
+      content: args.content,
+      timestamp: nowIso(),
+      stepKey: args.step.stepKey,
+      target: {
+        kind: "worker",
+        runId: args.runId,
+        stepId: args.step.id,
+        stepKey: args.step.stepKey,
+        attemptId: args.attemptId,
+        sessionId: args.sessionId,
+        laneId: args.laneId ?? args.step.laneId ?? null,
+      },
+      visibility: "full",
+      deliveryState: "delivered",
+      sourceSessionId: args.sessionId,
+      attemptId: args.attemptId,
+      laneId: args.laneId ?? args.step.laneId ?? null,
+      runId: args.runId,
+      metadata: args.metadata ?? null,
+    });
+  };
+
+  const normalizeWorkerProgressPreviewForChat = (preview: string): string | null => {
+    const compact = preview
+      .replace(/\u001b\[[0-9;]*m/g, "")
+      .replace(/([.!?])([A-Z])/g, "$1 $2")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!compact.length) return null;
+
+    if (
+      /^You are an ADE /i.test(compact)
+      || /^Mission goal:/i.test(compact)
+      || /^Mission Plan:/i.test(compact)
+      || /^Step instructions:/i.test(compact)
+      || /^Phase-level guidance:/i.test(compact)
+      || /^Referenced docs:/i.test(compact)
+      || /^tool ade\./i.test(compact)
+      || /^"(?:workerId|text|content|summary|outcome|stepId|stepKey|laneId|reportedAt)"\s*:/i.test(compact)
+      || /^\{\s*"ok"\s*:/i.test(compact)
+      || /^quote>\s*/i.test(compact)
+      || /^-p\s+"\$\(cat\s+/i.test(compact)
+      || /^cp\s+'.+worker-[a-f0-9-]+\.json'\s+'.+\.json'(\s+&&\s+exec\b.*)?$/i.test(compact)
+      || /^ade_[a-z0-9_]+=.+/i.test(compact)
+      || /worker-prompts\/worker-[a-f0-9-]+\.txt/i.test(compact)
+      || /\.ade-worker-mcp-[a-f0-9-]+\.json/i.test(compact)
+      || /[A-Za-z0-9._-]+\.(?:txt|json)['")]+$/i.test(compact)
+      || /^\/users\/.+\.zshrc:\d+:/i.test(compact)
+      || /command not found:\s*compdef/i.test(compact)
+      || /exec claude --model/i.test(compact)
+      || /exec codex\b/i.test(compact)
+      || /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\s+.+\s[%#$]$/.test(compact)
+    ) {
+      return null;
+    }
+
+    const fileUpdateMatch = compact.match(/^-?\s*(Created|Updated|Added|Removed)\s+\[([^\]]+)\]/i);
+    if (fileUpdateMatch) {
+      const verb = fileUpdateMatch[1].charAt(0).toUpperCase() + fileUpdateMatch[1].slice(1).toLowerCase();
+      const fileName = nodePath.basename(fileUpdateMatch[2].trim());
+      return `${verb} ${fileName}.`;
+    }
+
+    if (
+      /^(?:\/bin\/(?:zsh|bash)|zsh|bash|git|pnpm|npm|npx|node|sed|rg|cat|ls|cp|mv|rm|apply_patch)\b/i.test(compact)
+      || /^(?:diff --git|index [0-9a-f]{7,}\.\.[0-9a-f]{7,}|@@|--- |\+\+\+ )/i.test(compact)
+      || /^[+\-@{}[\]()<>|]+$/.test(compact)
+      || /^(?:<Route\b|import\b|export\b|const\b|function\b|return\b)/.test(compact)
+    ) {
+      return null;
+    }
+
+    const alphaChars = compact.match(/[A-Za-z]/g)?.length ?? 0;
+    if (alphaChars < 6) return null;
+    return clipTextForContext(compact, 180);
+  };
+
+  const maybeEmitCoordinatorProgressChatUpdate = (args: {
+    missionId: string;
+    runId: string;
+    message: string;
+  }): void => {
+    const content = normalizeCoordinatorUpdateForChat(args.message);
+    if (!content) return;
+
+    const digest = digestSignalText(content);
+    const nowMs = Date.now();
+    const lastState = coordinatorProgressChatState.get(args.runId) ?? {
+      lastDigest: null,
+      lastEmittedAtMs: 0,
+    };
+    const sameDigest = digest != null && lastState.lastDigest === digest;
+    const minIntervalMs = sameDigest
+      ? COORDINATOR_PROGRESS_CHAT_REPEAT_INTERVAL_MS
+      : COORDINATOR_PROGRESS_CHAT_MIN_INTERVAL_MS;
+    if (nowMs - lastState.lastEmittedAtMs < minIntervalMs) return;
+
+    coordinatorProgressChatState.set(args.runId, {
+      lastDigest: digest,
+      lastEmittedAtMs: nowMs,
+    });
+
+    emitOrchestratorMessage(args.missionId, content, null, {
+      role: "coordinator_v2",
+      runId: args.runId,
+      source: "coordinator_progress",
+    });
+  };
+
+  const maybeEmitWorkerProgressChatUpdate = (args: {
+    missionId: string;
+    runId: string;
+    step: OrchestratorStep;
+    attemptId: string;
+    sessionId: string;
+    laneId: string | null;
+    preview: string;
+  }): void => {
+    const content = normalizeWorkerProgressPreviewForChat(args.preview);
+    if (!content) return;
+
+    const digest = digestSignalText(content);
+    const nowMs = Date.now();
+    const lastState = workerProgressChatState.get(args.attemptId) ?? {
+      lastDigest: null,
+      lastEmittedAtMs: 0,
+    };
+    const sameDigest = digest != null && lastState.lastDigest === digest;
+    const minIntervalMs = sameDigest
+      ? WORKER_PROGRESS_CHAT_REPEAT_INTERVAL_MS
+      : WORKER_PROGRESS_CHAT_MIN_INTERVAL_MS;
+    if (nowMs - lastState.lastEmittedAtMs < minIntervalMs) return;
+
+    workerProgressChatState.set(args.attemptId, {
+      lastDigest: digest,
+      lastEmittedAtMs: nowMs,
+    });
+
+    emitWorkerThreadMessage({
+      missionId: args.missionId,
+      runId: args.runId,
+      step: args.step,
+      attemptId: args.attemptId,
+      sessionId: args.sessionId,
+      laneId: args.laneId,
+      content,
+      metadata: {
+        source: "runtime_signal_progress",
+      },
+    });
+  };
 
   // ── Coordinator Session Management ──────────────────────────────
   // Spins up a persistent AI coordinator session for a mission run.
@@ -661,10 +1079,7 @@ export function createAiOrchestratorService(args: {
           if (onDagMutation) onDagMutation(event);
         },
         onCoordinatorMessage: (message) => {
-          emitOrchestratorMessage(missionId, `[Coordinator] ${message}`, null, {
-            role: "coordinator_v2",
-            runId,
-          });
+          maybeEmitCoordinatorProgressChatUpdate({ missionId, runId, message });
         },
         onRunFinalize: (args) => {
           // Forward coordinator's verdict to the chat before finalizing
@@ -731,7 +1146,7 @@ export function createAiOrchestratorService(args: {
 
       emitOrchestratorMessage(
         missionId,
-        "Orchestrator online. The AI is now in full control of the mission.",
+        "Orchestrator online. I’m reviewing the mission, building the plan, and will start the first workers when the DAG is ready.",
         null,
         {
           role: "coordinator_v2",
@@ -991,7 +1406,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (phaseName.length > 0) return phaseName;
     const phaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
     if (phaseKey.length > 0) return phaseKey;
-    const activeStep = graph.steps.find((step) => !MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
+    const relevantSteps = filterExecutionSteps(graph.steps);
+    const activeStep = relevantSteps.find((step) => !MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
     const activeMeta = isRecord(activeStep?.metadata) ? activeStep.metadata : {};
     const activePhaseName = typeof activeMeta.phaseName === "string" ? activeMeta.phaseName.trim() : "";
     if (activePhaseName.length > 0) return activePhaseName;
@@ -1000,14 +1416,17 @@ Check all worker statuses and continue managing the mission from here. Read work
     return "unknown";
   };
 
-  const buildMissionStateProgressFromGraph = (graph: OrchestratorRunGraph): MissionStateProgress => ({
-    currentPhase: currentPhaseFromGraph(graph),
-    completedSteps: graph.steps.filter((step) => MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)).length,
-    totalSteps: graph.steps.length,
-    activeWorkers: graph.steps.filter((step) => step.status === "running").map((step) => step.stepKey),
-    blockedSteps: graph.steps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
-    failedSteps: graph.steps.filter((step) => step.status === "failed").map((step) => step.stepKey),
-  });
+  const buildMissionStateProgressFromGraph = (graph: OrchestratorRunGraph): MissionStateProgress => {
+    const relevantSteps = filterExecutionSteps(graph.steps);
+    return {
+      currentPhase: currentPhaseFromGraph(graph),
+      completedSteps: relevantSteps.filter((step) => MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)).length,
+      totalSteps: relevantSteps.length,
+      activeWorkers: relevantSteps.filter((step) => step.status === "running").map((step) => step.stepKey),
+      blockedSteps: relevantSteps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
+      failedSteps: relevantSteps.filter((step) => step.status === "failed").map((step) => step.stepKey),
+    };
+  };
 
   const pendingInterventionsForMission = (missionId: string): MissionStatePendingIntervention[] => {
     const mission = missionService.get(missionId);
@@ -1081,7 +1500,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     stepId: string
   ): MissionStateStepOutcome | null => {
     const step = graph.steps.find((entry) => entry.id === stepId) ?? null;
-    if (!step) return null;
+    if (!step || isDisplayOnlyTaskStep(step)) return null;
 
     const attemptsForStep = graph.attempts
       .filter((attempt) => attempt.stepId === step.id)
@@ -1155,195 +1574,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     };
   };
 
-  const upsertPlannerThread = (args: {
-    missionId: string;
-    laneId: string;
-    sessionId: string;
-    provider: "claude" | "codex";
-    model: string;
-    reasoningEffort: string | null;
-    runId?: string | null;
-    stepId?: string | null;
-  }): OrchestratorChatThread => {
-    return upsertThread({
-      missionId: args.missionId,
-      threadId: plannerThreadId(args.missionId),
-      threadType: "worker",
-      title: PLANNER_THREAD_TITLE,
-      target: {
-        kind: "worker",
-        runId: args.runId ?? null,
-        stepId: args.stepId ?? null,
-        stepKey: PLANNER_THREAD_STEP_KEY,
-        attemptId: null,
-        sessionId: args.sessionId,
-        laneId: args.laneId
-      },
-      metadata: {
-        role: "planner",
-        provider: args.provider,
-        model: args.model,
-        reasoningEffort: args.reasoningEffort,
-        plannerThread: true
-      }
-    });
-  };
-
-  const appendPlannerWorkerMessage = (
-    state: PlannerAgentSessionState,
-    content: string,
-    metadata?: Record<string, unknown> | null
-  ): OrchestratorChatMessage | null => {
-    const normalizedContent = content.trim();
-    if (!normalizedContent.length) return null;
-    return appendChatMessage({
-      id: randomUUID(),
-      missionId: state.missionId,
-      role: "worker",
-      content: normalizedContent,
-      timestamp: nowIso(),
-      threadId: state.threadId,
-      target: {
-        kind: "worker",
-        runId: state.runId ?? null,
-        stepId: state.stepId ?? null,
-        stepKey: PLANNER_THREAD_STEP_KEY,
-        attemptId: null,
-        sessionId: state.sessionId,
-        laneId: state.laneId
-      },
-      visibility: "full",
-      deliveryState: "delivered",
-      sourceSessionId: state.sessionId,
-      attemptId: null,
-      laneId: state.laneId,
-      runId: state.runId ?? null,
-      stepKey: PLANNER_THREAD_STEP_KEY,
-      metadata: metadata ?? null
-    });
-  };
-
-  const flushPlannerStreamBuffer = (state: PlannerAgentSessionState, force = false): void => {
-    if (!state.streamBuffer.length) return;
-    if (!force) {
-      const hasParagraphBreak = /\n{2,}/.test(state.streamBuffer);
-      const trailingWindow = state.streamBuffer.slice(-200);
-      const hasSentenceBoundary = /[.!?](?:\s|\n|$)/.test(trailingWindow);
-      const exceededChunkThreshold = state.streamBuffer.length >= PLANNER_STREAM_FLUSH_CHARS;
-      const exceededInterval =
-        Date.now() - state.lastStreamFlushAtMs >= PLANNER_STREAM_FLUSH_INTERVAL_MS
-        && state.streamBuffer.length >= PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS;
-      if (!hasParagraphBreak && !hasSentenceBoundary && !exceededChunkThreshold && !exceededInterval) {
-        return;
-      }
-    }
-
-    // Don't emit tiny fragments - accumulate more content first
-    if (!force && state.streamBuffer.trim().length < 10) {
-      return;
-    }
-
-    let chunk = state.streamBuffer;
-    if (!force) {
-      let boundary = Math.min(state.streamBuffer.length, PLANNER_STREAM_FLUSH_CHARS);
-      const paragraphBoundary = state.streamBuffer.lastIndexOf("\n\n", boundary);
-      if (paragraphBoundary >= 120) {
-        boundary = paragraphBoundary + 2;
-      } else {
-        const lastNewline = state.streamBuffer.lastIndexOf("\n", boundary);
-        if (lastNewline >= 120) {
-          boundary = lastNewline + 1;
-        } else {
-          const sentenceSlice = state.streamBuffer.slice(0, boundary);
-          const sentencePattern = /[.!?](?:\s|\n|$)/g;
-          let sentenceBoundary = -1;
-          let sentenceMatch: RegExpExecArray | null = null;
-          while ((sentenceMatch = sentencePattern.exec(sentenceSlice)) !== null) {
-            sentenceBoundary = sentenceMatch.index + sentenceMatch[0].length;
-          }
-          if (sentenceBoundary >= 160) {
-            boundary = sentenceBoundary;
-          }
-        }
-      }
-      chunk = state.streamBuffer.slice(0, boundary);
-      state.streamBuffer = state.streamBuffer.slice(boundary);
-    } else {
-      state.streamBuffer = "";
-    }
-
-    state.lastStreamFlushAtMs = Date.now();
-    appendPlannerWorkerMessage(state, chunk, {
-      planner: {
-        stream: true,
-        sessionId: state.sessionId
-      }
-    });
-  };
-
-  const appendPlannerTextDelta = (state: PlannerAgentSessionState, rawDelta: string): void => {
-    // Strip thinking markers if present
-    let delta = String(rawDelta ?? "");
-    if (delta.includes("<thinking>") || delta.includes("</thinking>")) {
-      delta = delta.replace(/<\/?thinking>/g, "");
-    }
-    if (!delta.trim().length) return;
-    if (state.rawOutput.length < MAX_PLANNER_RAW_OUTPUT_CHARS) {
-      const remaining = MAX_PLANNER_RAW_OUTPUT_CHARS - state.rawOutput.length;
-      const accepted = delta.slice(0, remaining);
-      state.rawOutput += accepted;
-      if (accepted.length < delta.length) {
-        state.rawOutputTruncated = true;
-      }
-    } else {
-      state.rawOutputTruncated = true;
-    }
-    state.streamBuffer += delta;
-    flushPlannerStreamBuffer(state, false);
-  };
-
-  const completePlannerTurn = (
-    state: PlannerAgentSessionState,
-    status: PlannerTurnCompletionStatus,
-    error: string | null
-  ): void => {
-    flushPlannerStreamBuffer(state, true);
-    if (state.rawOutputTruncated) {
-      appendPlannerWorkerMessage(
-        state,
-        "Planner output exceeded capture limit; response was truncated in-thread.",
-        {
-          planner: {
-            truncated: true,
-            sessionId: state.sessionId
-          }
-        }
-      );
-    }
-    const turn = state.turn;
-    if (!turn || turn.settled) return;
-    turn.resolve({
-      status,
-      rawOutput: state.rawOutput,
-      error
-    });
-    state.turn = null;
-  };
-
-  const registerPlannerSession = (state: PlannerAgentSessionState): void => {
-    const existingByMission = plannerSessionByMissionId.get(state.missionId);
-    if (existingByMission && existingByMission.sessionId !== state.sessionId) {
-      completePlannerTurn(
-        existingByMission,
-        "interrupted",
-        "Planner session was replaced by a newer planning run."
-      );
-      plannerSessionBySessionId.delete(existingByMission.sessionId);
-    }
-    plannerSessionByMissionId.set(state.missionId, state);
-    plannerSessionBySessionId.set(state.sessionId, state);
-  };
-
   /**
    * Resolve the primary lane ID. Returns null if lane service is unavailable.
    */
@@ -1352,14 +1582,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     const lanes = await laneService.list({ includeArchived: false });
     const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
     return primary?.id?.trim() || null;
-  };
-
-  const resolvePlannerLaneId = async (mission: MissionDetail): Promise<string> => {
-    const missionLaneId = toOptionalString(mission.laneId);
-    if (missionLaneId) return missionLaneId;
-    const laneId = await resolvePrimaryLaneId();
-    if (!laneId) throw new Error("Mission planning lane could not be resolved.");
-    return laneId;
   };
 
   /**
@@ -1397,8 +1619,9 @@ Check all worker statuses and continue managing the mission from here. Read work
    */
   const createMissionLane = async (missionId: string, missionTitle: string): Promise<string | null> => {
     try {
+      const laneName = missionTitle.trim().length > 0 ? missionTitle.trim() : `Mission ${missionId.slice(0, 6)}`;
       const result = await createLaneFromBase(
-        `m-${missionId.slice(0, 6)}-${slugify(missionTitle)}`,
+        laneName,
         { description: `Mission lane for ${missionTitle}`, folder: `Mission: ${missionTitle}`, missionId },
       );
       return result?.laneId ?? null;
@@ -1983,6 +2206,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         stepId: args.stepId,
         runId: args.runId,
         sessionId: args.sessionId,
+        canProceedWithoutAnswer: false,
         threadId: args.questionLink.threadId,
         messageId: args.questionLink.messageId,
         replyTo: args.questionLink.replyTo,
@@ -2207,6 +2431,15 @@ Check all worker statuses and continue managing the mission from here. Read work
             preview: signal.lastOutputPreview,
             runtimeState: signal.runtimeState
           }
+        });
+        maybeEmitWorkerProgressChatUpdate({
+          missionId: graph.run.missionId,
+          runId: attempt.runId,
+          step,
+          attemptId: attempt.attemptId,
+          sessionId,
+          laneId: signal.laneId || step.laneId || null,
+          preview: signal.lastOutputPreview,
         });
       }
       persistAttemptRuntimeState({
@@ -3341,13 +3574,14 @@ Check all worker statuses and continue managing the mission from here. Read work
           const runStartedAt = Date.parse(graph.run.createdAt);
           const missionDurationSec = Math.round((now - runStartedAt) / 1000);
 
-          const runningSteps = graph.steps.filter((s) => s.status === "running");
-          const readySteps = graph.steps.filter((s) => s.status === "ready");
-          const completedSteps = graph.steps.filter((s) =>
+          const relevantSteps = filterExecutionSteps(graph.steps);
+          const runningSteps = relevantSteps.filter((s) => s.status === "running");
+          const readySteps = relevantSteps.filter((s) => s.status === "ready");
+          const completedSteps = relevantSteps.filter((s) =>
             s.status === "succeeded" || s.status === "failed" || s.status === "skipped" || s.status === "canceled"
           );
-          const blockedSteps = graph.steps.filter((s) => s.status === "blocked");
-          const pendingSteps = graph.steps.filter((s) => s.status === "pending");
+          const blockedSteps = relevantSteps.filter((s) => s.status === "blocked");
+          const pendingSteps = relevantSteps.filter((s) => s.status === "pending");
 
           const stepGraph = graph.steps.map((s) => {
             const deps = s.dependencyStepIds
@@ -3359,6 +3593,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             const resultPreview = latestAttempt?.resultEnvelope?.summary?.slice(0, 200) ?? "";
             const errorMsg = latestAttempt?.errorMessage?.slice(0, 150) ?? "";
             let line = `  ${s.stepKey} [${s.status}] "${s.title}"`;
+            if (isDisplayOnlyTaskStep(s)) line += " plan_only";
             if (deps.length) line += ` deps:[${deps.join(",")}]`;
             if (resultPreview) line += ` result:"${resultPreview}"`;
             if (errorMsg && s.status === "failed") line += ` error:"${errorMsg}"`;
@@ -3371,7 +3606,12 @@ Check all worker statuses and continue managing the mission from here. Read work
 
           const statusMessage = [
             `[EVENT: ${reason}] Duration: ${missionDurationSec}s`,
-            `Progress: ${completedSteps.length}/${graph.steps.length} done, ${runningSteps.length} running, ${readySteps.length} ready, ${blockedSteps.length} blocked, ${pendingSteps.length} pending`,
+            `Progress: ${completedSteps.length}/${relevantSteps.length} executable steps done, ${runningSteps.length} running, ${readySteps.length} ready, ${blockedSteps.length} blocked, ${pendingSteps.length} pending`,
+            ...(() => {
+              const actionHints = buildCoordinatorEvaluationActionHints(graph);
+              if (actionHints.length === 0) return [] as string[];
+              return ["", "Required next actions:", ...actionHints.map((hint) => `- ${hint}`)];
+            })(),
             "",
             "Step graph:",
             ...stepGraph,
@@ -4366,40 +4606,14 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   const syncMissionPhaseFromRun = (graph: OrchestratorRunGraph, reason: string) => {
     if (!graph.run.missionId) return;
-
-    const sortedSteps = [...graph.steps].sort((a, b) => {
-      const aMeta = isRecord(a.metadata) ? a.metadata : {};
-      const bMeta = isRecord(b.metadata) ? b.metadata : {};
-      const aPhasePos = Number(aMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
-      const bPhasePos = Number(bMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
-      if (Number.isFinite(aPhasePos) && Number.isFinite(bPhasePos) && aPhasePos !== bPhasePos) {
-        return aPhasePos - bPhasePos;
-      }
-      if (a.stepIndex !== b.stepIndex) return a.stepIndex - b.stepIndex;
-      return a.title.localeCompare(b.title);
-    });
-    if (sortedSteps.length === 0) return;
-
-    const activeStep =
-      sortedSteps.find((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status))
-      ?? sortedSteps[sortedSteps.length - 1]
-      ?? null;
-    if (!activeStep) return;
-
-    const stepMeta = isRecord(activeStep.metadata) ? activeStep.metadata : {};
-    const nextPhaseKey = typeof stepMeta.phaseKey === "string" && stepMeta.phaseKey.trim().length > 0
-      ? stepMeta.phaseKey.trim()
-      : "development";
-    const nextPhaseName = typeof stepMeta.phaseName === "string" && stepMeta.phaseName.trim().length > 0
-      ? stepMeta.phaseName.trim()
-      : "Development";
-    const nextPhaseModel = isRecord(stepMeta.phaseModel) ? stepMeta.phaseModel : null;
-    const nextPhaseInstructions =
-      typeof stepMeta.phaseInstructions === "string" && stepMeta.phaseInstructions.trim().length > 0
-        ? stepMeta.phaseInstructions.trim()
-        : null;
-    const nextPhaseValidation = isRecord(stepMeta.phaseValidation) ? stepMeta.phaseValidation : null;
-    const nextPhaseBudget = isRecord(stepMeta.phaseBudget) ? stepMeta.phaseBudget : null;
+    const target = deriveMissionPhaseSyncTarget(graph);
+    if (!target) return;
+    const nextPhaseKey = target.phaseKey;
+    const nextPhaseName = target.phaseName;
+    const nextPhaseModel = target.phaseModel;
+    const nextPhaseInstructions = target.phaseInstructions;
+    const nextPhaseValidation = target.phaseValidation;
+    const nextPhaseBudget = target.phaseBudget;
 
     const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
     const phaseRuntime = isRecord(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
@@ -4444,7 +4658,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     orchestratorService.appendTimelineEvent({
       runId: graph.run.id,
-      stepId: activeStep.id,
+      stepId: target.sourceStepId ?? undefined,
       eventType: "phase_transition",
       reason: transitionReason,
       detail: {
@@ -5161,15 +5375,6 @@ Check all worker statuses and continue managing the mission from here. Read work
           activeSteeringDirectives.delete(mid);
           activeChatSessions.delete(mid);
           chatTurnQueues.delete(mid);
-          // Clean planner session and associated session-keyed maps.
-          const plannerState = plannerSessionByMissionId.get(mid);
-          if (plannerState) {
-            plannerSessionByMissionId.delete(mid);
-            const sid = plannerState.sessionId;
-            plannerSessionBySessionId.delete(sid);
-            sessionRuntimeSignals.delete(sid);
-            sessionSignalQueues.delete(sid);
-          }
         }
       }
     } catch (error) {
@@ -5195,70 +5400,6 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     const missionGoal = initialMission.prompt || initialMission.title;
 
-    // ── Check for existing run (plan review re-entry) ──
-    if (args.forcePlanReviewBypass) {
-      const existingRuns = orchestratorService.listRuns({ missionId });
-      const activeRun = existingRuns.find(
-        (r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused"
-      );
-      if (activeRun) {
-        // Resume the coordinator for the existing run
-        const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
-        const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
-        const resumeMissionLaneId = await ensureMissionLaneForRun({
-          runId: activeRun.id,
-          missionId,
-          missionTitle: initialMission.title,
-        });
-        const resumedCoordinator = startCoordinatorAgentV2(missionId, activeRun.id, missionGoal, coordinatorModelConfig, {
-          userRules,
-          projectContext: projectCtx,
-          availableProviders,
-          phases,
-          missionLaneId: resumeMissionLaneId ?? undefined,
-        });
-        const coordinatorStarted = Boolean(resumedCoordinator?.isAlive);
-        if (coordinatorStarted) {
-          const ts = nowIso();
-          db.run(
-            `update orchestrator_runs set status = 'active', updated_at = ? where id = ? and status in ('bootstrapping', 'queued', 'paused')`,
-            [ts, activeRun.id]
-          );
-        } else {
-          pauseRunWithIntervention({
-            runId: activeRun.id,
-            missionId,
-            source: "transition_decision",
-            reasonCode: "coordinator_start_failed",
-            title: "Coordinator startup failed",
-            body: "Coordinator runtime failed to start while resuming this run. Activation was blocked to preserve coordinator-owned autonomy.",
-            requestedAction: "Resolve coordinator startup health, then resume the run.",
-            metadata: {
-              startupPath: "force_plan_review_bypass_resume"
-            }
-          });
-        }
-
-        const steps = orchestratorService.listSteps(activeRun.id);
-        const existingGraph = getRunGraphSafe(activeRun.id);
-        updateMissionStateDoc(
-          activeRun.id,
-          {
-            ...(existingGraph ? { updateProgress: buildMissionStateProgressFromGraph(existingGraph) } : {}),
-            pendingInterventions: pendingInterventionsForMission(missionId),
-          },
-          { graph: existingGraph }
-        );
-        return {
-          started: {
-            run: orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === activeRun.id) ?? activeRun,
-            steps
-          },
-          mission: missionService.get(missionId)
-        };
-      }
-    }
-
     const missionMetadata = getMissionMetadata(missionId);
     const launchMetadata = isRecord(missionMetadata.launch) ? missionMetadata.launch : null;
     const launchTeamRuntime = isRecord(launchMetadata?.teamRuntime) ? launchMetadata.teamRuntime : null;
@@ -5271,6 +5412,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         };
     const missionAfterPlanning = missionService.get(missionId);
     const missionMetadataAfterPlanning = getMissionMetadata(missionId);
+    const missionPhaseConfiguration = isRecord(missionMetadataAfterPlanning.phaseConfiguration)
+      ? missionMetadataAfterPlanning.phaseConfiguration
+      : null;
     const plannerPlanMeta = isRecord(missionMetadataAfterPlanning.plannerPlan)
       ? missionMetadataAfterPlanning.plannerPlan
       : null;
@@ -5307,6 +5451,37 @@ Check all worker statuses and continue managing the mission from here. Read work
           : plannerParallelismCap ?? launchMaxParallel ?? 4
       )
     );
+    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
+    const sortedPhases = [...phases].sort((a, b) => a.position - b.position);
+    const initialPhase = sortedPhases[0] ?? null;
+    const phaseRuntime = initialPhase
+      ? {
+          currentPhaseKey: initialPhase.phaseKey,
+          currentPhaseName: initialPhase.name,
+          currentPhaseModel: initialPhase.model,
+          currentPhaseInstructions: initialPhase.instructions,
+          currentPhaseValidation: initialPhase.validationGate,
+          currentPhaseBudget: initialPhase.budget ?? {},
+          transitionedAt: nowIso(),
+          transitions: [
+            {
+              fromPhaseKey: null,
+              fromPhaseName: null,
+              toPhaseKey: initialPhase.phaseKey,
+              toPhaseName: initialPhase.name,
+              at: nowIso(),
+              reason: "run_initialized"
+            }
+          ],
+          phaseBudgets: {
+            [initialPhase.phaseKey]: {
+              enteredAt: nowIso(),
+              usedTokens: 0,
+              usedCostUsd: 0
+            }
+          }
+        }
+      : undefined;
 
     // ── Create run — just persistence, no planning ──
     const started = orchestratorService.startRun({
@@ -5338,11 +5513,13 @@ Check all worker statuses and continue managing the mission from here. Read work
           : undefined,
         agentRuntime: normalizeAgentRuntimeFlags(launchAgentRuntime),
         aiFirst: true,
+        phaseOverride: phases,
+        phaseProfileId: typeof missionPhaseConfiguration?.profileId === "string"
+          ? missionPhaseConfiguration.profileId
+          : null,
+        ...(phaseRuntime ? { phaseRuntime } : {}),
       }
     });
-
-    // ── Gather context for the coordinator ──
-    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
 
     // ── Create a dedicated mission lane ──
     const missionLaneId = await ensureMissionLaneForRun({
@@ -5384,15 +5561,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
 
     // Mark run as active only after coordinator startup succeeds.
-    const runStartTs = nowIso();
-    db.run(
-      `update orchestrator_runs set status = 'active', started_at = coalesce(started_at, ?), updated_at = ? where id = ?`,
-      [runStartTs, runStartTs, started.run.id]
-    );
+    const activatedRun = orchestratorService.activateRun(started.run.id);
     transitionMissionStatus(missionId, "in_progress");
     emitOrchestratorMessage(
       missionId,
-      "Mission started. The AI orchestrator is now in control."
+      "Mission started. I’m moving through planning, implementation, and validation based on your selected phases."
     );
 
     const initialGraph = getRunGraphSafe(started.run.id);
@@ -5408,7 +5581,10 @@ Check all worker statuses and continue managing the mission from here. Read work
     void syncMissionFromRun(started.run.id, "mission_run_started");
 
     return {
-      started,
+      started: {
+        run: activatedRun,
+        steps: orchestratorService.listSteps(started.run.id),
+      },
       mission: missionService.get(missionId),
     };
   };
@@ -5515,50 +5691,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     const phases = phaseConfig?.selectedPhases ?? [];
 
     return { userRules, projectCtx, availableProviders, phases };
-  };
-
-  const approveMissionPlan = async (args: MissionRunStartArgs): Promise<MissionRunStartResult> => {
-    const missionId = String(args.missionId ?? "").trim();
-    if (!missionId.length) throw new Error("missionId is required.");
-    const mission = missionService.get(missionId);
-    if (!mission) throw new Error(`Mission not found: ${missionId}`);
-    const runs = orchestratorService.listRuns({ missionId });
-    const activeRun = runs.find((entry) => entry.status === "active" || entry.status === "bootstrapping" || entry.status === "paused" || entry.status === "queued") ?? null;
-
-    for (const intervention of mission.interventions) {
-      if (
-        intervention.status === "open" &&
-        intervention.interventionType === "approval_required" &&
-        intervention.title === PLAN_REVIEW_INTERVENTION_TITLE
-      ) {
-        try {
-          missionService.resolveIntervention({
-            missionId,
-            interventionId: intervention.id,
-            status: "resolved",
-            note: "Approved for execution."
-          });
-          if (activeRun) {
-            recordRuntimeEvent({
-              runId: activeRun.id,
-              eventType: "intervention_resolved",
-              eventKey: `intervention_resolved:${intervention.id}:plan_approval`,
-              payload: {
-                interventionId: intervention.id,
-                reason: "plan_approved"
-              }
-            });
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    return startMissionRun({
-      ...args,
-      forcePlanReviewBypass: true
-    });
   };
 
   const getRunGraphSafe = (runId: string): OrchestratorRunGraph | null => {
@@ -5838,6 +5970,10 @@ Check all worker statuses and continue managing the mission from here. Read work
   const steerMission = (steerArgs: SteerMissionArgs): SteerMissionResult => {
     const missionId = steerArgs.missionId?.trim();
     if (!missionId) throw new Error("missionId is required.");
+    const targetedInterventionId =
+      typeof steerArgs.interventionId === "string" && steerArgs.interventionId.trim().length > 0
+        ? steerArgs.interventionId.trim()
+        : null;
 
     const mission = missionService.get(missionId);
     if (!mission) throw new Error(`Mission not found: ${missionId}`);
@@ -5949,7 +6085,10 @@ Check all worker statuses and continue managing the mission from here. Read work
     const resolvedInterventions: string[] = [];
     const resumedRunIds = new Set<string>();
     const refreshedMission = missionService.get(missionId);
-    const openManualInput = refreshedMission?.interventions.filter((entry) => entry.status === "open" && entry.interventionType === "manual_input") ?? [];
+    const openManualInput = refreshedMission?.interventions.filter((entry) => {
+      if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
+      return !targetedInterventionId || entry.id === targetedInterventionId;
+    }) ?? [];
     for (const intervention of openManualInput) {
       try {
         missionService.resolveIntervention({
@@ -6058,28 +6197,6 @@ Check all worker statuses and continue managing the mission from here. Read work
           projectedStepCount
         }
       );
-    }
-
-    // Real-time delivery: try to deliver the directive to running planner session
-    const plannerState = plannerSessionByMissionId.get(missionId);
-    if (plannerState && agentChatService) {
-      void (async () => {
-        try {
-          await sendWorkerMessageToSession(
-            plannerState.sessionId,
-            `[ADE ORCHESTRATOR STEERING]: ${directive.directive}`
-          );
-          logger.debug("ai_orchestrator.steering_delivered_to_planner", {
-            missionId,
-            directive: directive.directive.slice(0, 200)
-          });
-        } catch (deliveryError) {
-          logger.debug("ai_orchestrator.steering_planner_delivery_failed", {
-            missionId,
-            error: deliveryError instanceof Error ? deliveryError.message : String(deliveryError)
-          });
-        }
-      })();
     }
 
     // Real-time delivery: try to deliver the directive to running worker sessions
@@ -6413,132 +6530,10 @@ Check all worker statuses and continue managing the mission from here. Read work
     sessionSignalQueues.set(sessionId, next);
   };
 
-  const handlePlannerAgentChatEvent = (envelope: AgentChatEventEnvelope): boolean => {
-    const sessionId = String(envelope.sessionId ?? "").trim();
-    if (!sessionId.length) return false;
-    const state = plannerSessionBySessionId.get(sessionId);
-    if (!state) return false;
-
-    state.lastEventAt = typeof envelope.timestamp === "string" && envelope.timestamp.trim().length
-      ? envelope.timestamp
-      : nowIso();
-
-    const event = envelope.event;
-    if (event.type === "status") {
-      if (event.turnId) {
-        state.activeTurnId = event.turnId;
-      }
-      if (event.turnStatus === "started") {
-        appendPlannerWorkerMessage(
-          state,
-          "Planner started reasoning on the mission plan.",
-          {
-            planner: {
-              event: "turn_started",
-              sessionId: state.sessionId,
-              turnId: event.turnId ?? null
-            }
-          }
-        );
-      } else if (event.turnStatus === "failed" || event.turnStatus === "interrupted") {
-        const status = event.turnStatus === "failed" ? "failed" : "interrupted";
-        const message = typeof event.message === "string" && event.message.trim().length
-          ? event.message.trim()
-          : `Planner turn ${status}.`;
-        appendPlannerWorkerMessage(state, message, {
-          planner: {
-            event: "turn_status_terminal",
-            sessionId: state.sessionId,
-            status
-          }
-        });
-        completePlannerTurn(state, status, message);
-      }
-      return true;
-    }
-
-    if (event.type === "text") {
-      appendPlannerTextDelta(state, event.text);
-      return true;
-    }
-
-    if (event.type === "plan") {
-      appendPlannerWorkerMessage(
-        state,
-        `Planner proposed ${event.steps.length} plan step${event.steps.length === 1 ? "" : "s"}.`,
-        {
-          planner: {
-            event: "plan_outline",
-            sessionId: state.sessionId
-          }
-        }
-      );
-      return true;
-    }
-
-    if (event.type === "error") {
-      const rawMsg = String(event.message ?? "Planner session reported an error.").trim();
-
-      // Filter known noisy errors into human-readable summaries
-      let displayMsg = rawMsg;
-      if (rawMsg.includes("File content") && rawMsg.includes("exceeds maximum")) {
-        displayMsg = "Reading large file in smaller chunks...";
-      } else if (rawMsg.includes("Sibling tool call errored")) {
-        // Skip entirely - this is a cascading error from a parallel tool call
-        return true;
-      } else if (rawMsg.includes("SANDBOX BLOCKED")) {
-        displayMsg = "Skipping restricted path, trying alternative approach...";
-      } else if (rawMsg.startsWith("Tool '") && rawMsg.includes("failed:")) {
-        // Generic tool failure - summarize
-        const toolName = rawMsg.match(/Tool '(\w+)'/)?.[1] ?? "tool";
-        displayMsg = `${toolName} encountered an issue, adjusting approach...`;
-      }
-
-      // Only emit if we have a meaningful message
-      if (displayMsg && displayMsg.length > 3) {
-        appendPlannerWorkerMessage(state, displayMsg, {
-          planner: {
-            event: "error",
-            sessionId: state.sessionId
-          }
-        });
-      }
-      completePlannerTurn(state, "failed", rawMsg);
-      return true;
-    }
-
-    if (event.type === "done") {
-      const status: PlannerTurnCompletionStatus =
-        event.status === "failed"
-          ? "failed"
-          : event.status === "interrupted"
-            ? "interrupted"
-            : "completed";
-      completePlannerTurn(state, status, status === "completed" ? null : `Planner turn ${status}.`);
-      appendPlannerWorkerMessage(
-        state,
-        status === "completed"
-          ? "Planner completed the turn."
-          : `Planner turn ${status}.`,
-        {
-          planner: {
-            event: "turn_done",
-            sessionId: state.sessionId,
-            status
-          }
-        }
-      );
-      return true;
-    }
-
-    return false;
-  };
-
   const onAgentChatEvent = (envelope: AgentChatEventEnvelope): void => {
     if (disposed) return;
     const sessionId = String(envelope.sessionId ?? "").trim();
     if (!sessionId.length) return;
-    handlePlannerAgentChatEvent(envelope);
     const event = envelope.event;
     const shouldReplay =
       (event.type === "status" && (event.turnStatus === "completed" || event.turnStatus === "interrupted" || event.turnStatus === "failed"))
@@ -7135,8 +7130,6 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   return {
     startMissionRun,
-
-    approveMissionPlan,
     cancelRunGracefully,
     cleanupTeamResources,
 
@@ -7184,6 +7177,52 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
       }
 
+      if (event.type === "orchestrator-attempt-updated" && event.attemptId && event.stepId) {
+        try {
+          const graph = getEventGraph();
+          const step = graph.steps.find((entry) => entry.id === event.stepId) ?? null;
+          const attempt = graph.attempts.find((entry) => entry.id === event.attemptId) ?? null;
+          const missionId = graph.run.missionId ?? getMissionIdForRun(runId);
+          if (missionId) {
+            const threadStatus =
+              attempt
+              && (
+                attempt.status === "succeeded"
+                || attempt.status === "failed"
+                || attempt.status === "blocked"
+                || attempt.status === "canceled"
+              )
+                ? "closed"
+                : "active";
+            const fallbackStepLabel = step?.stepKey?.trim() || step?.title?.trim() || "starting";
+            upsertThread({
+              missionId,
+              threadId: `worker:${missionId}:${event.attemptId}`,
+              threadType: "worker",
+              title: `Worker: ${fallbackStepLabel}`,
+              target: {
+                kind: "worker",
+                runId,
+                stepId: step?.id ?? event.stepId,
+                stepKey: step?.stepKey ?? null,
+                attemptId: event.attemptId,
+                sessionId: attempt?.executorSessionId ?? null,
+                laneId: step?.laneId ?? null,
+              },
+              status: threadStatus,
+            });
+          }
+        } catch (threadError) {
+          logger.debug("ai_orchestrator.worker_thread_upsert_failed", {
+            runId,
+            stepId: event.stepId,
+            attemptId: event.attemptId,
+            reason: event.reason,
+            error: threadError instanceof Error ? threadError.message : String(threadError),
+          });
+        }
+      }
+
       // ── Strict coordinator ownership gate ──
       const existingCoordinator = coordinatorAgents.get(runId) ?? null;
       let coordinator = existingCoordinator?.isAlive ? existingCoordinator : null;
@@ -7192,6 +7231,14 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (recovered?.isAlive) coordinator = recovered;
       }
       if (!coordinator) {
+        const runStatus = getEventGraph().run.status;
+        const waitingForCoordinatorStartup =
+          !existingCoordinator &&
+          event.type === "orchestrator-run-updated" &&
+          (runStatus === "bootstrapping" || runStatus === "queued");
+        if (waitingForCoordinatorStartup) {
+          return;
+        }
         if (event.reason !== "finalized") {
           const missionId = getMissionIdForRun(runId);
           if (missionId) {
@@ -7406,8 +7453,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       chatMessages.clear();
       activeChatSessions.clear();
       chatTurnQueues.clear();
-      plannerSessionByMissionId.clear();
-      plannerSessionBySessionId.clear();
       activeHealthSweepRuns.clear();
       sessionRuntimeSignals.clear();
       attemptRuntimeTrackers.clear();

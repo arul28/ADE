@@ -174,15 +174,6 @@ describe("conflictService conflict context integrity", () => {
       projectConfigService: {
         get: () => ({ effective: { providerMode: "subscription" } })
       } as any,
-      packService: {
-        refreshLanePack: async () => {},
-        refreshConflictPack: async () => {},
-        getLaneExport: async () => ({ content: "lane export" }),
-        getConflictExport: async () => ({
-          content:
-            '## Conflict Lineage\n```json\n{"pairwisePairsComputed":2,"pairwisePairsTotal":5,"stalePolicy":{"ttlMs":120000}}\n```'
-        })
-      } as any,
       aiIntegrationService: {
         getMode: () => "subscription",
         requestConflictProposal: async (args: any) => {
@@ -216,9 +207,6 @@ describe("conflictService conflict context integrity", () => {
     expect(capturedRequest).toBeTruthy();
     expect(typeof capturedRequest.prompt).toBe("string");
     expect(capturedRequest.prompt).toContain("relevantFilesForConflict");
-    expect(capturedRequest.prompt).toContain("\"pairwisePairsComputed\": 2");
-    expect(capturedRequest.prompt).toContain("\"pairwisePairsTotal\": 5");
-    expect(capturedRequest.prompt).toContain("\"ttlMs\": 120000");
   });
 
   it("returns insufficient-context proposal without calling subscription provider", async () => {
@@ -265,15 +253,6 @@ describe("conflictService conflict context integrity", () => {
       projectConfigService: {
         get: () => ({ effective: { providerMode: "subscription" } })
       } as any,
-      packService: {
-        refreshLanePack: async () => {},
-        refreshConflictPack: async () => {},
-        getLaneExport: async () => ({ content: "lane export" }),
-        getConflictExport: async () => ({
-          content:
-            '## Conflict Lineage\n```json\n{"pairwisePairsComputed":1,"pairwisePairsTotal":1,"stalePolicy":{"ttlMs":60000}}\n```'
-        })
-      } as any,
       aiIntegrationService: {
         getMode: () => "subscription",
         requestConflictProposal: async () => {
@@ -299,14 +278,7 @@ describe("conflictService conflict context integrity", () => {
     const projectId = "proj-external-single";
     await seedProjectAndLane(db, projectId, repoRoot);
     const packsRoot = path.join(repoRoot, ".ade", "packs");
-    fs.mkdirSync(path.join(packsRoot, "lanes", "lane-1"), { recursive: true });
-    fs.mkdirSync(path.join(packsRoot, "lanes", "lane-target"), { recursive: true });
-    fs.mkdirSync(path.join(packsRoot, "conflicts", "v2"), { recursive: true });
     fs.mkdirSync(path.join(repoRoot, "docs", "architecture"), { recursive: true });
-    fs.writeFileSync(path.join(packsRoot, "project_pack.md"), "# Project Pack\n", "utf8");
-    fs.writeFileSync(path.join(packsRoot, "lanes", "lane-1", "lane_pack.md"), "# Lane 1 Pack\n", "utf8");
-    fs.writeFileSync(path.join(packsRoot, "lanes", "lane-target", "lane_pack.md"), "# Lane Target Pack\n", "utf8");
-    fs.writeFileSync(path.join(packsRoot, "conflicts", "v2", "lane-1__lane-target.md"), "# Conflict Pack\n", "utf8");
     fs.writeFileSync(path.join(repoRoot, "docs", "PRD.ade.md"), "# PRD\n", "utf8");
     fs.writeFileSync(path.join(repoRoot, "docs", "architecture", "ARCHITECTURE.ade.md"), "# Architecture\n", "utf8");
 
@@ -355,15 +327,6 @@ describe("conflictService conflict context integrity", () => {
           effective: { providerMode: "guest", providers: {} }
         })
       } as any,
-      packService: {
-        refreshLanePack: async () => {},
-        refreshConflictPack: async () => {},
-        getLaneExport: async () => ({ content: "lane export" }),
-        getConflictExport: async () => ({
-          content:
-            '## Conflict Lineage\n```json\n{"pairwisePairsComputed":1,"pairwisePairsTotal":1,"stalePolicy":{"ttlMs":120000}}\n```'
-        })
-      } as any,
       conflictPacksDir: path.join(packsRoot, "conflicts")
     });
 
@@ -382,11 +345,22 @@ describe("conflictService conflict context integrity", () => {
     expect(run.summary ?? "").toContain("src/a.ts");
     const promptPath = path.join(path.dirname(run.logPath ?? run.patchPath!), "prompt.md");
     const prompt = fs.readFileSync(promptPath, "utf8");
-    expect(prompt).toContain("## ADE Pack References");
-    expect(prompt).toContain(path.join(packsRoot, "project_pack.md"));
-    expect(prompt).toContain(path.join(packsRoot, "lanes", "lane-1", "lane_pack.md"));
-    expect(prompt).toContain(path.join(packsRoot, "lanes", "lane-target", "lane_pack.md"));
-    expect(prompt).toContain(path.join(packsRoot, "conflicts", "v2", "lane-1__lane-target.md"));
+    const runDir = path.dirname(promptPath);
+    const projectContextPath = path.join(runDir, "project-context.md");
+    const sourceLaneContextPath = path.join(runDir, "lane-context-lane-1.md");
+    const targetLaneContextPath = path.join(runDir, "lane-context-lane-target.md");
+    const conflictContextPath = path.join(runDir, "conflict-context-lane-1-to-lane-target.json");
+    expect(prompt).toContain("## ADE Context Files");
+    expect(prompt).toContain("Read all required generated ADE context files listed below.");
+    expect(prompt).toContain(projectContextPath);
+    expect(prompt).toContain(sourceLaneContextPath);
+    expect(prompt).toContain(targetLaneContextPath);
+    expect(prompt).toContain(conflictContextPath);
+    expect(prompt).toContain(path.join(repoRoot, "docs", "PRD.ade.md"));
+    expect(fs.existsSync(projectContextPath)).toBe(true);
+    expect(fs.existsSync(sourceLaneContextPath)).toBe(true);
+    expect(fs.existsSync(targetLaneContextPath)).toBe(true);
+    expect(fs.existsSync(conflictContextPath)).toBe(true);
     expect(prompt).toContain("Do not run: git add, git commit, git push");
   });
 
@@ -442,15 +416,6 @@ describe("conflictService conflict context integrity", () => {
           effective: { providerMode: "guest", providers: {} }
         })
       } as any,
-      packService: {
-        refreshLanePack: async () => {},
-        refreshConflictPack: async () => {},
-        getLaneExport: async () => ({ content: "lane export" }),
-        getConflictExport: async () => ({
-          content:
-            '## Conflict Lineage\n```json\n{"pairwisePairsComputed":1,"pairwisePairsTotal":1,"stalePolicy":{"ttlMs":120000}}\n```'
-        })
-      } as any
     });
 
     const run = await service.runExternalResolver({
@@ -555,15 +520,6 @@ describe("conflictService conflict context integrity", () => {
           effective: { providerMode: "guest", providers: {} }
         })
       } as any,
-      packService: {
-        refreshLanePack: async () => {},
-        refreshConflictPack: async () => {},
-        getLaneExport: async () => ({ content: "lane export" }),
-        getConflictExport: async () => ({
-          content:
-            '## Conflict Lineage\n```json\n{"pairwisePairsComputed":2,"pairwisePairsTotal":2,"stalePolicy":{"ttlMs":120000}}\n```'
-        })
-      } as any
     });
 
     const run = await service.runExternalResolver({
@@ -629,15 +585,6 @@ describe("conflictService conflict context integrity", () => {
           effective: { providerMode: "guest", providers: {} }
         })
       } as any,
-      packService: {
-        refreshLanePack: async () => {},
-        refreshConflictPack: async () => {},
-        getLaneExport: async () => ({ content: "lane export" }),
-        getConflictExport: async () => ({
-          content:
-            '## Conflict Lineage\n```json\n{"pairwisePairsComputed":1,"pairwisePairsTotal":1,"stalePolicy":{"ttlMs":120000}}\n```'
-        })
-      } as any
     });
 
     const run = await service.runExternalResolver({

@@ -1,7 +1,13 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { OrchestratorRunGraph, OrchestratorTeamMember, OrchestratorStepStatus } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
-import { isRecord } from "./missionHelpers";
+import {
+  compactText,
+  filterExecutionSteps,
+  isRecord,
+  stepIntentSummary,
+} from "./missionHelpers";
+import { relativeWhen } from "../../lib/format";
 import { useMissionPolling } from "./useMissionPolling";
 
 const TEAM_STATUS_COLOR: Record<OrchestratorTeamMember["status"], string> = {
@@ -13,11 +19,21 @@ const TEAM_STATUS_COLOR: Record<OrchestratorTeamMember["status"], string> = {
   failed: "#EF4444",
 };
 
-const TEAM_SOURCE_LABEL: Record<OrchestratorTeamMember["source"], string> = {
-  "ade-worker": "ADE WORKER",
-  "ade-subagent": "SUBAGENT",
-  "claude-native": "NATIVE",
+const TEAM_STATUS_LABEL: Record<OrchestratorTeamMember["status"], string> = {
+  spawning: "Starting",
+  active: "Active",
+  idle: "Idle",
+  completing: "Wrapping up",
+  terminated: "Ended",
+  failed: "Failed",
 };
+
+const TEAM_SOURCE_LABEL: Record<OrchestratorTeamMember["source"], string> = {
+  "ade-worker": "Worker",
+  "ade-subagent": "Sub-agent",
+  "claude-native": "Native",
+};
+
 const TERMINATED_AUTO_COLLAPSE_MS = 2 * 60 * 1000;
 
 type ValidatorLineageEntry = {
@@ -33,42 +49,49 @@ type ValidatorLineageEntry = {
   targetStepStatus: OrchestratorStepStatus | null;
 };
 
-function teamStatusLabel(status: OrchestratorTeamMember["status"]): string {
-  return status.replace(/_/g, " ").toUpperCase();
-}
-
 export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null }) {
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
   const [transcriptTail, setTranscriptTail] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
+  const [showAdvancedOutput, setShowAdvancedOutput] = useState(false);
+  const [showAdvancedPanels, setShowAdvancedPanels] = useState(false);
   const [showCollapsedTerminated, setShowCollapsedTerminated] = useState(false);
   const [teamMembers, setTeamMembers] = useState<OrchestratorTeamMember[]>([]);
   const transcriptRef = useRef<HTMLPreElement>(null);
   const runId = runGraph?.run.id ?? null;
 
-  const activeAttempts = useMemo(() => {
+  const executableSteps = useMemo(() => filterExecutionSteps(runGraph?.steps ?? []), [runGraph?.steps]);
+  const executableStepIds = useMemo(() => new Set(executableSteps.map((step) => step.id)), [executableSteps]);
+
+  const sessionAttempts = useMemo(() => {
     if (!runGraph) return [];
     return runGraph.attempts
-      .filter((attempt) => attempt.status === "running" && typeof attempt.executorSessionId === "string" && attempt.executorSessionId.length > 0)
-      .sort((a, b) => Date.parse(b.startedAt ?? b.createdAt) - Date.parse(a.startedAt ?? a.createdAt));
-  }, [runGraph]);
+      .filter((attempt) => executableStepIds.has(attempt.stepId) && typeof attempt.executorSessionId === "string" && attempt.executorSessionId.length > 0)
+      .sort((a, b) => {
+        const aRunning = a.status === "running" ? 0 : 1;
+        const bRunning = b.status === "running" ? 0 : 1;
+        if (aRunning !== bRunning) return aRunning - bRunning;
+        return Date.parse(b.startedAt ?? b.createdAt) - Date.parse(a.startedAt ?? a.createdAt);
+      });
+  }, [executableStepIds, runGraph]);
 
   useEffect(() => {
-    if (!activeAttempts.length) {
+    if (!sessionAttempts.length) {
       setSelectedAttemptId(null);
       setTranscriptTail("");
       return;
     }
-    setSelectedAttemptId((prev) => (prev && activeAttempts.some((attempt) => attempt.id === prev) ? prev : activeAttempts[0]!.id));
-  }, [activeAttempts]);
+    setSelectedAttemptId((prev) => (prev && sessionAttempts.some((attempt) => attempt.id === prev) ? prev : sessionAttempts[0]!.id));
+  }, [sessionAttempts]);
 
   const selectedAttempt = useMemo(
-    () => activeAttempts.find((attempt) => attempt.id === selectedAttemptId) ?? null,
-    [activeAttempts, selectedAttemptId]
+    () => sessionAttempts.find((attempt) => attempt.id === selectedAttemptId) ?? null,
+    [selectedAttemptId, sessionAttempts]
   );
+
   const selectedStep = useMemo(
-    () => (runGraph && selectedAttempt ? runGraph.steps.find((step) => step.id === selectedAttempt.stepId) ?? null : null),
-    [runGraph, selectedAttempt]
+    () => executableSteps.find((step) => step.id === selectedAttempt?.stepId) ?? null,
+    [executableSteps, selectedAttempt?.stepId]
   );
 
   const sessionId = selectedAttempt?.executorSessionId ?? null;
@@ -80,13 +103,12 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
     }
     window.ade.orchestrator.getTeamMembers({ runId }).then(
       (members) => setTeamMembers(Array.isArray(members) ? members : []),
-      () => setTeamMembers([]),
+      () => setTeamMembers([])
     );
   }, [runId]);
 
-  // Initial transcript load
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !showAdvancedOutput) return;
     let cancelled = false;
     (async () => {
       try {
@@ -96,19 +118,20 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
         if (!cancelled) setTranscriptTail("(unable to read worker transcript)");
       }
     })();
-    return () => { cancelled = true; };
-  }, [sessionId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, showAdvancedOutput]);
 
-  // Polling via shared coordinator (replaces per-component setInterval)
   const pollTranscript = useCallback(() => {
-    if (!sessionId) return;
+    if (!sessionId || !showAdvancedOutput) return;
     window.ade.sessions.readTranscriptTail({ sessionId, maxBytes: 16_000 }).then(
       (tail) => setTranscriptTail(tail),
       () => setTranscriptTail("(unable to read worker transcript)")
     );
-  }, [sessionId]);
+  }, [sessionId, showAdvancedOutput]);
 
-  useMissionPolling(pollTranscript, 2_000, !!sessionId);
+  useMissionPolling(pollTranscript, 2_000, !!sessionId && showAdvancedOutput);
   useMissionPolling(refreshTeamMembers, 5_000, !!runId);
 
   useEffect(() => {
@@ -135,13 +158,13 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
       const candidates = [
         typeof payload.filePath === "string" ? payload.filePath : null,
         typeof payload.path === "string" ? payload.path : null,
-        typeof payload.file === "string" ? payload.file : null
+        typeof payload.file === "string" ? payload.file : null,
       ].filter((entry): entry is string => Boolean(entry));
       for (const file of candidates) {
         files.set(file, (files.get(file) ?? 0) + 1);
       }
     }
-    return [...files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    return [...files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
   }, [relatedEvents]);
 
   const toolsCalled = useMemo(() => {
@@ -159,13 +182,15 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
       if (!toolName) continue;
       tools.set(toolName, (tools.get(toolName) ?? 0) + 1);
     }
-    return [...tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    return [...tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  }, [relatedEvents]);
+
+  const recentTimeline = useMemo(() => {
+    return relatedEvents.slice(-8).reverse();
   }, [relatedEvents]);
 
   const flattenedTeamMembers = useMemo(() => {
-    const byCreated = [...teamMembers].sort(
-      (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)
-    );
+    const byCreated = [...teamMembers].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     const byId = new Map(byCreated.map((member) => [member.id, member]));
     const children = new Map<string, OrchestratorTeamMember[]>();
     const roots: OrchestratorTeamMember[] = [];
@@ -236,14 +261,8 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
       const targetStepId = typeof metadata.targetStepId === "string" ? metadata.targetStepId.trim() : "";
       const targetStepKey = typeof metadata.targetStepKey === "string" ? metadata.targetStepKey.trim() : "";
       const targetStep = targetStepId.length > 0 ? stepById.get(targetStepId) ?? null : null;
-      const role =
-        typeof metadata.role === "string" && metadata.role.trim().length > 0
-          ? metadata.role.trim()
-          : "validator";
-      const model =
-        typeof metadata.modelId === "string" && metadata.modelId.trim().length > 0
-          ? metadata.modelId.trim()
-          : "unknown";
+      const role = typeof metadata.role === "string" && metadata.role.trim().length > 0 ? metadata.role.trim() : "validator";
+      const model = typeof metadata.modelId === "string" && metadata.modelId.trim().length > 0 ? metadata.modelId.trim() : "unknown";
       entries.push({
         stepId: step.id,
         stepKey: step.stepKey,
@@ -272,22 +291,22 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       <div className="flex items-center gap-2 px-3 py-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-        <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Follow</span>
+        <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+          Worker view
+        </span>
         <select
           value={selectedAttemptId ?? ""}
           onChange={(event) => setSelectedAttemptId(event.target.value)}
-          disabled={activeAttempts.length === 0}
-          className="h-7 px-2 text-[10px] outline-none"
+          disabled={sessionAttempts.length === 0}
+          className="h-7 min-w-[220px] px-2 text-[10px] outline-none"
           style={{ ...outlineButton(), background: COLORS.recessedBg }}
         >
-          {activeAttempts.length === 0 ? (
-            <option value="">No active attempts</option>
-          ) : null}
-          {activeAttempts.map((attempt) => {
-            const step = runGraph.steps.find((entry) => entry.id === attempt.stepId);
+          {sessionAttempts.length === 0 ? <option value="">No worker sessions yet</option> : null}
+          {sessionAttempts.map((attempt) => {
+            const step = executableSteps.find((entry) => entry.id === attempt.stepId);
             return (
               <option key={attempt.id} value={attempt.id}>
-                {(step?.title ?? attempt.stepId.slice(0, 8)).slice(0, 70)}
+                [{attempt.status}] {(step?.title ?? attempt.stepId.slice(0, 8)).slice(0, 70)}
               </option>
             );
           })}
@@ -298,37 +317,184 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-        <div className="min-h-0 min-w-0 flex-1" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-          <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-            <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Live Output</span>
-            <button
-              className="text-[10px] font-bold uppercase tracking-[1px]"
-              style={{ color: autoScroll ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
-              onClick={() => setAutoScroll((prev) => !prev)}
-            >
-              {autoScroll ? "Auto-scroll" : "Scroll lock"}
-            </button>
+        <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto">
+          <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+            {selectedStep && selectedAttempt ? (
+              <>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      Current worker
+                    </div>
+                    <div className="mt-1 text-sm font-semibold" style={{ color: COLORS.textPrimary }}>
+                      {selectedStep.title}
+                    </div>
+                    <div className="mt-1 text-[11px] leading-relaxed" style={{ color: COLORS.textSecondary }}>
+                      {stepIntentSummary(selectedStep)}
+                    </div>
+                  </div>
+                  <div
+                    className="px-2 py-1 text-[9px] font-bold uppercase tracking-[1px]"
+                    style={{
+                      background: `${selectedAttempt.status === "running" ? COLORS.accent : COLORS.textMuted}18`,
+                      border: `1px solid ${selectedAttempt.status === "running" ? COLORS.accent : COLORS.border}`,
+                      color: selectedAttempt.status === "running" ? COLORS.accent : COLORS.textMuted,
+                      fontFamily: MONO_FONT,
+                    }}
+                  >
+                    {selectedAttempt.status}
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    { label: "Session", value: selectedAttempt.executorSessionId ?? "--" },
+                    { label: "Started", value: selectedAttempt.startedAt ? relativeWhen(selectedAttempt.startedAt) : "--" },
+                    { label: "Executor", value: selectedAttempt.executorKind },
+                    { label: "Latest activity", value: recentTimeline[0] ? compactText(recentTimeline[0].eventType.replace(/_/g, " "), 42) : "Waiting" },
+                  ].map((entry) => (
+                    <div key={entry.label} className="px-2 py-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                      <div className="text-[9px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        {entry.label}
+                      </div>
+                      <div className="mt-1 text-[11px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+                        {entry.value}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {selectedAttempt.errorMessage ? (
+                  <div className="mt-3 px-2 py-2 text-[11px]" style={{ background: `${COLORS.danger}12`, border: `1px solid ${COLORS.danger}28`, color: COLORS.danger }}>
+                    {compactText(selectedAttempt.errorMessage, 220)}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="text-[11px]" style={{ color: COLORS.textMuted }}>
+                Worker sessions will appear here once a real execution attempt starts.
+              </div>
+            )}
           </div>
-          <pre
-            ref={transcriptRef}
-            className="h-full overflow-auto p-3 text-[10px] whitespace-pre-wrap"
-            style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT, background: COLORS.recessedBg }}
-          >
-            {sessionId
-              ? (transcriptTail || "Waiting for transcript output...")
-              : "No active worker selected."}
-          </pre>
+
+          <div className="grid gap-3 xl:grid-cols-2">
+            <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+              <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                Files changed
+              </div>
+              <div className="mt-2 space-y-1">
+                {filesTouched.length === 0 ? (
+                  <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                    No file activity recorded yet.
+                  </div>
+                ) : filesTouched.map(([file, count]) => (
+                  <div key={file} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
+                    <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{file}</span>
+                    <span style={{ color: COLORS.textMuted }}>{count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+              <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                Tools used
+              </div>
+              <div className="mt-2 space-y-1">
+                {toolsCalled.length === 0 ? (
+                  <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                    No tool activity recorded yet.
+                  </div>
+                ) : toolsCalled.map(([tool, count]) => (
+                  <div key={tool} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
+                    <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{tool}</span>
+                    <span style={{ color: COLORS.textMuted }}>{count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                Recent worker signals
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAdvancedOutput((prev) => !prev)}
+                className="text-[10px] font-bold uppercase tracking-[1px]"
+                style={{ color: showAdvancedOutput ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+              >
+                {showAdvancedOutput ? "Hide raw output" : "Show raw output"}
+              </button>
+            </div>
+            <div className="mt-2 space-y-1">
+              {recentTimeline.length === 0 ? (
+                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                  No worker events yet.
+                </div>
+              ) : recentTimeline.map((event) => (
+                <div key={event.id ?? `${event.eventType}:${event.occurredAt}`} className="px-2 py-1.5 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                  <div className="flex items-center justify-between gap-2" style={{ fontFamily: MONO_FONT }}>
+                    <span style={{ color: COLORS.textPrimary }}>{event.eventType.replace(/_/g, " ")}</span>
+                    <span style={{ color: COLORS.textMuted }}>{relativeWhen(event.occurredAt)}</span>
+                  </div>
+                  {(() => {
+                    const payload = isRecord(event.payload) ? event.payload : {};
+                    const summaryCandidate =
+                      typeof payload.summary === "string"
+                        ? payload.summary
+                        : typeof payload.message === "string"
+                          ? payload.message
+                          : typeof payload.reason === "string"
+                            ? payload.reason
+                            : "";
+                    return summaryCandidate ? (
+                      <div className="mt-1" style={{ color: COLORS.textSecondary }}>
+                        {compactText(summaryCandidate, 180)}
+                      </div>
+                    ) : null;
+                  })()}
+                </div>
+              ))}
+            </div>
+
+            {showAdvancedOutput && (
+              <div className="mt-3" style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
+                <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                  <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    Raw worker transcript
+                  </span>
+                  <button
+                    className="text-[10px] font-bold uppercase tracking-[1px]"
+                    style={{ color: autoScroll ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+                    onClick={() => setAutoScroll((prev) => !prev)}
+                  >
+                    {autoScroll ? "Auto-scroll" : "Scroll lock"}
+                  </button>
+                </div>
+                <pre
+                  ref={transcriptRef}
+                  className="max-h-[320px] overflow-auto p-3 text-[10px] whitespace-pre-wrap"
+                  style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}
+                >
+                  {sessionId ? (transcriptTail || "Waiting for transcript output...") : "No worker session selected."}
+                </pre>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="w-full space-y-3 lg:w-[320px] lg:shrink-0">
-          <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+          <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
             <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-              Team Members
+              Collaborators
             </div>
             {collapsedTerminatedCount > 0 ? (
               <div className="mt-1 flex items-center justify-between gap-2">
                 <span className="text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                  {collapsedTerminatedCount} terminated member{collapsedTerminatedCount === 1 ? "" : "s"} auto-collapsed
+                  {collapsedTerminatedCount} ended collaborator{collapsedTerminatedCount === 1 ? "" : "s"} hidden
                 </span>
                 <button
                   type="button"
@@ -343,7 +509,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
             <div className="mt-2 max-h-[220px] space-y-1 overflow-auto pr-1">
               {visibleTeamMembers.length === 0 ? (
                 <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                  No team members registered.
+                  No collaborators registered yet.
                 </div>
               ) : visibleTeamMembers.map(({ member, depth }) => {
                 const metadata = isRecord(member.metadata) ? member.metadata : {};
@@ -355,7 +521,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
                 return (
                   <div
                     key={member.id}
-                    className="rounded-none border px-2 py-1.5"
+                    className="border px-2 py-1.5"
                     style={{
                       marginLeft: `${depth * 10}px`,
                       borderColor: COLORS.border,
@@ -371,7 +537,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
                         {depth > 0 ? `↳ ${member.id}` : member.id}
                       </span>
                       <span className="ml-auto text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        {teamStatusLabel(member.status)}
+                        {TEAM_STATUS_LABEL[member.status]}
                       </span>
                     </div>
                     <div className="mt-1 flex flex-wrap gap-1 text-[9px]" style={{ fontFamily: MONO_FONT }}>
@@ -396,83 +562,57 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
             </div>
           </div>
 
-          <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-              Validator Lineage
+          <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                Advanced panels
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAdvancedPanels((prev) => !prev)}
+                className="text-[10px] font-bold uppercase tracking-[1px]"
+                style={{ color: showAdvancedPanels ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+              >
+                {showAdvancedPanels ? "Hide" : "Show"}
+              </button>
             </div>
-            <div className="mt-2 space-y-1">
-              {validatorLineage.length === 0 ? (
-                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                  No validator steps detected.
-                </div>
-              ) : validatorLineage.map((entry) => (
-                <div
-                  key={entry.stepId}
-                  className="rounded-none border px-2 py-1.5"
-                  style={{
-                    borderColor: "#F59E0B55",
-                    background: "#F59E0B08",
-                  }}
-                >
-                  <div className="flex items-center gap-1">
-                    <span className="text-[9px] font-bold uppercase tracking-[0.5px]" style={{ color: "#F59E0B", fontFamily: MONO_FONT }}>
-                      Validation
-                    </span>
-                    <span className="truncate text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
-                      {entry.stepKey}
-                    </span>
-                    <span className="ml-auto text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                      {entry.status}
-                    </span>
+            {showAdvancedPanels ? (
+              <div className="mt-2 space-y-2">
+                <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                  <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    Quality checks
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-1 text-[9px]" style={{ fontFamily: MONO_FONT }}>
-                    {entry.autoSpawnedValidation ? (
-                      <span className="border px-1 py-0.5" style={{ borderColor: "#F59E0B66", color: "#FCD34D" }}>
-                        auto-spawned
-                      </span>
-                    ) : null}
-                    <span className="border px-1 py-0.5" style={{ borderColor: COLORS.border, color: COLORS.textSecondary }}>
-                      role:{entry.role}
-                    </span>
-                    <span className="border px-1 py-0.5" style={{ borderColor: COLORS.border, color: COLORS.textMuted }}>
-                      model:{entry.model}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    target:{entry.targetStepKey ?? "unlinked"}
-                    {entry.targetStepStatus ? ` (${entry.targetStepStatus})` : ""}
+                  <div className="mt-2 space-y-1">
+                    {validatorLineage.length === 0 ? (
+                      <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                        No validator steps detected.
+                      </div>
+                    ) : validatorLineage.map((entry) => (
+                      <div key={entry.stepId} className="border px-2 py-1.5" style={{ borderColor: `${COLORS.warning}50`, background: `${COLORS.warning}10` }}>
+                        <div className="flex items-center gap-1">
+                          <span className="text-[9px] font-bold uppercase tracking-[0.5px]" style={{ color: COLORS.warning, fontFamily: MONO_FONT }}>
+                            Validation
+                          </span>
+                          <span className="truncate text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
+                            {entry.stepKey}
+                          </span>
+                          <span className="ml-auto text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                            {entry.status}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          target: {entry.targetStepKey ?? "unlinked"}{entry.targetStepStatus ? ` (${entry.targetStepStatus})` : ""}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Files Modified</div>
-            <div className="mt-2 space-y-1">
-              {filesTouched.length === 0 ? (
-                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>No file events yet.</div>
-              ) : filesTouched.map(([file, count]) => (
-                <div key={file} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
-                  <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{file}</span>
-                  <span style={{ color: COLORS.textMuted }}>{count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="p-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Tools Called</div>
-            <div className="mt-2 space-y-1">
-              {toolsCalled.length === 0 ? (
-                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>No tool events yet.</div>
-              ) : toolsCalled.map(([tool, count]) => (
-                <div key={tool} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
-                  <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{tool}</span>
-                  <span style={{ color: COLORS.textMuted }}>{count}</span>
-                </div>
-              ))}
-            </div>
+              </div>
+            ) : (
+              <div className="mt-2 text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                Validator lineage and other low-level worker internals live here when you need them.
+              </div>
+            )}
           </div>
         </div>
       </div>

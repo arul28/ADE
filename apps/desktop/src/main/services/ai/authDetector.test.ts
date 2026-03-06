@@ -118,7 +118,7 @@ describe("authDetector", () => {
       "fetch",
       vi.fn(async (url: string) => {
         if (url.includes("11434")) {
-          return new Response("{}", { status: 200 });
+          return new Response(JSON.stringify({ models: [{ name: "llama3.3" }] }), { status: 200 });
         }
         return new Response("{}", { status: 503 });
       }),
@@ -185,6 +185,22 @@ describe("authDetector", () => {
         endpoint: "http://localhost:11434",
       }),
     );
+  });
+
+  it("does not report openai-compatible local providers when no models are loaded", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("1234")) {
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }
+        return new Response("{}", { status: 503 });
+      }),
+    );
+
+    const auth = await detectAllAuth({});
+
+    expect(auth.some((entry) => entry.type === "local" && entry.provider === "lmstudio")).toBe(false);
   });
 
   it("marks unsupported CLI auth checks as unverified", async () => {

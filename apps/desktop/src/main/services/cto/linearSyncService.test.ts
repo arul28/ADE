@@ -98,6 +98,13 @@ describe("linearSyncService", () => {
       issueTracker: {
         fetchCandidateIssues: vi.fn(async () => [issueFixture]),
         fetchIssueById: vi.fn(async () => issueFixture),
+        fetchIssuesByIds: vi.fn(async (ids: string[]) => {
+          const map = new Map();
+          for (const id of ids) {
+            if (id === issueFixture.id) map.set(id, issueFixture);
+          }
+          return map;
+        }),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         updateIssueAssignee: vi.fn(async () => {}),
@@ -138,6 +145,7 @@ describe("linearSyncService", () => {
           missions.set(patch.missionId, next);
           return next;
         }),
+        patchMetadata: vi.fn(() => {}),
       } as any,
       aiOrchestratorService: {
         startMissionRun: vi.fn(async () => ({ runId: "run-1" })),

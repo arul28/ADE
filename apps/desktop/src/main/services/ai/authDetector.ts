@@ -237,13 +237,30 @@ async function readStoredApiKeys(): Promise<Record<string, string>> {
   }
 }
 
-async function checkLocalEndpoint(url: string, timeoutMs = 2_000): Promise<boolean> {
+async function checkLocalEndpointHasModels(
+  provider: "ollama" | "lmstudio" | "vllm",
+  url: string,
+  timeoutMs = 2_000,
+): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(url, { method: "GET", signal: controller.signal });
     clearTimeout(timer);
-    return res.ok;
+    if (!res.ok) return false;
+
+    const payload = await res.json() as unknown;
+    if (provider === "ollama") {
+      const models: Array<{ name?: unknown }> = Array.isArray((payload as { models?: unknown[] })?.models)
+        ? ((payload as { models?: Array<{ name?: unknown }> }).models ?? [])
+        : [];
+      return models.some((entry) => typeof entry?.name === "string" && entry.name.trim().length > 0);
+    }
+
+    const models: Array<{ id?: unknown }> = Array.isArray((payload as { data?: unknown[] })?.data)
+      ? ((payload as { data?: Array<{ id?: unknown }> }).data ?? [])
+      : [];
+    return models.some((entry) => typeof entry?.id === "string" && entry.id.trim().length > 0);
   } catch {
     return false;
   }
@@ -266,7 +283,7 @@ async function detectLocalProviders(): Promise<Array<{ provider: "ollama" | "lms
 
   const localChecks = await Promise.allSettled(
     localEndpoints.map(async ({ provider, url }) => {
-      const alive = await checkLocalEndpoint(url, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
+      const alive = await checkLocalEndpointHasModels(provider, url, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
       if (!alive) return null;
       const endpoint = url.replace(/\/api\/tags$|\/v1\/models$/, "");
       return { provider, endpoint } as const;

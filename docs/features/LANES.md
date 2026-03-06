@@ -453,7 +453,7 @@ lanes (
 | LANES-042 | Rebase suggestion UI in LanesPage | DONE — Phase 8 (amber rebase badges on lane rows, rebase/dismiss/defer actions in lane detail) |
 | LANES-043 | Lane appearance customization (color, icon, tags) | DONE — Phase 8 (`updateAppearance` IPC, `color`/`icon`/`tags_json` columns) |
 | LANES-044 | Lane reparent support | DONE — Phase 8 (`reparent` IPC, changes parent-child relationship in stack) |
-| LANES-045 | Create child lane from parent | DONE — Phase 8 (`createChild` IPC, used by ConflictsPage for integration lanes) |
+| LANES-045 | Create child lane from parent | DONE — Phase 8 (`createChild` IPC, used by integration proposal flows) |
 | LANES-046 | Import branch as lane | DONE — Phase 8 (`importBranch` IPC, creates lane from existing branch) |
 | LANES-047 | Quick-launch terminal profiles | DONE — Phase 8 (Claude/Codex/Shell one-click launch buttons, configurable profiles) |
 | LANES-048 | Lane filter/search in LanesPage | DONE — Phase 8 (text search with filter token toggling) |

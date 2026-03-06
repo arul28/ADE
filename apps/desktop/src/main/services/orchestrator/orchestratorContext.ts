@@ -45,6 +45,7 @@ import type {
   AgentChatEventEnvelope,
   TeamManifest,
   ExecutionPlanPreview,
+  OrchestratorStep,
   OrchestratorWorkerRole,
   RecoveryLoopPolicy,
   RecoveryLoopState,
@@ -130,7 +131,6 @@ export type MissionRunStartArgs = {
   defaultExecutorKind?: OrchestratorExecutorKind;
   defaultRetryLimit?: number;
   metadata?: Record<string, unknown> | null;
-  forcePlanReviewBypass?: boolean;
   plannerProvider?: OrchestratorPlannerProvider;
 };
 
@@ -166,7 +166,6 @@ export type OrchestratorHookCommandRunner = (args: {
 }) => Promise<OrchestratorHookExecutionResult>;
 
 export type ResolvedOrchestratorConfig = {
-  requirePlanReview: boolean;
   defaultPlannerProvider: string | null;
   defaultExecutionPolicy: Partial<MissionExecutionPolicy> | null;
   defaultMissionLevelSettings: MissionLevelSettings | null;
@@ -178,7 +177,6 @@ export type RuntimeReasoningEffort = "low" | "medium" | "high";
 export type MissionRuntimeProfile = {
   planning: {
     useAiPlanner: boolean;
-    requirePlanReview: boolean;
     preferProvider: string | null;
   };
   execution: {
@@ -239,34 +237,6 @@ export type Deferred<T> = {
   resolve: (value: T) => void;
   reject: (error: unknown) => void;
   settled: boolean;
-};
-
-export type PlannerTurnCompletionStatus = "completed" | "failed" | "interrupted";
-
-export type PlannerTurnCompletion = {
-  status: PlannerTurnCompletionStatus;
-  rawOutput: string;
-  error: string | null;
-};
-
-export type PlannerAgentSessionState = {
-  missionId: string;
-  runId: string | null;
-  stepId: string | null;
-  threadId: string;
-  sessionId: string;
-  laneId: string;
-  provider: "claude" | "codex";
-  model: string;
-  reasoningEffort: string | null;
-  rawOutput: string;
-  rawOutputTruncated: boolean;
-  streamBuffer: string;
-  lastStreamFlushAtMs: number;
-  turn: Deferred<PlannerTurnCompletion> | null;
-  activeTurnId: string | null;
-  createdAt: string;
-  lastEventAt: string;
 };
 
 export type WorkerDeliveryContext = {
@@ -339,7 +309,6 @@ export type ParallelMissionStepDescriptor = {
 
 // ── Constants ───────────────────────────────────────────────────────
 
-export const PLAN_REVIEW_INTERVENTION_TITLE = "Mission plan approval required";
 export const STEERING_DIRECTIVES_METADATA_KEY = "steeringDirectives";
 export const ORCHESTRATOR_CHAT_METADATA_KEY = "orchestratorChat";
 export const ORCHESTRATOR_CHAT_SESSION_METADATA_KEY = "orchestratorChatSession";
@@ -397,13 +366,6 @@ export const WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS = 90_000;
 export const WORKER_MESSAGE_INFLIGHT_LEASE_MS = 45_000;
 export const WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS = 180_000;
 export const ACTIVE_ATTEMPT_STATUSES = new Set(["queued", "running", "blocked"]);
-export const PLANNER_THREAD_ID_PREFIX = "planner";
-export const PLANNER_THREAD_TITLE = "Planner Agent";
-export const PLANNER_THREAD_STEP_KEY = "planner";
-export const PLANNER_STREAM_FLUSH_CHARS = 1_800;
-export const PLANNER_STREAM_FLUSH_INTERVAL_MS = 2_500;
-export const PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS = 480;
-export const MAX_PLANNER_RAW_OUTPUT_CHARS = 4_000_000;
 export const ORCHESTRATOR_HOOK_DEFAULT_TIMEOUT_MS = 10_000;
 export const ORCHESTRATOR_HOOK_MAX_TIMEOUT_MS = 300_000;
 export const ORCHESTRATOR_HOOK_MAX_CAPTURE_CHARS = 8_000;
@@ -447,8 +409,6 @@ export type OrchestratorContext = {
   chatMessages: Map<string, OrchestratorChatMessage[]>;
   activeChatSessions: Map<string, OrchestratorChatSessionState>;
   chatTurnQueues: Map<string, Promise<void>>;
-  plannerSessionByMissionId: Map<string, PlannerAgentSessionState>;
-  plannerSessionBySessionId: Map<string, PlannerAgentSessionState>;
   activeHealthSweepRuns: Set<string>;
   sessionRuntimeSignals: Map<string, SessionRuntimeSignal>;
   attemptRuntimeTrackers: Map<string, AttemptRuntimeTracker>;
@@ -545,6 +505,19 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+export function isDisplayOnlyTaskStep(
+  step: Pick<OrchestratorStep, "metadata"> | null | undefined,
+): boolean {
+  const metadata = asRecord(step?.metadata);
+  return metadata?.displayOnlyTask === true;
+}
+
+export function filterExecutionSteps<T extends { metadata?: unknown }>(steps: T[]): T[] {
+  return steps.filter((step) =>
+    !isDisplayOnlyTaskStep(step as Pick<OrchestratorStep, "metadata">),
+  );
 }
 
 export function asBool(value: unknown, fallback = false): boolean {
@@ -815,10 +788,6 @@ export function missionThreadId(missionId: string): string {
   return `mission:${missionId}`;
 }
 
-export function plannerThreadId(missionId: string): string {
-  return `${PLANNER_THREAD_ID_PREFIX}:${missionId}`;
-}
-
 export function clampLimit(rawLimit: number | null | undefined, fallback: number, max = MAX_THREAD_PAGE_SIZE): number {
   const numeric = Number(rawLimit);
   if (!Number.isFinite(numeric) || numeric < 1) return fallback;
@@ -931,7 +900,6 @@ export function readConfig(projectConfigService: ReturnType<typeof createProject
   const snapshot = projectConfigService?.get();
   const ai = snapshot?.effective?.ai;
   const orchestrator = isRecord(ai) && isRecord(ai.orchestrator) ? (ai.orchestrator as Record<string, unknown>) : {};
-  const requirePlanReview = asBool(orchestrator.requirePlanReview, false);
   const defaultPlannerProviderRaw = asString(orchestrator.defaultPlannerProvider);
   const defaultPlannerProvider: string | null =
     defaultPlannerProviderRaw && defaultPlannerProviderRaw.trim().length > 0 ? defaultPlannerProviderRaw.trim() : null;
@@ -943,7 +911,6 @@ export function readConfig(projectConfigService: ReturnType<typeof createProject
     : null;
   const hooks = readOrchestratorHooksConfig(orchestrator);
   return {
-    requirePlanReview,
     defaultPlannerProvider,
     defaultExecutionPolicy,
     defaultMissionLevelSettings,
@@ -967,8 +934,15 @@ export function mapOrchestratorStepStatus(status: OrchestratorStepStatus): Missi
 }
 
 export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission: MissionDetail): MissionStatus {
-  if (graph.run.status === "active" || graph.run.status === "bootstrapping" || graph.run.status === "queued" || graph.run.status === "completing") return "in_progress";
+  const hasBlockingIntervention = mission.interventions.some((entry) => {
+    if (entry.status !== "open") return false;
+    if (entry.interventionType !== "manual_input") return true;
+    const metadata = isRecord(entry.metadata) ? entry.metadata : null;
+    return metadata?.canProceedWithoutAnswer !== true;
+  });
   if (graph.run.status === "paused") return "intervention_required";
+  if (hasBlockingIntervention) return "intervention_required";
+  if (graph.run.status === "active" || graph.run.status === "bootstrapping" || graph.run.status === "queued" || graph.run.status === "completing") return "in_progress";
   if (graph.run.status === "succeeded") {
     return "completed";
   }
@@ -1163,7 +1137,6 @@ export function deriveRuntimeProfileFromPolicy(
   return {
     planning: {
       useAiPlanner: policy.planning.mode !== "off",
-      requirePlanReview: policy.planning.mode === "manual_review",
       preferProvider: policy.planning.model ?? config.defaultPlannerProvider ?? null
     },
     execution: {
@@ -1246,7 +1219,6 @@ export function deriveRuntimeProfileFromPhases(
   return {
     planning: {
       useAiPlanner: true,
-      requirePlanReview: false,
       preferProvider: config.defaultPlannerProvider ?? null
     },
     execution: {
@@ -1396,4 +1368,3 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
   ];
   return { profiles };
 }
-

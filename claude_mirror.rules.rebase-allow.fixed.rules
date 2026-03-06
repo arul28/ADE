@@ -1,0 +1,93 @@
+# Claude mirror (strict) execpolicy blocklist.
+# NOTE: Execpolicy applies only to commands run outside the Codex sandbox.
+
+prefix_rule(
+    pattern = ["sudo"],
+    decision = "forbidden",
+    justification = "Privileged commands are blocked.",
+)
+
+prefix_rule(
+    pattern = ["rm"],
+    decision = "forbidden",
+    justification = "Destructive deletes are blocked.",
+)
+
+prefix_rule(
+    pattern = ["chmod"],
+    decision = "forbidden",
+    justification = "Permission changes are blocked.",
+)
+
+prefix_rule(
+    pattern = ["curl"],
+    decision = "forbidden",
+    justification = "Network fetch via curl is blocked outside the sandbox.",
+)
+
+prefix_rule(
+    pattern = ["wget"],
+    decision = "forbidden",
+    justification = "Network fetch via wget is blocked outside the sandbox.",
+)
+
+prefix_rule(
+    pattern = ["mkfs"],
+    decision = "forbidden",
+    justification = "Filesystem formatting is blocked.",
+)
+
+prefix_rule(
+    pattern = ["dd"],
+    decision = "forbidden",
+    justification = "Raw disk operations are blocked.",
+)
+
+prefix_rule(
+    pattern = ["shutdown"],
+    decision = "forbidden",
+    justification = "System shutdown is blocked.",
+)
+
+prefix_rule(
+    pattern = ["reboot"],
+    decision = "forbidden",
+    justification = "System reboot is blocked.",
+)
+
+prefix_rule(pattern = ["git", "rebase", "origin/main"], decision = "allow")
+prefix_rule(pattern = ["git", "rebase", "--continue"], decision = "allow")
+prefix_rule(pattern = ["git", "rebase", "--abort"], decision = "allow")
+prefix_rule(pattern = ["git", "rebase", "--skip"], decision = "allow")
+prefix_rule(pattern = ["git", "add", "--"], decision = "allow")
+prefix_rule(pattern = ["git", "rm", "--"], decision = "allow")
+
+# Git write operations (strict: block all matching prefixes)
+prefix_rule(pattern = ["git", "push"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "pull"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "fetch"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "clone"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "commit"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "mv"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "checkout"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "switch"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "restore"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "merge"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "reset"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "revert"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "cherry-pick"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "stash"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "branch"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "tag"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "remote"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "config"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "clean"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "gc"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "prune"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "init"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "worktree"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "submodule"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "bisect"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "am"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "apply"], decision = "forbidden", justification = "Git write operations are blocked.")
+prefix_rule(pattern = ["git", "format-patch"], decision = "forbidden", justification = "Git write operations are blocked.")

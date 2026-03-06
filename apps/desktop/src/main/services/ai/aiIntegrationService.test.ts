@@ -183,6 +183,36 @@ describe("aiIntegrationService", () => {
     expect(String(firstCall.modelId).length).toBeGreaterThan(0);
   });
 
+  it("forwards memory context and compaction identifiers to the unified executor when provided", async () => {
+    const { service } = makeService();
+    const memoryService = {
+      addSharedFact: vi.fn(),
+    } as any;
+
+    await service.executeTask({
+      feature: "orchestrator",
+      taskType: "implementation",
+      prompt: "Implement with memory context",
+      cwd: "/tmp",
+      model: "openai/gpt-4.1",
+      projectId: "project-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+      memoryService,
+    });
+
+    expect(mockState.executeUnified).toHaveBeenCalledTimes(1);
+    const firstCall = mockState.executeUnified.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(firstCall.projectId).toBe("project-1");
+    expect(firstCall.runId).toBe("run-1");
+    expect(firstCall.stepId).toBe("step-1");
+    expect(firstCall.attemptId).toBe("attempt-1");
+    expect(firstCall.memoryService).toBe(memoryService);
+    expect(firstCall.enableCompaction).toBe(true);
+    expect(firstCall.addSharedFact).toBeTypeOf("function");
+  });
+
   it("fails in guest mode", async () => {
     const { service } = makeService({ providerMode: "guest" });
 

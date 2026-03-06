@@ -4,7 +4,7 @@
 
 > Last updated: 2026-03-05
 >
-> **Status: W1-W4 Complete** — CTO core identity, worker agents org chart, heartbeat/activation system, bidirectional Linear sync, and full CtoPage UI shipped. W5 (Night Shift Mode) is next.
+> **Status: W1-W4 Complete, W6 Baseline Shipped** — CTO core identity, worker agents org chart, heartbeat/activation system, bidirectional Linear sync, and full CtoPage UI shipped. Unified memory renderer surfaces are live; native sqlite-vec integration is deferred. W5 (Automations Platform + Night Shift) is next.
 
 ---
 
@@ -37,6 +37,7 @@
   - [Project State Awareness](#project-state-awareness)
   - [Question Answering](#question-answering)
   - [Request Routing](#request-routing)
+  - [Automation Ownership & Execution](#automation-ownership--execution)
 - [Memory Architecture](#memory-architecture)
   - [Three-Tier Memory Integration](#three-tier-memory-integration)
   - [Auto-Compaction](#auto-compaction)
@@ -65,7 +66,7 @@
 
 ## Overview
 
-The **CTO** (Chief Technical Officer) is ADE's always-on, persistent, project-aware AI agent. It occupies its own tab in the ADE desktop app and serves as the single point of contact for all project-level questions, decisions, and actions. The CTO replaces the former Concierge Agent concept with a broader mandate: rather than simply routing requests, the CTO is a persistent agent that accumulates deep knowledge about the entire project and uses that knowledge to make informed decisions, create missions, manage lanes, and answer questions — like having a CTO who knows everything about the codebase and never forgets.
+The **CTO** (Chief Technical Officer) is ADE's always-on, persistent, project-aware AI agent. It occupies its own tab in the ADE desktop app and serves as the single point of contact for all project-level questions, decisions, and actions. The CTO replaces the former Concierge Agent concept with a broader mandate: rather than simply routing requests, the CTO is a persistent agent that accumulates deep knowledge about the entire project and uses that knowledge to make informed decisions, create missions, manage lanes, answer questions, and supervise persistent employees that can be assigned automations from the Automations tab.
 
 The CTO is the answer to a fundamental problem with current AI coding tools: every conversation starts from scratch. Context is expensive to rebuild, and even the best retrieval systems lose nuance. The CTO solves this by maintaining a persistent identity with three-tier memory (core/hot/cold) and auto-compacting context that ensures it never truly forgets. Facts, decisions, architectural patterns, team preferences, and project history accumulate over time and are always available.
 
@@ -341,7 +342,7 @@ promptTemplate: |
   Description: {{ issue.description }}
 ```
 
-CTO selects template based on issue classification. Users create custom templates in Settings.
+CTO selects template based on issue classification. Users create custom templates in Automations, with Settings only supplying shared defaults and connector policy.
 
 ---
 
@@ -410,6 +411,15 @@ When the CTO receives a request it cannot or should not handle inline, it routes
 | Code question | Inline answer from project knowledge | "How does the rate limiter work?" |
 | External agent request | Appropriate subsystem via intent classification | Any request arriving via MCP from an external agent |
 
+### Automation Ownership & Execution
+
+Automations are authored in the Automations tab, but the CTO org is a primary execution target for those rules.
+
+- Automations can run as a disposable automation bot, route through the CTO, target a specific persistent employee, or enter the Night Shift queue.
+- Persistent employees bring long-lived identity, memory, budgets, and active-hours policy to recurring automations.
+- Automation-scoped memory stays attached to the rule, while employee memory remains attached to the person. When a persistent employee executes a rule, both scopes are available.
+- The CTO can supervise org-wide automations, re-route work to a better employee, or review Night Shift results and follow up the next morning.
+
 ---
 
 ## Memory Architecture
@@ -421,19 +431,12 @@ The CTO is the primary consumer of ADE's three-tier memory system. While all age
 | Tier | CTO Usage |
 |---|---|
 | **Tier 1 — Core Memory** (~2-4K tokens, always loaded) | The CTO's essential working context: current project state summary, active missions, recent decisions, and critical constraints. Self-edited by the CTO via `memoryUpdateCore` as the project evolves. |
-| **Tier 2 — Hot Memory** (retrieved on demand via hybrid search) | The bulk of the CTO's accumulated project knowledge: architectural decisions, coding conventions, past mission outcomes, user preferences, episodic memories from past interactions, and procedural knowledge. Retrieved via composite-scored hybrid search (BM25 + vector). |
+| **Tier 2 — Hot Memory** (retrieved on demand) | The bulk of the CTO's accumulated project knowledge: architectural decisions, coding conventions, past mission outcomes, user preferences, and episodic/project facts. Current retrieval is lexical/composite ranking from `unifiedMemoryService.ts`; embedding-backed hybrid retrieval remains future work. |
 | **Tier 3 — Cold Memory** (archival, never in context) | Historical records, old mission summaries, superseded decisions, and low-importance observations. Accessible via deep search but excluded from standard retrieval. |
 
 ### Auto-Compaction
 
-The CTO's conversations can be long-running. When context usage approaches 70% of the model's window, the compaction engine triggers a **pre-compaction flush**:
-
-1. The CTO is prompted to persist important facts, decisions, and observations to memory before compaction.
-2. The CTO uses its own intelligence to decide what matters — not a mechanical extraction rule.
-3. After the flush, context is compacted (summarized and truncated), but the important content has already been written to durable memory.
-4. Post-compaction, the CTO continues with its Tier 1 core memory intact and Tier 2 retrieval available — effectively picking up where it left off with minimal information loss.
-
-This cycle can repeat indefinitely. The CTO never truly "forgets" because the pre-compaction flush ensures important knowledge migrates to durable storage before context eviction.
+The CTO's conversations can be long-running. The current compaction flow still preserves summaries/shared facts, but the full documented silent pre-compaction `memoryAdd` flush is not yet shipped. Treat that flush behavior as planned work rather than current behavior.
 
 ### Temporal Decay & Composite Scoring
 
@@ -524,7 +527,7 @@ The `.ade/cto/` directory follows the same portability principles as the rest of
 
 - **Committable to the repository**: Any machine with the repo clone has the CTO's full state.
 - **Git is the sync layer**: No separate cloud sync needed.
-- **Embeddings are local**: The embeddings cache is in `.gitignore` and regenerated locally. The source JSON data is what gets committed.
+- **Memory DB is local**: durable memory lives in the local ADE database. If embedding-backed retrieval is added later, any embedding cache/regeneration strategy should be treated as an implementation detail rather than today's portability contract.
 - **Merge-friendly**: JSON with sorted keys for clean diffs, YAML for human readability.
 
 ---
@@ -762,7 +765,7 @@ When the CTO determines that a request requires a mission:
 
 1. **Complexity assessment**: The CTO estimates task complexity from project knowledge — file count, architectural impact, dependency chains, similar past missions.
 2. **Mission creation**: The CTO calls `create_mission` with the task description, enriched with relevant project context.
-3. **Plan review**: The mission orchestrator generates a phased plan. The CTO can review and steer if needed.
+3. **Planning phase oversight**: The mission starts in the built-in planning phase (default). The CTO can steer during planning or later execution as needed.
 4. **Execution monitoring**: While the mission executes, the CTO tracks progress and can relay status to the user or external agent.
 5. **Outcome integration**: After the mission completes, the CTO absorbs the outcome into its memory — what worked, what failed, what was learned.
 

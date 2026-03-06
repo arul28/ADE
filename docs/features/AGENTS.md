@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-03
+> Last updated: 2026-03-05
 
 ---
 
@@ -13,7 +13,7 @@ ADE currently does **not** ship a standalone `/agents` hub page.
 Agent behavior is delivered through existing runtime surfaces:
 
 - **Missions** for coordinated multi-step execution,
-- **Automations** for trigger-action background rules,
+- **Automations** for trigger- and event-driven background execution,
 - **Chat/orchestrator runtime** for interactive and mission-linked agent sessions.
 
 This replaces legacy "future hub" documentation with the implementation that exists in the product today.
@@ -32,23 +32,12 @@ Missions run coordinated agent work via orchestrator runtime:
 
 ### Automations (`/automations`)
 
-Automations are config-driven rules loaded from effective project config.
+Automations is the canonical surface for creating and operating non-interactive agent work.
 
-Supported triggers:
-
-- `session-end`
-- `commit`
-- `schedule`
-- `manual`
-
-Supported actions:
-
-- `update-packs`
-- `predict-conflicts`
-- `run-tests`
-- `run-command`
-
-Automation runs and action results are persisted and queryable for history/status.
+- Rules can target disposable automation bots, persistent employees, CTO-routed execution, or the Night Shift queue.
+- W5 trigger families cover local events (`manual`, `schedule`, `commit`, `session-end`) plus external GitHub, Linear, and webhook triggers.
+- Rules define tool palettes, memory behavior, guardrails, and output/verification policy rather than only a fixed action enum.
+- Automation runs and action results are persisted and queryable for simulation, history, and review.
 
 ### Chat-linked agent runtime
 
@@ -64,6 +53,7 @@ Agent-capable AI behavior follows current config contracts:
 - `ai.taskRouting` controls provider/model selection per task type,
 - `ai.features` toggles specific AI-enabled surfaces,
 - `ai.permissions` applies provider-specific execution guardrails.
+- `automations` stores rule/default data, while `/automations` is the primary authoring and operations UI.
 
 Legacy `providers.mode` does not drive agent/runtime mode.
 

@@ -607,7 +607,15 @@ const MessageBubble = React.memo(function MessageBubble({ msg, attemptNameMap }:
         )}
         style={
           isWorker
-            ? { background: "#8B5CF618", borderLeft: "2px solid #8B5CF6", border: "1px solid #8B5CF630", borderLeftWidth: "2px", borderLeftColor: "#8B5CF6", color: "#FAFAFA", borderRadius: 0 }
+            ? {
+                background: "#8B5CF618",
+                borderTop: "1px solid #8B5CF630",
+                borderRight: "1px solid #8B5CF630",
+                borderBottom: "1px solid #8B5CF630",
+                borderLeft: "2px solid #8B5CF6",
+                color: "#FAFAFA",
+                borderRadius: 0
+              }
             : { background: "#13101A", border: "1px solid #1E1B26", color: "#FAFAFA", borderRadius: 0 }
         }
       >

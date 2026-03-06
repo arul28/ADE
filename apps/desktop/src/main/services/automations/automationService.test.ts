@@ -117,16 +117,13 @@ describe("automationService integration", () => {
       getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
     } as any;
 
-    const packService = { refreshLanePack: async () => {}, refreshProjectPack: async () => {} } as any;
-
     const service = createAutomationService({
       db: db as any,
       logger,
       projectId,
       projectRoot,
       laneService,
-      projectConfigService,
-      packService
+      projectConfigService
     });
 
     service.onHeadChanged({ laneId: "lane1", preHeadSha: null, postHeadSha: "abc", reason: "test" });
@@ -173,16 +170,13 @@ describe("automationService integration", () => {
       getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
     } as any;
 
-    const packService = { refreshLanePack: async () => {}, refreshProjectPack: async () => {} } as any;
-
     const service = createAutomationService({
       db: db as any,
       logger,
       projectId,
       projectRoot,
       laneService,
-      projectConfigService,
-      packService
+      projectConfigService
     });
 
     const run = await service.triggerManually({ id: "echo" });
@@ -222,16 +216,13 @@ describe("automationService integration", () => {
       getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
     } as any;
 
-    const packService = { refreshLanePack: async () => {}, refreshProjectPack: async () => {} } as any;
-
     const service = createAutomationService({
       db: db as any,
       logger,
       projectId,
       projectRoot,
       laneService,
-      projectConfigService,
-      packService
+      projectConfigService
     });
 
     await expect(service.triggerManually({ id: "echo" })).rejects.toThrow(/untrusted/i);

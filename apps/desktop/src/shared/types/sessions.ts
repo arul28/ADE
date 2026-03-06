@@ -85,6 +85,7 @@ export type ListSessionsArgs = {
 export type UpdateSessionMetaArgs = {
   sessionId: string;
   pinned?: boolean;
+  title?: string;
   goal?: string | null;
   toolType?: TerminalToolType | null;
   resumeCommand?: string | null;

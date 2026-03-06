@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowsDownUp, GitMerge, GitPullRequest, ListNumbers, Plus, ArrowsClockwise } from "@phosphor-icons/react";
+import { GitPullRequest, Plus, ArrowsClockwise } from "@phosphor-icons/react";
 import type { MergeMethod, PrMergeContext, PrWithConflicts } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
@@ -12,11 +12,11 @@ import { CreatePrModal } from "./CreatePrModal";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
-const TAB_DEFS: Array<{ id: PrTab; num: string; label: string; icon: React.ElementType }> = [
-  { id: "normal", num: "01", label: "NORMAL", icon: GitPullRequest },
-  { id: "queue", num: "02", label: "QUEUE", icon: ListNumbers },
-  { id: "integration", num: "03", label: "INTEGRATION", icon: GitMerge },
-  { id: "rebase", num: "04", label: "REBASE", icon: ArrowsDownUp },
+const TAB_DEFS: Array<{ id: PrTab; num: string; label: string }> = [
+  { id: "normal", num: "01", label: "NORMAL" },
+  { id: "queue", num: "02", label: "QUEUE" },
+  { id: "integration", num: "03", label: "INTEGRATION" },
+  { id: "rebase", num: "04", label: "REBASE" },
 ];
 
 function classifyPr(_pr: PrWithConflicts, ctx: PrMergeContext | null): "normal" | "queue" | "integration" {
@@ -55,16 +55,26 @@ function PRsPageInner() {
   React.useEffect(() => {
     const syncTabFromUrl = () => {
       try {
-        const fromSearch = new URLSearchParams(window.location.search).get("tab");
+        const searchParams = new URLSearchParams(window.location.search);
+        const fromSearch = searchParams.get("tab");
+        const searchLaneId = searchParams.get("laneId");
         const fromHash = (() => {
           const hash = window.location.hash ?? "";
           const queryIndex = hash.indexOf("?");
           if (queryIndex < 0) return null;
-          return new URLSearchParams(hash.slice(queryIndex + 1)).get("tab");
+          const hashParams = new URLSearchParams(hash.slice(queryIndex + 1));
+          return {
+            tab: hashParams.get("tab"),
+            laneId: hashParams.get("laneId"),
+          };
         })();
-        const tab = fromSearch ?? fromHash;
+        const tab = fromSearch ?? fromHash?.tab ?? null;
+        const laneId = searchLaneId ?? fromHash?.laneId ?? null;
         if (tab === "normal" || tab === "queue" || tab === "integration" || tab === "rebase") {
           setActiveTab(tab);
+          if (tab === "rebase" && laneId) {
+            setSelectedRebaseItemId(laneId);
+          }
         }
       } catch {
         /* ignore */
@@ -77,7 +87,7 @@ function PRsPageInner() {
       window.removeEventListener("popstate", syncTabFromUrl);
       window.removeEventListener("hashchange", syncTabFromUrl);
     };
-  }, [setActiveTab]);
+  }, [setActiveTab, setSelectedRebaseItemId]);
 
   // Classify PRs by type
   const { normalPrs, queuePrs, integrationPrs } = React.useMemo(() => {

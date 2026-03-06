@@ -4,6 +4,8 @@
 // monitor progress, steer execution, and complete missions autonomously.
 // ---------------------------------------------------------------------------
 
+import fs from "node:fs";
+import path from "node:path";
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { createCoordinatorToolSet, type CoordinatorSendWorkerMessageFn } from "./coordinatorTools";
 import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "./unifiedOrchestratorAdapter";
@@ -31,6 +33,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { Tool } from "ai";
 import type { createMissionService } from "../missions/missionService";
+import type { ResolveModelOpts } from "../ai/providerResolver";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -119,12 +122,53 @@ const MAX_CONVERSATION_HISTORY = 200;
 const MAX_EVENT_RETRY_COUNT = 2;
 const CHECKPOINT_TURN_INTERVAL = 5;
 const CHECKPOINT_SUMMARY_MAX_CHARS = 8_000;
+const COORDINATOR_TURN_TIMEOUT_MS = 120_000;
 const CHECKPOINT_DAG_MUTATION_TOOLS = new Set([
   "spawn_worker",
   "revise_plan",
   "mark_step_complete",
   "complete_mission",
 ]);
+
+export function shouldUseSdkTools(modelId: string): boolean {
+  const descriptor = resolveModelDescriptor(modelId);
+  if (!descriptor?.isCliWrapped) return true;
+  // Claude Code uses built-in CLI/MCP tools rather than AI SDK tool definitions.
+  if (descriptor.family === "anthropic") return false;
+  // Codex CLI supports provider-executed tool streaming and MCP-backed tool calls.
+  return true;
+}
+
+export function buildCoordinatorCliOptions(args: {
+  modelId: string;
+  projectRoot: string;
+  runId: string;
+  mcpServers?: Record<string, Record<string, unknown>>;
+}): ResolveModelOpts["cli"] | undefined {
+  const descriptor = resolveModelDescriptor(args.modelId);
+  if (!descriptor?.isCliWrapped) {
+    return undefined;
+  }
+
+  const cli: NonNullable<ResolveModelOpts["cli"]> = {};
+  if (args.mcpServers) {
+    cli.mcpServers = args.mcpServers;
+  }
+
+  if (descriptor.family === "anthropic") {
+    const logDir = path.join(args.projectRoot, ".ade", "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    cli.claude = {
+      permissionMode: "bypassPermissions",
+      allowedTools: ["mcp__ade"],
+      settingSources: [],
+      debugFile: path.join(logDir, `coordinator-${args.runId}.claude.log`),
+      sessionId: args.runId,
+    };
+  }
+
+  return Object.keys(cli).length > 0 ? cli : undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Worker Identity Prompt Builder
@@ -340,7 +384,7 @@ export class CoordinatorAgent {
         await this.compactHistory();
       }
     } catch (err) {
-      this.deps.logger.debug("coordinator_agent.batch_failed", {
+      this.deps.logger.warn("coordinator_agent.batch_failed", {
         runId: this.deps.runId,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -425,59 +469,94 @@ export class CoordinatorAgent {
 
   private async runTurn(): Promise<void> {
     const sdkModel = await this.resolveModel();
-    const descriptor = resolveModelDescriptor(this.deps.modelId);
-    const useSdkTools = !(descriptor?.isCliWrapped && (descriptor.family === "anthropic" || descriptor.family === "openai"));
+    const useSdkTools = shouldUseSdkTools(this.deps.modelId);
+    const abortController = new AbortController();
+    const timeoutHandle = setTimeout(() => abortController.abort(), COORDINATOR_TURN_TIMEOUT_MS);
 
-    const result = streamText({
-      model: sdkModel,
-      system: this.systemPrompt,
-      messages: this.conversationHistory,
-      ...(useSdkTools ? { tools: this.tools as any } : {}),
-      stopWhen: stepCountIs(MAX_TOOL_STEPS_PER_TURN),
+    this.deps.logger.info("coordinator_agent.turn_started", {
+      runId: this.deps.runId,
+      modelId: this.deps.modelId,
+      useSdkTools,
+      historyLength: this.conversationHistory.length,
+      timeoutMs: COORDINATOR_TURN_TIMEOUT_MS,
     });
 
-    let assistantText = "";
-    for await (const part of result.fullStream) {
-      if (part.type === "text-delta") {
-        assistantText += part.text;
-      }
-    }
+    try {
+      const result = streamText({
+        model: sdkModel,
+        system: this.systemPrompt,
+        messages: this.conversationHistory,
+        ...(useSdkTools ? { tools: this.tools as any } : {}),
+        stopWhen: stepCountIs(MAX_TOOL_STEPS_PER_TURN),
+        abortSignal: abortController.signal,
+      });
 
-    // Record token usage for compaction monitoring
-    if (this.compactionMonitor) {
+      let assistantText = "";
+      let sawStreamPart = false;
+      for await (const part of result.fullStream) {
+        sawStreamPart = true;
+        if (part.type === "text-delta") {
+          assistantText += part.text;
+        }
+      }
+
+      // Record token usage for compaction monitoring
+      if (this.compactionMonitor) {
+        try {
+          const usage = await result.usage;
+          if (usage) {
+            this.compactionMonitor.recordTokens(
+              usage.inputTokens ?? 0,
+              usage.outputTokens ?? 0,
+            );
+          }
+        } catch {
+          // Usage retrieval can fail; non-critical
+        }
+      }
+
+      // Persist the full response messages (tool calls + results + text) so the
+      // coordinator retains memory of what actions it took across turns.
       try {
-        const usage = await result.usage;
-        if (usage) {
-          this.compactionMonitor.recordTokens(
-            usage.inputTokens ?? 0,
-            usage.outputTokens ?? 0,
-          );
+        const responseMessages = await result.response;
+        if (responseMessages.messages && responseMessages.messages.length > 0) {
+          this.conversationHistory.push(...(responseMessages.messages as ModelMessage[]));
+        } else if (assistantText.trim()) {
+          // Fallback: at minimum record the text response
+          this.conversationHistory.push({ role: "assistant", content: assistantText });
         }
       } catch {
-        // Usage retrieval can fail; non-critical
+        // If response retrieval fails, fall back to text-only
+        if (assistantText.trim()) {
+          this.conversationHistory.push({ role: "assistant", content: assistantText });
+        }
       }
-    }
 
-    // Persist the full response messages (tool calls + results + text) so the
-    // coordinator retains memory of what actions it took across turns.
-    try {
-      const responseMessages = await result.response;
-      if (responseMessages.messages && responseMessages.messages.length > 0) {
-        this.conversationHistory.push(...(responseMessages.messages as ModelMessage[]));
-      } else if (assistantText.trim()) {
-        // Fallback: at minimum record the text response
-        this.conversationHistory.push({ role: "assistant", content: assistantText });
+      // Notify the facade about coordinator messages (for chat display)
+      if (assistantText.trim() && this.deps.onCoordinatorMessage) {
+        this.deps.onCoordinatorMessage(assistantText.trim());
       }
-    } catch {
-      // If response retrieval fails, fall back to text-only
-      if (assistantText.trim()) {
-        this.conversationHistory.push({ role: "assistant", content: assistantText });
-      }
-    }
 
-    // Notify the facade about coordinator messages (for chat display)
-    if (assistantText.trim() && this.deps.onCoordinatorMessage) {
-      this.deps.onCoordinatorMessage(assistantText.trim());
+      this.deps.logger.info("coordinator_agent.turn_completed", {
+        runId: this.deps.runId,
+        modelId: this.deps.modelId,
+        useSdkTools,
+        sawStreamPart,
+        assistantTextLength: assistantText.trim().length,
+      });
+    } catch (error) {
+      const aborted = abortController.signal.aborted;
+      this.deps.logger.warn("coordinator_agent.turn_failed", {
+        runId: this.deps.runId,
+        modelId: this.deps.modelId,
+        useSdkTools,
+        timeoutMs: COORDINATOR_TURN_TIMEOUT_MS,
+        aborted,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
     }
   }
 
@@ -641,7 +720,11 @@ When you enter the Planning phase (your first phase), follow this protocol:
    - Set parallelism based on the planner\u2019s analysis of independent workstreams
    - Each task should be scoped for ONE worker in ONE session
    - The DAG is visible to the user in real-time \u2014 structure it clearly
-6. After building the DAG, mark the planning step complete and transition to Development
+   - create_task is for DISPLAY-ONLY planning structure. These task nodes help the user understand the breakdown; they are not the runnable worker graph.
+   - When you later spawn_worker, dependsOn should reference EXECUTABLE prerequisite workers, not just the display-only planning tasks
+6. After planning output is captured, call set_current_phase with phaseKey "development" before starting implementation workers.
+7. Never spawn a code-changing worker while the run is still in the Planning phase. Planning workers must stay read-only; transition phases first.
+8. Then begin development execution (spawn workers, delegate tasks, and continue phase-by-phase).
 
 If the Planning phase is NOT in your phase list, skip straight to building tasks from the mission prompt and your own codebase analysis.`;
     }
@@ -753,6 +836,7 @@ Match your approach to the mission's actual complexity:
 - Changes are sequential (each depends on the previous)
 - Total context fits comfortably in a single agent session
 - No file-level conflicts possible between parallel edits
+- Planner signals low complexity, low uncertainty, and little meaningful parallelism
 
 **MULTIPLE workers when:**
 - Genuinely independent workstreams exist (e.g., frontend + backend + tests)
@@ -772,7 +856,7 @@ Match your approach to the mission's actual complexity:
 - Each lane is a fresh git worktree branching from the base — cheap to create
 - Lanes merge back via the configured PR strategy
 
-Do NOT overcomplicate simple tasks. A one-file bug fix does not need 3 workers, 5 milestones, and a validation gate. Read the code, understand the scope, and scale your approach accordingly. The overhead of coordination should never exceed the cost of the work itself.
+Do NOT overcomplicate simple tasks. A one-file bug fix does not need 3 workers, 5 milestones, and a validation gate. If planning is enabled and the task is tiny, default to one planning worker, one implementation worker on the mission lane, and one validator only if validation is enabled or the change is genuinely risky. Read the code, understand the scope, and scale your approach accordingly. The overhead of coordination should never exceed the cost of the work itself.
 
 ## Lane Management Rules
 
@@ -861,6 +945,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 ### 7. Finalize When Done
 - Call list_tasks and read_mission_status to verify everything is complete
 - Optionally spawn a final validator for an integration check
+- If all tracked steps are terminal and no workers are still running, do not stop there: either transition to the next phase and continue, or call complete_mission.
 - Call complete_mission with a clear summary of what was accomplished
 - If the mission is truly impossible, call fail_mission with a detailed explanation
 
@@ -971,7 +1056,12 @@ Your initial plan is a hypothesis. Adjust it as you learn:
     })();
     const model = await resolveModel(this.deps.modelId, auth, {
       cwd: this.deps.projectRoot,
-      cli: mcpServers ? { mcpServers } : undefined
+      cli: buildCoordinatorCliOptions({
+        modelId: this.deps.modelId,
+        projectRoot: this.deps.projectRoot,
+        runId: this.deps.runId,
+        mcpServers,
+      }),
     });
     this.cachedSdkModel = model;
     this.cachedModelAt = now;

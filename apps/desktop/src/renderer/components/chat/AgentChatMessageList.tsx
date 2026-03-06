@@ -116,25 +116,10 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
   const { event } = envelope;
   const prev = out[out.length - 1];
 
-  if (prev?.event.type === "text" && event.type === "text") {
-    const prevTurn = prev.event.turnId ?? null;
-    const nextTurn = event.turnId ?? null;
-    const prevItem = prev.event.itemId ?? null;
-    const nextItem = event.itemId ?? null;
-    if (prevTurn === nextTurn && prevItem === nextItem) {
-      out[out.length - 1] = {
-        ...prev,
-        timestamp: envelope.timestamp,
-        event: {
-          ...prev.event,
-          text: `${prev.event.text}${event.text}`
-        }
-      };
-      return;
-    }
-  }
-
-  if (prev?.event.type === "reasoning" && event.type === "reasoning") {
+  if (
+    (prev?.event.type === "text" && event.type === "text")
+    || (prev?.event.type === "reasoning" && event.type === "reasoning")
+  ) {
     const prevTurn = prev.event.turnId ?? null;
     const nextTurn = event.turnId ?? null;
     const prevItem = prev.event.itemId ?? null;
@@ -256,7 +241,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown
         remarkPlugins={[remarkGfm]}
         components={{
           pre: ({ children }) => (
-            <pre className="my-2.5 overflow-auto border border-border/25 bg-[#0C0A10] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/75">
+            <pre className="my-2.5 overflow-auto border border-border/25 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/75">
               {children}
             </pre>
           ),
@@ -266,7 +251,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown
             return isBlock ? (
               <code className="font-mono text-[11px] text-fg/75">{children}</code>
             ) : (
-              <code className="border border-border/20 bg-[#0C0A10] px-1.5 py-0.5 font-mono text-[11px] text-accent/80">{children}</code>
+              <code className="border border-border/20 bg-surface-recessed/90 px-1.5 py-0.5 font-mono text-[11px] text-accent/80">{children}</code>
             );
           },
           a: ({ children, href }) => (
@@ -321,7 +306,7 @@ function CollapsibleCard({
 function DiffPreview({ diff }: { diff: string }) {
   const lines = diff.split(/\r?\n/);
   return (
-    <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words border border-border/15 bg-[#0C0A10] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/70">
+    <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words border border-border/15 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/70">
       {lines.map((line, index) => {
         let tone = "text-fg/70";
         let bg = "";
@@ -401,7 +386,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
       className="border-border/10 bg-gradient-to-r from-surface/30 to-transparent"
     >
       <pre
-        className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-[#0C0A10] px-4 py-3 font-mono text-[11px] text-fg/65"
+        className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] text-fg/65"
       >
         {displayStr}
       </pre>
@@ -516,11 +501,11 @@ function renderEvent(
 
     const commandBody = (
       <>
-        <div className="border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] text-fg/80">
+        <div className="border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[11px] text-fg/80">
           <span className="select-none text-amber-500/40">$ </span>{event.command}
         </div>
         {outputTrimmed.length ? (
-          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px] leading-[1.5] text-fg/60">
+          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[11px] leading-[1.5] text-fg/60">
             {event.output}
           </pre>
         ) : null}
@@ -557,7 +542,7 @@ function renderEvent(
           EDIT
         </span>
         <span className="flex-1 truncate text-[10px] text-emerald-400/60">{event.path}</span>
-        <span className="border border-border/15 bg-[#0C0A10] px-1.5 py-0.5 text-[9px] text-muted-fg/50">{event.kind}</span>
+        <span className="border border-border/15 bg-surface-recessed/90 px-1.5 py-0.5 text-[9px] text-muted-fg/50">{event.kind}</span>
       </div>
     );
 
@@ -659,7 +644,7 @@ function renderEvent(
     // Build expandable args display
     const kvPairs = Object.entries(safeArgs);
     const argsDisplay = kvPairs.length > 0 ? (
-      <div className="space-y-1 border border-border/10 bg-[#0C0A10] px-4 py-2.5 font-mono text-[11px]">
+      <div className="space-y-1 border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[11px]">
         {kvPairs.map(([k, v]) => {
           const val = typeof v === "string" ? v : JSON.stringify(v);
           const truncated = val.length > 300 ? `${val.slice(0, 300)}…` : val;
@@ -677,7 +662,7 @@ function renderEvent(
         })}
       </div>
     ) : (
-      <div className="border border-border/10 bg-[#0C0A10] px-4 py-2 font-mono text-[10px] text-muted-fg/40">
+      <div className="border border-border/10 bg-surface-recessed/90 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
         No arguments
       </div>
     );
@@ -1115,6 +1100,21 @@ export function AgentChatMessageList({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, rows.length, rowHeight]);
 
+  const streamingIndicator = showStreamingIndicator ? (
+    latestActivity ? (
+      <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
+    ) : (
+      <div className="flex items-center gap-3 border-l-2 border-l-accent/30 bg-gradient-to-r from-accent/[0.04] to-transparent px-4 py-2.5 font-mono text-[11px] text-fg/60">
+        <div className="flex items-center gap-1">
+          <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:0ms]" />
+          <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:150ms]" />
+          <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:300ms]" />
+        </div>
+        <span className="font-medium">Streaming...</span>
+      </div>
+    )
+  ) : null;
+
   return (
     <div
       ref={scrollRef}
@@ -1141,41 +1141,13 @@ export function AgentChatMessageList({
           </div>
           {/* Bottom spacer fills remaining scroll area */}
           <div style={{ height: bottomSpacerHeight }} aria-hidden />
-
-          {showStreamingIndicator ? (
-            latestActivity ? (
-              <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
-            ) : (
-              <div className="flex items-center gap-3 border-l-2 border-l-accent/30 bg-gradient-to-r from-accent/[0.04] to-transparent px-4 py-2.5 font-mono text-[11px] text-fg/60">
-                <div className="flex items-center gap-1">
-                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:0ms]" />
-                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:150ms]" />
-                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:300ms]" />
-                </div>
-                <span className="font-medium">Streaming...</span>
-              </div>
-            )
-          ) : null}
+          {streamingIndicator}
         </div>
       ) : (
         /* ── Non-virtualized path: render all rows (small conversation) ── */
         <div className="space-y-3">
           {rows.map((envelope, index) => renderRow(envelope, index, false))}
-
-          {showStreamingIndicator ? (
-            latestActivity ? (
-              <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
-            ) : (
-              <div className="flex items-center gap-3 border-l-2 border-l-accent/30 bg-gradient-to-r from-accent/[0.04] to-transparent px-4 py-2.5 font-mono text-[11px] text-fg/60">
-                <div className="flex items-center gap-1">
-                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:0ms]" />
-                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:150ms]" />
-                  <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:300ms]" />
-                </div>
-                <span className="font-medium">Streaming...</span>
-              </div>
-            )
-          ) : null}
+          {streamingIndicator}
         </div>
       )}
     </div>

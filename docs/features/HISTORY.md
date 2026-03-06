@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-03-05
 
 ---
 
@@ -32,8 +32,9 @@
 The History feature provides an ADE-native operations timeline that records
 everything meaningful that happens in a project. Unlike `git log` which only shows
 commits, the History tab captures a broader view: git operations with before/after
-SHA transitions, pack refresh events, terminal session lifecycle, and metadata about
-each action.
+SHA transitions, terminal session lifecycle, and metadata about each action. Pack-
+backed checkpoints/events still exist as backend compatibility artifacts, but they
+are not exposed through a current public `ade.packs.*` IPC surface.
 
 This timeline serves multiple purposes:
 
@@ -93,11 +94,11 @@ Terminal session lifecycle tracking. Each session records:
 - Command count and last command
 
 Sessions appear in the timeline alongside other operations, providing context about
-what terminal work was happening around each git or pack operation.
+what terminal work was happening around each git or context-maintenance operation.
 
 ### Checkpoint
 
-An immutable snapshot created at session boundaries (implemented in Phase 8 via packService). A checkpoint captures:
+An immutable snapshot created at session boundaries (implemented in Phase 8 via packService compatibility internals). A checkpoint captures:
 
 - The exact SHA at the moment of creation
 - Diff stat since the previous checkpoint
@@ -109,9 +110,9 @@ like at that point.
 
 ### Pack Event
 
-Append-only log entries recording changes to pack state (implemented in Phase 8 via packService). Each event records what
+Append-only log entries recording changes to pack/export state (implemented in Phase 8 via packService compatibility internals). Each event records what
 happened (checkpoint created, narrative updated, conflict detected, etc.) with a
-typed payload. This provides a granular audit trail of how packs evolved. Events are surfaced as a human-readable activity feed in the PackViewer UI.
+typed payload. This provides a granular audit trail of how deterministic context exports evolve. Events are surfaced in context/inventory workflows rather than a dedicated PackViewer component.
 
 ### Feature History (Future)
 
@@ -279,7 +280,7 @@ The right pane shows comprehensive details for the selected operation.
 |---------|--------|----------------|
 | `operationService` | **Exists, implemented** | CRUD for operation records; query with filters (lane, kind, status, pagination); SHA transition tracking |
 | `sessionService` | Exists | Session lifecycle tracking; provides session data for history correlation |
-| `packService` | Exists | Pack refresh operations are recorded via operationService |
+| `packService` | Exists | Remaining compatibility pack refresh operations are recorded via operationService |
 
 The `operationService` is called by other services whenever a significant action
 occurs. For example, `gitService` calls `operationService.record()` before and
@@ -293,13 +294,9 @@ after each git operation to capture the pre/post state.
 |---------|-----------|-------------|
 | `ade.history.listOperations` | `(args: { laneId?: string; kind?: string; status?: string; limit: number; offset: number }) => OperationRecord[]` | Query operations with optional filters and pagination |
 
-**Pack/checkpoint channels** (implemented via packService, Phase 8):
+**Pack/checkpoint status**:
 
-| Channel | Signature | Description |
-|---------|-----------|-------------|
-| `ade.packs.listCheckpoints` | `(args: { laneId?: string; limit?: number }) => Checkpoint[]` | List checkpoints (via packService) |
-| `ade.packs.listEvents` | `(args: { limit?: number }) => PackEvent[]` | List pack events |
-| `ade.packs.listEventsSince` | `(args: { since: string; limit?: number }) => PackEvent[]` | List pack events since a timestamp |
+There is no current public `ade.packs.*` IPC surface in the branch. Checkpoints, pack events, and pack versions remain backend data owned by compatibility paths, but History UI browsing for those records is still not shipped.
 
 **Planned (future)**:
 
@@ -471,14 +468,14 @@ interface HistoryEntry {
 
 ### Checkpoints & Snapshots
 
-Backend implementation (packService) is DONE (Phase 8). History tab UI for browsing these remains TODO for Phase 9.
+Backend data structures remain in place, but public browsing/IPC for them is still not shipped in the current branch.
 
 | ID | Task | Status |
 |----|------|--------|
-| HIST-011 | Checkpoint creation on session end | DONE — Phase 8 (backend: `packService` creates checkpoints on session end, stored in `checkpoints` table) |
-| HIST-012 | Checkpoint storage and indexing (SQLite + filesystem) | DONE — Phase 8 (backend: SQLite `checkpoints` table + filesystem at `.ade/history/checkpoints/`) |
-| HIST-013 | Pack event logging (append-only event log) | DONE — Phase 8 (backend: SQLite `pack_events` table, append-only, surfaced as activity feed in PackViewer) |
-| HIST-014 | Pack version tracking (version numbers, content hashes) | DONE — Phase 8 (backend: SQLite `pack_versions` + `pack_heads` tables, immutable snapshots with diff viewer) |
+| HIST-011 | Checkpoint creation on session end | Backend artifact exists — not exposed in current History UI |
+| HIST-012 | Checkpoint storage and indexing (SQLite + filesystem) | Backend artifact exists — not exposed in current History UI |
+| HIST-013 | Pack event logging (append-only event log) | Backend artifact exists — not exposed in current public IPC/UI |
+| HIST-014 | Pack version tracking (version numbers, content hashes) | Backend artifact exists — still used by compatibility exports, not by History UI |
 
 ### Advanced Timeline Features
 
@@ -511,4 +508,4 @@ Backend implementation (packService) is DONE (Phase 8). History tab UI for brows
 
 ---
 
-*This document describes the History feature for ADE. The core timeline is implemented (Phases 2+). Checkpoints, pack event logging, and pack version tracking are implemented in the backend (Phase 8, via packService). The History UI received PaneTilingLayout, human-readable descriptions, status-colored borders, URL parameter support, and auto-refresh in Phase 8. Advanced timeline features (graph view, undo, replay, export, History UI for browsing checkpoints/events) are planned for Phase 9.*
+*This document describes the History feature for ADE. The core operations timeline is implemented. Checkpoints, pack event logging, and pack version tracking still exist as backend compatibility data, but they are not currently exposed through a public `ade.packs.*` bridge or dedicated History UI browser. The History UI received PaneTilingLayout, human-readable descriptions, status-colored borders, URL parameter support, and auto-refresh in Phase 8. Advanced timeline features (graph view, undo, replay, export, checkpoint/event browsing) remain future work.*

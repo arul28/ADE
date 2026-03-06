@@ -27,7 +27,6 @@ import {
   humanToolLabel,
   isRecord,
   parseRecord,
-  readFileIfExists,
   statusFromCode,
   type ConflictPredictionPackFile
 } from "./packUtils";
@@ -43,7 +42,7 @@ export type MissionPackBuilderDeps = {
   laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   /** Helpers from the main service that the builder calls back into */
-  getLanePackPath: (laneId: string) => string;
+  getLanePackBody: (laneId: string) => Promise<string>;
   readConflictPredictionPack: (laneId: string) => ConflictPredictionPackFile | null;
   getHeadSha: (worktreePath: string) => Promise<string | null>;
   getPackIndexRow: (packKey: string) => {
@@ -454,11 +453,11 @@ export async function buildMissionPackBody(
   lines.push("");
 
   if (mission.lane_id) {
-    const lanePack = readFileIfExists(deps.getLanePackPath(mission.lane_id));
+    const lanePack = await deps.getLanePackBody(mission.lane_id);
     if (lanePack.trim().length) {
-      lines.push("## Lane Pack Reference");
-      lines.push(`- Lane pack key: lane:${mission.lane_id}`);
-      lines.push(`- Lane pack path: ${deps.getLanePackPath(mission.lane_id)}`);
+      lines.push("## Lane Context Reference");
+      lines.push(`- Lane context key: lane:${mission.lane_id}`);
+      lines.push("- Lane context source: live lane export compatibility view");
       lines.push("");
     }
   }
@@ -642,7 +641,7 @@ export async function buildPlanPackBody(
     }
   } else {
     // No mission linked: structured template
-    const lanePackBody = readFileIfExists(deps.getLanePackPath(args.laneId));
+    const lanePackBody = await deps.getLanePackBody(args.laneId);
     const intent = extractSection(lanePackBody, ADE_INTENT_START, ADE_INTENT_END, "");
     const taskSpec = extractSection(lanePackBody, ADE_TASK_SPEC_START, ADE_TASK_SPEC_END, "");
 
@@ -742,6 +741,14 @@ export async function buildFeaturePackBody(
   const { db, projectId, projectRoot } = deps;
   const lanes = await deps.laneService.list({ includeArchived: false });
   const matching = lanes.filter((lane) => lane.tags.includes(args.featureKey));
+  const lanePackBodyCache = new Map<string, string>();
+  const getLanePackBody = async (laneId: string): Promise<string> => {
+    const cached = lanePackBodyCache.get(laneId);
+    if (cached != null) return cached;
+    const body = await deps.getLanePackBody(laneId);
+    lanePackBodyCache.set(laneId, body);
+    return body;
+  };
   const lines: string[] = [];
 
   // JSON header
@@ -821,13 +828,13 @@ export async function buildFeaturePackBody(
           const prev = featureDeltas.get(filePath);
           if (!prev) {
             featureDeltas.set(filePath, {
-              insertions: Number.isFinite(ins as number) ? ins : null,
-              deletions: Number.isFinite(del as number) ? del : null
+              insertions: Number.isFinite(ins) ? ins : null,
+              deletions: Number.isFinite(del) ? del : null
             });
           } else {
             featureDeltas.set(filePath, {
-              insertions: prev.insertions == null || ins == null ? null : prev.insertions + (ins as number),
-              deletions: prev.deletions == null || del == null ? null : prev.deletions + (del as number)
+              insertions: prev.insertions == null || ins == null ? null : prev.insertions + ins,
+              deletions: prev.deletions == null || del == null ? null : prev.deletions + del
             });
           }
         }
@@ -981,7 +988,7 @@ export async function buildFeaturePackBody(
   lines.push("## Combined Errors");
   const allErrors: string[] = [];
   for (const lane of matching) {
-    const lanePackBody = readFileIfExists(deps.getLanePackPath(lane.id));
+    const lanePackBody = await getLanePackBody(lane.id);
     const errSection = extractSectionByHeading(lanePackBody, "## Errors & Issues");
     if (errSection && errSection.trim() !== "No errors detected.") {
       for (const errLine of errSection.split("\n").map((l) => l.trim()).filter(Boolean)) {
@@ -1001,7 +1008,7 @@ export async function buildFeaturePackBody(
 
   // Per-Lane Details
   for (const lane of matching.sort((a, b) => a.stackDepth - b.stackDepth || a.name.localeCompare(b.name))) {
-    const lanePackBody = readFileIfExists(deps.getLanePackPath(lane.id));
+    const lanePackBody = await getLanePackBody(lane.id);
     const intent = extractSection(lanePackBody, ADE_INTENT_START, ADE_INTENT_END, "");
 
     const laneTest = db.get<{ status: string; suite_name: string | null; suite_key: string }>(
@@ -1015,14 +1022,8 @@ export async function buildFeaturePackBody(
       [projectId, lane.id]
     );
 
-    const laneFileCount = (() => {
-      try {
-        const lanePackContent = readFileIfExists(deps.getLanePackPath(lane.id));
-        const keyFilesMatch = /## Key Files \((\d+) files touched\)/.exec(lanePackContent);
-        if (keyFilesMatch) return Number(keyFilesMatch[1]);
-      } catch { /* fall through */ }
-      return 0;
-    })();
+    const keyFilesMatch = /## Key Files \((\d+) files touched\)/.exec(lanePackBody);
+    const laneFileCount = keyFilesMatch ? Number(keyFilesMatch[1]) : 0;
 
     lines.push(`### Lane: ${lane.name}`);
     lines.push(`- Branch: \`${lane.branchRef}\` | Status: ${lane.status.dirty ? "dirty" : "clean"} | Ahead: ${lane.status.ahead} | Behind: ${lane.status.behind}`);

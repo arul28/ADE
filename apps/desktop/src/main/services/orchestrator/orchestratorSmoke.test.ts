@@ -259,9 +259,7 @@ async function createSmokeFixture() {
     get: () => ({
       effective: {
         ai: {
-          orchestrator: {
-            requirePlanReview: false
-          }
+          orchestrator: {}
         }
       }
     })
@@ -529,9 +527,7 @@ describe("orchestrator smoke", () => {
       get: () => ({
         effective: {
           ai: {
-            orchestrator: {
-              requirePlanReview: false
-            }
+            orchestrator: {}
           }
         }
       })

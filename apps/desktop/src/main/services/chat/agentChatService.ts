@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { streamText, stepCountIs, type LanguageModel } from "ai";
+import { generateText, streamText, stepCountIs, type LanguageModel } from "ai";
 import { createClaudeCode } from "ai-sdk-provider-claude-code";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createPackService } from "../packs/packService";
 import { runGit } from "../git/git";
 import type {
   AgentChatApprovalDecision,
@@ -25,6 +26,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatSteerArgs,
   AgentChatSendArgs,
+  AgentChatUpdateSessionArgs,
   TerminalSessionStatus,
   TerminalToolType,
   CtoCapabilityMode
@@ -33,10 +35,11 @@ import {
   getModelById,
   getAvailableModels as getRegistryModels,
   MODEL_REGISTRY,
+  resolveModelAlias,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { detectAllAuth } from "../ai/authDetector";
-import { resolveModel, buildProviderOptions, isModelCliWrapped } from "../ai/providerResolver";
+import { resolveModel, buildProviderOptions, isModelCliWrapped, normalizeCliMcpServers } from "../ai/providerResolver";
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import type { createMemoryService } from "../memory/memoryService";
@@ -159,6 +162,9 @@ type ManagedChatSession = {
   endedNotified: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
+  autoTitleSeed: string | null;
+  autoTitleStage: "none" | "initial" | "final";
+  autoTitleInFlight: boolean;
 };
 
 type ResolvedChatConfig = {
@@ -167,14 +173,27 @@ type ResolvedChatConfig = {
   claudePermissionMode: "plan" | "acceptEdits" | "bypassPermissions";
   unifiedPermissionMode: PermissionMode;
   sessionBudgetUsd: number | null;
+  autoTitleEnabled: boolean;
+  autoTitleModelId: string | null;
+  autoTitleRefreshOnComplete: boolean;
 };
 
 const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
 const DEFAULT_CLAUDE_MODEL = "sonnet";
 const DEFAULT_UNIFIED_MODEL_ID = "anthropic/claude-sonnet-4-6-api";
 const DEFAULT_REASONING_EFFORT = "medium";
+const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5-api";
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
+const AUTO_TITLE_MAX_CHARS = 48;
+const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
+Return only the title text.
+- Use 2 to 6 words.
+- Focus on the task, feature, bug, or deliverable.
+- Never start with Completed, Complete, Done, Finished, Resolved, or Success.
+- No quotes.
+- No emoji.
+- No trailing punctuation.`;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "minimal", description: "Minimum reasoning, fastest responses." },
   { effort: "low", description: "Fastest turn-around with shallow reasoning." },
@@ -356,6 +375,63 @@ function normalizePreview(text: string, maxChars = 220): string | null {
   return preview.length > maxChars ? preview.slice(0, maxChars) : preview;
 }
 
+function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string | null {
+  const normalized = raw
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N})\]]+$/gu, "")
+    .trim();
+  if (!normalized.length) return null;
+  const lowercase = normalized.toLowerCase();
+  const collapsed = lowercase.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  if (
+    collapsed === "completed"
+    || collapsed === "complete"
+    || collapsed === "done"
+    || collapsed === "finished"
+    || collapsed === "resolved"
+    || collapsed === "success"
+    || collapsed === "session closed"
+    || collapsed === "chat completed"
+  ) {
+    return null;
+  }
+
+  if (/^(completed?|done|finished|resolved|success)\b/u.test(collapsed)) {
+    const remainder = collapsed.replace(/^(completed?|done|finished|resolved|success)\b/u, "").trim();
+    const remainderTokens = remainder.length ? remainder.split(/\s+/).filter(Boolean) : [];
+    const genericRemainder = remainderTokens.every((token) =>
+      /^(ok|okay|yes|no|true|false|ready|response|reply|result|output|pass|passed)$/u.test(token)
+    );
+    if (!remainderTokens.length || remainderTokens.length <= 2 || genericRemainder) {
+      return null;
+    }
+  }
+
+  if (/^(session closed|chat completed)\b/u.test(collapsed)) {
+    return null;
+  }
+  return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
+}
+
+function defaultChatSessionTitle(provider: AgentChatProvider): string {
+  if (provider === "codex") return "Codex Chat";
+  if (provider === "claude") return "Claude Chat";
+  return "AI Chat";
+}
+
+function hasCustomChatSessionTitle(title: string | null | undefined, provider: AgentChatProvider): boolean {
+  const normalized = String(title ?? "").trim();
+  return normalized.length > 0 && normalized !== defaultChatSessionTitle(provider);
+}
+
+function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string): string {
+  if (provider === "codex") return "chat:codex";
+  if (provider === "unified") return `chat:unified:${sessionId}`;
+  return `chat:claude:${sessionId}`;
+}
+
 function parseJsonLine(raw: string): JsonRpcEnvelope | null {
   const line = raw.trim();
   if (!line) return null;
@@ -374,6 +450,14 @@ function resolveModelIdFromStoredValue(
 ): string | undefined {
   const normalized = model.trim().toLowerCase();
   if (!normalized.length) return undefined;
+
+  const aliasMatch = resolveModelAlias(normalized);
+  if (aliasMatch) {
+    if (providerHint === "codex" && !(aliasMatch.family === "openai" && aliasMatch.isCliWrapped)) return undefined;
+    if (providerHint === "claude" && !(aliasMatch.family === "anthropic" && aliasMatch.isCliWrapped)) return undefined;
+    if (providerHint === "unified" && aliasMatch.isCliWrapped) return undefined;
+    return aliasMatch.id;
+  }
 
   const matches = MODEL_REGISTRY.filter(
     (entry) =>
@@ -413,19 +497,8 @@ import {
   mapPermissionToCodex
 } from "../orchestrator/permissionMapping";
 
-function mapSessionPermissionToClaude(mode: AgentChatSession["permissionMode"]): "default" | "plan" | "acceptEdits" | "bypassPermissions" {
-  return mapPermissionToClaude(mode);
-}
-
-function mapSessionPermissionToCodex(mode: AgentChatSession["permissionMode"]): {
-  approvalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
-  sandbox: "read-only" | "workspace-write" | "danger-full-access";
-} | null {
-  return mapPermissionToCodex(mode);
-}
-
 /** Spread-ready codex policy args (approvalPolicy + sandbox) or empty object if null. */
-function codexPolicyArgs(policy: ReturnType<typeof mapSessionPermissionToCodex>): Record<string, string> {
+function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, string> {
   return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
 }
 
@@ -487,6 +560,7 @@ export function createAgentChatService(args: {
   transcriptsDir: string;
   projectId?: string;
   memoryService?: ReturnType<typeof createMemoryService> | null;
+  packService?: ReturnType<typeof createPackService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -502,6 +576,7 @@ export function createAgentChatService(args: {
     transcriptsDir,
     projectId,
     memoryService,
+    packService,
     ctoStateService,
     laneService,
     sessionService,
@@ -521,19 +596,22 @@ export function createAgentChatService(args: {
   const claudeProvider = createClaudeCode();
   const managedSessions = new Map<string, ManagedChatSession>();
 
-  const buildAdeMcpServers = (defaultRole: "agent" | "cto"): Record<string, Record<string, unknown>> => {
+  const buildAdeMcpServers = (
+    provider: "claude" | "codex",
+    defaultRole: "agent" | "cto",
+  ): Record<string, Record<string, unknown>> => {
     const launch = resolveAdeMcpServerLaunch({
       workspaceRoot: projectRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole
     });
-    return {
+    return normalizeCliMcpServers(provider, {
       ade: {
         command: launch.command,
         args: launch.cmdArgs,
         env: launch.env
       }
-    };
+    }) ?? {};
   };
 
   const refreshReconstructionContext = (managed: ManagedChatSession): void => {
@@ -573,6 +651,103 @@ export function createAgentChatService(args: {
       }
     }
     return detectAllAuth(configApiKeys);
+  };
+
+  const setManagedSessionTitle = (managed: ManagedChatSession, rawTitle: string): string | null => {
+    const title = sanitizeAutoTitle(rawTitle);
+    if (!title) return null;
+
+    const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
+    if (currentTitle?.trim() === title) return title;
+
+    sessionService.updateMeta({ sessionId: managed.session.id, title });
+    return title;
+  };
+
+  const maybeAutoTitleSession = async (
+    managed: ManagedChatSession,
+    args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
+  ): Promise<void> => {
+    const config = resolveChatConfig();
+    if (!config.autoTitleEnabled) return;
+    if (managed.autoTitleInFlight) return;
+    if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
+    if (args.stage === "final") {
+      if (!config.autoTitleRefreshOnComplete) return;
+      if (managed.autoTitleStage === "final") return;
+    }
+
+    const seed = sanitizeAutoTitle(args.latestUserText ?? managed.autoTitleSeed ?? "", 180);
+    if (!seed) return;
+
+    const auth = await detectAuth();
+    const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+    if (!availableModels.length) return;
+
+    const preferredModelId =
+      [
+        config.autoTitleModelId,
+        DEFAULT_AUTO_TITLE_MODEL_ID,
+        "anthropic/claude-haiku-4-5",
+        "openai/codex-mini-latest",
+        "openai/gpt-4.1-mini",
+        "openai/gpt-5.4",
+        availableModels[0]?.id,
+      ].find((candidate) => {
+        const modelId = typeof candidate === "string" ? candidate.trim() : "";
+        return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
+      }) ?? null;
+
+    if (!preferredModelId) return;
+
+    const descriptor = getModelById(preferredModelId);
+    if (!descriptor) return;
+
+    const laneName = sessionService.get(managed.session.id)?.laneName ?? "Current lane";
+    const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
+    const titleContext = [
+      `Lane: ${laneName}`,
+      `Model: ${getModelById(managed.session.modelId ?? "")?.displayName ?? managed.session.model}`,
+      `Primary request: ${seed}`,
+      args.summary?.trim().length
+        ? `Latest outcome: ${args.summary.trim()}`
+        : managed.preview?.trim().length
+          ? `Latest output: ${managed.preview.trim()}`
+          : null,
+      hasCustomChatSessionTitle(currentTitle, managed.session.provider)
+        ? `Current title: ${String(currentTitle).trim()}`
+        : null,
+    ].filter((line): line is string => Boolean(line && line.trim().length));
+
+    managed.autoTitleInFlight = true;
+    try {
+      const resolvedModel = await resolveModel(descriptor.id, auth, {
+        cwd: managed.laneWorktreePath,
+        middleware: false,
+      });
+      const result = await generateText({
+        model: resolvedModel,
+        system: AUTO_TITLE_SYSTEM_PROMPT,
+        prompt: [
+          args.stage === "final"
+            ? "Write a final concise title for this completed coding chat."
+            : "Write a concise title for this new coding chat.",
+          titleContext.join("\n"),
+        ].join("\n\n"),
+      });
+      const nextTitle = setManagedSessionTitle(managed, result.text);
+      if (!nextTitle) return;
+      managed.autoTitleStage = args.stage;
+    } catch (error) {
+      logger.warn("agent_chat.auto_title_failed", {
+        sessionId: managed.session.id,
+        stage: args.stage,
+        modelId: descriptor.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      managed.autoTitleInFlight = false;
+    }
   };
 
   // Unified session support — for API-key / local models using streamText + universal tools.
@@ -671,13 +846,19 @@ export function createAgentChatService(args: {
 
     const budget = Number(chat.sessionBudgetUsd ?? permissions.cli?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
+    const autoTitleModelId = typeof chat.autoTitleModelId === "string" && chat.autoTitleModelId.trim().length
+      ? chat.autoTitleModelId.trim()
+      : null;
 
     return {
       codexApprovalPolicy: approvalPolicy,
       codexSandboxMode: sandboxMode,
       claudePermissionMode,
       unifiedPermissionMode,
-      sessionBudgetUsd
+      sessionBudgetUsd,
+      autoTitleEnabled: chat.autoTitleEnabled === true,
+      autoTitleModelId,
+      autoTitleRefreshOnComplete: chat.autoTitleRefreshOnComplete !== false,
     };
   };
 
@@ -891,6 +1072,11 @@ export function createAgentChatService(args: {
       sessionService.setSummary(managed.session.id, options.summary);
     }
 
+    void maybeAutoTitleSession(managed, {
+      stage: "final",
+      summary: options?.summary ?? managed.preview,
+    });
+
     const endedAt = toIso();
     sessionService.end({
       sessionId: managed.session.id,
@@ -987,7 +1173,10 @@ export function createAgentChatService(args: {
       closed: row.status !== "running",
       endedNotified: row.status !== "running",
       ctoSessionStartedAt: row.status === "running" ? row.startedAt : null,
-      pendingReconstructionContext: null
+      pendingReconstructionContext: null,
+      autoTitleSeed: null,
+      autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
+      autoTitleInFlight: false,
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
@@ -1175,6 +1364,7 @@ export function createAgentChatService(args: {
         const tools = createUniversalToolSet(managed.laneWorktreePath, {
           permissionMode: unifiedRt.permissionMode,
           ...(memoryService && projectId ? { memoryService, projectId } : {}),
+          agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
           ...(managed.session.identityKey === "cto" && ctoStateService
             ? {
                 onMemoryUpdateCore: (patch) => {
@@ -1229,7 +1419,7 @@ export function createAgentChatService(args: {
         const claudeRt = runtime as ClaudeRuntime;
         const chatConfig = resolveChatConfig();
         const claudePermissionMode = managed.session.permissionMode
-          ? mapSessionPermissionToClaude(managed.session.permissionMode)
+          ? mapPermissionToClaude(managed.session.permissionMode)
           : chatConfig.claudePermissionMode;
 
         const canUseTool = async (toolName: string, toolInput: unknown): Promise<ClaudeToolPermissionResult> => {
@@ -1263,7 +1453,7 @@ export function createAgentChatService(args: {
           cwd: managed.laneWorktreePath,
           permissionMode: claudePermissionMode,
           settingSources: [],
-          mcpServers: buildAdeMcpServers(managed.session.identityKey === "cto" ? "cto" : "agent"),
+          mcpServers: buildAdeMcpServers("claude", managed.session.identityKey === "cto" ? "cto" : "agent"),
           maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
           canUseTool
         };
@@ -1954,6 +2144,48 @@ export function createAgentChatService(args: {
     return runtime;
   };
 
+  type CodexPolicy = {
+    approvalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
+    sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  } | null;
+
+  const resolveCodexThreadParams = (managed: ManagedChatSession): {
+    codexPolicy: CodexPolicy;
+    mcpServers: Record<string, Record<string, unknown>>;
+  } => {
+    const config = resolveChatConfig();
+    const codexPolicy = managed.session.permissionMode
+      ? mapPermissionToCodex(managed.session.permissionMode)
+      : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
+    const mcpServers = buildAdeMcpServers("codex", managed.session.identityKey === "cto" ? "cto" : "agent");
+    return { codexPolicy, mcpServers };
+  };
+
+  const startFreshCodexThread = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    codexPolicy: CodexPolicy,
+    mcpServers: Record<string, Record<string, unknown>>,
+  ): Promise<void> => {
+    const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
+      model: managed.session.model,
+      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+      cwd: managed.laneWorktreePath,
+      mcpServers,
+      mcp_servers: mcpServers,
+      ...codexPolicyArgs(codexPolicy),
+      experimentalRawEvents: false,
+      persistExtendedHistory: true
+    });
+    const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
+    if (newThreadId) {
+      managed.session.threadId = newThreadId;
+      sessionService.setResumeCommand(managed.session.id, `chat:codex:${newThreadId}`);
+    }
+    runtime.threadResumed = true;
+    persistChatState(managed);
+  };
+
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
     if (managed.runtime?.kind === "claude") return managed.runtime;
 
@@ -1995,7 +2227,10 @@ export function createAgentChatService(args: {
       closed: false,
       endedNotified: false,
       ctoSessionStartedAt: null,
-      pendingReconstructionContext: null
+      pendingReconstructionContext: null,
+      autoTitleSeed: null,
+      autoTitleStage: "none",
+      autoTitleInFlight: false,
     };
 
     let runtime: CodexRuntime | null = null;
@@ -2177,16 +2412,11 @@ export function createAgentChatService(args: {
       laneId,
       ptyId: null,
       tracked: true,
-      title: effectiveProvider === "codex" ? "Codex Chat" : effectiveProvider === "unified" ? "AI Chat" : "Claude Chat",
+      title: defaultChatSessionTitle(effectiveProvider),
       startedAt,
       transcriptPath,
       toolType: toolTypeFromProvider(effectiveProvider),
-      resumeCommand:
-        effectiveProvider === "codex"
-          ? "chat:codex"
-          : effectiveProvider === "unified"
-            ? `chat:unified:${sessionId}`
-            : `chat:claude:${sessionId}`
+      resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId)
     });
 
     const managed: ManagedChatSession = {
@@ -2214,7 +2444,10 @@ export function createAgentChatService(args: {
       closed: false,
       endedNotified: false,
       ctoSessionStartedAt: identityKey === "cto" ? startedAt : null,
-      pendingReconstructionContext: null
+      pendingReconstructionContext: null,
+      autoTitleSeed: null,
+      autoTitleStage: "none",
+      autoTitleInFlight: false,
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
@@ -2263,6 +2496,14 @@ export function createAgentChatService(args: {
       refreshReconstructionContext(managed);
     }
 
+    if (!managed.autoTitleSeed) {
+      managed.autoTitleSeed = trimmed;
+      void maybeAutoTitleSession(managed, {
+        stage: "initial",
+        latestUserText: trimmed,
+      });
+    }
+
     // Unified runtime dispatch
     if (managed.session.provider === "unified") {
       if (!managed.runtime || managed.runtime.kind !== "unified") {
@@ -2287,77 +2528,35 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort = DEFAULT_REASONING_EFFORT;
       }
 
-      const threadIdToResume = managed.session.threadId || readPersistedState(sessionId)?.threadId;
+      if (!runtime.threadResumed) {
+        const threadIdToResume = managed.session.threadId || readPersistedState(sessionId)?.threadId;
+        const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
 
-      if (!runtime.threadResumed && threadIdToResume) {
-        const config = resolveChatConfig();
-        const codexPolicy = managed.session.permissionMode
-          ? mapSessionPermissionToCodex(managed.session.permissionMode)
-          : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
-        const mcpServers = buildAdeMcpServers(managed.session.identityKey === "cto" ? "cto" : "agent");
-        const resumeParams = {
-          threadId: threadIdToResume,
-          model: managed.session.model,
-          ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
-          cwd: managed.laneWorktreePath,
-          mcpServers,
-          mcp_servers: mcpServers,
-          ...codexPolicyArgs(codexPolicy),
-          persistExtendedHistory: true
-        };
-
-        try {
-          await runtime.request("thread/resume", resumeParams);
-          managed.session.threadId = threadIdToResume;
-          runtime.threadResumed = true;
-        } catch (resumeError) {
-          // Rollout expired or thread not found — start a fresh thread instead
-          logger.warn("agent_chat.thread_resume_failed", {
-            sessionId,
-            threadId: threadIdToResume,
-            error: resumeError instanceof Error ? resumeError.message : String(resumeError)
-          });
-          const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
-            model: managed.session.model,
-            ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
-            cwd: managed.laneWorktreePath,
-            mcpServers,
-            mcp_servers: mcpServers,
-            ...codexPolicyArgs(codexPolicy),
-            experimentalRawEvents: false,
-            persistExtendedHistory: true
-          });
-          const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
-          if (newThreadId) {
-            managed.session.threadId = newThreadId;
-            sessionService.setResumeCommand(sessionId, `chat:codex:${newThreadId}`);
+        if (threadIdToResume) {
+          try {
+            await runtime.request("thread/resume", {
+              threadId: threadIdToResume,
+              model: managed.session.model,
+              ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+              cwd: managed.laneWorktreePath,
+              mcpServers,
+              mcp_servers: mcpServers,
+              ...codexPolicyArgs(codexPolicy),
+              persistExtendedHistory: true
+            });
+            managed.session.threadId = threadIdToResume;
+            runtime.threadResumed = true;
+          } catch (resumeError) {
+            logger.warn("agent_chat.thread_resume_failed", {
+              sessionId,
+              threadId: threadIdToResume,
+              error: resumeError instanceof Error ? resumeError.message : String(resumeError)
+            });
+            await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
           }
-          runtime.threadResumed = true;
-          persistChatState(managed);
+        } else {
+          await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
         }
-      } else if (!runtime.threadResumed && !threadIdToResume) {
-        const config = resolveChatConfig();
-        const codexPolicy = managed.session.permissionMode
-          ? mapSessionPermissionToCodex(managed.session.permissionMode)
-          : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
-        const mcpServers = buildAdeMcpServers(managed.session.identityKey === "cto" ? "cto" : "agent");
-        const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
-          model: managed.session.model,
-          ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
-          cwd: managed.laneWorktreePath,
-          mcpServers,
-          mcp_servers: mcpServers,
-          ...codexPolicyArgs(codexPolicy),
-          experimentalRawEvents: false,
-          persistExtendedHistory: true
-        });
-        const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
-        if (newThreadId) {
-          managed.session.threadId = newThreadId;
-          sessionService.setResumeCommand(sessionId, `chat:codex:${newThreadId}`);
-        }
-        runtime.threadResumed = true;
-        persistChatState(managed);
       }
 
       await sendCodexMessage(managed, trimmed, attachments);
@@ -2470,16 +2669,12 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
-      const config = resolveChatConfig();
-      const codexPolicy = managed.session.permissionMode
-        ? mapSessionPermissionToCodex(managed.session.permissionMode)
-        : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
-      const mcpServers = buildAdeMcpServers(managed.session.identityKey === "cto" ? "cto" : "agent");
       if (!managed.session.reasoningEffort) {
         managed.session.reasoningEffort = persisted?.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
       }
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
+        const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
         try {
           await runtime.request("thread/resume", {
             threadId,
@@ -2495,28 +2690,12 @@ export function createAgentChatService(args: {
           runtime.threadResumed = true;
           sessionService.setResumeCommand(sessionId, `chat:codex:${threadId}`);
         } catch (resumeError) {
-          // Rollout expired or thread not found — start a fresh thread
           logger.warn("agent_chat.resume_session_thread_failed", {
             sessionId,
             threadId,
             error: resumeError instanceof Error ? resumeError.message : String(resumeError)
           });
-          const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
-            model: managed.session.model,
-            ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
-            cwd: managed.laneWorktreePath,
-            mcpServers,
-            mcp_servers: mcpServers,
-            ...codexPolicyArgs(codexPolicy),
-            experimentalRawEvents: false,
-            persistExtendedHistory: true
-          });
-          const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
-          if (newThreadId) {
-            managed.session.threadId = newThreadId;
-            sessionService.setResumeCommand(sessionId, `chat:codex:${newThreadId}`);
-          }
-          runtime.threadResumed = true;
+          await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
         }
       }
     } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !isModelCliWrapped(managed.session.modelId))) {
@@ -2577,6 +2756,8 @@ export function createAgentChatService(args: {
         provider,
         model,
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
+        title: row.title ?? null,
+        goal: row.goal ?? null,
         reasoningEffort: persisted?.reasoningEffort ?? null,
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
@@ -2631,11 +2812,11 @@ export function createAgentChatService(args: {
     const identity = ctoStateService?.getIdentity();
     const pref = identity?.modelPreferences;
     const preferredProviderRaw = (pref?.provider ?? "").trim().toLowerCase();
-    const providerFromPreference: AgentChatProvider = preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")
-      ? "codex"
-      : preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")
-        ? "claude"
-        : "unified";
+    const providerFromPreference: AgentChatProvider = (() => {
+      if (preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")) return "codex";
+      if (preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")) return "claude";
+      return "unified";
+    })();
 
     const explicitModelId = typeof args.modelId === "string" && args.modelId.trim().length
       ? args.modelId.trim()
@@ -2646,15 +2827,13 @@ export function createAgentChatService(args: {
     const resolvedModelId = explicitModelId ?? preferredModelId;
     const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
 
-    const provider = resolvedDescriptor
-      ? resolvedDescriptor.isCliWrapped
-        ? resolvedDescriptor.family === "openai"
-          ? "codex"
-          : resolvedDescriptor.family === "anthropic"
-            ? "claude"
-            : providerFromPreference
-        : "unified"
-      : providerFromPreference;
+    const provider: AgentChatProvider = (() => {
+      if (!resolvedDescriptor) return providerFromPreference;
+      if (!resolvedDescriptor.isCliWrapped) return "unified";
+      if (resolvedDescriptor.family === "openai") return "codex";
+      if (resolvedDescriptor.family === "anthropic") return "claude";
+      return providerFromPreference;
+    })();
 
     const preferredModel = typeof pref?.model === "string" && pref.model.trim().length
       ? pref.model.trim()
@@ -2686,11 +2865,7 @@ export function createAgentChatService(args: {
       }
 
       const mapped = mapApprovalDecisionForCodex(decision);
-      if (pending.kind === "command") {
-        managed.runtime.sendResponse(pending.requestId, { decision: mapped });
-      } else {
-        managed.runtime.sendResponse(pending.requestId, { decision: mapped });
-      }
+      managed.runtime.sendResponse(pending.requestId, { decision: mapped });
       managed.runtime.approvals.delete(itemId);
       return;
     }
@@ -2791,21 +2966,100 @@ export function createAgentChatService(args: {
     }
   };
 
+  const updateSession = async ({
+    sessionId,
+    modelId,
+    reasoningEffort,
+    permissionMode,
+  }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
+    const managed = ensureManagedSession(sessionId);
+
+    if (modelId !== undefined) {
+      const nextModelId = String(modelId ?? "").trim();
+      if (!nextModelId.length) {
+        throw new Error("A modelId is required when updating a chat session model.");
+      }
+
+      const descriptor = getModelById(nextModelId) ?? resolveModelAlias(nextModelId);
+      if (!descriptor) {
+        throw new Error(`Unknown model '${nextModelId}'.`);
+      }
+
+      const nextProvider: AgentChatProvider = (() => {
+        if (!descriptor.isCliWrapped) return "unified";
+        if (descriptor.family === "openai") return "codex";
+        if (descriptor.family === "anthropic") return "claude";
+        return managed.session.provider;
+      })();
+      const nextModel = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
+      const compatible =
+        managed.runtime == null
+          ? true
+          : managed.session.provider === "codex"
+            ? descriptor.family === "openai" && descriptor.isCliWrapped
+            : managed.session.provider === "claude"
+              ? descriptor.family === "anthropic" && descriptor.isCliWrapped
+              : !descriptor.isCliWrapped;
+
+      if (!compatible) {
+        throw new Error("This session can only switch to models compatible with its current runtime.");
+      }
+
+      const currentTitle = sessionService.get(sessionId)?.title ?? null;
+      const previousProvider = managed.session.provider;
+      managed.session.provider = nextProvider;
+      managed.session.modelId = descriptor.id;
+      managed.session.model = nextModel;
+      managed.session.capabilityMode = inferCapabilityMode(nextProvider);
+      sessionService.updateMeta({
+        sessionId,
+        ...(hasCustomChatSessionTitle(currentTitle, previousProvider)
+          ? {}
+          : { title: defaultChatSessionTitle(nextProvider) }),
+        toolType: toolTypeFromProvider(nextProvider),
+        resumeCommand: resumeCommandForProvider(nextProvider, sessionId)
+      });
+    }
+
+    if (reasoningEffort !== undefined) {
+      managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+    }
+
+    if (permissionMode !== undefined) {
+      managed.session.permissionMode = permissionMode;
+      if (managed.runtime?.kind === "unified") {
+        managed.runtime.permissionMode = permissionMode === "default" || permissionMode === "config-toml"
+          ? "edit"
+          : permissionMode === "plan" || permissionMode === "edit" || permissionMode === "full-auto"
+            ? permissionMode
+            : "edit";
+      }
+    }
+
+    persistChatState(managed);
+    return managed.session;
+  };
+
   const listContextPacks = async (args: { laneId?: string } = {}): Promise<import("../../../shared/types").ContextPackOption[]> => {
     const packs: import("../../../shared/types").ContextPackOption[] = [
-      { scope: "project", label: "Project", description: "Full project context pack", available: true },
+      { scope: "project", label: "Project", description: "Live project context export", available: Boolean(packService) },
     ];
 
     if (args.laneId) {
       packs.push(
-        { scope: "lane", label: "Lane", description: "Current lane context", available: true, laneId: args.laneId },
-        { scope: "conflict", label: "Conflicts", description: "Conflict analysis for this lane", available: true, laneId: args.laneId },
-        { scope: "plan", label: "Plan", description: "Lane development plan", available: true, laneId: args.laneId }
+        { scope: "lane", label: "Lane", description: "Live lane context export", available: Boolean(packService), laneId: args.laneId },
+        { scope: "conflict", label: "Conflicts", description: "Live conflict context export", available: Boolean(packService), laneId: args.laneId },
+        { scope: "plan", label: "Plan", description: "Live plan context export", available: Boolean(packService), laneId: args.laneId }
       );
     }
 
     packs.push(
-      { scope: "mission", label: "Mission", description: "Active mission context", available: true }
+      {
+        scope: "mission",
+        label: "Mission",
+        description: "Mission-scoped export requires an explicit mission selection and is not wired into this picker yet",
+        available: false
+      }
     );
 
     return packs;
@@ -2815,9 +3069,37 @@ export function createAgentChatService(args: {
     const MAX_CHARS = 50_000;
     let content = "";
     let truncated = false;
+    const level = args.level === "brief" ? "lite" : args.level === "detailed" ? "deep" : "standard";
 
     try {
-      content = `[Context Pack: ${args.scope}]`;
+      if (!packService) {
+        throw new Error("Live context export service is unavailable.");
+      }
+
+      const exportResult = await (async () => {
+        if (args.scope === "project") return await packService.getProjectExport({ level });
+        if (args.scope === "lane") {
+          if (!args.laneId?.trim()) throw new Error("Lane context requires laneId.");
+          return await packService.getLaneExport({ laneId: args.laneId.trim(), level });
+        }
+        if (args.scope === "conflict") {
+          if (!args.laneId?.trim()) throw new Error("Conflict context requires laneId.");
+          return await packService.getConflictExport({ laneId: args.laneId.trim(), level });
+        }
+        if (args.scope === "plan") {
+          if (!args.laneId?.trim()) throw new Error("Plan context requires laneId.");
+          return await packService.getPlanExport({ laneId: args.laneId.trim(), level });
+        }
+        if (args.scope === "feature") {
+          if (!args.featureKey?.trim()) throw new Error("Feature context requires featureKey.");
+          return await packService.getFeatureExport({ featureKey: args.featureKey.trim(), level });
+        }
+        if (!args.missionId?.trim()) throw new Error("Mission context requires missionId.");
+        return await packService.getMissionExport({ missionId: args.missionId.trim(), level });
+      })();
+
+      content = exportResult.content;
+      truncated = exportResult.truncated;
 
       if (content.length > MAX_CHARS) {
         content = content.slice(0, MAX_CHARS);
@@ -2862,6 +3144,7 @@ export function createAgentChatService(args: {
     getAvailableModels,
     dispose,
     disposeAll,
+    updateSession,
     listContextPacks,
     fetchContextPack,
     changePermissionMode,

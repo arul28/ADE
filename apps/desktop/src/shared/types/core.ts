@@ -36,10 +36,6 @@ export type ClearLocalAdeDataResult = {
   clearedAt: string;
 };
 
-export type ExportConfigBundleResult =
-  | { cancelled: true }
-  | { cancelled: false; savedPath: string; bytesWritten: number; exportedAt: string };
-
 export type RecentProjectSummary = {
   rootPath: string;
   displayName: string;

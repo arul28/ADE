@@ -166,4 +166,118 @@ describe("runtimeEventRouter", () => {
       vi.useRealTimers();
     }
   });
+
+  it("adds a development transition hint when a planning-labeled step completes", () => {
+    const coordinator = {
+      injectEvent: vi.fn(),
+    } as any;
+
+    routeEventToCoordinator(
+      coordinator,
+      {
+        type: "orchestrator-step-updated",
+        runId: "run-1",
+        stepId: "step-1",
+        attemptId: "attempt-1",
+        at: "2026-03-03T00:00:00.000Z",
+        reason: "attempt_completed",
+      } as any,
+      {
+        graph: {
+          run: {
+            status: "active",
+            metadata: {
+              phaseRuntime: {
+                currentPhaseKey: "planning",
+                currentPhaseName: "Planning",
+              },
+            },
+          },
+          steps: [
+            {
+              id: "step-1",
+              stepKey: "worker_plan",
+              status: "succeeded",
+              metadata: {
+                phaseKey: "planning",
+                phaseName: "Planning",
+              },
+            },
+          ],
+          attempts: [
+            {
+              id: "attempt-1",
+              stepId: "step-1",
+              status: "succeeded",
+              resultEnvelope: {
+                summary: "Research complete.",
+              },
+            },
+          ],
+          claims: [],
+        } as any,
+      },
+    );
+
+    const message = coordinator.injectEvent.mock.calls[0]?.[1] as string;
+    expect(message).toContain("set_current_phase");
+    expect(message).toContain("development");
+  });
+
+  it("adds a complete_mission hint when all tracked steps are terminal", () => {
+    const coordinator = {
+      injectEvent: vi.fn(),
+    } as any;
+
+    routeEventToCoordinator(
+      coordinator,
+      {
+        type: "orchestrator-step-updated",
+        runId: "run-1",
+        stepId: "step-1",
+        attemptId: "attempt-1",
+        at: "2026-03-03T00:00:00.000Z",
+        reason: "attempt_completed",
+      } as any,
+      {
+        graph: {
+          run: {
+            status: "active",
+            metadata: {
+              phaseRuntime: {
+                currentPhaseKey: "development",
+                currentPhaseName: "Development",
+              },
+            },
+          },
+          steps: [
+            {
+              id: "step-1",
+              stepKey: "worker_impl",
+              status: "succeeded",
+              metadata: {
+                phaseKey: "development",
+                phaseName: "Development",
+              },
+            },
+          ],
+          attempts: [
+            {
+              id: "attempt-1",
+              stepId: "step-1",
+              status: "succeeded",
+              resultEnvelope: {
+                summary: "Implementation complete.",
+              },
+            },
+          ],
+          claims: [],
+        } as any,
+      },
+    );
+
+    const message = coordinator.injectEvent.mock.calls[0]?.[1] as string;
+    expect(message).toContain("complete_mission");
+    expect(message).toContain("all tracked steps are terminal");
+  });
 });

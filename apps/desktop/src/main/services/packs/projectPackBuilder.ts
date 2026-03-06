@@ -1,7 +1,6 @@
 /**
  * Project pack builder — generates the project-level context pack and
- * bootstrap scan.  Also handles ADE context document generation, installation,
- * and status reading.
+ * bootstrap scan. Also handles ADE context document generation and status reading.
  */
 
 import { createHash } from "node:crypto";
@@ -13,17 +12,16 @@ import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { extractFirstJsonObject } from "../ai/utils";
 import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import type {
   ContextDocStatus,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
-  ContextInstallGeneratedDocsArgs,
-  ContextPrepareDocGenArgs,
-  ContextPrepareDocGenResult,
   ContextStatus,
   LaneSummary
 } from "../../../shared/types";
+import { nowIso } from "../shared/utils";
 import {
   ensureDirFor,
   formatCommand,
@@ -62,7 +60,6 @@ export type ProjectPackBuilderDeps = {
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
-const nowIso = () => new Date().toISOString();
 
 const nowTimestampSegment = () => {
   const iso = nowIso();
@@ -139,26 +136,6 @@ const formatDocDigest = (args: {
   }
 
   return { content: `${lines.join("\n").trim()}\n`, warnings };
-};
-
-const extractFirstJsonObject = (text: string): string | null => {
-  const raw = text.trim();
-  if (!raw) return null;
-  if (raw.startsWith("{") && raw.endsWith("}")) return raw;
-
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) {
-    const inner = fenced[1].trim();
-    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
-  }
-
-  const first = raw.indexOf("{");
-  const last = raw.lastIndexOf("}");
-  if (first >= 0 && last > first) {
-    const candidate = raw.slice(first, last + 1).trim();
-    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
-  }
-  return null;
 };
 
 const writeDocWithFallback = (args: {
@@ -605,153 +582,6 @@ export async function runContextDocGeneration(
     usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,
     warnings,
     outputPreview
-  };
-}
-
-export function prepareContextDocGeneration(
-  deps: ProjectPackBuilderDeps,
-  args: ContextPrepareDocGenArgs
-): ContextPrepareDocGenResult {
-  let cwd = deps.projectRoot;
-  try {
-    const info = deps.laneService.getLaneBaseAndBranch(args.laneId);
-    if (info.worktreePath) cwd = info.worktreePath;
-  } catch {
-    // fallback to projectRoot
-  }
-
-  const tmpRoot = path.join(path.dirname(deps.packsDir), "context", "tmp");
-  fs.mkdirSync(tmpRoot, { recursive: true });
-
-  // Clean old temp files (>24h)
-  try {
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    for (const entry of fs.readdirSync(tmpRoot)) {
-      const abs = path.join(tmpRoot, entry);
-      try {
-        const stat = fs.statSync(abs);
-        if (stat.mtimeMs < cutoff) fs.rmSync(abs, { force: true });
-      } catch { /* ignore */ }
-    }
-  } catch { /* ignore */ }
-
-  const outputPrdPath = path.join(deps.projectRoot, ADE_DOC_PRD_REL);
-  const outputArchPath = path.join(deps.projectRoot, ADE_DOC_ARCH_REL);
-  fs.mkdirSync(path.dirname(outputPrdPath), { recursive: true });
-  fs.mkdirSync(path.dirname(outputArchPath), { recursive: true });
-
-  const prompt = `# ADE Context Document Generation
-
-You are generating context documentation for a software project. Explore this
-codebase and produce two markdown files that ADE uses as context for AI coding
-agents working in this repository.
-
-## Output Files — Write exactly two files:
-
-1. \`${outputPrdPath}\` — Product Requirements Document
-2. \`${outputArchPath}\` — Architecture Document
-
-## Exploration Strategy
-
-Before writing, explore to understand:
-- Project structure (top-level directories, key files)
-- Dependencies and package manager (package.json, Cargo.toml, go.mod, etc.)
-- Existing documentation (README, docs/, CONTRIBUTING)
-- Source code organization (src/, lib/, app/)
-- Test structure and frameworks
-- Build and CI configuration
-- Key entry points and main modules
-
-## PRD Document Content
-
-- **Project Overview**: What this project does, its purpose, target users
-- **Key Features**: Main capabilities, described functionally
-- **Technical Stack**: Languages, frameworks, key dependencies
-- **Project Status**: Current state, recent activity
-- **Development Workflow**: Branching strategy, contribution patterns
-- **Key Concepts**: Important domain terminology
-
-## Architecture Document Content
-
-- **System Overview**: High-level architecture (layers, services, components)
-- **Directory Structure**: Key directories and their purposes
-- **Core Modules**: Most important modules and responsibilities
-- **Data Flow**: How data moves through the system
-- **Key Patterns**: Design patterns used (MVC, event sourcing, etc.)
-- **Configuration**: How the app is configured
-- **Build & Deploy**: Build system, deployment targets
-- **Testing Strategy**: Test organization and frameworks
-
-## Rules
-
-- Base everything on actual code you read — do not speculate
-- Keep each document concise (under 2500 words)
-- Use the project's actual terminology
-- If existing docs/ exist, use them as primary source material
-- If target files already exist, REWRITE them to reflect current state (do not append changelog/delta sections)
-- Write the files directly to the paths above — do not ask questions
-`;
-
-  const promptFilePath = path.join(tmpRoot, `generate-context-${Date.now()}.md`);
-  fs.writeFileSync(promptFilePath, prompt, "utf8");
-
-  return { promptFilePath, outputPrdPath, outputArchPath, cwd, provider: args.provider };
-}
-
-export function installGeneratedDocs(
-  deps: ProjectPackBuilderDeps,
-  args: ContextInstallGeneratedDocsArgs
-): ContextGenerateDocsResult {
-  const FALLBACK_GENERATED_ROOT = path.join(path.dirname(deps.packsDir), "context", "generated");
-  const generatedAt = nowIso();
-  const warnings: ContextGenerateDocsResult["warnings"] = [];
-
-  let generatedPrd = "";
-  let generatedArch = "";
-  try {
-    if (fs.existsSync(args.outputPrdPath)) generatedPrd = fs.readFileSync(args.outputPrdPath, "utf8");
-  } catch { /* ignore */ }
-  try {
-    if (fs.existsSync(args.outputArchPath)) generatedArch = fs.readFileSync(args.outputArchPath, "utf8");
-  } catch { /* ignore */ }
-
-  if (!generatedPrd.trim()) {
-    warnings.push({ code: "output_missing_prd", message: "PRD file was not created by the agent." });
-  }
-  if (!generatedArch.trim()) {
-    warnings.push({ code: "output_missing_architecture", message: "Architecture file was not created by the agent." });
-  }
-
-  const prdWrite = generatedPrd.trim()
-    ? writeDocWithFallback({ preferredAbsPath: path.join(deps.projectRoot, ADE_DOC_PRD_REL), fallbackFileName: "PRD.ade.md", content: generatedPrd, fallbackRoot: FALLBACK_GENERATED_ROOT })
-    : { writtenPath: path.join(deps.projectRoot, ADE_DOC_PRD_REL), usedFallback: false, warning: null };
-  const archWrite = generatedArch.trim()
-    ? writeDocWithFallback({ preferredAbsPath: path.join(deps.projectRoot, ADE_DOC_ARCH_REL), fallbackFileName: "ARCHITECTURE.ade.md", content: generatedArch, fallbackRoot: FALLBACK_GENERATED_ROOT })
-    : { writtenPath: path.join(deps.projectRoot, ADE_DOC_ARCH_REL), usedFallback: false, warning: null };
-
-  if (prdWrite.warning) {
-    warnings.push({ code: "write_fallback_prd", message: prdWrite.warning, actionLabel: "Open fallback PRD", actionPath: prdWrite.writtenPath });
-  }
-  if (archWrite.warning) {
-    warnings.push({ code: "write_fallback_architecture", message: archWrite.warning, actionLabel: "Open fallback architecture", actionPath: archWrite.writtenPath });
-  }
-
-  deps.db.setJson(CONTEXT_DOC_LAST_RUN_KEY, {
-    generatedAt,
-    provider: args.provider,
-    prdPath: prdWrite.writtenPath,
-    architecturePath: archWrite.writtenPath,
-    warnings
-  });
-
-  return {
-    provider: args.provider,
-    generatedAt,
-    prdPath: prdWrite.writtenPath,
-    architecturePath: archWrite.writtenPath,
-    usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,
-    warnings,
-    outputPreview: ""
   };
 }
 

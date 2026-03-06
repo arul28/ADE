@@ -15,11 +15,11 @@ import { EmptyState } from "../../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
-import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
+import { ResolverTerminalModal } from "../../shared/conflictResolver/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
-import { COLORS, LABEL_STYLE as SHARED_LABEL_STYLE, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, LABEL_STYLE, inlineBadge } from "../../lanes/laneDesignTokens";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
-import { normalizeBranchName } from "../shared/prHelpers";
+import { normalizeBranchName, type BackgroundResolverSession } from "../shared/prHelpers";
 
 /* ---- Badge helpers ---- */
 
@@ -53,10 +53,6 @@ function formatTimestamp(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
-
-/* ---- Inline style constants ---- */
-
-const LABEL_STYLE = SHARED_LABEL_STYLE;
 
 function InlineBadge({ label, color, bg, border }: { label: string; color: string; bg: string; border: string }) {
   return (
@@ -101,14 +97,6 @@ type NormalTabProps = {
   onRefresh: () => Promise<void>;
 };
 
-type BackgroundResolverSession = {
-  ptyId: string;
-  sessionId: string;
-  provider: "codex" | "claude";
-  startedAt: string;
-  exitCode: number | null;
-};
-
 export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh }: NormalTabProps) {
   const navigate = useNavigate();
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
@@ -117,7 +105,6 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId,
     detailStatus,
     detailChecks,
     detailReviews,
-    detailComments,
     detailBusy,
     rebaseNeeds,
     autoRebaseStatuses,
@@ -519,31 +506,6 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId,
                 </button>
               )}
 
-              {/* View Diff / Open on GitHub */}
-              <button
-                type="button"
-                onClick={() => void window.ade.prs.openInGitHub(selectedPr.id)}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  height: 32,
-                  padding: "0 14px",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  fontFamily: "JetBrains Mono, monospace",
-                  textTransform: "uppercase",
-                  letterSpacing: "1px",
-                  color: "#FAFAFA",
-                  background: "transparent",
-                  border: "1px solid #27272A",
-                  cursor: "pointer",
-                }}
-              >
-                <Eye size={14} weight="regular" />
-                VIEW ON GITHUB
-              </button>
-
               {/* Open in GitHub */}
               <button
                 type="button"
@@ -819,7 +781,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _mergeContextByPrId,
         </div>
       ),
     },
-  }), [prs, selectedPr, selectedPrId, laneById, detailStatus, detailBusy, detailChecks, detailReviews, detailComments, actionBusy, actionError, actionResult, resolverOpen, resolverTargetLaneId, mergeMethod, deleteConfirm, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, navigate, onSelectPr, onRefresh]);
+  }), [prs, selectedPr, selectedPrId, laneById, detailStatus, detailBusy, detailChecks, detailReviews, actionBusy, actionError, actionResult, resolverOpen, resolverTargetLaneId, mergeMethod, deleteConfirm, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, navigate, onSelectPr, onRefresh]);
 
   return <PaneTilingLayout layoutId="prs:normal:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

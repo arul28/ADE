@@ -1,23 +1,21 @@
-# Packs — Deterministic Context Artifacts
+# Packs — Compatibility Context Artifacts
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-03
+> Last updated: 2026-03-05
 
 ---
 
 ## Overview
 
-Packs are ADE's versioned context artifacts. They combine deterministic project facts (git-derived data, lane/session state, conflict data) with optional AI narrative sections.
+Persisted pack files are no longer ADE's canonical runtime context source. W6 uses live local context exports plus unified memory for runtime retrieval/injection.
 
-Packs are the shared context substrate for:
+Pack files and pack version history still exist as compatibility artifacts for:
 
-- mission planning/execution,
-- conflict analysis and resolver runs,
-- PR drafting and integration simulation,
-- history/audit workflows.
-
-The current implementation is fully aligned to `.ade` paths.
+- export/resource compatibility (`read_context`, `ade://pack/...`),
+- audit/history,
+- optional persisted summaries,
+- legacy workflows that still expect file-shaped context.
 
 ---
 
@@ -25,7 +23,7 @@ The current implementation is fully aligned to `.ade` paths.
 
 ### Pack roots
 
-All pack bodies are stored under `.ade/packs`:
+Compatibility pack bodies and history live under `.ade/packs`:
 
 - project pack: `.ade/packs/project_pack.md`
 - lane pack: `.ade/packs/lanes/<laneId>/lane_pack.md`
@@ -33,6 +31,7 @@ All pack bodies are stored under `.ade/packs`:
 - plan pack: `.ade/packs/plans/<laneId>/plan_pack.md`
 - mission pack: `.ade/packs/missions/<missionId>/mission_pack.md`
 - conflict pack: `.ade/packs/conflicts/v2/<laneId>__<peer>.md`
+- external resolver runs: `.ade/packs/external-resolver-runs/<runId>/`
 
 Version/history support is maintained under `.ade/history` and `.ade/packs/versions`.
 
@@ -43,7 +42,7 @@ Canonical ADE context docs are:
 - `.ade/context/PRD.ade.md`
 - `.ade/context/ARCHITECTURE.ade.md`
 
-These are prioritized during doc discovery and are included in context status/fingerprint and downstream pack/export assembly.
+These are prioritized during doc discovery and are included in context status/fingerprint and downstream export assembly.
 
 ---
 
@@ -72,6 +71,12 @@ Doc discovery prioritizes:
 
 ---
 
+## Runtime Truth
+
+Runtime exports (`getProjectExport`, `getLaneExport`, `getConflictExport`, `getFeatureExport`, `getPlanExport`, `getMissionExport`) are synthesized from current local state when requested. They do not require a pre-refreshed on-disk pack file to exist first.
+
+Conflict external-resolver runs now consume generated per-run context files plus optional docs, rather than assuming `.ade/packs/...` files are already present.
+
 ## Refresh Triggers and Cadence
 
 Context doc refresh preferences support these triggers:
@@ -93,7 +98,7 @@ Pack content includes:
 - optional narrative sections (provider-dependent),
 - context headers/markers for stable machine consumption.
 
-In guest mode, deterministic packs still refresh and remain usable; narrative generation is simply skipped.
+In guest mode, deterministic compatibility packs remain usable; narrative generation is simply skipped.
 
 ---
 
@@ -101,27 +106,22 @@ In guest mode, deterministic packs still refresh and remain usable; narrative ge
 
 ### Missions
 
-Mission planning/execution reads pack exports plus ADE context docs for bounded runtime context.
+Mission planning/execution consumes live bounded exports plus ADE context docs. Persisted pack history may still be useful for audit or compatibility, but it is not the runtime source of truth.
 
 ### Conflicts
 
-Conflict tooling references:
-
-- project pack,
-- relevant lane packs,
-- conflict packs,
-- `.ade/context/*.ade.md` docs.
+Conflict tooling keeps prediction artifacts under `.ade/packs/conflicts`, but external resolver prompts should prefer generated per-run context files and optional `.ade/context/*.ade.md` docs.
 
 ### PRs
 
-PR drafting and integration simulation consume pack data for summaries and conflict-aware planning.
+PR drafting and integration simulation consume live exports and summaries. Persisted pack artifacts remain optional compatibility/audit outputs.
 
 ---
 
 ## Practical Guidance
 
-Use packs as the primary context layer for both humans and automation:
+Use packs as persisted compatibility/audit artifacts, not as the canonical live runtime layer:
 
-- refresh project/lane packs before high-stakes AI operations,
+- rely on unified memory plus live exports for runtime context,
 - keep `.ade/context/*.ade.md` up to date,
-- rely on pack paths above as the canonical no-legacy baseline.
+- use persisted pack paths only when a compatibility consumer explicitly asks for them.

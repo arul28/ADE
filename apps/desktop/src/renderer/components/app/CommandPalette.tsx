@@ -33,7 +33,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       { id: "go-lanes", title: "Go to Lanes", shortcut: "G L", group: "Navigation", run: () => navigate("/lanes") },
       { id: "go-files", title: "Go to Files", shortcut: "G F", group: "Navigation", run: () => navigate("/files") },
       { id: "go-work", title: "Go to Work", shortcut: "G T", group: "Navigation", run: () => navigate("/work") },
-      { id: "go-conflicts", title: "Go to Conflicts", shortcut: "G C", group: "Navigation", run: () => navigate("/conflicts") },
+      { id: "go-graph", title: "Go to Graph", shortcut: "G G", group: "Navigation", run: () => navigate("/graph") },
       { id: "go-prs", title: "Go to PRs", shortcut: "G R", group: "Navigation", run: () => navigate("/prs") },
       { id: "go-history", title: "Go to History", shortcut: "G H", group: "Navigation", run: () => navigate("/history") },
       { id: "go-missions", title: "Go to Missions", shortcut: "G M", group: "Navigation", run: () => navigate("/missions") },
@@ -73,13 +73,6 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
         hint: "Visual dependency graph",
         group: "Actions",
         run: () => navigate("/graph")
-      },
-      {
-        id: "action-automations",
-        title: "Go to Automations",
-        hint: "CI/CD and automation rules",
-        group: "Actions",
-        run: () => navigate("/automations")
       },
       {
         id: "lane-next",
@@ -320,7 +313,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                                           ? "bg-[#A78BFA18] text-[#FAFAFA] border-l-[3px] border-l-[#A78BFA]"
                                           : "border-l-[3px] border-l-transparent hover:bg-[#A78BFA08]"
                                       )}
-                                      style={isSelected ? { paddingLeft: 9 } : { paddingLeft: 9 }}
+                                      style={{ paddingLeft: 9 }}
                                       onMouseEnter={() => setSelectedIdx(idx)}
                                       onClick={() => runCommand(cmd)}
                                     >

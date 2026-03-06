@@ -40,7 +40,6 @@ import type {
   OrchestratorRuntimeEventType,
   OrchestratorTeamRuntimeState,
   OrchestratorTimelineEvent,
-  PackDeltaDigestV1,
   PackExport,
   PrepareResolverSessionArgs,
   PtyCreateArgs,
@@ -81,12 +80,13 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
-import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { getMissionStateDocumentPath } from "./missionStateDoc";
-import { buildFullPrompt, shellEscapeArg } from "./baseOrchestratorAdapter";
+import { buildFullPrompt, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { deriveSessionSummaryFromText } from "../packs/transcriptInsights";
 import {
   type RunRow, type StepRow, type AttemptRow, type ClaimRow,
   type ContextSnapshotRow, type HandoffRow, type TimelineRow,
@@ -443,6 +443,66 @@ function loadMissionStateDocCounts(projectRoot: string, runId: string): {
   }
 }
 
+function readUtf8Tail(filePath: string, maxBytes = 64 * 1024): string {
+  const stat = fs.statSync(filePath);
+  const size = Math.max(0, Number(stat.size) || 0);
+  if (size <= maxBytes) {
+    return fs.readFileSync(filePath, "utf8");
+  }
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const start = Math.max(0, size - maxBytes);
+    const length = size - start;
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, start);
+    return buffer.toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function deriveTranscriptSummaryFromPath(filePath: string | null | undefined): string | null {
+  const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
+  if (!normalizedPath || !fs.existsSync(normalizedPath)) return null;
+  try {
+    const rawTail = readUtf8Tail(normalizedPath);
+    const sanitizedTail = rawTail
+      .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .filter((line) => {
+        const lower = line.toLowerCase();
+        if (lower.startsWith("ade_mission_id=")) return false;
+        if (lower.startsWith("-p \"$(cat ")) return false;
+        if (lower.includes("worker-prompts/worker-")) return false;
+        if (lower.includes(".ade-worker-mcp-")) return false;
+        if (lower.includes("exec claude --model")) return false;
+        if (lower.includes("exec codex ")) return false;
+        if (lower.startsWith("/users/") && lower.includes(".zshrc:")) return false;
+        if (lower.includes("command not found: compdef")) return false;
+        if (/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\s+.+\s[%#$]$/.test(line)) return false;
+        return true;
+      })
+      .join("\n");
+    const summary = deriveSessionSummaryFromText(sanitizedTail).trim();
+    if (!summary.length) return null;
+    const lowerSummary = summary.toLowerCase();
+    if (
+      lowerSummary.startsWith("ade_mission_id=")
+      || lowerSummary.startsWith("-p \"$(cat ")
+      || lowerSummary.includes("worker-prompts/worker-")
+      || lowerSummary.includes("exec claude --model")
+      || lowerSummary.includes("exec codex ")
+    ) {
+      return null;
+    }
+    return summary;
+  } catch {
+    return null;
+  }
+}
+
 export function createOrchestratorService({
   db,
   projectId,
@@ -483,7 +543,6 @@ export function createOrchestratorService({
     if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
       out.teammatePlanMode = teammatePlanMode;
     }
-    out.requirePlanReview = asBool(orchestrator.requirePlanReview, out.requirePlanReview);
     out.maxParallelWorkers = asIntInRange(
       orchestrator.maxParallelWorkers,
       out.maxParallelWorkers,
@@ -1818,39 +1877,12 @@ export function createOrchestratorService({
         : args.contextProfile.laneExportLevel;
     const projectExportLevel = stepType === "analysis" ? "standard" : args.contextProfile.projectExportLevel;
     const lanePackKey = args.step.laneId ? `lane:${args.step.laneId}` : null;
-    const laneExport = await (async (): Promise<PackExport | null> => {
-      if (!args.step.laneId) return null;
-      const laneId = args.step.laneId;
-      try {
-        return await packService.getLaneExport({
-          laneId,
+    const laneExport = args.step.laneId
+      ? await packService.getLaneExport({
+          laneId: args.step.laneId,
           level: laneExportLevel
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!message.includes("Lane pack is empty")) {
-          throw error;
-        }
-        await packService.refreshLanePack({
-          laneId,
-          reason: "orchestrator_context_bootstrap"
-        });
-        appendTimelineEvent({
-          runId: args.run.id,
-          stepId: args.step.id,
-          attemptId: args.attemptId,
-          eventType: "context_pack_bootstrap",
-          reason: "lane_pack_refreshed",
-          detail: {
-            laneId
-          }
-        });
-        return await packService.getLaneExport({
-          laneId,
-          level: laneExportLevel
-        });
-      }
-    })();
+        })
+      : null;
     const projectExport = await packService.getProjectExport({
       level: projectExportLevel
     });
@@ -1910,19 +1942,7 @@ export function createOrchestratorService({
       if (remainingBytes <= 0 && args.contextProfile.docsMode === "full_docs") break;
     }
 
-    const packDeltaDigest = await (async (): Promise<PackDeltaDigestV1 | null> => {
-      if (!lanePackKey || !previousPackDeltaSince) return null;
-      try {
-        return await packService.getDeltaDigest({
-          packKey: lanePackKey,
-          sinceTimestamp: previousPackDeltaSince,
-          minimumImportance: "medium",
-          limit: 60
-        });
-      } catch {
-        return null;
-      }
-    })();
+    const packDeltaDigest = null;
 
     const missionStepIds = new Set<string>();
     if (args.step.missionStepId) missionStepIds.add(args.step.missionStepId);
@@ -2289,15 +2309,21 @@ export function createOrchestratorService({
       l2: memoryL2
     };
 
-    const laneHead = lanePackKey ? packService.getHeadVersion({ packKey: lanePackKey }) : null;
-    const projectHead = packService.getHeadVersion({ packKey: "project" });
+    const laneVersionId =
+      laneExport?.header.versionId ??
+      laneExport?.header.contentHash ??
+      (laneExport ? `live:${laneExport.packKey}:${sha256(laneExport.content)}` : null);
+    const projectVersionId =
+      projectExport.header.versionId ??
+      projectExport.header.contentHash ??
+      `live:${projectExport.packKey}:${sha256(projectExport.content)}`;
     const cursor: OrchestratorContextSnapshotCursor = {
       lanePackKey,
-      lanePackVersionId: laneHead?.versionId ?? null,
-      lanePackVersionNumber: laneHead?.versionNumber ?? null,
+      lanePackVersionId: laneVersionId,
+      lanePackVersionNumber: laneExport?.header.versionNumber ?? null,
       projectPackKey: "project",
-      projectPackVersionId: projectHead.versionId,
-      projectPackVersionNumber: projectHead.versionNumber,
+      projectPackVersionId: projectVersionId,
+      projectPackVersionNumber: projectExport.header.versionNumber ?? null,
       packDeltaSince: previousPackDeltaSince,
 	      docs: docsRefs,
 	      packDeltaDigest,
@@ -2312,8 +2338,8 @@ export function createOrchestratorService({
 	        "execution_pack_v2",
 	        "deep_pack_v2",
           "memory_hierarchy_v1",
-	        `pack:project:${projectExport.level}`,
-	        ...(lanePackKey ? [`pack:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : []),
+	        `context_export:project:${projectExport.level}`,
+	        ...(lanePackKey ? [`context_export:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : []),
         ...(packDeltaDigest ? ["delta_digest"] : []),
         ...(missionHandoffIds.length ? ["mission_handoffs"] : []),
         ...(missionHandoffDigest ? ["mission_handoff_digest"] : []),
@@ -3134,6 +3160,7 @@ export function createOrchestratorService({
 
           const requiresPlanApproval =
             args.step.metadata?.requiresPlanApproval === true || args.step.metadata?.coordinationPattern === "plan_then_implement";
+          const readOnlyExecution = args.step.metadata?.readOnlyExecution === true || requiresPlanApproval;
           const promptParts = [
             `You are an ADE mission worker for step "${args.step.title}".`,
             requiresPlanApproval
@@ -3196,15 +3223,15 @@ export function createOrchestratorService({
           }
           const cliMode = args.permissionConfig?.cli?.mode ?? "full-auto";
           if (cliCommand === "codex") {
-            commandParts.push("--sandbox", requiresPlanApproval ? "read-only" : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write");
+            commandParts.push("--sandbox", readOnlyExecution ? "read-only" : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write");
           } else {
-            if (!requiresPlanApproval && cliMode === "full-auto") {
+            if (!readOnlyExecution && cliMode === "full-auto") {
               commandParts.push("--dangerously-skip-permissions");
             } else {
-              commandParts.push("--permission-mode", requiresPlanApproval || cliMode === "read-only" ? "plan" : "acceptEdits");
+              commandParts.push("--permission-mode", readOnlyExecution || cliMode === "read-only" ? "plan" : "acceptEdits");
             }
           }
-          commandParts.push(shellEscapeArg(prompt));
+          commandParts.push(shellInlineDecodedArg(prompt));
           const startupCommand = commandParts.join(" ");
 
           const session = await args.createTrackedSession({
@@ -3223,7 +3250,7 @@ export function createOrchestratorService({
               adapterState: "worker_spawned",
               contextFilePath,
               contextDigest: sha256(JSON.stringify(contextManifest)),
-              planMode: requiresPlanApproval,
+              planMode: readOnlyExecution,
               startupCommandPreview: startupCommand.slice(0, 320),
               localFirst: true
             }
@@ -4496,8 +4523,8 @@ export function createOrchestratorService({
             .filter((attempt) => attempt.status === "running").length;
           if (runningAttemptCount >= effectiveCap) break;
 
-          const readySteps = listStepRows(runId)
-            .map(toStep)
+          const readySteps = filterExecutionSteps(listStepRows(runId)
+            .map(toStep))
             .filter((step) => step.status === "ready")
             .sort(readyStepOrderComparator);
           if (!readySteps.length) break;
@@ -4761,16 +4788,13 @@ export function createOrchestratorService({
 
       const pipelineRows = db.all<{
         session_id: string;
-        lane_id: string;
         ended_at: string | null;
         delta_at: string | null;
         checkpoint_at: string | null;
-        lane_pack_at: string | null;
       }>(
         `
           select
             s.id as session_id,
-            s.lane_id as lane_id,
             s.ended_at as ended_at,
             (
               select d.computed_at
@@ -4787,14 +4811,7 @@ export function createOrchestratorService({
                 and c.session_id = s.id
               order by c.created_at desc
               limit 1
-            ) as checkpoint_at,
-            (
-              select p.deterministic_updated_at
-              from packs_index p
-              where p.project_id = ?
-                and p.pack_key = ('lane:' || s.lane_id)
-              limit 1
-            ) as lane_pack_at
+            ) as checkpoint_at
           from terminal_sessions s
           join lanes l on l.id = s.lane_id
           where l.project_id = ?
@@ -4803,14 +4820,17 @@ export function createOrchestratorService({
           order by s.ended_at desc
           limit 400
         `,
-        [projectId, projectId, projectId, projectId]
+        [projectId, projectId, projectId]
       );
       const pipelineSamples = pipelineRows
         .map((row) => {
           const endedAt = row.ended_at ? Date.parse(row.ended_at) : NaN;
-          const packAt = row.lane_pack_at ? Date.parse(row.lane_pack_at) : NaN;
-          if (!Number.isFinite(endedAt) || !Number.isFinite(packAt)) return null;
-          return Math.max(0, packAt - endedAt);
+          if (!Number.isFinite(endedAt)) return null;
+          const materializedAt = [row.delta_at, row.checkpoint_at]
+            .map((value) => (value ? Date.parse(value) : NaN))
+            .filter((value) => Number.isFinite(value));
+          if (!materializedAt.length) return null;
+          return Math.max(0, Math.max(...materializedAt) - endedAt);
         })
         .filter((value): value is number => Number.isFinite(value));
       const pipelineWithin = pipelineSamples.filter((value) => value <= GATE_THRESHOLDS.maxTrackedPipelineLatencyMs).length;
@@ -4819,7 +4839,7 @@ export function createOrchestratorService({
         pipelineSamples.length > 0 ? Math.round(pipelineSamples.reduce((sum, value) => sum + value, 0) / pipelineSamples.length) : 0;
       gateEntries.push({
         key: "session_delta_checkpoint_pack_latency",
-        label: "Tracked session -> delta -> checkpoint -> lane pack latency",
+        label: "Tracked session -> delta/checkpoint latency",
         status:
           pipelineSamples.length === 0
             ? "warn"
@@ -4841,26 +4861,28 @@ export function createOrchestratorService({
         }
       });
 
-      const packRows = db.all<{ pack_type: string; deterministic_updated_at: string | null }>(
+      const snapshotRows = db.all<{ created_at: string }>(
         `
-          select pack_type, deterministic_updated_at
-          from packs_index
+          select created_at
+          from orchestrator_context_snapshots
           where project_id = ?
+          order by created_at desc
+          limit 400
         `,
         [projectId]
       );
-      const freshCount = packRows.filter((row) => {
-        const updatedAt = row.deterministic_updated_at ? Date.parse(row.deterministic_updated_at) : NaN;
+      const freshnessWindowMs = GATE_THRESHOLDS.freshnessMaxAgeByPackTypeMs.lane;
+      const freshCount = snapshotRows.filter((row) => {
+        const updatedAt = row.created_at ? Date.parse(row.created_at) : NaN;
         if (!Number.isFinite(updatedAt)) return false;
-        const maxAge = GATE_THRESHOLDS.freshnessMaxAgeByPackTypeMs[row.pack_type] ?? GATE_THRESHOLDS.freshnessMaxAgeByPackTypeMs.project;
-        return now - updatedAt <= maxAge;
+        return now - updatedAt <= freshnessWindowMs;
       }).length;
-      const freshnessRate = packRows.length > 0 ? freshCount / packRows.length : 0;
+      const freshnessRate = snapshotRows.length > 0 ? freshCount / snapshotRows.length : 0;
       gateEntries.push({
         key: "pack_freshness_by_type",
-        label: "Pack freshness by type",
+        label: "Live context snapshot freshness",
         status:
-          packRows.length === 0
+          snapshotRows.length === 0
             ? "warn"
             : freshnessRate >= GATE_THRESHOLDS.minFreshnessByTypeRate
               ? "pass"
@@ -4868,16 +4890,17 @@ export function createOrchestratorService({
         measuredValue: Number(freshnessRate.toFixed(4)),
         threshold: GATE_THRESHOLDS.minFreshnessByTypeRate,
         comparator: ">=",
-        samples: packRows.length,
+        samples: snapshotRows.length,
         reasons:
-          packRows.length === 0
-            ? ["No packs indexed yet."]
+          snapshotRows.length === 0
+            ? ["No context snapshots exist yet."]
             : freshnessRate >= GATE_THRESHOLDS.minFreshnessByTypeRate
               ? []
-              : [`Fresh packs ${freshCount}/${packRows.length} fell below threshold.`],
+              : [`Fresh context snapshots ${freshCount}/${snapshotRows.length} fell below threshold.`],
         metadata: {
           freshCount,
-          total: packRows.length
+          total: snapshotRows.length,
+          freshnessWindowMs
         }
       });
 
@@ -5221,19 +5244,6 @@ export function createOrchestratorService({
             dependencyStepIds: depIds
           }
         });
-      }
-
-      // Best effort mission pack refresh for durable mission-level context snapshot.
-      try {
-        if (typeof (packService as any).refreshMissionPack === "function") {
-          void (packService as any).refreshMissionPack({
-            missionId,
-            reason: "orchestrator_run_started",
-            runId
-          });
-        }
-      } catch {
-        // do not fail run creation on mission pack refresh failure
       }
 
       const run = toRun(
@@ -6026,10 +6036,11 @@ export function createOrchestratorService({
 
           const requiresPlanApproval =
             step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
+          const readOnlyExecution = step.metadata?.readOnlyExecution === true || requiresPlanApproval;
 
           // Resolve in-process permission from project + mission config
           const inProcessPermissionMode: "read-only" | "edit" | "full-auto" = (() => {
-            if (requiresPlanApproval) return "read-only" as const;
+            if (readOnlyExecution) return "read-only" as const;
             // Build unified provider permissions for this mission
             const projPerms: MissionPermissionConfig = {};
             const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
@@ -6072,6 +6083,11 @@ export function createOrchestratorService({
               timeoutMs,
               permissionMode: inProcessPermissionMode,
               oneShot: true,
+              projectId,
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              ...(memoryService ? { memoryService } : {}),
             });
 
             appendTimelineEvent({
@@ -6507,6 +6523,7 @@ export function createOrchestratorService({
       if (!stepRow) throw new Error(`Step not found for attempt: ${args.attemptId}`);
       const runRow = getRunRow(attemptRow.run_id);
       if (!runRow) throw new Error(`Run not found for attempt: ${args.attemptId}`);
+	      const attempt = toAttempt(attemptRow);
 	      const step = toStep(stepRow);
 	      const run = toRun(runRow);
 
@@ -6555,22 +6572,67 @@ export function createOrchestratorService({
 	          ? Math.min(10 * 60_000, Math.floor(aiRetryBackoffRaw))
 	          : null;
 	      const computedBackoff = shouldRetry ? (aiRetryBackoffMs ?? 0) : 0;
-	      const defaultSummary =
-	        status === "succeeded"
-	          ? "Step completed."
-	          : status === "failed"
-	            ? effectiveErrorMessage?.trim() || "Step attempt failed."
-	            : status === "blocked"
+		      const stepMetadata = asRecord(step.metadata) ?? {};
+		      const lastResultReport = asRecord(stepMetadata.lastResultReport);
+		      const reportedSummary =
+		        typeof lastResultReport?.summary === "string" ? lastResultReport.summary.trim() : "";
+		      const transcriptPath =
+		        typeof attempt.metadata?.transcriptPath === "string" ? attempt.metadata.transcriptPath.trim() : "";
+		      const transcriptSummary =
+		        !args.result && status === "succeeded"
+		          ? deriveTranscriptSummaryFromPath(transcriptPath)
+		          : null;
+		      const reportedFilesChanged = Array.isArray(lastResultReport?.filesChanged)
+		        ? lastResultReport.filesChanged
+		            .map((entry) => String(entry ?? "").trim())
+		            .filter((entry) => entry.length > 0)
+		        : [];
+		      const reportedTests = asRecord(lastResultReport?.testsRun);
+		      const implicitOutputs = (() => {
+		        if (status !== "succeeded") return null;
+		        const outputs: Record<string, unknown> = {};
+		        if (reportedFilesChanged.length > 0) {
+		          outputs.filesChanged = reportedFilesChanged;
+		        }
+		        if (reportedTests) {
+		          if (typeof reportedTests.command === "string" && reportedTests.command.trim().length > 0) {
+		            outputs.testsCommand = reportedTests.command.trim();
+		          }
+		          const passed = Number(reportedTests.passed);
+		          if (Number.isFinite(passed)) outputs.testsPassed = Math.max(0, Math.floor(passed));
+		          const failed = Number(reportedTests.failed);
+		          if (Number.isFinite(failed)) outputs.testsFailed = Math.max(0, Math.floor(failed));
+		          const skipped = Number(reportedTests.skipped);
+		          if (Number.isFinite(skipped)) outputs.testsSkipped = Math.max(0, Math.floor(skipped));
+		          if (typeof reportedTests.raw === "string" && reportedTests.raw.trim().length > 0) {
+		            outputs.testsSummary = reportedTests.raw.trim();
+		          }
+		        }
+		        return Object.keys(outputs).length > 0 ? outputs : null;
+		      })();
+		      const defaultSummary =
+		        status === "succeeded"
+		          ? reportedSummary
+		            || transcriptSummary
+		            || (
+		              stepMetadata.readOnlyExecution === true
+		                || String(stepMetadata.stepType ?? "").trim().toLowerCase() === "planning"
+		                ? "Planning session completed."
+		                : "Step completed."
+		            )
+		          : status === "failed"
+		            ? effectiveErrorMessage?.trim() || "Step attempt failed."
+		            : status === "blocked"
 	              ? effectiveErrorMessage?.trim() || "Step attempt blocked."
 	              : "Step attempt canceled.";
-	      const envelope: OrchestratorAttemptResultEnvelope = normalizeEnvelope(
-	        args.result ?? {
-	          success: status === "succeeded",
-          summary: defaultSummary,
-          outputs: null,
-          warnings: status === "failed" || status === "blocked" ? [defaultSummary] : [],
-          sessionId: attemptRow.executor_session_id,
-	          trackedSession: true
+		      const envelope: OrchestratorAttemptResultEnvelope = normalizeEnvelope(
+		        args.result ?? {
+		          success: status === "succeeded",
+	          summary: defaultSummary,
+	          outputs: implicitOutputs,
+	          warnings: status === "failed" || status === "blocked" ? [defaultSummary] : [],
+	          sessionId: attemptRow.executor_session_id,
+		          trackedSession: true
 	        }
 	      );
 	      if (reservationWarns && fileReservationMessage && !envelope.warnings.includes(fileReservationMessage)) {
@@ -9468,7 +9530,7 @@ export function createOrchestratorService({
 
       // Determine final terminal status
       let finalStatus: OrchestratorRunStatus;
-      const allStepStatuses = steps.map((s) => s.status);
+      const allStepStatuses = filterExecutionSteps(steps).map((s) => s.status);
       const anyFailed = allStepStatuses.some((s) => s === "failed");
       const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
 

@@ -33,7 +33,6 @@ import { COLORS } from "../lanes/laneDesignTokens";
 export const STATUS_BADGE_STYLES: Record<MissionStatus, { background: string; color: string; border: string }> = {
   queued: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
   planning: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" },
-  plan_review: { background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430" },
   in_progress: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
   intervention_required: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
   completed: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
@@ -44,7 +43,6 @@ export const STATUS_BADGE_STYLES: Record<MissionStatus, { background: string; co
 export const STATUS_DOT_HEX: Record<MissionStatus, string> = {
   queued: "#71717A",
   planning: "#3B82F6",
-  plan_review: "#06B6D4",
   in_progress: "#22C55E",
   intervention_required: "#F59E0B",
   completed: "#22C55E",
@@ -55,7 +53,6 @@ export const STATUS_DOT_HEX: Record<MissionStatus, string> = {
 export const STATUS_LABELS: Record<MissionStatus, string> = {
   queued: "Queued",
   planning: "Planning",
-  plan_review: "Review",
   in_progress: "Running",
   intervention_required: "Action",
   completed: "Done",
@@ -94,7 +91,6 @@ export const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "f
 
 export const NOISY_EVENT_TYPES = new Set([
   "claim_heartbeat",
-  "context_pack_bootstrap",
   "autopilot_parallelism_cap_adjusted",
   "tick",
   "dynamic_cap",
@@ -154,7 +150,6 @@ export type SteeringEntry = { directive: string; appliedAt: string };
 export const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: string }> = [
   { key: "queued", label: "QUEUED", hex: "#71717A" },
   { key: "planning", label: "PLANNING", hex: "#3B82F6" },
-  { key: "plan_review", label: "REVIEW", hex: "#06B6D4" },
   { key: "in_progress", label: "RUNNING", hex: "#22C55E" },
   { key: "intervention_required", label: "ACTION", hex: "#F59E0B" },
   { key: "completed", label: "DONE", hex: "#22C55E" },
@@ -165,7 +160,6 @@ export const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; h
 export type MissionSettingsDraft = {
   defaultOrchestratorModel: ModelConfig;
   teammatePlanMode: TeammatePlanMode;
-  requirePlanReview: boolean;
   permissionConfig: MissionPermissionConfig;
   /** @deprecated kept for backward-compat read/write */
   defaultPlannerProvider: PlannerProvider;
@@ -195,7 +189,6 @@ export const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
 export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   defaultOrchestratorModel: { ...DEFAULT_ORCHESTRATOR_MODEL },
   teammatePlanMode: "auto",
-  requirePlanReview: false,
   permissionConfig: { ...DEFAULT_PERMISSION_CONFIG },
   defaultPlannerProvider: "auto",
   cliMode: "full-auto",
@@ -207,6 +200,19 @@ export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function isDisplayOnlyTaskStep(
+  step: Pick<OrchestratorStep, "metadata"> | null | undefined,
+): boolean {
+  const metadata = isRecord(step?.metadata) ? step.metadata : null;
+  return metadata?.displayOnlyTask === true;
+}
+
+export function filterExecutionSteps<T extends { metadata?: unknown }>(steps: T[]): T[] {
+  return steps.filter((step) =>
+    !isDisplayOnlyTaskStep(step as Pick<OrchestratorStep, "metadata">),
+  );
 }
 
 export function readBool(primary: unknown, fallback: unknown, defaultValue: boolean): boolean {
@@ -442,7 +448,6 @@ export function narrativeForEvent(ev: { eventType: string; reason: string; stepI
 
   if (ev.eventType === "context_snapshot_created") return "Context snapshot saved for future reference";
   if (ev.eventType === "context_pressure_warning") return "Context window pressure detected \u2014 may need to compact";
-  if (ev.eventType === "context_pack_bootstrap") return "Context pack bootstrapped for worker";
   if (ev.eventType === "integration_chain_started") return "Integration merge chain started";
 
   if (ev.eventType === "validation_contract_unfulfilled") return "Validation contract unfulfilled";
@@ -541,13 +546,11 @@ export function statusGlyph(status: OrchestratorStepStatus): string {
 
 /* ════════════════════ ELAPSED TIME COMPONENT ════════════════════ */
 
-import { useState, useEffect } from "react";
-
 /** Self-ticking elapsed-time display — isolates the 1s timer from the parent tree. */
 export function ElapsedTime({ startedAt, endedAt }: { startedAt: string | null; endedAt?: string | null }) {
-  const [, setTick] = useState(0);
+  const [, setTick] = React.useState(0);
   const isTerminal = !!endedAt;
-  useEffect(() => {
+  React.useEffect(() => {
     if (isTerminal || !startedAt) return;
     const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
     return () => window.clearInterval(timer);

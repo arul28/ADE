@@ -12,11 +12,7 @@ import type {
   ConflictProposalPreview,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
-  ContextPrepareDocGenArgs,
-  ContextPrepareDocGenResult,
-  ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
-  ContextInventorySnapshot,
   ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
@@ -67,6 +63,7 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatUpdateSessionArgs,
   AutomationsEventPayload,
   AutomationRuleSummary,
   AutomationRun,
@@ -133,7 +130,6 @@ import type {
   CiScanResult,
   CiImportRequest,
   CiImportResult,
-  ExportConfigBundleResult,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -393,7 +389,6 @@ declare global {
         openRepo: () => Promise<ProjectInfo | null>;
         openAdeFolder: () => Promise<void>;
         clearLocalData: (args?: ClearLocalAdeDataArgs) => Promise<ClearLocalAdeDataResult>;
-        exportConfig: () => Promise<ExportConfigBundleResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
         closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
@@ -423,7 +418,6 @@ declare global {
         getStatus: () => Promise<OnboardingStatus>;
         detectDefaults: () => Promise<OnboardingDetectionResult>;
         detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
-        generateInitialPacks: (args?: { laneIds?: string[] }) => Promise<void>;
         complete: () => Promise<OnboardingStatus>;
       };
       ci: {
@@ -473,9 +467,6 @@ declare global {
         getRunGraph: (args: GetOrchestratorRunGraphArgs) => Promise<OrchestratorRunGraph>;
         startRun: (args: StartOrchestratorRunArgs) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
         startRunFromMission: (
-          args: StartOrchestratorRunFromMissionArgs
-        ) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
-        approveMissionPlan: (
           args: StartOrchestratorRunFromMissionArgs
         ) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
         startAttempt: (args: StartOrchestratorAttemptArgs) => Promise<OrchestratorAttempt>;
@@ -551,7 +542,7 @@ declare global {
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
         get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
-        updateMeta: (args: { sessionId: string; pinned?: boolean; goal?: string | null; toolType?: string | null; resumeCommand?: string | null }) => Promise<TerminalSessionSummary | null>;
+        updateMeta: (args: { sessionId: string; pinned?: boolean; title?: string; goal?: string | null; toolType?: string | null; resumeCommand?: string | null }) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
       };
@@ -565,6 +556,7 @@ declare global {
         approve: (args: AgentChatApproveArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
         dispose: (args: AgentChatDisposeArgs) => Promise<void>;
+        updateSession: (args: AgentChatUpdateSessionArgs) => Promise<AgentChatSession>;
         onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => () => void;
         listContextPacks: (args?: import("../shared/types").ContextPackListArgs) => Promise<import("../shared/types").ContextPackOption[]>;
         fetchContextPack: (args: import("../shared/types").ContextPackFetchArgs) => Promise<import("../shared/types").ContextPackFetchResult>;
@@ -651,42 +643,8 @@ declare global {
       };
       context: {
         getStatus: () => Promise<ContextStatus>;
-        getInventory: () => Promise<ContextInventorySnapshot>;
         generateDocs: (args: ContextGenerateDocsArgs) => Promise<ContextGenerateDocsResult>;
-        prepareDocGeneration: (args: ContextPrepareDocGenArgs) => Promise<ContextPrepareDocGenResult>;
-        installGeneratedDocs: (args: ContextInstallGeneratedDocsArgs) => Promise<ContextGenerateDocsResult>;
         openDoc: (args: ContextOpenDocArgs) => Promise<void>;
-      };
-      packs: {
-        getProjectPack: () => Promise<PackSummary>;
-        getLanePack: (laneId: string) => Promise<PackSummary>;
-        getFeaturePack: (featureKey: string) => Promise<PackSummary>;
-        getConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
-        getPlanPack: (laneId: string) => Promise<PackSummary>;
-        getMissionPack: (args: GetMissionPackArgs) => Promise<PackSummary>;
-        getProjectExport: (args: GetProjectExportArgs) => Promise<PackExport>;
-        getLaneExport: (args: GetLaneExportArgs) => Promise<PackExport>;
-        getConflictExport: (args: GetConflictExportArgs) => Promise<PackExport>;
-        getFeatureExport: (args: GetFeatureExportArgs) => Promise<PackExport>;
-        getPlanExport: (args: GetPlanExportArgs) => Promise<PackExport>;
-        getMissionExport: (args: GetMissionExportArgs) => Promise<PackExport>;
-        refreshLanePack: (laneId: string) => Promise<PackSummary>;
-        refreshProjectPack: (args?: { laneId?: string | null }) => Promise<PackSummary>;
-        refreshFeaturePack: (featureKey: string) => Promise<PackSummary>;
-        refreshConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
-        savePlanPack: (args: { laneId: string; body: string }) => Promise<PackSummary>;
-        refreshMissionPack: (args: RefreshMissionPackArgs) => Promise<PackSummary>;
-        refreshPlanPack: (laneId: string) => Promise<PackSummary>;
-        listVersions: (args: { packKey: string; limit?: number }) => Promise<PackVersionSummary[]>;
-        getVersion: (versionId: string) => Promise<PackVersion>;
-        diffVersions: (args: { fromId: string; toId: string }) => Promise<string>;
-        updateNarrative: (args: { packKey: string; narrative: string }) => Promise<PackSummary>;
-        listEvents: (args: { packKey: string; limit?: number }) => Promise<PackEvent[]>;
-        listEventsSince: (args: ListPackEventsSinceArgs) => Promise<PackEvent[]>;
-        listCheckpoints: (args?: { laneId?: string; limit?: number }) => Promise<Checkpoint[]>;
-        getHeadVersion: (packKey: string) => Promise<PackHeadVersion>;
-        getDeltaDigest: (args: import("../shared/types").PackDeltaDigestArgs) => Promise<import("../shared/types").PackDeltaDigestV1>;
-        onEvent: (cb: (ev: PackEvent) => void) => () => void;
       };
       github: {
         getStatus: () => Promise<GitHubStatus>;
@@ -793,11 +751,29 @@ declare global {
         getFactor: () => number;
       };
       memory?: {
-        getBudget: (args?: { projectId?: string; level?: string }) => Promise<unknown[]>;
+        add: (args: {
+          projectId?: string;
+          scope?: "user" | "project" | "lane" | "mission" | "agent";
+          scopeOwnerId?: string;
+          category: "fact" | "preference" | "pattern" | "decision" | "gotcha";
+          content: string;
+          importance?: "low" | "medium" | "high";
+          sourceRunId?: string;
+        }) => Promise<unknown>;
+        pin: (args: { id: string }) => Promise<void>;
+        updateCore: (args: CtoUpdateCoreMemoryArgs) => Promise<CtoSnapshot>;
+        getBudget: (args?: { projectId?: string; level?: string; scope?: "user" | "project" | "lane" | "mission" | "agent"; scopeOwnerId?: string }) => Promise<unknown[]>;
         getCandidates: (args?: { projectId?: string; limit?: number }) => Promise<unknown[]>;
         promote: (args: { id: string }) => Promise<void>;
         archive: (args: { id: string }) => Promise<void>;
-        search: (args: { query: string; projectId?: string; limit?: number }) => Promise<unknown[]>;
+        search: (args: {
+          query: string;
+          projectId?: string;
+          scope?: "user" | "project" | "lane" | "mission" | "agent";
+          scopeOwnerId?: string;
+          limit?: number;
+          status?: "promoted" | "candidate" | "archived" | "all";
+        }) => Promise<unknown[]>;
       };
       cto?: {
         getState: (args?: CtoGetStateArgs) => Promise<CtoSnapshot>;

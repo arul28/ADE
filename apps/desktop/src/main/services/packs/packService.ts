@@ -1,25 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createContextDocService } from "../context/contextDocService";
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
+import { createSessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
-import { getErrorMessage, toOptionalString, uniqueSorted } from "../shared/utils";
+import { uniqueSorted } from "../shared/utils";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type {
   Checkpoint,
   ConflictLineageV1,
-  ContextDocStatus,
-  ContextGenerateDocsArgs,
-  ContextGenerateDocsResult,
-  ContextInstallGeneratedDocsArgs,
-  ContextPrepareDocGenArgs,
-  ContextPrepareDocGenResult,
-  ContextStatus,
   ContextExportLevel,
   ContextHeaderV1,
   ConflictRiskLevel,
@@ -48,8 +43,7 @@ import type {
   ProjectExportManifestV1,
   ProjectManifestLaneEntryV1,
   SessionDeltaSummary,
-  TestRunStatus,
-  ContextRefreshTrigger
+  TestRunStatus
 } from "../../../shared/types";
 import {
   ADE_INTENT_END,
@@ -72,17 +66,12 @@ import type { PackRelation } from "../../../shared/contextContract";
 
 // ── Extracted builder modules ────────────────────────────────────────────────
 import {
-  type LaneSessionRow,
-  type SessionDeltaRow,
   safeJsonParseArray,
   readFileIfExists,
   ensureDirFor,
   ensureDir,
   safeSegment,
   parsePackMetadataJson,
-  parseNumStat,
-  parsePorcelainPaths,
-  parseChatTranscriptDelta,
   extractSection,
   statusFromCode,
   humanToolLabel,
@@ -92,7 +81,6 @@ import {
   buildGraphEnvelope,
   importanceRank,
   getDefaultSectionLocators,
-  rowToSessionDelta,
   upsertPackIndex,
   toPackSummaryFromRow,
   formatCommand,
@@ -100,12 +88,6 @@ import {
 } from "./packUtils";
 import {
   type ProjectPackBuilderDeps,
-  readContextDocMeta as readContextDocMetaImpl,
-  readContextStatus as readContextStatusImpl,
-  runContextDocGeneration as runContextDocGenerationImpl,
-  prepareContextDocGeneration as prepareContextDocGenerationImpl,
-  installGeneratedDocs as installGeneratedDocsImpl,
-  resolveContextDocPath as resolveContextDocPathImpl,
   buildProjectPackBody as buildProjectPackBodyImpl
 } from "./projectPackBuilder";
 import {
@@ -204,6 +186,10 @@ export function createPackService({
     projectConfigService,
     aiIntegrationService
   };
+  const contextDocService = createContextDocService({
+    ...projectPackBuilderDeps,
+    packsDir,
+  });
 
   const conflictPackBuilderDeps: ConflictPackBuilderDeps = {
     projectRoot,
@@ -218,122 +204,7 @@ export function createPackService({
   const computeLaneLineage = (args: { laneId: string; lanesById: Map<string, LaneSummary> }) => computeLaneLineageImpl(args);
   const buildLaneConflictRiskSummaryLines = (laneId: string) => buildLaneConflictRiskSummaryLinesImpl(conflictPackBuilderDeps, laneId);
 
-  const readContextDocMeta = () => readContextDocMetaImpl(projectRoot);
-  const readContextStatus = () => readContextStatusImpl({ db, projectId, projectRoot, packsDir });
-
-  type ContextDocRefreshPrefs = {
-    cadence: ContextRefreshTrigger;
-    provider: "codex" | "claude" | "unified";
-    modelId: string | null;
-    reasoningEffort: string | null;
-    updatedAt: string;
-  };
-  const CONTEXT_DOC_PREFS_KEY = "context:docs:preferences.v1";
-  const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
-  const AUTO_REFRESH_MIN_INTERVAL_MS: Record<Exclude<ContextRefreshTrigger, "manual">, number> = {
-    per_mission: 15 * 60_000,
-    per_pr: 15 * 60_000,
-    per_lane_refresh: 45 * 60_000
-  };
-
-  const normalizeRefreshTrigger = (value: unknown): ContextRefreshTrigger => {
-    const normalized = String(value ?? "").trim();
-    if (normalized === "per_mission" || normalized === "per_pr" || normalized === "per_lane_refresh") return normalized;
-    return "manual";
-  };
-
-  const normalizeContextProvider = (value: unknown): "codex" | "claude" | "unified" => {
-    const normalized = String(value ?? "").trim();
-    if (normalized === "codex" || normalized === "claude") return normalized;
-    return "unified";
-  };
-
-  const normalizeOptionalString = toOptionalString;
-
-  const readContextDocRefreshPrefs = (): ContextDocRefreshPrefs | null => {
-    const raw = db.getJson<Record<string, unknown>>(CONTEXT_DOC_PREFS_KEY);
-    if (!raw) return null;
-    return {
-      cadence: normalizeRefreshTrigger(raw.cadence),
-      provider: normalizeContextProvider(raw.provider),
-      modelId: normalizeOptionalString(raw.modelId),
-      reasoningEffort: normalizeOptionalString(raw.reasoningEffort),
-      updatedAt: normalizeOptionalString(raw.updatedAt) ?? nowIso()
-    };
-  };
-
-  const persistContextDocRefreshPrefs = (args: ContextGenerateDocsArgs): ContextDocRefreshPrefs => {
-    const prefs: ContextDocRefreshPrefs = {
-      cadence: normalizeRefreshTrigger(args.trigger),
-      provider: normalizeContextProvider(args.provider),
-      modelId: normalizeOptionalString(args.modelId),
-      reasoningEffort: normalizeOptionalString(args.reasoningEffort),
-      updatedAt: nowIso()
-    };
-    db.setJson(CONTEXT_DOC_PREFS_KEY, prefs);
-    return prefs;
-  };
-
-  const readLastContextDocRunAt = (): number | null => {
-    const raw = db.getJson<Record<string, unknown>>(CONTEXT_DOC_LAST_RUN_KEY);
-    const generatedAt = normalizeOptionalString(raw?.generatedAt);
-    if (!generatedAt) return null;
-    const ts = Date.parse(generatedAt);
-    return Number.isFinite(ts) ? ts : null;
-  };
-
-  const runContextDocGeneration = async (args: ContextGenerateDocsArgs) => {
-    persistContextDocRefreshPrefs(args);
-    return await runContextDocGenerationImpl(projectPackBuilderDeps, args);
-  };
-
-  const maybeAutoRefreshContextDocs = async (args: {
-    trigger: Exclude<ContextRefreshTrigger, "manual">;
-    reason?: string;
-    force?: boolean;
-  }): Promise<ContextGenerateDocsResult | null> => {
-    const trigger = normalizeRefreshTrigger(args.trigger);
-    if (trigger === "manual") return null;
-    const prefs = readContextDocRefreshPrefs();
-    if (!prefs || prefs.cadence !== trigger) return null;
-    const minIntervalMs = AUTO_REFRESH_MIN_INTERVAL_MS[trigger];
-    if (!args.force) {
-      const lastRunAt = readLastContextDocRunAt();
-      if (lastRunAt != null && Date.now() - lastRunAt < minIntervalMs) {
-        logger.debug("packs.context_docs.auto_refresh_skipped_recent", {
-          trigger,
-          reason: args.reason ?? null,
-          minIntervalMs
-        });
-        return null;
-      }
-    }
-    try {
-      logger.info("packs.context_docs.auto_refresh_start", {
-        trigger,
-        reason: args.reason ?? null,
-        provider: prefs.provider,
-        modelId: prefs.modelId
-      });
-      return await runContextDocGeneration({
-        provider: prefs.provider,
-        ...(prefs.modelId ? { modelId: prefs.modelId } : {}),
-        ...(prefs.reasoningEffort ? { reasoningEffort: prefs.reasoningEffort } : {}),
-        trigger
-      });
-    } catch (error) {
-      logger.warn("packs.context_docs.auto_refresh_failed", {
-        trigger,
-        reason: args.reason ?? null,
-        error: getErrorMessage(error)
-      });
-      return null;
-    }
-  };
-
-  const prepareContextDocGeneration = (args: ContextPrepareDocGenArgs) => prepareContextDocGenerationImpl(projectPackBuilderDeps, args);
-  const installGeneratedDocs = (args: ContextInstallGeneratedDocsArgs) => installGeneratedDocsImpl(projectPackBuilderDeps, args);
-  const resolveContextDocPath = (docId: ContextDocStatus["id"]) => resolveContextDocPathImpl(projectRoot, docId);
+  const readContextDocMeta = () => contextDocService.getDocMeta();
 
   const buildProjectPackBody = (args: { reason: string; deterministicUpdatedAt: string; sourceLaneId?: string }) =>
     buildProjectPackBodyImpl(projectPackBuilderDeps, args);
@@ -909,80 +780,13 @@ export function createPackService({
     };
   };
 
-  const getSessionRow = (sessionId: string): LaneSessionRow | null =>
-    db.get<LaneSessionRow>(
-      `
-        select
-          id,
-          lane_id,
-          tracked,
-          started_at,
-          ended_at,
-          head_sha_start,
-          head_sha_end,
-          transcript_path
-        from terminal_sessions
-        where id = ?
-        limit 1
-      `,
-      [sessionId]
-    );
-
-  const getSessionDeltaRow = (sessionId: string): SessionDeltaRow | null =>
-    db.get<SessionDeltaRow>(
-      `
-        select
-          session_id,
-          lane_id,
-          started_at,
-          ended_at,
-          head_sha_start,
-          head_sha_end,
-          files_changed,
-          insertions,
-          deletions,
-          touched_files_json,
-          failure_lines_json,
-          computed_at
-        from session_deltas
-        where session_id = ?
-        limit 1
-      `,
-      [sessionId]
-    );
-
   const getHeadSha = async (worktreePath: string): Promise<string | null> => {
     const res = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
     if (res.exitCode !== 0) return null;
     const sha = res.stdout.trim();
     return sha.length ? sha : null;
   };
-
-  const listRecentLaneSessionDeltas = (laneId: string, limit: number): SessionDeltaSummary[] => {
-    const rows = db.all<SessionDeltaRow>(
-      `
-        select
-          d.session_id,
-          d.lane_id,
-          d.started_at,
-          d.ended_at,
-          d.head_sha_start,
-          d.head_sha_end,
-          d.files_changed,
-          d.insertions,
-          d.deletions,
-          d.touched_files_json,
-          d.failure_lines_json,
-          d.computed_at
-        from session_deltas d
-        where d.lane_id = ?
-        order by d.started_at desc
-        limit ?
-      `,
-      [laneId, limit]
-    );
-    return rows.map(rowToSessionDelta);
-  };
+  const sessionDeltaService = createSessionDeltaService({ db, projectId, laneService, sessionService });
 
   const buildLanePackBody = async ({
     laneId,
@@ -1510,6 +1314,142 @@ export function createPackService({
     return toPackSummaryFromRow({ packKey, row: effectiveRow, version });
   };
 
+  const buildLiveLanePackSummary = async (args: {
+    laneId: string;
+ 	    reason: string;
+  }): Promise<PackSummary> => {
+    const storedPack = getPackSummaryForKey(`lane:${args.laneId}`, {
+      packType: "lane",
+      packPath: getLanePackPath(args.laneId)
+    });
+    const deterministicUpdatedAt = nowIso();
+    const latestDelta = sessionDeltaService.listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
+    const { body, lastHeadSha } = await buildLanePackBody({
+      laneId: args.laneId,
+      reason: args.reason,
+      latestDelta,
+      deterministicUpdatedAt
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt,
+      lastHeadSha
+    });
+  };
+
+  const buildLiveProjectPackSummary = async (args: {
+    reason: string;
+    sourceLaneId?: string;
+  }): Promise<PackSummary> => {
+    const storedPack = getPackSummaryForKey("project", {
+      packType: "project",
+      packPath: projectPackPath
+    });
+    const deterministicUpdatedAt = nowIso();
+    const body = await buildProjectPackBody({
+      reason: args.reason,
+      deterministicUpdatedAt,
+      sourceLaneId: args.sourceLaneId
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt
+    });
+  };
+
+  const buildLiveConflictPackSummary = async (args: {
+    laneId: string;
+    peerLaneId: string | null;
+    reason: string;
+  }): Promise<PackSummary> => {
+    const lane = laneService.getLaneBaseAndBranch(args.laneId);
+    const peerKey = args.peerLaneId ?? lane.baseRef;
+    const storedPack = getPackSummaryForKey(`conflict:${args.laneId}:${peerKey}`, {
+      packType: "conflict",
+      packPath: getConflictPackPath(args.laneId, peerKey)
+    });
+    const deterministicUpdatedAt = nowIso();
+    const { body, lastHeadSha } = await buildConflictPackBody({
+      laneId: args.laneId,
+      peerLaneId: args.peerLaneId,
+      reason: args.reason,
+      deterministicUpdatedAt
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt,
+      lastHeadSha
+    });
+  };
+
+  const buildLivePlanPackSummary = async (args: {
+    laneId: string;
+    reason: string;
+  }): Promise<PackSummary> => {
+    const storedPack = getPackSummaryForKey(`plan:${args.laneId}`, {
+      packType: "plan",
+      packPath: getPlanPackPath(args.laneId)
+    });
+    const deterministicUpdatedAt = nowIso();
+    const { body, headSha } = await buildPlanPackBody({
+      laneId: args.laneId,
+      reason: args.reason,
+      deterministicUpdatedAt
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt,
+      lastHeadSha: headSha
+    });
+  };
+
+  const buildLiveFeaturePackSummary = async (args: {
+    featureKey: string;
+    reason: string;
+  }): Promise<PackSummary> => {
+    const storedPack = getPackSummaryForKey(`feature:${args.featureKey}`, {
+      packType: "feature",
+      packPath: getFeaturePackPath(args.featureKey)
+    });
+    const deterministicUpdatedAt = nowIso();
+    const { body } = await buildFeaturePackBody({
+      featureKey: args.featureKey,
+      reason: args.reason,
+      deterministicUpdatedAt
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt
+    });
+  };
+
+  const buildLiveMissionPackSummary = async (args: {
+    missionId: string;
+    reason: string;
+  }): Promise<PackSummary> => {
+    const storedPack = getPackSummaryForKey(`mission:${args.missionId}`, {
+      packType: "mission",
+      packPath: getMissionPackPath(args.missionId)
+    });
+    const deterministicUpdatedAt = nowIso();
+    const { body } = await buildMissionPackBody({
+      missionId: args.missionId,
+      reason: args.reason,
+      deterministicUpdatedAt,
+      runId: null
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt
+    });
+  };
+
   // ── Mission/Plan/Feature builder wrappers ────────────────────────────────────
 
   const missionPackBuilderDeps: MissionPackBuilderDeps = {
@@ -1520,7 +1460,13 @@ export function createPackService({
     packsDir,
     laneService,
     projectConfigService,
-    getLanePackPath,
+    getLanePackBody: async (laneId: string) => {
+      const pack = await buildLiveLanePackSummary({
+        laneId,
+        reason: "context_export_dependency"
+      });
+      return pack.body;
+    },
     readConflictPredictionPack,
     getHeadSha,
     getPackIndexRow
@@ -1534,6 +1480,76 @@ export function createPackService({
     buildMissionPackBodyImpl(missionPackBuilderDeps, args);
   const buildConflictPackBody = (args: { laneId: string; peerLaneId: string | null; reason: string; deterministicUpdatedAt: string }) =>
     buildConflictPackBodyImpl(conflictPackBuilderDeps, args);
+
+  const buildLivePackSummary = (args: {
+    storedPack: PackSummary;
+    body: string;
+    deterministicUpdatedAt: string | null;
+    narrativeUpdatedAt?: string | null;
+    lastHeadSha?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): PackSummary => {
+    const contentHash = sha256(args.body);
+    const reuseStoredVersion =
+      typeof args.storedPack.contentHash === "string" &&
+      args.storedPack.contentHash === contentHash &&
+      typeof args.storedPack.versionId === "string" &&
+      args.storedPack.versionId.trim().length > 0;
+    const versionId = reuseStoredVersion
+      ? args.storedPack.versionId ?? null
+      : `live:${args.storedPack.packKey}:${contentHash.slice(0, 16)}`;
+    const versionNumber = reuseStoredVersion ? args.storedPack.versionNumber ?? null : null;
+
+    return {
+      ...args.storedPack,
+      exists: args.body.trim().length > 0 || args.storedPack.exists,
+      deterministicUpdatedAt: args.deterministicUpdatedAt,
+      narrativeUpdatedAt: args.narrativeUpdatedAt ?? args.storedPack.narrativeUpdatedAt ?? null,
+      lastHeadSha: args.lastHeadSha ?? args.storedPack.lastHeadSha ?? null,
+      versionId,
+      versionNumber,
+      contentHash,
+      metadata: args.metadata ?? args.storedPack.metadata ?? null,
+      body: args.body
+    };
+  };
+
+  const buildBasicExport = (args: {
+    packKey: string;
+    packType: "feature" | "plan" | "mission";
+    level: ContextExportLevel;
+    pack: PackSummary;
+  }): PackExport => {
+    const header = {
+      schema: CONTEXT_HEADER_SCHEMA_V1,
+      contractVersion: CONTEXT_CONTRACT_VERSION,
+      projectId,
+      packKey: args.packKey,
+      packType: args.packType,
+      exportLevel: args.level,
+      deterministicUpdatedAt: args.pack.deterministicUpdatedAt ?? null,
+      narrativeUpdatedAt: args.pack.narrativeUpdatedAt ?? null,
+      versionId: args.pack.versionId ?? null,
+      versionNumber: args.pack.versionNumber ?? null,
+      contentHash: args.pack.contentHash ?? null
+    } satisfies ContextHeaderV1;
+    const content = args.pack.body;
+    const approxTokens = Math.ceil(content.length / 4);
+    const maxTokens = args.level === "lite" ? 30_000 : args.level === "standard" ? 60_000 : 120_000;
+    const truncated = approxTokens > maxTokens;
+    const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
+    return {
+      packKey: args.packKey,
+      packType: args.packType,
+      level: args.level,
+      header,
+      content: finalContent,
+      approxTokens: Math.ceil(finalContent.length / 4),
+      maxTokens,
+      truncated,
+      warnings: truncated ? [`${args.packType[0]!.toUpperCase()}${args.packType.slice(1)} pack content was truncated to fit token budget.`] : []
+    };
+  };
 
   return {
     getProjectPack(): PackSummary {
@@ -1580,34 +1596,6 @@ export function createPackService({
         metadata: null,
         body
       };
-    },
-
-    getContextStatus(): ContextStatus {
-      return readContextStatus();
-    },
-
-    async generateContextDocs(args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> {
-      return runContextDocGeneration(args);
-    },
-
-    async maybeAutoRefreshContextDocs(args: {
-      trigger: "per_mission" | "per_pr" | "per_lane_refresh";
-      reason?: string;
-      force?: boolean;
-    }): Promise<ContextGenerateDocsResult | null> {
-      return await maybeAutoRefreshContextDocs(args);
-    },
-
-    prepareContextDocGeneration(args: ContextPrepareDocGenArgs): ContextPrepareDocGenResult {
-      return prepareContextDocGeneration(args);
-    },
-
-    installGeneratedDocs(args: ContextInstallGeneratedDocsArgs): ContextGenerateDocsResult {
-      return installGeneratedDocs(args);
-    },
-
-    getContextDocPath(docId: ContextDocStatus["id"]): string {
-      return resolveContextDocPath(docId);
     },
 
     getLanePack(laneId: string): PackSummary {
@@ -1689,151 +1677,6 @@ export function createPackService({
       return getPackSummaryForKey(packKey, { packType: "mission", packPath: getMissionPackPath(id) });
     },
 
-    getSessionDelta(sessionId: string): SessionDeltaSummary | null {
-      const row = getSessionDeltaRow(sessionId);
-      if (!row) return null;
-      return rowToSessionDelta(row);
-    },
-
-    async computeSessionDelta(sessionId: string): Promise<SessionDeltaSummary | null> {
-      const session = getSessionRow(sessionId);
-      if (!session) return null;
-      if (session.tracked !== 1) return null;
-
-      const lane = laneService.getLaneBaseAndBranch(session.lane_id);
-      const diffRef = session.head_sha_start?.trim() || "HEAD";
-
-      const numStatRes = await runGit(["diff", "--numstat", diffRef], { cwd: lane.worktreePath, timeoutMs: 20_000 });
-      const nameRes = await runGit(["diff", "--name-only", diffRef], { cwd: lane.worktreePath, timeoutMs: 20_000 });
-      const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
-
-      const parsedStat = parseNumStat(numStatRes.stdout);
-      const touched = new Set<string>([...parsedStat.files]);
-
-      if (nameRes.exitCode === 0) {
-        for (const line of nameRes.stdout.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
-          touched.add(line);
-        }
-      }
-
-      if (statusRes.exitCode === 0) {
-        for (const rel of parsePorcelainPaths(statusRes.stdout)) {
-          touched.add(rel);
-        }
-      }
-
-      const isChatTranscript = session.transcript_path.endsWith(".chat.jsonl");
-      const transcript = sessionService.readTranscriptTail(
-        session.transcript_path,
-        220_000,
-        isChatTranscript ? { raw: true, alignToLineBoundary: true } : undefined
-      );
-      const failureLines = (() => {
-        const out: string[] = [];
-        const seen = new Set<string>();
-        const push = (value: string | null | undefined) => {
-          const normalized = stripAnsi(String(value ?? "")).replace(/\s+/g, " ").trim();
-          if (!normalized.length) return;
-          if (seen.has(normalized)) return;
-          seen.add(normalized);
-          out.push(normalized);
-        };
-
-        for (const rawLine of transcript.split("\n")) {
-          const line = stripAnsi(rawLine).trim();
-          if (!line) continue;
-          if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(line)) continue;
-          push(line);
-        }
-
-        if (isChatTranscript) {
-          const chatDelta = parseChatTranscriptDelta(transcript);
-          for (const touchedPath of chatDelta.touchedFiles) {
-            touched.add(touchedPath);
-          }
-          for (const line of chatDelta.failureLines) {
-            push(line);
-          }
-        }
-
-        return out.slice(-8);
-      })();
-
-      const touchedFiles = [...touched].sort();
-      const computedAt = new Date().toISOString();
-
-      db.run(
-        `
-          insert into session_deltas(
-            session_id,
-            project_id,
-            lane_id,
-            started_at,
-            ended_at,
-            head_sha_start,
-            head_sha_end,
-            files_changed,
-            insertions,
-            deletions,
-            touched_files_json,
-            failure_lines_json,
-            computed_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          on conflict(session_id) do update set
-            project_id = excluded.project_id,
-            lane_id = excluded.lane_id,
-            started_at = excluded.started_at,
-            ended_at = excluded.ended_at,
-            head_sha_start = excluded.head_sha_start,
-            head_sha_end = excluded.head_sha_end,
-            files_changed = excluded.files_changed,
-            insertions = excluded.insertions,
-            deletions = excluded.deletions,
-            touched_files_json = excluded.touched_files_json,
-            failure_lines_json = excluded.failure_lines_json,
-            computed_at = excluded.computed_at
-        `,
-        [
-          session.id,
-          projectId,
-          session.lane_id,
-          session.started_at,
-          session.ended_at,
-          session.head_sha_start,
-          session.head_sha_end,
-          touchedFiles.length,
-          parsedStat.insertions,
-          parsedStat.deletions,
-          JSON.stringify(touchedFiles),
-          JSON.stringify(failureLines),
-          computedAt
-        ]
-      );
-
-      logger.info("packs.session_delta_updated", {
-        sessionId,
-        laneId: session.lane_id,
-        filesChanged: touchedFiles.length,
-        insertions: parsedStat.insertions,
-        deletions: parsedStat.deletions
-      });
-
-      return {
-        sessionId: session.id,
-        laneId: session.lane_id,
-        startedAt: session.started_at,
-        endedAt: session.ended_at,
-        headShaStart: session.head_sha_start,
-        headShaEnd: session.head_sha_end,
-        filesChanged: touchedFiles.length,
-        insertions: parsedStat.insertions,
-        deletions: parsedStat.deletions,
-        touchedFiles,
-        failureLines,
-        computedAt
-      };
-    },
-
     async refreshLanePack(args: { laneId: string; reason: string; sessionId?: string }): Promise<PackSummary> {
       const op = operationService.start({
         laneId: args.laneId,
@@ -1846,8 +1689,8 @@ export function createPackService({
 
       try {
         const latestDelta = args.sessionId
-          ? await this.computeSessionDelta(args.sessionId)
-          : listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
+          ? await sessionDeltaService.computeSessionDelta(args.sessionId)
+          : sessionDeltaService.listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
         const deterministicUpdatedAt = nowIso();
         const { body, lastHeadSha } = await buildLanePackBody({
           laneId: args.laneId,
@@ -1988,132 +1831,6 @@ export function createPackService({
       }
     },
 
-    async refreshFeaturePack(args: { featureKey: string; reason: string }): Promise<PackSummary> {
-      const key = args.featureKey.trim();
-      if (!key) throw new Error("featureKey is required");
-      const packKey = `feature:${key}`;
-      const deterministicUpdatedAt = nowIso();
-      const built = await buildFeaturePackBody({
-        featureKey: key,
-        reason: args.reason,
-        deterministicUpdatedAt
-      });
-
-      const packPath = getFeaturePackPath(key);
-      return persistPackRefresh({
-        packKey,
-        packType: "feature",
-        packPath,
-        laneId: null,
-        body: built.body,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
-        lastHeadSha: null,
-        metadata: {
-          reason: args.reason,
-          featureKey: key,
-          laneIds: built.laneIds
-        },
-        eventType: "refresh_triggered",
-        eventPayload: { trigger: args.reason, featureKey: key, laneIds: built.laneIds }
-      });
-    },
-
-    async refreshConflictPack(args: { laneId: string; peerLaneId?: string | null; reason: string }): Promise<PackSummary> {
-      const laneId = args.laneId.trim();
-      if (!laneId) throw new Error("laneId is required");
-      const peer = args.peerLaneId?.trim() || null;
-      const lane = laneService.getLaneBaseAndBranch(laneId);
-      const peerKey = peer ?? lane.baseRef;
-      const packKey = `conflict:${laneId}:${peerKey}`;
-
-      const deterministicUpdatedAt = nowIso();
-      const built = await buildConflictPackBody({
-        laneId,
-        peerLaneId: peer,
-        reason: args.reason,
-        deterministicUpdatedAt
-      });
-
-      const packPath = getConflictPackPath(laneId, peerKey);
-      return persistPackRefresh({
-        packKey,
-        packType: "conflict",
-        packPath,
-        laneId,
-        body: built.body,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
-        lastHeadSha: built.lastHeadSha,
-        metadata: {
-          reason: args.reason,
-          laneId,
-          peerLaneId: peer,
-          peerKey
-        },
-        eventType: "refresh_triggered",
-        eventPayload: { trigger: args.reason, laneId, peerLaneId: peer, peerKey }
-      });
-    },
-
-    async refreshPlanPack(args: { laneId: string; reason: string }): Promise<PackSummary> {
-      const laneId = args.laneId.trim();
-      if (!laneId) throw new Error("laneId is required");
-      const packKey = `plan:${laneId}`;
-      const deterministicUpdatedAt = nowIso();
-      const built = await buildPlanPackBody({
-        laneId,
-        reason: args.reason,
-        deterministicUpdatedAt
-      });
-      const packPath = getPlanPackPath(laneId);
-      return persistPackRefresh({
-        packKey,
-        packType: "plan",
-        packPath,
-        laneId,
-        body: built.body,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
-        lastHeadSha: built.headSha,
-        metadata: {
-          reason: args.reason,
-          laneId
-        },
-        eventType: "refresh_triggered",
-        eventPayload: { trigger: args.reason, laneId }
-      });
-    },
-
-    async savePlanPack(args: { laneId: string; body: string; reason: string }): Promise<PackSummary> {
-      const laneId = args.laneId.trim();
-      if (!laneId) throw new Error("laneId is required");
-      const packKey = `plan:${laneId}`;
-      const packPath = getPlanPackPath(laneId);
-      const deterministicUpdatedAt = nowIso();
-
-      const lane = laneService.getLaneBaseAndBranch(laneId);
-      const headSha = await getHeadSha(lane.worktreePath);
-
-      const body = args.body ?? "";
-      return persistPackRefresh({
-        packKey,
-        packType: "plan",
-        packPath,
-        laneId,
-        body,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: deterministicUpdatedAt,
-        lastHeadSha: headSha,
-        metadata: {
-          reason: args.reason,
-          laneId
-        },
-        eventType: "plan_saved",
-        eventPayload: { trigger: args.reason, laneId }
-      });
-    },
-
     async refreshMissionPack(args: { missionId: string; reason: string; runId?: string | null }): Promise<PackSummary> {
       const missionId = args.missionId.trim();
       if (!missionId) throw new Error("missionId is required");
@@ -2149,100 +1866,6 @@ export function createPackService({
       });
     },
 
-    updateNarrative(args: { packKey: string; narrative: string; source?: string; metadata?: Record<string, unknown> }): PackSummary {
-      const packKey = args.packKey.trim();
-      if (!packKey) throw new Error("packKey is required");
-      const row = getPackIndexRow(packKey);
-      if (!row?.pack_path) throw new Error(`Pack not found: ${packKey}`);
-      const existingMetadata = parsePackMetadataJson(row.metadata_json) ?? {};
-      const nextMetadata: Record<string, unknown> = {
-        ...existingMetadata,
-        ...(args.metadata ?? {})
-      };
-
-      const existing = readFileIfExists(row.pack_path);
-      const { updated: updatedBody, insertedMarkers } = replaceNarrativeSection(existing, args.narrative);
-      ensureDirFor(row.pack_path);
-      fs.writeFileSync(row.pack_path, updatedBody, "utf8");
-
-      const now = nowIso();
-      const provider = typeof nextMetadata.provider === "string" ? nextMetadata.provider : null;
-      const model = typeof nextMetadata.model === "string" ? nextMetadata.model : null;
-      createPackEvent({
-        packKey,
-        eventType: "narrative_update",
-        payload: {
-          source: args.source ?? "user",
-          insertedMarkers,
-          ...(provider ? { provider } : {}),
-          ...(model ? { model } : {})
-        }
-      });
-
-      const version = createPackVersion({ packKey, packType: row.pack_type, body: updatedBody });
-      nextMetadata.source = args.source ?? "user";
-      nextMetadata.versionId = version.versionId;
-      nextMetadata.versionNumber = version.versionNumber;
-      nextMetadata.contentHash = version.contentHash;
-
-      upsertPackIndex({
-        db,
-        projectId,
-        packKey,
-        laneId: row.lane_id ?? null,
-        packType: row.pack_type,
-        packPath: row.pack_path,
-        deterministicUpdatedAt: row.deterministic_updated_at ?? now,
-        narrativeUpdatedAt: now,
-        lastHeadSha: row.last_head_sha ?? null,
-        metadata: nextMetadata
-      });
-
-      return toPackSummaryFromRow({
-        packKey,
-        row: {
-          ...row,
-          narrative_updated_at: now
-        },
-        version: {
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash
-        }
-      });
-    },
-
-    listVersions(args: { packKey: string; limit?: number }): PackVersionSummary[] {
-      const packKey = args.packKey.trim();
-      if (!packKey) throw new Error("packKey is required");
-      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 50;
-      const packType = getPackIndexRow(packKey)?.pack_type ?? inferPackTypeFromKey(packKey);
-      const rows = db.all<{
-        id: string;
-        version_number: number;
-        content_hash: string;
-        created_at: string;
-      }>(
-        `
-          select id, version_number, content_hash, created_at
-          from pack_versions
-          where project_id = ?
-            and pack_key = ?
-          order by version_number desc
-          limit ?
-        `,
-        [projectId, packKey, limit]
-      );
-      return rows.map((row) => ({
-        id: row.id,
-        packKey,
-        packType,
-        versionNumber: Number(row.version_number ?? 0),
-        contentHash: String(row.content_hash ?? ""),
-        createdAt: row.created_at
-      }));
-    },
-
     getVersion(versionId: string): PackVersion {
       const id = versionId.trim();
       if (!id) throw new Error("versionId is required");
@@ -2275,57 +1898,6 @@ export function createPackService({
         body: readFileIfExists(row.rendered_path),
         createdAt: row.created_at
       };
-    },
-
-    async diffVersions(args: { fromId: string; toId: string }): Promise<string> {
-      const from = this.getVersion(args.fromId);
-      const to = this.getVersion(args.toId);
-      const res = await runGit(["diff", "--no-index", "--", from.renderedPath, to.renderedPath], {
-        cwd: projectRoot,
-        timeoutMs: 20_000
-      });
-      if (res.exitCode === 0 || res.exitCode === 1) {
-        return res.stdout;
-      }
-      throw new Error(res.stderr.trim() || "Failed to diff pack versions");
-    },
-
-    listEvents(args: { packKey: string; limit?: number }): PackEvent[] {
-      const packKey = args.packKey.trim();
-      if (!packKey) throw new Error("packKey is required");
-      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 50;
-      const rows = db.all<{
-        id: string;
-        pack_key: string;
-        event_type: string;
-        payload_json: string | null;
-        created_at: string;
-      }>(
-        `
-          select id, pack_key, event_type, payload_json, created_at
-          from pack_events
-          where project_id = ?
-            and pack_key = ?
-          order by created_at desc
-          limit ?
-        `,
-        [projectId, packKey, limit]
-      );
-      return rows.map((row) =>
-        ensureEventMeta({
-          id: row.id,
-          packKey: row.pack_key,
-          eventType: row.event_type,
-          payload: (() => {
-            try {
-              return row.payload_json ? (JSON.parse(row.payload_json) as Record<string, unknown>) : {};
-            } catch {
-              return {};
-            }
-          })(),
-          createdAt: row.created_at
-        })
-      );
     },
 
     listEventsSince(args: ListPackEventsSinceArgs): PackEvent[] {
@@ -2567,101 +2139,6 @@ export function createPackService({
       };
     },
 
-    listCheckpoints(args: { laneId?: string; limit?: number } = {}): Checkpoint[] {
-      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, Math.floor(args.limit))) : 100;
-      const where = ["project_id = ?"];
-      const params: Array<string | number> = [projectId];
-      if (args.laneId) {
-        where.push("lane_id = ?");
-        params.push(args.laneId);
-      }
-      params.push(limit);
-      const rows = db.all<{
-        id: string;
-        lane_id: string;
-        session_id: string | null;
-        sha: string;
-        diff_stat_json: string | null;
-        pack_event_ids_json: string | null;
-        created_at: string;
-      }>(
-        `
-          select id, lane_id, session_id, sha, diff_stat_json, pack_event_ids_json, created_at
-          from checkpoints
-          where ${where.join(" and ")}
-          order by created_at desc
-          limit ?
-        `,
-        params
-      );
-      return rows.map((row) => ({
-        id: row.id,
-        laneId: row.lane_id,
-        sessionId: row.session_id,
-        sha: row.sha,
-        diffStat: (() => {
-          try {
-            return row.diff_stat_json
-              ? (JSON.parse(row.diff_stat_json) as Checkpoint["diffStat"])
-              : { insertions: 0, deletions: 0, filesChanged: 0, files: [] };
-          } catch {
-            return { insertions: 0, deletions: 0, filesChanged: 0, files: [] };
-          }
-        })(),
-        packEventIds: (() => {
-          try {
-            return row.pack_event_ids_json ? (JSON.parse(row.pack_event_ids_json) as string[]) : [];
-          } catch {
-            return [];
-          }
-        })(),
-        createdAt: row.created_at
-      }));
-    },
-
-    getPeerLanesContext(laneId: string): string {
-      const id = laneId.trim();
-      if (!id) return "";
-      try {
-        const pack = readConflictPredictionPack(id);
-        if (!pack) return "";
-        const overlaps = Array.isArray(pack.overlaps) ? pack.overlaps : [];
-        if (!overlaps.length) return "";
-
-        const riskScore = (r: string): number => {
-          const n = r.trim().toLowerCase();
-          if (n === "high") return 3;
-          if (n === "medium") return 2;
-          if (n === "low") return 1;
-          return 0;
-        };
-
-        const peers = overlaps
-          .filter((ov) => ov && ov.peerId != null)
-          .map((ov) => {
-            const peerName = asString(ov.peerName).trim() || asString(ov.peerId).trim() || "unknown";
-            const riskLevel = asString(ov.riskLevel).trim() || "unknown";
-            const files = Array.isArray(ov.files) ? ov.files.map((f) => asString(typeof f === "string" ? f : f?.path).trim()).filter(Boolean) : [];
-            return { peerName, riskLevel, files, score: riskScore(riskLevel) };
-          })
-          .filter((ov) => ov.score > 0 || ov.files.length > 0)
-          .sort((a, b) => b.score - a.score || b.files.length - a.files.length || a.peerName.localeCompare(b.peerName))
-          .slice(0, 10);
-
-        if (!peers.length) return "";
-
-        const lines = ["## Peer Lanes Context", ""];
-        for (const peer of peers) {
-          const risk = ` | conflict risk: ${peer.riskLevel}`;
-          const fileList = peer.files.length ? ` | overlapping files: ${peer.files.slice(0, 5).join(", ")}` : "";
-          lines.push(`- **${peer.peerName}**${risk}${fileList}`);
-        }
-        return lines.join("\n");
-      } catch {
-        return "";
-      }
-    },
-
     async getLaneExport(args: GetLaneExportArgs): Promise<PackExport> {
       const laneId = args.laneId.trim();
       if (!laneId) throw new Error("laneId is required");
@@ -2674,10 +2151,10 @@ export function createPackService({
       const lane = lanes.find((entry) => entry.id === laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
-      const pack = this.getLanePack(laneId);
-      if (!pack.exists || !pack.body.trim().length) {
-        throw new Error("Lane pack is empty. Refresh deterministic packs first.");
-      }
+      const pack = await buildLiveLanePackSummary({
+        laneId,
+        reason: "context_export"
+      });
 
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
       const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
@@ -2698,14 +2175,6 @@ export function createPackService({
           conflictStatus: (conflictState?.status ?? null) as ConflictStatusValue | null
         })
       };
-
-      const packRefreshAt = pack.deterministicUpdatedAt ?? null;
-      const packRefreshAgeMs = (() => {
-        if (!packRefreshAt) return null;
-        const ts = Date.parse(packRefreshAt);
-        if (!Number.isFinite(ts)) return null;
-        return Math.max(0, Date.now() - ts);
-      })();
 
       const predictionPack = readConflictPredictionPack(laneId);
       const lastConflictRefreshAt =
@@ -2824,10 +2293,9 @@ export function createPackService({
           baseRef: lane.baseRef,
           headRef: lane.branchRef,
           headSha: pack.lastHeadSha ?? null,
-          lastPackRefreshAt: packRefreshAt,
+          lastPackRefreshAt: pack.deterministicUpdatedAt ?? null,
           isEditProtected: lane.isEditProtected,
-          packStale: packRefreshAgeMs != null ? packRefreshAgeMs > 10 * 60_000 : null,
-          ...(packRefreshAgeMs != null && packRefreshAgeMs > 10 * 60_000 ? { packStaleReason: `lastPackRefreshAgeMs=${packRefreshAgeMs}` } : {})
+          packStale: false
         },
         conflicts: {
           activeConflictPackKeys,
@@ -2919,7 +2387,9 @@ export function createPackService({
       if (level !== "lite" && level !== "standard" && level !== "deep") {
         throw new Error(`Invalid export level: ${String(level)}`);
       }
-      const pack = this.getProjectPack();
+      const pack = await buildLiveProjectPackSummary({
+        reason: "context_export"
+      });
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
       const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
       const docsMeta = readContextDocMeta();
@@ -2943,15 +2413,6 @@ export function createPackService({
           conflictStatus: (conflictState?.status ?? null) as ConflictStatusValue | null
         });
 
-        const packRow = getPackIndexRow(`lane:${lane.id}`);
-        const packRefreshAt = packRow?.deterministic_updated_at ?? null;
-        const packRefreshAgeMs = (() => {
-          if (!packRefreshAt) return null;
-          const ts = Date.parse(packRefreshAt);
-          if (!Number.isFinite(ts)) return null;
-          return Math.max(0, Date.now() - ts);
-        })();
-
         return {
           laneId: lane.id,
           laneName: lane.name,
@@ -2971,10 +2432,9 @@ export function createPackService({
             baseRef: lane.baseRef,
             headRef: lane.branchRef,
             headSha: null,
-            lastPackRefreshAt: packRefreshAt,
+            lastPackRefreshAt: null,
             isEditProtected: lane.isEditProtected,
-            packStale: packRefreshAgeMs != null ? packRefreshAgeMs > 10 * 60_000 : null,
-            ...(packRefreshAgeMs != null && packRefreshAgeMs > 10 * 60_000 ? { packStaleReason: `lastPackRefreshAgeMs=${packRefreshAgeMs}` } : {})
+            packStale: false
           },
           conflictState
         };
@@ -3022,7 +2482,11 @@ export function createPackService({
       const packKey = `conflict:${laneId}:${peerKey}`;
       const peerLabel = peerLaneId ? `lane:${peerLaneId}` : `base:${lane.baseRef}`;
 
-      const pack = this.getConflictPack({ laneId, peerLaneId });
+      const pack = await buildLiveConflictPackSummary({
+        laneId,
+        peerLaneId,
+        reason: "context_export"
+      });
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
       const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
 
@@ -3177,32 +2641,12 @@ export function createPackService({
       if (level !== "lite" && level !== "standard" && level !== "deep") {
         throw new Error(`Invalid export level: ${String(level)}`);
       }
-      const pack = this.getFeaturePack(featureKey);
       const packKey = `feature:${featureKey}`;
-      const header = {
-        schema: CONTEXT_HEADER_SCHEMA_V1,
-        contractVersion: CONTEXT_CONTRACT_VERSION,
-        projectId,
-        packKey,
-        packType: "feature" as const,
-        exportLevel: level
-      } satisfies ContextHeaderV1;
-      const content = pack.exists ? pack.body : "";
-      const approxTokens = Math.ceil(content.length / 4);
-      const maxTokens = level === "lite" ? 30_000 : level === "standard" ? 60_000 : 120_000;
-      const truncated = approxTokens > maxTokens;
-      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
-      return {
-        packKey,
-        packType: "feature",
-        level,
-        header,
-        content: finalContent,
-        approxTokens: Math.ceil(finalContent.length / 4),
-        maxTokens,
-        truncated,
-        warnings: truncated ? ["Feature pack content was truncated to fit token budget."] : []
-      };
+      const pack = await buildLiveFeaturePackSummary({
+        featureKey,
+        reason: "context_export"
+      });
+      return buildBasicExport({ packKey, packType: "feature", level, pack });
     },
 
     async getPlanExport(args: { laneId: string; level: ContextExportLevel }): Promise<PackExport> {
@@ -3212,32 +2656,12 @@ export function createPackService({
       if (level !== "lite" && level !== "standard" && level !== "deep") {
         throw new Error(`Invalid export level: ${String(level)}`);
       }
-      const pack = this.getPlanPack(laneId);
       const packKey = `plan:${laneId}`;
-      const header = {
-        schema: CONTEXT_HEADER_SCHEMA_V1,
-        contractVersion: CONTEXT_CONTRACT_VERSION,
-        projectId,
-        packKey,
-        packType: "plan" as const,
-        exportLevel: level
-      } satisfies ContextHeaderV1;
-      const content = pack.exists ? pack.body : "";
-      const approxTokens = Math.ceil(content.length / 4);
-      const maxTokens = level === "lite" ? 30_000 : level === "standard" ? 60_000 : 120_000;
-      const truncated = approxTokens > maxTokens;
-      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
-      return {
-        packKey,
-        packType: "plan",
-        level,
-        header,
-        content: finalContent,
-        approxTokens: Math.ceil(finalContent.length / 4),
-        maxTokens,
-        truncated,
-        warnings: truncated ? ["Plan pack content was truncated to fit token budget."] : []
-      };
+      const pack = await buildLivePlanPackSummary({
+        laneId,
+        reason: "context_export"
+      });
+      return buildBasicExport({ packKey, packType: "plan", level, pack });
     },
 
     async getMissionExport(args: { missionId: string; level: ContextExportLevel }): Promise<PackExport> {
@@ -3247,36 +2671,12 @@ export function createPackService({
       if (level !== "lite" && level !== "standard" && level !== "deep") {
         throw new Error(`Invalid export level: ${String(level)}`);
       }
-      const pack = this.getMissionPack(missionId);
       const packKey = `mission:${missionId}`;
-      const header = {
-        schema: CONTEXT_HEADER_SCHEMA_V1,
-        contractVersion: CONTEXT_CONTRACT_VERSION,
-        projectId,
-        packKey,
-        packType: "mission" as const,
-        exportLevel: level
-      } satisfies ContextHeaderV1;
-      const content = pack.exists ? pack.body : "";
-      const approxTokens = Math.ceil(content.length / 4);
-      const maxTokens = level === "lite" ? 30_000 : level === "standard" ? 60_000 : 120_000;
-      const truncated = approxTokens > maxTokens;
-      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
-      return {
-        packKey,
-        packType: "mission",
-        level,
-        header,
-        content: finalContent,
-        approxTokens: Math.ceil(finalContent.length / 4),
-        maxTokens,
-        truncated,
-        warnings: truncated ? ["Mission pack content was truncated to fit token budget."] : []
-      };
+      const pack = await buildLiveMissionPackSummary({
+        missionId,
+        reason: "context_export"
+      });
+      return buildBasicExport({ packKey, packType: "mission", level, pack });
     },
-
-    recordEvent(args: { packKey: string; eventType: string; payload?: Record<string, unknown> }): PackEvent {
-      return createPackEvent(args);
-    }
   };
 }

@@ -56,8 +56,7 @@ function asString(value: unknown): string | undefined {
 
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const out = value.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
-  return out;
+  return value.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
 }
 
 function asLaneTypeArray(value: unknown): LaneType[] | undefined {
@@ -475,9 +474,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       orchestrator.teammatePlanMode = teammatePlanMode;
     }
 
-    const requirePlanReview = asBool(orchestratorRaw.requirePlanReview);
-    if (requirePlanReview != null) orchestrator.requirePlanReview = requirePlanReview;
-
     const maxParallelWorkers = asNumber(orchestratorRaw.maxParallelWorkers);
     if (maxParallelWorkers != null) orchestrator.maxParallelWorkers = Math.max(1, Math.floor(maxParallelWorkers));
 
@@ -858,28 +854,20 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     : [];
 
   const github =
-    isRecord(value.github) && (asNumber(value.github.prPollingIntervalSeconds) != null)
-      ? {
-          ...(asNumber(value.github.prPollingIntervalSeconds) != null
-            ? { prPollingIntervalSeconds: asNumber(value.github.prPollingIntervalSeconds) }
-            : {})
-        }
+    isRecord(value.github) && asNumber(value.github.prPollingIntervalSeconds) != null
+      ? { prPollingIntervalSeconds: asNumber(value.github.prPollingIntervalSeconds) }
       : undefined;
 
   const git =
-    isRecord(value.git) && (asBool(value.git.autoRebaseOnHeadChange) != null)
-      ? {
-          ...(asBool(value.git.autoRebaseOnHeadChange) != null
-            ? { autoRebaseOnHeadChange: asBool(value.git.autoRebaseOnHeadChange) }
-            : {})
-        }
+    isRecord(value.git) && asBool(value.git.autoRebaseOnHeadChange) != null
+      ? { autoRebaseOnHeadChange: asBool(value.git.autoRebaseOnHeadChange) }
       : undefined;
 
-  const providersRaw = isRecord((value as Record<string, unknown>).providers)
-    ? { ...((value as Record<string, unknown>).providers as Record<string, unknown>) }
+  const providersRaw = isRecord(value.providers)
+    ? { ...(value.providers as Record<string, unknown>) }
     : undefined;
-  const ai = coerceAiConfig((value as Record<string, unknown>).ai);
-  const linearSync = coerceLinearSync((value as Record<string, unknown>).linearSync);
+  const ai = coerceAiConfig(value.ai);
+  const linearSync = coerceLinearSync(value.linearSync);
 
   if (providersRaw) {
     delete providersRaw.mode;

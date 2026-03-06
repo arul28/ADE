@@ -3,21 +3,9 @@ import path from "node:path";
 import type { Logger } from "../logging/logger";
 import type { LinearPriorityLabel, NormalizedLinearIssue } from "../../../shared/types";
 import type { LinearCredentialService } from "./linearCredentialService";
-import { isRecord } from "../shared/utils";
+import { isRecord, toOptionalString as asString, asArray, sleep, getErrorMessage } from "../shared/utils";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length ? value.trim() : null;
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
 
 function mapPriorityLabel(priority: number): LinearPriorityLabel {
   if (priority === 1) return "urgent";
@@ -128,12 +116,14 @@ export function createLinearClient(args: LinearClientArgs) {
 
         const payload = await res.json().catch(() => ({})) as {
           data?: TData;
-          errors?: Array<{ message?: string }>;
+          errors?: Array<{ message?: string; extensions?: { code?: string } }>;
         };
 
         const message = payload.errors?.[0]?.message ?? null;
+        const errorCode = payload.errors?.[0]?.extensions?.code ?? null;
         const isRateLimited =
           res.status === 429 ||
+          errorCode === "RATELIMITED" ||
           (message ? /rate\s*limit|too\s*many\s*requests/i.test(message) : false);
 
         if ((!res.ok || payload.errors?.length) && (isRateLimited || res.status >= 500) && attempt <= maxRetries) {
@@ -167,6 +157,29 @@ export function createLinearClient(args: LinearClientArgs) {
     };
   };
 
+  const ISSUE_FIELDS_FRAGMENT = `
+    id
+    identifier
+    title
+    description
+    url
+    priority
+    createdAt
+    updatedAt
+    project { id slug }
+    team { id key }
+    state { id name type }
+    assignee { id name displayName }
+    creator { id }
+    labels { nodes { id name } }
+    children {
+      nodes {
+        id
+        state { type }
+      }
+    }
+  `;
+
   const fetchIssuesPage = async (projectSlug: string, stateTypes: string[], after: string | null) => {
     const data = await request<{
       issues?: {
@@ -186,26 +199,7 @@ export function createLinearClient(args: LinearClientArgs) {
           ) {
             pageInfo { hasNextPage endCursor }
             nodes {
-              id
-              identifier
-              title
-              description
-              url
-              priority
-              createdAt
-              updatedAt
-              project { id slug }
-              team { id key }
-              state { id name type }
-              assignee { id name displayName }
-              creator { id }
-              labels { nodes { id name } }
-              children {
-                nodes {
-                  id
-                  state { type }
-                }
-              }
+              ${ISSUE_FIELDS_FRAGMENT}
             }
           }
         }
@@ -228,21 +222,26 @@ export function createLinearClient(args: LinearClientArgs) {
     };
   };
 
+  const fetchAllPagesForSlug = async (projectSlug: string, stateTypes: string[]): Promise<NormalizedLinearIssue[]> => {
+    const issues: NormalizedLinearIssue[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const res = await fetchIssuesPage(projectSlug, stateTypes, cursor);
+      issues.push(...res.nodes);
+      if (!res.hasNextPage || !res.endCursor) break;
+      cursor = res.endCursor;
+    }
+    return issues;
+  };
+
   const fetchCandidateIssues = async (params: {
     projectSlugs: string[];
     stateTypes: string[];
   }): Promise<NormalizedLinearIssue[]> => {
-    const issues: NormalizedLinearIssue[] = [];
-    for (const projectSlug of params.projectSlugs) {
-      let cursor: string | null = null;
-      for (let page = 0; page < 10; page += 1) {
-        const res = await fetchIssuesPage(projectSlug, params.stateTypes, cursor);
-        issues.push(...res.nodes);
-        if (!res.hasNextPage || !res.endCursor) break;
-        cursor = res.endCursor;
-      }
-    }
-    return issues;
+    const results = await Promise.all(
+      params.projectSlugs.map((slug) => fetchAllPagesForSlug(slug, params.stateTypes))
+    );
+    return results.flat();
   };
 
   const fetchIssueById = async (issueId: string): Promise<NormalizedLinearIssue | null> => {
@@ -250,26 +249,7 @@ export function createLinearClient(args: LinearClientArgs) {
       query: `
         query IssueById($id: String!) {
           issue(id: $id) {
-            id
-            identifier
-            title
-            description
-            url
-            priority
-            createdAt
-            updatedAt
-            project { id slug }
-            team { id key }
-            state { id name type }
-            assignee { id name displayName }
-            creator { id }
-            labels { nodes { id name } }
-            children {
-              nodes {
-                id
-                state { type }
-              }
-            }
+            ${ISSUE_FIELDS_FRAGMENT}
           }
         }
       `,
@@ -277,6 +257,41 @@ export function createLinearClient(args: LinearClientArgs) {
       maxRetries: 2,
     });
     return data.issue && isRecord(data.issue) ? toNormalizedIssue(data.issue) : null;
+  };
+
+  const fetchIssuesByIds = async (issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>> => {
+    const results = new Map<string, NormalizedLinearIssue>();
+    if (!issueIds.length) return results;
+
+    // Batch via filter: id.in — Linear supports up to 50 per page
+    const BATCH_SIZE = 50;
+    for (let i = 0; i < issueIds.length; i += BATCH_SIZE) {
+      const batch = issueIds.slice(i, i + BATCH_SIZE);
+      const data = await request<{
+        issues?: {
+          nodes?: Array<Record<string, unknown>>;
+        };
+      }>({
+        query: `
+          query IssuesByIds($ids: [ID!]!) {
+            issues(filter: { id: { in: $ids } }, first: ${BATCH_SIZE}) {
+              nodes {
+                ${ISSUE_FIELDS_FRAGMENT}
+              }
+            }
+          }
+        `,
+        variables: { ids: batch },
+        maxRetries: 2,
+      });
+
+      for (const node of asArray(data.issues?.nodes)) {
+        if (!isRecord(node)) continue;
+        const normalized = toNormalizedIssue(node);
+        if (normalized) results.set(normalized.id, normalized);
+      }
+    }
+    return results;
   };
 
   const fetchWorkflowStates = async (teamKey: string): Promise<Array<{ id: string; name: string; type: string; teamId: string; teamKey: string }>> => {
@@ -425,7 +440,7 @@ export function createLinearClient(args: LinearClientArgs) {
       args.logger?.warn("linear_sync.add_label_failed", {
         issueId,
         labelName: trimmed,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       });
     }
   };
@@ -440,13 +455,14 @@ export function createLinearClient(args: LinearClientArgs) {
     }
 
     const filename = path.basename(absPath);
-    const contentType = filename.endsWith(".png")
-      ? "image/png"
-      : filename.endsWith(".jpg") || filename.endsWith(".jpeg")
-        ? "image/jpeg"
-        : filename.endsWith(".mp4")
-          ? "video/mp4"
-          : "application/octet-stream";
+    const ext = path.extname(filename).toLowerCase();
+    const CONTENT_TYPE_MAP: Record<string, string> = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".mp4": "video/mp4",
+    };
+    const contentType = CONTENT_TYPE_MAP[ext] ?? "application/octet-stream";
 
     const uploadInit = await request<{
       fileUpload?: {
@@ -533,6 +549,7 @@ export function createLinearClient(args: LinearClientArgs) {
     getViewer,
     fetchCandidateIssues,
     fetchIssueById,
+    fetchIssuesByIds,
     fetchWorkflowStates,
     updateIssueState,
     updateIssueAssignee,

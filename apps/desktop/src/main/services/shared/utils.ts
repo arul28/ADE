@@ -43,6 +43,20 @@ export function uniqueSorted(values: Iterable<string>): string[] {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
 }
 
+export function uniqueStrings(values: Iterable<string>): string[] {
+  return Array.from(new Set(values));
+}
+
+export function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+// ── Async helpers ──────────────────────────────────────────────────
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ── Git helpers ─────────────────────────────────────────────────────
 
 export function parseDiffNameOnly(stdout: string): string[] {

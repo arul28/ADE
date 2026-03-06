@@ -1329,6 +1329,145 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_memories_status on memories(project_id, status)");
   db.run("create index if not exists idx_memories_agent on memories(agent_id)");
 
+  // Unified memory backend (project/agent/mission scopes, tiered retrieval).
+  db.run(`
+    create table if not exists unified_memories (
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      scope_owner_id text,
+      tier integer not null default 2,
+      category text not null,
+      content text not null,
+      importance text not null default 'medium',
+      confidence real not null default 1.0,
+      observation_count integer not null default 1,
+      status text not null default 'promoted',
+      source_type text not null default 'agent',
+      source_id text,
+      source_session_id text,
+      source_pack_key text,
+      source_run_id text,
+      file_scope_pattern text,
+      agent_id text,
+      pinned integer not null default 0,
+      composite_score real not null default 0,
+      write_gate_reason text,
+      dedupe_key text not null default '',
+      created_at text not null,
+      updated_at text not null,
+      last_accessed_at text not null,
+      access_count integer not null default 0,
+      promoted_at text,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_unified_memories_project_scope_tier on unified_memories(project_id, scope, tier)");
+  db.run("create index if not exists idx_unified_memories_scope_owner on unified_memories(project_id, scope, scope_owner_id)");
+  db.run("create index if not exists idx_unified_memories_project_status on unified_memories(project_id, status)");
+  db.run("create index if not exists idx_unified_memories_project_pinned on unified_memories(project_id, pinned, tier)");
+  db.run("create index if not exists idx_unified_memories_project_accessed on unified_memories(project_id, last_accessed_at)");
+  db.run("create index if not exists idx_unified_memories_project_dedupe on unified_memories(project_id, scope, scope_owner_id, dedupe_key)");
+
+  db.run(`
+    create table if not exists unified_memory_embeddings (
+      id text primary key,
+      memory_id text not null,
+      project_id text not null,
+      embedding_model text not null,
+      embedding_blob blob not null,
+      dimensions integer not null,
+      norm real,
+      created_at text not null,
+      updated_at text not null,
+      unique(memory_id, embedding_model),
+      foreign key(memory_id) references unified_memories(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_unified_memory_embeddings_project on unified_memory_embeddings(project_id)");
+  db.run("create index if not exists idx_unified_memory_embeddings_memory on unified_memory_embeddings(memory_id)");
+
+  // One-time safe backfill from legacy memories table.
+  db.run(`
+    insert or ignore into unified_memories (
+      id,
+      project_id,
+      scope,
+      scope_owner_id,
+      tier,
+      category,
+      content,
+      importance,
+      confidence,
+      observation_count,
+      status,
+      source_type,
+      source_id,
+      source_session_id,
+      source_pack_key,
+      source_run_id,
+      file_scope_pattern,
+      agent_id,
+      pinned,
+      composite_score,
+      write_gate_reason,
+      dedupe_key,
+      created_at,
+      updated_at,
+      last_accessed_at,
+      access_count,
+      promoted_at
+    )
+    select
+      id,
+      project_id,
+      case scope
+        when 'project' then 'project'
+        when 'mission' then 'mission'
+        when 'user' then 'agent'
+        when 'lane' then 'mission'
+        else 'project'
+      end as scope,
+      case scope
+        when 'mission' then coalesce(source_run_id, agent_id, source_session_id)
+        when 'user' then coalesce(agent_id, source_session_id)
+        when 'lane' then coalesce(agent_id, source_session_id)
+        else null
+      end as scope_owner_id,
+      case
+        when status = 'archived' then 3
+        when status = 'candidate' then 3
+        else 2
+      end as tier,
+      category,
+      content,
+      coalesce(importance, 'medium') as importance,
+      coalesce(confidence, 1.0) as confidence,
+      case
+        when coalesce(access_count, 0) > 0 then access_count
+        else 1
+      end as observation_count,
+      coalesce(status, 'promoted') as status,
+      'system' as source_type,
+      coalesce(source_run_id, source_session_id, source_pack_key, agent_id) as source_id,
+      source_session_id,
+      source_pack_key,
+      source_run_id,
+      null as file_scope_pattern,
+      agent_id,
+      0 as pinned,
+      0 as composite_score,
+      null as write_gate_reason,
+      lower(trim(content)) as dedupe_key,
+      coalesce(created_at, last_accessed_at, datetime('now')) as created_at,
+      coalesce(promoted_at, last_accessed_at, created_at, datetime('now')) as updated_at,
+      coalesce(last_accessed_at, created_at, datetime('now')) as last_accessed_at,
+      coalesce(access_count, 0) as access_count,
+      promoted_at
+    from memories
+  `);
+
   // CTO persistent identity/core-memory/session-log state.
   db.run(`
     create table if not exists cto_identity_state (

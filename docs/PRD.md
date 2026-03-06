@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-03-04
+Last updated: 2026-03-05
 
 Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -30,7 +30,7 @@ Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product 
 8. [Feature Documentation](#8-feature-documentation)
 9. [Architecture Documentation](#9-architecture-documentation)
 10. [Cross-Cutting Concerns](#10-cross-cutting-concerns)
-    - 10.1 [Packs (Context and History System)](#101-packs-context-and-history-system)
+    - 10.1 [Unified Memory (Context and History System)](#101-unified-memory-context-and-history-system)
     - 10.2 [Mission Workers](#102-mission-workers)
     - 10.3 [Workspace Graph](#103-workspace-graph)
     - 10.4 [Job Engine](#104-job-engine)
@@ -54,7 +54,7 @@ Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product 
 
 ## 1. Product Overview
 
-ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its Packs system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-worker missions through its AI Integration Layer -- native agent SDKs unified behind an AgentExecutor interface, a local MCP server, and an AI orchestrator that coordinates workers across configured providers (CLI subscriptions, API-key/OpenRouter, and local endpoints). Missions use a configurable phases model where users define the structure and constraints, and the orchestrator executes accordingly. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-worker communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across workers and missions. An always-on CTO agent provides persistent project awareness and serves as the intelligent entry point for both users and external systems.
+ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its unified memory system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-worker missions through its AI Integration Layer -- native agent SDKs unified behind an AgentExecutor interface, a local MCP server, and an AI orchestrator that coordinates workers across configured providers (CLI subscriptions, API-key/OpenRouter, and local endpoints). Missions use a configurable phases model where users define the structure and constraints, and the orchestrator executes accordingly. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-worker communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across workers and missions. An always-on CTO agent provides persistent project awareness and serves as the intelligent entry point for both users and external systems.
 
 ADE is built with Electron and ships as a cross-platform desktop application for macOS, Windows, and Linux.
 
@@ -74,7 +74,7 @@ Software teams increasingly use AI coding agents (Claude Code, Codex, Cursor, an
 
 ### The Vision
 
-ADE is the orchestration layer for agentic development. It watches what each agent does, tracks context through immutable checkpoints and durable packs, predicts conflicts between parallel work, and surfaces integration risks before they become merge nightmares. Its AI orchestrator -- powered by native agent SDKs and a local MCP server -- can plan multi-step missions, spawn agents into isolated lanes, inject context packs into agent prompts, and route human interventions back through the ADE UI. The orchestrator acts as a smart PM: an AI meta-reasoner selects optimal dispatch strategies (sequential, parallel, wave, or adaptive fan-out), agents communicate in real time through @mentions, a compaction engine prevents context overflow in long-running missions, and a scoped memory architecture enables knowledge to flow between agents and persist across missions. AI execution is local-first and provider-flexible: users can run via CLI subscriptions or configured API/local providers without any ADE-hosted account layer.
+ADE is the orchestration layer for agentic development. It watches what each agent does, tracks context through immutable checkpoints and durable memory entries, predicts conflicts between parallel work, and surfaces integration risks before they become merge nightmares. Its AI orchestrator -- powered by native agent SDKs and a local MCP server -- can plan multi-step missions, spawn agents into isolated lanes, inject bounded memory context into agent prompts, and route human interventions back through the ADE UI. The orchestrator acts as a smart PM: an AI meta-reasoner selects optimal dispatch strategies (sequential, parallel, wave, or adaptive fan-out), agents communicate in real time through @mentions, a compaction engine prevents context overflow in long-running missions, and a scoped memory architecture enables knowledge to flow between agents and persist across missions. AI execution is local-first and provider-flexible: users can run via CLI subscriptions or configured API/local providers without any ADE-hosted account layer.
 
 Think of ADE as "mission control for agentic development."
 
@@ -82,7 +82,7 @@ Think of ADE as "mission control for agentic development."
 
 ADE is a **development orchestration control plane** -- it does not try to be a general-purpose agent platform. Agents in ADE have a specific job: they write code, push to git, and open pull requests. Everything in ADE's architecture is optimized for that workflow.
 
-ADE exposes its full infrastructure via the MCP server (35+ tools), enabling external agent systems to orchestrate development through ADE programmatically. An external agent platform like OpenClaw can connect to ADE's MCP server to launch missions, read context packs, check for conflicts, and monitor progress -- all without touching ADE's UI. This makes ADE a first-class development backend for the broader agent ecosystem.
+ADE exposes its full infrastructure via the MCP server (35+ tools), enabling external agent systems to orchestrate development through ADE programmatically. An external agent platform like OpenClaw can connect to ADE's MCP server to launch missions, read memory/context resources, check for conflicts, and monitor progress -- all without touching ADE's UI. This makes ADE a first-class development backend for the broader agent ecosystem.
 
 Users can build personal agent setups on top of ADE. For example, a **"Virtual Me" (V) agent** running on an external orchestration platform could serve as the user's single entry point for all tasks -- delegating development work to ADE via MCP, research to research agents, scheduling to calendar agents, and communication to messaging agents. V observes ADE's outputs the same way a human developer would: by reading the repo (git log, `.ade/` state files, PR results). ADE does not need to "report to V" -- the `.ade/` directory, MCP server, and CTO provide everything V needs to interact with ADE programmatically. This is a user-land concern: ADE provides the infrastructure and the MCP surface, but the composition of higher-level agent workflows is up to the user. See `final-plan/appendix.md` Section 11.3 for detailed V concept documentation.
 
@@ -104,7 +104,7 @@ ADE does not replace the IDE or the git CLI. It integrates deeply with external 
 
 ### Lane
 
-A lane is the fundamental unit of parallel work in ADE. Each lane wraps a git branch and a workspace directory, providing an isolated development surface with its own terminal sessions, status tracking, and pack context.
+A lane is the fundamental unit of parallel work in ADE. Each lane wraps a git branch and a workspace directory, providing an isolated development surface with its own terminal sessions, status tracking, and memory-aware context.
 
 Lane types:
 
@@ -284,20 +284,19 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 
 ## 7. Application Structure (Tabs)
 
-ADE uses a 12-tab application shell with a slim icon rail (50px) on the left side. The selected lane persists across tabs, allowing Run, Terminals, Conflicts, PRs, Files, and Missions tabs to default-filter to the active lane context. All local features work without any AI provider configured; AI-powered features (narratives, orchestrator, conflict proposals, chat) require at least one configured provider (CLI/API/local).
+ADE uses an 11-tab application shell with a slim icon rail (50px) on the left side. The selected lane persists across tabs, allowing Run, Work, Graph, PRs, Files, and Missions tabs to default-filter to the active lane context. Conflict intelligence is no longer a standalone tab: lane-level summaries live in Lanes, the global risk matrix lives in Graph, and blocked rebase flows live in PRs. All local features work without any AI provider configured; AI-powered features (narratives, orchestrator, conflict proposals, chat) require at least one configured provider (CLI/API/local).
 
 Current tab routes:
 - `/project` (Play)
 - `/lanes`
 - `/files`
-- `/terminals`
-- `/conflicts`
-- `/context`
+- `/work`
 - `/graph`
 - `/prs`
 - `/history`
-- `/cto`
+- `/automations`
 - `/missions`
+- `/cto`
 - `/settings`
 
 The detailed ownership model for future additions (including Machines) is maintained in `docs/final-plan/README.md`.
@@ -326,9 +325,9 @@ The Terminals tab is a global session list optimized for high session volume. It
 
 See: [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md)
 
-### 7.5 Conflicts
+### 7.5 Graph & Conflict Intelligence
 
-The Conflicts tab is the project-wide conflict radar. It aggregates predicted and active conflicts across all lanes, displaying a left-side list of affected lanes with stack blocker highlights, and a right-side content area with the pairwise lane risk matrix, merge simulation panel (source lane to target lane/branch dry-run), conflict pack viewer, and AI proposal workflow (generate via the agent SDKs, review diff, apply, run tests). Conflict badges in the Lanes tab provide at-a-glance risk visibility, and real-time overlap indicators update within seconds of staged or dirty changes.
+Conflict intelligence no longer lives in a dedicated tab. The global risk matrix, pairwise lane overlap view, merge simulation, and AI proposal workflow live in Graph; lane badges and overlap summaries live in Lanes; and blocked/manual rebase recovery lives in PRs. Conflict badges in the Lanes tab provide at-a-glance risk visibility, and real-time overlap indicators update within seconds of staged or dirty changes.
 
 See: [features/CONFLICTS.md](features/CONFLICTS.md)
 
@@ -378,7 +377,7 @@ The Missions tab is the AI orchestrator control center. Missions use a **configu
 
 #### Configurable Phases Model
 
-Before execution, a **pre-mission planner** performs deep research on the codebase (reading files, searching code, tracing dependencies) and generates a structured step graph. This is NOT a phase — it runs before any phase cards are processed.
+Planning is a built-in mission phase (`planning`) and is enabled by default in built-in profiles. The coordinator performs planning inside the run, can ask clarification questions, and must transition explicitly into `development` before execution fan-out.
 
 Missions ship with pre-built execution phases that cover the standard development lifecycle:
 
@@ -498,7 +497,7 @@ The Settings tab provides application preferences including AI provider configur
 
 **Phase Profile Management**: Settings includes a dedicated section for managing mission phase profiles. Users can create, edit, and delete named phase profiles that define default phase configurations for different mission types. Each profile specifies which phases are included, their ordering, model selection, budget caps, validation gates, and custom instructions. Phase profiles configured here serve as the global defaults that can be overridden per-mission at launch time.
 
-**Automations**: Background automation workflows (trigger-action pipelines, scheduled tasks, watchers, review agents) and Night Shift mode (scheduled unattended execution with morning digest) are configured in the Automations section of Settings. This consolidates all background autonomous behavior configuration in one place.
+**Automations**: Automations is a first-class tab and the canonical surface for creating, simulating, running, and reviewing background workflows. Settings provides defaults and integration setup for Automations (models, budgets, connectors, shared templates, Night Shift defaults) but is not the main builder UI.
 
 See: [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md)
 
@@ -520,8 +519,9 @@ Each feature area is specified in detail in the following documents. These are t
 | 8 | Packs | [features/PACKS.md](features/PACKS.md) | Durable context and history system. Covers immutable checkpoints, append-only pack events, pack versioning with head pointers, materialized current views, all six pack types, the update pipeline, and privacy/retention controls. |
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
 | 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | AI orchestrator control center for mission intake and execution. Covers mission lifecycle, orchestrator run management, step DAG visualization, intervention queues, artifacts (including PR links), timeline events, and per-task-type model routing. |
-| 11 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, and theme/keybinding settings. |
-| 12 | CTO | [features/CTO.md](features/CTO.md) | Always-on project-aware agent. Covers the CTO's persistent chat interface, three-tier memory model with project-scoped core memory, MCP tool access for mission creation and lane management, external request routing, and relationship to the mission orchestrator. Background autonomous behaviors (automations, Night Shift, watchers, review agents) are consolidated into Automations within Settings. |
+| 11 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | First-class background execution surface. Covers trigger families (local + GitHub/Linear/webhook), executor routing (automation bots, employees, CTO-route, Night Shift), templates, tool palettes, automation-scoped memory, simulation, history, and overnight review. |
+| 12 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, automation defaults/integration setup, and theme/keybinding settings. |
+| 13 | CTO | [features/CTO.md](features/CTO.md) | Always-on project-aware agent. Covers the CTO's persistent chat interface, three-tier memory model with project-scoped core memory, MCP tool access for mission creation and lane management, external request routing, and relationship to the mission orchestrator. Persistent employees can own and execute automations created in the Automations tab. |
 
 ---
 
@@ -560,7 +560,7 @@ Packs are ADE's core differentiator for agentic workflows. They provide a durabl
 
 - Orchestrator state transitions, scheduling, retries, claims, and gates are deterministic code/state-machine paths.
 - The coordinator AI owns strategy decisions (planning, delegation, replanning, completion) while runtime code enforces boundaries (permissions, budgets, state integrity, and auditability).
-- Mission startup is fail-hard: if planner/coordinator startup fails, ADE pauses with intervention instead of switching to non-autonomous fallback logic.
+- Mission startup is fail-hard: if coordinator startup fails, ADE pauses with intervention instead of switching to non-autonomous fallback logic.
 - Default orchestrator context profile uses bounded digest refs (prioritizing `.ade/context/PRD.ade.md` and `.ade/context/ARCHITECTURE.ade.md` plus discovered docs); full doc bodies are included only when step policy explicitly requires `includeFullDocs`.
 
 **Update pipeline**: On session end, the pipeline creates a checkpoint, appends events, materializes lane/project/feature packs, predicts conflicts, updates conflict packs if needed, and optionally requests AI narrative augmentation via the agent SDKs. This pipeline runs through the job engine with coalescing to avoid redundant work.
@@ -581,7 +581,7 @@ Mission workers are the agents that the orchestrator spawns to execute tasks wit
 
 **Worker Autonomy**: Workers operate with full-auto permissions within their assigned lane. They can read and write files, run tests, execute git operations, and use MCP tools without human approval. The pre-flight checklist enforces full-auto mode before mission launch. If a worker encounters a situation it cannot resolve, it escalates to the orchestrator (not directly to the human).
 
-**Background Automations**: Autonomous background behaviors (trigger-action workflows, scheduled tasks, Night Shift mode with morning digest, watchers, review agents) are consolidated into the Automations section of Settings. These are not managed through a separate tab but are configured as automation rules that execute workers when triggered.
+**Background Automations**: Autonomous background behaviors live in the dedicated Automations tab. Rules can be created there, simulated before activation, assigned to automation bots or persistent employees, routed through the CTO, or queued for Night Shift. Settings only holds defaults and integration credentials.
 
 ### 10.3 Workspace Graph
 
@@ -731,13 +731,13 @@ ADE supports three complementary modes of work:
 - Tiered validation (self-check and dedicated validator at gates, runtime-enforced)
 - Orchestrator intelligence that scales from simple to complex missions
 
-**Background Automations** (fire-and-forget, configured in Settings):
-- Automation rules: Trigger-action pipelines (on commit, on schedule, etc.)
+**Background Automations** (`/automations`, fire-and-forget or employee-backed):
+- Automation rules: Builder-defined flows with local triggers plus GitHub, Linear, and webhook triggers
+- Executor routing: disposable automation bots, persistent employees, CTO-route, or Night Shift queue
 - Night Shift mode: Scheduled unattended execution with morning digest
-- Watchers: External resource monitoring (repos, APIs, dependency feeds)
-- Review automation: PR pre-review and summarization
+- Templates and tool palettes: reusable recipes with explicit allowed tools and verification requirements
 
-Background automations are configured in the Automations section of Settings. Each automation defines a trigger, behavior, compute backend, and guardrails (budget caps, stop conditions).
+Background automations are created and operated from the Automations tab. Each automation defines a trigger, executor, tool palette, memory mode, and guardrails (budget caps, stop conditions, verification rules). Settings supplies shared defaults and connector setup.
 
 Development baseline: ADE assumes a modern Git CLI (worktrees, `git restore`, `git merge-tree --write-tree`, and `--ignore-other-worktrees` flows). There is no legacy-git compatibility mode in runtime call paths.
 
@@ -771,7 +771,7 @@ External agent platforms (OpenClaw, Claude Code, Codex, custom agent frameworks)
 - **Context and memory**: `read_context`, `get_timeline`, `get_step_output`
 - **Lane management**: `create_lane`, `list_lanes`, `get_lane_status`, `merge_lane`, `rebase_lane`
 - **Quality gates**: `run_tests`, `check_conflicts`, `simulate_integration`, `evaluate_run`
-- **User interaction**: `ask_user`, `approve_plan`, `commit_changes`
+- **User interaction**: `ask_user`, `resolve_intervention`, `commit_changes`
 - **Observability**: `get_run_graph`, `get_mission_metrics`, `get_pr_health`, `stream_events`
 
 The CTO is ADE's designated router for incoming external requests. When an external agent connects and submits a development request, the CTO analyzes the request, determines the appropriate workflow (new mission, context query, conflict check, etc.), and routes it internally. This prevents external systems from needing to understand ADE's internal orchestration model.
@@ -799,7 +799,7 @@ This section clarifies the runtime characteristics of ADE's AI agents (mission w
 
 This reconstruction pattern means the CTO and mission infrastructure can be invoked on any machine that has the `.ade/` directory, supporting the cross-machine portability model (Section 10.11).
 
-**Background Automations**: Scheduled and trigger-based automations (Night Shift, watchers, review automation) are event-driven. An automation rule defines a trigger and behavior; when the trigger fires, a worker is spawned to execute the behavior. Between activations, automations consume no compute resources.
+**Background Automations**: Scheduled and event-driven automations are event-driven. A rule defines its trigger, executor target, tool palette, memory policy, and output contract; when the trigger fires, ADE dispatches either a disposable automation bot, a persistent employee, a CTO-routed worker, or a Night Shift queue item. Between activations, automations consume no compute resources.
 
 **Context Window Strategy**: ADE optimizes context windows for both the CTO and workers using several techniques inspired by the ZOE/CODEX separation pattern:
 - **Business/code separation**: Business context (mission intent, acceptance criteria, architectural constraints) is structured as a compact preamble. Code context (diffs, file contents, test output) is streamed on-demand via MCP tools rather than pre-loaded.

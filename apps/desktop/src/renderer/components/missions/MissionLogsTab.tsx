@@ -41,6 +41,14 @@ function formatWhen(iso: string): string {
   return new Date(parsed).toLocaleString();
 }
 
+function mergeEntries(existing: MissionLogEntry[], incoming: MissionLogEntry[]): MissionLogEntry[] {
+  const byId = new Map<string, MissionLogEntry>();
+  for (const entry of [...existing, ...incoming]) {
+    byId.set(entry.id, entry);
+  }
+  return [...byId.values()].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
 export const MissionLogsTab = React.memo(function MissionLogsTab({
   missionId,
   runId,
@@ -77,7 +85,7 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
       });
       setTotal(result.total);
       setNextCursor(result.nextCursor);
-      setEntries((prev) => (cursor ? [...prev, ...result.entries] : result.entries));
+      setEntries((prev) => (cursor ? mergeEntries(prev, result.entries) : result.entries));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -233,4 +241,3 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
     </div>
   );
 });
-

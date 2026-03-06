@@ -1,5 +1,6 @@
 import type { IssueTracker } from "./issueTracker";
 import type { LinearClient } from "./linearClient";
+import { getErrorMessage } from "../shared/utils";
 
 export function createLinearIssueTracker(args: { client: LinearClient }): IssueTracker {
   return {
@@ -9,6 +10,10 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
 
     fetchIssueById(issueId) {
       return args.client.fetchIssueById(issueId);
+    },
+
+    fetchIssuesByIds(issueIds) {
+      return args.client.fetchIssuesByIds(issueIds);
     },
 
     fetchWorkflowStates(teamKey) {
@@ -53,7 +58,7 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
           connected: false,
           viewerId: null,
           viewerName: null,
-          message: error instanceof Error ? error.message : String(error),
+          message: getErrorMessage(error),
         };
       }
     },

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
-import { createBaseOrchestratorAdapter, shellEscapeArg } from "./baseOrchestratorAdapter";
+import { createBaseOrchestratorAdapter, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
 import {
   classifyWorkerExecutionPath,
   getModelById,
@@ -9,8 +9,14 @@ import {
   resolveModelAlias,
   resolveModelDescriptor,
 } from "../../../shared/modelRegistry";
+import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
-import { mapPermissionToClaude, mapPermissionToCodex } from "./permissionMapping";
+import {
+  mapPermissionToClaude,
+  mapPermissionToCodex,
+  normalizeMissionPermissions,
+  providerPermissionsToLegacyConfig,
+} from "./permissionMapping";
 
 /**
  * Build environment variable assignments for worker identity.
@@ -130,6 +136,21 @@ function workerLocalMcpConfigFileName(attemptId: string): string {
   return `.ade-worker-mcp-${sanitized}.json`;
 }
 
+function workerPromptFilePath(projectRoot: string, attemptId: string): string {
+  return path.join(projectRoot, ".ade", "orchestrator", "worker-prompts", `worker-${attemptId}.txt`);
+}
+
+function writeWorkerPromptFile(args: {
+  projectRoot: string;
+  attemptId: string;
+  prompt: string;
+}): string {
+  const promptPath = workerPromptFilePath(args.projectRoot, args.attemptId);
+  fs.mkdirSync(path.dirname(promptPath), { recursive: true });
+  fs.writeFileSync(promptPath, args.prompt, "utf8");
+  return promptPath;
+}
+
 /**
  * Resolve the project root from the current working directory.
  * Walks up from cwd looking for package.json with the monorepo marker.
@@ -155,7 +176,7 @@ export function resolveUnifiedRuntimeRoot(): string {
  * Codex reads MCP servers from `mcp_servers.<name>` in its config, and the
  * `-c key=value` flag overrides individual dotted TOML paths.
  */
-function buildCodexMcpConfigFlags(args: {
+export function buildCodexMcpConfigFlags(args: {
   workspaceRoot: string;
   runtimeRoot: string;
   missionId: string;
@@ -176,14 +197,14 @@ function buildCodexMcpConfigFlags(args: {
   // Codex -c flag parses values as TOML
   const argsToml = `[${launch.cmdArgs.map((a) => `"${a.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`;
   const flags: string[] = [
-    "-c", `mcp_servers.ade.command="${launch.command}"`,
-    "-c", `mcp_servers.ade.args=${argsToml}`,
-    "-c", `mcp_servers.ade.env.ADE_PROJECT_ROOT="${launch.env.ADE_PROJECT_ROOT}"`,
-    "-c", `mcp_servers.ade.env.ADE_MISSION_ID="${launch.env.ADE_MISSION_ID}"`,
-    "-c", `mcp_servers.ade.env.ADE_RUN_ID="${launch.env.ADE_RUN_ID}"`,
-    "-c", `mcp_servers.ade.env.ADE_STEP_ID="${launch.env.ADE_STEP_ID}"`,
-    "-c", `mcp_servers.ade.env.ADE_ATTEMPT_ID="${launch.env.ADE_ATTEMPT_ID}"`,
-    "-c", `mcp_servers.ade.env.ADE_DEFAULT_ROLE="${launch.env.ADE_DEFAULT_ROLE}"`
+    "-c", shellEscapeArg(`mcp_servers.ade.command="${launch.command}"`),
+    "-c", shellEscapeArg(`mcp_servers.ade.args=${argsToml}`),
+    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_PROJECT_ROOT="${launch.env.ADE_PROJECT_ROOT}"`),
+    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_MISSION_ID="${launch.env.ADE_MISSION_ID}"`),
+    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_RUN_ID="${launch.env.ADE_RUN_ID}"`),
+    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_STEP_ID="${launch.env.ADE_STEP_ID}"`),
+    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_ATTEMPT_ID="${launch.env.ADE_ATTEMPT_ID}"`),
+    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_DEFAULT_ROLE="${launch.env.ADE_DEFAULT_ROLE}"`)
   ];
   return flags;
 }
@@ -205,6 +226,11 @@ export function cleanupMcpConfigFile(projectRoot: string, attemptId: string, lan
     } catch {
       // Ignore — lane-local config may not exist.
     }
+  }
+  try {
+    fs.unlinkSync(workerPromptFilePath(projectRoot, attemptId));
+  } catch {
+    // Ignore — prompt file may already be removed or never created.
   }
 }
 
@@ -228,6 +254,22 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
   } catch {
     // Directory may not exist yet — that's fine
   }
+
+  const promptDir = path.join(projectRoot, ".ade", "orchestrator", "worker-prompts");
+  try {
+    const entries = fs.readdirSync(promptDir);
+    for (const entry of entries) {
+      if (entry.startsWith("worker-") && entry.endsWith(".txt")) {
+        try {
+          fs.unlinkSync(path.join(promptDir, entry));
+        } catch {
+          // Ignore individual file removal errors
+        }
+      }
+    }
+  } catch {
+    // Directory may not exist yet — that's fine
+  }
 }
 
 /** @deprecated Kept only as fallback when _providers is absent. Prefer per-provider mapping. */
@@ -235,6 +277,35 @@ function resolveCliMode(permissionConfig: { cli?: { mode?: "read-only" | "edit" 
   const mode = permissionConfig?.cli?.mode;
   if (mode === "read-only" || mode === "edit" || mode === "full-auto") return mode;
   return "full-auto";
+}
+
+type LegacyPermissionConfig = {
+  cli?: {
+    mode?: "read-only" | "edit" | "full-auto";
+    sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
+    writablePaths?: string[];
+    allowedTools?: string[];
+  };
+  inProcess?: {
+    mode?: "plan" | "edit" | "full-auto";
+  };
+  _providers?: MissionProviderPermissions;
+};
+
+export function forceReadOnlyPermissionConfig(
+  permissionConfig: LegacyPermissionConfig | undefined,
+  readOnlyExecution: boolean,
+): LegacyPermissionConfig | undefined {
+  if (!readOnlyExecution) return permissionConfig;
+  const providers = normalizeMissionPermissions(permissionConfig as MissionPermissionConfig | undefined);
+  return providerPermissionsToLegacyConfig({
+    ...providers,
+    claude: "plan",
+    codex: "plan",
+    unified: "plan",
+    codexSandbox: "read-only",
+    writablePaths: [],
+  });
 }
 
 /**
@@ -263,11 +334,15 @@ export function createUnifiedOrchestratorAdapter(options?: {
     buildOverrideCommand: ({ prompt }) => {
       // For override commands, try to detect the best CLI
       // Default to claude since it's the most common
-      return `exec claude -p ${shellEscapeArg(prompt)}`;
+      return `exec claude -p ${shellInlineDecodedArg(prompt)}`;
     },
 
     buildStartupCommand: ({ prompt, model, step, run, attempt, permissionConfig, teamRuntime }) => {
       const descriptor = getModelById(model) ?? resolveModelAlias(model);
+      const requiresPlanApproval =
+        step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
+      const readOnlyExecution = step.metadata?.readOnlyExecution === true || requiresPlanApproval;
+      const effectivePermissionConfig = forceReadOnlyPermissionConfig(permissionConfig, readOnlyExecution);
       const workerEnv = buildWorkerEnvVars({
         missionId: run.missionId,
         runId: run.id,
@@ -287,11 +362,15 @@ export function createUnifiedOrchestratorAdapter(options?: {
       if (descriptor?.isCliWrapped && descriptor.family === "anthropic") {
         // Claude CLI path — use per-provider permission when available
         const cliModel = resolveClaudeCliModel(descriptor?.sdkModelId ?? model);
-        const claudeProviderMode = permissionConfig?._providers?.claude;
+        const claudeProviderMode = effectivePermissionConfig?._providers?.claude;
         const mappedClaude = mapPermissionToClaude(claudeProviderMode);
-        const dangerouslySkip = mappedClaude === "bypassPermissions";
-        const permissionMode = mappedClaude === "bypassPermissions" ? "acceptEdits" : mappedClaude;
-        const allowedTools = permissionConfig?._providers?.allowedTools ?? permissionConfig?.cli?.allowedTools ?? [];
+        const dangerouslySkip = !readOnlyExecution && mappedClaude === "bypassPermissions";
+        const permissionMode = readOnlyExecution
+          ? "plan"
+          : mappedClaude === "bypassPermissions"
+            ? "acceptEdits"
+            : mappedClaude;
+        const allowedTools = effectivePermissionConfig?._providers?.allowedTools ?? effectivePermissionConfig?.cli?.allowedTools ?? [];
 
         const parts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
 
@@ -309,9 +388,13 @@ export function createUnifiedOrchestratorAdapter(options?: {
         // so Claude native teammates inherit an MCP config path available from that directory.
         const mcpConfigPath = writeMcpConfigFile(mcpIdentity);
         const localMcpConfigName = workerLocalMcpConfigFileName(attempt.id);
+        const promptFilePath = writeWorkerPromptFile({
+          projectRoot: workspaceRoot,
+          attemptId: attempt.id,
+          prompt,
+        });
         parts.push("--mcp-config", shellEscapeArg(localMcpConfigName));
-
-        parts.push("-p", shellEscapeArg(prompt));
+        parts.push("-p", `"$(cat ${shellEscapeArg(promptFilePath)})"`);
 
         const envParts: string[] = [...workerEnv];
         if (
@@ -330,11 +413,13 @@ export function createUnifiedOrchestratorAdapter(options?: {
 
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
         // Codex CLI path — use per-provider permission when available
-        const codexProviderMode = permissionConfig?._providers?.codex;
+        const codexProviderMode = effectivePermissionConfig?._providers?.codex;
         const mappedCodex = mapPermissionToCodex(codexProviderMode);
         const approvalPolicy = mappedCodex?.approvalPolicy ?? "untrusted";
-        const sandboxMode = permissionConfig?._providers?.codexSandbox ?? permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
-        const writablePaths = permissionConfig?._providers?.writablePaths ?? permissionConfig?.cli?.writablePaths ?? [];
+        const sandboxMode = readOnlyExecution
+          ? "read-only"
+          : effectivePermissionConfig?._providers?.codexSandbox ?? effectivePermissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+        const writablePaths = effectivePermissionConfig?._providers?.writablePaths ?? effectivePermissionConfig?.cli?.writablePaths ?? [];
 
         const parts: string[] = [
           "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.sdkModelId)),
@@ -351,11 +436,17 @@ export function createUnifiedOrchestratorAdapter(options?: {
           if (wp.trim().length) parts.push("--add-dir", shellEscapeArg(wp.trim()));
         }
 
-        parts.push(shellEscapeArg(prompt));
+        parts.push("-");
 
         const envParts = [...workerEnv];
         const cmd = parts.join(" ");
-        return envParts.length > 0 ? `${envParts.join(" ")} exec ${cmd}` : `exec ${cmd}`;
+        const promptFilePath = writeWorkerPromptFile({
+          projectRoot: workspaceRoot,
+          attemptId: attempt.id,
+          prompt,
+        });
+        const startup = `${envParts.length > 0 ? `${envParts.join(" ")} ` : ""}exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
+        return startup;
       }
 
       // Non-CLI or unknown models cannot run via this shell-based adapter.

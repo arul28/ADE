@@ -103,6 +103,65 @@ function failedStepSummaries(graph: OrchestratorRunGraph): string[] {
     });
 }
 
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function resolveRunPhase(graph: OrchestratorRunGraph): { phaseKey: string; phaseName: string } {
+  const runMeta = readRecord(graph.run.metadata);
+  const phaseRuntime = readRecord(runMeta.phaseRuntime);
+  return {
+    phaseKey: typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim().toLowerCase() : "",
+    phaseName: typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim().toLowerCase() : "",
+  };
+}
+
+function resolveStepPhase(step: OrchestratorStep | undefined): { phaseKey: string; phaseName: string } {
+  const stepMeta = readRecord(step?.metadata);
+  return {
+    phaseKey: typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "",
+    phaseName: typeof stepMeta.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "",
+  };
+}
+
+function buildCoordinatorActionHints(
+  event: OrchestratorRuntimeEvent,
+  graph: OrchestratorRunGraph,
+  step?: OrchestratorStep,
+): string[] {
+  const reason = String(event.reason ?? "").trim().toLowerCase();
+  if (reason !== "attempt_completed" && reason !== "completed" && reason !== "skipped") {
+    return [];
+  }
+
+  const hints: string[] = [];
+  const runPhase = resolveRunPhase(graph);
+  const stepPhase = resolveStepPhase(step);
+  const planningPhase =
+    stepPhase.phaseKey === "planning"
+    || stepPhase.phaseName === "planning"
+    || runPhase.phaseKey === "planning"
+    || runPhase.phaseName === "planning";
+
+  if (planningPhase && step?.status === "succeeded") {
+    hints.push(
+      "Coordinator action: this completion is still labeled Planning. Review the worker output, create/update the visible DAG if needed, then call set_current_phase with phaseKey \"development\" before spawning any code-changing worker."
+    );
+  }
+
+  const allStepsTerminal = graph.steps.length > 0 && graph.steps.every((candidate) => TERMINAL_STATUSES.has(candidate.status));
+  const hasRunningAttempt = graph.attempts.some((candidate) => candidate.status === "running");
+  if (graph.run.status === "active" && allStepsTerminal && !hasRunningAttempt) {
+    hints.push(
+      "Coordinator action: no workers are running and all tracked steps are terminal. If the mission goal is satisfied, call complete_mission. Otherwise transition to the next phase and spawn the next worker."
+    );
+  }
+
+  return hints;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -146,6 +205,10 @@ export function formatRuntimeEvent(
     if (attempt?.resultEnvelope?.summary) {
       parts.push(`Result: ${attempt.resultEnvelope.summary}`);
     }
+    const actionHints = buildCoordinatorActionHints(event, g, step);
+    if (actionHints.length > 0) {
+      parts.push(...actionHints);
+    }
     digest = parts.join("\n");
   }
 
@@ -178,6 +241,21 @@ export function formatStepCompletion(
   const running = graph.steps.filter((s) => s.status === "running");
   if (running.length > 0) {
     parts.push(`Running: ${running.map((s) => s.stepKey).join(", ")}`);
+  }
+  const actionHints = buildCoordinatorActionHints(
+    {
+      type: "orchestrator-step-updated",
+      runId: graph.run.id,
+      stepId: step.id,
+      attemptId: attempt?.id ?? undefined,
+      at: attempt?.completedAt ?? step.completedAt ?? step.updatedAt,
+      reason: step.status === "skipped" ? "skipped" : "attempt_completed",
+    },
+    graph,
+    step,
+  );
+  if (actionHints.length > 0) {
+    parts.push(...actionHints);
   }
   const digest = parts.join("\n");
 

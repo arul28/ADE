@@ -15,6 +15,10 @@ export function shellEscapeArg(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+export function shellInlineDecodedArg(value: string): string {
+  return `"$(node -e 'process.stdout.write(JSON.parse(process.argv[1]))' ${shellEscapeArg(JSON.stringify(value))})"`;
+}
+
 export function compactText(value: string, maxChars = 220): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxChars) return normalized;
@@ -198,6 +202,30 @@ export function buildFullPrompt(
     systemParts.push(`Phase-level guidance:\n${phaseInstructions}`);
   }
 
+  const requiresPlanApproval =
+    step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
+  const readOnlyExecution = step.metadata?.readOnlyExecution === true || requiresPlanApproval;
+  if (readOnlyExecution) {
+    systemParts.push(
+      "IMPORTANT: This step is READ-ONLY. Do NOT modify files, stage changes, or run write operations. Research, review, and return findings or a plan only."
+    );
+  }
+  systemParts.push(
+    [
+      "RESULT REPORTING:",
+      "- Use `report_status` for short progress updates when you make meaningful progress or hit a blocker.",
+      "- Before you exit, ALWAYS call `report_result` with your outcome, summary, filesChanged, and testsRun fields filled in as accurately as possible.",
+      ...(readOnlyExecution
+        ? [
+            "- This step cannot write files. Do NOT attempt `.ade/checkpoints/...` or `.ade/step-output-...md` writes.",
+            "- Put your findings, plan, warnings, and suggested next steps into `report_result` instead."
+          ]
+        : [
+            "- After calling `report_result`, also write the checkpoint and step-output files described below."
+          ])
+    ].join("\n")
+  );
+
   const steeringDirectives = Array.isArray(step.metadata?.steeringDirectives)
     ? (step.metadata.steeringDirectives as unknown[])
         .map((entry) => {
@@ -288,6 +316,19 @@ export function buildFullPrompt(
   // Project memories (high importance only)
   const memProjectId = opts?.projectId;
   if (memoryService && memProjectId) {
+    const missionMemories = memoryService.getMemoryBudget(memProjectId, "lite", {
+      scope: "mission",
+      scopeOwnerId: run.id,
+    });
+    if (missionMemories.length > 0) {
+      systemParts.push(
+        [
+          "## Mission Memory",
+          ...missionMemories.map((mem) => `- [${mem.category}] ${mem.content}`)
+        ].join("\n")
+      );
+    }
+
     const projectMemories = memoryService.getMemoryBudget(memProjectId, "lite");
     const promoted = projectMemories.filter((m) => m.importance === "high");
     if (promoted.length > 0) {
@@ -407,7 +448,7 @@ export function buildFullPrompt(
   }
 
   // D. Checkpoint instructions
-  {
+  if (!readOnlyExecution) {
     const sanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
     systemParts.push(
       [
@@ -434,7 +475,7 @@ export function buildFullPrompt(
   );
 
   // Durable step output file
-  {
+  if (!readOnlyExecution) {
     const sanitizedStepKeyForOutput = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
     systemParts.push(
       [

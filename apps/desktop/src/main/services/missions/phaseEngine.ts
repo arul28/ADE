@@ -19,8 +19,6 @@ import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
 import { nowIso } from "../shared/utils";
 
 export const BUILT_IN_PHASE_KEYS = {
-  /** @deprecated The planning phase card has been removed — deep research is handled by the pre-mission planner.
-   *  Kept for backward compatibility with existing missions/profiles that reference this key. */
   planning: "planning",
   development: "development",
   testing: "testing",
@@ -30,6 +28,7 @@ export const BUILT_IN_PHASE_KEYS = {
 } as const;
 
 const DEFAULT_MODELS: Record<string, ModelConfig> = {
+  [BUILT_IN_PHASE_KEYS.planning]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
   [BUILT_IN_PHASE_KEYS.development]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
   [BUILT_IN_PHASE_KEYS.testing]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "low" },
   [BUILT_IN_PHASE_KEYS.validation]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
@@ -37,6 +36,33 @@ const DEFAULT_MODELS: Record<string, ModelConfig> = {
 
 export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
   return [
+    {
+      id: `builtin:${BUILT_IN_PHASE_KEYS.planning}`,
+      phaseKey: BUILT_IN_PHASE_KEYS.planning,
+      name: "Planning",
+      description: "Research, clarify requirements, and design the execution DAG.",
+      instructions:
+        "Investigate the codebase, identify dependencies/risks, and produce a concrete execution plan before implementation.",
+      model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.planning],
+      budget: {},
+      orderingConstraints: {
+        mustBeFirst: true,
+      },
+      askQuestions: {
+        enabled: true,
+        mode: "auto_if_uncertain",
+        maxQuestions: 5,
+      },
+      validationGate: {
+        tier: "self",
+        required: false,
+      },
+      isBuiltIn: true,
+      isCustom: false,
+      position: 0,
+      createdAt: at,
+      updatedAt: at,
+    },
     {
       id: `builtin:${BUILT_IN_PHASE_KEYS.development}`,
       phaseKey: BUILT_IN_PHASE_KEYS.development,
@@ -57,7 +83,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       },
       isBuiltIn: true,
       isCustom: false,
-      position: 0,
+      position: 1,
       createdAt: at,
       updatedAt: at,
     },
@@ -80,7 +106,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       },
       isBuiltIn: true,
       isCustom: false,
-      position: 1,
+      position: 2,
       createdAt: at,
       updatedAt: at,
     },
@@ -103,7 +129,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       },
       isBuiltIn: true,
       isCustom: false,
-      position: 2,
+      position: 3,
       createdAt: at,
       updatedAt: at,
     },
@@ -113,11 +139,13 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
 export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowIso()): PhaseProfile[] {
   const byKey = new Map(cards.map((card) => [card.phaseKey, card] as const));
   const defaultKeys = [
+    BUILT_IN_PHASE_KEYS.planning,
     BUILT_IN_PHASE_KEYS.development,
     BUILT_IN_PHASE_KEYS.testing,
     BUILT_IN_PHASE_KEYS.validation,
   ];
   const tddKeys = [
+    BUILT_IN_PHASE_KEYS.planning,
     BUILT_IN_PHASE_KEYS.testing,
     BUILT_IN_PHASE_KEYS.development,
     BUILT_IN_PHASE_KEYS.validation,
@@ -135,7 +163,7 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
     {
       id: "builtin:default",
       name: "Default",
-      description: "Development -> Testing -> Validation",
+      description: "Planning -> Development -> Testing -> Validation",
       phases: asPhaseList(defaultKeys),
       isBuiltIn: true,
       isDefault: true,
@@ -145,7 +173,7 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
     {
       id: "builtin:tdd",
       name: "TDD",
-      description: "Testing -> Development -> Validation",
+      description: "Planning -> Testing -> Development -> Validation",
       phases: asPhaseList(tddKeys),
       isBuiltIn: true,
       isDefault: false,
@@ -225,8 +253,11 @@ function inferPhaseKeyFromStep(kind: string, metadata: MissionStepMetadata | Rec
   const lowerKind = kind.toLowerCase();
   const lowerType = stepType.toLowerCase();
 
-  // "analysis" steps run in development phase (deep research is handled by the pre-mission planner)
-  if (lowerType === "analysis") return BUILT_IN_PHASE_KEYS.development;
+  if (lowerType === "analysis" || lowerType === "planning") {
+    return phases.some((phase) => phase.phaseKey === BUILT_IN_PHASE_KEYS.planning)
+      ? BUILT_IN_PHASE_KEYS.planning
+      : BUILT_IN_PHASE_KEYS.development;
+  }
   if (lowerType === "test" || lowerKind === "validation") return BUILT_IN_PHASE_KEYS.testing;
   if (lowerType === "milestone") return BUILT_IN_PHASE_KEYS.validation;
   if (lowerType === "review") return BUILT_IN_PHASE_KEYS.validation;

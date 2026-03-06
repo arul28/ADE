@@ -10,10 +10,10 @@ import {
 } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { sanitizeTerminalInlineText } from "../../lib/terminalAttention";
+import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { getTerminalRuntimeHealth } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
-import { isChatToolType } from "../../lib/sessions";
 
 function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {
   if (state === "waiting-input") return "waiting input";
@@ -106,7 +106,7 @@ export function SessionInfoPopover({
               ["Lane", session.laneName],
               ["Status", session.status],
               ["Runtime", runtimeStateLabel(session.runtimeState)],
-              session.toolType ? ["Tool", session.toolType] : null,
+              session.toolType ? ["Tool", formatToolTypeLabel(session.toolType)] : null,
               session.exitCode != null ? ["Exit", `${session.exitCode}`] : null,
               !session.tracked ? ["Context", "no context"] : null,
               ["Started", new Date(session.startedAt).toLocaleTimeString()],

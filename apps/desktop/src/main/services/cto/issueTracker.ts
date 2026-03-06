@@ -20,6 +20,7 @@ export type IssueTrackerWorkflowState = {
 export type IssueTracker = {
   fetchCandidateIssues(query: IssueTrackerCandidateQuery): Promise<NormalizedLinearIssue[]>;
   fetchIssueById(issueId: string): Promise<NormalizedLinearIssue | null>;
+  fetchIssuesByIds(issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>>;
   fetchWorkflowStates(teamKey: string): Promise<IssueTrackerWorkflowState[]>;
   updateIssueState(issueId: string, stateId: string): Promise<void>;
   updateIssueAssignee(issueId: string, assigneeId: string | null): Promise<void>;

@@ -161,7 +161,7 @@ export function UnifiedModelSelector({
         {open ? (
           <div
             role="listbox"
-            className="absolute bottom-full left-0 z-50 mb-1 border border-border/25 bg-[#0F0D14]/98 shadow-[0_-8px_32px_-8px_rgba(0,0,0,0.8)]"
+            className="absolute bottom-full left-0 z-50 mb-1 border border-border/25 bg-surface-overlay/95 shadow-[var(--shadow-float)] backdrop-blur-md"
             style={{ minWidth: 240, maxHeight: 280, overflowY: "auto" }}
           >
             {grouped.map(({ label, authType, models }) => {

@@ -143,7 +143,27 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     get(sessionId: string): TerminalSessionDetail | null {
-      const row = db.get<TerminalSessionDetail & { laneName: string }>(
+      const row = db.get<{
+        id: string;
+        laneId: string;
+        laneName: string;
+        ptyId: string | null;
+        tracked: number;
+        pinned: number;
+        goal: string | null;
+        toolType: string | null;
+        title: string;
+        status: TerminalSessionStatus;
+        startedAt: string;
+        endedAt: string | null;
+        exitCode: number | null;
+        transcriptPath: string;
+        headShaStart: string | null;
+        headShaEnd: string | null;
+        lastOutputPreview: string | null;
+        summary: string | null;
+        resumeCommand: string | null;
+      }>(
         `
           select
             s.id as id,
@@ -172,17 +192,16 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `,
         [sessionId]
       );
-      return row
-        ? ({
-            ...row,
-            tracked: (row as any).tracked === 1,
-            pinned: (row as any).pinned === 1,
-            goal: (row as any).goal ?? null,
-            toolType: normalizeToolType((row as any).toolType),
-            runtimeState: runtimeStateFromStatus((row as any).status),
-            resumeCommand: (row as any).resumeCommand ?? null
-          } as TerminalSessionDetail)
-        : null;
+      if (!row) return null;
+      return {
+        ...row,
+        tracked: row.tracked === 1,
+        pinned: row.pinned === 1,
+        goal: row.goal ?? null,
+        toolType: normalizeToolType(row.toolType),
+        runtimeState: runtimeStateFromStatus(row.status),
+        resumeCommand: row.resumeCommand ?? null
+      } as TerminalSessionDetail;
     },
 
     updateMeta(args: UpdateSessionMetaArgs): TerminalSessionSummary | null {
@@ -195,6 +214,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (typeof args.pinned === "boolean") {
         sets.push("pinned = ?");
         params.push(args.pinned ? 1 : 0);
+      }
+
+      if (args.title !== undefined) {
+        const nextTitle = typeof args.title === "string" ? args.title.trim() : "";
+        if (nextTitle.length) {
+          sets.push("title = ?");
+          params.push(nextTitle);
+        }
       }
 
       if (args.goal !== undefined) {
@@ -211,7 +238,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (args.resumeCommand !== undefined) {
         const next = typeof args.resumeCommand === "string" ? args.resumeCommand.trim() : "";
         sets.push("resume_command = ?");
-        params.push(next ? next : null);
+        params.push(next || null);
       }
 
       if (sets.length) {
@@ -315,7 +342,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     setResumeCommand(sessionId: string, resumeCommand: string | null): void {
       const next = typeof resumeCommand === "string" ? resumeCommand.trim() : "";
-      db.run("update terminal_sessions set resume_command = ? where id = ?", [next ? next : null, sessionId]);
+      db.run("update terminal_sessions set resume_command = ? where id = ?", [next || null, sessionId]);
     },
 
     end({

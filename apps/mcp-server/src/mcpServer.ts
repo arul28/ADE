@@ -210,7 +210,8 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         content: { type: "string", minLength: 1 },
         category: { type: "string", enum: ["fact", "preference", "pattern", "decision", "gotcha"] },
-        importance: { type: "string", enum: ["low", "medium", "high"], default: "medium" }
+        importance: { type: "string", enum: ["low", "medium", "high"], default: "medium" },
+        scope: { type: "string", enum: ["project", "mission", "agent"] }
       }
     }
   },
@@ -264,7 +265,21 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         query: { type: "string", minLength: 1 },
+        scope: { type: "string", enum: ["project", "mission", "agent"] },
+        status: { type: "string", enum: ["promoted", "candidate", "archived", "all"], default: "promoted" },
         limit: { type: "number", minimum: 1, maximum: 50, default: 5 }
+      }
+    }
+  },
+  {
+    name: "memory_pin",
+    description: "Pin a memory entry into always-available Tier-1 context.",
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      additionalProperties: false,
+      properties: {
+        id: { type: "string", minLength: 1 }
       }
     }
   },
@@ -497,20 +512,6 @@ const TOOL_SPECS: ToolSpec[] = [
         directive: { type: "string", minLength: 1 },
         targetStepKey: { type: "string" },
         priority: { type: "string", enum: ["suggestion", "instruction", "override"] }
-      }
-    }
-  },
-  {
-    name: "approve_plan",
-    description: "Approve or reject a mission's execution plan.",
-    inputSchema: {
-      type: "object",
-      required: ["missionId", "approved"],
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", minLength: 1 },
-        approved: { type: "boolean" },
-        feedback: { type: "string" }
       }
     }
   },
@@ -826,6 +827,7 @@ const MUTATION_TOOLS = new Set([
   "rebase_lane",
   "land_queue_next",
   "memory_add",
+  "memory_pin",
   "memory_update_core",
   "reflection_add",
   "spawn_agent"
@@ -838,7 +840,6 @@ const ORCHESTRATION_TOOLS = new Set([
   "resume_mission",
   "cancel_mission",
   "steer_mission",
-  "approve_plan",
   "resolve_intervention"
 ]);
 
@@ -914,6 +915,9 @@ function normalizeExportLevel(value: unknown, fallback: ContextExportLevel = "st
 
 type MemoryToolCategory = "fact" | "preference" | "pattern" | "decision" | "gotcha";
 type MemoryToolImportance = "low" | "medium" | "high";
+type MemoryToolScope = "project" | "mission" | "agent";
+type MemoryToolSearchStatus = "promoted" | "candidate" | "archived" | "all";
+type MemoryServiceScope = "project" | "mission" | "user";
 type SharedFactType = "api_pattern" | "schema_change" | "config" | "architectural" | "gotcha";
 
 function parseMemoryToolCategory(value: unknown): MemoryToolCategory {
@@ -939,6 +943,37 @@ function parseMemoryToolImportance(value: unknown): MemoryToolImportance {
     return importance;
   }
   throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "importance must be one of: low, medium, high");
+}
+
+function parseMemoryToolScope(value: unknown, fallback: MemoryToolScope): MemoryToolScope {
+  const scope = asOptionalTrimmedString(value) ?? fallback;
+  if (scope === "project" || scope === "mission" || scope === "agent") {
+    return scope;
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "scope must be one of: project, mission, agent");
+}
+
+function mapMemoryToolScopeToServiceScope(scope: MemoryToolScope): MemoryServiceScope {
+  if (scope === "agent") return "user";
+  return scope;
+}
+
+function resolveMemoryToolScopeOwnerId(scope: MemoryToolScope, callerCtx: CallerContext): string | null {
+  if (scope === "mission") {
+    return callerCtx.runId ?? null;
+  }
+  if (scope === "agent") {
+    return callerCtx.callerId ?? callerCtx.attemptId ?? null;
+  }
+  return null;
+}
+
+function parseMemoryToolSearchStatus(value: unknown): MemoryToolSearchStatus {
+  const status = asOptionalTrimmedString(value) ?? "promoted";
+  if (status === "promoted" || status === "candidate" || status === "archived" || status === "all") {
+    return status;
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "status must be one of: promoted, candidate, archived, all");
 }
 
 function mapMemoryCategoryToSharedFactType(category: MemoryToolCategory): SharedFactType {
@@ -1960,6 +1995,14 @@ async function runCoordinatorTool(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
   }
   const effectiveToolArgs = { ...args.toolArgs };
+  if ((args.name === "report_status" || args.name === "report_result") && !asOptionalTrimmedString(effectiveToolArgs.workerId)) {
+    const graph = getRunGraphSafe(args.runtime, runId);
+    const step = graph ? resolveStepFromGraph(graph, args.callerCtx.stepId, null) : null;
+    const inferredWorkerId = asOptionalTrimmedString(step?.stepKey);
+    if (inferredWorkerId) {
+      effectiveToolArgs.workerId = inferredWorkerId;
+    }
+  }
   const nativeRegistration = ensureNativeTeammateRegistration({
     runtime: args.runtime,
     runId,
@@ -2178,6 +2221,9 @@ async function runTool(args: {
     const content = assertNonEmptyString(toolArgs.content, "content");
     const category = parseMemoryToolCategory(toolArgs.category);
     const importance = parseMemoryToolImportance(toolArgs.importance);
+    const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
+    const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
+    const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
 
     let memoryWritten = false;
     let memoryId: string | null = null;
@@ -2185,7 +2231,8 @@ async function runTool(args: {
     try {
       const memory = runtime.memoryService.addMemory({
         projectId: runtime.projectId,
-        scope: "project",
+        scope: serviceScope,
+        ...(scopeOwnerId ? { scopeOwnerId } : {}),
         category,
         content,
         importance,
@@ -2197,7 +2244,7 @@ async function runTool(args: {
       memoryError = error instanceof Error ? error.message : String(error);
     }
 
-    const sharedFactAttempted = Boolean(callerCtx.runId);
+    const sharedFactAttempted = Boolean(callerCtx.runId) && requestedScope === "mission";
     const sharedFactType = mapMemoryCategoryToSharedFactType(category);
     let sharedFactWritten = false;
     let sharedFactId: string | null = null;
@@ -2222,6 +2269,7 @@ async function runTool(args: {
       content,
       category,
       importance,
+      scope: requestedScope,
       memory: {
         written: memoryWritten,
         id: memoryId,
@@ -2335,19 +2383,53 @@ async function runTool(args: {
     ensureMemorySearchAllowed(session);
 
     const query = assertNonEmptyString(toolArgs.query, "query");
+    const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
+    const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
+    const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
+    const status = parseMemoryToolSearchStatus(toolArgs.status);
+    const statusFilter =
+      status === "all"
+        ? (["promoted", "candidate", "archived"] as const)
+        : status;
     const limit = Math.max(1, Math.min(50, Math.floor(asNumber(toolArgs.limit, 5))));
-    const memories = runtime.memoryService.searchMemories(query, runtime.projectId, undefined, limit);
+    const memories = runtime.memoryService.searchMemories(
+      query,
+      runtime.projectId,
+      serviceScope,
+      limit,
+      statusFilter,
+      scopeOwnerId
+    );
 
     return {
       query,
+      scope: requestedScope,
+      status,
       count: memories.length,
       memories: memories.map((memory) => ({
         id: memory.id,
+        scope: memory.scope,
+        status: memory.status,
         category: memory.category,
         content: memory.content,
         importance: memory.importance,
-        createdAt: memory.createdAt
+        confidence: memory.confidence,
+        createdAt: memory.createdAt,
+        promotedAt: memory.promotedAt,
+        sourceRunId: memory.sourceRunId
       }))
+    };
+  }
+
+  if (name === "memory_pin") {
+    ensureMemoryAddAllowed(session);
+
+    const id = assertNonEmptyString(toolArgs.id, "id");
+    runtime.memoryService.pinMemory(id);
+    return {
+      id,
+      pinned: true,
+      tier: "pinned"
     };
   }
 
@@ -2827,41 +2909,6 @@ async function runTool(args: {
       ...(targetStepKey ? { targetStepKey } : {})
     });
     return result;
-  }
-
-  if (name === "approve_plan") {
-
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
-    const approved = toolArgs.approved === true;
-    const feedback = asOptionalTrimmedString(toolArgs.feedback);
-
-    if (!approved) {
-      // Rejection: add intervention and cancel any active run for this mission
-      const intervention = runtime.missionService.addIntervention({
-        missionId,
-        interventionType: "manual_input",
-        title: "Plan rejected",
-        body: feedback ?? "Plan was rejected by evaluator."
-      });
-      // Cancel the most recent active run if one exists
-      const runs = runtime.orchestratorService.listRuns({ missionId, status: "active", limit: 1 });
-      let cancelledRunId: string | null = null;
-      if (runs.length > 0) {
-        try {
-          await runtime.aiOrchestratorService.cancelRunGracefully({ runId: runs[0]!.id, reason: "Plan rejected" });
-          cancelledRunId = runs[0]!.id;
-        } catch {
-          // Run may already be in a terminal state
-        }
-      }
-      return { approved: false, intervention, cancelledRunId };
-    }
-
-    // Approval: start the mission run via approveMissionPlan
-    const result = await runtime.aiOrchestratorService.approveMissionPlan({
-      missionId
-    });
-    return { approved: true, ...result };
   }
 
   if (name === "resolve_intervention") {

@@ -29,7 +29,7 @@
 
 ADE (Agentic Development Environment) is a desktop application designed to augment the developer workflow by providing deep integration between terminal sessions, git operations, and context-aware tooling. The system is built around two main components -- the Desktop UI and the Local Core Engine -- with an integrated AI layer that connects to configured providers (CLI subscriptions, API-key/OpenRouter, and local OpenAI-compatible endpoints) via native agent SDKs and an MCP server. Strict boundaries govern which layer is permitted to perform mutations on the repository and filesystem.
 
-The core insight behind ADE's architecture is that developer context -- the state of code changes, terminal output, test results, process health, and git history -- is fragmented across tools. ADE unifies this context into a persistent memory system (three scopes: project, agent, mission; three tiers: pinned, hot, cold) that serves both humans and AI agents. The memory system replaces the earlier "context packs" approach with intelligent write gates, hybrid vector search, and temporal decay.
+The core insight behind ADE's architecture is that developer context -- the state of code changes, terminal output, test results, process health, and git history -- is fragmented across tools. ADE is moving that context toward a persistent memory system (three scopes: project, agent, mission; three tiers: pinned, hot, cold) that serves both humans and AI agents. Today that memory system is the canonical durable memory backend, while pack-based compatibility paths still remain for some orchestrator/MCP/context-doc flows.
 
 The AI integration layer replaces the previous hosted cloud backend with a local-first, provider-flexible approach. ADE can run with CLI subscriptions (`claude`/`codex`), API-key/OpenRouter providers, and local model endpoints (LM Studio/Ollama/vLLM). An MCP server exposes ADE's internal tools to these AI processes, and an AI orchestrator coordinates multi-step mission execution.
 
@@ -63,15 +63,20 @@ ADE supports pluggable compute backends for lane and mission execution. The `Com
 
 Rather than using branches alone, ADE maps each lane (unit of work) to a dedicated git worktree. This enables true parallel development: multiple lanes can have different working trees checked out simultaneously without interference. The worktree model also provides a clean filesystem boundary for process execution and test isolation.
 
-### Deterministic Packs Over Live Queries
+### Deterministic Context Exports + Unified Memory
 
-> **Planned removal (Phase 4 W6)**: The context pack system will be replaced by the Unified Memory System — one service with three scopes (project/agent/mission) and three tiers (pinned/hot/cold). See `docs/final-plan/phase-4.md` W6 for details.
+W6 is now complete as a runtime migration: unified memory is the canonical durable memory backend and renderer inspection surface, and runtime context assembly no longer depends on persisted `.ade/packs/...` files.
 
-ADE materializes context into markdown pack files rather than relying on live queries. This decision ensures reproducibility (packs are snapshots), enables offline consumption, and provides a natural serialization format for AI context delivery. Packs are rebuilt on deterministic triggers (session end, HEAD change) rather than polled.
+ADE still keeps deterministic markdown context exports as explicit compatibility and audit surfaces for:
+- MCP `read_context` resources and `ade://pack/...` URIs
+- Agent chat context-export selection
+- Optional persisted pack refresh/version history for users or integrations that still inspect `.ade/packs/...`
+
+This keeps prompts reproducible and auditable without leaving persisted pack artifacts on the critical runtime path.
 
 ### Event-Driven Job Engine
 
-Background work is triggered by events (session end, HEAD change) rather than periodic polling. This reduces unnecessary computation while ensuring that packs and deltas are always current when needed. The job engine coalesces duplicate requests to avoid redundant work.
+Background work is triggered by events (session end, HEAD change) rather than periodic polling. This reduces unnecessary computation while ensuring memory and delta signals stay current. The job engine coalesces duplicate requests to avoid redundant work.
 
 ### SQLite for Structured State
 
@@ -87,7 +92,7 @@ ADE is composed of two main components with an integrated AI layer, each with di
 
 **Technology**: Electron 40.x (Chromium + Node.js), React 18.3, TypeScript, Vite, TailwindCSS 4.x
 
-The Desktop UI is the user-facing application. It renders lanes, terminals (via xterm.js), file diffs (via Monaco Editor), process status panels, test result views, pack viewers, and operation history. The UI is split into two Electron processes:
+The Desktop UI is the user-facing application. It renders lanes, terminals (via xterm.js), file diffs (via Monaco Editor), process status panels, test result views, memory inspectors, and operation history. The UI is split into two Electron processes:
 
 - **Main Process (trusted)**: Full Node.js access. This is where all services live. It handles file I/O, PTY spawning via node-pty, git operations, SQLite database access, process management, test execution, and AI integration. Entry point is `main.ts`, which initializes an `AppContext` containing all service instances.
 
@@ -102,10 +107,10 @@ Key UI subsystems:
 | Files | IDE-style workspace browser/editor with search and quick-open |
 | Terminals | Embedded terminal sessions (PTY via node-pty) and agent chat sessions (Codex App Server, Claude multi-turn, and unified API/local runtimes) with unified session tracking |
 | Conflicts | Risk matrix, merge simulation, proposal/reconciliation workflows |
-| Context/Packs | Deterministic pack views, exports, and docs-generation actions |
+| Context/Memory | Unified memory inspection, candidate promotion, and docs-generation actions |
 | Graph | Workspace topology and risk overlays |
 | PRs | PR creation/linking, checks/reviews, stacked + integration flows |
-| History | Operation/checkpoint/pack event timeline |
+| History | Operation/checkpoint/event timeline |
 | Agents | Autonomous agent system: automation, Night Shift, watcher, and review agents with identity/policy profiles |
 | Missions | AI orchestrator control center: mission intake, lifecycle board, Slack-style chat (MissionChatV2 + MentionInput), Details tab, run narrative, interventions, artifacts, outcomes |
 | Settings | Provider config (CLI/API/local/OpenRouter), trust levels, keybindings, terminal profiles, and data controls |
@@ -165,20 +170,22 @@ Common utility code is consolidated into shared modules to eliminate duplication
 | `fileService` | `fileService.ts` | Full file operations: workspace listing, tree browsing (with gitignore), read, write, create, rename, delete, watch (chokidar), quick-open (fuzzy), text search |
 | `gitService` | `gitOperationsService.ts` | All git operations (stage, commit, stash, sync, push, etc.) |
 | `operationService` | `operationService.ts` | Operation history tracking with pre/post HEAD SHAs |
-| `packService` | `packService.ts` + `packUtils.ts`, `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts` | Pack materialization and assembly. Core orchestration in `packService.ts` (3.2K lines); domain-specific assembly decomposed into builders for project packs (~1K), mission packs (~1K), and conflict packs (~330). Shared helpers in `packUtils.ts` (~550). |
+| `packService` | `packService.ts` + builders/utils | Deterministic context-export compatibility layer. Still live for orchestrator context snapshots, MCP `read_context`, and remaining pack-based compatibility paths such as conflict resolution. |
+| `contextDocService` | `contextDocService.ts` | Runtime owner for context-doc status/generate/open flows and auto-refresh preferences. |
+| `sessionDeltaService` | `sessionDeltaService.ts` | Runtime owner for session delta computation and `ade.sessions.getDelta` reads. |
 | `jobEngine` | `jobEngine.ts` | Async job scheduling with deduplication |
 | `processService` | `processService.ts` | Dev process lifecycle management |
 | `testService` | `testService.ts` | Test suite execution and result tracking |
 | `projectConfigService` | `projectConfigService.ts` | YAML config loading, validation, trust model |
 | `aiIntegrationService` | `aiIntegrationService.ts` | AI provider routing, CLI spawning, narrative/proposal generation |
 | `missionService` | `missionService.ts` | Mission lifecycle, step tracking, intervention management |
-| `missionPlanningService` | `missionPlanningService.ts` | AI-powered mission planning (fail-hard, no deterministic fallback) |
+| `phaseEngine` | `phaseEngine.ts` | Built-in/custom phase cards + profiles; planning phase defaults and ordering constraints |
 | `orchestratorService` | `orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` | Run/step/attempt state machine, claim management, context snapshots. DB row types, normalizers, and parse helpers extracted to `orchestratorQueries.ts` (~760 lines). Step policy resolution and file claim helpers extracted to `stepPolicyResolver.ts` (~340 lines). |
 | `aiOrchestratorService` | `aiOrchestratorService.ts` (~7.7K lines) + 8 extracted modules (see below) | AI orchestrator coordination layer. Decomposed from a 13.2K-line monolith into a focused core plus domain-specific modules. |
 | `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, unified API/local backend, ChatEvent streaming |
 | `metaReasoner` | `metaReasoner.ts` | AI-driven fan-out dispatch analysis, dynamic step injection, fan-out strategy selection |
-| `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, pre-compaction writeback, conversation replacement |
-| `memoryService` | `memoryService.ts` | Three-tier memory with sqlite-vec vector search, composite scoring, pre-compaction flush, consolidation, and `.ade/memory/` git sync |
+| `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, shared-fact/summarization writeback, conversation replacement. Full silent memory-flush integration remains future work. |
+| `memoryService` | `memoryService.ts` | Unified durable memory backend backed by `unified_memories`: project/agent/mission scopes, pinned/hot/cold tiers, lexical/composite ranking, pin/promote/archive flows, and DB-backed persistence in `.ade/ade.db`. Embedding-backed retrieval, consolidation, and full pre-compaction flush remain future work. |
 | `ctoAgent` | *Planned* | MCP entry point for external agent systems — intent classification, routing to mission/task/review/query handlers, identity-based learned routing |
 | `externalMcpClient` | *Planned* | Connects to external MCP servers for extended agent capabilities — lazy connect, permission integration, tool manifest merging |
 | `adeStateManager` | *Planned* | Manages `.ade/` portable state directory — cross-machine sync via git, embedding regeneration on clone, state integrity checks |
@@ -236,7 +243,7 @@ ADE uses each agent's native SDK rather than a single unified execution layer:
 
 #### Agent Chat Service
 
-The Agent Chat Service provides a native interactive chat interface inside ADE, complementing the programmatic `AgentExecutor` for one-shot tasks. It uses the Codex App Server protocol (JSON-RPC 2.0 over stdio, documented at https://developers.openai.com/codex/app-server) for Codex and the community Vercel provider's multi-turn `streamText()` for Claude. A provider-agnostic `AgentChatService` interface unifies both backends behind a common `ChatEvent` stream. Chat sessions integrate as first-class `terminal_sessions` with delta computation, pack integration, and full session lifecycle callbacks. A **unified runtime** extends chat to API-key and local models (not just CLI-wrapped), with permission modes (plan/edit/full-auto) and universal tools.
+The Agent Chat Service provides a native interactive chat interface inside ADE, complementing the programmatic `AgentExecutor` for one-shot tasks. It uses the Codex App Server protocol (JSON-RPC 2.0 over stdio, documented at https://developers.openai.com/codex/app-server) for Codex and the community Vercel provider's multi-turn `streamText()` for Claude. A provider-agnostic `AgentChatService` interface unifies both backends behind a common `ChatEvent` stream. Chat sessions integrate as first-class `terminal_sessions` with delta computation, context-export compatibility hooks, and full session lifecycle callbacks. A **unified runtime** extends chat to API-key and local models (not just CLI-wrapped), with permission modes (plan/edit/full-auto) and universal tools.
 
 #### Model Registry & Dynamic Pricing
 
@@ -283,7 +290,7 @@ Each task type maps to a preferred provider and model:
 | Narrative generation | Claude CLI | Concise developer-facing summaries |
 | PR description drafting | Claude CLI | Factual, structured markdown generation |
 
-Routing is configurable in `.ade/local.yaml` under per-task-type settings. The `executorHint` field on each mission step allows the planner to override defaults based on task characteristics.
+Routing is configurable in `.ade/local.yaml` under per-task-type settings. Runtime step metadata is stamped from the current phase so coordinator/worker routing stays phase-consistent.
 
 ---
 
@@ -295,7 +302,7 @@ The primary data flow through ADE follows this pipeline:
 
 ```
 User creates mission (plain-English prompt)
-  --> AI orchestrator plans execution via claude/codex CLI (fail-hard planner, 300s timeout)
+  --> AI orchestrator starts run and enters planning phase (default profile)
     --> Meta-reasoner analyzes for fan-out opportunities (external/internal/hybrid parallel)
       --> Orchestrator spawns agents in separate lane worktrees
         --> Agents work in lanes using MCP tools (read context, run tests, commit, memory tools)
@@ -303,7 +310,7 @@ User creates mission (plain-English prompt)
             --> Compaction engine monitors token usage, self-summarizes at 70% threshold
               --> Run narrative appended after each step completion
                 --> Inter-agent messaging via @mentions and teamMessageTool
-                  --> Context packs track progress; attempt transcripts persisted for resume
+                  --> Context snapshots + export cursors track progress; attempt transcripts persisted for resume
                     --> Orchestrator monitors via gate reports and claim heartbeats
                       --> Interventions route to ADE UI when human input needed
                         --> PR strategy (integration/per-lane/manual) replaces merge phase
@@ -316,8 +323,8 @@ For non-mission workflows, the standard context pipeline continues:
 User creates lane
   --> Runs terminal session in lane worktree
     --> Session end triggers checkpoint computation
-      --> Checkpoint triggers pack update (lane pack + project pack)
-        --> Pack triggers conflict prediction
+      --> Job engine queues lane refresh hook + conflict prediction
+        --> Context exports and docs refresh on demand (orchestrator/MCP/settings flows)
           --> AI generates narratives/proposals via configured providers (CLI/API/local)
             --> Results displayed in desktop UI
 ```
@@ -339,13 +346,12 @@ For memory persistence and cross-machine sync:
 Agent execution → Memory write (memoryAdd)
   → Embed via local GGUF or OpenAI fallback
     → Consolidation check (cosine > 0.85 similarity)
-      → Store in SQLite + memory_vectors
-        → Emit to .ade/memory/ JSON files
-          → git commit + push (user-initiated or automated)
-            → Other machines: git pull → memory service reload → re-embed if needed
+      → Store in `.ade/ade.db` (`unified_memories` + `unified_memory_embeddings`)
+        → optional git commit + push
+          → Other machines: git pull → memory retrieval reflects new entries
 ```
 
-Each step in these pipelines is triggered by events rather than polling. The job engine ensures that rapid successive events (multiple sessions ending quickly) are coalesced into a single pack refresh.
+Each step in these pipelines is triggered by events rather than polling. The job engine coalesces rapid successive updates into a single lane-refresh/conflict-prediction pass.
 
 ### IPC Architecture
 
@@ -356,7 +362,7 @@ Communication between the renderer and main process is organized into a broad ty
 | App / Project / Onboarding / CI | `ade.app.*`, `ade.project.*`, `ade.onboarding.*`, `ade.ci.*` | invoke/handle + selected events |
 | Lanes / Git / Conflicts / PRs | `ade.lanes.*`, `ade.git.*`, `ade.conflicts.*`, `ade.prs.*` | invoke/handle + selected events |
 | Terminals / Sessions / Files | `ade.pty.*`, `ade.sessions.*`, `ade.files.*` | invoke/handle + high-frequency stream events |
-| Context / Packs / History / Graph | `ade.context.*`, `ade.packs.*`, `ade.history.*`, `ade.graph.*` | invoke/handle + pack events |
+| Context / History / Graph | `ade.context.*`, `ade.history.*`, `ade.graph.*` | invoke/handle + context events |
 | Processes / Tests / Agents | `ade.processes.*`, `ade.tests.*`, `ade.agents.*` | invoke/handle + runtime events |
 | Missions / Orchestrator | `ade.missions.*`, `ade.orchestrator.*` | invoke/handle + lifecycle events |
 | AI Integration | `ade.ai.*` | invoke/handle + streaming events |
@@ -383,32 +389,29 @@ PTY exit --> ptyService.closeEntry()
   --> sessionService.end()
   --> onSessionEnded callback
     --> jobEngine.onSessionEnded()
-      --> packService.refreshLanePack()
-      --> packService.refreshProjectPack()
+      --> enqueue lane refresh hook (memory/context maintenance)
+      --> queue conflict prediction
 
 Git operation completes --> gitService (any mutation)
   --> operationService.finish()
   --> onHeadChanged callback (if SHA changed)
     --> jobEngine.onHeadChanged()
-      --> packService.refreshLanePack()
-      --> packService.refreshProjectPack()
+      --> queue conflict prediction (debounced)
 
-Pack refresh completes --> packService
-  --> onPackRefreshed callback
-    --> aiIntegrationService.generateNarrative() (if subscriptions available)
-    --> conflictService.predictConflicts()
+Context-doc auto-refresh trigger --> IPC workflows (mission/PR/lane refresh)
+  --> contextDocService.maybeAutoRefreshDocs()
+    --> context docs status/inventory update
 
 Mission created --> missionService
-  --> missionPlanningService.planMission()
-    --> spawns claude/codex CLI for AI planning (fail-hard, no deterministic fallback)
-    --> orchestratorService.startRun()
-      --> orchestrator tick loop begins
-        --> metaReasoner.analyzeForFanOut() injects parallel steps dynamically
-        --> spawns agents per step via executor adapters
-          --> agents use MCP tools to interact with ADE services
-            --> compactionEngine monitors token usage per session
-              --> appendRunNarrative() generates rolling narrative after step completion
-                --> deliverMessageToAgent() routes inter-agent @mention messages
+  --> orchestratorService.startRun()
+    --> phaseRuntime seeds to first enabled phase (planning by default)
+    --> coordinator plans/clarifies and transitions via set_current_phase()
+      --> metaReasoner.analyzeForFanOut() injects parallel steps dynamically
+      --> spawns agents per step via executor adapters
+        --> agents use MCP tools to interact with ADE services
+          --> compactionEngine monitors token usage per session
+            --> appendRunNarrative() generates rolling narrative after step completion
+              --> deliverMessageToAgent() routes inter-agent @mention messages
 
 Agent step completed --> orchestratorService
   --> appendRunNarrative() updates run narrative
@@ -434,21 +437,19 @@ ADE is designed to be fully portable across developer machines without requiring
 
 | State Category | Location | Git-tracked | Notes |
 |----------------|----------|:-----------:|-------|
-| Project memories | `.ade/memory/project.json` | Yes | Shared project knowledge |
-| Agent memories | `.ade/memory/agents/<id>.json` | Yes | Per-agent learned behaviors |
+| Unified memory tables | `.ade/ade.db` (`unified_memories`, `unified_memory_embeddings`) | Project policy dependent | Primary runtime memory store |
 | Agent definitions | `.ade/agents/*.yaml` | Yes | Agent role and capability configs |
 | Agent identities | `.ade/identities/*.yaml` | Yes | Agent persona and policy profiles |
 | Mission history | `.ade/missions/history.jsonl` | Yes | Completed mission records |
-| Learning packs | `.ade/learning/*.json` | Yes | Auto-accumulated project rules |
+| Deterministic context exports | `.ade/packs/**` | Project policy dependent | Compatibility artifacts used by orchestrator/MCP/context-doc tooling |
 | Shared config | `.ade/local.yaml` | Yes | Project-level settings |
 | MCP socket | `.ade/mcp.sock` | No | Runtime artifact |
-| Embedding cache | `.ade/cache/embeddings/` | No | Regenerated locally per machine |
 | Session transcripts | `.ade/transcripts/` | No | Large, ephemeral |
 | Private config | `.ade/local.private.yaml` | No | Machine-specific secrets/paths |
 
 **No hub needed**: Unlike systems that require a central server for state sync, ADE relies entirely on git. When a developer pushes their `.ade/` changes, other machines receive the state on the next pull. This is intentionally simple and works with any git hosting provider.
 
-**Embedding regeneration**: The `memory_vectors` SQLite table (sqlite-vec data) is not portable — it is `.gitignore`d because binary embedding data is machine-specific. On first startup after cloning or pulling new memory files, the memory service detects the mismatch and triggers a background re-embedding job using the local GGUF model (~30s for typical projects).
+**Embedding storage**: Memory embeddings are stored in `unified_memory_embeddings` inside `.ade/ade.db`, but they are not yet used by active retrieval. Native sqlite-vec virtual-table integration is deferred; the current runtime uses lexical/composite scoring in `unifiedMemoryService.ts`.
 
 **Phase 8 relay is NOT state sync**: The planned Phase 8 relay server enables real-time remote control of a running ADE instance (e.g., from an iOS app). This is an operational bridge — it streams live events and accepts commands from a remote client to a running desktop instance. It does not participate in state synchronization, which remains purely git-based.
 
@@ -458,16 +459,16 @@ ADE is designed to be fully portable across developer machines without requiring
 
 ## Implementation Status
 
-Current codebase status is feature-rich across lanes, files, terminals, conflicts, packs/context, PRs, agents, missions, orchestrator runtime, and AI-powered planning via configured providers (CLI/API/local).
+Current codebase status is feature-rich across lanes, files, terminals, conflicts, unified memory/docs context, PRs, agents, missions, orchestrator runtime, and phase-based planning via configured providers (CLI/API/local).
 
 | Component | Status |
 |-----------|--------|
 | Desktop UI (all subsystems) | Complete |
 | Local Core Engine (all services) | Complete |
-| Mission service + planning | Complete |
+| Mission service + phase configuration | Complete |
 | Orchestrator service (run/step/attempt/claim state machine) | Complete |
-| Mission planning via claude/codex CLI | Complete |
-| Deterministic mission planner fallback | Removed (fail-hard planning path) |
+| Planning phase (default built-in) | Complete |
+| Pre-mission planner fallback path | Removed (coordinator-owned phase runtime) |
 | Agent SDK integration (dual-SDK) | Complete |
 | AgentExecutor interface | Complete |
 | AI integration service | Complete |
@@ -484,7 +485,7 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Inter-agent messaging | Complete |
 | Memory architecture (scoped namespaces + candidate/promoted lifecycle) | Complete |
 | Shared facts + run narrative | Complete |
-| Unified Memory System (W6) — replaces packs + memoryService + CTO state; sqlite-vec, hybrid search, write gate, decay | Planned (Phase 4) |
+| Unified Memory System (W6) — replaces pack-first renderer surfaces and unifies retrieval | Baseline shipped (Phase 4); native sqlite-vec deferred |
 | Skills + Learning Pipeline (W7) — procedural extraction, skill materialization to `.claude/skills/` | Planned (Phase 4) |
 | CTO Agent — core identity, memory, persistent chat (W1) | Complete (Phase 4) |
 | Worker Agents — org chart, multi-adapter, config versioning, budget, task sessions (W2) | Complete (Phase 4) |
@@ -494,6 +495,6 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
 | Compute backend abstraction (Phase 5.5) | Planned |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, fail-hard planner, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 complete: CTO agent core identity + persistent chat (W1), worker agents + org chart (W2), heartbeat + activation system (W3), bidirectional Linear sync (W4). Remaining Phase 4 workstreams execute in order W6→W7→W5: Unified Memory System (W6, replaces context packs + memoryService + CTO state with one service, three scopes, three tiers, sqlite-vec hybrid search), Skills + Learning Pipeline (W7, episodic→procedural extraction + skill materialization), Night Shift Mode (W5), External MCP Consumption (W8), OpenClaw Bridge (W9), `.ade/` Portable State (W10). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, Slack-style chat, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 and W6 are complete. Remaining Phase 4 workstreams execute in order W7→W5. Native sqlite-vec integration is deferred; current shipped retrieval is lexical/composite scoring, with embedding-backed retrieval still future work. Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan/README.md`

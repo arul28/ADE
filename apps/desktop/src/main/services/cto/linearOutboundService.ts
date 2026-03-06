@@ -5,22 +5,14 @@ import type { LinearArtifactMode, NormalizedLinearIssue } from "../../../shared/
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { IssueTracker } from "./issueTracker";
-import { isWithinDir } from "../shared/utils";
+import { isWithinDir, nowIso, uniqueStrings, getErrorMessage } from "../shared/utils";
 
 function bodyHash(body: string): string {
   return createHash("sha256").update(body).digest("hex");
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
 function normalizeText(value: string): string {
   return value.replace(/\r\n/g, "\n").trim();
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(new Set(values));
 }
 
 type WorkpadRow = {
@@ -168,7 +160,7 @@ export function createLinearOutboundService(args: {
     const uploaded: string[] = [];
 
     for (const entry of rawEntries) {
-      if (/^https?:\/\//i.test(entry) || /^file:\/\//i.test(entry)) {
+      if (/^(https?|file):\/\//i.test(entry)) {
         uploaded.push(entry);
         continue;
       }
@@ -182,7 +174,6 @@ export function createLinearOutboundService(args: {
         });
         continue;
       }
-      if (!fs.existsSync(artifactPath)) continue;
       let stat: fs.Stats;
       try {
         stat = fs.statSync(artifactPath);
@@ -207,7 +198,7 @@ export function createLinearOutboundService(args: {
         args.logger?.warn("linear_sync.attachment_upload_failed", {
           issueId: params.issueId,
           artifactPath,
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         });
       }
     }

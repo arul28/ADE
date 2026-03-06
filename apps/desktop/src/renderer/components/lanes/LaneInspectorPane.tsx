@@ -1,13 +1,13 @@
 import { useState } from "react";
-import { PackViewer } from "../packs/PackViewer";
 import { LanePrPanel } from "../prs/LanePrPanel";
 import { LaneConflictsPanel } from "./LaneConflictsPanel";
+import { MemoryInspectorPanel } from "../settings/MemoryInspector";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 
 type InspectorTab = "context" | "pr" | "conflicts";
 
 const TAB_DEFS: Array<{ id: InspectorTab; num: string; label: string }> = [
-  { id: "context", num: "01", label: "CONTEXT" },
+  { id: "context", num: "01", label: "MEMORY" },
   { id: "pr", num: "02", label: "PR" },
   { id: "conflicts", num: "03", label: "CONFLICTS" },
 ];
@@ -75,7 +75,7 @@ export function LaneInspectorPane({
       <div className="flex-1 min-h-0" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
         {tab === "context" && (
           <div className="h-full overflow-auto">
-            <PackViewer laneId={laneId} />
+            <MemoryInspectorPanel laneId={laneId} compact />
           </div>
         )}
         {tab === "pr" && (

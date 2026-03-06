@@ -3,7 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
-import { isRecord } from "../shared/utils";
+import { isRecord, getErrorMessage } from "../shared/utils";
 
 const TOKEN_FILE = "linear-token.v1.bin";
 const IMPORT_SENTINEL = "linear-token.imported.v1";
@@ -19,11 +19,12 @@ function extractLegacyToken(raw: string): string | null {
     if (!isRecord(parsed)) return null;
     const linear = isRecord(parsed.linear) ? parsed.linear : null;
     if (!linear) return null;
-    const token = typeof linear.token === "string"
-      ? linear.token.trim()
-      : typeof linear.apiKey === "string"
-        ? linear.apiKey.trim()
-        : "";
+    let token = "";
+    if (typeof linear.token === "string") {
+      token = linear.token.trim();
+    } else if (typeof linear.apiKey === "string") {
+      token = linear.apiKey.trim();
+    }
     return token.length ? token : null;
   } catch {
     return null;
@@ -36,7 +37,6 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
 
   const readEncryptedToken = (): string | null => {
-    if (!fs.existsSync(tokenPath)) return null;
     try {
       if (!safeStorage.isEncryptionAvailable()) {
         args.logger?.warn("linear_sync.token_store_unavailable", {
@@ -49,9 +49,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       const parsed = JSON.parse(decrypted) as { token?: unknown };
       const token = typeof parsed?.token === "string" ? parsed.token.trim() : "";
       return token.length ? token : null;
-    } catch (error) {
+    } catch (error: unknown) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
       args.logger?.warn("linear_sync.token_store_read_failed", {
-        error: error instanceof Error ? error.message : String(error)
+        error: getErrorMessage(error)
       });
       return null;
     }
@@ -60,12 +61,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const persistToken = (token: string | null): void => {
     const clean = (token ?? "").trim();
     if (!clean.length) {
-      if (fs.existsSync(tokenPath)) {
-        try {
-          fs.unlinkSync(tokenPath);
-        } catch {
-          // best effort
-        }
+      try {
+        fs.unlinkSync(tokenPath);
+      } catch {
+        // best effort — file may not exist
       }
       return;
     }
@@ -84,10 +83,25 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
+  let legacyImportDone = false;
+
   const importLegacyTokenIfNeeded = (): void => {
-    if (fs.existsSync(tokenPath) || fs.existsSync(importSentinelPath)) return;
+    if (legacyImportDone) return;
+    legacyImportDone = true;
     const legacyPath = path.join(args.adeDir, "local.secret.yaml");
-    if (!fs.existsSync(legacyPath)) return;
+    try {
+      // If token already exists or import sentinel is present, skip
+      fs.accessSync(tokenPath);
+      return;
+    } catch {
+      // token file doesn't exist — continue
+    }
+    try {
+      fs.accessSync(importSentinelPath);
+      return;
+    } catch {
+      // sentinel doesn't exist — continue
+    }
     try {
       const raw = fs.readFileSync(legacyPath, "utf8");
       const token = extractLegacyToken(raw);
@@ -100,17 +114,26 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       fs.mkdirSync(secretsDir, { recursive: true });
       fs.writeFileSync(importSentinelPath, "imported", "utf8");
       args.logger?.info("linear_sync.token_imported_legacy", { legacyPath });
-    } catch (error) {
+    } catch (error: unknown) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
       args.logger?.warn("linear_sync.token_import_failed", {
         legacyPath,
-        error: error instanceof Error ? error.message : String(error)
+        error: getErrorMessage(error)
       });
     }
   };
 
+  let cachedToken: string | null | undefined;
+
   const getToken = (): string | null => {
+    if (cachedToken !== undefined) return cachedToken;
     importLegacyTokenIfNeeded();
-    return readEncryptedToken();
+    cachedToken = readEncryptedToken();
+    return cachedToken;
+  };
+
+  const invalidateCache = (): void => {
+    cachedToken = undefined;
   };
 
   return {
@@ -124,10 +147,12 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
     setToken(token: string): void {
       persistToken(token);
+      invalidateCache();
     },
 
     clearToken(): void {
       persistToken(null);
+      invalidateCache();
     },
 
     getStatus(): { tokenStored: boolean } {

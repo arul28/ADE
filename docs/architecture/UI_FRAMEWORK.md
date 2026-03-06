@@ -84,7 +84,6 @@ Routes are defined in `apps/desktop/src/renderer/components/app/App.tsx`. Curren
 - `/files`
 - `/terminals` (legacy redirect to `/work`)
 - `/work`
-- `/conflicts`
 - `/context` (legacy redirect to `/settings`)
 - `/graph`
 - `/prs`
@@ -201,6 +200,9 @@ graph/
 ├── graphTypes.ts               # Shared type definitions for graph state
 ├── graphHelpers.ts             # Graph data transformation utilities
 ├── graphLayout.ts              # Layout algorithm (node positioning, edge routing)
+├── shared/
+│   ├── RiskMatrix.tsx          # Shared pairwise risk matrix used by Graph
+│   └── RiskTooltip.tsx         # Hover details for risk matrix cells
 ├── graphNodes/
 │   ├── LaneNode.tsx            # Custom React Flow node for lanes
 │   └── ProposalNode.tsx        # Custom React Flow node for conflict proposals
@@ -238,7 +240,7 @@ High-level IPC domains consumed by the renderer:
 
 - App/project/onboarding/CI
 - Lanes/sessions/pty/files/git
-- Conflicts/context/packs
+- Conflicts/context/memory
 - PRs/github/hosted
 - Agents/missions/layout/graph/processes/tests
 - Project config/keybindings/terminal profiles/agent tools
@@ -251,7 +253,6 @@ High-frequency event streams include:
 - `ade.processes.event`
 - `ade.tests.event`
 - `ade.conflicts.event`
-- `ade.packs.event`
 - `ade.prs.event`
 - `ade.agents.event`
 - `ade.missions.event`
@@ -267,10 +268,10 @@ The complete live channel inventory is defined in `apps/desktop/src/shared/ipc.t
 
 Renderer architecture is fully operational for the current desktop scope:
 
-- 12-tab shell + startup/onboarding routes are implemented.
+- 11-tab shell + startup/onboarding routes are implemented.
 - Six-theme token system is implemented and wired through settings.
-- High-density pane layouts are implemented across lanes/terminals/conflicts/graph.
-- Key feature pages (Play, Lanes, Files, Terminals, Conflicts, Context, Graph, PRs, History, Agents, Missions, Settings) are implemented.
+- High-density pane layouts are implemented across lanes/work/graph/prs.
+- Key feature pages (Play, Lanes, Files, Work, Graph, PRs, History, Automations, CTO, Missions, Settings) are implemented.
 - IPC integration is broad and type-aligned with the preload contract.
 - MissionsPage decomposed into 8 focused modules (60% size reduction).
 - WorkspaceGraphPage decomposed into sub-directories for nodes, edges, dialogs, and shared helpers (14% size reduction).

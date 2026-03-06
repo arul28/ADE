@@ -8,11 +8,7 @@ import type {
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { WorkerAgentService } from "./workerAgentService";
 import type { FlowPolicyService } from "./flowPolicyService";
-import { isRecord, safeJsonParse } from "../shared/utils";
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
+import { isRecord, safeJsonParse, toOptionalString as asString } from "../shared/utils";
 
 function normalizeLabel(value: string): string {
   return value.trim().toLowerCase();

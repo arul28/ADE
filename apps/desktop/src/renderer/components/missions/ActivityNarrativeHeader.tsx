@@ -9,6 +9,7 @@ import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
 import {
   NOISY_EVENT_TYPES,
+  filterExecutionSteps,
   narrativeForEvent,
   narrativeSummary,
   iconForEventType,
@@ -31,7 +32,7 @@ export function ActivityNarrativeHeader({
     );
   }
 
-  const steps = runGraph.steps;
+  const steps = filterExecutionSteps(runGraph.steps);
   const totalSteps = steps.length;
   const succeededCount = steps.filter((s) => s.status === "succeeded").length;
   const runningCount = steps.filter((s) => s.status === "running").length;
@@ -71,32 +72,9 @@ export function ActivityNarrativeHeader({
   return (
     <div className="space-y-2">
       <div className="px-3 py-2.5" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-        <div className="text-[10px] font-bold uppercase tracking-[1px] mb-2" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>MISSION PROGRESS</div>
-
-        {totalSteps > 0 && (
-          <div className="mb-2">
-            <div className="flex h-1.5 w-full overflow-hidden" style={{ background: COLORS.recessedBg }}>
-              {succeededCount > 0 && (
-                <div
-                  className="transition-all"
-                  style={{ width: `${(succeededCount / totalSteps) * 100}%`, background: COLORS.success }}
-                />
-              )}
-              {runningCount > 0 && (
-                <div
-                  className="transition-all"
-                  style={{ width: `${(runningCount / totalSteps) * 100}%`, background: COLORS.accent }}
-                />
-              )}
-              {failedCount > 0 && (
-                <div
-                  className="transition-all"
-                  style={{ width: `${(failedCount / totalSteps) * 100}%`, background: COLORS.danger }}
-                />
-              )}
-            </div>
-          </div>
-        )}
+        <div className="text-[10px] font-bold uppercase tracking-[1px] mb-2" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+          Timeline summary
+        </div>
 
         <div className="space-y-1">
           <div className="flex items-center gap-1.5 text-xs" style={{ color: COLORS.textSecondary }}>

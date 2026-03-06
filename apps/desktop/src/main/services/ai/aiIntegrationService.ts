@@ -9,13 +9,14 @@ import {
   getAvailableModels,
   MODEL_REGISTRY,
   resolveModelAlias,
+  enrichModelRegistry,
 } from "../../../shared/modelRegistry";
 import { detectAllAuth, getCachedCliAuthStatuses, verifyProviderApiKey, type DetectedAuth, type CliAuthStatus } from "./authDetector";
 import { executeUnified, resumeUnified } from "./unifiedExecutor";
 import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
-import { enrichModelRegistry } from "../../../shared/modelRegistry";
 import { isRecord } from "../shared/utils";
+import type { createMemoryService } from "../memory/memoryService";
 
 export type AiTaskType =
   | "planning"
@@ -59,6 +60,7 @@ export type AiIntegrationStatus = {
     authenticated?: boolean;
     verified?: boolean;
   }>;
+  availableModelIds?: string[];
 };
 
 export type ExecuteAiTaskArgs = {
@@ -75,6 +77,11 @@ export type ExecuteAiTaskArgs = {
   permissionMode?: ExecutorOpts["permissions"]["mode"];
   oneShot?: boolean;
   sessionId?: string;
+  projectId?: string;
+  runId?: string;
+  stepId?: string;
+  attemptId?: string;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
 };
 
 export type ExecuteAiTaskResult = {
@@ -335,15 +342,8 @@ export function createAiIntegrationService(args: {
       };
     }
 
-    if (apiEntry.type === "openrouter") {
-      const verification = await verifyProviderApiKey("openrouter", apiEntry.key);
-      return {
-        ...verification,
-        source: apiEntry.source,
-      };
-    }
-
-    const verification = await verifyProviderApiKey(apiEntry.provider, apiEntry.key);
+    const providerName = apiEntry.type === "openrouter" ? "openrouter" : apiEntry.provider;
+    const verification = await verifyProviderApiKey(providerName, apiEntry.key);
     return {
       ...verification,
       source: apiEntry.source,
@@ -501,9 +501,11 @@ export function createAiIntegrationService(args: {
     return available[0].id;
   };
 
-  const executeViaUnifiedPath = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
-    const modelId = args.model;
-    if (!modelId) throw new Error("model is required for unified execution path");
+  const consumeEventStream = async (
+    stream: AsyncIterable<{ type: string; [key: string]: unknown }>,
+    feature: AiFeatureKey,
+    modelId: string,
+  ): Promise<ExecuteAiTaskResult> => {
     const start = Date.now();
     let text = "";
     let structuredOutput: unknown = null;
@@ -512,33 +514,24 @@ export function createAiIntegrationService(args: {
     let outputTokens: number | null = null;
     let model: string | null = null;
 
-    for await (const event of executeUnified({
-      modelId,
-      prompt: args.prompt,
-      system: args.systemPrompt,
-      cwd: args.cwd,
-      tools: args.taskType === "mission_planning" ? "planning" : args.permissionMode === "read-only" ? "none" : "coding",
-      timeout: args.timeoutMs,
-      jsonSchema: args.jsonSchema,
-      reasoningEffort: args.reasoningEffort,
-    })) {
+    for await (const event of stream) {
       if (event.type === "text") text += event.content;
       if (event.type === "structured_output") structuredOutput = event.data;
       if (event.type === "done") {
-        sessionId = event.sessionId;
-        inputTokens = event.usage?.inputTokens ?? null;
-        outputTokens = event.usage?.outputTokens ?? null;
-        model = event.model ?? null;
+        sessionId = event.sessionId as string | null;
+        inputTokens = (event.usage as { inputTokens?: number })?.inputTokens ?? null;
+        outputTokens = (event.usage as { outputTokens?: number })?.outputTokens ?? null;
+        model = (event.model as string) ?? null;
       }
-      if (event.type === "error") throw new Error(event.message);
+      if (event.type === "error") throw new Error(event.message as string);
     }
 
     const durationMs = Date.now() - start;
     const descriptor = getModelById(modelId);
 
     logUsage({
-      feature: args.feature,
-      provider: (descriptor?.family ?? "unknown") as any,
+      feature,
+      provider: (descriptor?.family ?? "unknown") as AgentProvider,
       model,
       inputTokens,
       outputTokens,
@@ -550,13 +543,44 @@ export function createAiIntegrationService(args: {
     return {
       text,
       structuredOutput,
-      provider: (descriptor?.family ?? "unknown") as any,
+      provider: (descriptor?.family ?? "unknown") as AgentProvider,
       model,
       sessionId,
       inputTokens,
       outputTokens,
       durationMs
     };
+  };
+
+  const executeViaUnifiedPath = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
+    const modelId = args.model;
+    if (!modelId) throw new Error("model is required for unified execution path");
+
+    return consumeEventStream(
+      executeUnified({
+        modelId,
+        prompt: args.prompt,
+        system: args.systemPrompt,
+        cwd: args.cwd,
+        tools: args.taskType === "mission_planning" ? "planning" : args.permissionMode === "read-only" ? "none" : "coding",
+        timeout: args.timeoutMs,
+        jsonSchema: args.jsonSchema,
+        reasoningEffort: args.reasoningEffort,
+        ...(args.projectId ? { projectId: args.projectId } : {}),
+        ...(args.runId ? { runId: args.runId } : {}),
+        ...(args.stepId ? { stepId: args.stepId } : {}),
+        ...(args.attemptId ? { attemptId: args.attemptId } : {}),
+        ...(args.projectId && args.runId && args.stepId && args.attemptId ? { db, enableCompaction: true } : {}),
+        ...(args.memoryService ? { memoryService: args.memoryService } : {}),
+        ...(args.memoryService && args.runId
+          ? {
+              addSharedFact: args.memoryService.addSharedFact.bind(args.memoryService),
+            }
+          : {}),
+      }),
+      args.feature,
+      modelId,
+    );
   };
 
   const executeTask = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
@@ -682,6 +706,7 @@ export function createAiIntegrationService(args: {
         return statusCache.result;
       }
       const auth = await detectAuth();
+      const available = getAvailableModels(auth);
       // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
       // populated the cache, so this reads instantly from cache:
       const cliStatuses = getCachedCliAuthStatuses();
@@ -694,6 +719,7 @@ export function createAiIntegrationService(args: {
           codex: availability.codex ? await listModels("codex") : CODEX_FALLBACK_MODELS
         },
         detectedAuth: redactDetectedAuth(auth, cliStatuses),
+        availableModelIds: available.map((descriptor) => descriptor.id),
       };
       statusCache = { result, cachedAt: Date.now() };
       return result;
@@ -840,64 +866,26 @@ export function createAiIntegrationService(args: {
       runId?: string;
       stepId?: string;
     }): Promise<ExecuteAiTaskResult> {
-      const modelId = args.model ? await resolveModelForTask(args.taskType, args.model) : await resolveModelForTask(args.taskType);
-      const start = Date.now();
-      let text = "";
-      let structuredOutput: unknown = null;
-      let sessionId: string | null = null;
-      let inputTokens: number | null = null;
-      let outputTokens: number | null = null;
-      let resultModel: string | null = null;
+      const modelId = await resolveModelForTask(args.taskType, args.model);
 
-      for await (const event of resumeUnified({
+      return consumeEventStream(
+        resumeUnified({
+          modelId,
+          prompt: args.prompt,
+          cwd: args.cwd,
+          timeout: args.timeoutMs,
+          tools: "coding",
+          previousAttemptId: args.previousAttemptId,
+          db,
+          projectId: args.projectId,
+          attemptId: args.attemptId,
+          runId: args.runId,
+          stepId: args.stepId,
+          enableCompaction: true,
+        }),
+        args.feature,
         modelId,
-        prompt: args.prompt,
-        cwd: args.cwd,
-        timeout: args.timeoutMs,
-        tools: "coding",
-        previousAttemptId: args.previousAttemptId,
-        db,
-        projectId: args.projectId,
-        attemptId: args.attemptId,
-        runId: args.runId,
-        stepId: args.stepId,
-        enableCompaction: true,
-      })) {
-        if (event.type === "text") text += event.content;
-        if (event.type === "structured_output") structuredOutput = event.data;
-        if (event.type === "done") {
-          sessionId = event.sessionId;
-          inputTokens = event.usage?.inputTokens ?? null;
-          outputTokens = event.usage?.outputTokens ?? null;
-          resultModel = event.model ?? null;
-        }
-        if (event.type === "error") throw new Error(event.message);
-      }
-
-      const durationMs = Date.now() - start;
-      const descriptor = getModelById(modelId);
-
-      logUsage({
-        feature: args.feature,
-        provider: (descriptor?.family ?? "unknown") as any,
-        model: resultModel,
-        inputTokens,
-        outputTokens,
-        durationMs,
-        success: true,
-        sessionId
-      });
-
-      return {
-        text,
-        structuredOutput,
-        provider: (descriptor?.family ?? "unknown") as any,
-        model: resultModel,
-        sessionId,
-        inputTokens,
-        outputTokens,
-        durationMs
-      };
+      );
     }
   };
 }

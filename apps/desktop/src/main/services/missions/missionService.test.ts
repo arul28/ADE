@@ -77,6 +77,7 @@ async function createDbWithProjectAndLane() {
 
   return {
     db,
+    dbPath,
     projectId,
     laneId,
     root,
@@ -197,7 +198,28 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
-  it("supports planning and plan_review lifecycle states in active mission listings", async () => {
+  it("flushes newly created missions to disk immediately", async () => {
+    const { db, dbPath, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+
+    const created = service.create({
+      prompt: "Persist mission rows before a quick app restart.",
+      laneId
+    });
+
+    const reopened = await openKvDb(dbPath, createLogger());
+    const persisted = reopened.get<{ count: number }>(
+      "select count(*) as count from missions where id = ? and project_id = ?",
+      [created.id, projectId]
+    );
+
+    expect(Number(persisted?.count ?? 0)).toBe(1);
+
+    reopened.close();
+    dispose();
+  });
+
+  it("maps legacy plan_review lifecycle rows to in_progress in active mission listings", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });
 
@@ -211,10 +233,16 @@ describe("missionService lifecycle", () => {
     const activePlanning = service.list({ status: "active" });
     expect(activePlanning.some((entry) => entry.id === created.id && entry.status === "planning")).toBe(true);
 
-    const review = service.update({ missionId: created.id, status: "plan_review" });
-    expect(review.status).toBe("plan_review");
-    const activeReview = service.list({ status: "active" });
-    expect(activeReview.some((entry) => entry.id === created.id && entry.status === "plan_review")).toBe(true);
+    db.run(
+      "update missions set status = 'plan_review' where id = ? and project_id = ?",
+      [created.id, projectId]
+    );
+
+    const detail = service.get(created.id);
+    expect(detail?.status).toBe("in_progress");
+
+    const activeReviewCompat = service.list({ status: "active" });
+    expect(activeReviewCompat.some((entry) => entry.id === created.id && entry.status === "in_progress")).toBe(true);
 
     const running = service.update({ missionId: created.id, status: "in_progress" });
     expect(running.status).toBe("in_progress");

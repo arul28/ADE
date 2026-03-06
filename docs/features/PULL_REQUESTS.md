@@ -57,7 +57,7 @@ Conflict service and PR service share the same modern merge prediction assumptio
 - conflicted file sets and marker previews extracted from git output,
 - integration lane/rebase helpers using local worktree state.
 
-This keeps PR readiness and conflict prediction consistent across `/prs` and `/conflicts` workflows.
+This keeps PR readiness and conflict prediction consistent across `/prs`, Graph risk workflows, and lane-level conflict surfaces.
 
 ---
 

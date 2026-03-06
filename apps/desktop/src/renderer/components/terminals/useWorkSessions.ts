@@ -610,6 +610,20 @@ export function useWorkSessions() {
           } else if (status.availableProviders.claude) {
             const claudeId = status.models.claude?.[0]?.id ?? "anthropic/claude-sonnet-4-6";
             applyDescriptor(claudeId) || applyDescriptor("anthropic/claude-sonnet-4-6");
+          } else {
+            const availableModelIds = Array.isArray(status.availableModelIds)
+              ? status.availableModelIds.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+              : [];
+            const preferredDirectModelId =
+              availableModelIds.find((candidate) => {
+                const descriptor = resolveModelDescriptor(candidate);
+                return descriptor != null && !descriptor.isCliWrapped;
+              }) ?? null;
+            if (preferredDirectModelId) {
+              applyDescriptor(preferredDirectModelId);
+            } else if (availableModelIds[0]) {
+              applyDescriptor(availableModelIds[0]);
+            }
           }
         } catch {
           // Fallback defaults below.

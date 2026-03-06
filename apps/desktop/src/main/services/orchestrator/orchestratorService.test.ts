@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
-import type { PackDeltaDigestV1, PackExport, PackType } from "../../../shared/types";
+import type { PackExport, PackType } from "../../../shared/types";
 import { createOrchestratorService, ReflectionValidationError } from "./orchestratorService";
 import { openKvDb } from "../state/kvDb";
 
@@ -150,44 +150,6 @@ async function createFixture(args: {
     getLaneExport: async ({ laneId: targetLaneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) =>
       buildExport(`lane:${targetLaneId}`, "lane", level),
     getProjectExport: async ({ level }: { level: "lite" | "standard" | "deep" }) => buildExport("project", "project", level),
-    getHeadVersion: ({ packKey }: { packKey: string }) => ({
-      packKey,
-      packType: packKey.startsWith("lane:") ? "lane" : "project",
-      versionId: `${packKey}-v1`,
-      versionNumber: 1,
-      contentHash: `hash-${packKey}`,
-      updatedAt: now
-    }),
-    getDeltaDigest: async (): Promise<PackDeltaDigestV1> => ({
-      packKey: `lane:${laneId}`,
-      packType: "lane",
-      since: {
-        sinceVersionId: null,
-        sinceTimestamp: now,
-        baselineVersionId: null,
-        baselineVersionNumber: null,
-        baselineCreatedAt: null
-      },
-      newVersion: {
-        packKey: `lane:${laneId}`,
-        packType: "lane",
-        versionId: `lane:${laneId}-v1`,
-        versionNumber: 1,
-        contentHash: "hash",
-        updatedAt: now
-      },
-      changedSections: [],
-      highImpactEvents: [],
-      blockers: [],
-      conflicts: null,
-      decisionState: {
-        recommendedExportLevel: "standard",
-        reasons: []
-      },
-      handoffSummary: "none",
-      clipReason: null,
-      omittedSections: null
-    }),
     refreshMissionPack: async ({ missionId: targetMissionId }: { missionId: string }) => ({
       packKey: `mission:${targetMissionId}`,
       packType: "mission",
@@ -851,6 +813,70 @@ describe("orchestratorService", () => {
       ).toBe(0);
 
       expect(fixture.service.listAttempts({ runId: started.run.id })).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("ignores display-only task cards when scanning ready autopilot steps", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "unified",
+            ownerId: "autopilot-owner",
+            parallelismCap: 1
+          }
+        },
+        steps: [
+          {
+            stepKey: "plan",
+            title: "Plan sidebar work",
+            stepIndex: 0,
+            executorKind: "manual",
+            metadata: {
+              isTask: true,
+              displayOnlyTask: true
+            }
+          },
+          {
+            stepKey: "planning-worker",
+            title: "Research sidebar",
+            stepIndex: 1,
+            laneId: fixture.laneId,
+            executorKind: "unified",
+            metadata: {
+              stepType: "planning"
+            }
+          }
+        ]
+      });
+
+      const startedAttempts = await fixture.service.startReadyAutopilotAttempts({
+        runId: started.run.id,
+        reason: "ignore_display_only_tasks"
+      });
+
+      expect(startedAttempts).toBe(1);
+      const attempts = fixture.service.listAttempts({ runId: started.run.id });
+      const planningWorkerStep = fixture.service
+        .listSteps(started.run.id)
+        .find((step) => step.stepKey === "planning-worker");
+
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.stepId).toBe(planningWorkerStep?.id);
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
+      const manualSkipEvents = timeline.filter((entry) =>
+        entry.eventType === "autopilot_step_skipped"
+        && entry.reason === "manual_step_requires_operator"
+        && (entry.detail as Record<string, unknown> | null)?.stepKey === "plan"
+      );
+
+      expect(manualSkipEvents).toHaveLength(0);
     } finally {
       fixture.dispose();
     }
@@ -2286,6 +2312,138 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("hydrates tracked-session success summaries from transcript tails when no explicit result was reported", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning Worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "unified"
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        "looking at router wiring first\n\nThe plan is ready. The implementation requires 4 targeted changes across 3 existing files plus 1 new file.\n",
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
+      expect(after?.status).toBe("succeeded");
+      expect(after?.resultEnvelope?.summary).toContain("The plan is ready.");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("ignores shell startup noise when deriving tracked-session fallback summaries", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'claude-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning Worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "unified",
+            metadata: {
+              stepType: "planning",
+              readOnlyExecution: true,
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "ADE_MISSION_ID='mission-1' ADE_RUN_ID='run-1' exec claude --model 'sonnet' --permission-mode 'plan'",
+          "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh",
+          "/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef",
+          "admin@Mac test-10-f4bb12de %",
+          "-p \"$(cat '/Users/admin/Projects/ADE/.ade/orchestrator/worker-prompts/worker-123.txt')\"",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
+      expect(after?.status).toBe("succeeded");
+      expect(after?.resultEnvelope?.summary).toBe("Planning session completed.");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("derives tracked-session completion status from terminal session state when exit code is missing", async () => {
     const fixture = await createFixture();
     try {
@@ -2467,21 +2625,16 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("bootstraps lane pack refresh when context snapshot sees empty lane pack", async () => {
+  it("creates context snapshots without lane pack bootstrap refresh", async () => {
     let laneExportCalls = 0;
-    let laneRefreshCalls = 0;
     const fixture = await createFixture({
       packService: {
         getLaneExport: async ({ laneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) => {
           laneExportCalls += 1;
-          if (laneExportCalls === 1) {
-            throw new Error("Lane pack is empty. Refresh deterministic packs first.");
-          }
           return buildExport(`lane:${laneId}`, "lane", level);
         },
         refreshLanePack: async () => {
-          laneRefreshCalls += 1;
-          return {} as any;
+          throw new Error("refreshLanePack should not be used for live context exports");
         }
       }
     });
@@ -2497,9 +2650,13 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
+      const snapshot = fixture.service
+        .listContextSnapshots({ runId: started.run.id })
+        .find((entry) => entry.id === attempt.contextSnapshotId);
       expect(attempt.contextSnapshotId).toBeTruthy();
-      expect(laneRefreshCalls).toBe(1);
-      expect(laneExportCalls).toBeGreaterThanOrEqual(2);
+      expect(laneExportCalls).toBe(1);
+      expect(snapshot?.cursor.contextSources?.some((source) => source.startsWith("context_export:project:"))).toBe(true);
+      expect(snapshot?.cursor.contextSources?.some((source) => source.startsWith("context_export:lane:"))).toBe(true);
     } finally {
       fixture.dispose();
     }
@@ -2716,14 +2873,21 @@ describe("orchestratorService", () => {
   });
 
   it("runs non-CLI unified attempts in-process without spawning terminal sessions", async () => {
+    const executeViaUnified = vi.fn(async () => ({
+      text: "api/local execution completed",
+      structuredOutput: { ok: true },
+      sessionId: null
+    }));
+    const memoryService = {
+      addSharedFact: vi.fn(),
+      getSharedFacts: vi.fn(() => []),
+      getMemoryBudget: vi.fn(() => []),
+    };
     const fixture = await createFixture({
       aiIntegrationService: {
-        executeViaUnified: async () => ({
-          text: "api/local execution completed",
-          structuredOutput: { ok: true },
-          sessionId: null
-        })
-      }
+        executeViaUnified
+      },
+      memoryService,
     });
     try {
       const started = fixture.service.startRun({
@@ -2752,6 +2916,15 @@ describe("orchestratorService", () => {
       expect(attempt.status).toBe("succeeded");
       expect(attempt.resultEnvelope?.trackedSession).toBe(false);
       expect(fixture.ptyCreateCalls).toHaveLength(0);
+      expect(executeViaUnified).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: fixture.projectId,
+          runId: started.run.id,
+          stepId: step.id,
+          attemptId: attempt.id,
+          memoryService,
+        })
+      );
     } finally {
       fixture.dispose();
     }

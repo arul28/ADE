@@ -13,11 +13,11 @@ import { EmptyState } from "../../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
-import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
+import { ResolverTerminalModal } from "../../shared/conflictResolver/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
 import { ConflictFilePreview } from "../ConflictFilePreview";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
-import { normalizeBranchName } from "../shared/prHelpers";
+import { normalizeBranchName, type BackgroundResolverSession } from "../shared/prHelpers";
 
 /* ---- Outcome dot with design-system colors ---- */
 
@@ -170,14 +170,6 @@ type ProposalConflictPair = {
   outcome: "conflict" | "blocked";
   fileCount: number;
   files: ConflictPreviewFile[];
-};
-
-type BackgroundResolverSession = {
-  ptyId: string;
-  sessionId: string;
-  provider: "codex" | "claude";
-  startedAt: string;
-  exitCode: number | null;
 };
 
 type ProposalResolverConfig = {

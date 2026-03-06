@@ -1,15 +1,17 @@
-# Context Contract v2 (backward compatible) — Packs, Exports, Markers, Graphs, Manifests, And Deltas
+# Context Contract v2 (legacy compatibility) — Packs, Exports, Markers, Graphs, Manifests, And Deltas
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-05
 
-This document is the **authoritative contract** for ADE context artifacts used by:
+This document is the contract for the **remaining pack/export compatibility artifacts** still used by:
 
 - long-running, parallel "orchestrator mode" workflows
 - spawning new agent runtimes with clean context windows
 - AI integration service consuming bounded exports via Vercel AI SDK
 - Guest-mode, deterministic-only workflows (no AI providers)
+
+It is **not** the authoritative current renderer/preload contract. The current user-facing runtime is memory-first (`window.ade.memory`, `MemoryInspector`, `unifiedMemoryService.ts`). Pack-shaped exports remain live only where internal orchestrator/MCP/compatibility flows still depend on them.
 
 The contract prioritizes **reviewability** (diffable, structured artifacts) and **bounded context** (token-budgeted exports), rather than raw "dump everything" prompts.
 
@@ -37,10 +39,11 @@ AI jobs (narratives, conflict proposals, PR drafts) consume **bounded exports** 
 
 Context is consumed entirely on the local machine:
 
-- Bounded exports are built from pack data (token-budgeted, redacted).
+- Bounded exports are generated live from current local state, unified memory, conflict summaries, and compatibility pack/version metadata where needed for auditability.
 - The AI integration service passes exports to CLI tools spawned by Vercel AI SDK.
 - No network transmission of context is required — all processing is local.
 - Exports are still structured, token-budgeted, and redacted for safety.
+- Current memory retrieval is lexical/composite over unified memory; embedding/vector retrieval is not active in this branch.
 
 This is intentionally deterministic and observable:
 
@@ -63,14 +66,14 @@ Contract rules:
 
 - Profile files are reconstructed per runtime launch or resume.
 - Profile files are bounded by export budget and redaction policy.
-- Runtime profile assembly must be replayable from DB + pack/export state (no hidden in-memory dependency).
+- Runtime profile assembly must be replayable from DB + current local state + compatibility pack/export state (no hidden in-memory dependency).
 
 ### Expected Behavior Matrix
 
 | Scenario | AI Context | Notes |
 |----------|-----------|------|
 | New lane with active session | bounded export consumed locally | Works whenever a configured provider is available |
-| No AI provider (guest mode) | no AI context needed | Deterministic packs still refresh normally |
+| No AI provider (guest mode) | no AI context needed | Live exports and deterministic compatibility artifacts remain available |
 | Conflict-heavy lane | bounded export with conflict data | Conflict risk summary included in lane exports |
 | Periodic delta handoff | delta digest + bounded export | Deterministic ordering, optional omission metadata preserved |
 
@@ -268,7 +271,7 @@ Exports are bounded views of packs designed for consumption by LLM jobs and orch
 ## Data Path Diagram
 
 ```
-Pack refresh (lane/project/conflict)
+Current local state + unified memory + optional pack/version history
   │
   ▼
 Build bounded export (Lite/Standard/Deep)
@@ -366,14 +369,18 @@ This captures:
 
 ## Orchestrator Delta Feed
 
-Orchestrators must keep context windows clean by consuming changes incrementally rather than reloading full packs.
+Orchestrators should prefer live context exports from current local state. Pack-version deltas are a compatibility/audit path, not the primary runtime dependency.
 
 ### Recommended consumption loop
 
-1. Track a cursor:
+1. Fetch bounded live exports for the current attempt:
+   - `packService.getLaneExport({ laneId, level })`
+   - `packService.getProjectExport({ level })`
+   - MCP compatibility surfaces such as `read_context` / `ade://pack/...` if needed
+2. Track a cursor:
    - `sinceIso` timestamp from the last checkpoint / last export consumed
-2. Preferred: Read a compact delta digest since cursor:
-   - `ade.packs.getDeltaDigest({ packKey, sinceVersionId? | sinceTimestamp, minimumImportance })`
+3. Optional compatibility path: read a compact delta digest since cursor when pack history exists:
+   - `packService.getDeltaDigest({ packKey, sinceVersionId? | sinceTimestamp, minimumImportance })`
    - Example response (abridged):
 
 ```json
@@ -403,19 +410,16 @@ Orchestrators must keep context windows clean by consuming changes incrementally
   "handoffSummary": "..."
 }
 ```
-3. Fallback (lower-level): Read new pack events since cursor:
-   - `ade.packs.listEventsSince({ packKey, sinceIso, limit })`
-4. If events/digest imply material change:
-   - fetch head version:
-     - `ade.packs.getHeadVersion({ packKey })`
-   - diff against last-seen version:
-     - `ade.packs.diffVersions({ fromId, toId })`
-5. For bounded context to send to an agent:
-   - `ade.packs.getLaneExport({ laneId, level: "lite" | "standard" | "deep" })`
-   - `ade.packs.getProjectExport({ level })`
-   - `ade.packs.getConflictExport({ laneId, peerLaneId?, level })`
+4. Fallback (lower-level): read new pack events since cursor:
+   - `packService.listEventsSince({ packKey, sinceIso, limit })`
+5. If compatibility events/digest imply material change:
+   - fetch recorded head version:
+     - `packService.getHeadVersion({ packKey })`
+   - compare against last-seen recorded version if you are explicitly consuming pack history
 
-Rule: **Agents consume exports**; packs/versions are used for auditability and diffs, not as default prompt payloads.
+There is no current public `window.ade.packs.*` preload surface in this branch.
+
+Rule: **Agents consume live exports**. Persisted pack versions/events are optional compatibility artifacts for auditability and historical diffs.
 
 ---
 

@@ -6,7 +6,7 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
-import { MergeSimulationPanel } from "../conflicts/MergeSimulationPanel";
+import { MergeSimulationPanel } from "./mergeSimulation/MergeSimulationPanel";
 
 function conflictDotClass(status: ConflictStatus["status"] | null | undefined): string {
   if (status === "conflict-active") return "bg-red-600";

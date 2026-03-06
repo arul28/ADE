@@ -16,7 +16,6 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import type { createPackService } from "../packs/packService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createTestService } from "../tests/testService";
 import cron from "node-cron";
@@ -122,7 +121,6 @@ export function createAutomationService({
   projectRoot,
   laneService,
   projectConfigService,
-  packService,
   conflictService,
   testService,
   onEvent
@@ -133,7 +131,6 @@ export function createAutomationService({
   projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
-  packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
   testService?: ReturnType<typeof createTestService>;
   onEvent?: (payload: { type: "runs-updated"; automationId?: string; runId?: string }) => void;
@@ -354,25 +351,11 @@ export function createAutomationService({
 
     const reason = trigger.reason ? `automation:${trigger.reason}` : "automation";
     if (action.type === "update-packs") {
-      if (trigger.laneId) {
-        await packService.refreshLanePack({
-          laneId: trigger.laneId,
-          reason,
-          ...(trigger.sessionId ? { sessionId: trigger.sessionId } : {})
-        });
-      } else {
-        const lanes = await laneService.list({ includeArchived: false });
-        for (const lane of lanes) {
-          await packService.refreshLanePack({
-            laneId: lane.id,
-            reason
-          });
-        }
-      }
-
-      // Project pack is cheap; refresh once per rule run.
-      await packService.refreshProjectPack({ reason, ...(trigger.laneId ? { laneId: trigger.laneId } : {}) });
-      return { status: "succeeded" };
+      logger.info("automations.update_packs.deprecated_noop", {
+        reason,
+        laneId: trigger.laneId ?? null
+      });
+      return { status: "succeeded", output: "update-packs is deprecated in W6 (unified memory lifecycle is automatic)." };
     }
 
     if (action.type === "predict-conflicts") {
@@ -498,7 +481,6 @@ export function createAutomationService({
           completed += 1;
           updateRunProgress(run.id, completed);
           emit({ type: "runs-updated", automationId: rule.id, runId: run.id });
-          void lastOutput;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           finishAction({ id: actionId, status: "failed", errorMessage: message, output: lastOutput });

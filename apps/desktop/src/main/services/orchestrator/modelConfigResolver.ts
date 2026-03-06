@@ -85,12 +85,22 @@ const DEFAULT_ORCHESTRATOR_MODEL_CONFIG: ModelConfig = {
   thinkingLevel: "medium"
 };
 
+function resolveMissionLaunchModelConfig(metadata: Record<string, unknown>): MissionModelConfig | null {
+  const directModelConfig = isRecord(metadata.modelConfig) ? metadata.modelConfig : null;
+  if (directModelConfig) {
+    return directModelConfig as MissionModelConfig;
+  }
+  const launch = isRecord(metadata.launch) ? metadata.launch : null;
+  const launchModelConfig = launch && isRecord(launch.modelConfig) ? launch.modelConfig : null;
+  return launchModelConfig ? (launchModelConfig as MissionModelConfig) : null;
+}
+
 export function resolveMissionDecisionTimeoutCapMs(
   ctx: OrchestratorContext,
   missionId: string
 ): number {
   const metadata = getMissionMetadata(ctx, missionId);
-  const modelConfig = isRecord(metadata.modelConfig) ? metadata.modelConfig : null;
+  const modelConfig = resolveMissionLaunchModelConfig(metadata);
   const rawHours = Number(modelConfig?.decisionTimeoutCapHours ?? Number.NaN);
   const normalizedHours = Number.isFinite(rawHours) ? Math.floor(rawHours) : 24;
   return DECISION_TIMEOUT_CAP_MS_BY_HOURS[normalizedHours] ?? DECISION_TIMEOUT_CAP_MS_BY_HOURS[24];
@@ -110,7 +120,7 @@ export function resolveOrchestratorModelConfig(
   callType: OrchestratorCallType
 ): ModelConfig {
   const metadata = getMissionMetadata(ctx, missionId);
-  const missionModelConfig = metadata?.modelConfig as MissionModelConfig | undefined;
+  const missionModelConfig = resolveMissionLaunchModelConfig(metadata);
 
   if (missionModelConfig) {
     return resolveCallTypeModel(
@@ -137,6 +147,5 @@ export function resolveMissionModelConfig(
   missionId: string
 ): MissionModelConfig | null {
   const metadata = getMissionMetadata(ctx, missionId);
-  const modelConfig = metadata?.modelConfig;
-  return isRecord(modelConfig) ? (modelConfig as MissionModelConfig) : null;
+  return resolveMissionLaunchModelConfig(metadata);
 }

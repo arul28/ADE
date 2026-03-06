@@ -44,7 +44,6 @@ export type AutopilotConfig = {
 
 export type ResolvedOrchestratorRuntimeConfig = {
   teammatePlanMode: "off" | "auto" | "required";
-  requirePlanReview: boolean;
   maxParallelWorkers: number;
   defaultMergePolicy: "sequential" | "batch-at-end" | "per-step";
   defaultConflictHandoff: "auto-resolve" | "ask-user" | "orchestrator-decides";
@@ -62,7 +61,6 @@ export type ResolvedOrchestratorRuntimeConfig = {
 
 export const DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG: ResolvedOrchestratorRuntimeConfig = {
   teammatePlanMode: "auto",
-  requirePlanReview: false,
   maxParallelWorkers: 4,
   defaultMergePolicy: "sequential",
   defaultConflictHandoff: "auto-resolve",

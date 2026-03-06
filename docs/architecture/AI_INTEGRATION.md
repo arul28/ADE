@@ -547,60 +547,27 @@ Orchestrator service (deterministic state machine)
 Mission service (user-facing lifecycle)
 ```
 
-#### Pre-Mission Planning
+#### Planning Phase (Built-In, Default On)
 
-Planning is handled by a dedicated **pre-mission planner** that runs before the orchestrator starts execution. This is NOT an execution phase — it completes before any phase cards are processed.
+Planning is a first-class mission phase (`planning`) inside the orchestrator run. It is included by default in built-in profiles and can be disabled per mission/profile.
 
-When a mission is created, the pre-mission planner:
+Runtime flow with planning enabled:
 
-1. Receives the mission prompt, title, and any attached context.
-2. Assembles a context bundle: project pack (Standard), docs digest, active lane summaries, operation history, and any user-attached files.
-3. Performs **deep research** — the planner gets a full agent session with read-only tools (file reading, code search, grep) to thoroughly understand the codebase before generating a plan.
-4. Builds a structured planner prompt (including phase pipeline info from phase cards) and invokes the configured planning `modelId` via unified runtime routing.
-5. The planner returns a JSON plan conforming to the mission plan schema:
-   ```typescript
-   interface MissionPlan {
-     summary: {
-       domain: string;
-       complexity: "trivial" | "moderate" | "complex" | "very_complex";
-       strategy: "sequential" | "parallel-lite" | "parallel-first";
-       parallelismCap: number;          // max concurrent worker agents
-     };
-     assumptions: string[];
-     risks: Array<{ description: string; mitigation: string }>;
-     steps: MissionStep[];
-     conflictHandoff: "auto-resolve" | "ask-user" | "orchestrator-decides";
-   }
+1. Mission run starts with `phaseRuntime.currentPhaseKey = "planning"`.
+2. Coordinator enters planning mode and gathers context.
+3. If planning clarifications are enabled, coordinator can issue `ask_user` quiz interventions.
+4. While a planning quiz intervention is open, coordinator task/delegation tools are runtime-blocked.
+5. Coordinator runs planning work in read-only mode.
+6. Coordinator synthesizes execution strategy and transitions via `set_current_phase({ phaseKey: "development" })`.
+7. Coordinator proceeds with DAG/task orchestration through downstream phases.
 
-   interface MissionStep {
-     id: string;
-     title: string;
-     description: string;
-     dependsOn: string[];               // step IDs
-     executorKind: "unified" | "shell" | "manual";
-     modelId: string;                   // canonical worker model id (required for unified workers)
-     requiresPlanApproval: boolean;     // worker must plan before implementing
-     claimPolicy: {
-       lanes: string[];                 // lane IDs or "new"
-       filePatterns: string[];          // glob patterns for file ownership
-       envKeys: string[];               // environment scope keys
-     };
-     contextProfiles: string[];         // "lite" | "standard" | "deep"
-     outputContract: {
-       type: "code_changes" | "test_results" | "review" | "artifact";
-       schema?: object;                 // JSON schema for structured output
-     };
-     timeoutMs: number;
-     maxRetries: number;
-     joinPolicy: "all-succeed" | "any-succeed" | "majority"; // for steps with multiple dependencies
-   }
-   ```
-6. The plan is validated against claim collision rules (no two steps claim overlapping file patterns in the same phase), normalized, and converted into orchestrator run steps.
-7. Optionally: the plan is presented to the user for review before execution begins (configurable via `ai.orchestrator.require_plan_review` in `.ade/local.yaml`).
+Runtime flow with planning disabled:
 
-If the AI planner fails (CLI unavailable, timeout, invalid output), planning fails fast with structured `MissionPlanningError` output and mission launch does not silently switch to deterministic strategy handlers.
+1. Run seeds `phaseRuntime` from the first enabled phase (typically `development`).
+2. Coordinator skips planning protocol and proceeds directly to DAG orchestration.
 
-Once planning completes, the **coordinator** takes over and executes the plan through the configured phase cards (Development, Testing, Validation, PR, etc.).
+Legacy note:
+- Older persisted rows may still contain `plan_review`; runtime normalizes those to `in_progress` for read compatibility.
 
 #### Worker Agent Spawning
 
@@ -729,8 +696,8 @@ The orchestrator is configurable in `.ade/local.yaml`:
 ```yaml
 ai:
   orchestrator:
-    # Planning
-    require_plan_review: false        # Show plan to user before execution
+    # Planning phase behavior is controlled by mission phase profiles.
+    # Built-in profiles include `planning` as phase 1 by default.
     max_parallel_workers: 4           # Max concurrent worker agents
     default_merge_policy: sequential  # sequential | batch-at-end | per-step
     default_conflict_handoff: auto-resolve  # auto-resolve | ask-user | orchestrator-decides
@@ -829,17 +796,18 @@ Threaded chat persistence is DB-first (`orchestrator_chat_threads` and `orchestr
 
 ### Memory Tool Wiring
 
-Memory tools are now wired into the agent coding tool set via `createCodingToolSet()`, giving agents the ability to:
+Memory tools are wired into the agent tool surfaces via `createCodingToolSet()` / `createUniversalToolSet()`, giving agents the ability to:
 
-- **Search scoped memories**: Query relevant memory namespaces (`runtime-thread`, `run`, `project`, `identity`, `daily-log`).
-- **Create candidate memories**: Record new facts discovered during work with explicit scope + provenance.
-- **Promote memories**: Mark high-confidence memories for promotion to project/identity durable scopes.
+- **Search scoped memories**: Query `project`, `mission`, and `agent` scopes through `memorySearch`.
+- **Persist durable discoveries**: Record facts/patterns/decisions/gotchas with `memoryAdd`.
+- **Pin always-on context**: Promote an existing entry to Tier 1 with `memoryPin`.
+- **Update CTO core memory**: Unified/CTO sessions can also call `memoryUpdateCore`.
 
 Memory tools follow the same MCP permission model as other agent tools. Read operations are always allowed; write operations require an active claim.
 
 ### Shared Facts and Run Narrative
 
-**Shared Facts**: The `orchestrator_shared_facts` table stores facts discovered by agents during a mission run. Facts are typed (`discovery`, `decision`, `blocker`, `dependency`) and scoped to a run and optionally a step. Shared facts and retrieved scoped memories are injected into prompts via `buildFullPrompt()`.
+**Shared Facts**: The `orchestrator_shared_facts` table stores facts discovered by agents during a mission run. Facts are typed and scoped to a run and optionally a step. Shared facts are still a live coordination primitive and are injected into prompts via `buildFullPrompt()`.
 
 **Run Narrative**: `appendRunNarrative()` in `orchestratorService.ts` generates a rolling narrative after each step completion. The narrative summarizes what has been accomplished, what is in progress, and what remains. It is stored as `runNarrative` metadata on the orchestrator run and displayed in the Activity tab.
 
@@ -849,29 +817,27 @@ Memory tools follow the same MCP permission model as other agent tools. Read ope
 
 > **Full spec**: `docs/final-plan/phase-4.md` W6 (Unified Memory System) contains the comprehensive implementation plan including schema, write gate, scoring formula, lifecycle algorithms, and pack removal strategy.
 
-The memory system provides agents with durable, searchable long-term memory that persists across sessions, runs, and machines. Phase 4 W6 replaces the current `memoryService.ts`, context packs, and CTO core memory with a single `unifiedMemoryService.ts` — one service, three scopes (project/agent/mission), three tiers (pinned/hot/cold). The unified `UnifiedMemoryEntry` schema includes category, confidence, importance, observation count, file scope, and embedding vector.
+The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6 is complete: `unifiedMemoryService.ts` is the canonical durable memory backend (project/agent/mission scopes with pinned/hot/cold tiers), and persisted `.ade/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
 
 #### Storage Layer
 
-- **Primary store**: SQLite (existing) with a new `memory_vectors` table via the `sqlite-vec` extension
-- **Embedding model**: Local GGUF (all-MiniLM-L6-v2, ~25MB) for offline use; OpenAI `text-embedding-3-small` as API fallback when network is available
-- **Vector dimensions**: 384 (MiniLM) or 1536 (OpenAI) — the retrieval pipeline normalizes across both
-- **Hybrid search**: BM25 keyword relevance (30% weight) + vector cosine similarity (70% weight)
-- **MMR re-ranking**: Maximal Marginal Relevance with lambda=0.7 to reduce redundant results in retrieval
+- **Primary store**: SQLite/sql.js with `unified_memories` as the active memory table and `unified_memory_embeddings` reserved for future embedding-backed retrieval work
+- **Active retrieval path**: SQL filtering + service-level lexical/composite scoring
+- **Native vector engine**: direct `sqlite-vec` integration is deferred and not required for W6
 
 #### Retrieval Pipeline
 
 ```
-Query → Embed query → Parallel: [Vector search, BM25 search] →
-  Merge with weights → Composite scoring (semantic + recency + importance + access) →
-  MMR re-rank → Budget filter (lite: 3, standard: 8, deep: 20) → Return
+Query → SQL filter candidates → Composite scoring (query coverage + recency + importance + confidence + access) →
+  Budget filter (lite: 3, standard: 8, deep: 20) → Return
 ```
 
-The composite score combines four signals:
-- **Semantic relevance** (cosine similarity or BM25 match)
+The composite score combines these live signals:
+- **Lexical query relevance**
 - **Recency** (decay function on `updatedAt` timestamp)
-- **Importance** (user-confirmed entries score highest, auto-promoted next, candidates lowest)
+- **Importance**
 - **Access frequency** (frequently retrieved memories rank higher)
+- **Confidence**
 
 Budget tiers control how many memories are injected into agent context:
 - **Lite** (3 entries): Quick tasks, terminal summaries, one-shot generation
@@ -881,31 +847,18 @@ Budget tiers control how many memories are injected into agent context:
 #### Write Pipeline
 
 ```
-New memory → Embed → Find similar (cosine > 0.85) →
-  If similar found: LLM decides PASS/REPLACE/APPEND/DELETE →
-  Store in SQLite + memory_vectors → Emit to .ade/memory/ for git sync
+New memory → Category/strict-mode gate →
+  Lexical duplicate check in same scope →
+  Merge or insert into `unified_memories`
 ```
 
-The consolidation step prevents memory bloat:
-- **PASS**: New memory is redundant; discard it
-- **REPLACE**: New memory supersedes existing; update in place
-- **APPEND**: New memory extends existing; merge content
-- **DELETE**: Existing memory is outdated; remove it
+This shipped path does not yet include embedding similarity, LLM PASS/REPLACE/APPEND/DELETE consolidation, or MMR.
 
-All write operations emit a corresponding JSON file to `.ade/memory/` for cross-machine sync via git.
+Memory writes are persisted directly in the local project database (`.ade/ade.db`) and consumed immediately by retrieval paths.
 
 #### Pre-Compaction Integration
 
-The memory system hooks into the existing `compactionEngine.ts` (Hivemind HW6) to ensure durable state is saved before context is compacted:
-
-1. At 70% context threshold, before compaction triggers:
-   - A silent agentic turn prompts the agent to save important memories
-   - The agent uses `memoryAdd` to persist key facts, decisions, and patterns discovered during work
-   - A flush counter prevents double-flushing within the same compaction cycle
-2. Compaction proceeds normally, knowing durable state is safely persisted in the memory store
-3. After compaction, the agent's context includes a summary but can retrieve full memories on demand
-
-This integration ensures that long-running agent sessions do not lose important discoveries when their context window is compacted.
+The current compaction flow still writes summaries/shared facts, but it does not yet run the full silent `memoryAdd` flush described in the W6 target design. Treat pre-compaction memory flush as planned work unless the implementation is explicitly present in code.
 
 #### Context Assembly Per Runtime
 
@@ -920,14 +873,12 @@ System prompt + tools definition                    (~5-10K tokens)
 + Response reserve                                   (~4K tokens)
 ```
 
-The memory retrieval tier is scoped to the runtime's namespace hierarchy:
-- `runtime-thread`: Ephemeral, current session only
-- `run`: Shared across all agents in a mission run
+The live memory scopes are:
 - `project`: Persistent project-level knowledge
-- `identity`: Agent-specific learned behaviors
-- `daily-log`: Time-scoped operational notes
+- `mission`: Shared across a mission run
+- `agent`: Agent-specific durable memory
 
-Each tier is populated by `buildFullPrompt()` in the unified executor, which queries the memory service with the appropriate scope and budget before assembling the final prompt.
+`buildFullPrompt()` currently injects shared facts, mission-memory highlights, and project-memory highlights, while structured lane/project context still comes from pack exports.
 
 #### Prior Art & Design References
 
@@ -1029,7 +980,7 @@ External MCP Request           User (CTO Tab)
 - The CTO can proactively create missions, spin up lanes, and orchestrate work based on project context without explicit user direction
 - It maintains awareness of all active missions, lane states, and recent agent outputs
 
-**CTO State**: The CTO maintains its state in `.ade/cto/`, separate from worker agent memory in `.ade/memory/agents/`. This includes persistent project context, learned routing patterns, decision history, and user corrections. Over time, the CTO becomes more effective at anticipating project needs and dispatching work autonomously.
+**CTO State**: The CTO maintains its state in `.ade/cto/`, separate from unified memory tables in `.ade/ade.db`. This includes persistent project context, learned routing patterns, decision history, and user corrections. Over time, the CTO becomes more effective at anticipating project needs and dispatching work autonomously.
 
 **Use Cases**:
 - Primary interface for project-level AI interactions via the CTO tab
@@ -1043,28 +994,26 @@ External MCP Request           User (CTO Tab)
 
 ADE stores all portable state in the `.ade/` directory at the project root, enabling cross-machine synchronization via git without any cloud backend or hub.
 
-**Portable state** (committed to git):
-- `memory/project.json` — project-level memories
-- `memory/agents/<agentId>.json` — per-agent identity memories
+**Portable state** (project policy dependent):
+- `ade.db` — primary runtime database (lanes, missions, orchestrator, unified memory, usage, etc.)
 - `agents/` — agent definition YAML files
-- `identities/` — agent identity YAML files
-- `missions/history.jsonl` — mission execution history
-- `learning/` — learning pack JSON files
+- `cto/` — CTO identity/core-memory/session-log files
+- `packs/` — deterministic context export artifacts used by compatibility flows
 - `local.yaml` — project-level configuration (shared settings)
 
-**Non-portable state** (`.gitignore`d):
+**Non-portable state**:
 - `mcp.sock` — Unix socket for embedded MCP (runtime artifact)
-- `cache/embeddings/` — sqlite-vec embedding cache (regenerated locally on each machine)
 - `transcripts/` — raw session transcripts (large, ephemeral)
+- `chat-transcripts/` — chat transcript artifacts (runtime data)
 - `local.private.yaml` — machine-specific overrides (API keys, paths)
 
 **Sync workflow**:
 ```
-Machine A: Agent discovers pattern → memoryAdd → .ade/memory/project.json updated → git commit + push
-Machine B: git pull → .ade/memory/project.json updated → memory service reloads → agent benefits from learned pattern
+Machine A: Agent discovers pattern → memoryAdd → `.ade/ade.db` updated → optional git commit + push
+Machine B: git pull → `.ade/ade.db` updated → memory retrieval reflects new entries
 ```
 
-**Embedding regeneration**: When `.ade/` is cloned on a new machine, the `memory_vectors` SQLite table is empty. On first startup, the memory service detects the mismatch (JSON files present but no vectors) and triggers a background re-embedding job using the local GGUF model. This is a one-time operation (~30s for a typical project's memory corpus).
+**Embedding behavior**: Embeddings live in `unified_memory_embeddings` within `.ade/ade.db`, but they are not part of the active retrieval path today. Native sqlite-vec table migration is deferred; production retrieval is still lexical/composite scoring in `unifiedMemoryService.ts`.
 
 **No cloud dependency**: State sync is entirely git-based. There is no central hub, relay, or cloud service involved in state portability. The Phase 8 relay is for real-time remote control of a running ADE instance — not for state synchronization.
 
@@ -1073,7 +1022,7 @@ Machine B: git pull → .ade/memory/project.json updated → memory service relo
 **Shipped (~90%)**:
 - AI orchestrator service with mission lifecycle management, decomposed into modular architecture (core + 8 extracted modules)
 - Orchestrator service decomposed (`orchestratorQueries.ts`, `stepPolicyResolver.ts` extracted)
-- Fail-hard planner (300s timeout, `MissionPlanningError`, no coordinator-strategy deterministic fallback)
+- Built-in planning phase runtime (default-on profiles), clarification gating, and explicit coordinator phase transitions
 - PR strategies (integration/per-lane/queue/manual) replacing merge phase
 - Team synthesis and recovery loops
 - Execution plan preview with approval gates
@@ -1542,7 +1491,7 @@ Agent chat sessions integrate into ADE's existing session tracking infrastructur
    → Unified: re-resolve model + reload persisted message history + permission mode
 ```
 
-This lifecycle mirrors the PTY session lifecycle exactly, ensuring that chat sessions produce the same context artifacts (deltas, packs, checkpoints) as terminal sessions.
+This lifecycle mirrors the PTY session lifecycle exactly, ensuring that chat sessions produce the same context artifacts (deltas, memory updates, checkpoints) as terminal sessions.
 
 ---
 
@@ -1551,12 +1500,11 @@ This lifecycle mirrors the PTY session lifecycle exactly, ensuring that chat ses
 ### Desktop Application
 
 - **AI integration service**: `apps/desktop/src/main/services/ai/aiIntegrationService.ts` -- provider detection, task routing, executor dispatch via `AgentExecutor`, streaming response handling.
-- **Mission planning service**: `apps/desktop/src/main/services/missions/missionPlanningService.ts` -- builds planner prompts, dispatches to the unified executor runtime for AI planning, normalizes plan output.
 - **Orchestrator service**: `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- run/step/attempt state machine, claim management, context snapshots, gate reports.
 - **AI orchestrator service**: `apps/desktop/src/main/services/orchestrator/aiOrchestratorService.ts` (~7.7K lines) + 8 extracted modules (`chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`, `orchestratorConstants.ts`) -- AI coordination layer: autopilot, worker management, messaging, recovery.
 - **Agent chat service**: `apps/desktop/src/main/services/chat/agentChatService.ts` -- manages chat session lifecycle, spawns Codex app-server processes and Claude multi-turn sessions, maps provider events to ChatEvent streams, integrates with session tracking.
-- **Pack service**: `apps/desktop/src/main/services/packs/packService.ts` (~3.2K lines) + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` -- pack materialization and assembly decomposed into domain-specific builders.
-- **Bounded context exports**: `apps/desktop/src/main/services/packs/packExports.ts` -- builds Lite/Standard/Deep exports used as AI context inputs.
+- **Unified memory service**: `apps/desktop/src/main/services/memory/memoryService.ts` -- memory retrieval, candidate/promoted lifecycle, and budgeted context assembly.
+- **Bounded memory budgets**: `memoryGetBudget` (`lite`/`standard`/`deep`) controls AI context size in runtime prompt assembly.
 - **Model system**: `apps/desktop/src/shared/modelRegistry.ts` (pricing-aware descriptors, `FAMILY_TO_CLI` map) + `modelProfiles.ts` (derived from registry).
 - **Shared types**: `apps/desktop/src/shared/types/` -- 17 domain-scoped type modules (core, lanes, conflicts, prs, git, files, sessions, chat, missions, orchestrator, config, automations, packs, budget, models, usage) with barrel `index.ts`.
 - **Configuration**: Provider settings read from `projectConfigService.ts` (merged shared + local config).
@@ -1566,7 +1514,7 @@ This lifecycle mirrors the PTY session lifecycle exactly, ensuring that chat ses
 
 The job engine handles background AI tasks that are triggered by system events:
 
-- **Auto-narrative generation**: After a lane pack refresh, the job engine optionally triggers narrative generation via the AI integration service if a CLI subscription is available. This is a non-blocking async flow that does not interfere with the user's interactive workflow.
+- **Auto-narrative generation**: After lane/session context updates, the job engine optionally triggers narrative generation via the AI integration service if a CLI subscription is available. This is a non-blocking async flow that does not interfere with the user's interactive workflow.
 - **Conflict proposal generation**: When conflict prediction detects new or changed conflicts, the job engine can trigger AI-powered conflict resolution proposals.
 
 The job engine does **not** coordinate orchestrator step transitions. The orchestrator service has its own tick-based scheduler for mission execution.
@@ -1575,27 +1523,24 @@ The job engine does **not** coordinate orchestrator step transitions. The orches
 
 The mission service (`missionService.ts`) provides the user-facing lifecycle for AI-driven work:
 
-- **Mission creation**: Accepts a plain-English prompt, title, lane assignment, planner engine preference, and executor policy.
-- **Planning dispatch**: Delegates to `missionPlanningService` which dispatches to the unified executor runtime for AI planning and surfaces structured planning failures instead of silently replacing strategy.
-- **Step tracking**: Converts planner output into mission steps with independent status transitions.
+- **Mission creation**: Accepts a plain-English prompt, title, lane assignment, phase profile/override, and execution policy.
+- **Phase selection**: Resolves selected phases per mission/profile; built-ins include planning first by default.
+- **Step tracking**: Tracks mission steps and interventions while run-time orchestration remains coordinator-owned.
 - **Phase pipeline contracts (Task 3)**: Resolves mission phase profile/override, persists phase configuration, and annotates mission steps with phase identity metadata.
 - **Phase transition audit (Task 3)**: Runtime phase changes emit durable `phase_transition` mission/timeline events and update run metadata (`phaseRuntime`) for operator inspection.
 - **Profile lifecycle APIs (Task 3)**: list/save/delete/clone/import/export/getPhaseConfiguration/getDashboard contracts are exposed to renderer and automation surfaces.
 - **Intervention management**: Creates, resolves, and dismisses intervention records when AI agents or the orchestrator need human input.
 - **Artifact collection**: Links mission outcomes (PR URLs, generated files, test results) as artifacts.
 
-### Pack Service
+### Memory Service
 
-> **Planned removal (Phase 4 W6)**: The entire pack service will be deleted and replaced by the Unified Memory System. See `docs/final-plan/phase-4.md` W6 "Context Pack Removal" for the full file list (~10.3K lines backend + ~1.7K lines UI) and consumer migration plan. The worker briefing assembly stays but pulls from memory queries instead of pack markdown.
+W6 is complete with unified memory as the primary AI context backbone in renderer/main flows. Pack-first renderer surfaces have been cut over to memory-first equivalents, and the remaining pack-shaped APIs are compatibility veneers over live exports rather than runtime prerequisites.
 
-The pack service currently provides the context backbone for all AI operations. It has been decomposed from a 5.7K-line monolith into a 3.2K-line core (`packService.ts`) plus four extracted modules: `projectPackBuilder.ts` (~1K lines) for project pack assembly, `missionPackBuilder.ts` (~1K lines) for mission pack assembly, `conflictPackBuilder.ts` (~330 lines) for conflict pack assembly, and `packUtils.ts` (~550 lines) for shared pack utilities.
-
-- **Lane packs**: Deterministic snapshots of lane state (files changed, commits, diffs, test results) that serve as primary AI context.
-- **Project packs**: Cross-lane summaries that give AI agents a view of the full workspace. Assembly logic in `projectPackBuilder.ts`.
-- **Mission packs**: Mission-scoped context bundles assembled by `missionPackBuilder.ts`.
-- **Conflict packs**: Conflict-focused context for resolution proposals, assembled by `conflictPackBuilder.ts`.
-- **Token-budgeted exports**: Lite/Standard/Deep export tiers that bound context size for different AI task types.
-- **Pack events**: Every AI-generated artifact (narrative, proposal, PR description) is recorded as a pack event for audit and versioning.
+- **Budgeted retrieval**: `lite` / `standard` / `deep` memory budgets bound context size for each AI task type.
+- **Candidate workflow**: Discoveries enter as candidates and can be promoted or archived via memory APIs.
+- **Promoted retrieval**: Prompt assembly consumes promoted entries by ranking and budget.
+- **Auditability**: Entries preserve confidence, recency, and access metadata for deterministic ranking.
+- **Compatibility inventory**: Remaining pack internals are kept only where they still provide explicit compatibility or audit value.
 
 ### Skills + Learning Pipeline
 
@@ -1622,13 +1567,12 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Architecture design | Complete | Documented in this file |
-| Mission planning via Claude CLI | Complete | `missionPlanningService.ts` -- spawns `claude -p` with JSON schema |
-| Mission planning via Codex CLI | Complete | `missionPlanningService.ts` -- spawns `codex exec` with output schema |
+| Planning phase (coordinator-owned) | Complete | Built-in `planning` phase is default-on and transitions via `set_current_phase` |
 | Coordinator-strategy deterministic fallback (runtime) | Removed | Coordinator owns strategy; unavailable coordinator pauses/escalates instead of deterministic replacement |
 | Orchestrator state machine | Complete | `orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- runs, steps, attempts, claims, gates, timeline |
 | Executor adapter interface | Complete | `OrchestratorExecutorAdapter` type for pluggable step execution |
 | Context snapshot system | Complete | Profile-based export assembly (deterministic, narrative-opt-in) |
-| Bounded pack exports | Complete | Lite/Standard/Deep export tiers in `packExports.ts` |
+| Bounded memory budgets | Complete | Lite/Standard/Deep retrieval tiers via memory APIs |
 | AgentExecutor interface | Complete | `apps/desktop/src/main/services/ai/agentExecutor.ts` |
 | Agent SDK integration (dual-SDK) | Complete | Unified executor runtime (formerly `ClaudeExecutor` + `CodexExecutor`) |
 | AI integration service | Complete | `apps/desktop/src/main/services/ai/aiIntegrationService.ts` |
@@ -1663,7 +1607,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | E2B compute backend | Planned | Phase 4 -- Firecracker microVM sandboxes via E2B SDK |
 | Compute environment types | Planned | Phase 4 -- terminal-only, browser, and desktop environment support |
 | Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
-| Unified Memory System (W6) — replaces context packs + memoryService + CTO core memory | Planned | Phase 4 — one service, three scopes (project/agent/mission), three tiers (pinned/hot/cold), sqlite-vec hybrid BM25+vector search, composite scoring, write gate (dedup+consolidation), temporal decay, pre-compaction flush, context pack removal (~10.3K lines deleted) |
+| Unified Memory System (W6) — replaces context packs + CTO core memory UI surfaces | Baseline shipped | Unified memory retrieval and renderer cutover are active; embeddings remain stored but inactive in retrieval, and native sqlite-vec is still deferred |
 | Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Planned | Phase 4 — episodic→procedural extraction from 3+ similar episodes, `.claude/skills/SKILL.md` materialization, skill ingestion, knowledge source capture (failures, interventions, repeated errors) |
 | CTO Agent — core identity, persistent chat, core memory (W1) | Complete | Phase 4 -- `ctoStateService.ts`, dual-canonical persistence (DB + file), session reconstruction, CtoPage with chat |
 | Worker Agents — org chart, multi-adapter, config versioning, budget (W2) | Complete | Phase 4 -- `workerAgentService.ts`, `workerRevisionService.ts`, `workerBudgetService.ts`, `workerTaskSessionService.ts`, `workerAdapterRuntimeService.ts` |
@@ -1674,7 +1618,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4 complete: CTO agent core (W1), worker agents + org chart (W2), heartbeat + activation (W3), bidirectional Linear sync (W4). Remaining Phase 4 workstreams execute W6→W7→W5: Unified Memory System (W6, replaces packs + memoryService + CTO state), Skills + Learning Pipeline (W7), then Night Shift (W5), External MCP (W8), OpenClaw Bridge (W9), Portable State (W10). A major codebase refactoring has decomposed the three largest services: the AI orchestrator (13.2K to 7.7K core + 8 modules, 42% reduction), the orchestrator service (9.3K to 8.3K + 2 modules), and the pack service (5.7K to 3.2K + 4 modules, 45% reduction — will be fully deleted in W6). The type system was modularized from a 5.7K-line monolith into 17 domain-scoped modules. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4 and W6 are complete. Remaining workstreams execute W7→W5. Native sqlite-vec integration is deferred; production retrieval currently uses lexical/composite scoring, with embeddings stored but not yet queried. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 
@@ -1711,7 +1655,7 @@ The MCP server (`apps/mcp-server`) has been overhauled from a 16-tool agent inte
 | `search_code` | Search code across the project |
 | `get_git_log` | Get git log for a lane or branch |
 
-#### Mission Lifecycle Tools (8)
+#### Mission Lifecycle Tools (7)
 
 | Tool | Description |
 |------|-------------|
@@ -1721,7 +1665,6 @@ The MCP server (`apps/mcp-server`) has been overhauled from a 16-tool agent inte
 | `resume_mission` | Resume a paused mission |
 | `cancel_mission` | Cancel a mission |
 | `steer_mission` | Send a steering message to adjust mission direction |
-| `approve_plan` | Approve a mission execution plan |
 | `resolve_intervention` | Resolve a pending intervention |
 
 #### Observation Tools (8)

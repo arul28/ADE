@@ -75,8 +75,12 @@ export function LaneConflictsPanel({ laneId }: { laneId: string | null }) {
           <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => void refresh()} disabled={loading}>
             REFRESH
           </button>
-          <button type="button" style={primaryButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => navigate("/conflicts")}>
-            OPEN CONFLICTS
+          <button
+            type="button"
+            style={primaryButton({ height: 28, padding: "0 10px", fontSize: 10 })}
+            onClick={() => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
+          >
+            OPEN GRAPH
           </button>
         </div>
       </div>

@@ -345,7 +345,7 @@ Memories follow a lifecycle: `candidate` --> `promoted` --> `archived`. This pre
 | Path validation for file operations | Done | Lane root scoping enforced |
 | Force push safety (`--force-with-lease`) | Done | Hard-coded in git service |
 | Secret redaction rules | Done | `redactSecrets()` and `redactSecretsDeep()` in `apps/desktop/src/main/utils/redaction.ts`; applied to all outbound AI context payloads |
-| Confidence heuristics for proposals | Done | Confidence scoring (high/medium/low) displayed in ConflictsPage proposal list |
+| Confidence heuristics for proposals | Done | Confidence scoring (high/medium/low) displayed in the Graph conflict panel and proposal flows |
 | Memory scoping (project-level isolation) | Done | Memories scoped by project_id, no cross-project leakage |
 | Candidate memory promotion policy | Done | Confidence-based auto-promotion, staleness archival, user oversight via Context Budget Panel |
 | Memory content redaction | Done | Secret redaction rules applied to memory content before prompt injection |

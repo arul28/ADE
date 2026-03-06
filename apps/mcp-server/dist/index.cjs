@@ -43,8 +43,8 @@ function ensureStore() {
   if (cache) return cache;
   if (!storePath) throw new Error("API key store not initialized. Call initApiKeyStore first.");
   try {
-    if (import_node_fs22.default.existsSync(storePath)) {
-      const raw = import_node_fs22.default.readFileSync(storePath, "utf8");
+    if (import_node_fs23.default.existsSync(storePath)) {
+      const raw = import_node_fs23.default.readFileSync(storePath, "utf8");
       cache = JSON.parse(raw);
       return cache;
     }
@@ -55,11 +55,11 @@ function ensureStore() {
 }
 function persist() {
   if (!storePath || !cache) return;
-  import_node_fs22.default.mkdirSync(import_node_path24.default.dirname(storePath), { recursive: true });
-  import_node_fs22.default.writeFileSync(storePath, JSON.stringify(cache, null, 2), { encoding: "utf8", mode: 384 });
+  import_node_fs23.default.mkdirSync(import_node_path25.default.dirname(storePath), { recursive: true });
+  import_node_fs23.default.writeFileSync(storePath, JSON.stringify(cache, null, 2), { encoding: "utf8", mode: 384 });
 }
 function initApiKeyStore(adeDir) {
-  storePath = import_node_path24.default.join(adeDir, "api-keys.json");
+  storePath = import_node_path25.default.join(adeDir, "api-keys.json");
 }
 function storeApiKey(provider, key) {
   const store = ensureStore();
@@ -82,26 +82,26 @@ function listStoredProviders() {
 function getAllApiKeys() {
   return { ...ensureStore() };
 }
-var import_node_fs22, import_node_path24, storePath, cache;
+var import_node_fs23, import_node_path25, storePath, cache;
 var init_apiKeyStore = __esm({
   "../desktop/src/main/services/ai/apiKeyStore.ts"() {
     "use strict";
-    import_node_fs22 = __toESM(require("fs"), 1);
-    import_node_path24 = __toESM(require("path"), 1);
+    import_node_fs23 = __toESM(require("fs"), 1);
+    import_node_path25 = __toESM(require("path"), 1);
     storePath = null;
     cache = null;
   }
 });
 
 // src/index.ts
-var import_node_fs31 = __toESM(require("fs"), 1);
+var import_node_fs32 = __toESM(require("fs"), 1);
 var import_node_buffer2 = require("buffer");
 var import_node_net2 = __toESM(require("net"), 1);
-var import_node_path32 = __toESM(require("path"), 1);
+var import_node_path33 = __toESM(require("path"), 1);
 
 // src/bootstrap.ts
-var import_node_fs29 = __toESM(require("fs"), 1);
-var import_node_path30 = __toESM(require("path"), 1);
+var import_node_fs30 = __toESM(require("fs"), 1);
+var import_node_path31 = __toESM(require("path"), 1);
 var nodePty = __toESM(require("node-pty"), 1);
 
 // ../desktop/src/main/services/logging/logger.ts
@@ -1486,6 +1486,174 @@ function migrate(db) {
   db.run("create index if not exists idx_memories_status on memories(project_id, status)");
   db.run("create index if not exists idx_memories_agent on memories(agent_id)");
   db.run(`
+    create table if not exists unified_memories (
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      scope_owner_id text,
+      tier integer not null default 2,
+      category text not null,
+      content text not null,
+      importance text not null default 'medium',
+      confidence real not null default 1.0,
+      observation_count integer not null default 1,
+      status text not null default 'promoted',
+      source_type text not null default 'agent',
+      source_id text,
+      source_session_id text,
+      source_pack_key text,
+      source_run_id text,
+      file_scope_pattern text,
+      agent_id text,
+      pinned integer not null default 0,
+      composite_score real not null default 0,
+      write_gate_reason text,
+      dedupe_key text not null default '',
+      created_at text not null,
+      updated_at text not null,
+      last_accessed_at text not null,
+      access_count integer not null default 0,
+      promoted_at text,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_unified_memories_project_scope_tier on unified_memories(project_id, scope, tier)");
+  db.run("create index if not exists idx_unified_memories_scope_owner on unified_memories(project_id, scope, scope_owner_id)");
+  db.run("create index if not exists idx_unified_memories_project_status on unified_memories(project_id, status)");
+  db.run("create index if not exists idx_unified_memories_project_pinned on unified_memories(project_id, pinned, tier)");
+  db.run("create index if not exists idx_unified_memories_project_accessed on unified_memories(project_id, last_accessed_at)");
+  db.run("create index if not exists idx_unified_memories_project_dedupe on unified_memories(project_id, scope, scope_owner_id, dedupe_key)");
+  db.run(`
+    create table if not exists unified_memory_embeddings (
+      id text primary key,
+      memory_id text not null,
+      project_id text not null,
+      embedding_model text not null,
+      embedding_blob blob not null,
+      dimensions integer not null,
+      norm real,
+      created_at text not null,
+      updated_at text not null,
+      unique(memory_id, embedding_model),
+      foreign key(memory_id) references unified_memories(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_unified_memory_embeddings_project on unified_memory_embeddings(project_id)");
+  db.run("create index if not exists idx_unified_memory_embeddings_memory on unified_memory_embeddings(memory_id)");
+  db.run(`
+    insert or ignore into unified_memories (
+      id,
+      project_id,
+      scope,
+      scope_owner_id,
+      tier,
+      category,
+      content,
+      importance,
+      confidence,
+      observation_count,
+      status,
+      source_type,
+      source_id,
+      source_session_id,
+      source_pack_key,
+      source_run_id,
+      file_scope_pattern,
+      agent_id,
+      pinned,
+      composite_score,
+      write_gate_reason,
+      dedupe_key,
+      created_at,
+      updated_at,
+      last_accessed_at,
+      access_count,
+      promoted_at
+    )
+    select
+      id,
+      project_id,
+      case scope
+        when 'project' then 'project'
+        when 'mission' then 'mission'
+        when 'user' then 'agent'
+        when 'lane' then 'mission'
+        else 'project'
+      end as scope,
+      case scope
+        when 'mission' then coalesce(source_run_id, agent_id, source_session_id)
+        when 'user' then coalesce(agent_id, source_session_id)
+        when 'lane' then coalesce(agent_id, source_session_id)
+        else null
+      end as scope_owner_id,
+      case
+        when status = 'archived' then 3
+        when status = 'candidate' then 3
+        else 2
+      end as tier,
+      category,
+      content,
+      coalesce(importance, 'medium') as importance,
+      coalesce(confidence, 1.0) as confidence,
+      case
+        when coalesce(access_count, 0) > 0 then access_count
+        else 1
+      end as observation_count,
+      coalesce(status, 'promoted') as status,
+      'system' as source_type,
+      coalesce(source_run_id, source_session_id, source_pack_key, agent_id) as source_id,
+      source_session_id,
+      source_pack_key,
+      source_run_id,
+      null as file_scope_pattern,
+      agent_id,
+      0 as pinned,
+      0 as composite_score,
+      null as write_gate_reason,
+      lower(trim(content)) as dedupe_key,
+      coalesce(created_at, last_accessed_at, datetime('now')) as created_at,
+      coalesce(promoted_at, last_accessed_at, created_at, datetime('now')) as updated_at,
+      coalesce(last_accessed_at, created_at, datetime('now')) as last_accessed_at,
+      coalesce(access_count, 0) as access_count,
+      promoted_at
+    from memories
+  `);
+  db.run(`
+    create table if not exists cto_identity_state (
+      project_id text primary key,
+      version integer not null,
+      payload_json text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_identity_state_updated on cto_identity_state(updated_at)");
+  db.run(`
+    create table if not exists cto_core_memory_state (
+      project_id text primary key,
+      version integer not null,
+      payload_json text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_core_memory_state_updated on cto_core_memory_state(updated_at)");
+  db.run(`
+    create table if not exists cto_session_logs (
+      id text primary key,
+      project_id text not null,
+      session_id text not null,
+      summary text not null,
+      started_at text not null,
+      ended_at text,
+      provider text not null,
+      model_id text,
+      capability_mode text not null,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_session_logs_project_created on cto_session_logs(project_id, created_at)");
+  db.run("create index if not exists idx_cto_session_logs_session on cto_session_logs(project_id, session_id)");
+  db.run(`
     create table if not exists agent_identities (
       id text primary key,
       project_id text not null,
@@ -1535,6 +1703,98 @@ function migrate(db) {
   db.run("create index if not exists idx_orchestrator_team_members_mission on orchestrator_team_members(mission_id)");
   db.run("create index if not exists idx_orchestrator_team_members_status on orchestrator_team_members(run_id, status)");
   db.run(`
+    create table if not exists orchestrator_reflections (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      step_id text,
+      attempt_id text,
+      agent_role text not null,
+      phase text not null,
+      signal_type text not null,
+      observation text not null,
+      recommendation text not null,
+      context text not null,
+      occurred_at text not null,
+      created_at text not null,
+      schema_version integer not null default 1,
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_reflections_run_occurred on orchestrator_reflections(run_id, occurred_at)");
+  db.run("create index if not exists idx_orchestrator_reflections_mission on orchestrator_reflections(mission_id, occurred_at)");
+  db.run(`
+    create table if not exists orchestrator_retrospectives (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      generated_at text not null,
+      final_status text not null,
+      payload_json text not null,
+      schema_version integer not null default 1,
+      created_at text not null,
+      unique(project_id, run_id),
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_retrospectives_mission_generated on orchestrator_retrospectives(mission_id, generated_at)");
+  db.run(`
+    create table if not exists orchestrator_retrospective_trends (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      retrospective_id text not null,
+      source_mission_id text not null,
+      source_run_id text not null,
+      source_retrospective_id text not null,
+      pain_point_key text not null,
+      pain_point_label text not null,
+      status text not null,
+      previous_pain_score integer not null default 0,
+      current_pain_score integer not null default 0,
+      created_at text not null,
+      unique(project_id, retrospective_id, source_retrospective_id, pain_point_key)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_retrospective_trends_mission_created on orchestrator_retrospective_trends(mission_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_retrospective_trends_run_created on orchestrator_retrospective_trends(run_id, created_at)");
+  db.run(`
+    create table if not exists orchestrator_reflection_pattern_stats (
+      id text primary key,
+      project_id text not null,
+      pattern_key text not null,
+      pattern_label text not null,
+      occurrence_count integer not null default 0,
+      first_seen_retrospective_id text not null,
+      first_seen_run_id text not null,
+      last_seen_retrospective_id text not null,
+      last_seen_run_id text not null,
+      promoted_memory_id text,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, pattern_key)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_reflection_pattern_stats_count on orchestrator_reflection_pattern_stats(project_id, occurrence_count desc, updated_at desc)");
+  db.run(`
+    create table if not exists orchestrator_reflection_pattern_sources (
+      id text primary key,
+      project_id text not null,
+      pattern_stat_id text not null,
+      retrospective_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      created_at text not null,
+      unique(pattern_stat_id, retrospective_id),
+      foreign key(pattern_stat_id) references orchestrator_reflection_pattern_stats(id)
+    )
+  `);
+  db.run("create index if not exists idx_orchestrator_reflection_pattern_sources_pattern on orchestrator_reflection_pattern_sources(pattern_stat_id, created_at)");
+  db.run("create index if not exists idx_orchestrator_reflection_pattern_sources_mission on orchestrator_reflection_pattern_sources(mission_id, created_at)");
+  db.run(`
     create table if not exists orchestrator_run_state (
       run_id text primary key,
       phase text not null default 'bootstrapping',
@@ -1565,6 +1825,226 @@ function migrate(db) {
   `);
   db.run("create index if not exists idx_attempt_transcripts_attempt on attempt_transcripts(attempt_id)");
   db.run("create index if not exists idx_attempt_transcripts_run on attempt_transcripts(run_id)");
+  db.run(`
+    create table if not exists worker_agents (
+      id text primary key,
+      project_id text not null,
+      slug text not null,
+      name text not null,
+      role text not null default 'generalist',
+      title text,
+      reports_to text,
+      capabilities_json text not null default '[]',
+      status text not null default 'idle',
+      adapter_type text not null default 'claude-local',
+      adapter_config_json text not null default '{}',
+      runtime_config_json text not null default '{}',
+      budget_monthly_cents integer not null default 0,
+      spent_monthly_cents integer not null default 0,
+      last_heartbeat_at text,
+      created_at text not null,
+      updated_at text not null,
+      deleted_at text
+    )
+  `);
+  db.run("create index if not exists idx_worker_agents_project on worker_agents(project_id)");
+  db.run("create index if not exists idx_worker_agents_project_active on worker_agents(project_id, deleted_at)");
+  db.run(`
+    create table if not exists worker_agent_revisions (
+      id text primary key,
+      project_id text not null,
+      agent_id text not null,
+      before_json text not null,
+      after_json text not null,
+      changed_keys_json text not null default '[]',
+      had_redactions integer not null default 0,
+      actor text not null default 'user',
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_worker_agent_revisions_agent on worker_agent_revisions(project_id, agent_id)");
+  db.run(`
+    create table if not exists worker_agent_task_sessions (
+      id text primary key,
+      project_id text not null,
+      agent_id text not null,
+      adapter_type text not null,
+      task_key text not null,
+      payload_json text not null default '{}',
+      cleared_at text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_worker_agent_task_sessions_lookup on worker_agent_task_sessions(project_id, agent_id, adapter_type, task_key)");
+  db.run(`
+    create table if not exists worker_agent_runs (
+      id text primary key,
+      project_id text not null,
+      agent_id text not null,
+      status text not null default 'pending',
+      wakeup_reason text not null default 'timer',
+      task_key text,
+      issue_key text,
+      execution_run_id text,
+      execution_locked_at text,
+      context_json text not null default '{}',
+      result_json text,
+      error_message text,
+      started_at text,
+      finished_at text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_worker_agent_runs_agent on worker_agent_runs(project_id, agent_id)");
+  db.run("create index if not exists idx_worker_agent_runs_status on worker_agent_runs(project_id, status)");
+  db.run(`
+    create table if not exists worker_agent_cost_events (
+      id text primary key,
+      project_id text not null,
+      agent_id text not null,
+      run_id text,
+      session_id text,
+      provider text not null,
+      model_id text,
+      input_tokens integer,
+      output_tokens integer,
+      cost_cents integer not null default 0,
+      estimated integer not null default 0,
+      source text not null default 'manual',
+      occurred_at text not null,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_worker_agent_cost_events_agent on worker_agent_cost_events(project_id, agent_id)");
+  db.run("create index if not exists idx_worker_agent_cost_events_month on worker_agent_cost_events(project_id, agent_id, occurred_at)");
+  db.run(`
+    create table if not exists linear_sync_state (
+      project_id text primary key,
+      enabled integer not null default 0,
+      running integer not null default 0,
+      last_poll_at text,
+      last_success_at text,
+      last_error text,
+      health_json text not null default '{}',
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_linear_sync_state_updated on linear_sync_state(updated_at)");
+  db.run(`
+    create table if not exists linear_issue_snapshots (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      identifier text not null,
+      state_type text not null,
+      assignee_id text,
+      updated_at_linear text not null,
+      payload_json text not null,
+      hash text not null,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, issue_id)
+    )
+  `);
+  db.run("create index if not exists idx_linear_issue_snapshots_project_updated_linear on linear_issue_snapshots(project_id, updated_at_linear)");
+  db.run(`
+    create table if not exists linear_dispatch_queue (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      identifier text not null,
+      title text not null,
+      status text not null,
+      action text not null,
+      worker_id text,
+      worker_slug text,
+      mission_id text,
+      route_json text not null default '{}',
+      attempt_count integer not null default 0,
+      next_attempt_at text,
+      last_error text,
+      note text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run(
+    "create index if not exists idx_linear_dispatch_queue_lookup on linear_dispatch_queue(project_id, status, next_attempt_at, created_at)"
+  );
+  db.run("create index if not exists idx_linear_dispatch_queue_issue on linear_dispatch_queue(project_id, issue_id, status)");
+  db.run(`
+    create table if not exists linear_issue_claims (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      queue_item_id text,
+      worker_id text,
+      worker_slug text,
+      mission_id text,
+      linear_assignee_id text,
+      status text not null default 'active',
+      claimed_at text not null,
+      released_at text,
+      updated_at text not null
+    )
+  `);
+  db.run("drop index if exists idx_linear_issue_claims_unique");
+  db.run(
+    "create unique index if not exists idx_linear_issue_claims_active_unique on linear_issue_claims(project_id, issue_id) where status = 'active'"
+  );
+  db.run("create index if not exists idx_linear_issue_claims_lookup on linear_issue_claims(project_id, issue_id, status)");
+  db.run(`
+    create table if not exists linear_workpads (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      comment_id text not null,
+      last_body_hash text,
+      last_body text,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, issue_id)
+    )
+  `);
+  db.run("create index if not exists idx_linear_workpads_project_issue on linear_workpads(project_id, issue_id)");
+  db.run(`
+    create table if not exists linear_sync_events (
+      id text primary key,
+      project_id text not null,
+      issue_id text,
+      queue_item_id text,
+      event_type text not null,
+      status text,
+      message text,
+      payload_json text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_linear_sync_events_project_created on linear_sync_events(project_id, created_at)");
+  db.run("create index if not exists idx_linear_sync_events_issue_created on linear_sync_events(project_id, issue_id, created_at)");
+  db.run(`
+    create table if not exists cto_flow_policies (
+      project_id text primary key,
+      policy_json text not null,
+      active_revision_id text,
+      updated_at text not null,
+      updated_by text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_flow_policies_updated on cto_flow_policies(updated_at)");
+  db.run(`
+    create table if not exists cto_flow_policy_revisions (
+      id text primary key,
+      project_id text not null,
+      actor text not null,
+      policy_json text not null,
+      diff_json text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cto_flow_policy_revisions_project_created on cto_flow_policy_revisions(project_id, created_at)");
 }
 async function openKvDb(dbPath, logger) {
   const wasmDir = resolveSqlJsWasmDir();
@@ -1906,10 +2386,10 @@ function createOperationService({
   db,
   projectId
 }) {
-  const nowIso5 = () => (/* @__PURE__ */ new Date()).toISOString();
+  const nowIso6 = () => (/* @__PURE__ */ new Date()).toISOString();
   const start = (args) => {
     const operationId = (0, import_node_crypto2.randomUUID)();
-    const startedAt = nowIso5();
+    const startedAt = nowIso6();
     const metadata = args.metadata ?? {};
     db.run(
       `
@@ -1931,7 +2411,7 @@ function createOperationService({
     return { operationId, startedAt };
   };
   const finish = (args) => {
-    const endedAt = nowIso5();
+    const endedAt = nowIso6();
     const existing = db.get(
       "select metadata_json from operations where id = ? and project_id = ? limit 1",
       [args.operationId, projectId]
@@ -2010,17 +2490,43 @@ function createOperationService({
 }
 
 // ../desktop/src/main/services/lanes/laneService.ts
+var import_node_fs5 = __toESM(require("fs"), 1);
+var import_node_path6 = __toESM(require("path"), 1);
+var import_node_crypto3 = require("crypto");
+
+// ../desktop/src/main/services/git/gitConflictState.ts
 var import_node_fs4 = __toESM(require("fs"), 1);
 var import_node_path5 = __toESM(require("path"), 1);
-var import_node_crypto3 = require("crypto");
-var DEFAULT_LANE_STATUS = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+function detectConflictKind(gitDir) {
+  try {
+    if (import_node_fs4.default.existsSync(import_node_path5.default.join(gitDir, "rebase-apply")) || import_node_fs4.default.existsSync(import_node_path5.default.join(gitDir, "rebase-merge"))) {
+      return "rebase";
+    }
+    if (import_node_fs4.default.existsSync(import_node_path5.default.join(gitDir, "MERGE_HEAD"))) {
+      return "merge";
+    }
+  } catch {
+  }
+  return null;
+}
+function parseNameOnly(stdout) {
+  return Array.from(
+    new Set(
+      stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
+}
+
+// ../desktop/src/main/services/lanes/laneService.ts
+var DEFAULT_LANE_STATUS = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 var LANE_LIST_CACHE_TTL_MS = 1e4;
 function cloneLaneStatus(status) {
   return {
     dirty: status.dirty,
     ahead: status.ahead,
     behind: status.behind,
-    remoteBehind: status.remoteBehind
+    remoteBehind: status.remoteBehind,
+    rebaseInProgress: status.rebaseInProgress
   };
 }
 function cloneLaneSummary(summary) {
@@ -2036,11 +2542,11 @@ function slugify(input) {
   return s.length ? s : "lane";
 }
 function normAbs(p) {
-  return import_node_path5.default.resolve(p);
+  return import_node_path6.default.resolve(p);
 }
 function isWithinDir2(dir, candidate) {
-  const rel = import_node_path5.default.relative(dir, candidate);
-  return rel.length === 0 || !rel.startsWith("..") && !import_node_path5.default.isAbsolute(rel);
+  const rel = import_node_path6.default.relative(dir, candidate);
+  return rel.length === 0 || !rel.startsWith("..") && !import_node_path6.default.isAbsolute(rel);
 }
 function parseLaneIcon(value) {
   if (!value) return null;
@@ -2129,7 +2635,17 @@ async function computeLaneStatus(worktreePath, baseRef, branchRef) {
       remoteBehind = Number.isFinite(count) ? count : 0;
     }
   }
-  return { dirty, ahead, behind, remoteBehind };
+  let rebaseInProgress = false;
+  try {
+    const gitDirRes = await runGit(["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: worktreePath, timeoutMs: 5e3 });
+    if (gitDirRes.exitCode === 0) {
+      const gitDir = gitDirRes.stdout.trim();
+      const kind = detectConflictKind(gitDir);
+      rebaseInProgress = kind === "rebase";
+    }
+  } catch {
+  }
+  return { dirty, ahead, behind, remoteBehind, rebaseInProgress };
 }
 function computeStackDepth(args) {
   const { laneId, rowsById, memo } = args;
@@ -2427,7 +2943,7 @@ function createLaneService({
     const slug = slugify(args.name);
     const suffix = laneId.slice(0, 8);
     const branchRef = `ade/${slug}-${suffix}`;
-    const worktreePath = import_node_path5.default.join(worktreesDir, `${slug}-${suffix}`);
+    const worktreePath = import_node_path6.default.join(worktreesDir, `${slug}-${suffix}`);
     await runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
       cwd: projectRoot,
       timeoutMs: 6e4
@@ -2443,6 +2959,10 @@ function createLaneService({
       [laneId, projectId, args.name, args.description ?? null, args.baseRef, branchRef, worktreePath, args.parentLaneId, args.folder ?? null, now]
     );
     invalidateLaneListCache();
+    try {
+      await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 6e4 });
+    } catch {
+    }
     const row = getLaneRow(laneId);
     if (!row) throw new Error(`Failed to create lane: ${laneId}`);
     const rowsById = new Map(getAllLaneRows(true).map((entry) => [entry.id, entry]));
@@ -2581,7 +3101,7 @@ function createLaneService({
       const displayName = (args.name ?? "").trim() || branchRef;
       const slug = slugify(displayName);
       const suffix = laneId.slice(0, 8);
-      const worktreePath = import_node_path5.default.join(worktreesDir, `${slug}-${suffix}`);
+      const worktreePath = import_node_path6.default.join(worktreesDir, `${slug}-${suffix}`);
       await runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
         cwd: projectRoot,
         timeoutMs: 6e4
@@ -2603,6 +3123,13 @@ function createLaneService({
         [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, now]
       );
       invalidateLaneListCache();
+      try {
+        const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5e3 });
+        if (upstreamCheck.exitCode !== 0) {
+          await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 6e4 });
+        }
+      } catch {
+      }
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Failed to import lane: ${laneId}`);
       const rowsById = getRowsById(true);
@@ -2651,10 +3178,10 @@ function createLaneService({
             parentRow.branch_ref
           );
         } catch {
-          parentStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+          parentStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
         }
       }
-      const defaultStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
+      const defaultStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
       const out = [];
       for (const row of childRows) {
         let status;
@@ -3180,7 +3707,7 @@ function createLaneService({
       if (childRows.length > 0) {
         throw new Error("Cannot delete a lane with active child lanes. Delete or rebase/archive children first.");
       }
-      if (row.lane_type === "worktree" && row.worktree_path && import_node_fs4.default.existsSync(row.worktree_path)) {
+      if (row.lane_type === "worktree" && row.worktree_path && import_node_fs5.default.existsSync(row.worktree_path)) {
         const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 8e3 });
         const dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
         if (dirty && !force) {
@@ -3214,9 +3741,9 @@ function createLaneService({
           await runGitOrThrow(["push", remote, "--delete", row.branch_ref], { cwd: projectRoot, timeoutMs: 45e3 });
         }
       }
-      const lanePackDir = import_node_path5.default.join(projectRoot, ".ade", "packs", "lanes", laneId);
+      const lanePackDir = import_node_path6.default.join(projectRoot, ".ade", "packs", "lanes", laneId);
       try {
-        import_node_fs4.default.rmSync(lanePackDir, { recursive: true, force: true });
+        import_node_fs5.default.rmSync(lanePackDir, { recursive: true, force: true });
       } catch {
       }
       db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
@@ -3273,7 +3800,7 @@ function createLaneService({
       const laneName = (args.name ?? "").trim();
       if (!laneName) throw new Error("Lane name is required");
       const attachedPath = normAbs(args.attachedPath);
-      if (!import_node_fs4.default.existsSync(attachedPath) || !import_node_fs4.default.statSync(attachedPath).isDirectory()) {
+      if (!import_node_fs5.default.existsSync(attachedPath) || !import_node_fs5.default.statSync(attachedPath).isDirectory()) {
         throw new Error("Attached lane path must be an existing directory");
       }
       await ensureAttachableWorktreeRoot(attachedPath);
@@ -3312,6 +3839,13 @@ function createLaneService({
         [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
       );
       invalidateLaneListCache();
+      try {
+        const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: attachedPath, timeoutMs: 5e3 });
+        if (upstreamCheck.exitCode !== 0) {
+          await runGit(["push", "-u", "origin", branchRef], { cwd: attachedPath, timeoutMs: 6e4 });
+        }
+      } catch {
+      }
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Failed to attach lane: ${laneId}`);
       const status = await computeLaneStatus(attachedPath, baseRef, branchRef);
@@ -3335,20 +3869,20 @@ function createLaneService({
         throw new Error("Archived lanes cannot be moved. Unarchive first.");
       }
       const currentPath = normAbs(row.worktree_path);
-      if (!import_node_fs4.default.existsSync(currentPath) || !import_node_fs4.default.statSync(currentPath).isDirectory()) {
+      if (!import_node_fs5.default.existsSync(currentPath) || !import_node_fs5.default.statSync(currentPath).isDirectory()) {
         throw new Error("Attached worktree path no longer exists on disk");
       }
       await ensureAttachableWorktreeRoot(currentPath);
       const slug = slugify(row.name);
-      const defaultTarget = import_node_path5.default.join(worktreesDir, `${slug}-${laneId.slice(0, 8)}`);
+      const defaultTarget = import_node_path6.default.join(worktreesDir, `${slug}-${laneId.slice(0, 8)}`);
       const normalizedWorktreesDir = normAbs(worktreesDir);
       let targetPath = normAbs(defaultTarget);
       if (!isWithinDir2(normalizedWorktreesDir, targetPath)) {
         throw new Error("Failed to resolve destination under .ade/worktrees");
       }
       if (currentPath !== targetPath) {
-        if (import_node_fs4.default.existsSync(targetPath)) {
-          targetPath = normAbs(import_node_path5.default.join(worktreesDir, `${slug}-${(0, import_node_crypto3.randomUUID)().slice(0, 8)}`));
+        if (import_node_fs5.default.existsSync(targetPath)) {
+          targetPath = normAbs(import_node_path6.default.join(worktreesDir, `${slug}-${(0, import_node_crypto3.randomUUID)().slice(0, 8)}`));
         }
         const existingTarget = db.get(
           "select id, name from lanes where project_id = ? and worktree_path = ? and id != ? limit 1",
@@ -3391,7 +3925,7 @@ function createLaneService({
 }
 
 // ../desktop/src/main/services/sessions/sessionService.ts
-var import_node_fs5 = __toESM(require("fs"), 1);
+var import_node_fs6 = __toESM(require("fs"), 1);
 
 // ../desktop/src/main/utils/ansiStrip.ts
 var OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
@@ -3621,6 +4155,13 @@ function createSessionService({ db }) {
         sets.push("pinned = ?");
         params.push(args.pinned ? 1 : 0);
       }
+      if (args.title !== void 0) {
+        const nextTitle = typeof args.title === "string" ? args.title.trim() : "";
+        if (nextTitle.length) {
+          sets.push("title = ?");
+          params.push(nextTitle);
+        }
+      }
       if (args.goal !== void 0) {
         sets.push("goal = ?");
         params.push(args.goal == null ? null : String(args.goal));
@@ -3732,13 +4273,13 @@ function createSessionService({ db }) {
     readTranscriptTail(transcriptPath, maxBytes, options) {
       if (!transcriptPath) return "";
       try {
-        const stat = import_node_fs5.default.statSync(transcriptPath);
+        const stat = import_node_fs6.default.statSync(transcriptPath);
         const size = stat.size;
         const start = Math.max(0, size - maxBytes);
-        const fd = import_node_fs5.default.openSync(transcriptPath, "r");
+        const fd = import_node_fs6.default.openSync(transcriptPath, "r");
         try {
           const out = Buffer.alloc(size - start);
-          import_node_fs5.default.readSync(fd, out, 0, out.length, start);
+          import_node_fs6.default.readSync(fd, out, 0, out.length, start);
           const alignToLineBoundary = options?.alignToLineBoundary === true;
           let slice = out;
           if (alignToLineBoundary && start > 0 && out.length > 0) {
@@ -3750,7 +4291,7 @@ function createSessionService({ db }) {
           const text = slice.toString("utf8");
           return options?.raw ? text : stripAnsi(text);
         } finally {
-          import_node_fs5.default.closeSync(fd);
+          import_node_fs6.default.closeSync(fd);
         }
       } catch {
         return "";
@@ -3760,8 +4301,8 @@ function createSessionService({ db }) {
 }
 
 // ../desktop/src/main/services/config/projectConfigService.ts
-var import_node_fs6 = __toESM(require("fs"), 1);
-var import_node_path6 = __toESM(require("path"), 1);
+var import_node_fs7 = __toESM(require("fs"), 1);
+var import_node_path7 = __toESM(require("path"), 1);
 var import_node_crypto4 = require("crypto");
 var import_yaml = __toESM(require("yaml"), 1);
 var import_node_cron = __toESM(require("node-cron"), 1);
@@ -4126,8 +4667,6 @@ function coerceAiConfig(value) {
     if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
       orchestrator.teammatePlanMode = teammatePlanMode;
     }
-    const requirePlanReview = asBool(orchestratorRaw.requirePlanReview);
-    if (requirePlanReview != null) orchestrator.requirePlanReview = requirePlanReview;
     const maxParallelWorkers = asNumber(orchestratorRaw.maxParallelWorkers);
     if (maxParallelWorkers != null) orchestrator.maxParallelWorkers = Math.max(1, Math.floor(maxParallelWorkers));
     const defaultMergePolicy = asString2(orchestratorRaw.defaultMergePolicy)?.trim();
@@ -4187,6 +4726,187 @@ function coerceAiConfig(value) {
   }
   return Object.keys(out).length ? out : void 0;
 }
+function normalizePriorityLabels(value) {
+  const labels = asStringArray(value);
+  if (!labels) return void 0;
+  const normalized = labels.map((entry) => entry.trim().toLowerCase()).filter(
+    (entry) => entry === "urgent" || entry === "high" || entry === "normal" || entry === "low" || entry === "none"
+  );
+  return normalized.length ? normalized : void 0;
+}
+function normalizeIssueStateKey(value) {
+  const state = asString2(value)?.trim().toLowerCase() ?? "";
+  if (state === "todo" || state === "in_progress" || state === "in_review" || state === "done" || state === "canceled" || state === "blocked") {
+    return state;
+  }
+  return null;
+}
+function coerceLinearSync(value) {
+  if (!isRecord(value)) return void 0;
+  const out = {};
+  const enabled = asBool(value.enabled);
+  if (enabled != null) out.enabled = enabled;
+  const pollingIntervalSec = asNumber(value.pollingIntervalSec);
+  if (pollingIntervalSec != null) out.pollingIntervalSec = Math.max(5, Math.floor(pollingIntervalSec));
+  if (Array.isArray(value.projects)) {
+    const projects = value.projects.map((entry) => {
+      if (!isRecord(entry)) return null;
+      const slug = asString2(entry.slug)?.trim();
+      if (!slug) return null;
+      const stateMapRaw = isRecord(entry.stateMap) ? entry.stateMap : null;
+      let stateMap;
+      if (stateMapRaw) {
+        const next = {};
+        for (const [rawKey, rawValue] of Object.entries(stateMapRaw)) {
+          const key = normalizeIssueStateKey(rawKey);
+          const mapped = asString2(rawValue)?.trim();
+          if (!key || !mapped) continue;
+          next[key] = mapped;
+        }
+        if (Object.keys(next).length) stateMap = next;
+      }
+      return {
+        slug,
+        ...asString2(entry.defaultWorker)?.trim() ? { defaultWorker: asString2(entry.defaultWorker).trim() } : {},
+        ...asString2(entry.teamKey)?.trim() ? { teamKey: asString2(entry.teamKey).trim() } : {},
+        ...stateMap ? { stateMap } : {}
+      };
+    }).filter((entry) => entry != null);
+    if (projects.length) out.projects = projects;
+  }
+  if (isRecord(value.routing)) {
+    const byLabel = asStringMap(value.routing.byLabel);
+    if (byLabel && Object.keys(byLabel).length) out.routing = { byLabel };
+  }
+  if (isRecord(value.assignment)) {
+    const setAssigneeOnDispatch = asBool(value.assignment.setAssigneeOnDispatch);
+    if (setAssigneeOnDispatch != null) out.assignment = { setAssigneeOnDispatch };
+  }
+  if (isRecord(value.autoDispatch)) {
+    const rules = Array.isArray(value.autoDispatch.rules) ? value.autoDispatch.rules.map((rule, index) => {
+      if (!isRecord(rule)) return null;
+      const actionRaw = asString2(rule.action)?.trim();
+      const action = actionRaw === "auto" || actionRaw === "escalate" || actionRaw === "queue-night-shift" ? actionRaw : null;
+      if (!action) return null;
+      const match = isRecord(rule.match) ? rule.match : null;
+      const labels = match ? asStringArray(match.labels) : void 0;
+      const priority = match ? normalizePriorityLabels(match.priority) : void 0;
+      const projectSlugs = match ? asStringArray(match.projectSlugs) : void 0;
+      const owner = match ? asStringArray(match.owner) : void 0;
+      return {
+        id: asString2(rule.id)?.trim() || `rule-${index + 1}`,
+        action,
+        ...asString2(rule.template)?.trim() ? { template: asString2(rule.template).trim() } : {},
+        ...labels || priority || projectSlugs || owner ? {
+          match: {
+            ...labels ? { labels } : {},
+            ...priority ? { priority } : {},
+            ...projectSlugs ? { projectSlugs } : {},
+            ...owner ? { owner } : {}
+          }
+        } : {}
+      };
+    }).filter((entry) => entry != null) : void 0;
+    const defaultActionRaw = asString2(value.autoDispatch.default)?.trim();
+    const defaultAction = defaultActionRaw === "auto" || defaultActionRaw === "escalate" || defaultActionRaw === "queue-night-shift" ? defaultActionRaw : null;
+    const autoDispatch = {};
+    if (rules?.length) autoDispatch.rules = rules;
+    if (defaultAction) autoDispatch.default = defaultAction;
+    if (Object.keys(autoDispatch).length) out.autoDispatch = autoDispatch;
+  }
+  if (isRecord(value.concurrency)) {
+    const global = asNumber(value.concurrency.global);
+    const byStateRaw = isRecord(value.concurrency.byState) ? value.concurrency.byState : null;
+    let byState;
+    if (byStateRaw) {
+      const next = {};
+      for (const [rawKey, rawValue] of Object.entries(byStateRaw)) {
+        const key = normalizeIssueStateKey(rawKey);
+        const n = asNumber(rawValue);
+        if (!key || n == null) continue;
+        next[key] = Math.max(0, Math.floor(n));
+      }
+      if (Object.keys(next).length) byState = next;
+    }
+    if (global != null || byState) {
+      out.concurrency = {
+        ...global != null ? { global: Math.max(1, Math.floor(global)) } : {},
+        ...byState ? { byState } : {}
+      };
+    }
+  }
+  if (isRecord(value.reconciliation)) {
+    const enabled2 = asBool(value.reconciliation.enabled);
+    const stalledTimeoutSec = asNumber(value.reconciliation.stalledTimeoutSec);
+    if (enabled2 != null || stalledTimeoutSec != null) {
+      out.reconciliation = {
+        ...enabled2 != null ? { enabled: enabled2 } : {},
+        ...stalledTimeoutSec != null ? { stalledTimeoutSec: Math.max(30, Math.floor(stalledTimeoutSec)) } : {}
+      };
+    }
+  }
+  if (isRecord(value.classification)) {
+    const mode = asString2(value.classification.mode)?.trim();
+    const confidenceThreshold = asNumber(value.classification.confidenceThreshold);
+    if (mode || confidenceThreshold != null) {
+      out.classification = {
+        ...mode === "heuristics" || mode === "ai" || mode === "hybrid" ? { mode } : {},
+        ...confidenceThreshold != null ? { confidenceThreshold: Math.max(0, Math.min(1, confidenceThreshold)) } : {}
+      };
+    }
+  }
+  if (isRecord(value.artifacts)) {
+    const mode = asString2(value.artifacts.mode)?.trim();
+    if (mode === "links" || mode === "attachments") out.artifacts = { mode };
+  }
+  return Object.keys(out).length ? out : void 0;
+}
+function mergeLinearSync(shared, local) {
+  if (!shared && !local) return void 0;
+  const out = {
+    enabled: local?.enabled ?? shared?.enabled,
+    pollingIntervalSec: local?.pollingIntervalSec ?? shared?.pollingIntervalSec,
+    projects: local?.projects ?? shared?.projects,
+    routing: {
+      ...shared?.routing ?? {},
+      ...local?.routing ?? {},
+      byLabel: {
+        ...shared?.routing?.byLabel ?? {},
+        ...local?.routing?.byLabel ?? {}
+      }
+    },
+    assignment: {
+      ...shared?.assignment ?? {},
+      ...local?.assignment ?? {}
+    },
+    autoDispatch: {
+      ...shared?.autoDispatch ?? {},
+      ...local?.autoDispatch ?? {},
+      ...local?.autoDispatch?.rules != null ? { rules: local.autoDispatch.rules } : shared?.autoDispatch?.rules != null ? { rules: shared.autoDispatch.rules } : {}
+    },
+    concurrency: {
+      ...shared?.concurrency ?? {},
+      ...local?.concurrency ?? {},
+      byState: {
+        ...shared?.concurrency?.byState ?? {},
+        ...local?.concurrency?.byState ?? {}
+      }
+    },
+    reconciliation: {
+      ...shared?.reconciliation ?? {},
+      ...local?.reconciliation ?? {}
+    },
+    classification: {
+      ...shared?.classification ?? {},
+      ...local?.classification ?? {}
+    },
+    artifacts: {
+      ...shared?.artifacts ?? {},
+      ...local?.artifacts ?? {}
+    }
+  };
+  return Object.keys(out).length ? out : void 0;
+}
 function mergeAiConfig(sharedAi, localAi) {
   if (!sharedAi && !localAi) return void 0;
   const taskRouting = {
@@ -4244,6 +4964,7 @@ function coerceConfigFile(value) {
   } : void 0;
   const providersRaw = isRecord(value.providers) ? { ...value.providers } : void 0;
   const ai = coerceAiConfig(value.ai);
+  const linearSync = coerceLinearSync(value.linearSync);
   if (providersRaw) {
     delete providersRaw.mode;
     delete providersRaw.ai;
@@ -4259,12 +4980,13 @@ function coerceConfigFile(value) {
     ...github ? { github } : {},
     ...git ? { git } : {},
     ...ai ? { ai } : {},
-    ...providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}
+    ...providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {},
+    ...linearSync ? { linearSync } : {}
   };
 }
 function readConfigFile(filePath) {
   try {
-    const raw = import_node_fs6.default.readFileSync(filePath, "utf8");
+    const raw = import_node_fs7.default.readFileSync(filePath, "utf8");
     if (!raw.trim().length) {
       return {
         config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] },
@@ -4295,7 +5017,8 @@ function toCanonicalYaml(config2) {
     ...config2.github ? { github: config2.github } : {},
     ...config2.git ? { git: config2.git } : {},
     ...config2.ai ? { ai: config2.ai } : {},
-    ...config2.providers ? { providers: config2.providers } : {}
+    ...config2.providers ? { providers: config2.providers } : {},
+    ...config2.linearSync ? { linearSync: config2.linearSync } : {}
   };
   return import_yaml.default.stringify(normalized, { indent: 2 });
 }
@@ -4446,6 +5169,7 @@ function resolveEffectiveConfig(shared, local) {
     ...local.git ?? {}
   } : void 0;
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
+  const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);
   const environments = [...shared.environments ?? [], ...local.environments ?? []];
   const aiModeRaw = typeof mergedAi?.mode === "string" ? String(mergedAi.mode).trim().toLowerCase() : "";
   const providerMode = (() => {
@@ -4470,7 +5194,8 @@ function resolveEffectiveConfig(shared, local) {
       autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false
     },
     ...effectiveAi ? { ai: effectiveAi } : {},
-    ...mergedProviders ? { providers: mergedProviders } : {}
+    ...mergedProviders ? { providers: mergedProviders } : {},
+    ...mergedLinearSync ? { linearSync: mergedLinearSync } : {}
   };
 }
 function validateDuplicateIds(values, sectionPath, issues, fileLabel) {
@@ -4487,7 +5212,7 @@ function validateDuplicateIds(values, sectionPath, issues, fileLabel) {
 }
 function isDirectory(absPath) {
   try {
-    return import_node_fs6.default.statSync(absPath).isDirectory();
+    return import_node_fs7.default.statSync(absPath).isDirectory();
   } catch {
     return false;
   }
@@ -4567,7 +5292,7 @@ function validateEffectiveConfig(effective, projectRoot, shared, local) {
     if (!Number.isFinite(proc.gracefulShutdownMs) || proc.gracefulShutdownMs <= 0) {
       issues.push({ path: `${p}.gracefulShutdownMs`, message: "gracefulShutdownMs must be > 0" });
     }
-    const absCwd = import_node_path6.default.isAbsolute(proc.cwd) ? proc.cwd : import_node_path6.default.join(projectRoot, proc.cwd);
+    const absCwd = import_node_path7.default.isAbsolute(proc.cwd) ? proc.cwd : import_node_path7.default.join(projectRoot, proc.cwd);
     if (proc.cwd && !isDirectory(absCwd)) {
       issues.push({ path: `${p}.cwd`, message: `cwd does not exist: ${proc.cwd}` });
     }
@@ -4627,7 +5352,7 @@ function validateEffectiveConfig(effective, projectRoot, shared, local) {
     if (!suite.name) issues.push({ path: `${p}.name`, message: "Test suite name is required" });
     if (!suite.command.length) issues.push({ path: `${p}.command`, message: "Test suite command must be a non-empty argv array" });
     if (!suite.cwd) issues.push({ path: `${p}.cwd`, message: "Test suite cwd is required" });
-    const absCwd = import_node_path6.default.isAbsolute(suite.cwd) ? suite.cwd : import_node_path6.default.join(projectRoot, suite.cwd);
+    const absCwd = import_node_path7.default.isAbsolute(suite.cwd) ? suite.cwd : import_node_path7.default.join(projectRoot, suite.cwd);
     if (suite.cwd && !isDirectory(absCwd)) {
       issues.push({ path: `${p}.cwd`, message: `cwd does not exist: ${suite.cwd}` });
     }
@@ -4652,7 +5377,7 @@ function validateEffectiveConfig(effective, projectRoot, shared, local) {
     }
     const overrideCwd = policy.overrides.cwd;
     if (overrideCwd) {
-      const absCwd = import_node_path6.default.isAbsolute(overrideCwd) ? overrideCwd : import_node_path6.default.join(projectRoot, overrideCwd);
+      const absCwd = import_node_path7.default.isAbsolute(overrideCwd) ? overrideCwd : import_node_path7.default.join(projectRoot, overrideCwd);
       if (!isDirectory(absCwd)) {
         issues.push({ path: `${p}.overrides.cwd`, message: `cwd override does not exist: ${overrideCwd}` });
       }
@@ -4728,6 +5453,52 @@ function validateEffectiveConfig(effective, projectRoot, shared, local) {
       }
     }
   }
+  const linearSync = effective.linearSync;
+  if (linearSync) {
+    const p = "effective.linearSync";
+    if (linearSync.pollingIntervalSec != null) {
+      if (!Number.isFinite(linearSync.pollingIntervalSec) || linearSync.pollingIntervalSec <= 0) {
+        issues.push({ path: `${p}.pollingIntervalSec`, message: "pollingIntervalSec must be > 0" });
+      } else if (linearSync.pollingIntervalSec < 5 || linearSync.pollingIntervalSec > 3600) {
+        issues.push({ path: `${p}.pollingIntervalSec`, message: "pollingIntervalSec must be between 5 and 3600" });
+      }
+    }
+    if (linearSync.classification?.confidenceThreshold != null) {
+      const threshold = linearSync.classification.confidenceThreshold;
+      if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+        issues.push({ path: `${p}.classification.confidenceThreshold`, message: "confidenceThreshold must be between 0 and 1" });
+      }
+    }
+    if (linearSync.projects?.length) {
+      const seen = /* @__PURE__ */ new Set();
+      for (let i = 0; i < linearSync.projects.length; i += 1) {
+        const project = linearSync.projects[i];
+        const pp = `${p}.projects[${i}]`;
+        const slug = (project.slug ?? "").trim().toLowerCase();
+        if (!slug.length) {
+          issues.push({ path: `${pp}.slug`, message: "Project slug is required" });
+          continue;
+        }
+        if (seen.has(slug)) {
+          issues.push({ path: `${pp}.slug`, message: `Duplicate project slug '${slug}'` });
+        } else {
+          seen.add(slug);
+        }
+      }
+    }
+    if (linearSync.autoDispatch?.rules?.length) {
+      for (let i = 0; i < linearSync.autoDispatch.rules.length; i += 1) {
+        const rule = linearSync.autoDispatch.rules[i];
+        const rp = `${p}.autoDispatch.rules[${i}]`;
+        if (rule.action !== "auto" && rule.action !== "escalate" && rule.action !== "queue-night-shift") {
+          issues.push({ path: `${rp}.action`, message: `Unknown action '${String(rule.action)}'` });
+        }
+      }
+    }
+    if (linearSync.concurrency?.global != null && linearSync.concurrency.global < 1) {
+      issues.push({ path: `${p}.concurrency.global`, message: "global concurrency must be >= 1" });
+    }
+  }
   return {
     ok: issues.length === 0,
     issues
@@ -4754,8 +5525,8 @@ function createProjectConfigService({
   db,
   logger
 }) {
-  const sharedPath = import_node_path6.default.join(adeDir, "ade.yaml");
-  const localPath = import_node_path6.default.join(adeDir, "local.yaml");
+  const sharedPath = import_node_path7.default.join(adeDir, "ade.yaml");
+  const localPath = import_node_path7.default.join(adeDir, "local.yaml");
   let lastSeenSharedHash = null;
   let lastSeenLocalHash = null;
   const getTrustedSharedHash = () => db.getJson(TRUSTED_SHARED_HASH_KEY);
@@ -4858,7 +5629,7 @@ function createProjectConfigService({
     };
   };
   const readSnapshotFromDisk = () => {
-    import_node_fs6.default.mkdirSync(adeDir, { recursive: true });
+    import_node_fs7.default.mkdirSync(adeDir, { recursive: true });
     const sharedFile = readConfigFile(sharedPath);
     const localFile = readConfigFile(localPath);
     const sharedHash = hashContent(sharedFile.raw);
@@ -4892,9 +5663,9 @@ function createProjectConfigService({
       }
       const sharedYaml = toCanonicalYaml(shared);
       const localYaml = toCanonicalYaml(local);
-      import_node_fs6.default.mkdirSync(import_node_path6.default.dirname(sharedPath), { recursive: true });
-      import_node_fs6.default.writeFileSync(sharedPath, sharedYaml, "utf8");
-      import_node_fs6.default.writeFileSync(localPath, localYaml, "utf8");
+      import_node_fs7.default.mkdirSync(import_node_path7.default.dirname(sharedPath), { recursive: true });
+      import_node_fs7.default.writeFileSync(sharedPath, sharedYaml, "utf8");
+      import_node_fs7.default.writeFileSync(localPath, localYaml, "utf8");
       const sharedHash = hashContent(sharedYaml);
       setTrustedSharedHash(sharedHash);
       logger.info("projectConfig.save", {
@@ -4961,8 +5732,8 @@ function createProjectConfigService({
 
 // ../desktop/src/main/services/packs/packService.ts
 var import_node_crypto7 = require("crypto");
-var import_node_fs11 = __toESM(require("fs"), 1);
-var import_node_path11 = __toESM(require("path"), 1);
+var import_node_fs12 = __toESM(require("fs"), 1);
+var import_node_path12 = __toESM(require("path"), 1);
 
 // ../desktop/src/shared/contextContract.ts
 var ADE_INTENT_START = "<!-- ADE_INTENT_START -->";
@@ -5197,60 +5968,6 @@ function extractBetweenMarkers(content, startMarker, endMarker) {
   if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return null;
   const body = content.slice(startIdx + startMarker.length, endIdx).trim();
   return body.length ? body : "";
-}
-function replaceBetweenMarkers(args) {
-  const startIdx = args.content.indexOf(args.startMarker);
-  const endIdx = args.content.indexOf(args.endMarker);
-  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) {
-    return { content: args.content, changed: false };
-  }
-  const before = args.content.slice(0, startIdx + args.startMarker.length);
-  const after = args.content.slice(endIdx);
-  const nextBody = args.body.trim();
-  const updated = `${before}
-${nextBody}
-${after}`;
-  return { content: updated, changed: updated !== args.content };
-}
-function upsertSectionByHeading(args) {
-  const replaced = replaceBetweenMarkers({
-    content: args.content,
-    startMarker: args.startMarker,
-    endMarker: args.endMarker,
-    body: args.body
-  });
-  if (replaced.changed || args.content.includes(args.startMarker) && args.content.includes(args.endMarker)) {
-    return { content: replaced.content, insertedMarkers: false };
-  }
-  const headingRe = new RegExp(`^${escapeRegExp(args.heading)}\\s*$`, "m");
-  const match = headingRe.exec(args.content);
-  if (match?.index != null) {
-    const headingStart = match.index;
-    const headingLineEnd = findLineEnd(args.content, headingStart);
-    const nextHeadingIdx = findNextIndex(args.content, /^##\s+/gm, headingLineEnd);
-    const nextHrIdx = findNextIndex(args.content, /^---\s*$/gm, headingLineEnd);
-    const candidates = [nextHeadingIdx, nextHrIdx].filter((idx) => idx >= 0);
-    const sectionEnd = candidates.length ? Math.min(...candidates) : args.content.length;
-    const before = args.content.slice(0, headingLineEnd);
-    const after = args.content.slice(sectionEnd);
-    const body2 = args.body.trim();
-    const updated2 = `${before}${args.startMarker}
-${body2}
-${args.endMarker}
-${after}`;
-    return { content: updated2, insertedMarkers: true };
-  }
-  const trimmed = args.content.trimEnd();
-  const body = args.body.trim();
-  const suffix = `${args.heading}
-${args.startMarker}
-${body}
-${args.endMarker}
-`;
-  const updated = trimmed.length ? `${trimmed}
-
-${suffix}` : `${suffix}`;
-  return { content: updated, insertedMarkers: true };
 }
 function extractSectionByHeading(content, heading) {
   const headingRe = new RegExp(`^${escapeRegExp(heading)}\\s*$`, "m");
@@ -5830,8 +6547,8 @@ function buildConflictExport(args) {
 }
 
 // ../desktop/src/main/services/packs/packUtils.ts
-var import_node_fs7 = __toESM(require("fs"), 1);
-var import_node_path7 = __toESM(require("path"), 1);
+var import_node_fs8 = __toESM(require("fs"), 1);
+var import_node_path8 = __toESM(require("path"), 1);
 function safeJsonParseArray(raw) {
   const parsed = safeJsonParse(raw, null);
   if (!Array.isArray(parsed)) return [];
@@ -5839,16 +6556,16 @@ function safeJsonParseArray(raw) {
 }
 function readFileIfExists(filePath) {
   try {
-    return import_node_fs7.default.readFileSync(filePath, "utf8");
+    return import_node_fs8.default.readFileSync(filePath, "utf8");
   } catch {
     return "";
   }
 }
 function ensureDirFor(filePath) {
-  import_node_fs7.default.mkdirSync(import_node_path7.default.dirname(filePath), { recursive: true });
+  import_node_fs8.default.mkdirSync(import_node_path8.default.dirname(filePath), { recursive: true });
 }
 function ensureDir(dirPath) {
-  import_node_fs7.default.mkdirSync(dirPath, { recursive: true });
+  import_node_fs8.default.mkdirSync(dirPath, { recursive: true });
 }
 function safeSegment(raw) {
   const trimmed = raw.trim();
@@ -6172,7 +6889,7 @@ function toPackSummaryFromRow(args) {
   const packType = args.row?.pack_type ?? "project";
   const packPath = args.row?.pack_path ?? "";
   const body = packPath ? readFileIfExists(packPath) : "";
-  const exists = packPath.length ? import_node_fs7.default.existsSync(packPath) : false;
+  const exists = packPath.length ? import_node_fs8.default.existsSync(packPath) : false;
   const metadata = parsePackMetadataJson(args.row?.metadata_json);
   return {
     packKey: args.packKey,
@@ -6192,590 +6909,15 @@ function toPackSummaryFromRow(args) {
 
 // ../desktop/src/main/services/packs/projectPackBuilder.ts
 var import_node_crypto6 = require("crypto");
-var import_node_fs9 = __toESM(require("fs"), 1);
-var import_node_path9 = __toESM(require("path"), 1);
+var import_node_fs10 = __toESM(require("fs"), 1);
+var import_node_path10 = __toESM(require("path"), 1);
 
 // ../desktop/src/main/services/orchestrator/stepPolicyResolver.ts
-var import_node_path8 = __toESM(require("path"), 1);
+var import_node_path9 = __toESM(require("path"), 1);
 
 // ../desktop/src/main/services/orchestrator/orchestratorContext.ts
 var import_node_crypto5 = require("crypto");
 var import_node_child_process2 = require("child_process");
-
-// ../desktop/src/shared/modelRegistry.ts
-var ALL_CAPS = { tools: true, vision: true, reasoning: true, streaming: true };
-var NO_REASONING = { tools: true, vision: true, reasoning: false, streaming: true };
-var BASIC_CAPS = { tools: true, vision: false, reasoning: false, streaming: true };
-var MODEL_REGISTRY = [
-  // ---- Anthropic (CLI-wrapped via claude) ----
-  // Note: "max" thinking is API-only for Opus; CLI subscribers get up to "high"
-  {
-    id: "anthropic/claude-opus-4-6",
-    shortId: "opus",
-    displayName: "Claude Opus 4.6",
-    family: "anthropic",
-    authTypes: ["cli-subscription"],
-    contextWindow: 2e5,
-    maxOutputTokens: 32e3,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#D97706",
-    sdkProvider: "ai-sdk-provider-claude-code",
-    sdkModelId: "opus",
-    cliCommand: "claude",
-    isCliWrapped: true,
-    inputPricePer1M: 5,
-    outputPricePer1M: 25,
-    costTier: "very_high"
-  },
-  {
-    id: "anthropic/claude-sonnet-4-6",
-    shortId: "sonnet",
-    displayName: "Claude Sonnet 4.6",
-    family: "anthropic",
-    authTypes: ["cli-subscription"],
-    contextWindow: 2e5,
-    maxOutputTokens: 32e3,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
-    color: "#8B5CF6",
-    sdkProvider: "ai-sdk-provider-claude-code",
-    sdkModelId: "sonnet",
-    cliCommand: "claude",
-    isCliWrapped: true,
-    inputPricePer1M: 3,
-    outputPricePer1M: 15,
-    costTier: "medium"
-  },
-  {
-    id: "anthropic/claude-haiku-4-5",
-    shortId: "haiku",
-    displayName: "Claude Haiku 4.5",
-    family: "anthropic",
-    authTypes: ["cli-subscription"],
-    contextWindow: 2e5,
-    maxOutputTokens: 32e3,
-    capabilities: NO_REASONING,
-    color: "#06B6D4",
-    sdkProvider: "ai-sdk-provider-claude-code",
-    sdkModelId: "haiku",
-    cliCommand: "claude",
-    isCliWrapped: true,
-    inputPricePer1M: 0.8,
-    outputPricePer1M: 4,
-    costTier: "low"
-  },
-  // ---- Anthropic (API key direct) ----
-  {
-    id: "anthropic/claude-opus-4-6-api",
-    shortId: "opus-api",
-    displayName: "Claude Opus 4.6 (API)",
-    family: "anthropic",
-    authTypes: ["api-key"],
-    contextWindow: 2e5,
-    maxOutputTokens: 32e3,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
-    color: "#D97706",
-    sdkProvider: "@ai-sdk/anthropic",
-    sdkModelId: "claude-opus-4-6",
-    isCliWrapped: false,
-    inputPricePer1M: 5,
-    outputPricePer1M: 25,
-    costTier: "very_high"
-  },
-  {
-    id: "anthropic/claude-sonnet-4-6-api",
-    shortId: "sonnet-api",
-    displayName: "Claude Sonnet 4.6 (API)",
-    family: "anthropic",
-    authTypes: ["api-key"],
-    contextWindow: 2e5,
-    maxOutputTokens: 8192,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
-    color: "#8B5CF6",
-    sdkProvider: "@ai-sdk/anthropic",
-    sdkModelId: "claude-sonnet-4-6",
-    isCliWrapped: false,
-    inputPricePer1M: 3,
-    outputPricePer1M: 15,
-    costTier: "medium"
-  },
-  {
-    id: "anthropic/claude-haiku-4-5-api",
-    shortId: "haiku-api",
-    displayName: "Claude Haiku 4.5 (API)",
-    family: "anthropic",
-    authTypes: ["api-key"],
-    contextWindow: 2e5,
-    maxOutputTokens: 8192,
-    capabilities: NO_REASONING,
-    color: "#06B6D4",
-    sdkProvider: "@ai-sdk/anthropic",
-    sdkModelId: "claude-haiku-4-5-20251001",
-    isCliWrapped: false,
-    inputPricePer1M: 0.8,
-    outputPricePer1M: 4,
-    costTier: "low"
-  },
-  // ---- OpenAI (CLI-wrapped via codex) ----
-  // Codex reasoning tiers: minimal | low | medium | high | xhigh (per config.toml reference)
-  // xhigh is model-dependent (gpt-5.1+ support it)
-  {
-    id: "openai/gpt-5.3-codex",
-    shortId: "gpt-5.3-codex",
-    displayName: "GPT-5.3 Codex",
-    family: "openai",
-    authTypes: ["cli-subscription"],
-    contextWindow: 192e3,
-    maxOutputTokens: 16384,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
-    color: "#10B981",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.3-codex",
-    cliCommand: "codex",
-    isCliWrapped: true,
-    inputPricePer1M: 2,
-    outputPricePer1M: 8,
-    costTier: "high"
-  },
-  {
-    id: "openai/gpt-5.3-codex-spark",
-    shortId: "gpt-5.3-codex-spark",
-    displayName: "GPT-5.3 Codex Spark",
-    family: "openai",
-    authTypes: ["cli-subscription"],
-    contextWindow: 192e3,
-    maxOutputTokens: 16384,
-    capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-    reasoningTiers: ["minimal", "low", "medium"],
-    color: "#34D399",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.3-codex-spark",
-    cliCommand: "codex",
-    isCliWrapped: true,
-    inputPricePer1M: 1,
-    outputPricePer1M: 4,
-    costTier: "medium"
-  },
-  {
-    id: "openai/gpt-5.2-codex",
-    shortId: "gpt-5.2-codex",
-    displayName: "GPT-5.2 Codex",
-    family: "openai",
-    authTypes: ["cli-subscription"],
-    contextWindow: 192e3,
-    maxOutputTokens: 16384,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
-    color: "#10B981",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.2-codex",
-    cliCommand: "codex",
-    isCliWrapped: true,
-    inputPricePer1M: 1.5,
-    outputPricePer1M: 6,
-    costTier: "medium"
-  },
-  {
-    id: "openai/gpt-5.1-codex-max",
-    shortId: "gpt-5.1-codex-max",
-    displayName: "GPT-5.1 Codex Max",
-    family: "openai",
-    authTypes: ["cli-subscription"],
-    contextWindow: 192e3,
-    maxOutputTokens: 16384,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
-    color: "#10B981",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.1-codex-max",
-    cliCommand: "codex",
-    isCliWrapped: true,
-    inputPricePer1M: 3,
-    outputPricePer1M: 12,
-    costTier: "high"
-  },
-  {
-    id: "openai/codex-mini-latest",
-    shortId: "codex-mini",
-    displayName: "Codex Mini",
-    family: "openai",
-    authTypes: ["cli-subscription"],
-    contextWindow: 192e3,
-    maxOutputTokens: 16384,
-    capabilities: NO_REASONING,
-    color: "#34D399",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "codex-mini-latest",
-    cliCommand: "codex",
-    isCliWrapped: true,
-    inputPricePer1M: 0.3,
-    outputPricePer1M: 1.2,
-    costTier: "low"
-  },
-  {
-    id: "openai/o4-mini",
-    shortId: "o4-mini",
-    displayName: "o4-mini",
-    family: "openai",
-    authTypes: ["cli-subscription"],
-    contextWindow: 192e3,
-    maxOutputTokens: 16384,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#6EE7B7",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "o4-mini",
-    cliCommand: "codex",
-    isCliWrapped: true,
-    inputPricePer1M: 1.1,
-    outputPricePer1M: 4.4,
-    costTier: "low"
-  },
-  {
-    id: "openai/o3",
-    shortId: "o3",
-    displayName: "o3",
-    family: "openai",
-    authTypes: ["cli-subscription"],
-    contextWindow: 192e3,
-    maxOutputTokens: 16384,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#059669",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "o3",
-    cliCommand: "codex",
-    isCliWrapped: true,
-    inputPricePer1M: 2,
-    outputPricePer1M: 8,
-    costTier: "medium"
-  },
-  // ---- OpenAI (API key direct) ----
-  {
-    id: "openai/gpt-4.1",
-    shortId: "gpt-4.1",
-    displayName: "GPT-4.1",
-    family: "openai",
-    authTypes: ["api-key"],
-    contextWindow: 1e6,
-    maxOutputTokens: 32768,
-    capabilities: NO_REASONING,
-    color: "#10B981",
-    sdkProvider: "@ai-sdk/openai",
-    sdkModelId: "gpt-4.1",
-    isCliWrapped: false,
-    inputPricePer1M: 2,
-    outputPricePer1M: 8
-  },
-  {
-    id: "openai/gpt-4.1-mini",
-    shortId: "gpt-4.1-mini",
-    displayName: "GPT-4.1 Mini",
-    family: "openai",
-    authTypes: ["api-key"],
-    contextWindow: 1e6,
-    maxOutputTokens: 32768,
-    capabilities: NO_REASONING,
-    color: "#34D399",
-    sdkProvider: "@ai-sdk/openai",
-    sdkModelId: "gpt-4.1-mini",
-    isCliWrapped: false,
-    inputPricePer1M: 0.4,
-    outputPricePer1M: 1.6
-  },
-  {
-    id: "openai/o4-mini-api",
-    shortId: "o4-mini-api",
-    displayName: "o4-mini (API)",
-    family: "openai",
-    authTypes: ["api-key"],
-    contextWindow: 2e5,
-    maxOutputTokens: 1e5,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#6EE7B7",
-    sdkProvider: "@ai-sdk/openai",
-    sdkModelId: "o4-mini",
-    isCliWrapped: false,
-    inputPricePer1M: 1.1,
-    outputPricePer1M: 4.4
-  },
-  // ---- Google (Gemini 3.x — current) ----
-  {
-    id: "google/gemini-3.1-pro",
-    shortId: "gemini-pro",
-    displayName: "Gemini 3.1 Pro",
-    family: "google",
-    authTypes: ["api-key"],
-    contextWindow: 1e6,
-    maxOutputTokens: 65536,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#F59E0B",
-    sdkProvider: "@ai-sdk/google",
-    sdkModelId: "gemini-3.1-pro-preview",
-    isCliWrapped: false,
-    inputPricePer1M: 1.25,
-    outputPricePer1M: 5
-  },
-  {
-    id: "google/gemini-3-flash",
-    shortId: "gemini-flash",
-    displayName: "Gemini 3 Flash",
-    family: "google",
-    authTypes: ["api-key"],
-    contextWindow: 1e6,
-    maxOutputTokens: 65536,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "high"],
-    color: "#FBBF24",
-    sdkProvider: "@ai-sdk/google",
-    sdkModelId: "gemini-3-flash-preview",
-    isCliWrapped: false,
-    inputPricePer1M: 0.15,
-    outputPricePer1M: 0.6
-  },
-  // ---- DeepSeek ----
-  {
-    id: "deepseek/deepseek-r1",
-    shortId: "deepseek-r1",
-    displayName: "DeepSeek R1",
-    family: "deepseek",
-    authTypes: ["api-key"],
-    contextWindow: 128e3,
-    maxOutputTokens: 8192,
-    capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-    color: "#3B82F6",
-    sdkProvider: "@ai-sdk/deepseek",
-    sdkModelId: "deepseek-reasoner",
-    isCliWrapped: false,
-    inputPricePer1M: 0.55,
-    outputPricePer1M: 2.19
-  },
-  {
-    id: "deepseek/deepseek-chat",
-    shortId: "deepseek-chat",
-    displayName: "DeepSeek Chat",
-    family: "deepseek",
-    authTypes: ["api-key"],
-    contextWindow: 128e3,
-    maxOutputTokens: 8192,
-    capabilities: BASIC_CAPS,
-    color: "#60A5FA",
-    sdkProvider: "@ai-sdk/deepseek",
-    sdkModelId: "deepseek-chat",
-    isCliWrapped: false,
-    inputPricePer1M: 0.27,
-    outputPricePer1M: 1.1
-  },
-  // ---- Mistral ----
-  {
-    id: "mistral/codestral-latest",
-    shortId: "codestral",
-    displayName: "Codestral",
-    family: "mistral",
-    authTypes: ["api-key"],
-    contextWindow: 256e3,
-    maxOutputTokens: 8192,
-    capabilities: BASIC_CAPS,
-    color: "#F97316",
-    sdkProvider: "@ai-sdk/mistral",
-    sdkModelId: "codestral-latest",
-    isCliWrapped: false,
-    inputPricePer1M: 0.3,
-    outputPricePer1M: 0.9
-  },
-  // ---- xAI ----
-  {
-    id: "xai/grok-3",
-    shortId: "grok-3",
-    displayName: "Grok 3",
-    family: "xai",
-    authTypes: ["api-key"],
-    contextWindow: 131072,
-    maxOutputTokens: 8192,
-    capabilities: ALL_CAPS,
-    color: "#EF4444",
-    sdkProvider: "@ai-sdk/xai",
-    sdkModelId: "grok-3",
-    isCliWrapped: false,
-    inputPricePer1M: 3,
-    outputPricePer1M: 15
-  },
-  // ---- OpenRouter ----
-  {
-    id: "openrouter/auto",
-    shortId: "openrouter-auto",
-    displayName: "OpenRouter Auto",
-    family: "openrouter",
-    authTypes: ["openrouter"],
-    contextWindow: 2e5,
-    maxOutputTokens: 16384,
-    capabilities: ALL_CAPS,
-    color: "#A855F7",
-    sdkProvider: "@openrouter/ai-sdk-provider",
-    sdkModelId: "openrouter/auto",
-    isCliWrapped: false
-  },
-  // ---- Local (Ollama) ----
-  {
-    id: "ollama/llama-3.3",
-    shortId: "llama-3.3",
-    displayName: "Llama 3.3 (Local)",
-    family: "ollama",
-    authTypes: ["local"],
-    contextWindow: 128e3,
-    maxOutputTokens: 4096,
-    capabilities: BASIC_CAPS,
-    color: "#71717A",
-    sdkProvider: "@ai-sdk/openai-compatible",
-    sdkModelId: "auto",
-    isCliWrapped: false
-  },
-  {
-    id: "lmstudio/auto",
-    shortId: "lmstudio-auto",
-    displayName: "LM Studio (Auto)",
-    family: "lmstudio",
-    authTypes: ["local"],
-    contextWindow: 128e3,
-    maxOutputTokens: 8192,
-    capabilities: BASIC_CAPS,
-    color: "#64748B",
-    sdkProvider: "@ai-sdk/openai-compatible",
-    sdkModelId: "auto",
-    isCliWrapped: false
-  },
-  {
-    id: "vllm/auto",
-    shortId: "vllm-auto",
-    displayName: "vLLM (Auto)",
-    family: "vllm",
-    authTypes: ["local"],
-    contextWindow: 128e3,
-    maxOutputTokens: 8192,
-    capabilities: BASIC_CAPS,
-    color: "#475569",
-    sdkProvider: "@ai-sdk/openai-compatible",
-    sdkModelId: "auto",
-    isCliWrapped: false
-  }
-];
-var byId = /* @__PURE__ */ new Map();
-var byShortId = /* @__PURE__ */ new Map();
-function rebuildIndexes() {
-  byId = /* @__PURE__ */ new Map();
-  byShortId = /* @__PURE__ */ new Map();
-  for (const m of MODEL_REGISTRY) {
-    byId.set(m.id, m);
-    byShortId.set(m.shortId, m);
-  }
-}
-rebuildIndexes();
-function getModelById(id) {
-  return byId.get(id);
-}
-function getAvailableModels(detectedAuth) {
-  const hasAuth = (matcher) => detectedAuth.some((auth) => matcher(auth));
-  const FAMILY_TO_CLI = {
-    openai: "codex",
-    anthropic: "claude",
-    google: "gemini"
-  };
-  const hasMappedCli = (family) => {
-    const requiredCli = FAMILY_TO_CLI[family] ?? null;
-    if (!requiredCli) return hasAuth((auth) => auth.type === "cli-subscription");
-    return hasAuth(
-      (auth) => auth.type === "cli-subscription" && (!auth.cli || auth.cli === requiredCli)
-    );
-  };
-  const hasMappedLocal = (family) => {
-    const requiredProvider = family === "ollama" || family === "lmstudio" || family === "vllm" ? family : null;
-    if (!requiredProvider) return hasAuth((auth) => auth.type === "local");
-    return hasAuth(
-      (auth) => auth.type === "local" && (!auth.provider || auth.provider === requiredProvider)
-    );
-  };
-  const hasAuthForModel = (model) => model.authTypes.some((authType) => {
-    if (authType === "cli-subscription") return hasMappedCli(model.family);
-    if (authType === "api-key") {
-      return hasAuth(
-        (auth) => auth.type === "api-key" && (!auth.provider || auth.provider === model.family)
-      );
-    }
-    if (authType === "openrouter") return hasAuth((auth) => auth.type === "openrouter");
-    if (authType === "local") return hasMappedLocal(model.family);
-    if (authType === "oauth") return hasAuth((auth) => auth.type === "oauth");
-    return false;
-  });
-  return MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
-}
-function resolveModelAlias(alias) {
-  const normalized = alias.trim().toLowerCase();
-  return byId.get(normalized) ?? byShortId.get(normalized);
-}
-function resolveModelDescriptor(modelRef) {
-  const normalized = modelRef.trim();
-  if (!normalized.length) return void 0;
-  return getModelById(normalized) ?? resolveModelAlias(normalized);
-}
-function resolveCliProviderForModel(descriptor) {
-  if (!descriptor.isCliWrapped) return null;
-  if (descriptor.family === "anthropic") return "claude";
-  if (descriptor.family === "openai") return "codex";
-  return null;
-}
-function classifyWorkerExecutionPath(descriptor) {
-  if (resolveCliProviderForModel(descriptor)) return "cli";
-  if (descriptor.authTypes.includes("local")) return "local";
-  return "api";
-}
-function enrichModelRegistry(enrichments) {
-  let updated = 0;
-  for (const descriptor of MODEL_REGISTRY) {
-    const enrichment = enrichments.get(descriptor.sdkModelId);
-    if (!enrichment) continue;
-    if (enrichment.contextWindow && enrichment.contextWindow > 0) {
-      descriptor.contextWindow = enrichment.contextWindow;
-    }
-    if (enrichment.maxOutputTokens && enrichment.maxOutputTokens > 0) {
-      descriptor.maxOutputTokens = enrichment.maxOutputTokens;
-    }
-    if (enrichment.capabilities) {
-      Object.assign(descriptor.capabilities, enrichment.capabilities);
-    }
-    updated++;
-  }
-  return updated;
-}
-function getModelPricing(sdkModelId) {
-  if (_dynamicPricingOverrides[sdkModelId]) {
-    return _dynamicPricingOverrides[sdkModelId];
-  }
-  const model = MODEL_REGISTRY.find((m) => m.sdkModelId === sdkModelId);
-  if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
-    return { input: model.inputPricePer1M, output: model.outputPricePer1M };
-  }
-  return void 0;
-}
-var _dynamicPricingOverrides = {};
-function updateModelPricingInRegistry(updates) {
-  let count = 0;
-  for (const [modelId, pricing] of Object.entries(updates)) {
-    if (pricing.input >= 0 && pricing.output >= 0) {
-      _dynamicPricingOverrides[modelId] = pricing;
-      count++;
-    }
-  }
-  return count;
-}
-
-// ../desktop/src/main/services/orchestrator/orchestratorContext.ts
-var PLAN_REVIEW_INTERVENTION_TITLE = "Mission plan approval required";
 var STEERING_DIRECTIVES_METADATA_KEY = "steeringDirectives";
 var ORCHESTRATOR_CHAT_METADATA_KEY = "orchestratorChat";
 var ORCHESTRATOR_CHAT_SESSION_METADATA_KEY = "orchestratorChatSession";
@@ -6831,13 +6973,6 @@ var WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS = 9e4;
 var WORKER_MESSAGE_INFLIGHT_LEASE_MS = 45e3;
 var WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS = 18e4;
 var ACTIVE_ATTEMPT_STATUSES = /* @__PURE__ */ new Set(["queued", "running", "blocked"]);
-var PLANNER_THREAD_ID_PREFIX = "planner";
-var PLANNER_THREAD_TITLE = "Planner Agent";
-var PLANNER_THREAD_STEP_KEY = "planner";
-var PLANNER_STREAM_FLUSH_CHARS = 1800;
-var PLANNER_STREAM_FLUSH_INTERVAL_MS = 2500;
-var PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS = 480;
-var MAX_PLANNER_RAW_OUTPUT_CHARS = 4e6;
 var ORCHESTRATOR_HOOK_DEFAULT_TIMEOUT_MS = 1e4;
 var ORCHESTRATOR_HOOK_MAX_TIMEOUT_MS = 3e5;
 var ORCHESTRATOR_HOOK_MAX_CAPTURE_CHARS = 8e3;
@@ -6855,28 +6990,6 @@ var CALL_TYPE_DEFAULTS = {
 };
 function nowIso2() {
   return (/* @__PURE__ */ new Date()).toISOString();
-}
-function createDeferred() {
-  let settle = null;
-  let rejectFn = null;
-  const deferred = {
-    promise: new Promise((resolve, reject) => {
-      settle = resolve;
-      rejectFn = reject;
-    }),
-    resolve(value) {
-      if (deferred.settled) return;
-      deferred.settled = true;
-      settle?.(value);
-    },
-    reject(error48) {
-      if (deferred.settled) return;
-      deferred.settled = true;
-      rejectFn?.(error48);
-    },
-    settled: false
-  };
-  return deferred;
 }
 async function runBestEffortWithTimeout(args) {
   let timer = null;
@@ -7133,9 +7246,6 @@ function parseJsonArray(raw) {
 function missionThreadId(missionId) {
   return `mission:${missionId}`;
 }
-function plannerThreadId(missionId) {
-  return `${PLANNER_THREAD_ID_PREFIX}:${missionId}`;
-}
 function clampLimit(rawLimit, fallback, max = MAX_THREAD_PAGE_SIZE) {
   const numeric = Number(rawLimit);
   if (!Number.isFinite(numeric) || numeric < 1) return fallback;
@@ -7229,14 +7339,12 @@ function readConfig(projectConfigService) {
   const snapshot = projectConfigService?.get();
   const ai = snapshot?.effective?.ai;
   const orchestrator = isRecord3(ai) && isRecord3(ai.orchestrator) ? ai.orchestrator : {};
-  const requirePlanReview = asBool2(orchestrator.requirePlanReview, false);
   const defaultPlannerProviderRaw = asString4(orchestrator.defaultPlannerProvider);
   const defaultPlannerProvider = defaultPlannerProviderRaw && defaultPlannerProviderRaw.trim().length > 0 ? defaultPlannerProviderRaw.trim() : null;
   const defaultExecutionPolicy = isRecord3(orchestrator.defaultExecutionPolicy) ? orchestrator.defaultExecutionPolicy : null;
   const defaultMissionLevelSettings = isRecord3(orchestrator.defaultMissionLevelSettings) ? orchestrator.defaultMissionLevelSettings : null;
   const hooks = readOrchestratorHooksConfig(orchestrator);
   return {
-    requirePlanReview,
     defaultPlannerProvider,
     defaultExecutionPolicy,
     defaultMissionLevelSettings,
@@ -7436,7 +7544,6 @@ function deriveRuntimeProfileFromPolicy(policy, config2) {
   return {
     planning: {
       useAiPlanner: policy.planning.mode !== "off",
-      requirePlanReview: policy.planning.mode === "manual_review",
       preferProvider: policy.planning.model ?? config2.defaultPlannerProvider ?? null
     },
     execution: {
@@ -7470,7 +7577,6 @@ function deriveRuntimeProfileFromPolicy(policy, config2) {
 }
 function deriveRuntimeProfileFromPhases(phases, settings, config2) {
   const phaseKeys = new Set(phases.map((p) => p.phaseKey.toLowerCase()));
-  const planningCard = phases.find((p) => p.phaseKey.toLowerCase() === "planning");
   const testingEnabled = phaseKeys.has("testing") || phaseKeys.has("test");
   const reviewEnabled = phaseKeys.has("code_review") || phaseKeys.has("codereview") || phaseKeys.has("review") || phaseKeys.has("test_review") || phaseKeys.has("testreview");
   const hasStrictGates = phases.some(
@@ -7479,7 +7585,7 @@ function deriveRuntimeProfileFromPhases(phases, settings, config2) {
   const hasTdd = phases.some(
     (p) => (p.phaseKey.toLowerCase() === "testing" || p.phaseKey.toLowerCase() === "test") && p.instructions.toLowerCase().includes("tdd")
   );
-  const hasManualReview = planningCard?.askQuestions.mode === "always";
+  const hasManualReview = false;
   let maxParallelWorkers = 2;
   if (testingEnabled) maxParallelWorkers += 1;
   if (reviewEnabled) maxParallelWorkers += 1;
@@ -7500,14 +7606,10 @@ function deriveRuntimeProfileFromPhases(phases, settings, config2) {
   const reviewPhases = phases.filter(
     (p) => ["validation", "code_review", "codereview", "review", "test_review", "testreview"].includes(p.phaseKey.toLowerCase())
   );
-  const planningPhases = phases.filter(
-    (p) => p.phaseKey.toLowerCase() === "planning" || p.phaseKey.toLowerCase() === "analysis"
-  );
   return {
     planning: {
-      useAiPlanner: phaseKeys.has("planning") || phaseKeys.has("analysis"),
-      requirePlanReview: hasManualReview,
-      preferProvider: planningCard?.model?.modelId ?? config2.defaultPlannerProvider ?? null
+      useAiPlanner: true,
+      preferProvider: config2.defaultPlannerProvider ?? null
     },
     execution: {
       maxParallelWorkers,
@@ -7516,7 +7618,7 @@ function deriveRuntimeProfileFromPhases(phases, settings, config2) {
     },
     evaluation: {
       evaluateEveryStep: hasStrictGates || hasTdd,
-      autoAdjustPlan: phaseKeys.has("planning") || phaseKeys.has("analysis") || reviewEnabled,
+      autoAdjustPlan: true,
       autoResolveInterventions: testingEnabled || reviewEnabled,
       interventionConfidenceThreshold: hasStrictGates ? 0.75 : 0.9,
       evaluationReasoningEffort: normalizeReasoningEffort(
@@ -7524,7 +7626,7 @@ function deriveRuntimeProfileFromPhases(phases, settings, config2) {
         hasStrictGates ? "high" : "medium"
       ),
       interventionReasoningEffort: normalizeReasoningEffort(
-        planningPhases[0]?.model?.modelId,
+        config2.defaultPlannerProvider ?? null,
         hasStrictGates ? "high" : "medium"
       )
     },
@@ -7744,7 +7846,7 @@ function normalizeClaimState(value) {
   return "active";
 }
 function normalizeRuntimeEventType(value) {
-  if (value === "progress" || value === "heartbeat" || value === "question" || value === "blocked" || value === "done" || value === "retry_scheduled" || value === "retry_exhausted" || value === "claim_conflict" || value === "session_ended" || value === "intervention_opened" || value === "intervention_resolved" || value === "coordinator_steering" || value === "coordinator_broadcast" || value === "coordinator_skip" || value === "coordinator_add_step" || value === "coordinator_pause" || value === "coordinator_parallelize" || value === "coordinator_consolidate" || value === "coordinator_shutdown" || value === "step_dependencies_updated" || value === "step_metadata_updated" || value === "fan_out_dispatched" || value === "fan_out_complete" || value === "worker_status_report" || value === "worker_result_report" || value === "worker_message" || value === "plan_revised" || value === "lane_transfer" || value === "validation_report" || value === "validation_contract_unfulfilled" || value === "validation_self_check_reminder" || value === "validation_auto_spawned" || value === "validation_gate_blocked" || value === "tool_profiles_updated") {
+  if (value === "progress" || value === "heartbeat" || value === "question" || value === "blocked" || value === "done" || value === "retry_scheduled" || value === "retry_exhausted" || value === "claim_conflict" || value === "session_ended" || value === "intervention_opened" || value === "intervention_resolved" || value === "coordinator_steering" || value === "coordinator_broadcast" || value === "coordinator_skip" || value === "coordinator_add_step" || value === "coordinator_pause" || value === "coordinator_parallelize" || value === "coordinator_consolidate" || value === "coordinator_shutdown" || value === "step_dependencies_updated" || value === "step_metadata_updated" || value === "fan_out_dispatched" || value === "fan_out_complete" || value === "worker_status_report" || value === "worker_result_report" || value === "worker_message" || value === "plan_revised" || value === "lane_transfer" || value === "validation_report" || value === "validation_contract_unfulfilled" || value === "validation_self_check_reminder" || value === "validation_auto_spawned" || value === "validation_gate_blocked" || value === "reflection_added" || value === "retrospective_generated" || value === "tool_profiles_updated") {
     return value;
   }
   return "progress";
@@ -8085,10 +8187,9 @@ function clipText(value, maxChars) {
 }
 
 // ../desktop/src/main/services/orchestrator/stepPolicyResolver.ts
-var import_node_fs8 = __toESM(require("fs"), 1);
+var import_node_fs9 = __toESM(require("fs"), 1);
 var DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG = {
   teammatePlanMode: "auto",
-  requirePlanReview: false,
   maxParallelWorkers: 4,
   defaultMergePolicy: "sequential",
   defaultConflictHandoff: "auto-resolve",
@@ -8207,11 +8308,11 @@ function readyStepOrderComparator(a, b) {
 function normalizeRepoRelativePath(projectRoot, rawPath) {
   let value = String(rawPath ?? "").trim();
   if (!value.length) return null;
-  if (import_node_path8.default.isAbsolute(value)) {
-    value = import_node_path8.default.relative(projectRoot, value);
+  if (import_node_path9.default.isAbsolute(value)) {
+    value = import_node_path9.default.relative(projectRoot, value);
   }
   value = value.replace(/\\/g, "/");
-  value = import_node_path8.default.posix.normalize(value);
+  value = import_node_path9.default.posix.normalize(value);
   while (value.startsWith("./")) value = value.slice(2);
   if (!value.length || value === ".") return null;
   if (value.startsWith("../")) return null;
@@ -8311,9 +8412,9 @@ function readDocPaths(projectRoot) {
   const scannedSet = /* @__PURE__ */ new Set();
   const addPriorityPath = (absPath) => {
     try {
-      const stat = import_node_fs8.default.statSync(absPath);
+      const stat = import_node_fs9.default.statSync(absPath);
       if (!stat.isFile()) return;
-      const normalized = import_node_path8.default.normalize(absPath);
+      const normalized = import_node_path9.default.normalize(absPath);
       if (prioritySet.has(normalized)) return;
       prioritySet.add(normalized);
       priorityPaths.push(normalized);
@@ -8321,31 +8422,31 @@ function readDocPaths(projectRoot) {
     }
   };
   for (const relPath of DOC_PRIORITY_REL_PATHS) {
-    addPriorityPath(import_node_path8.default.join(projectRoot, relPath));
+    addPriorityPath(import_node_path9.default.join(projectRoot, relPath));
   }
   const walk = (root, depth) => {
     if (depth < 0) return;
     let entries = [];
     try {
-      entries = import_node_fs8.default.readdirSync(root, { withFileTypes: true });
+      entries = import_node_fs9.default.readdirSync(root, { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
       if (entry.name.startsWith(".") && entry.name !== ".ade") continue;
       if (DOC_SCAN_SKIP_DIRS.has(entry.name)) continue;
-      const abs = import_node_path8.default.join(root, entry.name);
+      const abs = import_node_path9.default.join(root, entry.name);
       if (entry.isDirectory()) {
         walk(abs, depth - 1);
         continue;
       }
       if (!entry.isFile()) continue;
       if (!DOC_FILE_EXT_RE.test(entry.name)) continue;
-      const rel = import_node_path8.default.relative(projectRoot, abs).replace(/\\/g, "/");
+      const rel = import_node_path9.default.relative(projectRoot, abs).replace(/\\/g, "/");
       const inDocsDir = /(^|\/)docs\//i.test(rel);
       const hinted = DOC_FILE_NAME_HINT_RE.test(entry.name) || inDocsDir || rel.startsWith(".ade/context/");
       if (!hinted) continue;
-      const normalized = import_node_path8.default.normalize(abs);
+      const normalized = import_node_path9.default.normalize(abs);
       if (!prioritySet.has(normalized)) scannedSet.add(normalized);
     }
   };
@@ -8376,15 +8477,15 @@ var nowTimestampSegment = () => {
 };
 var safeReadDoc = (absPath, maxBytes) => {
   try {
-    const fd = import_node_fs9.default.openSync(absPath, "r");
+    const fd = import_node_fs10.default.openSync(absPath, "r");
     try {
       const buf = Buffer.alloc(maxBytes);
-      const bytesRead = import_node_fs9.default.readSync(fd, buf, 0, maxBytes, 0);
+      const bytesRead = import_node_fs10.default.readSync(fd, buf, 0, maxBytes, 0);
       const text = buf.slice(0, Math.max(0, bytesRead)).toString("utf8");
-      const size = import_node_fs9.default.statSync(absPath).size;
+      const size = import_node_fs10.default.statSync(absPath).size;
       return { text, truncated: size > bytesRead };
     } finally {
-      import_node_fs9.default.closeSync(fd);
+      import_node_fs10.default.closeSync(fd);
     }
   } catch {
     return { text: "", truncated: false };
@@ -8400,8 +8501,8 @@ var formatDocDigest = (args) => {
   ];
   let usedChars = lines.join("\n").length;
   for (const rel of args.sources) {
-    const abs = import_node_path9.default.join(args.projectRoot, rel);
-    if (!import_node_fs9.default.existsSync(abs)) continue;
+    const abs = import_node_path10.default.join(args.projectRoot, rel);
+    if (!import_node_fs10.default.existsSync(abs)) continue;
     const read = safeReadDoc(abs, 16e4);
     if (!read.text.trim()) continue;
     const normalized = read.text.replace(/\r\n/g, "\n");
@@ -8457,14 +8558,14 @@ var extractFirstJsonObject = (text) => {
 var writeDocWithFallback = (args) => {
   try {
     ensureDirFor(args.preferredAbsPath);
-    import_node_fs9.default.writeFileSync(args.preferredAbsPath, args.content, "utf8");
+    import_node_fs10.default.writeFileSync(args.preferredAbsPath, args.content, "utf8");
     return { writtenPath: args.preferredAbsPath, usedFallback: false, warning: null };
   } catch (error48) {
     const ts = nowTimestampSegment();
-    const fallbackDir = import_node_path9.default.join(args.fallbackRoot, ts);
-    import_node_fs9.default.mkdirSync(fallbackDir, { recursive: true });
-    const fallbackPath = import_node_path9.default.join(fallbackDir, args.fallbackFileName);
-    import_node_fs9.default.writeFileSync(fallbackPath, args.content, "utf8");
+    const fallbackDir = import_node_path10.default.join(args.fallbackRoot, ts);
+    import_node_fs10.default.mkdirSync(fallbackDir, { recursive: true });
+    const fallbackPath = import_node_path10.default.join(fallbackDir, args.fallbackFileName);
+    import_node_fs10.default.writeFileSync(fallbackPath, args.content, "utf8");
     const reason = error48 instanceof Error ? error48.message : String(error48);
     return {
       writtenPath: fallbackPath,
@@ -8476,7 +8577,7 @@ var writeDocWithFallback = (args) => {
 function collectContextDocPaths(projectRoot) {
   const out = /* @__PURE__ */ new Set([ADE_DOC_PRD_REL, ADE_DOC_ARCH_REL]);
   for (const absPath of readDocPaths(projectRoot)) {
-    const rel = import_node_path9.default.relative(projectRoot, absPath).replace(/\\/g, "/");
+    const rel = import_node_path10.default.relative(projectRoot, absPath).replace(/\\/g, "/");
     if (!rel.length || rel.startsWith("..")) continue;
     if (!DOC_CONTEXT_EXT_RE.test(rel)) continue;
     out.add(rel);
@@ -8489,7 +8590,7 @@ function collectContextDocPaths(projectRoot) {
 }
 function scoreDocPath(relPath) {
   const rel = relPath.replace(/\\/g, "/");
-  const base = import_node_path9.default.posix.basename(rel).toLowerCase();
+  const base = import_node_path10.default.posix.basename(rel).toLowerCase();
   let score = 0;
   if (rel.startsWith(".ade/context/")) score += 120;
   if (base === "readme.md" || base === "readme.mdx") score += 80;
@@ -8511,9 +8612,9 @@ function readContextDocMeta(projectRoot) {
   const paths = collectContextDocPaths(projectRoot);
   const entries = [];
   for (const rel of paths) {
-    const abs = import_node_path9.default.join(projectRoot, rel);
+    const abs = import_node_path10.default.join(projectRoot, rel);
     try {
-      const st = import_node_fs9.default.statSync(abs);
+      const st = import_node_fs10.default.statSync(abs);
       if (!st.isFile()) continue;
       entries.push({ path: rel, size: st.size, mtimeMs: st.mtimeMs });
     } catch {
@@ -8529,14 +8630,14 @@ function readContextDocMeta(projectRoot) {
   };
 }
 function readContextStatus(deps) {
-  const FALLBACK_GENERATED_ROOT = import_node_path9.default.join(import_node_path9.default.dirname(deps.packsDir), "context", "generated");
+  const FALLBACK_GENERATED_ROOT = import_node_path10.default.join(import_node_path10.default.dirname(deps.packsDir), "context", "generated");
   const collectCanonicalContextDocPaths = () => collectContextDocPaths(deps.projectRoot).filter((rel) => !rel.endsWith(".ade.md"));
   const readCanonicalDocMeta = () => {
     const paths = collectCanonicalContextDocPaths();
     const present = [];
     for (const rel of paths) {
       try {
-        const st = import_node_fs9.default.statSync(import_node_path9.default.join(deps.projectRoot, rel));
+        const st = import_node_fs10.default.statSync(import_node_path10.default.join(deps.projectRoot, rel));
         if (!st.isFile()) continue;
         present.push({ path: rel, size: st.size, mtimeMs: st.mtimeMs });
       } catch {
@@ -8551,18 +8652,18 @@ function readContextStatus(deps) {
     };
   };
   const readDocStatus = (args) => {
-    const absPath = import_node_path9.default.join(deps.projectRoot, args.relPath);
+    const absPath = import_node_path10.default.join(deps.projectRoot, args.relPath);
     let exists = false;
     let sizeBytes = 0;
     let updatedAt = null;
     let fingerprint = null;
     try {
-      const st = import_node_fs9.default.statSync(absPath);
+      const st = import_node_fs10.default.statSync(absPath);
       if (st.isFile()) {
         exists = true;
         sizeBytes = st.size;
         updatedAt = st.mtime.toISOString();
-        const body = import_node_fs9.default.readFileSync(absPath, "utf8");
+        const body = import_node_fs10.default.readFileSync(absPath, "utf8");
         fingerprint = sha256(body);
       }
     } catch {
@@ -8590,17 +8691,17 @@ function readContextStatus(deps) {
     };
   };
   const countFallbackWrites = () => {
-    if (!import_node_fs9.default.existsSync(FALLBACK_GENERATED_ROOT)) return 0;
+    if (!import_node_fs10.default.existsSync(FALLBACK_GENERATED_ROOT)) return 0;
     const walk = (dir) => {
       let total = 0;
       let entries = [];
       try {
-        entries = import_node_fs9.default.readdirSync(dir, { withFileTypes: true });
+        entries = import_node_fs10.default.readdirSync(dir, { withFileTypes: true });
       } catch {
         return 0;
       }
       for (const entry of entries) {
-        const abs = import_node_path9.default.join(dir, entry.name);
+        const abs = import_node_path10.default.join(dir, entry.name);
         if (entry.isDirectory()) total += walk(abs);
         if (entry.isFile() && entry.name.endsWith(".ade.md")) total += 1;
       }
@@ -8682,7 +8783,7 @@ function readContextStatus(deps) {
   };
 }
 async function runContextDocGeneration(deps, args) {
-  const FALLBACK_GENERATED_ROOT = import_node_path9.default.join(import_node_path9.default.dirname(deps.packsDir), "context", "generated");
+  const FALLBACK_GENERATED_ROOT = import_node_path10.default.join(import_node_path10.default.dirname(deps.packsDir), "context", "generated");
   const provider = args.provider ?? "unified";
   const trigger = args.trigger ?? "manual";
   const modelId = typeof args.modelId === "string" && args.modelId.trim().length > 0 ? args.modelId.trim() : null;
@@ -8784,13 +8885,13 @@ async function runContextDocGeneration(deps, args) {
     warnings.push({ code: "generator_fallback_architecture", message: "Used deterministic fallback architecture digest." });
   }
   const prdWrite = writeDocWithFallback({
-    preferredAbsPath: import_node_path9.default.join(deps.projectRoot, ADE_DOC_PRD_REL),
+    preferredAbsPath: import_node_path10.default.join(deps.projectRoot, ADE_DOC_PRD_REL),
     fallbackFileName: "PRD.ade.md",
     content: generatedPrd,
     fallbackRoot: FALLBACK_GENERATED_ROOT
   });
   const archWrite = writeDocWithFallback({
-    preferredAbsPath: import_node_path9.default.join(deps.projectRoot, ADE_DOC_ARCH_REL),
+    preferredAbsPath: import_node_path10.default.join(deps.projectRoot, ADE_DOC_ARCH_REL),
     fallbackFileName: "ARCHITECTURE.ade.md",
     content: generatedArch,
     fallbackRoot: FALLBACK_GENERATED_ROOT
@@ -8831,134 +8932,9 @@ async function runContextDocGeneration(deps, args) {
     outputPreview
   };
 }
-function prepareContextDocGeneration(deps, args) {
-  let cwd = deps.projectRoot;
-  try {
-    const info = deps.laneService.getLaneBaseAndBranch(args.laneId);
-    if (info.worktreePath) cwd = info.worktreePath;
-  } catch {
-  }
-  const tmpRoot = import_node_path9.default.join(import_node_path9.default.dirname(deps.packsDir), "context", "tmp");
-  import_node_fs9.default.mkdirSync(tmpRoot, { recursive: true });
-  try {
-    const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
-    for (const entry of import_node_fs9.default.readdirSync(tmpRoot)) {
-      const abs = import_node_path9.default.join(tmpRoot, entry);
-      try {
-        const stat = import_node_fs9.default.statSync(abs);
-        if (stat.mtimeMs < cutoff) import_node_fs9.default.rmSync(abs, { force: true });
-      } catch {
-      }
-    }
-  } catch {
-  }
-  const outputPrdPath = import_node_path9.default.join(deps.projectRoot, ADE_DOC_PRD_REL);
-  const outputArchPath = import_node_path9.default.join(deps.projectRoot, ADE_DOC_ARCH_REL);
-  import_node_fs9.default.mkdirSync(import_node_path9.default.dirname(outputPrdPath), { recursive: true });
-  import_node_fs9.default.mkdirSync(import_node_path9.default.dirname(outputArchPath), { recursive: true });
-  const prompt = `# ADE Context Document Generation
-
-You are generating context documentation for a software project. Explore this
-codebase and produce two markdown files that ADE uses as context for AI coding
-agents working in this repository.
-
-## Output Files \u2014 Write exactly two files:
-
-1. \`${outputPrdPath}\` \u2014 Product Requirements Document
-2. \`${outputArchPath}\` \u2014 Architecture Document
-
-## Exploration Strategy
-
-Before writing, explore to understand:
-- Project structure (top-level directories, key files)
-- Dependencies and package manager (package.json, Cargo.toml, go.mod, etc.)
-- Existing documentation (README, docs/, CONTRIBUTING)
-- Source code organization (src/, lib/, app/)
-- Test structure and frameworks
-- Build and CI configuration
-- Key entry points and main modules
-
-## PRD Document Content
-
-- **Project Overview**: What this project does, its purpose, target users
-- **Key Features**: Main capabilities, described functionally
-- **Technical Stack**: Languages, frameworks, key dependencies
-- **Project Status**: Current state, recent activity
-- **Development Workflow**: Branching strategy, contribution patterns
-- **Key Concepts**: Important domain terminology
-
-## Architecture Document Content
-
-- **System Overview**: High-level architecture (layers, services, components)
-- **Directory Structure**: Key directories and their purposes
-- **Core Modules**: Most important modules and responsibilities
-- **Data Flow**: How data moves through the system
-- **Key Patterns**: Design patterns used (MVC, event sourcing, etc.)
-- **Configuration**: How the app is configured
-- **Build & Deploy**: Build system, deployment targets
-- **Testing Strategy**: Test organization and frameworks
-
-## Rules
-
-- Base everything on actual code you read \u2014 do not speculate
-- Keep each document concise (under 2500 words)
-- Use the project's actual terminology
-- If existing docs/ exist, use them as primary source material
-- If target files already exist, REWRITE them to reflect current state (do not append changelog/delta sections)
-- Write the files directly to the paths above \u2014 do not ask questions
-`;
-  const promptFilePath = import_node_path9.default.join(tmpRoot, `generate-context-${Date.now()}.md`);
-  import_node_fs9.default.writeFileSync(promptFilePath, prompt, "utf8");
-  return { promptFilePath, outputPrdPath, outputArchPath, cwd, provider: args.provider };
-}
-function installGeneratedDocs(deps, args) {
-  const FALLBACK_GENERATED_ROOT = import_node_path9.default.join(import_node_path9.default.dirname(deps.packsDir), "context", "generated");
-  const generatedAt = nowIso3();
-  const warnings = [];
-  let generatedPrd = "";
-  let generatedArch = "";
-  try {
-    if (import_node_fs9.default.existsSync(args.outputPrdPath)) generatedPrd = import_node_fs9.default.readFileSync(args.outputPrdPath, "utf8");
-  } catch {
-  }
-  try {
-    if (import_node_fs9.default.existsSync(args.outputArchPath)) generatedArch = import_node_fs9.default.readFileSync(args.outputArchPath, "utf8");
-  } catch {
-  }
-  if (!generatedPrd.trim()) {
-    warnings.push({ code: "output_missing_prd", message: "PRD file was not created by the agent." });
-  }
-  if (!generatedArch.trim()) {
-    warnings.push({ code: "output_missing_architecture", message: "Architecture file was not created by the agent." });
-  }
-  const prdWrite = generatedPrd.trim() ? writeDocWithFallback({ preferredAbsPath: import_node_path9.default.join(deps.projectRoot, ADE_DOC_PRD_REL), fallbackFileName: "PRD.ade.md", content: generatedPrd, fallbackRoot: FALLBACK_GENERATED_ROOT }) : { writtenPath: import_node_path9.default.join(deps.projectRoot, ADE_DOC_PRD_REL), usedFallback: false, warning: null };
-  const archWrite = generatedArch.trim() ? writeDocWithFallback({ preferredAbsPath: import_node_path9.default.join(deps.projectRoot, ADE_DOC_ARCH_REL), fallbackFileName: "ARCHITECTURE.ade.md", content: generatedArch, fallbackRoot: FALLBACK_GENERATED_ROOT }) : { writtenPath: import_node_path9.default.join(deps.projectRoot, ADE_DOC_ARCH_REL), usedFallback: false, warning: null };
-  if (prdWrite.warning) {
-    warnings.push({ code: "write_fallback_prd", message: prdWrite.warning, actionLabel: "Open fallback PRD", actionPath: prdWrite.writtenPath });
-  }
-  if (archWrite.warning) {
-    warnings.push({ code: "write_fallback_architecture", message: archWrite.warning, actionLabel: "Open fallback architecture", actionPath: archWrite.writtenPath });
-  }
-  deps.db.setJson(CONTEXT_DOC_LAST_RUN_KEY, {
-    generatedAt,
-    provider: args.provider,
-    prdPath: prdWrite.writtenPath,
-    architecturePath: archWrite.writtenPath,
-    warnings
-  });
-  return {
-    provider: args.provider,
-    generatedAt,
-    prdPath: prdWrite.writtenPath,
-    architecturePath: archWrite.writtenPath,
-    usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,
-    warnings,
-    outputPreview: ""
-  };
-}
 function resolveContextDocPath(projectRoot, docId) {
-  if (docId === "prd_ade") return import_node_path9.default.join(projectRoot, ADE_DOC_PRD_REL);
-  return import_node_path9.default.join(projectRoot, ADE_DOC_ARCH_REL);
+  if (docId === "prd_ade") return import_node_path10.default.join(projectRoot, ADE_DOC_PRD_REL);
+  return import_node_path10.default.join(projectRoot, ADE_DOC_ARCH_REL);
 }
 async function buildProjectBootstrap(deps, args) {
   const lanes = args.lanes;
@@ -8966,16 +8942,16 @@ async function buildProjectBootstrap(deps, args) {
   const historyRef = primary?.branchRef || primary?.baseRef || "HEAD";
   const topLevelEntries = (() => {
     try {
-      return import_node_fs9.default.readdirSync(deps.projectRoot, { withFileTypes: true }).filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules").slice(0, 40).map((entry) => `${entry.isDirectory() ? "dir" : "file"}: ${entry.name}`);
+      return import_node_fs10.default.readdirSync(deps.projectRoot, { withFileTypes: true }).filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules").slice(0, 40).map((entry) => `${entry.isDirectory() ? "dir" : "file"}: ${entry.name}`);
     } catch {
       return [];
     }
   })();
   const pickDocs = () => {
     const candidates = collectContextDocPaths(deps.projectRoot).filter((rel) => DOC_TEXT_EXT_RE.test(rel)).filter((rel) => {
-      const abs = import_node_path9.default.join(deps.projectRoot, rel);
+      const abs = import_node_path10.default.join(deps.projectRoot, rel);
       try {
-        return import_node_fs9.default.statSync(abs).isFile();
+        return import_node_fs10.default.statSync(abs).isFile();
       } catch {
         return false;
       }
@@ -8983,17 +8959,17 @@ async function buildProjectBootstrap(deps, args) {
     return rankDocPathsByRelevance(candidates).slice(0, 14);
   };
   const excerptDoc = (rel) => {
-    const abs = import_node_path9.default.join(deps.projectRoot, rel);
+    const abs = import_node_path10.default.join(deps.projectRoot, rel);
     try {
-      const fd = import_node_fs9.default.openSync(abs, "r");
+      const fd = import_node_fs10.default.openSync(abs, "r");
       try {
         const MAX = 48e3;
         const buf = Buffer.alloc(MAX);
-        const read = import_node_fs9.default.readSync(fd, buf, 0, MAX, 0);
+        const read = import_node_fs10.default.readSync(fd, buf, 0, MAX, 0);
         const raw = buf.slice(0, Math.max(0, read)).toString("utf8");
         const lines2 = raw.split(/\r?\n/);
         const titleLine = lines2.find((line) => line.trim().startsWith("# "));
-        const title = titleLine ? titleLine.replace(/^#\s+/, "").trim() : import_node_path9.default.basename(rel);
+        const title = titleLine ? titleLine.replace(/^#\s+/, "").trim() : import_node_path10.default.basename(rel);
         const blurbLines = [];
         for (const line of lines2) {
           const trimmed = line.trim();
@@ -9007,7 +8983,7 @@ async function buildProjectBootstrap(deps, args) {
         const blurb = blurbLines.slice(0, 2).join(" ");
         return { rel, title, blurb };
       } finally {
-        import_node_fs9.default.closeSync(fd);
+        import_node_fs10.default.closeSync(fd);
       }
     } catch {
       return null;
@@ -9053,7 +9029,7 @@ async function buildProjectBootstrap(deps, args) {
 `;
 }
 async function buildProjectPackBody(deps, args) {
-  const projectBootstrapPath = import_node_path9.default.join(deps.packsDir, "_bootstrap", "project_bootstrap.md");
+  const projectBootstrapPath = import_node_path10.default.join(deps.packsDir, "_bootstrap", "project_bootstrap.md");
   const config2 = deps.projectConfigService.get().effective;
   const lanes = await deps.laneService.list({ includeArchived: false });
   const docsMeta = readContextDocMeta(deps.projectRoot);
@@ -9062,7 +9038,7 @@ async function buildProjectPackBody(deps, args) {
     const m = existingBootstrapRaw.match(BOOTSTRAP_FINGERPRINT_RE);
     return m?.[1]?.toLowerCase() ?? null;
   })();
-  const shouldBootstrap = args.reason === "onboarding_init" || !import_node_fs9.default.existsSync(projectBootstrapPath) || existingFingerprint !== docsMeta.contextFingerprint;
+  const shouldBootstrap = args.reason === "onboarding_init" || !import_node_fs10.default.existsSync(projectBootstrapPath) || existingFingerprint !== docsMeta.contextFingerprint;
   if (shouldBootstrap) {
     try {
       const bootstrap = await buildProjectBootstrap(deps, { lanes });
@@ -9073,7 +9049,7 @@ async function buildProjectPackBody(deps, args) {
         `<!-- ADE_LAST_DOCS_REFRESH_AT:${docsMeta.lastDocsRefreshAt ?? ""} -->`,
         bootstrap
       ].join("\n");
-      import_node_fs9.default.writeFileSync(projectBootstrapPath, withMeta, "utf8");
+      import_node_fs10.default.writeFileSync(projectBootstrapPath, withMeta, "utf8");
     } catch (error48) {
       deps.logger.warn("packs.project_bootstrap_failed", {
         error: error48 instanceof Error ? error48.message : String(error48)
@@ -9918,13 +9894,13 @@ async function buildFeaturePackBody(deps, args) {
 }
 
 // ../desktop/src/main/services/packs/conflictPackBuilder.ts
-var import_node_fs10 = __toESM(require("fs"), 1);
-var import_node_path10 = __toESM(require("path"), 1);
+var import_node_fs11 = __toESM(require("fs"), 1);
+var import_node_path11 = __toESM(require("path"), 1);
 function readConflictPredictionPack(deps, laneId) {
   const filePath = deps.getConflictPredictionPath(laneId);
-  if (!import_node_fs10.default.existsSync(filePath)) return null;
+  if (!import_node_fs11.default.existsSync(filePath)) return null;
   try {
-    const raw = import_node_fs10.default.readFileSync(filePath, "utf8");
+    const raw = import_node_fs11.default.readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw);
     if (!isRecord2(parsed)) return null;
     return parsed;
@@ -9936,8 +9912,8 @@ async function readGitConflictState(deps, laneId) {
   const lane = deps.laneService.getLaneBaseAndBranch(laneId);
   const gitDirRes = await runGit(["rev-parse", "--absolute-git-dir"], { cwd: lane.worktreePath, timeoutMs: 1e4 });
   const gitDir = gitDirRes.exitCode === 0 ? gitDirRes.stdout.trim() : "";
-  const hasRebase = gitDir.length > 0 && (import_node_fs10.default.existsSync(import_node_path10.default.join(gitDir, "rebase-apply")) || import_node_fs10.default.existsSync(import_node_path10.default.join(gitDir, "rebase-merge")));
-  const hasMerge = gitDir.length > 0 && import_node_fs10.default.existsSync(import_node_path10.default.join(gitDir, "MERGE_HEAD"));
+  const hasRebase = gitDir.length > 0 && (import_node_fs11.default.existsSync(import_node_path11.default.join(gitDir, "rebase-apply")) || import_node_fs11.default.existsSync(import_node_path11.default.join(gitDir, "rebase-merge")));
+  const hasMerge = gitDir.length > 0 && import_node_fs11.default.existsSync(import_node_path11.default.join(gitDir, "MERGE_HEAD"));
   const kind = hasRebase ? "rebase" : hasMerge ? "merge" : null;
   const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 1e4 });
   const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnly(unmergedRes.stdout).sort((a, b) => a.localeCompare(b)) : [];
@@ -10046,9 +10022,9 @@ function buildLaneConflictRiskSummaryLines(deps, laneId) {
 }
 function readLanePackExcerpt(deps, laneId) {
   const filePath = deps.getLanePackPath(laneId);
-  if (!import_node_fs10.default.existsSync(filePath)) return null;
+  if (!import_node_fs11.default.existsSync(filePath)) return null;
   try {
-    const raw = import_node_fs10.default.readFileSync(filePath, "utf8");
+    const raw = import_node_fs11.default.readFileSync(filePath, "utf8");
     const trimmed = raw.trim();
     if (!trimmed) return null;
     const MAX = 12e3;
@@ -10144,17 +10120,6 @@ async function buildConflictPackBody(deps, args) {
 }
 
 // ../desktop/src/main/services/packs/packService.ts
-function replaceNarrativeSection(existing, narrative) {
-  const cleanNarrative = narrative.trim().length ? narrative.trim() : "Narrative generation returned empty content.";
-  const next = upsertSectionByHeading({
-    content: existing,
-    heading: "## Narrative",
-    startMarker: ADE_NARRATIVE_START,
-    endMarker: ADE_NARRATIVE_END,
-    body: cleanNarrative
-  });
-  return { updated: next.content, insertedMarkers: next.insertedMarkers };
-}
 function createPackService({
   db,
   logger,
@@ -10168,21 +10133,21 @@ function createPackService({
   operationService,
   onEvent
 }) {
-  const projectPackPath = import_node_path11.default.join(packsDir, "project_pack.md");
-  const getLanePackPath = (laneId) => import_node_path11.default.join(packsDir, "lanes", laneId, "lane_pack.md");
-  const getFeaturePackPath = (featureKey) => import_node_path11.default.join(packsDir, "features", safeSegment(featureKey), "feature_pack.md");
-  const getPlanPackPath = (laneId) => import_node_path11.default.join(packsDir, "plans", laneId, "plan_pack.md");
-  const getMissionPackPath = (missionId) => import_node_path11.default.join(packsDir, "missions", missionId, "mission_pack.md");
-  const getConflictPackPath = (laneId, peer) => import_node_path11.default.join(packsDir, "conflicts", "v2", `${laneId}__${safeSegment(peer)}.md`);
-  const conflictsRootDir = import_node_path11.default.join(packsDir, "conflicts");
-  const conflictPredictionsDir = import_node_path11.default.join(conflictsRootDir, "predictions");
-  const getConflictPredictionPath = (laneId) => import_node_path11.default.join(conflictPredictionsDir, `${laneId}.json`);
-  const versionsDir = import_node_path11.default.join(packsDir, "versions");
-  const historyDir = import_node_path11.default.join(import_node_path11.default.dirname(packsDir), "history");
-  const checkpointsDir = import_node_path11.default.join(historyDir, "checkpoints");
-  const eventsDir = import_node_path11.default.join(historyDir, "events");
-  const nowIso5 = () => (/* @__PURE__ */ new Date()).toISOString();
-  const sha2564 = (input) => (0, import_node_crypto7.createHash)("sha256").update(input).digest("hex");
+  const projectPackPath = import_node_path12.default.join(packsDir, "project_pack.md");
+  const getLanePackPath = (laneId) => import_node_path12.default.join(packsDir, "lanes", laneId, "lane_pack.md");
+  const getFeaturePackPath = (featureKey) => import_node_path12.default.join(packsDir, "features", safeSegment(featureKey), "feature_pack.md");
+  const getPlanPackPath = (laneId) => import_node_path12.default.join(packsDir, "plans", laneId, "plan_pack.md");
+  const getMissionPackPath = (missionId) => import_node_path12.default.join(packsDir, "missions", missionId, "mission_pack.md");
+  const getConflictPackPath = (laneId, peer) => import_node_path12.default.join(packsDir, "conflicts", "v2", `${laneId}__${safeSegment(peer)}.md`);
+  const conflictsRootDir = import_node_path12.default.join(packsDir, "conflicts");
+  const conflictPredictionsDir = import_node_path12.default.join(conflictsRootDir, "predictions");
+  const getConflictPredictionPath = (laneId) => import_node_path12.default.join(conflictPredictionsDir, `${laneId}.json`);
+  const versionsDir = import_node_path12.default.join(packsDir, "versions");
+  const historyDir = import_node_path12.default.join(import_node_path12.default.dirname(packsDir), "history");
+  const checkpointsDir = import_node_path12.default.join(historyDir, "checkpoints");
+  const eventsDir = import_node_path12.default.join(historyDir, "events");
+  const nowIso6 = () => (/* @__PURE__ */ new Date()).toISOString();
+  const sha2563 = (input) => (0, import_node_crypto7.createHash)("sha256").update(input).digest("hex");
   const inferPackTypeFromKey = (packKey) => {
     if (packKey === "project") return "project";
     if (packKey.startsWith("lane:")) return "lane";
@@ -10241,7 +10206,7 @@ function createPackService({
       provider: normalizeContextProvider(raw.provider),
       modelId: normalizeOptionalString(raw.modelId),
       reasoningEffort: normalizeOptionalString(raw.reasoningEffort),
-      updatedAt: normalizeOptionalString(raw.updatedAt) ?? nowIso5()
+      updatedAt: normalizeOptionalString(raw.updatedAt) ?? nowIso6()
     };
   };
   const persistContextDocRefreshPrefs = (args) => {
@@ -10250,7 +10215,7 @@ function createPackService({
       provider: normalizeContextProvider(args.provider),
       modelId: normalizeOptionalString(args.modelId),
       reasoningEffort: normalizeOptionalString(args.reasoningEffort),
-      updatedAt: nowIso5()
+      updatedAt: nowIso6()
     };
     db.setJson(CONTEXT_DOC_PREFS_KEY, prefs);
     return prefs;
@@ -10305,8 +10270,6 @@ function createPackService({
       return null;
     }
   };
-  const prepareContextDocGeneration2 = (args) => prepareContextDocGeneration(projectPackBuilderDeps, args);
-  const installGeneratedDocs2 = (args) => installGeneratedDocs(projectPackBuilderDeps, args);
   const resolveContextDocPath2 = (docId) => resolveContextDocPath(projectRoot, docId);
   const buildProjectPackBody2 = (args) => buildProjectPackBody(projectPackBuilderDeps, args);
   const findBaselineVersionAtOrBefore = (args) => {
@@ -10433,17 +10396,17 @@ function createPackService({
     const laneById2 = new Map(lanes.map((lane) => [lane.id, lane]));
     const now = Date.now();
     const keepBeforeMs = now - PACK_RETENTION_KEEP_DAYS * 24 * 60 * 6e4;
-    const lanesDir = import_node_path11.default.join(packsDir, "lanes");
-    const conflictsDir = import_node_path11.default.join(packsDir, "conflicts");
+    const lanesDir = import_node_path12.default.join(packsDir, "lanes");
+    const conflictsDir = import_node_path12.default.join(packsDir, "conflicts");
     const archivedDirs = [];
-    if (import_node_fs11.default.existsSync(lanesDir)) {
-      for (const entry of import_node_fs11.default.readdirSync(lanesDir, { withFileTypes: true })) {
+    if (import_node_fs12.default.existsSync(lanesDir)) {
+      for (const entry of import_node_fs12.default.readdirSync(lanesDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const laneId = entry.name;
         const lane = laneById2.get(laneId);
-        const absDir = import_node_path11.default.join(lanesDir, laneId);
+        const absDir = import_node_path12.default.join(lanesDir, laneId);
         if (!lane) {
-          import_node_fs11.default.rmSync(absDir, { recursive: true, force: true });
+          import_node_fs12.default.rmSync(absDir, { recursive: true, force: true });
           continue;
         }
         if (!lane.archivedAt) continue;
@@ -10456,65 +10419,65 @@ function createPackService({
     const keepByCount = new Set(archivedDirs.slice(0, PACK_RETENTION_MAX_ARCHIVED_LANES).map((entry) => entry.laneId));
     for (const { laneId, archivedAtMs } of archivedDirs) {
       if (keepByCount.has(laneId) && archivedAtMs >= keepBeforeMs) continue;
-      const absDir = import_node_path11.default.join(lanesDir, laneId);
-      import_node_fs11.default.rmSync(absDir, { recursive: true, force: true });
+      const absDir = import_node_path12.default.join(lanesDir, laneId);
+      import_node_fs12.default.rmSync(absDir, { recursive: true, force: true });
     }
-    if (import_node_fs11.default.existsSync(conflictsDir)) {
-      for (const entry of import_node_fs11.default.readdirSync(conflictsDir, { withFileTypes: true })) {
+    if (import_node_fs12.default.existsSync(conflictsDir)) {
+      for (const entry of import_node_fs12.default.readdirSync(conflictsDir, { withFileTypes: true })) {
         if (!entry.isFile()) continue;
         if (!entry.name.endsWith(".json")) continue;
         const laneId = entry.name.slice(0, -".json".length);
         const lane = laneById2.get(laneId);
         if (!lane) {
-          import_node_fs11.default.rmSync(import_node_path11.default.join(conflictsDir, entry.name), { force: true });
+          import_node_fs12.default.rmSync(import_node_path12.default.join(conflictsDir, entry.name), { force: true });
           continue;
         }
         if (!lane.archivedAt) continue;
         const ts = Date.parse(lane.archivedAt);
         const archivedAtMs = Number.isFinite(ts) ? ts : now;
         if (!keepByCount.has(laneId) || archivedAtMs < keepBeforeMs) {
-          import_node_fs11.default.rmSync(import_node_path11.default.join(conflictsDir, entry.name), { force: true });
+          import_node_fs12.default.rmSync(import_node_path12.default.join(conflictsDir, entry.name), { force: true });
         }
       }
-      const predictionsDir = import_node_path11.default.join(conflictsDir, "predictions");
-      if (import_node_fs11.default.existsSync(predictionsDir)) {
-        for (const entry of import_node_fs11.default.readdirSync(predictionsDir, { withFileTypes: true })) {
+      const predictionsDir = import_node_path12.default.join(conflictsDir, "predictions");
+      if (import_node_fs12.default.existsSync(predictionsDir)) {
+        for (const entry of import_node_fs12.default.readdirSync(predictionsDir, { withFileTypes: true })) {
           if (!entry.isFile()) continue;
           if (!entry.name.endsWith(".json")) continue;
           const laneId = entry.name.slice(0, -".json".length);
           const lane = laneById2.get(laneId);
-          const absPath = import_node_path11.default.join(predictionsDir, entry.name);
+          const absPath = import_node_path12.default.join(predictionsDir, entry.name);
           if (!lane) {
-            import_node_fs11.default.rmSync(absPath, { force: true });
+            import_node_fs12.default.rmSync(absPath, { force: true });
             continue;
           }
           if (!lane.archivedAt) continue;
           const ts = Date.parse(lane.archivedAt);
           const archivedAtMs = Number.isFinite(ts) ? ts : now;
           if (!keepByCount.has(laneId) || archivedAtMs < keepBeforeMs) {
-            import_node_fs11.default.rmSync(absPath, { force: true });
+            import_node_fs12.default.rmSync(absPath, { force: true });
           }
         }
       }
-      const v2Dir = import_node_path11.default.join(conflictsDir, "v2");
-      if (import_node_fs11.default.existsSync(v2Dir)) {
-        for (const entry of import_node_fs11.default.readdirSync(v2Dir, { withFileTypes: true })) {
+      const v2Dir = import_node_path12.default.join(conflictsDir, "v2");
+      if (import_node_fs12.default.existsSync(v2Dir)) {
+        for (const entry of import_node_fs12.default.readdirSync(v2Dir, { withFileTypes: true })) {
           if (!entry.isFile()) continue;
           if (!entry.name.endsWith(".md")) continue;
           const file2 = entry.name;
           const laneId = file2.split("__")[0]?.trim() ?? "";
           if (!laneId) continue;
           const lane = laneById2.get(laneId);
-          const absPath = import_node_path11.default.join(v2Dir, file2);
+          const absPath = import_node_path12.default.join(v2Dir, file2);
           if (!lane) {
-            import_node_fs11.default.rmSync(absPath, { force: true });
+            import_node_fs12.default.rmSync(absPath, { force: true });
             continue;
           }
           if (!lane.archivedAt) continue;
           const ts = Date.parse(lane.archivedAt);
           const archivedAtMs = Number.isFinite(ts) ? ts : now;
           if (!keepByCount.has(laneId) || archivedAtMs < keepBeforeMs) {
-            import_node_fs11.default.rmSync(absPath, { force: true });
+            import_node_fs12.default.rmSync(absPath, { force: true });
           }
         }
       }
@@ -10552,7 +10515,7 @@ function createPackService({
   };
   const createPackEvent = (args) => {
     const eventId = (0, import_node_crypto7.randomUUID)();
-    const createdAt = nowIso5();
+    const createdAt = nowIso6();
     const payload = upsertEventMetaForInsert({
       packKey: args.packKey,
       eventType: args.eventType,
@@ -10575,10 +10538,10 @@ function createPackService({
     const event = ensureEventMeta({ id: eventId, packKey: args.packKey, eventType: args.eventType, payload, createdAt });
     try {
       const monthKey = createdAt.slice(0, 7);
-      const monthDir = import_node_path11.default.join(eventsDir, monthKey);
+      const monthDir = import_node_path12.default.join(eventsDir, monthKey);
       ensureDir(monthDir);
-      import_node_fs11.default.writeFileSync(
-        import_node_path11.default.join(monthDir, `${eventId}.json`),
+      import_node_fs12.default.writeFileSync(
+        import_node_path12.default.join(monthDir, `${eventId}.json`),
         JSON.stringify(event, null, 2),
         "utf8"
       );
@@ -10591,7 +10554,7 @@ function createPackService({
     return event;
   };
   const createPackVersion = (args) => {
-    const bodyHash = sha2564(args.body);
+    const bodyHash = sha2563(args.body);
     const existing = readCurrentPackVersion(args.packKey);
     if (existing && existing.contentHash === bodyHash) {
       return {
@@ -10601,15 +10564,15 @@ function createPackService({
       };
     }
     const versionId = (0, import_node_crypto7.randomUUID)();
-    const createdAt = nowIso5();
+    const createdAt = nowIso6();
     const maxRow = db.get(
       "select max(version_number) as max_version from pack_versions where project_id = ? and pack_key = ?",
       [projectId, args.packKey]
     );
     const versionNumber = Number(maxRow?.max_version ?? 0) + 1;
-    const renderedPath = import_node_path11.default.join(versionsDir, `${versionId}.md`);
+    const renderedPath = import_node_path12.default.join(versionsDir, `${versionId}.md`);
     ensureDir(versionsDir);
-    import_node_fs11.default.writeFileSync(renderedPath, args.body, "utf8");
+    import_node_fs12.default.writeFileSync(renderedPath, args.body, "utf8");
     db.run(
       `
         insert into pack_versions(
@@ -10649,7 +10612,7 @@ function createPackService({
   };
   const persistPackRefresh = (args) => {
     ensureDirFor(args.packPath);
-    import_node_fs11.default.writeFileSync(args.packPath, args.body, "utf8");
+    import_node_fs12.default.writeFileSync(args.packPath, args.body, "utf8");
     createPackEvent({
       packKey: args.packKey,
       eventType: args.eventType ?? "refresh_triggered",
@@ -10697,7 +10660,7 @@ function createPackService({
     );
     if (existing?.id) return null;
     const checkpointId = (0, import_node_crypto7.randomUUID)();
-    const createdAt = nowIso5();
+    const createdAt = nowIso6();
     const diffStat = {
       insertions: args.delta.insertions,
       deletions: args.delta.deletions,
@@ -10717,8 +10680,8 @@ function createPackService({
     });
     try {
       ensureDir(checkpointsDir);
-      import_node_fs11.default.writeFileSync(
-        import_node_path11.default.join(checkpointsDir, `${checkpointId}.json`),
+      import_node_fs12.default.writeFileSync(
+        import_node_path12.default.join(checkpointsDir, `${checkpointId}.json`),
         JSON.stringify(
           {
             id: checkpointId,
@@ -11047,8 +11010,8 @@ function createPackService({
       }
       for (const rel of newUntrackedPaths) {
         try {
-          const fullPath = import_node_path11.default.join(worktreePath, rel);
-          const content = await import_node_fs11.default.promises.readFile(fullPath, "utf-8");
+          const fullPath = import_node_path12.default.join(worktreePath, rel);
+          const content = await import_node_fs12.default.promises.readFile(fullPath, "utf-8");
           const lineCount = content.split("\n").length;
           deltas.set(rel, { insertions: lineCount, deletions: 0 });
         } catch {
@@ -11293,7 +11256,7 @@ function createPackService({
       const version2 = readCurrentPackVersion("project");
       if (row) return toPackSummaryFromRow({ packKey: "project", row, version: version2 });
       const body = readFileIfExists(projectPackPath);
-      const exists = import_node_fs11.default.existsSync(projectPackPath);
+      const exists = import_node_fs12.default.existsSync(projectPackPath);
       return {
         packKey: "project",
         packType: "project",
@@ -11317,12 +11280,6 @@ function createPackService({
     },
     async maybeAutoRefreshContextDocs(args) {
       return await maybeAutoRefreshContextDocs(args);
-    },
-    prepareContextDocGeneration(args) {
-      return prepareContextDocGeneration2(args);
-    },
-    installGeneratedDocs(args) {
-      return installGeneratedDocs2(args);
     },
     getContextDocPath(docId) {
       return resolveContextDocPath2(docId);
@@ -11349,7 +11306,7 @@ function createPackService({
       if (row) return toPackSummaryFromRow({ packKey, row, version: version2 });
       const lanePackPath = getLanePackPath(laneId);
       const body = readFileIfExists(lanePackPath);
-      const exists = import_node_fs11.default.existsSync(lanePackPath);
+      const exists = import_node_fs12.default.existsSync(lanePackPath);
       return {
         packKey,
         packType: "lane",
@@ -11533,7 +11490,7 @@ function createPackService({
       });
       try {
         const latestDelta = args.sessionId ? await this.computeSessionDelta(args.sessionId) : listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
-        const deterministicUpdatedAt = nowIso5();
+        const deterministicUpdatedAt = nowIso6();
         const { body, lastHeadSha } = await buildLanePackBody({
           laneId: args.laneId,
           reason: args.reason,
@@ -11610,7 +11567,7 @@ function createPackService({
         }
       });
       try {
-        const deterministicUpdatedAt = nowIso5();
+        const deterministicUpdatedAt = nowIso6();
         const body = await buildProjectPackBody2({
           reason: args.reason,
           deterministicUpdatedAt,
@@ -11661,128 +11618,11 @@ function createPackService({
         throw error48;
       }
     },
-    async refreshFeaturePack(args) {
-      const key = args.featureKey.trim();
-      if (!key) throw new Error("featureKey is required");
-      const packKey = `feature:${key}`;
-      const deterministicUpdatedAt = nowIso5();
-      const built = await buildFeaturePackBody2({
-        featureKey: key,
-        reason: args.reason,
-        deterministicUpdatedAt
-      });
-      const packPath = getFeaturePackPath(key);
-      return persistPackRefresh({
-        packKey,
-        packType: "feature",
-        packPath,
-        laneId: null,
-        body: built.body,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
-        lastHeadSha: null,
-        metadata: {
-          reason: args.reason,
-          featureKey: key,
-          laneIds: built.laneIds
-        },
-        eventType: "refresh_triggered",
-        eventPayload: { trigger: args.reason, featureKey: key, laneIds: built.laneIds }
-      });
-    },
-    async refreshConflictPack(args) {
-      const laneId = args.laneId.trim();
-      if (!laneId) throw new Error("laneId is required");
-      const peer = args.peerLaneId?.trim() || null;
-      const lane = laneService.getLaneBaseAndBranch(laneId);
-      const peerKey = peer ?? lane.baseRef;
-      const packKey = `conflict:${laneId}:${peerKey}`;
-      const deterministicUpdatedAt = nowIso5();
-      const built = await buildConflictPackBody2({
-        laneId,
-        peerLaneId: peer,
-        reason: args.reason,
-        deterministicUpdatedAt
-      });
-      const packPath = getConflictPackPath(laneId, peerKey);
-      return persistPackRefresh({
-        packKey,
-        packType: "conflict",
-        packPath,
-        laneId,
-        body: built.body,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
-        lastHeadSha: built.lastHeadSha,
-        metadata: {
-          reason: args.reason,
-          laneId,
-          peerLaneId: peer,
-          peerKey
-        },
-        eventType: "refresh_triggered",
-        eventPayload: { trigger: args.reason, laneId, peerLaneId: peer, peerKey }
-      });
-    },
-    async refreshPlanPack(args) {
-      const laneId = args.laneId.trim();
-      if (!laneId) throw new Error("laneId is required");
-      const packKey = `plan:${laneId}`;
-      const deterministicUpdatedAt = nowIso5();
-      const built = await buildPlanPackBody2({
-        laneId,
-        reason: args.reason,
-        deterministicUpdatedAt
-      });
-      const packPath = getPlanPackPath(laneId);
-      return persistPackRefresh({
-        packKey,
-        packType: "plan",
-        packPath,
-        laneId,
-        body: built.body,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
-        lastHeadSha: built.headSha,
-        metadata: {
-          reason: args.reason,
-          laneId
-        },
-        eventType: "refresh_triggered",
-        eventPayload: { trigger: args.reason, laneId }
-      });
-    },
-    async savePlanPack(args) {
-      const laneId = args.laneId.trim();
-      if (!laneId) throw new Error("laneId is required");
-      const packKey = `plan:${laneId}`;
-      const packPath = getPlanPackPath(laneId);
-      const deterministicUpdatedAt = nowIso5();
-      const lane = laneService.getLaneBaseAndBranch(laneId);
-      const headSha = await getHeadSha3(lane.worktreePath);
-      const body = args.body ?? "";
-      return persistPackRefresh({
-        packKey,
-        packType: "plan",
-        packPath,
-        laneId,
-        body,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: deterministicUpdatedAt,
-        lastHeadSha: headSha,
-        metadata: {
-          reason: args.reason,
-          laneId
-        },
-        eventType: "plan_saved",
-        eventPayload: { trigger: args.reason, laneId }
-      });
-    },
     async refreshMissionPack(args) {
       const missionId = args.missionId.trim();
       if (!missionId) throw new Error("missionId is required");
       const packKey = `mission:${missionId}`;
-      const deterministicUpdatedAt = nowIso5();
+      const deterministicUpdatedAt = nowIso6();
       const built = await buildMissionPackBody2({
         missionId,
         reason: args.reason,
@@ -11812,88 +11652,6 @@ function createPackService({
         }
       });
     },
-    updateNarrative(args) {
-      const packKey = args.packKey.trim();
-      if (!packKey) throw new Error("packKey is required");
-      const row = getPackIndexRow(packKey);
-      if (!row?.pack_path) throw new Error(`Pack not found: ${packKey}`);
-      const existingMetadata = parsePackMetadataJson(row.metadata_json) ?? {};
-      const nextMetadata = {
-        ...existingMetadata,
-        ...args.metadata ?? {}
-      };
-      const existing = readFileIfExists(row.pack_path);
-      const { updated: updatedBody, insertedMarkers } = replaceNarrativeSection(existing, args.narrative);
-      ensureDirFor(row.pack_path);
-      import_node_fs11.default.writeFileSync(row.pack_path, updatedBody, "utf8");
-      const now = nowIso5();
-      const provider = typeof nextMetadata.provider === "string" ? nextMetadata.provider : null;
-      const model = typeof nextMetadata.model === "string" ? nextMetadata.model : null;
-      createPackEvent({
-        packKey,
-        eventType: "narrative_update",
-        payload: {
-          source: args.source ?? "user",
-          insertedMarkers,
-          ...provider ? { provider } : {},
-          ...model ? { model } : {}
-        }
-      });
-      const version2 = createPackVersion({ packKey, packType: row.pack_type, body: updatedBody });
-      nextMetadata.source = args.source ?? "user";
-      nextMetadata.versionId = version2.versionId;
-      nextMetadata.versionNumber = version2.versionNumber;
-      nextMetadata.contentHash = version2.contentHash;
-      upsertPackIndex({
-        db,
-        projectId,
-        packKey,
-        laneId: row.lane_id ?? null,
-        packType: row.pack_type,
-        packPath: row.pack_path,
-        deterministicUpdatedAt: row.deterministic_updated_at ?? now,
-        narrativeUpdatedAt: now,
-        lastHeadSha: row.last_head_sha ?? null,
-        metadata: nextMetadata
-      });
-      return toPackSummaryFromRow({
-        packKey,
-        row: {
-          ...row,
-          narrative_updated_at: now
-        },
-        version: {
-          versionId: version2.versionId,
-          versionNumber: version2.versionNumber,
-          contentHash: version2.contentHash
-        }
-      });
-    },
-    listVersions(args) {
-      const packKey = args.packKey.trim();
-      if (!packKey) throw new Error("packKey is required");
-      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 50;
-      const packType = getPackIndexRow(packKey)?.pack_type ?? inferPackTypeFromKey(packKey);
-      const rows = db.all(
-        `
-          select id, version_number, content_hash, created_at
-          from pack_versions
-          where project_id = ?
-            and pack_key = ?
-          order by version_number desc
-          limit ?
-        `,
-        [projectId, packKey, limit]
-      );
-      return rows.map((row) => ({
-        id: row.id,
-        packKey,
-        packType,
-        versionNumber: Number(row.version_number ?? 0),
-        contentHash: String(row.content_hash ?? ""),
-        createdAt: row.created_at
-      }));
-    },
     getVersion(versionId) {
       const id = versionId.trim();
       if (!id) throw new Error("versionId is required");
@@ -11919,49 +11677,6 @@ function createPackService({
         body: readFileIfExists(row.rendered_path),
         createdAt: row.created_at
       };
-    },
-    async diffVersions(args) {
-      const from = this.getVersion(args.fromId);
-      const to = this.getVersion(args.toId);
-      const res = await runGit(["diff", "--no-index", "--", from.renderedPath, to.renderedPath], {
-        cwd: projectRoot,
-        timeoutMs: 2e4
-      });
-      if (res.exitCode === 0 || res.exitCode === 1) {
-        return res.stdout;
-      }
-      throw new Error(res.stderr.trim() || "Failed to diff pack versions");
-    },
-    listEvents(args) {
-      const packKey = args.packKey.trim();
-      if (!packKey) throw new Error("packKey is required");
-      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 50;
-      const rows = db.all(
-        `
-          select id, pack_key, event_type, payload_json, created_at
-          from pack_events
-          where project_id = ?
-            and pack_key = ?
-          order by created_at desc
-          limit ?
-        `,
-        [projectId, packKey, limit]
-      );
-      return rows.map(
-        (row) => ensureEventMeta({
-          id: row.id,
-          packKey: row.pack_key,
-          eventType: row.event_type,
-          payload: (() => {
-            try {
-              return row.payload_json ? JSON.parse(row.payload_json) : {};
-            } catch {
-              return {};
-            }
-          })(),
-          createdAt: row.created_at
-        })
-      );
     },
     listEventsSince(args) {
       const packKey = args.packKey.trim();
@@ -12166,80 +11881,6 @@ function createPackService({
         clipReason,
         omittedSections: omittedSections.length ? omittedSections : null
       };
-    },
-    listCheckpoints(args = {}) {
-      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, Math.floor(args.limit))) : 100;
-      const where = ["project_id = ?"];
-      const params = [projectId];
-      if (args.laneId) {
-        where.push("lane_id = ?");
-        params.push(args.laneId);
-      }
-      params.push(limit);
-      const rows = db.all(
-        `
-          select id, lane_id, session_id, sha, diff_stat_json, pack_event_ids_json, created_at
-          from checkpoints
-          where ${where.join(" and ")}
-          order by created_at desc
-          limit ?
-        `,
-        params
-      );
-      return rows.map((row) => ({
-        id: row.id,
-        laneId: row.lane_id,
-        sessionId: row.session_id,
-        sha: row.sha,
-        diffStat: (() => {
-          try {
-            return row.diff_stat_json ? JSON.parse(row.diff_stat_json) : { insertions: 0, deletions: 0, filesChanged: 0, files: [] };
-          } catch {
-            return { insertions: 0, deletions: 0, filesChanged: 0, files: [] };
-          }
-        })(),
-        packEventIds: (() => {
-          try {
-            return row.pack_event_ids_json ? JSON.parse(row.pack_event_ids_json) : [];
-          } catch {
-            return [];
-          }
-        })(),
-        createdAt: row.created_at
-      }));
-    },
-    getPeerLanesContext(laneId) {
-      const id = laneId.trim();
-      if (!id) return "";
-      try {
-        const pack = readConflictPredictionPack2(id);
-        if (!pack) return "";
-        const overlaps = Array.isArray(pack.overlaps) ? pack.overlaps : [];
-        if (!overlaps.length) return "";
-        const riskScore = (r) => {
-          const n = r.trim().toLowerCase();
-          if (n === "high") return 3;
-          if (n === "medium") return 2;
-          if (n === "low") return 1;
-          return 0;
-        };
-        const peers = overlaps.filter((ov) => ov && ov.peerId != null).map((ov) => {
-          const peerName = asString3(ov.peerName).trim() || asString3(ov.peerId).trim() || "unknown";
-          const riskLevel = asString3(ov.riskLevel).trim() || "unknown";
-          const files = Array.isArray(ov.files) ? ov.files.map((f) => asString3(typeof f === "string" ? f : f?.path).trim()).filter(Boolean) : [];
-          return { peerName, riskLevel, files, score: riskScore(riskLevel) };
-        }).filter((ov) => ov.score > 0 || ov.files.length > 0).sort((a, b) => b.score - a.score || b.files.length - a.files.length || a.peerName.localeCompare(b.peerName)).slice(0, 10);
-        if (!peers.length) return "";
-        const lines = ["## Peer Lanes Context", ""];
-        for (const peer of peers) {
-          const risk = ` | conflict risk: ${peer.riskLevel}`;
-          const fileList = peer.files.length ? ` | overlapping files: ${peer.files.slice(0, 5).join(", ")}` : "";
-          lines.push(`- **${peer.peerName}**${risk}${fileList}`);
-        }
-        return lines.join("\n");
-      } catch {
-        return "";
-      }
     },
     async getLaneExport(args) {
       const laneId = args.laneId.trim();
@@ -12776,9 +12417,6 @@ function createPackService({
         truncated,
         warnings: truncated ? ["Mission pack content was truncated to fit token budget."] : []
       };
-    },
-    recordEvent(args) {
-      return createPackEvent(args);
     }
   };
 }
@@ -12786,8 +12424,8 @@ function createPackService({
 // ../desktop/src/main/services/conflicts/conflictService.ts
 var import_node_crypto8 = require("crypto");
 var import_node_child_process3 = require("child_process");
-var import_node_fs12 = __toESM(require("fs"), 1);
-var import_node_path12 = __toESM(require("path"), 1);
+var import_node_fs13 = __toESM(require("fs"), 1);
+var import_node_path13 = __toESM(require("path"), 1);
 
 // ../desktop/src/main/utils/redaction.ts
 function redactText(text) {
@@ -13011,10 +12649,10 @@ function safeParseMetadata2(raw) {
   return isRecord(parsed) ? parsed : {};
 }
 function writePatchFile(content, worktreePath) {
-  const patchDir = import_node_path12.default.join(worktreePath, ".ade", "tmp", "conflict-proposals");
-  import_node_fs12.default.mkdirSync(patchDir, { recursive: true });
-  const filePath = import_node_path12.default.join(patchDir, `proposal-${(0, import_node_crypto8.randomUUID)()}.patch`);
-  import_node_fs12.default.writeFileSync(filePath, content, "utf8");
+  const patchDir = import_node_path13.default.join(worktreePath, ".ade", "tmp", "conflict-proposals");
+  import_node_fs13.default.mkdirSync(patchDir, { recursive: true });
+  const filePath = import_node_path13.default.join(patchDir, `proposal-${(0, import_node_crypto8.randomUUID)()}.patch`);
+  import_node_fs13.default.writeFileSync(filePath, content, "utf8");
   return filePath;
 }
 function extractPathsFromUnifiedDiff(diffPatch) {
@@ -13132,7 +12770,7 @@ function makeContextSide(args) {
 }
 function deletePatchFile(filePath) {
   try {
-    import_node_fs12.default.unlinkSync(filePath);
+    import_node_fs13.default.unlinkSync(filePath);
   } catch {
   }
 }
@@ -13144,7 +12782,6 @@ function createConflictService({
   laneService,
   projectConfigService,
   aiIntegrationService,
-  packService,
   operationService,
   conflictPacksDir,
   onEvent
@@ -13194,7 +12831,7 @@ function createConflictService({
     const lanes = await laneService.list({ includeArchived: false });
     return lanes.filter((lane) => !lane.archivedAt);
   };
-  const sha2564 = (input) => (0, import_node_crypto8.createHash)("sha256").update(input).digest("hex");
+  const sha2563 = (input) => (0, import_node_crypto8.createHash)("sha256").update(input).digest("hex");
   const preparedContexts = /* @__PURE__ */ new Map();
   const PREPARED_TTL_MS = 20 * 6e4;
   const cleanupPreparedContexts = () => {
@@ -13205,47 +12842,47 @@ function createConflictService({
       if (ms < cutoff) preparedContexts.delete(digest);
     }
   };
-  const packsRootDir = conflictPacksDir ? import_node_path12.default.dirname(conflictPacksDir) : null;
-  const resolvedPacksRootDir = packsRootDir ?? import_node_path12.default.join(projectRoot, ".ade", "packs");
-  const projectPackPath = import_node_path12.default.join(resolvedPacksRootDir, "project_pack.md");
-  const lanePackPath = (laneId) => import_node_path12.default.join(resolvedPacksRootDir, "lanes", laneId, "lane_pack.md");
-  const conflictPackPath = (laneId, peerKey) => import_node_path12.default.join(resolvedPacksRootDir, "conflicts", "v2", `${laneId}__${safeSegment2(peerKey)}.md`);
+  const packsRootDir = conflictPacksDir ? import_node_path13.default.dirname(conflictPacksDir) : null;
+  const resolvedPacksRootDir = packsRootDir ?? import_node_path13.default.join(projectRoot, ".ade", "packs");
+  const projectPackPath = import_node_path13.default.join(resolvedPacksRootDir, "project_pack.md");
+  const lanePackPath = (laneId) => import_node_path13.default.join(resolvedPacksRootDir, "lanes", laneId, "lane_pack.md");
+  const conflictPackPath = (laneId, peerKey) => import_node_path13.default.join(resolvedPacksRootDir, "conflicts", "v2", `${laneId}__${safeSegment2(peerKey)}.md`);
   const contextDocPaths = uniqueSorted([
-    import_node_path12.default.join(projectRoot, ".ade/context/PRD.ade.md"),
-    import_node_path12.default.join(projectRoot, ".ade/context/ARCHITECTURE.ade.md"),
+    import_node_path13.default.join(projectRoot, ".ade/context/PRD.ade.md"),
+    import_node_path13.default.join(projectRoot, ".ade/context/ARCHITECTURE.ade.md"),
     ...readDocPaths(projectRoot)
   ]);
   const toRepoRelativePath = (absPath) => {
-    const rel = import_node_path12.default.relative(projectRoot, absPath).replace(/\\/g, "/");
+    const rel = import_node_path13.default.relative(projectRoot, absPath).replace(/\\/g, "/");
     if (!rel || rel.startsWith("..")) return absPath.replace(/\\/g, "/");
     return rel;
   };
   const safeReadText = (absPath, maxBytes) => {
     try {
-      const fd = import_node_fs12.default.openSync(absPath, "r");
+      const fd = import_node_fs13.default.openSync(absPath, "r");
       try {
         const buf = Buffer.alloc(maxBytes);
-        const read = import_node_fs12.default.readSync(fd, buf, 0, maxBytes, 0);
+        const read = import_node_fs13.default.readSync(fd, buf, 0, maxBytes, 0);
         return buf.slice(0, Math.max(0, read)).toString("utf8");
       } finally {
-        import_node_fs12.default.closeSync(fd);
+        import_node_fs13.default.closeSync(fd);
       }
     } catch {
       return "";
     }
   };
-  const externalRunsRootDir = import_node_path12.default.join(resolvedPacksRootDir, "external-resolver-runs");
+  const externalRunsRootDir = import_node_path13.default.join(resolvedPacksRootDir, "external-resolver-runs");
   const buildExternalResolverPackRefs = (args) => {
     const refs = /* @__PURE__ */ new Map();
     const addRef = (ref) => {
       const key = `${ref.kind}:${ref.absPath}`;
       if (refs.has(key)) return;
-      const absPath = import_node_path12.default.resolve(ref.absPath);
+      const absPath = import_node_path13.default.resolve(ref.absPath);
       refs.set(key, {
         ...ref,
         absPath,
         repoRelativePath: toRepoRelativePath(absPath),
-        exists: import_node_fs12.default.existsSync(absPath)
+        exists: import_node_fs13.default.existsSync(absPath)
       });
     };
     addRef({
@@ -13307,7 +12944,7 @@ function createConflictService({
     });
   };
   const ensureExternalRunsDir = () => {
-    import_node_fs12.default.mkdirSync(externalRunsRootDir, { recursive: true });
+    import_node_fs13.default.mkdirSync(externalRunsRootDir, { recursive: true });
   };
   const resolveExternalResolverCommand = (provider) => {
     const snapshot = projectConfigService.get();
@@ -13340,16 +12977,16 @@ function createConflictService({
   });
   const writeExternalRunRecord = (run) => {
     ensureExternalRunsDir();
-    const runDir = import_node_path12.default.join(externalRunsRootDir, run.runId);
-    import_node_fs12.default.mkdirSync(runDir, { recursive: true });
-    import_node_fs12.default.writeFileSync(import_node_path12.default.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}
+    const runDir = import_node_path13.default.join(externalRunsRootDir, run.runId);
+    import_node_fs13.default.mkdirSync(runDir, { recursive: true });
+    import_node_fs13.default.writeFileSync(import_node_path13.default.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}
 `, "utf8");
   };
   const readExternalRunRecord = (runId) => {
-    const filePath = import_node_path12.default.join(externalRunsRootDir, runId, "run.json");
-    if (!import_node_fs12.default.existsSync(filePath)) return null;
+    const filePath = import_node_path13.default.join(externalRunsRootDir, runId, "run.json");
+    if (!import_node_fs13.default.existsSync(filePath)) return null;
     try {
-      const parsed = JSON.parse(import_node_fs12.default.readFileSync(filePath, "utf8"));
+      const parsed = JSON.parse(import_node_fs13.default.readFileSync(filePath, "utf8"));
       if (!parsed || parsed.schema !== "ade.conflictExternalRun.v1") return null;
       return parsed;
     } catch {
@@ -13357,11 +12994,11 @@ function createConflictService({
     }
   };
   const listExternalRunRecords = () => {
-    if (!import_node_fs12.default.existsSync(externalRunsRootDir)) return [];
+    if (!import_node_fs13.default.existsSync(externalRunsRootDir)) return [];
     const out = [];
     let entries = [];
     try {
-      entries = import_node_fs12.default.readdirSync(externalRunsRootDir, { withFileTypes: true });
+      entries = import_node_fs13.default.readdirSync(externalRunsRootDir, { withFileTypes: true });
     } catch {
       return [];
     }
@@ -13393,7 +13030,7 @@ function createConflictService({
     const normalized = relPath.trim().replace(/\\/g, "/");
     if (!normalized.length) throw new Error("File path is required");
     if (normalized.includes("\0")) throw new Error("Invalid file path");
-    if (import_node_path12.default.isAbsolute(normalized)) throw new Error("Path must be repo-relative");
+    if (import_node_path13.default.isAbsolute(normalized)) throw new Error("Path must be repo-relative");
     if (normalized.startsWith("../") || normalized === ".." || normalized.includes("/../")) {
       throw new Error("Path escapes lane root");
     }
@@ -13403,15 +13040,15 @@ function createConflictService({
     const lane = laneService.getLaneBaseAndBranch(laneId);
     const gitDirRes = await runGit(["rev-parse", "--absolute-git-dir"], { cwd: lane.worktreePath, timeoutMs: 1e4 });
     const gitDir = gitDirRes.exitCode === 0 ? gitDirRes.stdout.trim() : "";
-    const hasRebase = gitDir.length > 0 && (import_node_fs12.default.existsSync(import_node_path12.default.join(gitDir, "rebase-apply")) || import_node_fs12.default.existsSync(import_node_path12.default.join(gitDir, "rebase-merge")));
-    const hasMerge = gitDir.length > 0 && import_node_fs12.default.existsSync(import_node_path12.default.join(gitDir, "MERGE_HEAD"));
+    const hasRebase = gitDir.length > 0 && (import_node_fs13.default.existsSync(import_node_path13.default.join(gitDir, "rebase-apply")) || import_node_fs13.default.existsSync(import_node_path13.default.join(gitDir, "rebase-merge")));
+    const hasMerge = gitDir.length > 0 && import_node_fs13.default.existsSync(import_node_path13.default.join(gitDir, "MERGE_HEAD"));
     const kind = hasRebase ? "rebase" : hasMerge ? "merge" : null;
     const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 1e4 });
     const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnly(unmergedRes.stdout).sort((a, b) => a.localeCompare(b)) : [];
     let mergeHeadSha = null;
     if (kind === "merge" && gitDir.length) {
       try {
-        const raw = import_node_fs12.default.readFileSync(import_node_path12.default.join(gitDir, "MERGE_HEAD"), "utf8").trim();
+        const raw = import_node_fs13.default.readFileSync(import_node_path13.default.join(gitDir, "MERGE_HEAD"), "utf8").trim();
         if (raw) mergeHeadSha = raw;
       } catch {
       }
@@ -13430,7 +13067,7 @@ function createConflictService({
   const extractMarkerPreview = (laneId, relPath, warnings) => {
     const filePath = ensureRelativeRepoPath2(relPath);
     const lane = laneService.getLaneBaseAndBranch(laneId);
-    const abs = import_node_path12.default.join(lane.worktreePath, filePath);
+    const abs = import_node_path13.default.join(lane.worktreePath, filePath);
     const raw = safeReadText(abs, 48e3);
     if (!raw) return null;
     if (raw.includes("\0")) return null;
@@ -13805,8 +13442,8 @@ function createConflictService({
   };
   const writeConflictPacks = async (assessment) => {
     if (!conflictPacksDir) return;
-    const predictionsDir = import_node_path12.default.join(conflictPacksDir, "predictions");
-    import_node_fs12.default.mkdirSync(predictionsDir, { recursive: true });
+    const predictionsDir = import_node_path13.default.join(conflictPacksDir, "predictions");
+    import_node_fs13.default.mkdirSync(predictionsDir, { recursive: true });
     for (const status of assessment.lanes) {
       try {
         const overlaps = await listOverlaps({ laneId: status.laneId });
@@ -13851,8 +13488,8 @@ function createConflictService({
           pairwisePairsComputed: assessment.pairwisePairsComputed,
           pairwisePairsTotal: assessment.pairwisePairsTotal
         };
-        const outPath = import_node_path12.default.join(predictionsDir, `${status.laneId}.json`);
-        import_node_fs12.default.writeFileSync(outPath, JSON.stringify(payload, null, 2), "utf8");
+        const outPath = import_node_path13.default.join(predictionsDir, `${status.laneId}.json`);
+        import_node_fs13.default.writeFileSync(outPath, JSON.stringify(payload, null, 2), "utf8");
       } catch (error48) {
         logger.warn("conflicts.pack_write_failed", {
           laneId: status.laneId,
@@ -14210,21 +13847,21 @@ function createConflictService({
     const comparedLaneIds = lanes.map((lane) => lane.id);
     const readAssessmentMeta = () => {
       if (!conflictPacksDir) return {};
-      const predictionsDir = import_node_path12.default.join(conflictPacksDir, "predictions");
-      if (!import_node_fs12.default.existsSync(predictionsDir)) return {};
+      const predictionsDir = import_node_path13.default.join(conflictPacksDir, "predictions");
+      if (!import_node_fs13.default.existsSync(predictionsDir)) return {};
       try {
-        const entries = import_node_fs12.default.readdirSync(predictionsDir, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
+        const entries = import_node_fs13.default.readdirSync(predictionsDir, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
         if (!entries.length) return {};
         let bestName = entries[0].name;
-        let bestMtime = import_node_fs12.default.statSync(import_node_path12.default.join(predictionsDir, bestName)).mtimeMs;
+        let bestMtime = import_node_fs13.default.statSync(import_node_path13.default.join(predictionsDir, bestName)).mtimeMs;
         for (const entry of entries.slice(1)) {
-          const ms = import_node_fs12.default.statSync(import_node_path12.default.join(predictionsDir, entry.name)).mtimeMs;
+          const ms = import_node_fs13.default.statSync(import_node_path13.default.join(predictionsDir, entry.name)).mtimeMs;
           if (ms > bestMtime) {
             bestMtime = ms;
             bestName = entry.name;
           }
         }
-        const raw = import_node_fs12.default.readFileSync(import_node_path12.default.join(predictionsDir, bestName), "utf8");
+        const raw = import_node_fs13.default.readFileSync(import_node_path13.default.join(predictionsDir, bestName), "utf8");
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
         const record2 = parsed;
@@ -14410,13 +14047,7 @@ function createConflictService({
 `;
     };
     const preparedAt = (/* @__PURE__ */ new Date()).toISOString();
-    if (packService) {
-      await packService.refreshLanePack({ laneId, reason: "conflict_proposal_prepare" });
-      if (peerLaneId) {
-        await packService.refreshLanePack({ laneId: peerLaneId, reason: "conflict_proposal_prepare" });
-      }
-      await packService.refreshConflictPack({ laneId, peerLaneId, reason: "conflict_proposal_prepare" });
-    }
+    warnings.push("Pack refresh removed in W6; using live git/conflict state only.");
     const conflictState = await readGitConflictState2(laneId);
     const activeConflict = {
       laneId,
@@ -14444,28 +14075,8 @@ function createConflictService({
     }
     let laneExportLite = null;
     let peerLaneExportLite = null;
-    let conflictExportStandard = null;
-    if (packService) {
-      try {
-        laneExportLite = (await packService.getLaneExport({ laneId, level: LANE_EXPORT_LEVEL })).content;
-      } catch (error48) {
-        warnings.push(`Lane export unavailable: ${error48 instanceof Error ? error48.message : String(error48)}`);
-      }
-      if (peerLaneId) {
-        try {
-          peerLaneExportLite = (await packService.getLaneExport({ laneId: peerLaneId, level: LANE_EXPORT_LEVEL })).content;
-        } catch (error48) {
-          warnings.push(`Peer lane export unavailable: ${error48 instanceof Error ? error48.message : String(error48)}`);
-        }
-      }
-      try {
-        conflictExportStandard = (await packService.getConflictExport({ laneId, peerLaneId, level: CONFLICT_EXPORT_LEVEL })).content;
-      } catch (error48) {
-        warnings.push(`Conflict export unavailable: ${error48 instanceof Error ? error48.message : String(error48)}`);
-      }
-    } else {
-      warnings.push("Pack service unavailable; conflict exports omitted from AI context.");
-    }
+    let conflictExportStandard = "";
+    warnings.push("Conflict/lane pack exports removed in W6; AI context uses direct overlap/conflict payloads.");
     const files = [];
     const relevantFilesForConflict = [];
     const fileContexts = [];
@@ -14591,8 +14202,9 @@ function createConflictService({
       files: overlapEntry.files.slice(0, 40)
     } : null;
     const extractNumericFromConflictExport = (key) => {
-      if (!conflictExportStandard) return null;
-      const match = conflictExportStandard.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
+      const exportText = typeof conflictExportStandard === "string" ? conflictExportStandard : "";
+      if (!exportText) return null;
+      const match = exportText.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
       if (!match) return null;
       const value = Number(match[1] ?? NaN);
       return Number.isFinite(value) ? value : null;
@@ -14657,7 +14269,7 @@ function createConflictService({
       }
     };
     const redactedContext = redactSecretsDeep(conflictContext);
-    const contextDigest = sha2564(JSON.stringify(redactedContext));
+    const contextDigest = sha2563(JSON.stringify(redactedContext));
     preparedContexts.set(contextDigest, {
       preparedAt,
       laneId,
@@ -15171,8 +14783,8 @@ function createConflictService({
     });
     const missingRequiredPacks = packRefs.filter((entry) => entry.required && !entry.exists).map((entry) => entry.repoRelativePath);
     const runId = (0, import_node_crypto8.randomUUID)();
-    const runDir = import_node_path12.default.join(externalRunsRootDir, runId);
-    import_node_fs12.default.mkdirSync(runDir, { recursive: true });
+    const runDir = import_node_path13.default.join(externalRunsRootDir, runId);
+    import_node_fs13.default.mkdirSync(runDir, { recursive: true });
     const startedAt = (/* @__PURE__ */ new Date()).toISOString();
     if (contextGaps.length > 0) {
       const blocked = {
@@ -15212,8 +14824,8 @@ function createConflictService({
       cwdLaneId,
       integrationLaneId: integrationLane?.id ?? null
     });
-    const promptPath = import_node_path12.default.join(runDir, "prompt.md");
-    import_node_fs12.default.writeFileSync(promptPath, prompt, "utf8");
+    const promptPath = import_node_path13.default.join(runDir, "prompt.md");
+    import_node_fs13.default.writeFileSync(promptPath, prompt, "utf8");
     const commandTemplate = resolveExternalResolverCommand(args.provider);
     if (!commandTemplate.length) {
       const missing = {
@@ -15260,8 +14872,8 @@ function createConflictService({
     });
     const stdout = proc.stdout ?? "";
     const stderr = proc.stderr ?? "";
-    const outputLogPath = import_node_path12.default.join(runDir, "output.log");
-    import_node_fs12.default.writeFileSync(outputLogPath, `${stdout}
+    const outputLogPath = import_node_path13.default.join(runDir, "output.log");
+    import_node_fs13.default.writeFileSync(outputLogPath, `${stdout}
 
 --- STDERR ---
 ${stderr}
@@ -15271,10 +14883,10 @@ ${stderr}
       timeoutMs: 45e3,
       maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
     });
-    const patchPath = import_node_path12.default.join(runDir, "changes.patch");
+    const patchPath = import_node_path13.default.join(runDir, "changes.patch");
     let finalPatchPath = null;
     if (diffResult.exitCode === 0 && diffResult.stdout.trim().length > 0) {
-      import_node_fs12.default.writeFileSync(patchPath, diffResult.stdout, "utf8");
+      import_node_fs13.default.writeFileSync(patchPath, diffResult.stdout, "utf8");
       finalPatchPath = patchPath;
     }
     const status = proc.status === 0 ? "completed" : "failed";
@@ -15323,7 +14935,7 @@ ${stderr}
     const run = readExternalRunRecord(runId);
     if (!run) throw new Error(`External resolver run not found: ${runId}`);
     if (run.status !== "completed") throw new Error("Only completed resolver runs can be committed.");
-    if (!run.patchPath || !import_node_fs12.default.existsSync(run.patchPath)) {
+    if (!run.patchPath || !import_node_fs13.default.existsSync(run.patchPath)) {
       throw new Error("Resolver run has no patch artifact to commit.");
     }
     if (run.commitSha && run.committedAt) {
@@ -15331,7 +14943,7 @@ ${stderr}
     }
     const laneId = run.cwdLaneId;
     const lane = laneService.getLaneBaseAndBranch(laneId);
-    const patchBody = import_node_fs12.default.readFileSync(run.patchPath, "utf8");
+    const patchBody = import_node_fs13.default.readFileSync(run.patchPath, "utf8");
     const touchedPaths = extractCommitPathsFromUnifiedDiff(patchBody);
     if (!touchedPaths.length) throw new Error("Resolver patch has no changed paths.");
     const normalizedPaths = touchedPaths.map((entry) => ensureRelativeRepoPath2(entry));
@@ -15609,8 +15221,8 @@ ${stderr}
     ];
     const status = contextGaps.length > 0 ? "blocked" : "ready";
     const runId = (0, import_node_crypto8.randomUUID)();
-    const runDir = import_node_path12.default.join(externalRunsRootDir, runId);
-    import_node_fs12.default.mkdirSync(runDir, { recursive: true });
+    const runDir = import_node_path13.default.join(externalRunsRootDir, runId);
+    import_node_fs13.default.mkdirSync(runDir, { recursive: true });
     const prompt = buildExternalResolverPrompt({
       targetLaneId,
       sourceLaneIds,
@@ -15620,8 +15232,8 @@ ${stderr}
       integrationLaneId: integrationLane?.id ?? null,
       scenario
     });
-    const promptPath = import_node_path12.default.join(runDir, "prompt.md");
-    import_node_fs12.default.writeFileSync(promptPath, prompt, "utf8");
+    const promptPath = import_node_path13.default.join(runDir, "prompt.md");
+    import_node_fs13.default.writeFileSync(promptPath, prompt, "utf8");
     const startedAt = (/* @__PURE__ */ new Date()).toISOString();
     const runRecord = {
       schema: "ade.conflictExternalRun.v1",
@@ -15669,11 +15281,11 @@ ${stderr}
       timeoutMs: 45e3,
       maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
     });
-    const runDir = import_node_path12.default.join(externalRunsRootDir, runId);
-    const patchPath = import_node_path12.default.join(runDir, "changes.patch");
+    const runDir = import_node_path13.default.join(externalRunsRootDir, runId);
+    const patchPath = import_node_path13.default.join(runDir, "changes.patch");
     let finalPatchPath = null;
     if (diffResult.exitCode === 0 && diffResult.stdout.trim().length > 0) {
-      import_node_fs12.default.writeFileSync(patchPath, diffResult.stdout, "utf8");
+      import_node_fs13.default.writeFileSync(patchPath, diffResult.stdout, "utf8");
       finalPatchPath = patchPath;
     }
     const completedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -15999,31 +15611,6 @@ ${stderr}
 
 // ../desktop/src/main/services/git/gitOperationsService.ts
 var import_node_path14 = __toESM(require("path"), 1);
-
-// ../desktop/src/main/services/git/gitConflictState.ts
-var import_node_fs13 = __toESM(require("fs"), 1);
-var import_node_path13 = __toESM(require("path"), 1);
-function detectConflictKind(gitDir) {
-  try {
-    if (import_node_fs13.default.existsSync(import_node_path13.default.join(gitDir, "rebase-apply")) || import_node_fs13.default.existsSync(import_node_path13.default.join(gitDir, "rebase-merge"))) {
-      return "rebase";
-    }
-    if (import_node_fs13.default.existsSync(import_node_path13.default.join(gitDir, "MERGE_HEAD"))) {
-      return "merge";
-    }
-  } catch {
-  }
-  return null;
-}
-function parseNameOnly(stdout) {
-  return Array.from(
-    new Set(
-      stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
-}
-
-// ../desktop/src/main/services/git/gitOperationsService.ts
 function localBranchNameFromRemoteRef(ref) {
   const normalized = ref.trim();
   const slashIndex = normalized.indexOf("/");
@@ -17021,6 +16608,622 @@ var SLASH_COMMAND_TRANSLATIONS = {
   }
 };
 
+// ../desktop/src/shared/modelRegistry.ts
+var ALL_CAPS = { tools: true, vision: true, reasoning: true, streaming: true };
+var NO_REASONING = { tools: true, vision: true, reasoning: false, streaming: true };
+var BASIC_CAPS = { tools: true, vision: false, reasoning: false, streaming: true };
+var MODEL_REGISTRY = [
+  // ---- Anthropic (CLI-wrapped via claude) ----
+  // Note: "max" thinking is API-only for Opus; CLI subscribers get up to "high"
+  {
+    id: "anthropic/claude-opus-4-6",
+    shortId: "opus",
+    displayName: "Claude Opus 4.6",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 2e5,
+    maxOutputTokens: 32e3,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#D97706",
+    sdkProvider: "ai-sdk-provider-claude-code",
+    sdkModelId: "opus",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 5,
+    outputPricePer1M: 25,
+    costTier: "very_high"
+  },
+  {
+    id: "anthropic/claude-sonnet-4-6",
+    shortId: "sonnet",
+    displayName: "Claude Sonnet 4.6",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 2e5,
+    maxOutputTokens: 32e3,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#8B5CF6",
+    sdkProvider: "ai-sdk-provider-claude-code",
+    sdkModelId: "sonnet",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 3,
+    outputPricePer1M: 15,
+    costTier: "medium"
+  },
+  {
+    id: "anthropic/claude-haiku-4-5",
+    shortId: "haiku",
+    displayName: "Claude Haiku 4.5",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 2e5,
+    maxOutputTokens: 32e3,
+    capabilities: NO_REASONING,
+    color: "#06B6D4",
+    sdkProvider: "ai-sdk-provider-claude-code",
+    sdkModelId: "haiku",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 0.8,
+    outputPricePer1M: 4,
+    costTier: "low"
+  },
+  // ---- Anthropic (API key direct) ----
+  {
+    id: "anthropic/claude-opus-4-6-api",
+    shortId: "opus-api",
+    displayName: "Claude Opus 4.6 (API)",
+    family: "anthropic",
+    authTypes: ["api-key"],
+    contextWindow: 2e5,
+    maxOutputTokens: 32e3,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#D97706",
+    sdkProvider: "@ai-sdk/anthropic",
+    sdkModelId: "claude-opus-4-6",
+    isCliWrapped: false,
+    inputPricePer1M: 5,
+    outputPricePer1M: 25,
+    costTier: "very_high"
+  },
+  {
+    id: "anthropic/claude-sonnet-4-6-api",
+    shortId: "sonnet-api",
+    displayName: "Claude Sonnet 4.6 (API)",
+    family: "anthropic",
+    authTypes: ["api-key"],
+    contextWindow: 2e5,
+    maxOutputTokens: 8192,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#8B5CF6",
+    sdkProvider: "@ai-sdk/anthropic",
+    sdkModelId: "claude-sonnet-4-6",
+    isCliWrapped: false,
+    inputPricePer1M: 3,
+    outputPricePer1M: 15,
+    costTier: "medium"
+  },
+  {
+    id: "anthropic/claude-haiku-4-5-api",
+    shortId: "haiku-api",
+    displayName: "Claude Haiku 4.5 (API)",
+    family: "anthropic",
+    authTypes: ["api-key"],
+    contextWindow: 2e5,
+    maxOutputTokens: 8192,
+    capabilities: NO_REASONING,
+    color: "#06B6D4",
+    sdkProvider: "@ai-sdk/anthropic",
+    sdkModelId: "claude-haiku-4-5-20251001",
+    isCliWrapped: false,
+    inputPricePer1M: 0.8,
+    outputPricePer1M: 4,
+    costTier: "low"
+  },
+  // ---- OpenAI (CLI-wrapped via codex) ----
+  // Codex reasoning tiers: minimal | low | medium | high | xhigh (per config.toml reference)
+  // xhigh is model-dependent (gpt-5.1+ support it)
+  {
+    id: "openai/gpt-5.3-codex",
+    shortId: "gpt-5.3-codex",
+    displayName: "GPT-5.3 Codex",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
+    color: "#10B981",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.3-codex",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 8,
+    costTier: "high"
+  },
+  {
+    id: "openai/gpt-5.3-codex-spark",
+    shortId: "gpt-5.3-codex-spark",
+    displayName: "GPT-5.3 Codex Spark",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+    reasoningTiers: ["minimal", "low", "medium"],
+    color: "#34D399",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.3-codex-spark",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 1,
+    outputPricePer1M: 4,
+    costTier: "medium"
+  },
+  {
+    id: "openai/gpt-5.2-codex",
+    shortId: "gpt-5.2-codex",
+    displayName: "GPT-5.2 Codex",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
+    color: "#10B981",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.2-codex",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 1.5,
+    outputPricePer1M: 6,
+    costTier: "medium"
+  },
+  {
+    id: "openai/gpt-5.1-codex-max",
+    shortId: "gpt-5.1-codex-max",
+    displayName: "GPT-5.1 Codex Max",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
+    color: "#10B981",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.1-codex-max",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 3,
+    outputPricePer1M: 12,
+    costTier: "high"
+  },
+  {
+    id: "openai/codex-mini-latest",
+    shortId: "codex-mini",
+    displayName: "Codex Mini",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: NO_REASONING,
+    color: "#34D399",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "codex-mini-latest",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 0.3,
+    outputPricePer1M: 1.2,
+    costTier: "low"
+  },
+  {
+    id: "openai/o4-mini",
+    shortId: "o4-mini",
+    displayName: "o4-mini",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#6EE7B7",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "o4-mini",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 1.1,
+    outputPricePer1M: 4.4,
+    costTier: "low"
+  },
+  {
+    id: "openai/o3",
+    shortId: "o3",
+    displayName: "o3",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 192e3,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#059669",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "o3",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 8,
+    costTier: "medium"
+  },
+  // ---- OpenAI (API key direct) ----
+  {
+    id: "openai/gpt-5.4",
+    shortId: "gpt-5.4",
+    aliases: ["gpt-5.4-2026-03-05"],
+    displayName: "GPT-5.4",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 105e4,
+    maxOutputTokens: 128e3,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
+    color: "#10A37F",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.4",
+    isCliWrapped: false,
+    inputPricePer1M: 2.5,
+    outputPricePer1M: 15,
+    costTier: "high"
+  },
+  {
+    id: "openai/gpt-5.4-pro",
+    shortId: "gpt-5.4-pro",
+    aliases: ["gpt-5.4-pro-2026-03-05"],
+    displayName: "GPT-5.4 Pro",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 105e4,
+    maxOutputTokens: 128e3,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["medium", "high", "xhigh"],
+    color: "#0F766E",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.4-pro",
+    isCliWrapped: false,
+    inputPricePer1M: 30,
+    outputPricePer1M: 180,
+    costTier: "very_high"
+  },
+  {
+    id: "openai/gpt-4.1",
+    shortId: "gpt-4.1",
+    displayName: "GPT-4.1",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 1e6,
+    maxOutputTokens: 32768,
+    capabilities: NO_REASONING,
+    color: "#10B981",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-4.1",
+    isCliWrapped: false,
+    inputPricePer1M: 2,
+    outputPricePer1M: 8
+  },
+  {
+    id: "openai/gpt-4.1-mini",
+    shortId: "gpt-4.1-mini",
+    displayName: "GPT-4.1 Mini",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 1e6,
+    maxOutputTokens: 32768,
+    capabilities: NO_REASONING,
+    color: "#34D399",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-4.1-mini",
+    isCliWrapped: false,
+    inputPricePer1M: 0.4,
+    outputPricePer1M: 1.6
+  },
+  {
+    id: "openai/o4-mini-api",
+    shortId: "o4-mini-api",
+    displayName: "o4-mini (API)",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 2e5,
+    maxOutputTokens: 1e5,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#6EE7B7",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "o4-mini",
+    isCliWrapped: false,
+    inputPricePer1M: 1.1,
+    outputPricePer1M: 4.4
+  },
+  // ---- Google (Gemini 3.x — current) ----
+  {
+    id: "google/gemini-3.1-pro",
+    shortId: "gemini-pro",
+    displayName: "Gemini 3.1 Pro",
+    family: "google",
+    authTypes: ["api-key"],
+    contextWindow: 1e6,
+    maxOutputTokens: 65536,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#F59E0B",
+    sdkProvider: "@ai-sdk/google",
+    sdkModelId: "gemini-3.1-pro-preview",
+    isCliWrapped: false,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 5
+  },
+  {
+    id: "google/gemini-3-flash",
+    shortId: "gemini-flash",
+    displayName: "Gemini 3 Flash",
+    family: "google",
+    authTypes: ["api-key"],
+    contextWindow: 1e6,
+    maxOutputTokens: 65536,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "high"],
+    color: "#FBBF24",
+    sdkProvider: "@ai-sdk/google",
+    sdkModelId: "gemini-3-flash-preview",
+    isCliWrapped: false,
+    inputPricePer1M: 0.15,
+    outputPricePer1M: 0.6
+  },
+  // ---- DeepSeek ----
+  {
+    id: "deepseek/deepseek-r1",
+    shortId: "deepseek-r1",
+    displayName: "DeepSeek R1",
+    family: "deepseek",
+    authTypes: ["api-key"],
+    contextWindow: 128e3,
+    maxOutputTokens: 8192,
+    capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+    color: "#3B82F6",
+    sdkProvider: "@ai-sdk/deepseek",
+    sdkModelId: "deepseek-reasoner",
+    isCliWrapped: false,
+    inputPricePer1M: 0.55,
+    outputPricePer1M: 2.19
+  },
+  {
+    id: "deepseek/deepseek-chat",
+    shortId: "deepseek-chat",
+    displayName: "DeepSeek Chat",
+    family: "deepseek",
+    authTypes: ["api-key"],
+    contextWindow: 128e3,
+    maxOutputTokens: 8192,
+    capabilities: BASIC_CAPS,
+    color: "#60A5FA",
+    sdkProvider: "@ai-sdk/deepseek",
+    sdkModelId: "deepseek-chat",
+    isCliWrapped: false,
+    inputPricePer1M: 0.27,
+    outputPricePer1M: 1.1
+  },
+  // ---- Mistral ----
+  {
+    id: "mistral/codestral-latest",
+    shortId: "codestral",
+    displayName: "Codestral",
+    family: "mistral",
+    authTypes: ["api-key"],
+    contextWindow: 256e3,
+    maxOutputTokens: 8192,
+    capabilities: BASIC_CAPS,
+    color: "#F97316",
+    sdkProvider: "@ai-sdk/mistral",
+    sdkModelId: "codestral-latest",
+    isCliWrapped: false,
+    inputPricePer1M: 0.3,
+    outputPricePer1M: 0.9
+  },
+  // ---- xAI ----
+  {
+    id: "xai/grok-3",
+    shortId: "grok-3",
+    displayName: "Grok 3",
+    family: "xai",
+    authTypes: ["api-key"],
+    contextWindow: 131072,
+    maxOutputTokens: 8192,
+    capabilities: ALL_CAPS,
+    color: "#EF4444",
+    sdkProvider: "@ai-sdk/xai",
+    sdkModelId: "grok-3",
+    isCliWrapped: false,
+    inputPricePer1M: 3,
+    outputPricePer1M: 15
+  },
+  // ---- OpenRouter ----
+  {
+    id: "openrouter/auto",
+    shortId: "openrouter-auto",
+    displayName: "OpenRouter Auto",
+    family: "openrouter",
+    authTypes: ["openrouter"],
+    contextWindow: 2e5,
+    maxOutputTokens: 16384,
+    capabilities: ALL_CAPS,
+    color: "#A855F7",
+    sdkProvider: "@openrouter/ai-sdk-provider",
+    sdkModelId: "openrouter/auto",
+    isCliWrapped: false
+  },
+  // ---- Local (Ollama) ----
+  {
+    id: "ollama/llama-3.3",
+    shortId: "llama-3.3",
+    displayName: "Llama 3.3 (Local)",
+    family: "ollama",
+    authTypes: ["local"],
+    contextWindow: 128e3,
+    maxOutputTokens: 4096,
+    capabilities: BASIC_CAPS,
+    color: "#71717A",
+    sdkProvider: "@ai-sdk/openai-compatible",
+    sdkModelId: "auto",
+    isCliWrapped: false
+  },
+  {
+    id: "lmstudio/auto",
+    shortId: "lmstudio-auto",
+    displayName: "LM Studio (Auto)",
+    family: "lmstudio",
+    authTypes: ["local"],
+    contextWindow: 128e3,
+    maxOutputTokens: 8192,
+    capabilities: BASIC_CAPS,
+    color: "#64748B",
+    sdkProvider: "@ai-sdk/openai-compatible",
+    sdkModelId: "auto",
+    isCliWrapped: false
+  },
+  {
+    id: "vllm/auto",
+    shortId: "vllm-auto",
+    displayName: "vLLM (Auto)",
+    family: "vllm",
+    authTypes: ["local"],
+    contextWindow: 128e3,
+    maxOutputTokens: 8192,
+    capabilities: BASIC_CAPS,
+    color: "#475569",
+    sdkProvider: "@ai-sdk/openai-compatible",
+    sdkModelId: "auto",
+    isCliWrapped: false
+  }
+];
+var byId = /* @__PURE__ */ new Map();
+var byShortId = /* @__PURE__ */ new Map();
+var byAlias = /* @__PURE__ */ new Map();
+function rebuildIndexes() {
+  byId = /* @__PURE__ */ new Map();
+  byShortId = /* @__PURE__ */ new Map();
+  byAlias = /* @__PURE__ */ new Map();
+  for (const m of MODEL_REGISTRY) {
+    byId.set(m.id, m);
+    byShortId.set(m.shortId, m);
+    for (const alias of m.aliases ?? []) {
+      const normalized = alias.trim().toLowerCase();
+      if (normalized.length) byAlias.set(normalized, m);
+    }
+  }
+}
+rebuildIndexes();
+function getModelById(id) {
+  return byId.get(id);
+}
+function getAvailableModels(detectedAuth) {
+  const hasAuth = (matcher) => detectedAuth.some((auth) => matcher(auth));
+  const FAMILY_TO_CLI = {
+    openai: "codex",
+    anthropic: "claude",
+    google: "gemini"
+  };
+  const hasMappedCli = (family) => {
+    const requiredCli = FAMILY_TO_CLI[family] ?? null;
+    if (!requiredCli) return hasAuth((auth) => auth.type === "cli-subscription");
+    return hasAuth(
+      (auth) => auth.type === "cli-subscription" && (!auth.cli || auth.cli === requiredCli)
+    );
+  };
+  const hasMappedLocal = (family) => {
+    const requiredProvider = family === "ollama" || family === "lmstudio" || family === "vllm" ? family : null;
+    if (!requiredProvider) return hasAuth((auth) => auth.type === "local");
+    return hasAuth(
+      (auth) => auth.type === "local" && (!auth.provider || auth.provider === requiredProvider)
+    );
+  };
+  const hasAuthForModel = (model) => model.authTypes.some((authType) => {
+    if (authType === "cli-subscription") return hasMappedCli(model.family);
+    if (authType === "api-key") {
+      return hasAuth(
+        (auth) => auth.type === "api-key" && (!auth.provider || auth.provider === model.family)
+      );
+    }
+    if (authType === "openrouter") return hasAuth((auth) => auth.type === "openrouter");
+    if (authType === "local") return hasMappedLocal(model.family);
+    if (authType === "oauth") return hasAuth((auth) => auth.type === "oauth");
+    return false;
+  });
+  return MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
+}
+function resolveModelAlias(alias) {
+  const normalized = alias.trim().toLowerCase();
+  return byId.get(normalized) ?? byShortId.get(normalized) ?? byAlias.get(normalized);
+}
+function resolveModelDescriptor(modelRef) {
+  const normalized = modelRef.trim();
+  if (!normalized.length) return void 0;
+  return getModelById(normalized) ?? resolveModelAlias(normalized);
+}
+function resolveCliProviderForModel(descriptor) {
+  if (!descriptor.isCliWrapped) return null;
+  if (descriptor.family === "anthropic") return "claude";
+  if (descriptor.family === "openai") return "codex";
+  return null;
+}
+function classifyWorkerExecutionPath(descriptor) {
+  if (resolveCliProviderForModel(descriptor)) return "cli";
+  if (descriptor.authTypes.includes("local")) return "local";
+  return "api";
+}
+function enrichModelRegistry(enrichments) {
+  let updated = 0;
+  for (const descriptor of MODEL_REGISTRY) {
+    const enrichment = enrichments.get(descriptor.sdkModelId);
+    if (!enrichment) continue;
+    if (enrichment.contextWindow && enrichment.contextWindow > 0) {
+      descriptor.contextWindow = enrichment.contextWindow;
+    }
+    if (enrichment.maxOutputTokens && enrichment.maxOutputTokens > 0) {
+      descriptor.maxOutputTokens = enrichment.maxOutputTokens;
+    }
+    if (enrichment.capabilities) {
+      Object.assign(descriptor.capabilities, enrichment.capabilities);
+    }
+    updated++;
+  }
+  return updated;
+}
+function getModelPricing(sdkModelId) {
+  if (_dynamicPricingOverrides[sdkModelId]) {
+    return _dynamicPricingOverrides[sdkModelId];
+  }
+  const model = MODEL_REGISTRY.find((m) => m.sdkModelId === sdkModelId);
+  if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
+    return { input: model.inputPricePer1M, output: model.outputPricePer1M };
+  }
+  return void 0;
+}
+var _dynamicPricingOverrides = {};
+function updateModelPricingInRegistry(updates) {
+  let count = 0;
+  for (const [modelId, pricing] of Object.entries(updates)) {
+    if (pricing.input >= 0 && pricing.output >= 0) {
+      _dynamicPricingOverrides[modelId] = pricing;
+      count++;
+    }
+  }
+  return count;
+}
+
 // ../desktop/src/main/services/orchestrator/executionPolicy.ts
 var DEFAULT_EXECUTION_POLICY = {
   planning: { mode: "auto", model: "anthropic/claude-sonnet-4-6" },
@@ -17081,9 +17284,9 @@ function stepTypeToPhase(stepType, taskType) {
   if (primary === "test_review" || secondary === "test_review" || primary === "review_test" || secondary === "review_test") {
     return "testReview";
   }
-  if (primary === "analysis" || secondary === "analysis") return "planning";
-  if (primary === "code" || primary === "implementation" || secondary === "code" || secondary === "implementation") return "implementation";
-  if (primary === "test" || primary === "validation" || secondary === "test" || secondary === "validation") return "testing";
+  if (primary === "analysis" || secondary === "analysis") return "implementation";
+  if (primary === "code" || primary === "implementation" || primary === "development" || secondary === "code" || secondary === "implementation" || secondary === "development") return "implementation";
+  if (primary === "test" || primary === "testing" || primary === "validation" || secondary === "test" || secondary === "testing" || secondary === "validation") return "testing";
   if (primary === "milestone" || secondary === "milestone") return "validation";
   if (primary === "review" && (secondary === "test" || secondary === "validation") || secondary === "review" && primary === "test") {
     return "testReview";
@@ -17107,7 +17310,6 @@ function evaluateRunCompletion(steps, policy) {
     }
   }
   const phaseRequired = {
-    planning: policy.planning.mode !== "off",
     implementation: true,
     // always required
     testing: policy.testing.mode !== "none",
@@ -17117,7 +17319,6 @@ function evaluateRunCompletion(steps, policy) {
     integration: !!policy.integrationPr && hasMultipleLanes(steps)
   };
   const allPhases = [
-    "planning",
     "implementation",
     "testing",
     "validation",
@@ -17291,13 +17492,13 @@ function phaseModelToExecutorKind(model, fallback = "unified") {
 }
 function phaseKeyToExecutionPhase(phaseKey) {
   const key = phaseKey.trim().toLowerCase();
-  if (key === "planning" || key === "analysis") return "planning";
-  if (key === "implementation" || key === "code") return "implementation";
+  if (key === "planning" || key === "analysis") return "implementation";
+  if (key === "implementation" || key === "development" || key === "code") return "implementation";
   if (key === "testing" || key === "test") return "testing";
   if (key === "validation") return "validation";
   if (key === "code_review" || key === "codereview" || key === "review") return "codeReview";
   if (key === "test_review" || key === "testreview") return "testReview";
-  if (key === "integration") return "integration";
+  if (key === "integration" || key === "merge" || key === "pr_conflict_resolution") return "integration";
   return null;
 }
 function evaluateRunCompletionFromPhases(steps, phases, settings) {
@@ -17316,10 +17517,14 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
   }
   const enabledPhases = /* @__PURE__ */ new Set();
   const requiredPhases = /* @__PURE__ */ new Set();
+  const phaseLabelByExecution = /* @__PURE__ */ new Map();
   for (const card of phases) {
     const ep = phaseKeyToExecutionPhase(card.phaseKey);
     if (ep) {
       enabledPhases.add(ep);
+      if (!phaseLabelByExecution.has(ep)) {
+        phaseLabelByExecution.set(ep, card.name || card.phaseKey || ep);
+      }
       if (card.validationGate.required) {
         requiredPhases.add(ep);
       }
@@ -17331,7 +17536,6 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
     enabledPhases.add("integration");
   }
   const allPhases = [
-    "planning",
     "implementation",
     "testing",
     "validation",
@@ -17343,12 +17547,13 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
     const stepsInPhase = phaseSteps.get(phase) ?? [];
     const required2 = requiredPhases.has(phase);
     const enabled = enabledPhases.has(phase);
+    const phaseLabel = phaseLabelByExecution.get(phase) ?? phase;
     if (stepsInPhase.length === 0) {
       if (required2) {
         diagnostics.push({
           phase,
           code: "phase_required_missing",
-          message: `Required phase "${phase}" has no steps`,
+          message: `Required phase "${phaseLabel}" has no steps`,
           blocking: true
         });
         riskFactors.push(`${phase}_required_but_missing`);
@@ -17356,7 +17561,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
         diagnostics.push({
           phase,
           code: "phase_skipped_by_policy",
-          message: `Phase "${phase}" not included in phase cards`,
+          message: `Phase "${phaseLabel}" not included in phase cards`,
           blocking: false
         });
       }
@@ -17372,7 +17577,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
       diagnostics.push({
         phase,
         code: "phase_succeeded",
-        message: `Phase "${phase}" completed successfully`,
+        message: `Phase "${phaseLabel}" completed successfully`,
         blocking: false
       });
     } else if (anyFailed && allTerminal) {
@@ -17380,7 +17585,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
       diagnostics.push({
         phase,
         code: "phase_failed",
-        message: `Phase "${phase}" has failed steps`,
+        message: `Phase "${phaseLabel}" has failed steps`,
         blocking
       });
       if (!blocking && required2) {
@@ -17390,7 +17595,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
       diagnostics.push({
         phase,
         code: "phase_in_progress",
-        message: `Phase "${phase}" still in progress`,
+        message: `Phase "${phaseLabel}" still in progress`,
         blocking: true
       });
     }
@@ -17447,542 +17652,20 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
   return { status, diagnostics, riskFactors, completionReady };
 }
 
-// ../desktop/src/main/services/missions/missionPlanner.ts
-var ANALYSIS_WORDS = ["analyze", "analysis", "investigate", "research", "understand", "audit", "review", "plan"];
-var IMPLEMENT_WORDS = ["implement", "refactor", "fix", "build", "create", "update", "add", "remove", "migrate", "ship", "write"];
-var VALIDATION_WORDS = ["test", "verify", "validate", "check", "lint", "typecheck", "ci", "qa"];
-var INTEGRATION_WORDS = ["merge", "integrate", "reconcile", "combine", "conflict", "land", "cherry-pick"];
-var SUMMARY_WORDS = ["summary", "summarize", "handoff", "report", "pr", "pull request", "document"];
-var ACTION_HINT_WORDS = [
-  ...ANALYSIS_WORDS,
-  ...IMPLEMENT_WORDS,
-  ...VALIDATION_WORDS,
-  ...INTEGRATION_WORDS,
-  ...SUMMARY_WORDS,
-  "harden",
-  "instrument",
-  "expose",
-  "show",
-  "prove"
-];
-var NON_EXECUTABLE_LINE_RE = /^(?:goals?|plan requirements?|hard constraints?|constraints?|important|notes?|final output|output)\s*:?\s*$/i;
-var NON_EXECUTABLE_PHRASES = [
-  "keep changes minimal",
-  "changes minimal and focused",
-  "exercise real parallel fan-out",
-  "dependency-safe joins",
-  "clean terminal completion",
-  "no manual intervention",
-  "step titles must be descriptive",
-  "run roots concurrently when dependencies allow"
-];
-function normalizePrompt(prompt) {
-  return prompt.replace(/\r\n/g, "\n").split("\n").map((line) => line.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-function toWords(input) {
-  return input.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).map((entry) => entry.trim()).filter(Boolean);
-}
-function hasAnyKeyword(input, keywords) {
-  const lower = input.toLowerCase();
-  return keywords.some((keyword) => lower.includes(keyword));
-}
-function slugify2(input) {
-  const slug = input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
-  return slug.length ? slug : "step";
-}
-function dedupe(values) {
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const value of values) {
-    const key = value.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(value);
-  }
-  return out;
-}
-function hasActionHint(task) {
-  const lower = task.toLowerCase();
-  return ACTION_HINT_WORDS.some((word) => lower.includes(word));
-}
-function isActionableTask(task) {
-  const normalized = task.replace(/\s+/g, " ").trim().replace(/[.;]+$/g, "").trim();
-  if (normalized.length < 8) return false;
-  if (NON_EXECUTABLE_LINE_RE.test(normalized)) return false;
-  const lower = normalized.toLowerCase();
-  if (NON_EXECUTABLE_PHRASES.some((phrase) => lower.includes(phrase))) return false;
-  if (normalized.endsWith(":")) return false;
-  if (hasActionHint(lower)) return true;
-  return /^(?:backend|runtime|ui|frontend|api|docs?|tests?|review)\b/i.test(normalized);
-}
-function extractTaskCandidates(prompt) {
-  const lines = prompt.replace(/\r\n/g, "\n").split("\n").map((line) => line.replace(/\s+$/g, "")).filter((line) => line.trim().length > 0);
-  const bulletLineRe = /^(\s*)(?:[-*•]|\d+[.)])\s+(.+)$/;
-  const bulletTasks = lines.map((line, index) => {
-    const match = line.match(bulletLineRe);
-    if (!match?.[2]) return null;
-    return {
-      index,
-      indent: match[1]?.length ?? 0,
-      task: match[2].trim()
-    };
-  }).filter((entry) => Boolean(entry)).filter((entry) => {
-    if (!entry.task.endsWith(":")) return true;
-    const nextLine = lines[entry.index + 1];
-    if (!nextLine) return true;
-    const nextMatch = nextLine.match(bulletLineRe);
-    if (!nextMatch) return true;
-    const nextIndent = nextMatch[1]?.length ?? 0;
-    return nextIndent <= entry.indent;
-  }).map((entry) => entry.task.replace(/\s+/g, " ").trim()).filter((task) => isActionableTask(task));
-  if (bulletTasks.length >= 2) {
-    return dedupe(bulletTasks.map((task) => task.slice(0, 140)));
-  }
-  const sentenceTasks = normalizePrompt(prompt).replace(/\n/g, " ").split(/(?<=[.!?;])\s+|\s+\band\b\s+/i).map((entry) => entry.trim()).filter((entry) => entry.length >= 8).map((entry) => entry.replace(/[.!?;]+$/g, "").trim()).filter((entry) => isActionableTask(entry));
-  return dedupe(sentenceTasks.slice(0, 8).map((task) => task.slice(0, 140)));
-}
-function classifyTask(task) {
-  if (hasAnyKeyword(task, SUMMARY_WORDS)) return "summary";
-  if (hasAnyKeyword(task, INTEGRATION_WORDS)) return "integration";
-  if (hasAnyKeyword(task, VALIDATION_WORDS)) return "validation";
-  if (hasAnyKeyword(task, ANALYSIS_WORDS)) return "analysis";
-  return "implementation";
-}
-function deriveJoinPolicy(prompt, branchCount) {
-  if (branchCount <= 1) {
-    return {
-      joinPolicy: "all_success",
-      quorumCount: null
-    };
-  }
-  const lower = prompt.toLowerCase();
-  const quorumMatch = lower.match(/\b(?:quorum|at least)\s+(\d+)\b/);
-  const quorum = quorumMatch ? Number(quorumMatch[1]) : NaN;
-  if (Number.isFinite(quorum) && quorum > 0) {
-    return {
-      joinPolicy: "quorum",
-      quorumCount: Math.max(1, Math.min(branchCount, Math.floor(quorum)))
-    };
-  }
-  if (/\b(?:either|any one|any of|one of)\b/.test(lower)) {
-    return {
-      joinPolicy: "any_success",
-      quorumCount: null
-    };
-  }
-  return {
-    joinPolicy: "all_success",
-    quorumCount: null
-  };
-}
-function buildPolicy(args) {
-  const claimScopes = [];
-  if (args.laneId && (args.kind === "integration" || args.kind === "merge" || args.kind === "validation")) {
-    claimScopes.push({
-      scopeKind: "lane",
-      scopeValue: `lane:${args.laneId}`,
-      ttlMs: 6e4
-    });
-  } else if (args.parallelBranch) {
-    claimScopes.push({
-      scopeKind: "file",
-      scopeValue: `planner:${slugify2(args.title)}`,
-      ttlMs: 45e3
-    });
-  }
-  return {
-    includeNarrative: false,
-    includeFullDocs: args.kind === "analysis" || args.kind === "integration",
-    docsMaxBytes: args.kind === "analysis" ? 16e4 : 12e4,
-    claimScopes
-  };
-}
-function toPlannerStep(step, index, strategy, keywords) {
-  const rawStepType = String(step.extraMetadata?.stepType ?? step.extraMetadata?.taskType ?? step.kind ?? "").trim().toLowerCase();
-  const roleClass = step.kind === "analysis" ? "planning" : step.kind === "implementation" ? "implementation" : step.kind === "integration" ? "integration" : step.kind === "merge" ? "merge" : step.kind === "summary" ? "handoff" : rawStepType === "review" || rawStepType === "test_review" || rawStepType === "review_test" ? "review" : "testing";
-  const metadata = {
-    stepType: step.kind,
-    dependencyIndices: step.dependencyIndices,
-    joinPolicy: step.joinPolicy,
-    quorumCount: step.quorumCount,
-    retryLimit: step.retryLimit,
-    executorKind: step.executorKind,
-    doneCriteria: step.doneCriteria,
-    policy: step.policy,
-    planner: {
-      version: "ade.missionPlanner.v1",
-      strategy,
-      splitReason: step.splitReason,
-      keywords
-    },
-    roleClass,
-    requiresDedicatedWorker: roleClass === "review" || roleClass === "testing" || roleClass === "integration",
-    role: step.kind === "analysis" ? "planning" : step.kind === "implementation" ? "implementation" : step.kind === "validation" ? "testing" : step.kind === "integration" ? "integration" : step.kind === "summary" ? "merge" : step.kind === "merge" ? "merge" : "implementation"
-  };
-  if (Number.isFinite(step.timeoutMs ?? NaN) && (step.timeoutMs ?? 0) > 0) {
-    metadata.timeoutMs = Math.floor(step.timeoutMs);
-  }
-  if (step.extraMetadata) {
-    for (const [key, value] of Object.entries(step.extraMetadata)) {
-      metadata[key] = value;
-    }
-  }
-  return {
-    index,
-    title: step.title,
-    detail: step.detail,
-    kind: step.kind,
-    metadata
-  };
-}
-function detectSlashCommands(prompt) {
-  return prompt.split("\n").map((line) => line.trim()).filter((line) => /^\/[a-zA-Z]/.test(line));
-}
-function buildDeterministicMissionPlan(args) {
-  const prompt = normalizePrompt(args.prompt);
-  const policy = args.policy;
-  const laneId = typeof args.laneId === "string" && args.laneId.trim().length ? args.laneId.trim() : null;
-  const taskCandidates = extractTaskCandidates(prompt);
-  const lowerPrompt = prompt.toLowerCase();
-  const promptWords = toWords(prompt);
-  const keywords = dedupe(promptWords.filter(
-    (word) => ANALYSIS_WORDS.includes(word) || IMPLEMENT_WORDS.includes(word) || VALIDATION_WORDS.includes(word) || INTEGRATION_WORDS.includes(word) || SUMMARY_WORDS.includes(word)
-  ));
-  const classified = taskCandidates.map((task) => ({
-    task,
-    kind: classifyTask(task)
-  }));
-  const workCandidates = classified.filter((entry) => entry.kind === "implementation" || entry.kind === "analysis").map((entry) => entry.task);
-  const validationCandidates = classified.filter((entry) => entry.kind === "validation").map((entry) => entry.task);
-  const summaryCandidates = classified.filter((entry) => entry.kind === "summary").map((entry) => entry.task);
-  const explicitIntegration = classified.some((entry) => entry.kind === "integration");
-  const explicitParallelRootIntent = /\bparallel\b/.test(lowerPrompt) && (/\broot\b/.test(lowerPrompt) || /\bfan[-\s]?out\b/.test(lowerPrompt) || /\bbranches?\b/.test(lowerPrompt));
-  const strategy = workCandidates.length >= 2 ? "parallel_execution_branches_with_join" : explicitIntegration ? "single_branch_with_explicit_integration_gate" : "single_branch_default";
-  const analysisExecutor = policy ? phaseModelToExecutorKind(policy.planning.model) : "unified";
-  const implExecutor = policy ? phaseModelToExecutorKind(policy.implementation.model) : "unified";
-  const testExecutor = policy ? phaseModelToExecutorKind(policy.testing.model) : "unified";
-  const reviewExecutor = policy?.codeReview.model ? phaseModelToExecutorKind(policy.codeReview.model) : "unified";
-  const testReviewExecutor = policy?.testReview.model ? phaseModelToExecutorKind(policy.testReview.model) : "unified";
-  const integrationExecutor = "unified";
-  const rawSteps = [];
-  let previousIndex = -1;
-  let analysisIndex = -1;
-  const shouldSeedAnalysis = (!explicitParallelRootIntent || workCandidates.length < 2) && (prompt.length >= 120 || hasAnyKeyword(prompt, ANALYSIS_WORDS) || taskCandidates.length >= 3);
-  if (shouldSeedAnalysis) {
-    const index = rawSteps.length;
-    analysisIndex = index;
-    rawSteps.push({
-      title: "Clarify mission constraints and success signal",
-      detail: "Collect deterministic constraints from packs and mission prompt before execution.",
-      kind: "analysis",
-      dependencyIndices: [],
-      joinPolicy: "all_success",
-      quorumCount: null,
-      timeoutMs: 18e4,
-      retryLimit: 0,
-      executorKind: analysisExecutor,
-      doneCriteria: "Context baseline and explicit success criteria are recorded for downstream steps.",
-      splitReason: "Mission prompt requires up-front deterministic scoping.",
-      policy: buildPolicy({
-        kind: "analysis",
-        laneId,
-        title: "analysis",
-        parallelBranch: false
-      }),
-      extraMetadata: policy?.planning.reasoningEffort ? { reasoningEffort: policy.planning.reasoningEffort } : void 0
-    });
-    previousIndex = index;
-  }
-  const effectiveWork = workCandidates.length > 0 ? workCandidates : ["Implement the mission objective"];
-  const parallelBranches = effectiveWork.length >= 2 ? effectiveWork.slice(0, 3) : effectiveWork.slice(0, 1);
-  const fanOutDependencies = analysisIndex >= 0 ? [analysisIndex] : [];
-  const workIndexes = [];
-  const isTdd = policy?.testing.mode === "tdd";
-  for (const workTask of parallelBranches) {
-    const implDependencyIndices = parallelBranches.length > 1 ? [...fanOutDependencies] : analysisIndex >= 0 ? [analysisIndex] : previousIndex >= 0 ? [previousIndex] : [];
-    if (isTdd) {
-      const testIndex = rawSteps.length;
-      rawSteps.push({
-        title: `Write tests for: ${workTask}`,
-        detail: "Write test cases before implementation (TDD).",
-        kind: "validation",
-        dependencyIndices: [...implDependencyIndices],
-        joinPolicy: "all_success",
-        quorumCount: null,
-        timeoutMs: 3e5,
-        retryLimit: 1,
-        executorKind: testExecutor,
-        doneCriteria: "Test cases are written and ready for implementation to satisfy.",
-        splitReason: "TDD policy requires test-first workflow.",
-        policy: buildPolicy({
-          kind: "validation",
-          laneId,
-          title: `tdd-test-${slugify2(workTask)}`,
-          parallelBranch: parallelBranches.length > 1
-        }),
-        extraMetadata: {
-          stepType: "test",
-          taskType: "test",
-          ...policy?.testing.reasoningEffort ? { reasoningEffort: policy.testing.reasoningEffort } : {}
-        }
-      });
-      const implIndex = rawSteps.length;
-      workIndexes.push(implIndex);
-      rawSteps.push({
-        title: workTask,
-        detail: "Execute this branch and keep outputs isolated for deterministic integration.",
-        kind: "implementation",
-        dependencyIndices: [testIndex],
-        joinPolicy: "all_success",
-        quorumCount: null,
-        timeoutMs: 42e4,
-        retryLimit: 1,
-        executorKind: implExecutor,
-        doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
-        splitReason: parallelBranches.length > 1 ? "Prompt included multiple executable units that can run concurrently." : "Prompt maps to a single executable workstream.",
-        policy: buildPolicy({
-          kind: "implementation",
-          laneId,
-          title: workTask,
-          parallelBranch: parallelBranches.length > 1
-        }),
-        extraMetadata: policy?.implementation.reasoningEffort ? { reasoningEffort: policy.implementation.reasoningEffort } : void 0
-      });
-      previousIndex = implIndex;
-    } else {
-      const index = rawSteps.length;
-      workIndexes.push(index);
-      rawSteps.push({
-        title: workTask,
-        detail: "Execute this branch and keep outputs isolated for deterministic integration.",
-        kind: "implementation",
-        dependencyIndices: [...implDependencyIndices],
-        joinPolicy: "all_success",
-        quorumCount: null,
-        timeoutMs: 42e4,
-        retryLimit: 1,
-        executorKind: implExecutor,
-        doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
-        splitReason: parallelBranches.length > 1 ? "Prompt included multiple executable units that can run concurrently." : "Prompt maps to a single executable workstream.",
-        policy: buildPolicy({
-          kind: "implementation",
-          laneId,
-          title: workTask,
-          parallelBranch: parallelBranches.length > 1
-        }),
-        extraMetadata: policy?.implementation.reasoningEffort ? { reasoningEffort: policy.implementation.reasoningEffort } : void 0
-      });
-      previousIndex = index;
-    }
-  }
-  if (policy && policy.codeReview.mode !== "off") {
-    const index = rawSteps.length;
-    rawSteps.push({
-      title: "Code review gate",
-      detail: "Review implementation outputs for quality, correctness, and adherence to standards.",
-      kind: "validation",
-      dependencyIndices: workIndexes.length ? [...workIndexes] : previousIndex >= 0 ? [previousIndex] : [],
-      joinPolicy: "all_success",
-      quorumCount: null,
-      timeoutMs: 6e5,
-      retryLimit: 0,
-      executorKind: reviewExecutor,
-      doneCriteria: "Review feedback is recorded and blocking issues are flagged.",
-      splitReason: "Execution policy requires code review before validation/summary.",
-      policy: buildPolicy({
-        kind: "validation",
-        laneId,
-        title: "code-review",
-        parallelBranch: false
-      }),
-      extraMetadata: {
-        taskType: "review",
-        stepType: "review",
-        ...policy.codeReview.reasoningEffort ? { reasoningEffort: policy.codeReview.reasoningEffort } : {}
-      }
-    });
-    previousIndex = index;
-  }
-  const hasParallelJoin = workIndexes.length > 1 || explicitIntegration;
-  if (hasParallelJoin) {
-    const joinConfig = deriveJoinPolicy(prompt, workIndexes.length || 1);
-    const index = rawSteps.length;
-    rawSteps.push({
-      title: "Integrate branch outputs",
-      detail: "Verify cross-branch compatibility and consolidate a single integration result.",
-      kind: "integration",
-      dependencyIndices: workIndexes.length ? workIndexes : previousIndex >= 0 ? [previousIndex] : [],
-      joinPolicy: joinConfig.joinPolicy,
-      quorumCount: joinConfig.quorumCount,
-      timeoutMs: 9e5,
-      retryLimit: 1,
-      executorKind: integrationExecutor,
-      doneCriteria: "Cross-branch contracts are validated and integration outputs are summarized for downstream gates.",
-      splitReason: "Parallel branches require a compatibility gate before validation.",
-      policy: buildPolicy({
-        kind: "integration",
-        laneId,
-        title: "integration",
-        parallelBranch: false
-      }),
-      extraMetadata: void 0
-    });
-    previousIndex = index;
-  }
-  const skipValidation = policy?.testing.mode === "none";
-  if (!skipValidation) {
-    const validationTitle = validationCandidates[0] ?? "Run deterministic verification checks";
-    const index = rawSteps.length;
-    rawSteps.push({
-      title: validationTitle,
-      detail: "Execute deterministic checks and classify failures before completion.",
-      kind: "validation",
-      dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
-      joinPolicy: "all_success",
-      quorumCount: null,
-      timeoutMs: 6e5,
-      retryLimit: 1,
-      executorKind: testExecutor,
-      doneCriteria: "Required checks complete and outcomes are attached to mission artifacts/handoffs.",
-      splitReason: "Validation gate ensures deterministic completion criteria.",
-      policy: buildPolicy({
-        kind: "validation",
-        laneId,
-        title: validationTitle,
-        parallelBranch: false
-      }),
-      extraMetadata: policy?.testing.reasoningEffort ? { reasoningEffort: policy.testing.reasoningEffort } : void 0
-    });
-    previousIndex = index;
-  }
-  if (policy && policy.testReview.mode !== "off" && policy.testing.mode !== "none") {
-    const index = rawSteps.length;
-    rawSteps.push({
-      title: "Test review gate",
-      detail: "Review test outcomes and failure diagnostics before final handoff/merge.",
-      kind: "validation",
-      dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
-      joinPolicy: "all_success",
-      quorumCount: null,
-      timeoutMs: 42e4,
-      retryLimit: 0,
-      executorKind: testReviewExecutor,
-      doneCriteria: "Test findings are reviewed and release blockers are called out explicitly.",
-      splitReason: "Execution policy requires a dedicated test review phase.",
-      policy: buildPolicy({
-        kind: "validation",
-        laneId,
-        title: "test-review",
-        parallelBranch: false
-      }),
-      extraMetadata: {
-        taskType: "test_review",
-        stepType: "test_review",
-        reviewTarget: "tests",
-        ...policy.testReview.reasoningEffort ? { reasoningEffort: policy.testReview.reasoningEffort } : {}
-      }
-    });
-    previousIndex = index;
-  }
-  const summaryTitle = summaryCandidates[0] ?? "Record mission outcomes and handoff artifacts";
-  rawSteps.push({
-    title: summaryTitle,
-    detail: "Finalize mission summary, artifacts, and runtime provenance for audit/history.",
-    kind: "summary",
-    dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
-    joinPolicy: "all_success",
-    quorumCount: null,
-    timeoutMs: 18e4,
-    retryLimit: 0,
-    executorKind: "unified",
-    doneCriteria: "Outcome summary and required artifact links are persisted for operators.",
-    splitReason: "Mission completion requires a deterministic audit and handoff record.",
-    policy: buildPolicy({
-      kind: "summary",
-      laneId,
-      title: summaryTitle,
-      parallelBranch: false
-    })
-  });
-  const slashCommands = detectSlashCommands(args.prompt);
-  for (const cmd of slashCommands) {
-    const depIndex = rawSteps.length - 1;
-    const cmdBase = cmd.split(/\s/)[0];
-    const translation = SLASH_COMMAND_TRANSLATIONS[cmdBase];
-    if (translation) {
-      rawSteps.push({
-        title: cmd,
-        detail: translation.prompt,
-        kind: "implementation",
-        dependencyIndices: depIndex >= 0 ? [depIndex] : [],
-        joinPolicy: "all_success",
-        quorumCount: null,
-        timeoutMs: 3e5,
-        retryLimit: 0,
-        executorKind: "unified",
-        doneCriteria: "Slash command execution completed.",
-        splitReason: "Slash command detected in prompt.",
-        policy: buildPolicy({
-          kind: "implementation",
-          laneId,
-          title: cmd,
-          parallelBranch: false
-        }),
-        extraMetadata: {
-          stepType: "command",
-          slashCommand: cmd,
-          instructions: translation.prompt
-        }
-      });
-    } else {
-      rawSteps.push({
-        title: cmd,
-        detail: `Execute slash command: ${cmd}`,
-        kind: "implementation",
-        dependencyIndices: depIndex >= 0 ? [depIndex] : [],
-        joinPolicy: "all_success",
-        quorumCount: null,
-        timeoutMs: 3e5,
-        retryLimit: 0,
-        executorKind: "unified",
-        doneCriteria: "Slash command execution completed.",
-        splitReason: "Slash command detected in prompt.",
-        policy: buildPolicy({
-          kind: "implementation",
-          laneId,
-          title: cmd,
-          parallelBranch: false
-        }),
-        extraMetadata: {
-          startupCommand: cmd,
-          stepType: "command",
-          slashCommand: cmd
-        }
-      });
-    }
-  }
-  return {
-    plannerVersion: "ade.missionPlanner.v1",
-    strategy,
-    keywords,
-    steps: rawSteps.map((step, index) => toPlannerStep(step, index, strategy, keywords))
-  };
-}
-
 // ../desktop/src/main/services/missions/phaseEngine.ts
 var BUILT_IN_PHASE_KEYS = {
   planning: "planning",
   development: "development",
   testing: "testing",
   validation: "validation",
+  /** @deprecated Legacy phase key retained only for backward compatibility with existing mission metadata. */
   prAndConflicts: "pr_conflict_resolution"
 };
 var DEFAULT_MODELS = {
   [BUILT_IN_PHASE_KEYS.planning]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
   [BUILT_IN_PHASE_KEYS.development]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
   [BUILT_IN_PHASE_KEYS.testing]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "low" },
-  [BUILT_IN_PHASE_KEYS.validation]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
-  [BUILT_IN_PHASE_KEYS.prAndConflicts]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "low" }
+  [BUILT_IN_PHASE_KEYS.validation]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" }
 };
 function createBuiltInPhaseCards(at = nowIso()) {
   return [
@@ -17990,13 +17673,12 @@ function createBuiltInPhaseCards(at = nowIso()) {
       id: `builtin:${BUILT_IN_PHASE_KEYS.planning}`,
       phaseKey: BUILT_IN_PHASE_KEYS.planning,
       name: "Planning",
-      description: "Decompose mission goals into executable milestones and tasks.",
-      instructions: "Plan the mission into concrete steps, dependencies, and validation expectations before implementation.",
+      description: "Research, clarify requirements, and design the execution DAG.",
+      instructions: "Investigate the codebase, identify dependencies/risks, and produce a concrete execution plan before implementation.",
       model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.planning],
       budget: {},
       orderingConstraints: {
-        mustBeFirst: true,
-        mustPrecede: [BUILT_IN_PHASE_KEYS.development]
+        mustBeFirst: true
       },
       askQuestions: {
         enabled: true,
@@ -18021,9 +17703,7 @@ function createBuiltInPhaseCards(at = nowIso()) {
       instructions: "Execute implementation tasks, update code, and publish structured progress/results.",
       model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.development],
       budget: {},
-      orderingConstraints: {
-        mustFollow: [BUILT_IN_PHASE_KEYS.planning]
-      },
+      orderingConstraints: {},
       askQuestions: {
         enabled: true,
         mode: "auto_if_uncertain",
@@ -18047,10 +17727,7 @@ function createBuiltInPhaseCards(at = nowIso()) {
       instructions: "Run tests, collect failures, and feed remediation details back into execution.",
       model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.testing],
       budget: {},
-      orderingConstraints: {
-        canLoop: true,
-        loopTarget: BUILT_IN_PHASE_KEYS.development
-      },
+      orderingConstraints: {},
       askQuestions: {
         enabled: false,
         mode: "never"
@@ -18073,9 +17750,7 @@ function createBuiltInPhaseCards(at = nowIso()) {
       instructions: "Validate done criteria, audit risk, and identify remaining obligations before completion.",
       model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.validation],
       budget: {},
-      orderingConstraints: {
-        mustFollow: [BUILT_IN_PHASE_KEYS.development]
-      },
+      orderingConstraints: {},
       askQuestions: {
         enabled: false,
         mode: "never"
@@ -18089,32 +17764,6 @@ function createBuiltInPhaseCards(at = nowIso()) {
       position: 3,
       createdAt: at,
       updatedAt: at
-    },
-    {
-      id: `builtin:${BUILT_IN_PHASE_KEYS.prAndConflicts}`,
-      phaseKey: BUILT_IN_PHASE_KEYS.prAndConflicts,
-      name: "PR & Conflict Resolution",
-      description: "Prepare PR strategy outputs and resolve merge conflicts.",
-      instructions: "Produce PR artifacts, integrate lane outputs, and resolve conflicts with full audit trail.",
-      model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.prAndConflicts],
-      budget: {},
-      orderingConstraints: {
-        mustBeLast: true,
-        mustFollow: [BUILT_IN_PHASE_KEYS.validation]
-      },
-      askQuestions: {
-        enabled: false,
-        mode: "never"
-      },
-      validationGate: {
-        tier: "self",
-        required: false
-      },
-      isBuiltIn: true,
-      isCustom: false,
-      position: 4,
-      createdAt: at,
-      updatedAt: at
     }
   ];
 }
@@ -18124,15 +17773,13 @@ function createBuiltInPhaseProfiles(cards, at = nowIso()) {
     BUILT_IN_PHASE_KEYS.planning,
     BUILT_IN_PHASE_KEYS.development,
     BUILT_IN_PHASE_KEYS.testing,
-    BUILT_IN_PHASE_KEYS.validation,
-    BUILT_IN_PHASE_KEYS.prAndConflicts
+    BUILT_IN_PHASE_KEYS.validation
   ];
   const tddKeys = [
     BUILT_IN_PHASE_KEYS.planning,
     BUILT_IN_PHASE_KEYS.testing,
     BUILT_IN_PHASE_KEYS.development,
-    BUILT_IN_PHASE_KEYS.validation,
-    BUILT_IN_PHASE_KEYS.prAndConflicts
+    BUILT_IN_PHASE_KEYS.validation
   ];
   const asPhaseList = (keys) => keys.map((key, index) => {
     const card = byKey.get(key);
@@ -18143,7 +17790,7 @@ function createBuiltInPhaseProfiles(cards, at = nowIso()) {
     {
       id: "builtin:default",
       name: "Default",
-      description: "Planning -> Development -> Testing -> Validation -> PR",
+      description: "Planning -> Development -> Testing -> Validation",
       phases: asPhaseList(defaultKeys),
       isBuiltIn: true,
       isDefault: true,
@@ -18153,7 +17800,7 @@ function createBuiltInPhaseProfiles(cards, at = nowIso()) {
     {
       id: "builtin:tdd",
       name: "TDD",
-      description: "Planning -> Testing -> Development -> Validation -> PR",
+      description: "Planning -> Testing -> Development -> Validation",
       phases: asPhaseList(tddKeys),
       isBuiltIn: true,
       isDefault: false,
@@ -18162,36 +17809,6 @@ function createBuiltInPhaseProfiles(cards, at = nowIso()) {
     }
   ];
 }
-function hasCycle(edges) {
-  const nodes = /* @__PURE__ */ new Set();
-  for (const [from, to] of edges) {
-    nodes.add(from);
-    nodes.add(to);
-  }
-  const visiting = /* @__PURE__ */ new Set();
-  const visited = /* @__PURE__ */ new Set();
-  const adjacency = /* @__PURE__ */ new Map();
-  for (const [from, to] of edges) {
-    const list = adjacency.get(from) ?? [];
-    list.push(to);
-    adjacency.set(from, list);
-  }
-  const dfs = (node) => {
-    if (visited.has(node)) return false;
-    if (visiting.has(node)) return true;
-    visiting.add(node);
-    for (const next of adjacency.get(node) ?? []) {
-      if (dfs(next)) return true;
-    }
-    visiting.delete(node);
-    visited.add(node);
-    return false;
-  };
-  for (const node of nodes) {
-    if (dfs(node)) return true;
-  }
-  return false;
-}
 function validatePhaseSequence(phases) {
   const errors = [];
   if (!phases.length) {
@@ -18199,58 +17816,27 @@ function validatePhaseSequence(phases) {
     return errors;
   }
   const byKey = /* @__PURE__ */ new Map();
+  let firstDevelopmentIndex = -1;
+  let firstPlanningIndex = -1;
   for (let i = 0; i < phases.length; i += 1) {
     const phase = phases[i];
-    if (!phase.phaseKey.trim()) {
+    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    if (!phaseKey) {
       errors.push(`Phase at position ${i + 1} is missing phaseKey.`);
       continue;
     }
-    if (byKey.has(phase.phaseKey)) {
+    if (byKey.has(phaseKey)) {
       errors.push(`Duplicate phase key: ${phase.phaseKey}.`);
     }
-    byKey.set(phase.phaseKey, i);
-    if (phase.orderingConstraints.mustBeFirst && i !== 0) {
-      errors.push(`${phase.name} must be first.`);
-    }
-    if (phase.orderingConstraints.mustBeLast && i !== phases.length - 1) {
-      errors.push(`${phase.name} must be last.`);
-    }
-    if (phase.orderingConstraints.canLoop && phase.orderingConstraints.loopTarget) {
-      if (!byKey.has(phase.orderingConstraints.loopTarget) && !phases.some((p) => p.phaseKey === phase.orderingConstraints.loopTarget)) {
-        errors.push(`${phase.name} loop target does not exist: ${phase.orderingConstraints.loopTarget}.`);
-      }
-    }
+    byKey.set(phaseKey, i);
+    if (phaseKey === BUILT_IN_PHASE_KEYS.development && firstDevelopmentIndex < 0) firstDevelopmentIndex = i;
+    if (phaseKey === BUILT_IN_PHASE_KEYS.planning && firstPlanningIndex < 0) firstPlanningIndex = i;
   }
-  for (let i = 0; i < phases.length; i += 1) {
-    const phase = phases[i];
-    for (const dep of phase.orderingConstraints.mustFollow ?? []) {
-      const depPos = byKey.get(dep);
-      if (depPos == null) {
-        errors.push(`${phase.name} requires missing predecessor: ${dep}.`);
-      } else if (depPos >= i) {
-        errors.push(`${phase.name} must follow ${dep}.`);
-      }
-    }
-    for (const dep of phase.orderingConstraints.mustPrecede ?? []) {
-      const depPos = byKey.get(dep);
-      if (depPos == null) {
-        errors.push(`${phase.name} requires missing successor: ${dep}.`);
-      } else if (depPos <= i) {
-        errors.push(`${phase.name} must precede ${dep}.`);
-      }
-    }
+  if (!byKey.has(BUILT_IN_PHASE_KEYS.development)) {
+    errors.push("Development phase is required.");
   }
-  const edges = [];
-  for (const phase of phases) {
-    for (const dep of phase.orderingConstraints.mustFollow ?? []) {
-      edges.push([dep, phase.phaseKey]);
-    }
-    for (const dep of phase.orderingConstraints.mustPrecede ?? []) {
-      edges.push([phase.phaseKey, dep]);
-    }
-  }
-  if (hasCycle(edges)) {
-    errors.push("Phase ordering constraints contain a cycle.");
+  if (firstPlanningIndex >= 0 && firstDevelopmentIndex >= 0 && firstPlanningIndex > firstDevelopmentIndex) {
+    errors.push("Planning phase must appear before development.");
   }
   return [...new Set(errors)];
 }
@@ -18280,11 +17866,13 @@ function inferPhaseKeyFromStep(kind, metadata, phases) {
   const stepType = typeof metadata.stepType === "string" ? metadata.stepType.trim() : "";
   const lowerKind = kind.toLowerCase();
   const lowerType = stepType.toLowerCase();
-  if (lowerType === "analysis") return BUILT_IN_PHASE_KEYS.planning;
+  if (lowerType === "analysis" || lowerType === "planning") {
+    return phases.some((phase) => phase.phaseKey === BUILT_IN_PHASE_KEYS.planning) ? BUILT_IN_PHASE_KEYS.planning : BUILT_IN_PHASE_KEYS.development;
+  }
   if (lowerType === "test" || lowerKind === "validation") return BUILT_IN_PHASE_KEYS.testing;
   if (lowerType === "milestone") return BUILT_IN_PHASE_KEYS.validation;
   if (lowerType === "review") return BUILT_IN_PHASE_KEYS.validation;
-  if (lowerType === "integration" || lowerType === "merge" || lowerKind === "integration") return BUILT_IN_PHASE_KEYS.prAndConflicts;
+  if (lowerType === "integration" || lowerType === "merge" || lowerKind === "integration") return BUILT_IN_PHASE_KEYS.validation;
   if (lowerKind === "summary") return BUILT_IN_PHASE_KEYS.validation;
   return BUILT_IN_PHASE_KEYS.development;
 }
@@ -18551,7 +18139,7 @@ function normalizeTeamRuntimeConfig(_missionId, config2) {
 
 // ../desktop/src/main/services/missions/missionService.ts
 var TERMINAL_MISSION_STATUSES = /* @__PURE__ */ new Set(["completed", "failed", "canceled"]);
-var ACTIVE_MISSION_STATUSES = /* @__PURE__ */ new Set(["in_progress", "planning", "plan_review", "intervention_required"]);
+var ACTIVE_MISSION_STATUSES = /* @__PURE__ */ new Set(["in_progress", "planning", "intervention_required"]);
 var DEFAULT_CONCURRENCY_CONFIG = {
   maxConcurrentMissions: 3,
   laneExclusivity: true
@@ -18564,10 +18152,9 @@ var PRIORITY_ORDER = {
 };
 var MISSION_TRANSITIONS = {
   queued: /* @__PURE__ */ new Set(["queued", "planning", "in_progress", "canceled"]),
-  planning: /* @__PURE__ */ new Set(["planning", "plan_review", "in_progress", "intervention_required", "failed", "canceled", "queued"]),
-  plan_review: /* @__PURE__ */ new Set(["plan_review", "in_progress", "queued", "failed", "canceled", "intervention_required"]),
-  in_progress: /* @__PURE__ */ new Set(["in_progress", "intervention_required", "completed", "failed", "canceled", "plan_review"]),
-  intervention_required: /* @__PURE__ */ new Set(["intervention_required", "in_progress", "failed", "canceled", "plan_review"]),
+  planning: /* @__PURE__ */ new Set(["planning", "in_progress", "intervention_required", "failed", "canceled", "queued"]),
+  in_progress: /* @__PURE__ */ new Set(["in_progress", "intervention_required", "completed", "failed", "canceled"]),
+  intervention_required: /* @__PURE__ */ new Set(["intervention_required", "in_progress", "failed", "canceled"]),
   completed: /* @__PURE__ */ new Set(["completed", "queued"]),
   failed: /* @__PURE__ */ new Set(["failed", "queued", "planning", "in_progress", "canceled"]),
   canceled: /* @__PURE__ */ new Set(["canceled", "queued", "planning", "in_progress"])
@@ -18581,7 +18168,6 @@ var STEP_TRANSITIONS = {
   skipped: /* @__PURE__ */ new Set(["skipped"]),
   canceled: /* @__PURE__ */ new Set(["canceled"])
 };
-var PLANNER_CLARIFY_SOURCE = "planner_clarifying_question";
 function safeParseRecord(raw) {
   const parsed = safeJsonParse(raw, null);
   return isRecord(parsed) ? parsed : null;
@@ -18644,17 +18230,14 @@ function normalizePlannerClarifyingAnswers(value) {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => normalizePlannerClarifyingAnswer(entry)).filter((entry) => entry != null).slice(0, 20);
 }
-function isPlannerClarifyingInterventionMetadata(metadata) {
-  if (!metadata) return false;
-  return metadata.source === PLANNER_CLARIFY_SOURCE && Number.isFinite(Number(metadata.questionIndex));
-}
 function isThinkingLevel(value) {
   return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "max" || value === "xhigh";
 }
 function toModelConfig(value) {
   const record2 = isRecord(value) ? value : {};
-  const modelId = typeof record2.modelId === "string" && record2.modelId.trim().length > 0 ? record2.modelId.trim() : typeof record2.model === "string" && record2.model.trim().length > 0 ? record2.model.trim() : "anthropic/claude-sonnet-4-6";
-  const descriptor = resolveModelDescriptor(modelId);
+  const rawModelId = typeof record2.modelId === "string" && record2.modelId.trim().length > 0 ? record2.modelId.trim() : typeof record2.model === "string" && record2.model.trim().length > 0 ? record2.model.trim() : "anthropic/claude-sonnet-4-6";
+  const descriptor = resolveModelDescriptor(rawModelId);
+  const modelId = descriptor?.id ?? rawModelId;
   const providerHint = typeof record2.provider === "string" && record2.provider.trim().length > 0 ? record2.provider.trim().toLowerCase() : descriptor?.family === "anthropic" ? "claude" : descriptor?.family === "openai" ? "codex" : null;
   const thinkingLevel = isThinkingLevel(record2.thinkingLevel) ? record2.thinkingLevel : void 0;
   return {
@@ -18751,7 +18334,8 @@ function sanitizeFilePart(value) {
   return cleaned.length ? cleaned : "phase-profile";
 }
 function normalizeMissionStatus(value) {
-  if (value === "queued" || value === "planning" || value === "plan_review" || value === "in_progress" || value === "intervention_required" || value === "completed" || value === "failed" || value === "canceled") {
+  if (value === "plan_review") return "in_progress";
+  if (value === "queued" || value === "planning" || value === "in_progress" || value === "intervention_required" || value === "completed" || value === "failed" || value === "canceled") {
     return value;
   }
   return "queued";
@@ -18784,7 +18368,7 @@ function normalizeInterventionStatus(value) {
   if (value === "open" || value === "resolved" || value === "dismissed") return value;
   return "open";
 }
-function normalizePrompt2(prompt) {
+function normalizePrompt(prompt) {
   return prompt.replace(/\r\n/g, "\n").split("\n").map((line) => line.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 function summarizePrompt(prompt) {
@@ -18796,7 +18380,7 @@ function summarizePrompt(prompt) {
 function deriveMissionTitle(prompt, explicit) {
   const cleanedExplicit = (explicit ?? "").trim();
   if (cleanedExplicit.length) return cleanedExplicit.slice(0, 140);
-  const firstSentence = normalizePrompt2(prompt).split(/(?<=[.!?])\s+/)[0] ?? "";
+  const firstSentence = normalizePrompt(prompt).split(/(?<=[.!?])\s+/)[0] ?? "";
   const compact = firstSentence.trim() || summarizePrompt(prompt);
   return compact.slice(0, 140);
 }
@@ -18816,54 +18400,6 @@ function truncateForMetadata(value, maxChars = 12e4) {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}
 ...<truncated>`;
-}
-function toPlannerAttempt(value) {
-  if (!isRecord(value)) return null;
-  const id = String(value.id ?? "").trim();
-  const engine = String(value.engine ?? "").trim();
-  const status = String(value.status ?? "").trim();
-  if (!id.length || !engine.length || status !== "succeeded" && status !== "failed") return null;
-  return {
-    id,
-    engine,
-    status,
-    reasonCode: typeof value.reasonCode === "string" ? value.reasonCode : null,
-    detail: typeof value.detail === "string" ? value.detail : null,
-    commandPreview: typeof value.commandPreview === "string" ? value.commandPreview : null,
-    rawResponse: typeof value.rawResponse === "string" ? value.rawResponse : null,
-    validationErrors: Array.isArray(value.validationErrors) ? value.validationErrors.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [],
-    createdAt: typeof value.createdAt === "string" ? value.createdAt : nowIso()
-  };
-}
-function toPlannerRunFromEvent(row) {
-  if (row.event_type !== "mission_plan_generated") return null;
-  const payload = safeParseRecord(row.payload_json);
-  if (!payload) return null;
-  const runId = String(payload.plannerRunId ?? "").trim();
-  if (!runId.length) return null;
-  const attemptsRaw = Array.isArray(payload.attempts) ? payload.attempts : [];
-  const attempts = attemptsRaw.map((entry) => toPlannerAttempt(entry)).filter((entry) => entry != null);
-  const validationErrors = Array.isArray(payload.validationErrors) ? payload.validationErrors.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
-  const rawResolvedEngine = String(payload.resolvedEngine ?? "").trim();
-  const resolvedEngine = rawResolvedEngine === "claude_cli" || rawResolvedEngine === "codex_cli" ? rawResolvedEngine : null;
-  return {
-    id: runId,
-    missionId: row.mission_id,
-    requestedEngine: String(payload.requestedEngine ?? "auto"),
-    resolvedEngine,
-    status: resolvedEngine != null && payload.degraded !== true ? "succeeded" : "skipped",
-    degraded: payload.degraded === true,
-    reasonCode: typeof payload.reasonCode === "string" ? payload.reasonCode : null,
-    reasonDetail: typeof payload.reasonDetail === "string" ? payload.reasonDetail : null,
-    planHash: typeof payload.planHash === "string" && payload.planHash.length > 0 ? payload.planHash : "",
-    normalizedPlanHash: typeof payload.normalizedPlanHash === "string" && payload.normalizedPlanHash.length > 0 ? payload.normalizedPlanHash : "",
-    commandPreview: typeof payload.commandPreview === "string" ? payload.commandPreview : null,
-    rawResponse: typeof payload.rawResponse === "string" ? payload.rawResponse : null,
-    createdAt: row.created_at,
-    durationMs: Number.isFinite(Number(payload.durationMs)) ? Math.floor(Number(payload.durationMs)) : 0,
-    validationErrors,
-    attempts
-  };
 }
 function toMissionSummary(row) {
   return {
@@ -19089,7 +18625,7 @@ function createMissionService({
     const updatedAt = args.updatedAt ?? nowIso();
     let startedAt = row.started_at;
     let completedAt = row.completed_at;
-    if (next === "planning" || next === "plan_review" || next === "in_progress") {
+    if (next === "planning" || next === "in_progress") {
       if (!startedAt) startedAt = updatedAt;
       completedAt = null;
     } else if (next === "queued") {
@@ -19111,12 +18647,6 @@ function createMissionService({
       `,
       [next, startedAt, completedAt, updatedAt, args.missionId, projectId]
     );
-    if (next === "plan_review") {
-      try {
-        ensurePlanReviewClarifyingQuestionInterventions(args.missionId);
-      } catch {
-      }
-    }
     if (previous !== next) {
       recordEvent({
         missionId: args.missionId,
@@ -19248,153 +18778,6 @@ function createMissionService({
       metadata: args.metadata ?? null
     };
   };
-  const parsePlannerPlanFromMissionMetadata = (missionId) => {
-    const row = db.get(
-      "select metadata_json from missions where id = ? and project_id = ? limit 1",
-      [missionId, projectId]
-    );
-    const metadata = safeParseRecord(row?.metadata_json ?? null);
-    if (!metadata) return null;
-    const plannerPlan = isRecord(metadata.plannerPlan) ? metadata.plannerPlan : null;
-    if (!plannerPlan) return null;
-    return { metadata, plannerPlan };
-  };
-  const propagatePlannerClarifyingAnswersToSteps = (args) => {
-    const stepRows = db.all(
-      `
-        select id, metadata_json
-        from mission_steps
-        where mission_id = ?
-          and project_id = ?
-      `,
-      [args.missionId, projectId]
-    );
-    for (const row of stepRows) {
-      const metadata = safeParseRecord(row.metadata_json) ?? {};
-      metadata.plannerClarifyingQuestions = args.questions;
-      metadata.plannerClarifyingAnswers = args.answers;
-      db.run(
-        `
-          update mission_steps
-          set metadata_json = ?,
-              updated_at = ?
-          where id = ?
-            and mission_id = ?
-            and project_id = ?
-        `,
-        [JSON.stringify(metadata), args.updatedAt, row.id, args.missionId, projectId]
-      );
-    }
-  };
-  const persistPlannerClarifyingAnswer = (args) => {
-    const parsed = parsePlannerPlanFromMissionMetadata(args.missionId);
-    if (!parsed) return;
-    const questions = normalizePlannerClarifyingQuestions(parsed.plannerPlan.clarifyingQuestions);
-    const existingAnswers = normalizePlannerClarifyingAnswers(parsed.plannerPlan.clarifyingAnswers);
-    const question = questions[args.questionIndex] ?? {
-      question: args.fallbackQuestion ?? `Clarifying question ${args.questionIndex + 1}`,
-      ...args.fallbackContext ? { context: args.fallbackContext } : {},
-      ...args.fallbackDefaultAssumption ? { defaultAssumption: args.fallbackDefaultAssumption } : {},
-      ...args.fallbackImpact ? { impact: args.fallbackImpact } : {}
-    };
-    const noteValue = String(args.note ?? "").trim();
-    const defaultAssumption = question.defaultAssumption ?? args.fallbackDefaultAssumption ?? "Proceed with conservative assumptions.";
-    const useUserAnswer = args.status === "resolved" && noteValue.length > 0;
-    const answer = {
-      questionIndex: Math.max(0, args.questionIndex),
-      question: question.question,
-      answer: useUserAnswer ? noteValue : defaultAssumption,
-      source: useUserAnswer ? "user" : "default_assumption",
-      answeredAt: nowIso(),
-      ...question.context ? { context: question.context } : {},
-      ...defaultAssumption ? { defaultAssumption } : {},
-      ...question.impact ? { impact: question.impact } : {}
-    };
-    const mergedAnswers = [
-      ...existingAnswers.filter((entry) => entry.questionIndex !== answer.questionIndex),
-      answer
-    ].sort((a, b) => a.questionIndex - b.questionIndex || a.question.localeCompare(b.question));
-    parsed.plannerPlan.clarifyingQuestions = questions;
-    parsed.plannerPlan.clarifyingAnswers = mergedAnswers;
-    parsed.metadata.plannerPlan = parsed.plannerPlan;
-    const updatedAt = nowIso();
-    db.run(
-      `
-        update missions
-        set metadata_json = ?,
-            updated_at = ?
-        where id = ?
-          and project_id = ?
-      `,
-      [JSON.stringify(parsed.metadata), updatedAt, args.missionId, projectId]
-    );
-    propagatePlannerClarifyingAnswersToSteps({
-      missionId: args.missionId,
-      questions,
-      answers: mergedAnswers,
-      updatedAt
-    });
-  };
-  const ensurePlanReviewClarifyingQuestionInterventions = (missionId) => {
-    const parsed = parsePlannerPlanFromMissionMetadata(missionId);
-    if (!parsed) return;
-    const questions = normalizePlannerClarifyingQuestions(parsed.plannerPlan.clarifyingQuestions);
-    if (!questions.length) return;
-    const existingRows = db.all(
-      `
-        select metadata_json, status
-        from mission_interventions
-        where mission_id = ?
-          and project_id = ?
-          and intervention_type = 'manual_input'
-      `,
-      [missionId, projectId]
-    );
-    const seenQuestionIndexes = /* @__PURE__ */ new Set();
-    for (const row of existingRows) {
-      const metadata = safeParseRecord(row.metadata_json);
-      if (!isPlannerClarifyingInterventionMetadata(metadata)) continue;
-      seenQuestionIndexes.add(Math.max(0, Math.floor(Number(metadata.questionIndex))));
-    }
-    const createdInterventions = [];
-    for (let index = 0; index < questions.length; index += 1) {
-      if (seenQuestionIndexes.has(index)) continue;
-      const question = questions[index];
-      const bodyParts = [
-        question.question,
-        question.context ? `Context: ${question.context}` : null,
-        question.impact ? `Impact: ${question.impact}` : null,
-        question.defaultAssumption ? `Default assumption if unanswered: ${question.defaultAssumption}` : null
-      ].filter((entry) => typeof entry === "string" && entry.trim().length > 0);
-      const intervention = insertIntervention({
-        missionId,
-        interventionType: "manual_input",
-        title: `Planning clarification ${index + 1}/${questions.length}`,
-        body: bodyParts.join("\n\n"),
-        requestedAction: "Provide guidance or dismiss to accept the default assumption.",
-        metadata: {
-          source: PLANNER_CLARIFY_SOURCE,
-          questionIndex: index,
-          question: question.question,
-          ...question.context ? { context: question.context } : {},
-          ...question.defaultAssumption ? { defaultAssumption: question.defaultAssumption } : {},
-          ...question.impact ? { impact: question.impact } : {}
-        }
-      });
-      createdInterventions.push(intervention.id);
-    }
-    if (!createdInterventions.length) return;
-    recordEvent({
-      missionId,
-      eventType: "mission_intervention_added",
-      actor: "system",
-      summary: `Planner requested ${createdInterventions.length} clarification question${createdInterventions.length === 1 ? "" : "s"}.`,
-      payload: {
-        interventionIds: createdInterventions,
-        source: PLANNER_CLARIFY_SOURCE
-      }
-    });
-  };
   const profilesDir = projectRoot ? import_node_path16.default.join(projectRoot, ".ade", "profiles") : null;
   let phaseStorageSeeded = false;
   const listPhaseProfileRows = (includeArchived = false) => db.all(
@@ -19459,6 +18842,87 @@ function createMissionService({
       `,
     [projectId]
   );
+  const listPhaseCardRows = (includeArchived = false) => db.all(
+    `
+        select
+          id,
+          project_id,
+          phase_key,
+          name,
+          description,
+          instructions,
+          model_json,
+          budget_json,
+          ordering_constraints_json,
+          ask_questions_json,
+          validation_gate_json,
+          is_built_in,
+          is_custom,
+          position,
+          archived_at,
+          created_at,
+          updated_at
+        from phase_cards
+        where project_id = ?
+          ${includeArchived ? "" : "and archived_at is null"}
+        order by position asc, updated_at desc, name asc
+      `,
+    [projectId]
+  );
+  const getPhaseCardRowByKey = (phaseKey) => db.get(
+    `
+        select
+          id,
+          project_id,
+          phase_key,
+          name,
+          description,
+          instructions,
+          model_json,
+          budget_json,
+          ordering_constraints_json,
+          ask_questions_json,
+          validation_gate_json,
+          is_built_in,
+          is_custom,
+          position,
+          archived_at,
+          created_at,
+          updated_at
+        from phase_cards
+        where project_id = ?
+          and phase_key = ?
+        order by updated_at desc
+        limit 1
+      `,
+    [projectId, phaseKey]
+  );
+  const toPhaseCardFromRow = (row) => {
+    const parsed = toPhaseCard(
+      {
+        id: row.id,
+        phaseKey: row.phase_key,
+        name: row.name,
+        description: row.description,
+        instructions: row.instructions,
+        model: safeJsonParse(row.model_json, null),
+        budget: safeJsonParse(row.budget_json, null),
+        orderingConstraints: safeJsonParse(row.ordering_constraints_json, null),
+        askQuestions: safeJsonParse(row.ask_questions_json, null),
+        validationGate: safeJsonParse(row.validation_gate_json, null),
+        isBuiltIn: Number(row.is_built_in) === 1,
+        isCustom: Number(row.is_custom) === 1,
+        position: row.position,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      },
+      row.position
+    );
+    if (!parsed) {
+      throw new Error(`Invalid phase card row for key: ${row.phase_key}`);
+    }
+    return parsed;
+  };
   const upsertPhaseCardRow = (card) => {
     const existing = db.get(
       `
@@ -19553,114 +19017,141 @@ function createMissionService({
       ]
     );
   };
-  const ensurePhaseStorageSeeded = () => {
-    if (phaseStorageSeeded) return;
-    const cardCount = db.get(
+  const upsertBuiltInPhaseProfileRow = (profile, now) => {
+    const existing = db.get(
       `
-        select count(*) as count
-        from phase_cards
-        where project_id = ?
-          and archived_at is null
-      `,
-      [projectId]
-    )?.count ?? 0;
-    if (cardCount === 0) {
-      const builtInCards = createBuiltInPhaseCards(nowIso());
-      for (const card of builtInCards) {
-        upsertPhaseCardRow(card);
-      }
-    }
-    const profileCount = db.get(
-      `
-        select count(*) as count
+        select id
         from phase_profiles
         where project_id = ?
+          and id = ?
+        limit 1
+      `,
+      [projectId, profile.id]
+    );
+    const normalizedPhases = normalizePhaseCards(profile.phases);
+    if (existing?.id) {
+      db.run(
+        `
+          update phase_profiles
+          set name = ?,
+              description = ?,
+              phases_json = ?,
+              is_built_in = 1,
+              is_default = ?,
+              archived_at = null,
+              updated_at = ?
+          where project_id = ?
+            and id = ?
+        `,
+        [
+          profile.name,
+          profile.description,
+          JSON.stringify(normalizedPhases),
+          profile.isDefault ? 1 : 0,
+          now,
+          projectId,
+          profile.id
+        ]
+      );
+      return;
+    }
+    db.run(
+      `
+        insert into phase_profiles(
+          id,
+          project_id,
+          name,
+          description,
+          phases_json,
+          is_built_in,
+          is_default,
+          archived_at,
+          created_at,
+          updated_at
+        ) values (?, ?, ?, ?, ?, 1, ?, null, ?, ?)
+      `,
+      [
+        profile.id,
+        projectId,
+        profile.name,
+        profile.description,
+        JSON.stringify(normalizedPhases),
+        profile.isDefault ? 1 : 0,
+        profile.createdAt,
+        now
+      ]
+    );
+  };
+  const ensurePhaseStorageSeeded = () => {
+    if (phaseStorageSeeded) return;
+    const now = nowIso();
+    const canonicalBuiltInCards = createBuiltInPhaseCards(now);
+    const canonicalBuiltInProfiles = createBuiltInPhaseProfiles(canonicalBuiltInCards, now);
+    const canonicalCardKeys = new Set(canonicalBuiltInCards.map((card) => card.phaseKey));
+    const canonicalProfileIds = new Set(canonicalBuiltInProfiles.map((profile) => profile.id));
+    for (const card of canonicalBuiltInCards) {
+      upsertPhaseCardRow({
+        ...card,
+        isBuiltIn: true,
+        isCustom: false,
+        updatedAt: now
+      });
+    }
+    for (const profile of canonicalBuiltInProfiles) {
+      upsertBuiltInPhaseProfileRow(profile, now);
+    }
+    const activeBuiltInCards = db.all(
+      `
+        select phase_key
+        from phase_cards
+        where project_id = ?
+          and is_built_in = 1
           and archived_at is null
       `,
       [projectId]
-    )?.count ?? 0;
-    if (profileCount === 0) {
-      const cards = db.all(
+    );
+    const legacyBuiltInCardKeys = activeBuiltInCards.map((row) => row.phase_key).filter((phaseKey) => !canonicalCardKeys.has(phaseKey));
+    if (legacyBuiltInCardKeys.length > 0) {
+      const placeholders = legacyBuiltInCardKeys.map(() => "?").join(", ");
+      db.run(
         `
-            select
-              id,
-              project_id,
-              phase_key,
-              name,
-              description,
-              instructions,
-              model_json,
-              budget_json,
-              ordering_constraints_json,
-              ask_questions_json,
-              validation_gate_json,
-              is_built_in,
-              is_custom,
-              position,
-              archived_at,
-              created_at,
-              updated_at
-            from phase_cards
-            where project_id = ?
-              and archived_at is null
-            order by position asc
-          `,
-        [projectId]
-      ).map(
-        (row) => toPhaseCard(
-          {
-            id: row.id,
-            phaseKey: row.phase_key,
-            name: row.name,
-            description: row.description,
-            instructions: row.instructions,
-            model: safeParseRecord(row.model_json),
-            budget: safeParseRecord(row.budget_json),
-            orderingConstraints: safeParseRecord(row.ordering_constraints_json),
-            askQuestions: safeParseRecord(row.ask_questions_json),
-            validationGate: safeParseRecord(row.validation_gate_json),
-            isBuiltIn: Number(row.is_built_in) === 1,
-            isCustom: Number(row.is_custom) === 1,
-            position: row.position,
-            createdAt: row.created_at,
-            updatedAt: row.updated_at
-          },
-          row.position
-        )
-      ).filter((entry) => entry != null);
-      const builtInProfiles = createBuiltInPhaseProfiles(
-        cards.length > 0 ? cards : createBuiltInPhaseCards(nowIso()),
-        nowIso()
+          update phase_cards
+          set archived_at = ?,
+              updated_at = ?
+          where project_id = ?
+            and is_built_in = 1
+            and archived_at is null
+            and phase_key in (${placeholders})
+        `,
+        [now, now, projectId, ...legacyBuiltInCardKeys]
       );
-      for (const profile of builtInProfiles) {
-        db.run(
-          `
-            insert into phase_profiles(
-              id,
-              project_id,
-              name,
-              description,
-              phases_json,
-              is_built_in,
-              is_default,
-              archived_at,
-              created_at,
-              updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, null, ?, ?)
-          `,
-          [
-            profile.id,
-            projectId,
-            profile.name,
-            profile.description,
-            JSON.stringify(normalizePhaseCards(profile.phases)),
-            1,
-            profile.isDefault ? 1 : 0,
-            profile.createdAt,
-            profile.updatedAt
-          ]
-        );
-      }
+    }
+    const activeBuiltInProfiles = db.all(
+      `
+        select id
+        from phase_profiles
+        where project_id = ?
+          and is_built_in = 1
+          and archived_at is null
+      `,
+      [projectId]
+    );
+    const legacyBuiltInProfileIds = activeBuiltInProfiles.map((row) => row.id).filter((id) => !canonicalProfileIds.has(id));
+    if (legacyBuiltInProfileIds.length > 0) {
+      const placeholders = legacyBuiltInProfileIds.map(() => "?").join(", ");
+      db.run(
+        `
+          update phase_profiles
+          set archived_at = ?,
+              is_default = 0,
+              updated_at = ?
+          where project_id = ?
+            and is_built_in = 1
+            and archived_at is null
+            and id in (${placeholders})
+        `,
+        [now, now, projectId, ...legacyBuiltInProfileIds]
+      );
     }
     const existingDefault = getDefaultPhaseProfileRow();
     if (!existingDefault) {
@@ -19669,7 +19160,7 @@ function createMissionService({
           select id
           from phase_profiles
           where project_id = ?
-            and archived_at is null
+          and archived_at is null
           order by
             case when id = 'builtin:default' then 0 else 1 end,
             is_built_in desc,
@@ -19829,6 +19320,8 @@ function createMissionService({
       }
       if (args.status === "active") {
         where.push("m.status in ('queued', 'planning', 'plan_review', 'in_progress', 'intervention_required')");
+      } else if (args.status === "in_progress") {
+        where.push("m.status in ('in_progress', 'plan_review')");
       } else if (args.status) {
         where.push("m.status = ?");
         params.push(args.status);
@@ -19841,11 +19334,11 @@ function createMissionService({
            case m.status
              when 'intervention_required' then 0
              when 'in_progress' then 1
-             when 'plan_review' then 2
-             when 'planning' then 3
-             when 'queued' then 4
-             when 'failed' then 5
-             when 'completed' then 6
+             when 'plan_review' then 1
+             when 'planning' then 2
+             when 'queued' then 3
+             when 'failed' then 4
+             when 'completed' then 5
              else 7
            end,
            m.updated_at desc,
@@ -19956,35 +19449,124 @@ function createMissionService({
         phaseConfiguration: resolveMissionPhaseConfiguration(id)
       };
     },
-    listPlannerRuns(args = {}) {
-      const where = ["project_id = ?", "event_type = 'mission_plan_generated'"];
-      const params = [projectId];
-      const missionId = String(args.missionId ?? "").trim();
-      if (missionId.length > 0) {
-        where.push("mission_id = ?");
-        params.push(missionId);
-      }
-      const limit = Number.isFinite(args.limit) ? Math.max(1, Math.min(250, Math.floor(args.limit ?? 50))) : 50;
-      const rows = db.all(
-        `
-          select id, mission_id, event_type, actor, summary, payload_json, created_at
-          from mission_events
-          where ${where.join(" and ")}
-          order by created_at desc
-          limit ?
-        `,
-        [...params, limit]
-      );
-      return rows.map((row) => toPlannerRunFromEvent(row)).filter((entry) => entry != null);
+    listPhaseItems(args = {}) {
+      ensurePhaseStorageSeeded();
+      return listPhaseCardRows(args.includeArchived === true).map(toPhaseCardFromRow);
     },
-    getPlannerAttempt(args) {
-      const plannerRunId = String(args.plannerRunId ?? "").trim();
-      const attemptId = String(args.attemptId ?? "").trim();
-      if (!plannerRunId.length || !attemptId.length) return null;
-      const runs = this.listPlannerRuns({ limit: 250 });
-      const run = runs.find((entry) => entry.id === plannerRunId);
-      if (!run) return null;
-      return run.attempts.find((entry) => entry.id === attemptId) ?? null;
+    savePhaseItem(args) {
+      ensurePhaseStorageSeeded();
+      if (!args.item || typeof args.item !== "object") {
+        throw new Error("Phase item payload is required.");
+      }
+      const now = nowIso();
+      const normalized = toPhaseCard(
+        {
+          ...args.item,
+          isBuiltIn: false,
+          isCustom: true,
+          updatedAt: now,
+          createdAt: args.item.createdAt ?? now
+        },
+        Number(args.item.position ?? 0)
+      );
+      if (!normalized) {
+        throw new Error("Invalid phase item payload.");
+      }
+      if (!normalized.phaseKey.trim().length) {
+        throw new Error("Phase item phaseKey is required.");
+      }
+      upsertPhaseCardRow(normalized);
+      const row = getPhaseCardRowByKey(normalized.phaseKey);
+      if (!row) throw new Error("Failed to save phase item.");
+      return toPhaseCardFromRow(row);
+    },
+    deletePhaseItem(args) {
+      ensurePhaseStorageSeeded();
+      const phaseKey = String(args.phaseKey ?? "").trim();
+      if (!phaseKey.length) throw new Error("phaseKey is required.");
+      const row = getPhaseCardRowByKey(phaseKey);
+      if (!row) throw new Error(`Phase item not found: ${phaseKey}`);
+      if (Number(row.is_built_in) === 1) {
+        throw new Error("Built-in phase items cannot be deleted.");
+      }
+      const now = nowIso();
+      db.run(
+        `
+          update phase_cards
+          set archived_at = ?,
+              updated_at = ?
+          where project_id = ?
+            and phase_key = ?
+            and archived_at is null
+        `,
+        [now, now, projectId, phaseKey]
+      );
+    },
+    exportPhaseItems(args = {}) {
+      ensurePhaseStorageSeeded();
+      const selectedKeys = Array.isArray(args.phaseKeys) ? args.phaseKeys.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
+      const selectedKeySet = selectedKeys.length ? new Set(selectedKeys) : null;
+      const items = listPhaseCardRows(false).filter((row) => !selectedKeySet || selectedKeySet.has(row.phase_key)).map(toPhaseCardFromRow);
+      let savedPath = null;
+      if (profilesDir) {
+        import_node_fs15.default.mkdirSync(profilesDir, { recursive: true });
+        const timestamp = nowIso().replace(/[:.]/g, "-");
+        const filePath = import_node_path16.default.join(profilesDir, `phase-items-${timestamp}.json`);
+        const payload = {
+          schema: "ade.phase-items.v1",
+          exportedAt: nowIso(),
+          items
+        };
+        import_node_fs15.default.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+        savedPath = filePath;
+      }
+      return { items, savedPath };
+    },
+    importPhaseItems(args) {
+      ensurePhaseStorageSeeded();
+      const filePath = String(args.filePath ?? "").trim();
+      if (!filePath.length) throw new Error("filePath is required.");
+      const raw = import_node_fs15.default.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      const itemsRaw = isRecord(parsed) && Array.isArray(parsed.items) ? parsed.items : Array.isArray(parsed) ? parsed : [];
+      const importedCards = toPhaseCards(itemsRaw);
+      if (importedCards.length === 0) {
+        throw new Error("Imported phase items payload is empty.");
+      }
+      const now = nowIso();
+      const usedKeys = new Set(
+        listPhaseCardRows(true).map((row) => String(row.phase_key).trim().toLowerCase()).filter((entry) => entry.length > 0)
+      );
+      const ensureUniqueKey = (seed) => {
+        const base = seed.trim().length > 0 ? seed.trim() : `custom_${(0, import_node_crypto9.randomUUID)().slice(0, 8)}`;
+        let candidate = base;
+        let suffix = 2;
+        while (usedKeys.has(candidate.toLowerCase())) {
+          candidate = `${base}_${suffix}`;
+          suffix += 1;
+        }
+        usedKeys.add(candidate.toLowerCase());
+        return candidate;
+      };
+      const saved = [];
+      for (const card of importedCards) {
+        const nextKey = ensureUniqueKey(card.phaseKey);
+        const nextCard = {
+          ...card,
+          id: `${card.id}:import:${(0, import_node_crypto9.randomUUID)()}`,
+          phaseKey: nextKey,
+          isBuiltIn: false,
+          isCustom: true,
+          updatedAt: now,
+          createdAt: now
+        };
+        upsertPhaseCardRow(nextCard);
+        const row = getPhaseCardRowByKey(nextKey);
+        if (!row) continue;
+        saved.push(toPhaseCardFromRow(row));
+      }
+      return saved;
     },
     listPhaseProfiles(args = {}) {
       ensurePhaseStorageSeeded();
@@ -20323,7 +19905,7 @@ function createMissionService({
       return event;
     },
     create(args) {
-      const prompt = normalizePrompt2(args.prompt ?? "");
+      const prompt = normalizePrompt(args.prompt ?? "");
       if (!prompt.length) {
         throw new Error("Mission prompt is required.");
       }
@@ -20338,7 +19920,6 @@ function createMissionService({
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
       const autopilotExecutor = args.autopilotExecutor ?? "unified";
-      const allowPlanningQuestions = args.allowPlanningQuestions !== false;
       const launchAgentRuntime = normalizeAgentRuntimeFlags(
         isRecord(args.agentRuntime) ? args.agentRuntime : {}
       );
@@ -20377,19 +19958,9 @@ function createMissionService({
       if (phaseErrors.length > 0) {
         throw new Error(`Invalid mission phase sequence: ${phaseErrors.join(" ")}`);
       }
-      const deterministicSeedPlan = buildDeterministicMissionPlan({
-        prompt,
-        laneId
-      });
       const plannerClarifyingQuestions = plannerPlan ? normalizePlannerClarifyingQuestions(plannerPlan.clarifyingQuestions) : [];
       const plannerClarifyingAnswers = plannerPlan ? normalizePlannerClarifyingAnswers(plannerPlan.clarifyingAnswers) : [];
-      const rawStepsToPersist = Array.isArray(args.plannedSteps) && args.plannedSteps.length ? [...args.plannedSteps].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title)) : deterministicSeedPlan.steps.map((step) => ({
-        index: step.index,
-        title: step.title,
-        detail: step.detail,
-        kind: step.kind,
-        metadata: step.metadata
-      }));
+      const rawStepsToPersist = Array.isArray(args.plannedSteps) && args.plannedSteps.length ? [...args.plannedSteps].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title)) : [];
       const stepsToPersist = applyPhaseCardsToPlanSteps(
         rawStepsToPersist.map((step) => ({
           ...step,
@@ -20410,7 +19981,6 @@ function createMissionService({
           autostart,
           runMode: launchMode,
           autopilotExecutor,
-          allowPlanningQuestions,
           agentRuntime: launchAgentRuntime,
           ...args.modelConfig ? { modelConfig: args.modelConfig } : {},
           ...args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {},
@@ -20567,10 +20137,10 @@ function createMissionService({
           executionMode,
           targetMachineId,
           preview: summarizePrompt(prompt),
-          plannerVersion: plannerRun ? "ade.missionPlanner.v2" : deterministicSeedPlan.plannerVersion,
-          plannerStrategy: plannerPlan?.missionSummary.strategy ?? deterministicSeedPlan.strategy,
+          plannerVersion: plannerRun ? "ade.missionPlanner.v2" : "coordinator",
+          plannerStrategy: plannerPlan?.missionSummary.strategy ?? "coordinator",
           plannerStepCount: stepsToPersist.length,
-          plannerKeywords: deterministicSeedPlan.keywords,
+          plannerKeywords: [],
           plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
           plannerEngineResolved: plannerRun?.resolvedEngine ?? null,
           plannerDegraded: plannerRun?.degraded ?? false,
@@ -20653,7 +20223,7 @@ function createMissionService({
       }
       const nextLaneId = args.laneId !== void 0 ? coerceNullableString(args.laneId) : existing.lane_id;
       assertLaneExists(nextLaneId);
-      const nextPrompt = args.prompt !== void 0 ? normalizePrompt2(args.prompt) : existing.prompt;
+      const nextPrompt = args.prompt !== void 0 ? normalizePrompt(args.prompt) : existing.prompt;
       if (!nextPrompt.length) throw new Error("Mission prompt cannot be empty.");
       const nextTitle = args.title !== void 0 ? deriveMissionTitle(nextPrompt, args.title) : existing.title;
       const nextPriority = args.priority ?? normalizeMissionPriority(existing.priority);
@@ -20754,6 +20324,21 @@ function createMissionService({
       const detail = this.get(missionId);
       if (!detail) throw new Error("Mission update failed");
       return detail;
+    },
+    patchMetadata(missionId, patch) {
+      const id = missionId.trim();
+      if (!id.length) throw new Error("Mission id is required.");
+      if (!getMissionRow(id)) throw new Error(`Mission not found: ${id}`);
+      const row = db.get(
+        `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+        [id, projectId]
+      );
+      const base = safeParseRecord(row?.metadata_json ?? null);
+      const next = { ...base, ...patch };
+      db.run(
+        `update missions set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
+        [JSON.stringify(next), nowIso(), id, projectId]
+      );
     },
     delete(args) {
       const missionId = args.missionId.trim();
@@ -21219,9 +20804,7 @@ function createMissionService({
     addIntervention(args) {
       const missionId = args.missionId.trim();
       if (!missionId.length) throw new Error("missionId is required.");
-      const missionRow = getMissionRow(missionId);
-      if (!missionRow) throw new Error(`Mission not found: ${missionId}`);
-      const missionStatus = normalizeMissionStatus(missionRow.status);
+      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
       const intervention = insertIntervention({
         missionId,
         interventionType: args.interventionType,
@@ -21241,9 +20824,8 @@ function createMissionService({
           interventionType: intervention.interventionType
         }
       });
-      const keepPlanReview = missionStatus === "plan_review" && intervention.status === "open" && (intervention.interventionType === "approval_required" || intervention.interventionType === "manual_input" && isPlannerClarifyingInterventionMetadata(isRecord(intervention.metadata) ? intervention.metadata : null));
       const shouldPauseMission = args.pauseMission !== false;
-      if (!keepPlanReview && shouldPauseMission) {
+      if (shouldPauseMission) {
         upsertMissionStatus({
           missionId,
           nextStatus: "intervention_required",
@@ -21317,19 +20899,6 @@ function createMissionService({
           ...note ? { note } : {}
         }
       });
-      const interventionMetadata = safeParseRecord(row.metadata_json);
-      if (row.intervention_type === "manual_input" && isPlannerClarifyingInterventionMetadata(interventionMetadata)) {
-        persistPlannerClarifyingAnswer({
-          missionId,
-          questionIndex: Math.max(0, Math.floor(Number(interventionMetadata.questionIndex))),
-          note,
-          status: targetStatus,
-          fallbackQuestion: typeof interventionMetadata.question === "string" ? interventionMetadata.question : void 0,
-          fallbackContext: typeof interventionMetadata.context === "string" ? interventionMetadata.context : void 0,
-          fallbackDefaultAssumption: typeof interventionMetadata.defaultAssumption === "string" ? interventionMetadata.defaultAssumption : void 0,
-          fallbackImpact: typeof interventionMetadata.impact === "string" ? interventionMetadata.impact : void 0
-        });
-      }
       const openCount = db.get(
         `
           select count(*) as count
@@ -22341,7 +21910,7 @@ function createTestService({
   broadcastEvent
 }) {
   const activeRuns = /* @__PURE__ */ new Map();
-  const nowIso5 = () => (/* @__PURE__ */ new Date()).toISOString();
+  const nowIso6 = () => (/* @__PURE__ */ new Date()).toISOString();
   const writeRunLogChunk = (entry, chunk) => {
     if (entry.logLimitReached) return;
     const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
@@ -22412,7 +21981,7 @@ function createTestService({
     return suiteIds.filter((id) => allowedSet.has(id));
   };
   const emitRun = (run) => broadcastEvent({ type: "run", run });
-  const emitLog = (runId, suiteId, stream, chunk) => broadcastEvent({ type: "log", runId, suiteId, stream, chunk, ts: nowIso5() });
+  const emitLog = (runId, suiteId, stream, chunk) => broadcastEvent({ type: "log", runId, suiteId, stream, chunk, ts: nowIso6() });
   const buildRunSummary = (row, suiteNameMap) => ({
     id: row.id,
     suiteId: row.suiteId,
@@ -22456,7 +22025,7 @@ function createTestService({
       clearTimeout(entry.killTimer);
       entry.killTimer = null;
     }
-    const endedAt = nowIso5();
+    const endedAt = nowIso6();
     const durationMs = Math.max(0, Date.parse(endedAt) - Date.parse(entry.startedAt));
     let status;
     if (entry.stopIntent === "timed_out") status = "timed_out";
@@ -22484,7 +22053,7 @@ function createTestService({
   };
   const spawnSuite = (laneId, suite, overlay) => {
     const runId = (0, import_node_crypto11.randomUUID)();
-    const startedAt = nowIso5();
+    const startedAt = nowIso6();
     const laneRoot = laneService.getLaneWorktreePath(laneId);
     const configuredCwd = overlay.cwd?.trim() ? overlay.cwd : suite.cwd;
     const cwd = import_node_path18.default.isAbsolute(configuredCwd) ? configuredCwd : import_node_path18.default.join(laneRoot, configuredCwd);
@@ -22680,10 +22249,81 @@ function createTestService({
   };
 }
 
-// ../desktop/src/main/services/memory/memoryService.ts
+// ../desktop/src/main/services/memory/unifiedMemoryService.ts
 var import_node_crypto12 = require("crypto");
+var CATEGORY_ALLOWLIST = /* @__PURE__ */ new Set([
+  "fact",
+  "preference",
+  "pattern",
+  "decision",
+  "gotcha",
+  "convention",
+  "episode",
+  "procedure",
+  "digest",
+  "handoff"
+]);
+var STRICT_WRITE_CATEGORIES = /* @__PURE__ */ new Set([
+  "convention",
+  "pattern",
+  "gotcha",
+  "decision"
+]);
+function clamp01(value) {
+  if (!Number.isFinite(value)) return 0;
+  if (value <= 0) return 0;
+  if (value >= 1) return 1;
+  return value;
+}
+function normalizeScope(scope) {
+  if (scope === "agent" || scope === "project" || scope === "mission") return scope;
+  if (scope === "user") return "agent";
+  if (scope === "lane") return "mission";
+  return "project";
+}
+function normalizeMemoryStatus(value) {
+  const s = String(value ?? "").trim().toLowerCase();
+  if (s === "candidate" || s === "promoted" || s === "archived") return s;
+  return "promoted";
+}
+function normalizeMemoryImportance(value) {
+  const s = String(value ?? "").trim().toLowerCase();
+  if (s === "high" || s === "medium" || s === "low") return s;
+  return "medium";
+}
+function normalizeMemoryTier(value, fallback) {
+  const n = Number(value);
+  if (n === 1 || n === 2 || n === 3) return n;
+  return fallback;
+}
+function normalizeSourceType(value) {
+  const s = String(value ?? "").trim();
+  if (s === "agent" || s === "system" || s === "user" || s === "mission_promotion") return s;
+  return "agent";
+}
+function normalizeScopeOwnerId(scope, scopeOwnerId) {
+  if (scope === "project") return null;
+  const value = String(scopeOwnerId ?? "").trim();
+  if (!value.length) return null;
+  return value;
+}
 function normalizeMemoryForDedup(content) {
   return String(content ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+function tokenizeForSimilarity(content) {
+  return normalizeMemoryForDedup(content).split(/[^a-z0-9_]+/).map((token) => token.trim()).filter(Boolean);
+}
+function lexicalSimilarity(left, right) {
+  const leftTokens = new Set(tokenizeForSimilarity(left));
+  const rightTokens = new Set(tokenizeForSimilarity(right));
+  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
+  let intersection2 = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) intersection2 += 1;
+  }
+  const union2 = leftTokens.size + rightTokens.size - intersection2;
+  if (union2 <= 0) return 0;
+  return intersection2 / union2;
 }
 function memoryImportanceRank(importance) {
   if (importance === "high") return 3;
@@ -22698,282 +22338,86 @@ function memoryStatusRank(status) {
   if (status === "candidate") return 2;
   return 1;
 }
-function toMemoryStatus(value) {
-  const raw = String(value ?? "").trim();
-  if (raw === "promoted" || raw === "candidate" || raw === "archived") return raw;
-  return "candidate";
-}
 function resolveHigherStatus(left, right) {
   return memoryStatusRank(left) >= memoryStatusRank(right) ? left : right;
 }
-function createMemoryService(db) {
-  function upsertMemory(args) {
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const normalized = normalizeMemoryForDedup(args.content);
-    const existingRows = normalized.length > 0 ? db.all(
-      `
-            SELECT *
-            FROM memories
-            WHERE project_id = ?
-              AND scope = ?
-              AND category = ?
-            ORDER BY
-              CASE status WHEN 'promoted' THEN 3 WHEN 'candidate' THEN 2 ELSE 1 END DESC,
-              CASE importance WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
-              confidence DESC,
-              last_accessed_at DESC
-          `,
-      [args.projectId, args.scope, args.category]
-    ) : [];
-    const existing = existingRows.find((row) => normalizeMemoryForDedup(String(row.content ?? "")) === normalized) ?? null;
-    if (existing?.id) {
-      const currentImportance = String(existing.importance ?? "medium");
-      const nextImportance = resolveHigherImportance(currentImportance, args.importance);
-      const currentStatus = toMemoryStatus(existing.status);
-      const nextStatus = resolveHigherStatus(currentStatus, args.status);
-      const promotedAt2 = nextStatus === "promoted" ? String(existing.promoted_at ?? "").trim() || now : null;
-      db.run(
-        `
-          UPDATE memories
-          SET
-            status = ?,
-            importance = ?,
-            source_session_id = COALESCE(?, source_session_id),
-            source_pack_key = COALESCE(?, source_pack_key),
-            last_accessed_at = ?,
-            access_count = access_count + 1,
-            agent_id = COALESCE(?, agent_id),
-            confidence = CASE WHEN ? > confidence THEN ? ELSE confidence END,
-            promoted_at = ?,
-            source_run_id = COALESCE(?, source_run_id)
-          WHERE id = ?
-        `,
-        [
-          nextStatus,
-          nextImportance,
-          args.sourceSessionId ?? null,
-          args.sourcePackKey ?? null,
-          now,
-          args.agentId ?? null,
-          args.confidence,
-          args.confidence,
-          promotedAt2,
-          args.sourceRunId ?? null,
-          String(existing.id)
-        ]
-      );
-      const refreshed = db.get(`SELECT * FROM memories WHERE id = ? LIMIT 1`, [String(existing.id)]);
-      if (refreshed) return mapMemoryRow(refreshed);
-    }
-    const id = (0, import_node_crypto12.randomUUID)();
-    const promotedAt = args.status === "promoted" ? now : null;
-    db.run(
-      `INSERT INTO memories (
-         id, project_id, scope, category, content, importance, source_session_id, source_pack_key,
-         created_at, last_accessed_at, access_count, status, agent_id, confidence, promoted_at, source_run_id
-       )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        args.projectId,
-        args.scope,
-        args.category,
-        args.content,
-        args.importance,
-        args.sourceSessionId ?? null,
-        args.sourcePackKey ?? null,
-        now,
-        now,
-        args.status,
-        args.agentId ?? null,
-        args.confidence,
-        promotedAt,
-        args.sourceRunId ?? null
-      ]
-    );
-    return {
-      id,
-      projectId: args.projectId,
-      scope: args.scope,
-      category: args.category,
-      content: args.content,
-      importance: args.importance,
-      sourceSessionId: args.sourceSessionId ?? null,
-      sourcePackKey: args.sourcePackKey ?? null,
-      createdAt: now,
-      lastAccessedAt: now,
-      accessCount: 0,
-      status: args.status,
-      agentId: args.agentId ?? null,
-      confidence: args.confidence,
-      promotedAt,
-      sourceRunId: args.sourceRunId ?? null
-    };
-  }
-  function addMemory(opts) {
-    const importance = opts.importance ?? "medium";
-    return upsertMemory({
-      projectId: opts.projectId,
-      scope: opts.scope,
-      category: opts.category,
-      content: opts.content,
-      importance,
-      sourceSessionId: opts.sourceSessionId,
-      sourcePackKey: opts.sourcePackKey,
-      agentId: opts.agentId,
-      sourceRunId: opts.sourceRunId,
-      status: "promoted",
-      confidence: 1
-    });
-  }
-  function addCandidateMemory(opts) {
-    const importance = opts.importance ?? "medium";
-    const confidence = opts.confidence ?? 0.5;
-    return upsertMemory({
-      projectId: opts.projectId,
-      scope: opts.scope,
-      category: opts.category,
-      content: opts.content,
-      importance,
-      sourceSessionId: opts.sourceSessionId,
-      sourcePackKey: opts.sourcePackKey,
-      agentId: opts.agentId,
-      sourceRunId: opts.sourceRunId,
-      status: "candidate",
-      confidence
-    });
-  }
-  function promoteMemory(id) {
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    db.run(
-      `UPDATE memories SET status = 'promoted', promoted_at = ? WHERE id = ?`,
-      [now, id]
-    );
-  }
-  function archiveMemory(id) {
-    db.run(
-      `UPDATE memories SET status = 'archived' WHERE id = ?`,
-      [id]
-    );
-  }
-  function getCandidateMemories(projectId, limit = 20) {
-    const rows = db.all(
-      `SELECT * FROM memories WHERE project_id = ? AND status = 'candidate' ORDER BY confidence DESC, created_at DESC LIMIT ?`,
-      [projectId, limit]
-    );
-    return rows.map(mapMemoryRow);
-  }
-  function searchMemories(query, projectId, scope, limit = 10, status = "promoted") {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.length) return [];
-    const conditions = words.map(() => "LOWER(content) LIKE ?").join(" AND ");
-    const params = words.map((w) => `%${w}%`);
-    const statuses = Array.isArray(status) ? status : [status];
-    let sql = `SELECT * FROM memories WHERE project_id = ? AND ${conditions}`;
-    params.unshift(projectId);
-    if (scope) {
-      sql += ` AND scope = ?`;
-      params.push(scope);
-    }
-    if (statuses.length) {
-      sql += ` AND status IN (${statuses.map(() => "?").join(", ")})`;
-      params.push(...statuses);
-    }
-    sql += ` ORDER BY CASE importance WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC, last_accessed_at DESC LIMIT ?`;
-    params.push(limit);
-    const rows = db.all(sql, params);
-    for (const row of rows) {
-      if (row.id) {
-        db.run(
-          `UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?`,
-          [(/* @__PURE__ */ new Date()).toISOString(), row.id]
-        );
-      }
-    }
-    return rows.map(mapMemoryRow);
-  }
-  function getRecentMemories(projectId, scope, limit = 10) {
-    const rows = db.all(
-      `SELECT * FROM memories WHERE project_id = ? AND scope = ? ORDER BY last_accessed_at DESC LIMIT ?`,
-      [projectId, scope, limit]
-    );
-    return rows.map(mapMemoryRow);
-  }
-  function getMemoryBudget(projectId, level, opts) {
-    const limits = { lite: 3, standard: 8, deep: 20 };
-    const limit = limits[level];
-    const includeCandidates = opts?.includeCandidates === true;
-    const statuses = includeCandidates ? ["promoted", "candidate"] : ["promoted"];
-    const rows = db.all(
-      `SELECT * FROM memories WHERE project_id = ? AND status IN (${statuses.map(() => "?").join(",")})
-       ORDER BY
-         CASE status WHEN 'promoted' THEN 2 WHEN 'candidate' THEN 1 ELSE 0 END DESC,
-         CASE importance WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
-         confidence DESC,
-         access_count DESC,
-         last_accessed_at DESC
-       LIMIT ?`,
-      [projectId, ...statuses, limit]
-    );
-    return rows.map(mapMemoryRow);
-  }
-  function addSharedFact(opts) {
-    const id = (0, import_node_crypto12.randomUUID)();
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    db.run(
-      `INSERT INTO orchestrator_shared_facts (id, run_id, step_id, fact_type, content, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, opts.runId, opts.stepId ?? null, opts.factType, opts.content, now]
-    );
-    return { id, runId: opts.runId, stepId: opts.stepId ?? null, factType: opts.factType, content: opts.content, createdAt: now };
-  }
-  function getSharedFacts(runId, limit = 20) {
-    const rows = db.all(
-      `SELECT * FROM orchestrator_shared_facts WHERE run_id = ? ORDER BY created_at DESC LIMIT ?`,
-      [runId, limit]
-    );
-    return rows.map(mapSharedFactRow);
-  }
-  function deleteMemory(id) {
-    db.run(`DELETE FROM memories WHERE id = ?`, [id]);
-  }
-  return {
-    addMemory,
-    addCandidateMemory,
-    promoteMemory,
-    archiveMemory,
-    getCandidateMemories,
-    searchMemories,
-    getRecentMemories,
-    getMemoryBudget,
-    addSharedFact,
-    getSharedFacts,
-    deleteMemory
-  };
+function resolveHigherTier(left, right) {
+  return Math.min(left, right);
 }
-function normalizeMemoryStatus(value) {
-  const s = String(value ?? "").trim().toLowerCase();
-  if (s === "candidate" || s === "promoted" || s === "archived") return s;
-  return "promoted";
+function mergeMemoryContent(existing, incoming) {
+  const normalizedExisting = normalizeMemoryForDedup(existing);
+  const normalizedIncoming = normalizeMemoryForDedup(incoming);
+  if (!normalizedExisting.length) return incoming;
+  if (!normalizedIncoming.length) return existing;
+  if (normalizedExisting === normalizedIncoming) return existing;
+  if (normalizedExisting.includes(normalizedIncoming)) return existing;
+  if (normalizedIncoming.includes(normalizedExisting)) return incoming;
+  return `${existing.trim()}
+${incoming.trim()}`;
+}
+function computeRecencyScore(lastAccessedAt, updatedAt) {
+  const source = lastAccessedAt || updatedAt;
+  const ts = Date.parse(source);
+  if (!Number.isFinite(ts)) return 0.25;
+  const ageMs = Math.max(0, Date.now() - ts);
+  const ageDays = ageMs / (1e3 * 60 * 60 * 24);
+  return Math.pow(0.5, ageDays / 30);
+}
+function computeQueryScore(content, query) {
+  const normalizedQuery = normalizeMemoryForDedup(query);
+  if (!normalizedQuery.length) return 0.5;
+  const words = normalizedQuery.split(/\s+/).filter(Boolean);
+  if (!words.length) return 0.5;
+  const normalizedContent = normalizeMemoryForDedup(content);
+  let matched = 0;
+  for (const word of words) {
+    if (normalizedContent.includes(word)) matched += 1;
+  }
+  const wordCoverage = matched / words.length;
+  const phraseBonus = normalizedContent.includes(normalizedQuery) ? 0.15 : 0;
+  return clamp01(wordCoverage + phraseBonus);
+}
+function computeCompositeScore(memory, queryScore) {
+  const importanceWeight = memory.importance === "high" ? 1 : memory.importance === "medium" ? 0.6 : 0.3;
+  const recencyScore = computeRecencyScore(memory.lastAccessedAt, memory.updatedAt);
+  const accessScore = Math.min(Math.max(memory.accessCount, 0) / 10, 1);
+  const tierBoost = memory.tier === 1 ? 0.15 : memory.tier === 2 ? 0.05 : -0.05;
+  const pinBoost = memory.pinned ? 0.1 : 0;
+  const composite = 0.4 * clamp01(queryScore) + 0.2 * recencyScore + 0.15 * importanceWeight + 0.15 * clamp01(memory.confidence) + 0.1 * accessScore + tierBoost + pinBoost;
+  if (!Number.isFinite(composite)) return 0;
+  return Math.max(0, composite);
 }
 function mapMemoryRow(row) {
+  const scope = normalizeScope(String(row.scope ?? "project"));
+  const pinned = Number(row.pinned ?? 0) === 1;
+  const tier = normalizeMemoryTier(row.tier, pinned ? 1 : 2);
   return {
     id: String(row.id ?? ""),
     projectId: String(row.project_id ?? ""),
-    scope: String(row.scope ?? "project"),
+    scope,
+    scopeOwnerId: row.scope_owner_id ? String(row.scope_owner_id) : null,
+    tier,
     category: String(row.category ?? "fact"),
     content: String(row.content ?? ""),
-    importance: String(row.importance ?? "medium"),
+    importance: normalizeMemoryImportance(row.importance),
     sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
     sourcePackKey: row.source_pack_key ? String(row.source_pack_key) : null,
     createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? row.created_at ?? ""),
     lastAccessedAt: String(row.last_accessed_at ?? ""),
     accessCount: Number(row.access_count ?? 0),
+    observationCount: Number(row.observation_count ?? 1),
     status: normalizeMemoryStatus(row.status),
     agentId: row.agent_id ? String(row.agent_id) : null,
-    confidence: Number(row.confidence ?? 1),
+    confidence: clamp01(Number(row.confidence ?? 1)),
     promotedAt: row.promoted_at ? String(row.promoted_at) : null,
-    sourceRunId: row.source_run_id ? String(row.source_run_id) : null
+    sourceRunId: row.source_run_id ? String(row.source_run_id) : null,
+    sourceType: normalizeSourceType(row.source_type),
+    sourceId: row.source_id ? String(row.source_id) : null,
+    fileScopePattern: row.file_scope_pattern ? String(row.file_scope_pattern) : null,
+    pinned: pinned || tier === 1,
+    compositeScore: Number(row.composite_score ?? 0),
+    writeGateReason: row.write_gate_reason ? String(row.write_gate_reason) : null
   };
 }
 function mapSharedFactRow(row) {
@@ -22986,16 +22430,1055 @@ function mapSharedFactRow(row) {
     createdAt: String(row.created_at ?? "")
   };
 }
+function createUnifiedMemoryService(db) {
+  function readById(id) {
+    const row = db.get(
+      `SELECT * FROM unified_memories WHERE id = ? LIMIT 1`,
+      [id]
+    );
+    return row ? mapMemoryRow(row) : null;
+  }
+  function updateAccessStats(id, compositeScore) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    if (typeof compositeScore === "number" && Number.isFinite(compositeScore)) {
+      db.run(
+        `
+          UPDATE unified_memories
+          SET access_count = access_count + 1,
+              last_accessed_at = ?,
+              updated_at = ?,
+              composite_score = ?
+          WHERE id = ?
+        `,
+        [now, now, compositeScore, id]
+      );
+      return;
+    }
+    db.run(
+      `
+        UPDATE unified_memories
+        SET access_count = access_count + 1,
+            last_accessed_at = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [now, now, id]
+    );
+  }
+  function evaluateWriteGate(args) {
+    const trimmed = String(args.content ?? "").trim();
+    if (!trimmed.length) {
+      return {
+        accepted: false,
+        reason: "memory content is empty",
+        content: "",
+        dedupeKey: ""
+      };
+    }
+    if (!CATEGORY_ALLOWLIST.has(args.category)) {
+      return {
+        accepted: false,
+        reason: `category '${args.category}' is not allowed`,
+        content: trimmed,
+        dedupeKey: normalizeMemoryForDedup(trimmed)
+      };
+    }
+    if (args.mode === "strict") {
+      if (args.importance !== "high") {
+        return {
+          accepted: false,
+          reason: "strict mode requires high importance",
+          content: trimmed,
+          dedupeKey: normalizeMemoryForDedup(trimmed)
+        };
+      }
+      if (!STRICT_WRITE_CATEGORIES.has(args.category)) {
+        return {
+          accepted: false,
+          reason: "strict mode only allows convention/pattern/gotcha/decision",
+          content: trimmed,
+          dedupeKey: normalizeMemoryForDedup(trimmed)
+        };
+      }
+    }
+    const bounded = trimmed.slice(0, 2e3);
+    const dedupeKey = normalizeMemoryForDedup(bounded);
+    const candidates = db.all(
+      `
+        SELECT id, content, dedupe_key
+        FROM unified_memories
+        WHERE project_id = ?
+          AND scope = ?
+          AND COALESCE(scope_owner_id, '') = ?
+          AND status != 'archived'
+          AND tier IN (1, 2)
+        ORDER BY updated_at DESC
+        LIMIT 120
+      `,
+      [args.projectId, args.scope, args.scopeOwnerId ?? ""]
+    );
+    let nearDuplicate = null;
+    for (const row of candidates) {
+      const rowId = String(row.id ?? "").trim();
+      if (!rowId.length) continue;
+      const rowContent = String(row.content ?? "");
+      const rowDedupe = String(row.dedupe_key ?? "") || normalizeMemoryForDedup(rowContent);
+      if (rowDedupe.length > 0 && rowDedupe === dedupeKey) {
+        return {
+          accepted: true,
+          content: bounded,
+          dedupeKey,
+          duplicateId: rowId
+        };
+      }
+      const score = lexicalSimilarity(rowContent, bounded);
+      if (score >= 0.85 && (!nearDuplicate || score > nearDuplicate.score)) {
+        nearDuplicate = { id: rowId, score };
+      }
+    }
+    if (nearDuplicate) {
+      return {
+        accepted: true,
+        content: bounded,
+        dedupeKey,
+        nearDuplicateId: nearDuplicate.id
+      };
+    }
+    return {
+      accepted: true,
+      content: bounded,
+      dedupeKey
+    };
+  }
+  function upsertFromWrite(opts) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const gate = evaluateWriteGate({
+      projectId: opts.projectId,
+      scope: opts.scope,
+      scopeOwnerId: opts.scopeOwnerId,
+      category: opts.category,
+      content: opts.content,
+      importance: opts.importance,
+      mode: opts.writeGateMode
+    });
+    if (!gate.accepted) {
+      return {
+        accepted: false,
+        reason: gate.reason ?? "write gate rejected memory"
+      };
+    }
+    const duplicateId = gate.duplicateId ?? gate.nearDuplicateId;
+    if (duplicateId) {
+      const existing = readById(duplicateId);
+      if (!existing) {
+        return {
+          accepted: false,
+          reason: "write gate duplicate target not found"
+        };
+      }
+      const mergedContent = gate.duplicateId ? existing.content : mergeMemoryContent(existing.content, gate.content);
+      const nextImportance = resolveHigherImportance(existing.importance, opts.importance);
+      const nextStatus = resolveHigherStatus(existing.status, opts.status);
+      const nextTier = opts.pinned || existing.pinned ? 1 : resolveHigherTier(existing.tier, opts.tier);
+      const nextPinned = opts.pinned || existing.pinned || nextTier === 1;
+      const nextObservationCount = Math.max(1, existing.observationCount) + 1;
+      const boostedConfidence = clamp01(Math.max(existing.confidence, opts.confidence) + 0.05);
+      const promotedAt2 = nextStatus === "promoted" ? existing.promotedAt ?? now : null;
+      db.run(
+        `
+          UPDATE unified_memories
+          SET category = ?,
+              content = ?,
+              importance = ?,
+              confidence = ?,
+              observation_count = ?,
+              status = ?,
+              tier = ?,
+              pinned = ?,
+              source_session_id = COALESCE(?, source_session_id),
+              source_pack_key = COALESCE(?, source_pack_key),
+              source_run_id = COALESCE(?, source_run_id),
+              source_type = COALESCE(?, source_type),
+              source_id = COALESCE(?, source_id),
+              file_scope_pattern = COALESCE(?, file_scope_pattern),
+              agent_id = COALESCE(?, agent_id),
+              promoted_at = ?,
+              dedupe_key = ?,
+              write_gate_reason = ?,
+              updated_at = ?,
+              access_count = access_count + 1,
+              last_accessed_at = ?
+          WHERE id = ?
+        `,
+        [
+          opts.category,
+          mergedContent,
+          nextImportance,
+          boostedConfidence,
+          nextObservationCount,
+          nextStatus,
+          nextTier,
+          nextPinned ? 1 : 0,
+          opts.sourceSessionId ?? null,
+          opts.sourcePackKey ?? null,
+          opts.sourceRunId ?? null,
+          opts.sourceType,
+          opts.sourceId ?? null,
+          opts.fileScopePattern ?? null,
+          opts.agentId ?? null,
+          promotedAt2,
+          gate.dedupeKey,
+          gate.duplicateId ? "duplicate" : "near_duplicate",
+          now,
+          now,
+          duplicateId
+        ]
+      );
+      const updated = readById(duplicateId);
+      if (!updated) {
+        return {
+          accepted: false,
+          reason: "failed to read updated memory"
+        };
+      }
+      return {
+        accepted: true,
+        memory: updated,
+        deduped: true,
+        mergedIntoId: duplicateId
+      };
+    }
+    const id = (0, import_node_crypto12.randomUUID)();
+    const pinned = opts.pinned || opts.tier === 1;
+    const tier = pinned ? 1 : opts.tier;
+    const promotedAt = opts.status === "promoted" ? now : null;
+    db.run(
+      `
+        INSERT INTO unified_memories (
+          id,
+          project_id,
+          scope,
+          scope_owner_id,
+          tier,
+          category,
+          content,
+          importance,
+          confidence,
+          observation_count,
+          status,
+          source_type,
+          source_id,
+          source_session_id,
+          source_pack_key,
+          source_run_id,
+          file_scope_pattern,
+          agent_id,
+          pinned,
+          composite_score,
+          write_gate_reason,
+          dedupe_key,
+          created_at,
+          updated_at,
+          last_accessed_at,
+          access_count,
+          promoted_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 0, ?
+        )
+      `,
+      [
+        id,
+        opts.projectId,
+        opts.scope,
+        opts.scopeOwnerId,
+        tier,
+        opts.category,
+        gate.content,
+        opts.importance,
+        clamp01(opts.confidence),
+        opts.status,
+        opts.sourceType,
+        opts.sourceId ?? null,
+        opts.sourceSessionId ?? null,
+        opts.sourcePackKey ?? null,
+        opts.sourceRunId ?? null,
+        opts.fileScopePattern ?? null,
+        opts.agentId ?? null,
+        pinned ? 1 : 0,
+        gate.dedupeKey,
+        now,
+        now,
+        now,
+        promotedAt
+      ]
+    );
+    const inserted = readById(id);
+    if (!inserted) {
+      return {
+        accepted: false,
+        reason: "failed to read inserted memory"
+      };
+    }
+    return {
+      accepted: true,
+      memory: inserted,
+      deduped: false
+    };
+  }
+  function writeMemory(opts) {
+    const scope = normalizeScope(opts.scope);
+    const scopeOwnerId = normalizeScopeOwnerId(scope, opts.scopeOwnerId);
+    const status = normalizeMemoryStatus(opts.status ?? "promoted");
+    const pinned = opts.pinned === true || opts.tier === 1;
+    const tier = normalizeMemoryTier(opts.tier, status === "candidate" || status === "archived" ? 3 : 2);
+    const importance = normalizeMemoryImportance(opts.importance ?? "medium");
+    const confidence = clamp01(opts.confidence ?? (status === "candidate" ? 0.5 : 1));
+    return upsertFromWrite({
+      projectId: opts.projectId,
+      scope,
+      scopeOwnerId,
+      tier,
+      category: opts.category,
+      content: opts.content,
+      importance,
+      confidence,
+      status,
+      pinned,
+      sourceSessionId: opts.sourceSessionId,
+      sourcePackKey: opts.sourcePackKey,
+      agentId: opts.agentId,
+      sourceRunId: opts.sourceRunId,
+      sourceType: opts.sourceType ?? "agent",
+      sourceId: opts.sourceId,
+      fileScopePattern: opts.fileScopePattern,
+      writeGateMode: opts.writeGateMode ?? "default"
+    });
+  }
+  function addMemory(opts) {
+    const result = writeMemory({
+      ...opts,
+      status: "promoted",
+      tier: 2,
+      confidence: 1,
+      sourceType: opts.sourceType ?? "agent",
+      writeGateMode: opts.writeGateMode ?? "default"
+    });
+    if (!result.accepted || !result.memory) {
+      throw new Error(result.reason ?? "failed to save promoted memory");
+    }
+    return result.memory;
+  }
+  function addCandidateMemory(opts) {
+    const result = writeMemory({
+      ...opts,
+      status: "candidate",
+      tier: 3,
+      confidence: clamp01(opts.confidence ?? 0.5),
+      sourceType: opts.sourceType ?? "agent",
+      writeGateMode: opts.writeGateMode ?? "default"
+    });
+    if (!result.accepted || !result.memory) {
+      throw new Error(result.reason ?? "failed to save candidate memory");
+    }
+    return result.memory;
+  }
+  function promoteMemory(id) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    db.run(
+      `
+        UPDATE unified_memories
+        SET status = 'promoted',
+            tier = CASE WHEN pinned = 1 THEN 1 ELSE 2 END,
+            promoted_at = COALESCE(promoted_at, ?),
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [now, now, id]
+    );
+  }
+  function archiveMemory(id) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    db.run(
+      `
+        UPDATE unified_memories
+        SET status = 'archived',
+            tier = 3,
+            pinned = 0,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [now, id]
+    );
+  }
+  function pinMemory(id) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    db.run(
+      `
+        UPDATE unified_memories
+        SET pinned = 1,
+            tier = 1,
+            updated_at = ?
+        WHERE id = ?
+          AND status != 'archived'
+      `,
+      [now, id]
+    );
+    return readById(id);
+  }
+  function unpinMemory(id) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    db.run(
+      `
+        UPDATE unified_memories
+        SET pinned = 0,
+            tier = CASE
+              WHEN status = 'archived' THEN 3
+              WHEN status = 'candidate' THEN 3
+              ELSE 2
+            END,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [now, id]
+    );
+    return readById(id);
+  }
+  function getCandidateMemories(projectId, limit = 20) {
+    const rows = db.all(
+      `
+        SELECT *
+        FROM unified_memories
+        WHERE project_id = ?
+          AND status = 'candidate'
+        ORDER BY confidence DESC, observation_count DESC, created_at DESC
+        LIMIT ?
+      `,
+      [projectId, limit]
+    );
+    return rows.map(mapMemoryRow);
+  }
+  function search(opts) {
+    const statusList = Array.isArray(opts.status) ? [...opts.status] : opts.status ? [opts.status] : ["promoted"];
+    const limit = Math.max(1, Math.min(100, opts.limit ?? 10));
+    const words = normalizeMemoryForDedup(opts.query).split(/\s+/).filter(Boolean);
+    const params = [opts.projectId];
+    let sql = `SELECT * FROM unified_memories WHERE project_id = ?`;
+    if (opts.scope) {
+      sql += ` AND scope = ?`;
+      params.push(opts.scope);
+    }
+    if (opts.scopeOwnerId !== void 0) {
+      sql += ` AND COALESCE(scope_owner_id, '') = ?`;
+      params.push(String(opts.scopeOwnerId ?? ""));
+    }
+    if (statusList.length > 0) {
+      sql += ` AND status IN (${statusList.map(() => "?").join(",")})`;
+      params.push(...statusList);
+    }
+    if (opts.tiers?.length) {
+      sql += ` AND tier IN (${opts.tiers.map(() => "?").join(",")})`;
+      params.push(...opts.tiers);
+    }
+    if (words.length > 0) {
+      const contentFilters = words.map(() => `LOWER(content) LIKE ?`).join(" AND ");
+      sql += ` AND ${contentFilters}`;
+      for (const word of words) {
+        params.push(`%${word}%`);
+      }
+    }
+    const fetchLimit = Math.max(limit * 4, limit);
+    sql += ` ORDER BY pinned DESC, tier ASC, updated_at DESC LIMIT ?`;
+    params.push(fetchLimit);
+    const rows = db.all(sql, params);
+    const scored = rows.map(mapMemoryRow).map((entry) => {
+      const queryScore = computeQueryScore(entry.content, opts.query);
+      const compositeScore = computeCompositeScore(entry, queryScore);
+      return {
+        ...entry,
+        compositeScore
+      };
+    }).sort((left, right) => {
+      if (right.compositeScore !== left.compositeScore) {
+        return right.compositeScore - left.compositeScore;
+      }
+      if (left.tier !== right.tier) return left.tier - right.tier;
+      return String(right.lastAccessedAt).localeCompare(String(left.lastAccessedAt));
+    }).slice(0, limit);
+    for (const entry of scored) {
+      updateAccessStats(entry.id, entry.compositeScore);
+    }
+    return scored;
+  }
+  function searchMemories(query, projectId, scope, limit = 10, status = "promoted", scopeOwnerId) {
+    return search({
+      query,
+      projectId,
+      scope: scope ? normalizeScope(scope) : void 0,
+      limit,
+      status,
+      ...scopeOwnerId !== void 0 ? { scopeOwnerId } : {}
+    });
+  }
+  function getRecentMemories(projectId, scope, limit = 10) {
+    const normalizedScope = normalizeScope(scope);
+    const rows = db.all(
+      `
+        SELECT *
+        FROM unified_memories
+        WHERE project_id = ?
+          AND scope = ?
+          AND status != 'archived'
+        ORDER BY last_accessed_at DESC
+        LIMIT ?
+      `,
+      [projectId, normalizedScope, limit]
+    );
+    return rows.map(mapMemoryRow);
+  }
+  function getMemoryBudget(projectId, level, opts) {
+    const limits = {
+      lite: 3,
+      standard: 8,
+      deep: 20
+    };
+    const includeCandidates = opts?.includeCandidates === true;
+    const status = includeCandidates ? ["promoted", "candidate"] : "promoted";
+    return search({
+      projectId,
+      query: "",
+      limit: limits[level],
+      status,
+      tiers: [1, 2, 3],
+      ...opts?.scope ? { scope: normalizeScope(opts.scope) } : {},
+      ...opts?.scopeOwnerId !== void 0 ? { scopeOwnerId: opts.scopeOwnerId } : {}
+    });
+  }
+  function addSharedFact(opts) {
+    const id = (0, import_node_crypto12.randomUUID)();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    db.run(
+      `
+        INSERT INTO orchestrator_shared_facts (id, run_id, step_id, fact_type, content, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [id, opts.runId, opts.stepId ?? null, opts.factType, opts.content, now]
+    );
+    return {
+      id,
+      runId: opts.runId,
+      stepId: opts.stepId ?? null,
+      factType: opts.factType,
+      content: opts.content,
+      createdAt: now
+    };
+  }
+  function getSharedFacts(runId, limit = 20) {
+    const rows = db.all(
+      `
+        SELECT *
+        FROM orchestrator_shared_facts
+        WHERE run_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `,
+      [runId, limit]
+    );
+    return rows.map(mapSharedFactRow);
+  }
+  function deleteMemory(id) {
+    db.run(`DELETE FROM unified_memory_embeddings WHERE memory_id = ?`, [id]);
+    db.run(`DELETE FROM unified_memories WHERE id = ?`, [id]);
+  }
+  return {
+    writeMemory,
+    search,
+    addMemory,
+    addCandidateMemory,
+    promoteMemory,
+    archiveMemory,
+    pinMemory,
+    unpinMemory,
+    getCandidateMemories,
+    searchMemories,
+    getRecentMemories,
+    getMemoryBudget,
+    addSharedFact,
+    getSharedFacts,
+    deleteMemory
+  };
+}
 
-// ../desktop/src/main/services/orchestrator/orchestratorService.ts
-var import_node_crypto15 = require("crypto");
-var import_node_child_process5 = require("child_process");
-var import_node_fs20 = __toESM(require("fs"), 1);
-var import_node_path21 = __toESM(require("path"), 1);
-
-// ../desktop/src/main/services/orchestrator/unifiedOrchestratorAdapter.ts
+// ../desktop/src/main/services/cto/ctoStateService.ts
 var import_node_fs18 = __toESM(require("fs"), 1);
 var import_node_path19 = __toESM(require("path"), 1);
+var import_node_crypto13 = require("crypto");
+var import_yaml2 = __toESM(require("yaml"), 1);
+function nowIso4() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function parseIsoToEpoch(value) {
+  if (!value) return Number.NaN;
+  const epoch = Date.parse(value);
+  return Number.isFinite(epoch) ? epoch : Number.NaN;
+}
+function writeTextAtomic(filePath, text) {
+  import_node_fs18.default.mkdirSync(import_node_path19.default.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${(0, import_node_crypto13.randomUUID)()}`;
+  import_node_fs18.default.writeFileSync(tmp, text, "utf8");
+  try {
+    import_node_fs18.default.renameSync(tmp, filePath);
+  } catch (error48) {
+    try {
+      import_node_fs18.default.copyFileSync(tmp, filePath);
+      import_node_fs18.default.unlinkSync(tmp);
+    } catch {
+      try {
+        import_node_fs18.default.unlinkSync(tmp);
+      } catch {
+      }
+      throw error48;
+    }
+  }
+}
+function asStringArray2(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    const normalized = typeof item === "string" ? item.trim() : "";
+    if (!normalized.length) continue;
+    out.push(normalized);
+  }
+  return out;
+}
+function uniqueStrings(values) {
+  return [...new Set(values.map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
+}
+function safeJsonParse2(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+function safeYamlParse(raw) {
+  try {
+    return import_yaml2.default.parse(raw);
+  } catch {
+    return null;
+  }
+}
+function normalizeIdentity(input) {
+  if (!input || typeof input !== "object") return null;
+  const source = input;
+  const name = typeof source.name === "string" && source.name.trim().length ? source.name.trim() : "CTO";
+  const persona = typeof source.persona === "string" && source.persona.trim().length ? source.persona.trim() : "Persistent technical lead for this project.";
+  const version2 = Math.max(1, Math.floor(Number(source.version ?? 1)));
+  const updatedAt = typeof source.updatedAt === "string" && source.updatedAt.trim().length ? source.updatedAt : nowIso4();
+  const modelPreferencesRaw = source.modelPreferences && typeof source.modelPreferences === "object" ? source.modelPreferences : {};
+  const memoryPolicyRaw = source.memoryPolicy && typeof source.memoryPolicy === "object" ? source.memoryPolicy : {};
+  return {
+    name,
+    version: version2,
+    persona,
+    modelPreferences: {
+      provider: typeof modelPreferencesRaw.provider === "string" && modelPreferencesRaw.provider.trim().length ? modelPreferencesRaw.provider.trim() : "claude",
+      model: typeof modelPreferencesRaw.model === "string" && modelPreferencesRaw.model.trim().length ? modelPreferencesRaw.model.trim() : "sonnet",
+      ...typeof modelPreferencesRaw.modelId === "string" && modelPreferencesRaw.modelId.trim().length ? { modelId: modelPreferencesRaw.modelId.trim() } : {},
+      ...typeof modelPreferencesRaw.reasoningEffort === "string" || modelPreferencesRaw.reasoningEffort == null ? { reasoningEffort: modelPreferencesRaw.reasoningEffort ?? null } : {}
+    },
+    memoryPolicy: {
+      autoCompact: memoryPolicyRaw.autoCompact !== false,
+      compactionThreshold: Number.isFinite(Number(memoryPolicyRaw.compactionThreshold)) ? Math.max(0.1, Math.min(1, Number(memoryPolicyRaw.compactionThreshold))) : 0.7,
+      preCompactionFlush: memoryPolicyRaw.preCompactionFlush !== false,
+      temporalDecayHalfLifeDays: Number.isFinite(Number(memoryPolicyRaw.temporalDecayHalfLifeDays)) ? Math.max(1, Math.floor(Number(memoryPolicyRaw.temporalDecayHalfLifeDays))) : 30
+    },
+    updatedAt
+  };
+}
+function normalizeCoreMemory(input) {
+  if (!input || typeof input !== "object") return null;
+  const source = input;
+  const version2 = Math.max(1, Math.floor(Number(source.version ?? 1)));
+  const updatedAt = typeof source.updatedAt === "string" && source.updatedAt.trim().length ? source.updatedAt : nowIso4();
+  return {
+    version: version2,
+    updatedAt,
+    projectSummary: typeof source.projectSummary === "string" && source.projectSummary.trim().length ? source.projectSummary.trim() : "Project context is being built through conversations and mission outcomes.",
+    criticalConventions: uniqueStrings(asStringArray2(source.criticalConventions)),
+    userPreferences: uniqueStrings(asStringArray2(source.userPreferences)),
+    activeFocus: uniqueStrings(asStringArray2(source.activeFocus)),
+    notes: uniqueStrings(asStringArray2(source.notes))
+  };
+}
+function normalizeSessionLogEntry(input) {
+  if (!input || typeof input !== "object") return null;
+  const source = input;
+  const sessionId = typeof source.sessionId === "string" ? source.sessionId.trim() : "";
+  const createdAt = typeof source.createdAt === "string" ? source.createdAt.trim() : "";
+  const summary = typeof source.summary === "string" ? source.summary.trim() : "";
+  const startedAt = typeof source.startedAt === "string" ? source.startedAt.trim() : "";
+  const provider = typeof source.provider === "string" ? source.provider.trim() : "";
+  if (!sessionId || !createdAt || !summary || !startedAt || !provider) return null;
+  const capabilityMode = source.capabilityMode === "full_mcp" ? "full_mcp" : "fallback";
+  return {
+    id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : (0, import_node_crypto13.randomUUID)(),
+    sessionId,
+    summary,
+    startedAt,
+    endedAt: typeof source.endedAt === "string" && source.endedAt.trim().length ? source.endedAt.trim() : null,
+    provider,
+    modelId: typeof source.modelId === "string" && source.modelId.trim().length ? source.modelId.trim() : null,
+    capabilityMode,
+    createdAt
+  };
+}
+function makeDefaultIdentity() {
+  const timestamp = nowIso4();
+  return {
+    name: "CTO",
+    version: 1,
+    persona: "You are the CTO for this project. You retain durable technical context and guide implementation decisions.",
+    modelPreferences: {
+      provider: "claude",
+      model: "sonnet",
+      reasoningEffort: "high"
+    },
+    memoryPolicy: {
+      autoCompact: true,
+      compactionThreshold: 0.7,
+      preCompactionFlush: true,
+      temporalDecayHalfLifeDays: 30
+    },
+    updatedAt: timestamp
+  };
+}
+function makeDefaultCoreMemory() {
+  const timestamp = nowIso4();
+  return {
+    version: 1,
+    updatedAt: timestamp,
+    projectSummary: "CTO memory initialized. Capture project goals and critical architecture decisions here.",
+    criticalConventions: [],
+    userPreferences: [],
+    activeFocus: [],
+    notes: []
+  };
+}
+function toStableJson(value) {
+  return JSON.stringify(value, Object.keys(value).sort());
+}
+function createCtoStateService(args) {
+  const ctoDir = import_node_path19.default.join(args.adeDir, "cto");
+  const identityPath = import_node_path19.default.join(ctoDir, "identity.yaml");
+  const coreMemoryPath = import_node_path19.default.join(ctoDir, "core-memory.json");
+  const sessionsPath = import_node_path19.default.join(ctoDir, "sessions.jsonl");
+  import_node_fs18.default.mkdirSync(ctoDir, { recursive: true });
+  const readIdentityFromFile = () => {
+    if (!import_node_fs18.default.existsSync(identityPath)) return null;
+    const parsed = safeYamlParse(import_node_fs18.default.readFileSync(identityPath, "utf8"));
+    const payload = normalizeIdentity(parsed);
+    if (!payload) return null;
+    return { payload, updatedAt: payload.updatedAt };
+  };
+  const readIdentityFromDb = () => {
+    const row = args.db.get(
+      `select payload_json, updated_at from cto_identity_state where project_id = ? limit 1`,
+      [args.projectId]
+    );
+    if (!row?.payload_json) return null;
+    const payload = normalizeIdentity(safeJsonParse2(row.payload_json));
+    if (!payload) return null;
+    const updatedAt = row.updated_at?.trim() || payload.updatedAt;
+    return { payload: { ...payload, updatedAt }, updatedAt };
+  };
+  const writeIdentityToFile = (payload) => {
+    writeTextAtomic(identityPath, import_yaml2.default.stringify(payload, { indent: 2 }));
+  };
+  const writeIdentityToDb = (payload) => {
+    args.db.run(
+      `
+        insert into cto_identity_state(project_id, version, payload_json, updated_at)
+        values(?, ?, ?, ?)
+        on conflict(project_id) do update set
+          version = excluded.version,
+          payload_json = excluded.payload_json,
+          updated_at = excluded.updated_at
+      `,
+      [args.projectId, payload.version, JSON.stringify(payload), payload.updatedAt]
+    );
+  };
+  const readCoreMemoryFromFile = () => {
+    if (!import_node_fs18.default.existsSync(coreMemoryPath)) return null;
+    const parsed = safeJsonParse2(import_node_fs18.default.readFileSync(coreMemoryPath, "utf8"));
+    const payload = normalizeCoreMemory(parsed);
+    if (!payload) return null;
+    return { payload, updatedAt: payload.updatedAt };
+  };
+  const readCoreMemoryFromDb = () => {
+    const row = args.db.get(
+      `select payload_json, updated_at from cto_core_memory_state where project_id = ? limit 1`,
+      [args.projectId]
+    );
+    if (!row?.payload_json) return null;
+    const payload = normalizeCoreMemory(safeJsonParse2(row.payload_json));
+    if (!payload) return null;
+    const updatedAt = row.updated_at?.trim() || payload.updatedAt;
+    return { payload: { ...payload, updatedAt }, updatedAt };
+  };
+  const writeCoreMemoryToFile = (payload) => {
+    writeTextAtomic(coreMemoryPath, `${JSON.stringify(payload, null, 2)}
+`);
+  };
+  const writeCoreMemoryToDb = (payload) => {
+    args.db.run(
+      `
+        insert into cto_core_memory_state(project_id, version, payload_json, updated_at)
+        values(?, ?, ?, ?)
+        on conflict(project_id) do update set
+          version = excluded.version,
+          payload_json = excluded.payload_json,
+          updated_at = excluded.updated_at
+      `,
+      [args.projectId, payload.version, JSON.stringify(payload), payload.updatedAt]
+    );
+  };
+  const chooseCanonical = (fromFile, fromDb, defaultFactory) => {
+    if (!fromFile && !fromDb) return defaultFactory();
+    if (fromFile && !fromDb) return fromFile.payload;
+    if (!fromFile && fromDb) return fromDb.payload;
+    const fileUpdated = parseIsoToEpoch(fromFile.updatedAt);
+    const dbUpdated = parseIsoToEpoch(fromDb.updatedAt);
+    if (Number.isFinite(fileUpdated) && Number.isFinite(dbUpdated)) {
+      if (fileUpdated > dbUpdated) return fromFile.payload;
+      if (dbUpdated > fileUpdated) return fromDb.payload;
+    } else if (Number.isFinite(fileUpdated)) {
+      return fromFile.payload;
+    } else if (Number.isFinite(dbUpdated)) {
+      return fromDb.payload;
+    }
+    const fileStable = toStableJson(fromFile.payload);
+    const dbStable = toStableJson(fromDb.payload);
+    if (fileStable === dbStable) return fromFile.payload;
+    return fromFile.payload;
+  };
+  const listSessionLogsFromDb = () => {
+    const rows = args.db.all(
+      `
+        select id, session_id, summary, started_at, ended_at, provider, model_id, capability_mode, created_at
+        from cto_session_logs
+        where project_id = ?
+        order by datetime(created_at) desc
+      `,
+      [args.projectId]
+    );
+    return rows.map(
+      (row) => normalizeSessionLogEntry({
+        id: row.id,
+        sessionId: row.session_id,
+        summary: row.summary,
+        startedAt: row.started_at,
+        endedAt: row.ended_at,
+        provider: row.provider,
+        modelId: row.model_id,
+        capabilityMode: row.capability_mode,
+        createdAt: row.created_at
+      })
+    ).filter((entry) => entry != null);
+  };
+  const listSessionLogsFromFile = () => {
+    if (!import_node_fs18.default.existsSync(sessionsPath)) return [];
+    const raw = import_node_fs18.default.readFileSync(sessionsPath, "utf8");
+    const entries = [];
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.length) continue;
+      const parsed = safeJsonParse2(trimmed);
+      const normalized = normalizeSessionLogEntry(parsed);
+      if (normalized) entries.push(normalized);
+    }
+    return entries;
+  };
+  const appendSessionLogToFile = (entry) => {
+    import_node_fs18.default.mkdirSync(import_node_path19.default.dirname(sessionsPath), { recursive: true });
+    import_node_fs18.default.appendFileSync(sessionsPath, `${JSON.stringify(entry)}
+`, "utf8");
+  };
+  const insertSessionLogToDb = (entry) => {
+    args.db.run(
+      `
+        insert or ignore into cto_session_logs(
+          id, project_id, session_id, summary, started_at, ended_at, provider, model_id, capability_mode, created_at
+        )
+        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        entry.id,
+        args.projectId,
+        entry.sessionId,
+        entry.summary,
+        entry.startedAt,
+        entry.endedAt,
+        entry.provider,
+        entry.modelId,
+        entry.capabilityMode,
+        entry.createdAt
+      ]
+    );
+  };
+  const reconcileDocs = () => {
+    const identity = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
+    const coreMemory = chooseCanonical(readCoreMemoryFromFile(), readCoreMemoryFromDb(), makeDefaultCoreMemory);
+    writeIdentityToFile(identity);
+    writeIdentityToDb(identity);
+    writeCoreMemoryToFile(coreMemory);
+    writeCoreMemoryToDb(coreMemory);
+    return { identity, coreMemory };
+  };
+  const reconcileSessionLogs = () => {
+    const dbEntries = listSessionLogsFromDb();
+    const fileEntries = listSessionLogsFromFile();
+    const dbKeySet = new Set(dbEntries.map((entry) => `${entry.sessionId}::${entry.createdAt}`));
+    const fileKeySet = new Set(fileEntries.map((entry) => `${entry.sessionId}::${entry.createdAt}`));
+    for (const entry of fileEntries) {
+      const key = `${entry.sessionId}::${entry.createdAt}`;
+      if (dbKeySet.has(key)) continue;
+      insertSessionLogToDb(entry);
+      dbKeySet.add(key);
+    }
+    for (const entry of dbEntries) {
+      const key = `${entry.sessionId}::${entry.createdAt}`;
+      if (fileKeySet.has(key)) continue;
+      appendSessionLogToFile(entry);
+      fileKeySet.add(key);
+    }
+  };
+  const reconcileAll = () => {
+    const docs = reconcileDocs();
+    reconcileSessionLogs();
+    return docs;
+  };
+  const getIdentity = () => reconcileAll().identity;
+  const getCoreMemory = () => reconcileAll().coreMemory;
+  const getSessionLogs = (limit = 20) => {
+    reconcileAll();
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    return args.db.all(
+      `
+          select id, session_id, summary, started_at, ended_at, provider, model_id, capability_mode, created_at
+          from cto_session_logs
+          where project_id = ?
+          order by datetime(created_at) desc
+          limit ?
+        `,
+      [args.projectId, safeLimit]
+    ).map(
+      (row) => normalizeSessionLogEntry({
+        id: row.id,
+        sessionId: row.session_id,
+        summary: row.summary,
+        startedAt: row.started_at,
+        endedAt: row.ended_at,
+        provider: row.provider,
+        modelId: row.model_id,
+        capabilityMode: row.capability_mode,
+        createdAt: row.created_at
+      })
+    ).filter((entry) => entry != null);
+  };
+  const getSnapshot = (recentLimit = 20) => {
+    const docs = reconcileAll();
+    return {
+      identity: docs.identity,
+      coreMemory: docs.coreMemory,
+      recentSessions: getSessionLogs(recentLimit)
+    };
+  };
+  const updateCoreMemory = (patch) => {
+    const current = getCoreMemory();
+    const timestamp = nowIso4();
+    const next = {
+      ...current,
+      version: current.version + 1,
+      updatedAt: timestamp,
+      ...typeof patch.projectSummary === "string" ? { projectSummary: patch.projectSummary.trim() } : {},
+      ...patch.criticalConventions ? { criticalConventions: uniqueStrings(asStringArray2(patch.criticalConventions)) } : {},
+      ...patch.userPreferences ? { userPreferences: uniqueStrings(asStringArray2(patch.userPreferences)) } : {},
+      ...patch.activeFocus ? { activeFocus: uniqueStrings(asStringArray2(patch.activeFocus)) } : {},
+      ...patch.notes ? { notes: uniqueStrings(asStringArray2(patch.notes)) } : {}
+    };
+    writeCoreMemoryToFile(next);
+    writeCoreMemoryToDb(next);
+    return getSnapshot();
+  };
+  const appendSessionLog = (entry) => {
+    reconcileAll();
+    const next = {
+      id: (0, import_node_crypto13.randomUUID)(),
+      sessionId: entry.sessionId,
+      summary: entry.summary.trim() || "Session completed.",
+      startedAt: entry.startedAt,
+      endedAt: entry.endedAt,
+      provider: entry.provider,
+      modelId: entry.modelId,
+      capabilityMode: entry.capabilityMode,
+      createdAt: nowIso4()
+    };
+    insertSessionLogToDb(next);
+    appendSessionLogToFile(next);
+    return next;
+  };
+  const buildReconstructionContext = (recentLimit = 8) => {
+    const snapshot = getSnapshot(recentLimit);
+    const sections = [];
+    sections.push("CTO Identity");
+    sections.push(`- Name: ${snapshot.identity.name}`);
+    sections.push(`- Persona: ${snapshot.identity.persona}`);
+    sections.push(`- Preferred model: ${snapshot.identity.modelPreferences.provider}/${snapshot.identity.modelPreferences.model}`);
+    sections.push("");
+    sections.push("Core Memory");
+    sections.push(`- Project summary: ${snapshot.coreMemory.projectSummary}`);
+    if (snapshot.coreMemory.criticalConventions.length) {
+      sections.push(`- Critical conventions: ${snapshot.coreMemory.criticalConventions.join("; ")}`);
+    }
+    if (snapshot.coreMemory.userPreferences.length) {
+      sections.push(`- User preferences: ${snapshot.coreMemory.userPreferences.join("; ")}`);
+    }
+    if (snapshot.coreMemory.activeFocus.length) {
+      sections.push(`- Active focus: ${snapshot.coreMemory.activeFocus.join("; ")}`);
+    }
+    if (snapshot.coreMemory.notes.length) {
+      sections.push(`- Notes: ${snapshot.coreMemory.notes.join("; ")}`);
+    }
+    if (snapshot.recentSessions.length) {
+      sections.push("");
+      sections.push("Recent Sessions");
+      for (const entry of snapshot.recentSessions) {
+        sections.push(`- [${entry.createdAt}] ${entry.summary}`);
+      }
+    }
+    return sections.join("\n").trim();
+  };
+  reconcileAll();
+  return {
+    getIdentity,
+    getCoreMemory,
+    getSessionLogs,
+    getSnapshot,
+    updateCoreMemory,
+    appendSessionLog,
+    buildReconstructionContext
+  };
+}
+
+// ../desktop/src/main/services/orchestrator/orchestratorService.ts
+var import_node_crypto16 = require("crypto");
+var import_node_child_process5 = require("child_process");
+var import_node_fs21 = __toESM(require("fs"), 1);
+var import_node_path23 = __toESM(require("path"), 1);
+
+// ../desktop/src/main/services/orchestrator/unifiedOrchestratorAdapter.ts
+var import_node_fs19 = __toESM(require("fs"), 1);
+var import_node_path20 = __toESM(require("path"), 1);
 
 // ../desktop/src/main/services/orchestrator/baseOrchestratorAdapter.ts
 function shellEscapeArg(value) {
@@ -23107,6 +23590,11 @@ function buildFullPrompt(args, _executorKind, opts) {
     systemParts.push(`Step instructions:
 ${instructions}`);
   }
+  const phaseInstructions = typeof step.metadata?.phaseInstructions === "string" ? step.metadata.phaseInstructions.trim() : "";
+  if (phaseInstructions && phaseInstructions !== instructions) {
+    systemParts.push(`Phase-level guidance:
+${phaseInstructions}`);
+  }
   const steeringDirectives = Array.isArray(step.metadata?.steeringDirectives) ? step.metadata.steeringDirectives.map((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
     const record2 = entry;
@@ -23173,6 +23661,18 @@ ${handoffSummaries.map((s) => `- ${s}`).join("\n")}`);
   }
   const memProjectId = opts?.projectId;
   if (memoryService && memProjectId) {
+    const missionMemories = memoryService.getMemoryBudget(memProjectId, "lite", {
+      scope: "mission",
+      scopeOwnerId: run.id
+    });
+    if (missionMemories.length > 0) {
+      systemParts.push(
+        [
+          "## Mission Memory",
+          ...missionMemories.map((mem) => `- [${mem.category}] ${mem.content}`)
+        ].join("\n")
+      );
+    }
     const projectMemories = memoryService.getMemoryBudget(memProjectId, "lite");
     const promoted = projectMemories.filter((m) => m.importance === "high");
     if (promoted.length > 0) {
@@ -23629,12 +24129,12 @@ function buildWorkerEnvVars(args) {
   ];
 }
 function resolveAdeMcpServerLaunch(args) {
-  const mcpServerDir = import_node_path19.default.resolve(args.runtimeRoot, "apps", "mcp-server");
-  const builtEntry = import_node_path19.default.join(mcpServerDir, "dist", "index.cjs");
-  const srcEntry = import_node_path19.default.join(mcpServerDir, "src", "index.ts");
+  const mcpServerDir = import_node_path20.default.resolve(args.runtimeRoot, "apps", "mcp-server");
+  const builtEntry = import_node_path20.default.join(mcpServerDir, "dist", "index.cjs");
+  const srcEntry = import_node_path20.default.join(mcpServerDir, "src", "index.ts");
   let command;
   let cmdArgs;
-  if (import_node_fs18.default.existsSync(builtEntry)) {
+  if (import_node_fs19.default.existsSync(builtEntry)) {
     command = "node";
     cmdArgs = [builtEntry, "--project-root", args.workspaceRoot];
   } else {
@@ -23665,9 +24165,9 @@ function getUnifiedUnsupportedModelReason(modelRef) {
   return `Model '${descriptor.id}' requires ${executionPath} execution (${descriptor.family}), but the unified worker adapter currently supports only Claude/Codex CLI models.`;
 }
 function writeMcpConfigFile(args) {
-  const configDir = import_node_path19.default.join(args.workspaceRoot, ".ade", "orchestrator", "mcp-configs");
-  import_node_fs18.default.mkdirSync(configDir, { recursive: true });
-  const configPath = import_node_path19.default.join(configDir, `worker-${args.attemptId}.json`);
+  const configDir = import_node_path20.default.join(args.workspaceRoot, ".ade", "orchestrator", "mcp-configs");
+  import_node_fs19.default.mkdirSync(configDir, { recursive: true });
+  const configPath = import_node_path20.default.join(configDir, `worker-${args.attemptId}.json`);
   const launch = resolveAdeMcpServerLaunch({
     workspaceRoot: args.workspaceRoot,
     runtimeRoot: args.runtimeRoot,
@@ -23686,7 +24186,7 @@ function writeMcpConfigFile(args) {
       }
     }
   };
-  import_node_fs18.default.writeFileSync(configPath, JSON.stringify(config2, null, 2), "utf8");
+  import_node_fs19.default.writeFileSync(configPath, JSON.stringify(config2, null, 2), "utf8");
   return configPath;
 }
 function workerLocalMcpConfigFileName(attemptId) {
@@ -23696,10 +24196,10 @@ function workerLocalMcpConfigFileName(attemptId) {
 function resolveUnifiedRuntimeRoot() {
   let dir = process.cwd();
   for (let i = 0; i < 10; i++) {
-    if (import_node_fs18.default.existsSync(import_node_path19.default.join(dir, "apps", "mcp-server", "package.json"))) {
+    if (import_node_fs19.default.existsSync(import_node_path20.default.join(dir, "apps", "mcp-server", "package.json"))) {
       return dir;
     }
-    const parent = import_node_path19.default.dirname(dir);
+    const parent = import_node_path20.default.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -23737,27 +24237,27 @@ function buildCodexMcpConfigFlags(args) {
   return flags;
 }
 function cleanupMcpConfigFile(projectRoot, attemptId, laneWorktreePath) {
-  const configPath = import_node_path19.default.join(projectRoot, ".ade", "orchestrator", "mcp-configs", `worker-${attemptId}.json`);
+  const configPath = import_node_path20.default.join(projectRoot, ".ade", "orchestrator", "mcp-configs", `worker-${attemptId}.json`);
   try {
-    import_node_fs18.default.unlinkSync(configPath);
+    import_node_fs19.default.unlinkSync(configPath);
   } catch {
   }
   const localConfigName = workerLocalMcpConfigFileName(attemptId);
   if (laneWorktreePath && laneWorktreePath.trim().length > 0) {
     try {
-      import_node_fs18.default.unlinkSync(import_node_path19.default.join(laneWorktreePath, localConfigName));
+      import_node_fs19.default.unlinkSync(import_node_path20.default.join(laneWorktreePath, localConfigName));
     } catch {
     }
   }
 }
 function cleanupStaleMcpConfigFiles(projectRoot) {
-  const configDir = import_node_path19.default.join(projectRoot, ".ade", "orchestrator", "mcp-configs");
+  const configDir = import_node_path20.default.join(projectRoot, ".ade", "orchestrator", "mcp-configs");
   try {
-    const entries = import_node_fs18.default.readdirSync(configDir);
+    const entries = import_node_fs19.default.readdirSync(configDir);
     for (const entry of entries) {
       if (entry.startsWith("worker-") && entry.endsWith(".json")) {
         try {
-          import_node_fs18.default.unlinkSync(import_node_path19.default.join(configDir, entry));
+          import_node_fs19.default.unlinkSync(import_node_path20.default.join(configDir, entry));
         } catch {
         }
       }
@@ -23867,12 +24367,12 @@ function createUnifiedOrchestratorAdapter(options) {
 }
 
 // ../desktop/src/main/services/orchestrator/missionLifecycle.ts
-var import_node_fs19 = __toESM(require("fs"), 1);
-var import_node_crypto14 = require("crypto");
-var import_node_path20 = __toESM(require("path"), 1);
+var import_node_fs20 = __toESM(require("fs"), 1);
+var import_node_crypto15 = require("crypto");
+var import_node_path21 = __toESM(require("path"), 1);
 
 // ../desktop/src/main/services/orchestrator/chatMessageService.ts
-var import_node_crypto13 = require("crypto");
+var import_node_crypto14 = require("crypto");
 function emitThreadEvent(ctx, event) {
   if (ctx.disposed.current) return;
   try {
@@ -24031,7 +24531,7 @@ function formatOrchestratorContent(content, stepKey, metadata) {
 function emitOrchestratorMessage(_ctx, missionId, content, stepKey, metadata, deps) {
   const formattedContent = formatOrchestratorContent(content, stepKey, metadata);
   const msg = {
-    id: (0, import_node_crypto13.randomUUID)(),
+    id: (0, import_node_crypto14.randomUUID)(),
     missionId,
     role: "orchestrator",
     content: formattedContent,
@@ -24257,7 +24757,7 @@ function ensureThreadForTarget(ctx, args) {
   }
   if (target.kind === "teammate") {
     const identity2 = teammateThreadIdentity(target);
-    const fallbackId2 = `teammate:${missionId}:${identity2 ?? (0, import_node_crypto13.randomUUID)()}`;
+    const fallbackId2 = `teammate:${missionId}:${identity2 ?? (0, import_node_crypto14.randomUUID)()}`;
     const existing2 = getThreadById(ctx, missionId, fallbackId2);
     if (existing2) return existing2;
     return upsertThread(ctx, {
@@ -24275,7 +24775,7 @@ function ensureThreadForTarget(ctx, args) {
     });
   }
   const identity = workerThreadIdentity(target);
-  const fallbackId = `worker:${missionId}:${identity ?? (0, import_node_crypto13.randomUUID)()}`;
+  const fallbackId = `worker:${missionId}:${identity ?? (0, import_node_crypto14.randomUUID)()}`;
   const existing = getThreadById(ctx, missionId, fallbackId);
   if (existing) return existing;
   return upsertThread(ctx, {
@@ -24676,7 +25176,7 @@ function sendWorkersBroadcastMessageCtx(ctx, threadArgs, target, deps) {
   const missionThread = ensureMissionThread(ctx, threadArgs.missionId);
   const metadata = isRecord3(threadArgs.metadata) ? threadArgs.metadata : null;
   const broadcastMessage = appendChatMessageCtx(ctx, {
-    id: (0, import_node_crypto13.randomUUID)(),
+    id: (0, import_node_crypto14.randomUUID)(),
     missionId: threadArgs.missionId,
     role: "user",
     content: threadArgs.content,
@@ -24773,7 +25273,7 @@ function sendThreadMessageCtx(ctx, threadArgs, deps) {
   const visibility = normalizeChatVisibility(threadArgs.visibilityMode, visibilityFallback);
   const deliveryState = isWorkerTarget || isTeammateTarget ? "queued" : DEFAULT_CHAT_DELIVERY;
   const msg = appendChatMessageCtx(ctx, {
-    id: (0, import_node_crypto13.randomUUID)(),
+    id: (0, import_node_crypto14.randomUUID)(),
     missionId: threadArgs.missionId,
     role: "user",
     content: threadArgs.content,
@@ -24867,7 +25367,7 @@ function sendAgentMessageCtx(ctx, args) {
     target: { kind: "worker", attemptId: fromAttemptId }
   });
   const agentMsg = appendChatMessageCtx(ctx, {
-    id: (0, import_node_crypto13.randomUUID)(),
+    id: (0, import_node_crypto14.randomUUID)(),
     missionId,
     role: "agent",
     content,
@@ -24889,7 +25389,7 @@ function sendAgentMessageCtx(ctx, args) {
     target: { kind: "worker", attemptId: toAttemptId }
   });
   appendChatMessageCtx(ctx, {
-    id: (0, import_node_crypto13.randomUUID)(),
+    id: (0, import_node_crypto14.randomUUID)(),
     missionId,
     role: "agent",
     content,
@@ -25252,7 +25752,7 @@ function inferRoleFromStepMetadata(metadata, kind) {
   if (combined.includes("test_review") || combined.includes("testreview")) return "test_review";
   if (combined.includes("review") || combined.includes("code_review")) return "code_review";
   if (combined.includes("test") || combined.includes("validation")) return "testing";
-  if (combined.includes("plan")) return "planning";
+  if (combined.includes("plan")) return "implementation";
   if (combined.includes("integration") || combined.includes("merge")) return "integration";
   return "implementation";
 }
@@ -25260,7 +25760,7 @@ function parseNumericDependencyIndices(metadata) {
   if (!Array.isArray(metadata.dependencyIndices)) return [];
   return metadata.dependencyIndices.map((value) => Number(value)).filter((value) => Number.isFinite(value)).map((value) => Math.floor(value));
 }
-function slugify3(value) {
+function slugify2(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "").slice(0, 28) || "lane";
 }
 var TERMINAL_PHASE_STEP_STATUSES = /* @__PURE__ */ new Set([
@@ -25281,23 +25781,23 @@ function discoverProjectDocs(ctx) {
         "README.md",
         "CLAUDE.md",
         "AGENTS.md",
-        ...readDocPaths(projectRoot).map((absPath) => import_node_path20.default.relative(projectRoot, absPath).replace(/\\/g, "/"))
+        ...readDocPaths(projectRoot).map((absPath) => import_node_path21.default.relative(projectRoot, absPath).replace(/\\/g, "/"))
       ].map((value) => value.replace(/\\/g, "/"))
     )
   ];
   const foundPaths = [];
   const docs = [];
   for (const candidate of candidatePaths) {
-    const fullPath = import_node_path20.default.join(projectRoot, candidate.replace(/^\/+/, ""));
+    const fullPath = import_node_path21.default.join(projectRoot, candidate.replace(/^\/+/, ""));
     try {
-      if (import_node_fs19.default.existsSync(fullPath)) {
-        const content = import_node_fs19.default.readFileSync(fullPath);
+      if (import_node_fs20.default.existsSync(fullPath)) {
+        const content = import_node_fs20.default.readFileSync(fullPath);
         if (content.byteLength > 0) {
           foundPaths.push(candidate);
           docs.push({
             path: candidate,
             bytes: content.byteLength,
-            sha256: (0, import_node_crypto14.createHash)("sha256").update(content).digest("hex")
+            sha256: (0, import_node_crypto15.createHash)("sha256").update(content).digest("hex")
           });
         }
       }
@@ -25407,7 +25907,7 @@ function dispatchOrchestratorHookCtx(ctx, hookArgs, deps) {
   if (!hook?.command) return;
   const missionId = getMissionIdForRun(ctx, hookArgs.runId);
   const commandPreview = clipHookLogText(hook.command);
-  const commandDigest = (0, import_node_crypto14.createHash)("sha256").update(hook.command).digest("hex").slice(0, 16);
+  const commandDigest = (0, import_node_crypto15.createHash)("sha256").update(hook.command).digest("hex").slice(0, 16);
   const occurredAt = hookArgs.eventAt && hookArgs.eventAt.trim().length > 0 ? hookArgs.eventAt : nowIso2();
   const runtimeEventBase = {
     source: "orchestrator_hook",
@@ -25561,13 +26061,548 @@ function maybeDispatchTeammateIdleHookCtx(ctx, idleArgs, deps) {
   }, deps);
 }
 
+// ../desktop/src/main/services/orchestrator/missionStateDoc.ts
+var import_promises = __toESM(require("fs/promises"), 1);
+var import_node_path22 = __toESM(require("path"), 1);
+var MISSION_STATE_DIR = ".ade";
+var COORDINATOR_CHECKPOINT_VERSION = 1;
+var MAX_DECISIONS = 30;
+var MAX_STEP_OUTCOMES = 40;
+var MAX_ACTIVE_ISSUES = 20;
+var MAX_PENDING_INTERVENTIONS = 10;
+var MAX_CHECKPOINT_SUMMARY_CHARS = 8e3;
+var missionStateWriteQueues = /* @__PURE__ */ new Map();
+var coordinatorCheckpointWriteQueues = /* @__PURE__ */ new Map();
+var stringOr = (value, fallback = "") => typeof value === "string" ? value : fallback;
+var clampNonNegativeInt = (value, fallback = 0) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.floor(parsed));
+};
+var normalizeStringArray = (value, max = 200) => {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const entry of value) {
+    if (out.length >= max) break;
+    const normalized = String(entry ?? "").trim();
+    if (!normalized.length || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+};
+var trimSummary = (value) => value.trim().slice(0, 200);
+function missionStateQueueKey(projectRoot, runId) {
+  return `${projectRoot}::${runId}`;
+}
+function getMissionStateDocumentPath(projectRoot, runId) {
+  return import_node_path22.default.join(projectRoot, MISSION_STATE_DIR, `mission-state-${runId}.json`);
+}
+function getCoordinatorCheckpointPath(projectRoot, runId) {
+  return import_node_path22.default.join(projectRoot, MISSION_STATE_DIR, `coordinator-checkpoint-${runId}.json`);
+}
+function normalizeProgress(value) {
+  const raw = isRecord3(value) ? value : {};
+  return {
+    currentPhase: stringOr(raw.currentPhase, "unknown").trim() || "unknown",
+    completedSteps: clampNonNegativeInt(raw.completedSteps, 0),
+    totalSteps: clampNonNegativeInt(raw.totalSteps, 0),
+    activeWorkers: normalizeStringArray(raw.activeWorkers),
+    blockedSteps: normalizeStringArray(raw.blockedSteps),
+    failedSteps: normalizeStringArray(raw.failedSteps)
+  };
+}
+function normalizeStepOutcome(value) {
+  const raw = isRecord3(value) ? value : null;
+  if (!raw) return null;
+  const stepKey = stringOr(raw.stepKey).trim();
+  if (!stepKey.length) return null;
+  const status = raw.status === "succeeded" || raw.status === "failed" || raw.status === "skipped" || raw.status === "in_progress" ? raw.status : "in_progress";
+  const testsRunRaw = isRecord3(raw.testsRun) ? raw.testsRun : null;
+  const testsRun = testsRunRaw ? {
+    passed: clampNonNegativeInt(testsRunRaw.passed, 0),
+    failed: clampNonNegativeInt(testsRunRaw.failed, 0),
+    skipped: clampNonNegativeInt(testsRunRaw.skipped, 0)
+  } : void 0;
+  const validationRaw = isRecord3(raw.validation) ? raw.validation : null;
+  const validation = validationRaw ? (() => {
+    const verdict = validationRaw.verdict === "pass" || validationRaw.verdict === "fail" || validationRaw.verdict === null ? validationRaw.verdict : null;
+    return {
+      verdict,
+      findings: normalizeStringArray(validationRaw.findings, 40)
+    };
+  })() : void 0;
+  return {
+    stepKey,
+    stepName: stringOr(raw.stepName, stepKey).trim() || stepKey,
+    phase: stringOr(raw.phase, "unknown").trim() || "unknown",
+    status,
+    summary: trimSummary(stringOr(raw.summary)),
+    filesChanged: normalizeStringArray(raw.filesChanged, 50),
+    ...testsRun ? { testsRun } : {},
+    ...validation ? { validation } : {},
+    warnings: normalizeStringArray(raw.warnings, 40),
+    completedAt: raw.completedAt === null ? null : stringOr(raw.completedAt).trim() || null
+  };
+}
+function normalizeDecision(value) {
+  const raw = isRecord3(value) ? value : null;
+  if (!raw) return null;
+  const timestamp = stringOr(raw.timestamp).trim();
+  const decision = stringOr(raw.decision).trim();
+  const rationale = stringOr(raw.rationale).trim();
+  const context = stringOr(raw.context).trim();
+  if (!timestamp || !decision) return null;
+  return { timestamp, decision, rationale, context };
+}
+function normalizeIssue(value) {
+  const raw = isRecord3(value) ? value : null;
+  if (!raw) return null;
+  const id = stringOr(raw.id).trim();
+  if (!id.length) return null;
+  return {
+    id,
+    severity: raw.severity === "low" || raw.severity === "medium" || raw.severity === "high" ? raw.severity : "medium",
+    description: stringOr(raw.description).trim(),
+    affectedSteps: normalizeStringArray(raw.affectedSteps),
+    status: raw.status === "open" || raw.status === "mitigated" || raw.status === "resolved" ? raw.status : "open"
+  };
+}
+function normalizePendingIntervention(value) {
+  const raw = isRecord3(value) ? value : null;
+  if (!raw) return null;
+  const id = stringOr(raw.id).trim();
+  if (!id.length) return null;
+  return {
+    id,
+    type: stringOr(raw.type).trim() || "unknown",
+    title: stringOr(raw.title).trim() || id,
+    createdAt: stringOr(raw.createdAt).trim() || nowIso2()
+  };
+}
+function normalizeReflectionEntry(value) {
+  const raw = isRecord3(value) ? value : null;
+  if (!raw) return null;
+  const id = stringOr(raw.id).trim();
+  const missionId = stringOr(raw.missionId).trim();
+  const runId = stringOr(raw.runId).trim();
+  const observation = stringOr(raw.observation).trim();
+  if (!id || !missionId || !runId || !observation) return null;
+  const signalTypeRaw = stringOr(raw.signalType).trim();
+  const signalType = signalTypeRaw === "wish" || signalTypeRaw === "frustration" || signalTypeRaw === "idea" || signalTypeRaw === "pattern" || signalTypeRaw === "limitation" ? signalTypeRaw : "idea";
+  return {
+    id,
+    projectId: stringOr(raw.projectId).trim(),
+    missionId,
+    runId,
+    stepId: stringOr(raw.stepId).trim() || null,
+    attemptId: stringOr(raw.attemptId).trim() || null,
+    agentRole: stringOr(raw.agentRole).trim() || "unknown",
+    phase: stringOr(raw.phase).trim() || "unknown",
+    signalType,
+    observation,
+    recommendation: stringOr(raw.recommendation).trim(),
+    context: stringOr(raw.context).trim(),
+    occurredAt: stringOr(raw.occurredAt).trim() || nowIso2(),
+    createdAt: stringOr(raw.createdAt).trim() || nowIso2(),
+    schemaVersion: 1
+  };
+}
+function normalizeRetrospective(value) {
+  const raw = isRecord3(value) ? value : null;
+  if (!raw) return null;
+  const id = stringOr(raw.id).trim();
+  const missionId = stringOr(raw.missionId).trim();
+  const runId = stringOr(raw.runId).trim();
+  if (!id || !missionId || !runId) return null;
+  const finalStatusRaw = stringOr(raw.finalStatus).trim();
+  const finalStatus = finalStatusRaw === "queued" || finalStatusRaw === "bootstrapping" || finalStatusRaw === "active" || finalStatusRaw === "paused" || finalStatusRaw === "completing" || finalStatusRaw === "succeeded" || finalStatusRaw === "failed" || finalStatusRaw === "canceled" ? finalStatusRaw : "failed";
+  return {
+    id,
+    missionId,
+    runId,
+    generatedAt: stringOr(raw.generatedAt).trim() || nowIso2(),
+    schemaVersion: 1,
+    finalStatus,
+    wins: normalizeStringArray(raw.wins, 30),
+    failures: normalizeStringArray(raw.failures, 30),
+    unresolvedRisks: normalizeStringArray(raw.unresolvedRisks, 30),
+    followUpActions: normalizeStringArray(raw.followUpActions, 30),
+    topPainPoints: normalizeStringArray(raw.topPainPoints, 30),
+    topImprovements: normalizeStringArray(raw.topImprovements, 30),
+    patternsToCapture: normalizeStringArray(raw.patternsToCapture, 30),
+    estimatedImpact: stringOr(raw.estimatedImpact).trim(),
+    changelog: Array.isArray(raw.changelog) ? raw.changelog.filter(
+      (x) => isRecord3(x) && typeof x.previousPainPoint === "string" && typeof x.currentState === "string" && (x.status === "resolved" || x.status === "still_open" || x.status === "worsened")
+    ).map((x) => {
+      const previousPainScore = Number(x.previousPainScore);
+      const currentPainScore = Number(x.currentPainScore);
+      return {
+        previousPainPoint: String(x.previousPainPoint),
+        status: x.status,
+        currentState: String(x.currentState),
+        ...typeof x.fixApplied === "string" && x.fixApplied.trim() ? { fixApplied: x.fixApplied.trim() } : {},
+        ...typeof x.sourceRetrospectiveId === "string" && x.sourceRetrospectiveId.trim().length ? { sourceRetrospectiveId: x.sourceRetrospectiveId.trim() } : {},
+        ...typeof x.sourceMissionId === "string" && x.sourceMissionId.trim().length ? { sourceMissionId: x.sourceMissionId.trim() } : {},
+        ...typeof x.sourceRunId === "string" && x.sourceRunId.trim().length ? { sourceRunId: x.sourceRunId.trim() } : {},
+        ...Number.isFinite(previousPainScore) ? { previousPainScore } : {},
+        ...Number.isFinite(currentPainScore) ? { currentPainScore } : {}
+      };
+    }) : []
+  };
+}
+function normalizeDocument(rawDoc) {
+  const raw = isRecord3(rawDoc) ? rawDoc : null;
+  if (!raw) return null;
+  if (Number(raw.schemaVersion) !== 1) return null;
+  const missionId = stringOr(raw.missionId).trim();
+  const runId = stringOr(raw.runId).trim();
+  if (!missionId.length || !runId.length) return null;
+  const stepOutcomes = Array.isArray(raw.stepOutcomes) ? raw.stepOutcomes.map((entry) => normalizeStepOutcome(entry)).filter((entry) => Boolean(entry)) : [];
+  const decisions = Array.isArray(raw.decisions) ? raw.decisions.map((entry) => normalizeDecision(entry)).filter((entry) => Boolean(entry)) : [];
+  const activeIssues = Array.isArray(raw.activeIssues) ? raw.activeIssues.map((entry) => normalizeIssue(entry)).filter((entry) => Boolean(entry)) : [];
+  const pendingInterventions = Array.isArray(raw.pendingInterventions) ? raw.pendingInterventions.map((entry) => normalizePendingIntervention(entry)).filter((entry) => Boolean(entry)) : [];
+  const modifiedFiles = normalizeStringArray(raw.modifiedFiles);
+  return {
+    schemaVersion: 1,
+    missionId,
+    runId,
+    goal: stringOr(raw.goal).trim(),
+    updatedAt: stringOr(raw.updatedAt).trim() || nowIso2(),
+    progress: normalizeProgress(raw.progress),
+    stepOutcomes: stepOutcomes.slice(-MAX_STEP_OUTCOMES),
+    decisions: decisions.slice(-MAX_DECISIONS),
+    activeIssues: activeIssues.slice(-MAX_ACTIVE_ISSUES),
+    modifiedFiles,
+    pendingInterventions: pendingInterventions.slice(-MAX_PENDING_INTERVENTIONS),
+    reflections: Array.isArray(raw.reflections) ? raw.reflections.map((entry) => normalizeReflectionEntry(entry)).filter((entry) => Boolean(entry)).slice(-200) : [],
+    latestRetrospective: normalizeRetrospective(raw.latestRetrospective)
+  };
+}
+function normalizeCoordinatorCheckpoint(rawDoc) {
+  const raw = isRecord3(rawDoc) ? rawDoc : null;
+  if (!raw) return null;
+  const runId = stringOr(raw.runId).trim();
+  const missionId = stringOr(raw.missionId).trim();
+  if (!runId.length || !missionId.length) return null;
+  const lastEventTimestampRaw = raw.lastEventTimestamp;
+  const lastEventTimestamp = typeof lastEventTimestampRaw === "string" && lastEventTimestampRaw.trim().length > 0 ? lastEventTimestampRaw.trim() : null;
+  return {
+    version: COORDINATOR_CHECKPOINT_VERSION,
+    runId,
+    missionId,
+    conversationSummary: stringOr(raw.conversationSummary).trim().slice(0, MAX_CHECKPOINT_SUMMARY_CHARS),
+    lastEventTimestamp,
+    turnCount: clampNonNegativeInt(raw.turnCount, 0),
+    compactionCount: clampNonNegativeInt(raw.compactionCount, 0),
+    savedAt: stringOr(raw.savedAt).trim() || nowIso2()
+  };
+}
+function mergeStepOutcomeUpdates(current, updates) {
+  const testsRun = (() => {
+    if (updates.testsRun === void 0) return current.testsRun;
+    const existing = current.testsRun ?? { passed: 0, failed: 0, skipped: 0 };
+    return {
+      passed: clampNonNegativeInt(updates.testsRun.passed, existing.passed),
+      failed: clampNonNegativeInt(updates.testsRun.failed, existing.failed),
+      skipped: clampNonNegativeInt(updates.testsRun.skipped, existing.skipped)
+    };
+  })();
+  const validation = (() => {
+    if (updates.validation === void 0) return current.validation;
+    const existing = current.validation ?? { verdict: null, findings: [] };
+    return {
+      verdict: updates.validation.verdict === "pass" || updates.validation.verdict === "fail" || updates.validation.verdict === null ? updates.validation.verdict : existing.verdict,
+      findings: updates.validation.findings ? normalizeStringArray(updates.validation.findings) : existing.findings
+    };
+  })();
+  const status = updates.status === "succeeded" || updates.status === "failed" || updates.status === "skipped" || updates.status === "in_progress" ? updates.status : current.status;
+  return {
+    ...current,
+    stepName: updates.stepName ? updates.stepName.trim() || current.stepName : current.stepName,
+    phase: updates.phase ? updates.phase.trim() || current.phase : current.phase,
+    status,
+    summary: updates.summary !== void 0 ? trimSummary(updates.summary) : current.summary,
+    filesChanged: updates.filesChanged ? normalizeStringArray(updates.filesChanged, 50) : current.filesChanged,
+    warnings: updates.warnings ? normalizeStringArray(updates.warnings, 40) : current.warnings,
+    completedAt: updates.completedAt !== void 0 ? updates.completedAt : current.completedAt,
+    ...testsRun ? { testsRun } : {},
+    ...validation ? { validation } : {}
+  };
+}
+function createDefaultStepOutcome(stepKey) {
+  return {
+    stepKey,
+    stepName: stepKey,
+    phase: "unknown",
+    status: "in_progress",
+    summary: "",
+    filesChanged: [],
+    warnings: [],
+    completedAt: null
+  };
+}
+function applyPatch(doc, patch) {
+  const next = {
+    ...doc,
+    progress: { ...doc.progress },
+    stepOutcomes: [...doc.stepOutcomes],
+    decisions: [...doc.decisions],
+    activeIssues: [...doc.activeIssues],
+    modifiedFiles: [...doc.modifiedFiles],
+    pendingInterventions: [...doc.pendingInterventions],
+    reflections: [...doc.reflections ?? []],
+    latestRetrospective: doc.latestRetrospective ?? null,
+    updatedAt: nowIso2()
+  };
+  if (patch.updateProgress) {
+    const progress = patch.updateProgress;
+    if (progress.currentPhase !== void 0) next.progress.currentPhase = stringOr(progress.currentPhase, "unknown").trim() || "unknown";
+    if (progress.completedSteps !== void 0) next.progress.completedSteps = clampNonNegativeInt(progress.completedSteps, next.progress.completedSteps);
+    if (progress.totalSteps !== void 0) next.progress.totalSteps = clampNonNegativeInt(progress.totalSteps, next.progress.totalSteps);
+    if (progress.activeWorkers !== void 0) next.progress.activeWorkers = normalizeStringArray(progress.activeWorkers);
+    if (progress.blockedSteps !== void 0) next.progress.blockedSteps = normalizeStringArray(progress.blockedSteps);
+    if (progress.failedSteps !== void 0) next.progress.failedSteps = normalizeStringArray(progress.failedSteps);
+  }
+  if (patch.addStepOutcome) {
+    const normalized = normalizeStepOutcome(patch.addStepOutcome);
+    if (normalized) {
+      const idx = next.stepOutcomes.findIndex((entry) => entry.stepKey === normalized.stepKey);
+      if (idx >= 0) {
+        next.stepOutcomes[idx] = mergeStepOutcomeUpdates(next.stepOutcomes[idx], normalized);
+      } else {
+        next.stepOutcomes.push(normalized);
+      }
+    }
+  }
+  if (patch.updateStepOutcome) {
+    const stepKey = patch.updateStepOutcome.stepKey.trim();
+    if (stepKey.length) {
+      const idx = next.stepOutcomes.findIndex((entry) => entry.stepKey === stepKey);
+      const current = idx >= 0 ? next.stepOutcomes[idx] : createDefaultStepOutcome(stepKey);
+      const merged = mergeStepOutcomeUpdates(current, patch.updateStepOutcome.updates);
+      if (idx >= 0) {
+        next.stepOutcomes[idx] = merged;
+      } else {
+        next.stepOutcomes.push(merged);
+      }
+    }
+  }
+  if (patch.addDecision) {
+    const normalized = normalizeDecision(patch.addDecision);
+    if (normalized) {
+      next.decisions.push(normalized);
+    }
+  }
+  if (patch.addIssue) {
+    const normalized = normalizeIssue(patch.addIssue);
+    if (normalized) {
+      const idx = next.activeIssues.findIndex((entry) => entry.id === normalized.id);
+      if (idx >= 0) {
+        next.activeIssues[idx] = normalized;
+      } else {
+        next.activeIssues.push(normalized);
+      }
+    }
+  }
+  if (patch.resolveIssue) {
+    const issueId = patch.resolveIssue.id.trim();
+    const idx = next.activeIssues.findIndex((entry) => entry.id === issueId);
+    if (idx >= 0) {
+      next.activeIssues[idx] = {
+        ...next.activeIssues[idx],
+        status: "resolved"
+      };
+    }
+    const resolution = patch.resolveIssue.resolution.trim();
+    if (issueId.length && resolution.length) {
+      next.decisions.push({
+        timestamp: nowIso2(),
+        decision: `Resolved issue ${issueId}`,
+        rationale: resolution,
+        context: "Issue resolution"
+      });
+    }
+  }
+  if (patch.pendingInterventions) {
+    next.pendingInterventions = patch.pendingInterventions.map((entry) => normalizePendingIntervention(entry)).filter((entry) => Boolean(entry)).slice(-MAX_PENDING_INTERVENTIONS);
+  }
+  if (patch.reflections) {
+    next.reflections = patch.reflections.map((entry) => normalizeReflectionEntry(entry)).filter((entry) => Boolean(entry)).slice(-200);
+  }
+  if (patch.latestRetrospective !== void 0) {
+    next.latestRetrospective = patch.latestRetrospective ? normalizeRetrospective(patch.latestRetrospective) : null;
+  }
+  next.stepOutcomes = next.stepOutcomes.slice(-MAX_STEP_OUTCOMES);
+  next.decisions = next.decisions.slice(-MAX_DECISIONS);
+  next.activeIssues = next.activeIssues.slice(-MAX_ACTIVE_ISSUES);
+  next.modifiedFiles = normalizeStringArray(next.stepOutcomes.flatMap((entry) => entry.filesChanged), 150);
+  return next;
+}
+async function loadDocumentFromDisk(filePath) {
+  try {
+    const raw = await import_promises.default.readFile(filePath, "utf8");
+    return normalizeDocument(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+async function writeDocumentToDisk(filePath, doc) {
+  await import_promises.default.mkdir(import_node_path22.default.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await import_promises.default.writeFile(tempPath, JSON.stringify(doc, null, 2), "utf8");
+  await import_promises.default.rename(tempPath, filePath);
+}
+function createInitialMissionStateDocument(args) {
+  return {
+    schemaVersion: 1,
+    missionId: args.missionId,
+    runId: args.runId,
+    goal: args.goal,
+    updatedAt: nowIso2(),
+    progress: normalizeProgress(args.progress),
+    stepOutcomes: [],
+    decisions: [],
+    activeIssues: [],
+    modifiedFiles: [],
+    pendingInterventions: [],
+    reflections: [],
+    latestRetrospective: null
+  };
+}
+async function updateMissionStateDocument(args) {
+  const filePath = getMissionStateDocumentPath(args.projectRoot, args.runId);
+  const key = missionStateQueueKey(args.projectRoot, args.runId);
+  const previous = missionStateWriteQueues.get(key) ?? Promise.resolve(
+    createInitialMissionStateDocument({
+      missionId: args.missionId,
+      runId: args.runId,
+      goal: args.goal,
+      progress: args.initialProgress
+    })
+  );
+  const nextJob = previous.catch(
+    () => createInitialMissionStateDocument({
+      missionId: args.missionId,
+      runId: args.runId,
+      goal: args.goal,
+      progress: args.initialProgress
+    })
+  ).then(async () => {
+    const existing = await loadDocumentFromDisk(filePath);
+    const base = existing ?? createInitialMissionStateDocument({
+      missionId: args.missionId,
+      runId: args.runId,
+      goal: args.goal,
+      progress: args.initialProgress
+    });
+    const nextDoc = applyPatch(base, args.patch);
+    await writeDocumentToDisk(filePath, nextDoc);
+    return nextDoc;
+  });
+  missionStateWriteQueues.set(key, nextJob);
+  try {
+    return await nextJob;
+  } finally {
+    if (missionStateWriteQueues.get(key) === nextJob) {
+      missionStateWriteQueues.delete(key);
+    }
+  }
+}
+async function readMissionStateDocument(args) {
+  const key = missionStateQueueKey(args.projectRoot, args.runId);
+  const pending = missionStateWriteQueues.get(key);
+  if (pending) {
+    try {
+      await pending;
+    } catch {
+    }
+  }
+  return loadDocumentFromDisk(getMissionStateDocumentPath(args.projectRoot, args.runId));
+}
+async function writeCoordinatorCheckpoint(projectRoot, runId, checkpoint) {
+  const filePath = getCoordinatorCheckpointPath(projectRoot, runId);
+  const key = missionStateQueueKey(projectRoot, runId);
+  const normalizedInput = normalizeCoordinatorCheckpoint({
+    ...checkpoint,
+    version: COORDINATOR_CHECKPOINT_VERSION,
+    runId
+  });
+  if (!normalizedInput) {
+    throw new Error(`Invalid coordinator checkpoint payload for run '${runId}'.`);
+  }
+  const previous = coordinatorCheckpointWriteQueues.get(key) ?? Promise.resolve(normalizedInput);
+  const nextJob = previous.catch(() => normalizedInput).then(async () => {
+    const normalized = normalizeCoordinatorCheckpoint(normalizedInput);
+    if (!normalized) {
+      throw new Error(`Unable to normalize coordinator checkpoint for run '${runId}'.`);
+    }
+    await writeDocumentToDisk(filePath, normalized);
+    return normalized;
+  });
+  coordinatorCheckpointWriteQueues.set(key, nextJob);
+  try {
+    return await nextJob;
+  } finally {
+    if (coordinatorCheckpointWriteQueues.get(key) === nextJob) {
+      coordinatorCheckpointWriteQueues.delete(key);
+    }
+  }
+}
+async function readCoordinatorCheckpoint(projectRoot, runId) {
+  const key = missionStateQueueKey(projectRoot, runId);
+  const pending = coordinatorCheckpointWriteQueues.get(key);
+  if (pending) {
+    try {
+      await pending;
+    } catch {
+    }
+  }
+  const filePath = getCoordinatorCheckpointPath(projectRoot, runId);
+  let raw;
+  try {
+    raw = await import_promises.default.readFile(filePath, "utf8");
+  } catch (error48) {
+    const code = error48.code;
+    if (code !== "ENOENT") {
+      console.warn(`[missionStateDoc] Failed to read coordinator checkpoint for run '${runId}':`, error48);
+    }
+    return null;
+  }
+  try {
+    return normalizeCoordinatorCheckpoint(JSON.parse(raw));
+  } catch (error48) {
+    console.warn(`[missionStateDoc] Corrupt coordinator checkpoint for run '${runId}' \u2014 ignoring:`, error48);
+    return null;
+  }
+}
+async function deleteCoordinatorCheckpoint(projectRoot, runId) {
+  const key = missionStateQueueKey(projectRoot, runId);
+  const pending = coordinatorCheckpointWriteQueues.get(key);
+  if (pending) {
+    try {
+      await pending;
+    } catch {
+    }
+  }
+  try {
+    await import_promises.default.unlink(getCoordinatorCheckpointPath(projectRoot, runId));
+  } catch (error48) {
+    const code = error48.code;
+    if (code !== "ENOENT") {
+      throw error48;
+    }
+  }
+}
+
 // ../desktop/src/main/services/orchestrator/orchestratorService.ts
 function sha2562(data) {
-  return (0, import_node_crypto15.createHash)("sha256").update(data).digest("hex");
+  return (0, import_node_crypto16.createHash)("sha256").update(data).digest("hex");
 }
 function getWorkerCheckpointPath(worktreePath, stepKey) {
   const sanitizedStepKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return import_node_path21.default.join(worktreePath, ".ade", "checkpoints", `${sanitizedStepKey}.md`);
+  return import_node_path23.default.join(worktreePath, ".ade", "checkpoints", `${sanitizedStepKey}.md`);
 }
 function normalizeValidationTier(value) {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -25606,6 +26641,98 @@ function hasPassingValidation(metadata) {
   const validationPassedAt = typeof metadata.validationPassedAt === "string" ? metadata.validationPassedAt.trim() : "";
   return validationPassedAt.length > 0;
 }
+var ReflectionValidationError = class extends Error {
+  code;
+  details;
+  constructor(code, message, details) {
+    super(message);
+    this.name = "ReflectionValidationError";
+    this.code = code;
+    this.details = details ?? null;
+  }
+};
+var RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD = 2;
+var RETROSPECTIVE_TREND_LOOKBACK_LIMIT = 50;
+var ISO_8601_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+function normalizeReflectionSignalType(value) {
+  if (value === "wish" || value === "frustration" || value === "idea" || value === "pattern" || value === "limitation") {
+    return value;
+  }
+  return null;
+}
+function normalizePainPointKey(value) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+function isStrictIsoTimestamp(value) {
+  if (!ISO_8601_TIMESTAMP_RE.test(value)) return false;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms);
+}
+function parseRetrospectivePayload(payload) {
+  try {
+    const parsed = JSON.parse(String(payload ?? "{}"));
+    if (parsed && typeof parsed.missionId === "string" && typeof parsed.runId === "string" && parsed.missionId && parsed.runId) {
+      return parsed;
+    }
+  } catch {
+  }
+  return null;
+}
+function buildPainPointCounter(entries) {
+  const counter = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const label = String(entry ?? "").trim();
+    if (!label) continue;
+    const key = normalizePainPointKey(label);
+    if (!key) continue;
+    const current = counter.get(key);
+    if (current) {
+      current.count += 1;
+    } else {
+      counter.set(key, { label, count: 1 });
+    }
+  }
+  return counter;
+}
+function computePainTrendStatus(previousPainScore, currentPainScore) {
+  if (currentPainScore <= 0) return "resolved";
+  if (currentPainScore > previousPainScore) return "worsened";
+  return "still_open";
+}
+function ensureReflectionLedgerDir(projectRoot) {
+  const dir = import_node_path23.default.join(projectRoot, ".ade", "reflections");
+  import_node_fs21.default.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+function appendReflectionLedgerEntry(projectRoot, missionId, payload) {
+  const dir = ensureReflectionLedgerDir(projectRoot);
+  const filePath = import_node_path23.default.join(dir, `${missionId}.jsonl`);
+  import_node_fs21.default.appendFileSync(filePath, `${JSON.stringify(payload)}
+`, "utf8");
+}
+function persistRetrospectiveArtifact(projectRoot, missionId, runId, payload) {
+  const dir = import_node_path23.default.join(ensureReflectionLedgerDir(projectRoot), "retrospectives");
+  import_node_fs21.default.mkdirSync(dir, { recursive: true });
+  const filePath = import_node_path23.default.join(dir, `${missionId}-${runId}.json`);
+  import_node_fs21.default.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+  return filePath;
+}
+function loadMissionStateDocCounts(projectRoot, runId) {
+  const filePath = getMissionStateDocumentPath(projectRoot, runId);
+  if (!import_node_fs21.default.existsSync(filePath)) {
+    return { decisions: 0, activeIssues: 0, pendingInterventions: 0, stepOutcomes: 0 };
+  }
+  try {
+    const parsed = JSON.parse(import_node_fs21.default.readFileSync(filePath, "utf8"));
+    const decisions = Array.isArray(parsed.decisions) ? parsed.decisions.length : 0;
+    const activeIssues = Array.isArray(parsed.activeIssues) ? parsed.activeIssues.length : 0;
+    const pendingInterventions = Array.isArray(parsed.pendingInterventions) ? parsed.pendingInterventions.length : 0;
+    const stepOutcomes = Array.isArray(parsed.stepOutcomes) ? parsed.stepOutcomes.length : 0;
+    return { decisions, activeIssues, pendingInterventions, stepOutcomes };
+  } catch {
+    return { decisions: 0, activeIssues: 0, pendingInterventions: 0, stepOutcomes: 0 };
+  }
+}
 function createOrchestratorService({
   db,
   projectId,
@@ -25633,7 +26760,6 @@ function createOrchestratorService({
     if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
       out.teammatePlanMode = teammatePlanMode;
     }
-    out.requirePlanReview = asBool3(orchestrator.requirePlanReview, out.requirePlanReview);
     out.maxParallelWorkers = asIntInRange(
       orchestrator.maxParallelWorkers,
       out.maxParallelWorkers,
@@ -25702,7 +26828,7 @@ function createOrchestratorService({
     });
   };
   const appendTimelineEvent = (args) => {
-    const id = (0, import_node_crypto15.randomUUID)();
+    const id = (0, import_node_crypto16.randomUUID)();
     const createdAt = nowIso2();
     db.run(
       `
@@ -25762,7 +26888,7 @@ function createOrchestratorService({
     const occurredAt = normalizeIsoTimestamp(args.occurredAt, createdAt);
     const baseKey = `${args.runId}:${args.stepId ?? "none"}:${args.attemptId ?? "none"}:${args.sessionId ?? "none"}:${args.eventType}:${occurredAt}`;
     const eventKey = String(args.eventKey ?? baseKey).trim() || baseKey;
-    const eventId = (0, import_node_crypto15.randomUUID)();
+    const eventId = (0, import_node_crypto16.randomUUID)();
     db.run(
       `
         insert or ignore into orchestrator_runtime_events(
@@ -26030,7 +27156,7 @@ function createOrchestratorService({
     [runId, projectId]
   );
   const insertHandoff = (args) => {
-    const id = (0, import_node_crypto15.randomUUID)();
+    const id = (0, import_node_crypto16.randomUUID)();
     const createdAt = nowIso2();
     db.run(
       `
@@ -26189,7 +27315,7 @@ function createOrchestratorService({
       ignoreAttemptId: args.attemptId
     });
     if (conflict) return null;
-    const id = (0, import_node_crypto15.randomUUID)();
+    const id = (0, import_node_crypto16.randomUUID)();
     const acquiredAt = nowIso2();
     const expiresAt = new Date(Date.now() + Math.max(1e3, Math.floor(args.ttlMs))).toISOString();
     try {
@@ -26836,7 +27962,7 @@ function createOrchestratorService({
     const docReadResults = await Promise.all(
       docsPaths.map(async (abs) => {
         try {
-          return { abs, buf: await import_node_fs20.default.promises.readFile(abs) };
+          return { abs, buf: await import_node_fs21.default.promises.readFile(abs) };
         } catch {
           return null;
         }
@@ -26845,7 +27971,7 @@ function createOrchestratorService({
     for (const result of docReadResults) {
       if (!result) continue;
       const { abs, buf } = result;
-      const rel = import_node_path21.default.relative(projectRoot, abs).replace(/\\/g, "/");
+      const rel = import_node_path23.default.relative(projectRoot, abs).replace(/\\/g, "/");
       const digest = sha2562(buf);
       const bytes = buf.length;
       if (args.contextProfile.docsMode === "full_docs") {
@@ -27303,7 +28429,7 @@ function createOrchestratorService({
         }
       }
     });
-    const snapshotId = (0, import_node_crypto15.randomUUID)();
+    const snapshotId = (0, import_node_crypto16.randomUUID)();
     const createdAt = nowIso2();
     db.run(
       `
@@ -27892,9 +29018,9 @@ function createOrchestratorService({
         }
         const title = `[orchestrator:${kind}] ${args.step.title}`;
         try {
-          const contextDir = import_node_path21.default.join(projectRoot, ".ade", "orchestrator", "contexts", args.run.id);
-          import_node_fs20.default.mkdirSync(contextDir, { recursive: true });
-          const contextFilePath = import_node_path21.default.join(contextDir, `${args.attempt.id}.json`);
+          const contextDir = import_node_path23.default.join(projectRoot, ".ade", "orchestrator", "contexts", args.run.id);
+          import_node_fs21.default.mkdirSync(contextDir, { recursive: true });
+          const contextFilePath = import_node_path23.default.join(contextDir, `${args.attempt.id}.json`);
           const memoryHierarchy = (() => {
             const snapshotId = args.attempt.contextSnapshotId;
             if (!snapshotId) return null;
@@ -27958,9 +29084,10 @@ function createOrchestratorService({
             memoryHierarchy,
             generatedAt: nowIso2()
           };
-          import_node_fs20.default.writeFileSync(contextFilePath, `${JSON.stringify(contextManifest, null, 2)}
+          import_node_fs21.default.writeFileSync(contextFilePath, `${JSON.stringify(contextManifest, null, 2)}
 `, "utf8");
           const requiresPlanApproval = args.step.metadata?.requiresPlanApproval === true || args.step.metadata?.coordinationPattern === "plan_then_implement";
+          const readOnlyExecution = args.step.metadata?.readOnlyExecution === true || requiresPlanApproval;
           const promptParts = [
             `You are an ADE mission worker for step "${args.step.title}".`,
             requiresPlanApproval ? "Work in planning mode only. Do not mutate files. Return a concise implementation plan and risk notes." : "Implement the step with focused, minimal edits and run the relevant validation commands.",
@@ -28013,12 +29140,12 @@ function createOrchestratorService({
           }
           const cliMode = args.permissionConfig?.cli?.mode ?? "full-auto";
           if (cliCommand === "codex") {
-            commandParts.push("--sandbox", requiresPlanApproval ? "read-only" : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write");
+            commandParts.push("--sandbox", readOnlyExecution ? "read-only" : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write");
           } else {
-            if (!requiresPlanApproval && cliMode === "full-auto") {
+            if (!readOnlyExecution && cliMode === "full-auto") {
               commandParts.push("--dangerously-skip-permissions");
             } else {
-              commandParts.push("--permission-mode", requiresPlanApproval || cliMode === "read-only" ? "plan" : "acceptEdits");
+              commandParts.push("--permission-mode", readOnlyExecution || cliMode === "read-only" ? "plan" : "acceptEdits");
             }
           }
           commandParts.push(shellEscapeArg(prompt));
@@ -28039,7 +29166,7 @@ function createOrchestratorService({
               adapterState: "worker_spawned",
               contextFilePath,
               contextDigest: sha2562(JSON.stringify(contextManifest)),
-              planMode: requiresPlanApproval,
+              planMode: readOnlyExecution,
               startupCommandPreview: startupCommand.slice(0, 320),
               localFirst: true
             }
@@ -28296,6 +29423,485 @@ function createOrchestratorService({
     },
     listRuntimeEvents(args = {}) {
       return listRuntimeEventRows(args).map(toRuntimeEvent);
+    },
+    addReflection(input) {
+      const missionId = String(input.missionId ?? "").trim();
+      const runId = String(input.runId ?? "").trim();
+      const stepId = String(input.stepId ?? "").trim() || null;
+      const attemptId = String(input.attemptId ?? "").trim() || null;
+      const agentRole = String(input.agentRole ?? "").trim();
+      const phase = String(input.phase ?? "").trim();
+      const observation = String(input.observation ?? "").trim();
+      const recommendation = String(input.recommendation ?? "").trim();
+      const context = String(input.context ?? "").trim();
+      const signalType = normalizeReflectionSignalType(String(input.signalType ?? "").trim());
+      const occurredAtRaw = String(input.occurredAt ?? "").trim();
+      if (!missionId) {
+        throw new ReflectionValidationError("mission_id_required", "missionId is required.");
+      }
+      if (!runId) {
+        throw new ReflectionValidationError("run_id_required", "runId is required.");
+      }
+      if (!agentRole) {
+        throw new ReflectionValidationError("agent_role_required", "agentRole is required.");
+      }
+      if (!phase) {
+        throw new ReflectionValidationError("phase_required", "phase is required.");
+      }
+      if (!signalType) {
+        throw new ReflectionValidationError("signal_type_invalid", "signalType must be one of wish|frustration|idea|pattern|limitation.");
+      }
+      if (!observation) {
+        throw new ReflectionValidationError("observation_required", "observation is required.");
+      }
+      if (!recommendation) {
+        throw new ReflectionValidationError("recommendation_required", "recommendation is required.");
+      }
+      if (!context) {
+        throw new ReflectionValidationError("context_required", "context is required.");
+      }
+      if (!occurredAtRaw) {
+        throw new ReflectionValidationError("occurred_at_invalid", "occurredAt is required and must be a valid ISO-8601 timestamp.");
+      }
+      if (!isStrictIsoTimestamp(occurredAtRaw)) {
+        throw new ReflectionValidationError("occurred_at_invalid", "occurredAt is required and must be a valid ISO-8601 timestamp.", { occurredAt: occurredAtRaw });
+      }
+      const occurredAtMs = Date.parse(occurredAtRaw);
+      const occurredAt = new Date(occurredAtMs).toISOString();
+      const runRow = getRunRow(runId);
+      if (!runRow) {
+        throw new ReflectionValidationError("run_not_found", `Run not found: ${runId}`, { runId });
+      }
+      if (String(runRow.mission_id) !== missionId) {
+        throw new ReflectionValidationError("run_mission_mismatch", "runId does not belong to missionId.", { runId, missionId, actualMissionId: runRow.mission_id });
+      }
+      if (stepId) {
+        const stepRow = getStepRow(stepId);
+        if (!stepRow) {
+          throw new ReflectionValidationError("step_not_found", `Step not found: ${stepId}`, { stepId });
+        }
+        if (String(stepRow.run_id) !== runId) {
+          throw new ReflectionValidationError("step_run_mismatch", "stepId does not belong to runId.", { stepId, runId, actualRunId: stepRow.run_id });
+        }
+      }
+      if (attemptId) {
+        const attemptRow = getAttemptRow(attemptId);
+        if (!attemptRow) {
+          throw new ReflectionValidationError("attempt_not_found", `Attempt not found: ${attemptId}`, { attemptId });
+        }
+        if (String(attemptRow.run_id) !== runId) {
+          throw new ReflectionValidationError("attempt_run_mismatch", "attemptId does not belong to runId.", { attemptId, runId, actualRunId: attemptRow.run_id });
+        }
+        if (stepId && String(attemptRow.step_id) !== stepId) {
+          throw new ReflectionValidationError("attempt_step_mismatch", "attemptId does not belong to stepId.", { attemptId, stepId, actualStepId: attemptRow.step_id });
+        }
+      }
+      const id = (0, import_node_crypto16.randomUUID)();
+      const createdAt = nowIso2();
+      const entry = {
+        id,
+        projectId,
+        missionId,
+        runId,
+        stepId,
+        attemptId,
+        agentRole,
+        phase,
+        signalType,
+        observation,
+        recommendation,
+        context,
+        occurredAt,
+        createdAt,
+        schemaVersion: 1
+      };
+      db.run("begin immediate");
+      try {
+        db.run(
+          `
+            insert into orchestrator_reflections(
+              id, project_id, mission_id, run_id, step_id, attempt_id,
+              agent_role, phase, signal_type, observation, recommendation,
+              context, occurred_at, created_at, schema_version
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+          `,
+          [id, projectId, missionId, runId, stepId, attemptId, agentRole, phase, signalType, observation, recommendation, context, occurredAt, createdAt]
+        );
+        appendReflectionLedgerEntry(projectRoot, missionId, entry);
+        db.run("commit");
+      } catch (error48) {
+        try {
+          db.run("rollback");
+        } catch {
+        }
+        throw error48;
+      }
+      persistRuntimeEvent({ runId, stepId, attemptId, eventType: "reflection_added", payload: { reflectionId: id, signalType, phase, agentRole } });
+      return entry;
+    },
+    listReflections(args = {}) {
+      const runId = String(args.runId ?? "").trim();
+      const missionId = String(args.missionId ?? "").trim();
+      const limit = Math.max(1, Math.min(500, Math.floor(Number(args.limit ?? 200) || 200)));
+      const where = ["project_id = ?"];
+      const params = [projectId];
+      if (runId) {
+        where.push("run_id = ?");
+        params.push(runId);
+      }
+      if (missionId) {
+        where.push("mission_id = ?");
+        params.push(missionId);
+      }
+      params.push(limit);
+      const rows = db.all(`select * from orchestrator_reflections where ${where.join(" and ")} order by occurred_at desc, created_at desc limit ?`, params);
+      return rows.map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        missionId: String(row.mission_id),
+        runId: String(row.run_id),
+        stepId: row.step_id ? String(row.step_id) : null,
+        attemptId: row.attempt_id ? String(row.attempt_id) : null,
+        agentRole: String(row.agent_role),
+        phase: String(row.phase),
+        signalType: row.signal_type,
+        observation: String(row.observation),
+        recommendation: String(row.recommendation ?? ""),
+        context: String(row.context ?? ""),
+        occurredAt: String(row.occurred_at),
+        createdAt: String(row.created_at),
+        schemaVersion: 1
+      }));
+    },
+    listRetrospectives(args = {}) {
+      const missionId = String(args.missionId ?? "").trim();
+      const limit = Math.max(1, Math.min(100, Math.floor(Number(args.limit ?? 20) || 20)));
+      const where = ["project_id = ?"];
+      const params = [projectId];
+      if (missionId) {
+        where.push("mission_id = ?");
+        params.push(missionId);
+      }
+      params.push(limit);
+      const rows = db.all(
+        `select payload_json from orchestrator_retrospectives where ${where.join(" and ")} order by generated_at desc limit ?`,
+        params
+      );
+      const out = [];
+      for (const row of rows) {
+        const parsed = parseRetrospectivePayload(row.payload_json);
+        if (parsed) out.push(parsed);
+      }
+      return out;
+    },
+    listRetrospectiveTrends(args = {}) {
+      const missionId = String(args.missionId ?? "").trim();
+      const runId = String(args.runId ?? "").trim();
+      const limit = Math.max(1, Math.min(500, Math.floor(Number(args.limit ?? 100) || 100)));
+      const where = ["project_id = ?"];
+      const params = [projectId];
+      if (missionId) {
+        where.push("mission_id = ?");
+        params.push(missionId);
+      }
+      if (runId) {
+        where.push("run_id = ?");
+        params.push(runId);
+      }
+      params.push(limit);
+      const rows = db.all(
+        `select * from orchestrator_retrospective_trends where ${where.join(" and ")} order by created_at desc limit ?`,
+        params
+      );
+      return rows.map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        missionId: String(row.mission_id),
+        runId: String(row.run_id),
+        retrospectiveId: String(row.retrospective_id),
+        sourceMissionId: String(row.source_mission_id),
+        sourceRunId: String(row.source_run_id),
+        sourceRetrospectiveId: String(row.source_retrospective_id),
+        painPointKey: String(row.pain_point_key),
+        painPointLabel: String(row.pain_point_label),
+        status: row.status,
+        previousPainScore: Number(row.previous_pain_score ?? 0),
+        currentPainScore: Number(row.current_pain_score ?? 0),
+        createdAt: String(row.created_at)
+      }));
+    },
+    listRetrospectivePatternStats(args = {}) {
+      const limit = Math.max(1, Math.min(500, Math.floor(Number(args.limit ?? 100) || 100)));
+      const rows = db.all(
+        `
+          select *
+          from orchestrator_reflection_pattern_stats
+          where project_id = ?
+          order by occurrence_count desc, updated_at desc
+          limit ?
+        `,
+        [projectId, limit]
+      );
+      return rows.map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        patternKey: String(row.pattern_key),
+        patternLabel: String(row.pattern_label),
+        occurrenceCount: Number(row.occurrence_count ?? 0),
+        firstSeenRetrospectiveId: String(row.first_seen_retrospective_id),
+        firstSeenRunId: String(row.first_seen_run_id),
+        lastSeenRetrospectiveId: String(row.last_seen_retrospective_id),
+        lastSeenRunId: String(row.last_seen_run_id),
+        promotedMemoryId: row.promoted_memory_id ? String(row.promoted_memory_id) : null,
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at)
+      }));
+    },
+    generateRunRetrospective(args) {
+      const runId = String(args.runId ?? "").trim();
+      if (!runId) return null;
+      const runRow = getRunRow(runId);
+      if (!runRow) return null;
+      const run = toRun(runRow);
+      if (!TERMINAL_RUN_STATUSES.has(run.status)) return null;
+      const existingRow = db.get(
+        `
+          select payload_json
+          from orchestrator_retrospectives
+          where project_id = ?
+            and run_id = ?
+          limit 1
+        `,
+        [projectId, runId]
+      );
+      const existing = parseRetrospectivePayload(existingRow?.payload_json);
+      if (existing) return existing;
+      const graph = this.getRunGraph({ runId, timelineLimit: 500 });
+      const reflections = this.listReflections({ runId, limit: 500 });
+      const missionStateDocCounts = loadMissionStateDocCounts(projectRoot, runId);
+      const generatedAt = nowIso2();
+      const painPointSignals = reflections.filter((entry) => entry.signalType === "frustration" || entry.signalType === "limitation").map((entry) => entry.observation).filter(Boolean);
+      const improvementSignals = reflections.filter((entry) => entry.signalType === "idea" || entry.signalType === "wish").map((entry) => (entry.recommendation || entry.observation).trim()).filter(Boolean);
+      const patternSignals = reflections.filter((entry) => entry.signalType === "pattern").map((entry) => entry.observation).filter(Boolean);
+      const painPointCounter = buildPainPointCounter(painPointSignals);
+      const topPainPoints = [...painPointCounter.entries()].sort((a, b) => b[1].count - a[1].count || a[1].label.localeCompare(b[1].label)).slice(0, 12).map((entry) => entry[1].label);
+      const topImprovements = [...new Set(improvementSignals.map((item) => item.trim()).filter(Boolean))].slice(0, 12);
+      const patternsToCapture = [...new Set(patternSignals.map((item) => item.trim()).filter(Boolean))].slice(0, 12);
+      const previousRows = db.all(
+        `
+          select id, mission_id, run_id, payload_json
+          from orchestrator_retrospectives
+          where project_id = ?
+            and mission_id != ?
+            and run_id != ?
+          order by generated_at desc
+          limit ?
+        `,
+        [projectId, run.missionId, runId, RETROSPECTIVE_TREND_LOOKBACK_LIMIT]
+      );
+      const previousPainScores = /* @__PURE__ */ new Map();
+      const trendEntries = [];
+      for (const row of previousRows) {
+        const previousRetrospective = parseRetrospectivePayload(row.payload_json);
+        if (!previousRetrospective) continue;
+        const counter = buildPainPointCounter(previousRetrospective.topPainPoints ?? []);
+        for (const [key, value] of counter.entries()) {
+          const currentPainScore = painPointCounter.get(key)?.count ?? 0;
+          trendEntries.push({
+            sourceMissionId: String(row.mission_id),
+            sourceRunId: String(row.run_id),
+            sourceRetrospectiveId: String(row.id),
+            painPointKey: key,
+            painPointLabel: value.label,
+            status: computePainTrendStatus(value.count, currentPainScore),
+            previousPainScore: value.count,
+            currentPainScore
+          });
+          const existingScore = previousPainScores.get(key);
+          if (!existingScore || value.count > existingScore.score) {
+            previousPainScores.set(key, {
+              label: value.label,
+              score: value.count,
+              sourceRetrospectiveId: String(row.id),
+              sourceMissionId: String(row.mission_id),
+              sourceRunId: String(row.run_id)
+            });
+          }
+        }
+      }
+      const changelog = [...previousPainScores.entries()].sort((a, b) => b[1].score - a[1].score || a[1].label.localeCompare(b[1].label)).slice(0, 12).map(([key, prev]) => {
+        const currentPainScore = painPointCounter.get(key)?.count ?? 0;
+        const status = computePainTrendStatus(prev.score, currentPainScore);
+        const currentState = status === "resolved" ? "Pain point did not recur in latest run." : status === "worsened" ? "Pain point frequency increased in latest run." : "Pain point persisted in latest run.";
+        return {
+          previousPainPoint: prev.label,
+          status,
+          currentState,
+          sourceRetrospectiveId: prev.sourceRetrospectiveId,
+          sourceMissionId: prev.sourceMissionId,
+          sourceRunId: prev.sourceRunId,
+          previousPainScore: prev.score,
+          currentPainScore
+        };
+      });
+      const runtimeEventCount = graph.runtimeEvents?.length ?? 0;
+      const retrospective = {
+        id: `retro:${runId}`,
+        missionId: run.missionId,
+        runId,
+        generatedAt,
+        schemaVersion: 1,
+        finalStatus: run.status,
+        wins: graph.steps.filter((step) => step.status === "succeeded").slice(0, 12).map((step) => `Completed ${step.stepKey}: ${step.title}`),
+        failures: graph.steps.filter((step) => step.status === "failed").slice(0, 12).map((step) => `Failed ${step.stepKey}: ${step.title}`),
+        unresolvedRisks: graph.steps.filter((step) => step.status === "blocked").slice(0, 12).map((step) => `Blocked ${step.stepKey}: ${step.title}`),
+        followUpActions: topImprovements.slice(0, 12),
+        topPainPoints,
+        topImprovements,
+        patternsToCapture,
+        estimatedImpact: topImprovements.length ? `Signals: timeline=${graph.timeline.length}, runtimeEvents=${runtimeEventCount}, reflections=${reflections.length}, decisions=${missionStateDocCounts.decisions}, activeIssues=${missionStateDocCounts.activeIssues}. Addressing top improvements should reduce retries and unresolved blockers in subsequent missions.` : `Signals: timeline=${graph.timeline.length}, runtimeEvents=${runtimeEventCount}, reflections=${reflections.length}, decisions=${missionStateDocCounts.decisions}, activeIssues=${missionStateDocCounts.activeIssues}. No clear improvements captured from reflections in this run.`,
+        changelog
+      };
+      db.run(
+        `
+          insert or ignore into orchestrator_retrospectives(
+            id, project_id, mission_id, run_id, generated_at, final_status, payload_json, schema_version, created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, 1, ?)
+        `,
+        [retrospective.id, projectId, retrospective.missionId, retrospective.runId, retrospective.generatedAt, retrospective.finalStatus, JSON.stringify(retrospective), generatedAt]
+      );
+      const persistedRow = db.get(
+        `
+          select payload_json
+          from orchestrator_retrospectives
+          where project_id = ?
+            and run_id = ?
+          limit 1
+        `,
+        [projectId, runId]
+      );
+      const persisted = parseRetrospectivePayload(persistedRow?.payload_json);
+      if (!persisted) return null;
+      persistRetrospectiveArtifact(projectRoot, persisted.missionId, persisted.runId, persisted);
+      db.run(
+        `delete from orchestrator_retrospective_trends where project_id = ? and retrospective_id = ?`,
+        [projectId, persisted.id]
+      );
+      for (const entry of trendEntries) {
+        const trendId = (0, import_node_crypto16.randomUUID)();
+        db.run(
+          `
+            insert into orchestrator_retrospective_trends(
+              id, project_id, mission_id, run_id, retrospective_id,
+              source_mission_id, source_run_id, source_retrospective_id,
+              pain_point_key, pain_point_label, status, previous_pain_score, current_pain_score, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            trendId,
+            projectId,
+            persisted.missionId,
+            persisted.runId,
+            persisted.id,
+            entry.sourceMissionId,
+            entry.sourceRunId,
+            entry.sourceRetrospectiveId,
+            entry.painPointKey,
+            entry.painPointLabel,
+            entry.status,
+            entry.previousPainScore,
+            entry.currentPainScore,
+            generatedAt
+          ]
+        );
+      }
+      if (memoryService) {
+        const seenPatternKeys = /* @__PURE__ */ new Set();
+        for (const patternLabel of persisted.patternsToCapture) {
+          const normalizedLabel = String(patternLabel ?? "").trim();
+          const patternKey = normalizePainPointKey(normalizedLabel);
+          if (!patternKey || seenPatternKeys.has(patternKey)) continue;
+          seenPatternKeys.add(patternKey);
+          const existingPattern = db.get(
+            `
+              select *
+              from orchestrator_reflection_pattern_stats
+              where project_id = ?
+                and pattern_key = ?
+              limit 1
+            `,
+            [projectId, patternKey]
+          );
+          let patternStatId;
+          let nextCount = 1;
+          let promotedMemoryId = null;
+          if (existingPattern) {
+            patternStatId = String(existingPattern.id);
+            nextCount = Number(existingPattern.occurrence_count ?? 0) + 1;
+            promotedMemoryId = existingPattern.promoted_memory_id ? String(existingPattern.promoted_memory_id) : null;
+            db.run(
+              `
+                update orchestrator_reflection_pattern_stats
+                set
+                  pattern_label = ?,
+                  occurrence_count = ?,
+                  last_seen_retrospective_id = ?,
+                  last_seen_run_id = ?,
+                  updated_at = ?
+                where id = ?
+              `,
+              [normalizedLabel, nextCount, persisted.id, persisted.runId, generatedAt, patternStatId]
+            );
+          } else {
+            patternStatId = (0, import_node_crypto16.randomUUID)();
+            db.run(
+              `
+                insert into orchestrator_reflection_pattern_stats(
+                  id, project_id, pattern_key, pattern_label,
+                  occurrence_count, first_seen_retrospective_id, first_seen_run_id,
+                  last_seen_retrospective_id, last_seen_run_id, promoted_memory_id,
+                  created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `,
+              [patternStatId, projectId, patternKey, normalizedLabel, 1, persisted.id, persisted.runId, persisted.id, persisted.runId, null, generatedAt, generatedAt]
+            );
+          }
+          db.run(
+            `
+              insert or ignore into orchestrator_reflection_pattern_sources(
+                id, project_id, pattern_stat_id, retrospective_id, mission_id, run_id, created_at
+              ) values (?, ?, ?, ?, ?, ?, ?)
+            `,
+            [(0, import_node_crypto16.randomUUID)(), projectId, patternStatId, persisted.id, persisted.missionId, persisted.runId, generatedAt]
+          );
+          if (!promotedMemoryId && nextCount >= RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD) {
+            try {
+              const confidence = Math.min(0.95, 0.7 + (nextCount - RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD) * 0.05);
+              const memory = memoryService.addCandidateMemory({
+                projectId,
+                scope: "project",
+                category: "pattern",
+                content: `[retrospective] ${normalizedLabel}`,
+                importance: "medium",
+                confidence,
+                sourceRunId: runId
+              });
+              promotedMemoryId = memory.id;
+              db.run(
+                `
+                  update orchestrator_reflection_pattern_stats
+                  set promoted_memory_id = ?, updated_at = ?
+                  where id = ?
+                `,
+                [promotedMemoryId, generatedAt, patternStatId]
+              );
+            } catch {
+            }
+          }
+        }
+      }
+      persistRuntimeEvent({ runId, eventType: "retrospective_generated", payload: { retrospectiveId: persisted.id } });
+      return persisted;
     },
     getRunGraph(args) {
       const runRow = getRunRow(args.runId);
@@ -29006,7 +30612,7 @@ function createOrchestratorService({
         notes.push("Phase 1.5 quality gates are not fully passing.");
       }
       const report = {
-        id: (0, import_node_crypto15.randomUUID)(),
+        id: (0, import_node_crypto16.randomUUID)(),
         generatedAt: nowIso2(),
         generatedBy: "deterministic_kernel",
         overallStatus,
@@ -29058,7 +30664,7 @@ function createOrchestratorService({
         [missionId, projectId]
       );
       if (!mission?.id) throw new Error(`Mission not found: ${missionId}`);
-      const runId = String(args.runId ?? "").trim() || (0, import_node_crypto15.randomUUID)();
+      const runId = String(args.runId ?? "").trim() || (0, import_node_crypto16.randomUUID)();
       const profileId = normalizeProfileId(args.contextProfile);
       const createdAt = nowIso2();
       const schedulerState = String(args.schedulerState ?? "initialized").trim() || "initialized";
@@ -29066,7 +30672,7 @@ function createOrchestratorService({
       const byKey = /* @__PURE__ */ new Map();
       const dependencyStepKeysByStepKey = /* @__PURE__ */ new Map();
       const stepRows = [...args.steps].sort((a, b) => a.stepIndex - b.stepIndex || a.stepKey.localeCompare(b.stepKey)).map((input, index) => {
-        const id = (0, import_node_crypto15.randomUUID)();
+        const id = (0, import_node_crypto16.randomUUID)();
         const stepKey = input.stepKey.trim();
         if (!stepKey) throw new Error("stepKey is required for every orchestrator step.");
         if (byKey.has(stepKey)) throw new Error(`Duplicate stepKey in run: ${stepKey}`);
@@ -29470,7 +31076,7 @@ function createOrchestratorService({
         [projectId, step.id]
       );
       const attemptNumber = Number(attemptNumRow?.max_attempt ?? 0) + 1;
-      const attemptId = (0, import_node_crypto15.randomUUID)();
+      const attemptId = (0, import_node_crypto16.randomUUID)();
       const createdAt = nowIso2();
       const executorKind = normalizeExecutorKind(
         String(args.executorKind ?? step.metadata?.executorKind ?? "manual")
@@ -29926,8 +31532,9 @@ function createOrchestratorService({
           })();
           const timeoutMs = Number.isFinite(Number(step.metadata?.timeoutMs)) ? Math.max(1e3, Math.floor(Number(step.metadata?.timeoutMs))) : runtimeConfig.stepTimeoutDefaultMs;
           const requiresPlanApproval = step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
+          const readOnlyExecution = step.metadata?.readOnlyExecution === true || requiresPlanApproval;
           const inProcessPermissionMode = (() => {
-            if (requiresPlanApproval) return "read-only";
+            if (readOnlyExecution) return "read-only";
             const projPerms = {};
             const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
             const perms = asRecord(aiCfg?.permissions);
@@ -29968,7 +31575,12 @@ function createOrchestratorService({
               ...reasoningEffort ? { reasoningEffort } : {},
               timeoutMs,
               permissionMode: inProcessPermissionMode,
-              oneShot: true
+              oneShot: true,
+              projectId,
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              ...memoryService ? { memoryService } : {}
             });
             appendTimelineEvent({
               runId: run.id,
@@ -30096,7 +31708,7 @@ function createOrchestratorService({
             if (worktreePath) {
               const checkpointPath = getWorkerCheckpointPath(worktreePath, step.stepKey);
               try {
-                const content = import_node_fs20.default.readFileSync(checkpointPath, "utf8");
+                const content = import_node_fs21.default.readFileSync(checkpointPath, "utf8");
                 if (content.trim().length > 0) {
                   result2.previousCheckpoint = content.length > 12e3 ? content.slice(0, 12e3) + "\n\n[checkpoint truncated]" : content;
                 }
@@ -30436,7 +32048,7 @@ function createOrchestratorService({
         if (ckWorktreePath) {
           const ckPath = getWorkerCheckpointPath(ckWorktreePath, step.stepKey);
           try {
-            const ckContent = import_node_fs20.default.readFileSync(ckPath, "utf8");
+            const ckContent = import_node_fs21.default.readFileSync(ckPath, "utf8");
             if (ckContent.trim().length > 0) {
               this.upsertWorkerCheckpoint({
                 missionId: run.missionId,
@@ -30475,7 +32087,7 @@ function createOrchestratorService({
           if (worktreePath) {
             const checkpointPath = getWorkerCheckpointPath(worktreePath, step.stepKey);
             try {
-              import_node_fs20.default.unlinkSync(checkpointPath);
+              import_node_fs21.default.unlinkSync(checkpointPath);
             } catch {
             }
           }
@@ -31255,6 +32867,10 @@ function createOrchestratorService({
           reason: args.reason ?? null
         }
       });
+      try {
+        void this.generateRunRetrospective({ runId: args.runId });
+      } catch {
+      }
     },
     addSteps(args) {
       const runId = String(args.runId ?? "").trim();
@@ -31284,7 +32900,7 @@ function createOrchestratorService({
         (a, b) => a.stepIndex - b.stepIndex || a.stepKey.localeCompare(b.stepKey)
       );
       const stepEntries = sorted.map((input, index) => {
-        const id = (0, import_node_crypto15.randomUUID)();
+        const id = (0, import_node_crypto16.randomUUID)();
         const stepKey = input.stepKey.trim();
         if (!stepKey) throw new Error("stepKey is required for every orchestrator step.");
         if (existingKeyToId.has(stepKey) || newKeyToId.has(stepKey)) {
@@ -32216,7 +33832,7 @@ ${st.instructions}`).join("\n\n");
       }
       const iterationNum = state.currentIteration + 1;
       const now = nowIso2();
-      const fixStepId = (0, import_node_crypto15.randomUUID)();
+      const fixStepId = (0, import_node_crypto16.randomUUID)();
       const fixStepKey = `recovery_fix_${iterationNum}`;
       const existingStepRows = listStepRows(runId);
       const maxIndex = existingStepRows.reduce((max, row) => Math.max(max, row.step_index), -1);
@@ -32249,7 +33865,7 @@ ${st.instructions}`).join("\n\n");
           now
         ]
       );
-      const recheckStepId = (0, import_node_crypto15.randomUUID)();
+      const recheckStepId = (0, import_node_crypto16.randomUUID)();
       const recheckStepKey = `recovery_recheck_${iterationNum}`;
       db.run(
         `
@@ -32442,7 +34058,7 @@ ${st.instructions}`).join("\n\n");
           updatedAt: now
         };
       }
-      const id = (0, import_node_crypto15.randomUUID)();
+      const id = (0, import_node_crypto16.randomUUID)();
       db.run(
         `
           insert into orchestrator_worker_checkpoints(
@@ -32551,7 +34167,7 @@ ${st.instructions}`).join("\n\n");
       }
       if (laneIds.size < 2) return null;
       const now = nowIso2();
-      const stepId = (0, import_node_crypto15.randomUUID)();
+      const stepId = (0, import_node_crypto16.randomUUID)();
       const stepKey = "integration_pr";
       const allStepIds = stepRows.filter((r) => r.status !== "skipped" && r.status !== "canceled").map((r) => r.id);
       const maxIndex = stepRows.reduce((max, row) => Math.max(max, row.step_index), -1);
@@ -32608,7 +34224,7 @@ ${st.instructions}`).join("\n\n");
     },
     // ── Artifact Registry ──────────────────────────────────────────────
     registerArtifact(artifact) {
-      const id = artifact.id ?? (0, import_node_crypto15.randomUUID)();
+      const id = artifact.id ?? (0, import_node_crypto16.randomUUID)();
       const now = nowIso2();
       db.run(
         `
@@ -32700,6 +34316,10 @@ ${st.instructions}`).join("\n\n");
       if (!runRow) throw new Error(`Run not found: ${runId}`);
       const run = toRun(runRow);
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        try {
+          void this.generateRunRetrospective({ runId });
+        } catch {
+        }
         return {
           finalized: true,
           blockers: [],
@@ -32832,6 +34452,10 @@ ${st.instructions}`).join("\n\n");
         }
       });
       emit({ type: "orchestrator-run-updated", runId, reason: "finalized" });
+      try {
+        void this.generateRunRetrospective({ runId });
+      } catch {
+      }
       return {
         finalized: true,
         blockers: [],
@@ -32997,8 +34621,8 @@ ${st.instructions}`).join("\n\n");
 
 // ../desktop/src/main/services/orchestrator/aiOrchestratorService.ts
 var import_node_crypto21 = require("crypto");
-var import_node_fs23 = __toESM(require("fs"), 1);
-var import_node_path25 = __toESM(require("path"), 1);
+var import_node_fs24 = __toESM(require("fs"), 1);
+var import_node_path26 = __toESM(require("path"), 1);
 
 // ../desktop/src/shared/modelProfiles.ts
 function providerFromFamily(family) {
@@ -33059,1241 +34683,6 @@ var MODEL_PRICING = new Proxy(
 );
 function updateModelPricing(updates) {
   return updateModelPricingInRegistry(updates);
-}
-
-// ../desktop/src/main/services/missions/missionPlanningService.ts
-var import_node_crypto16 = require("crypto");
-var fs21 = __toESM(require("fs"), 1);
-var path22 = __toESM(require("path"), 1);
-var MissionPlanningError = class extends Error {
-  reasonCode;
-  reasonDetail;
-  validationErrors;
-  attempts;
-  engine;
-  constructor(opts) {
-    super(`Mission planning failed: ${opts.reasonDetail}`);
-    this.name = "MissionPlanningError";
-    this.reasonCode = opts.reasonCode;
-    this.reasonDetail = opts.reasonDetail;
-    this.validationErrors = opts.validationErrors ?? [];
-    this.attempts = opts.attempts ?? 0;
-    this.engine = opts.engine ?? null;
-  }
-};
-var TASK_TYPES = ["analysis", "code", "integration", "test", "review", "merge", "deploy", "docs", "milestone"];
-var CONTEXT_PROFILES2 = ["deterministic", "deterministic_plus_narrative"];
-var CLAIM_LANES = ["analysis", "backend", "frontend", "integration", "conflict"];
-var DEFAULT_TIMEOUT_MS = 3e5;
-var MAX_PLANNER_VALIDATION_RETRIES = 2;
-var DEFAULT_PLANNER_MAX_QUESTIONS = 5;
-var GENERIC_STEP_NAME_RE = /^(?:step|task|phase)\s*[-_#]?\s*\d+$/i;
-var GENERIC_STEP_DESCRIPTION_RE = /^(?:execute|do|perform)\s+(?:mission|this|the)\s+(?:work|step|task)(?:\s+for\s+this\s+step)?\.?$/i;
-function clampQuestionCount(value, fallback = DEFAULT_PLANNER_MAX_QUESTIONS) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return Math.max(1, Math.min(10, Math.floor(numeric)));
-}
-function normalizePlannerQuestion(question) {
-  const record2 = isRecord(question) ? question : null;
-  if (!record2) return null;
-  const text = String(record2.question ?? "").trim();
-  if (!text.length) return null;
-  const context = String(record2.context ?? "").trim();
-  const defaultAssumption = String(record2.defaultAssumption ?? "").trim();
-  const impact = String(record2.impact ?? "").trim();
-  return {
-    question: text,
-    ...context.length ? { context: context.slice(0, 800) } : {},
-    ...defaultAssumption.length ? { defaultAssumption: defaultAssumption.slice(0, 800) } : {},
-    ...impact.length ? { impact: impact.slice(0, 800) } : {}
-  };
-}
-function normalizePlannerAnswer(answer) {
-  const record2 = isRecord(answer) ? answer : null;
-  if (!record2) return null;
-  const question = String(record2.question ?? "").trim();
-  const value = String(record2.answer ?? "").trim();
-  if (!question.length || !value.length) return null;
-  const questionIndex = Number(record2.questionIndex);
-  const source = record2.source === "default_assumption" ? "default_assumption" : "user";
-  const answeredAtRaw = String(record2.answeredAt ?? "").trim();
-  const answeredAt = answeredAtRaw.length > 0 ? answeredAtRaw : (/* @__PURE__ */ new Date()).toISOString();
-  const context = String(record2.context ?? "").trim();
-  const defaultAssumption = String(record2.defaultAssumption ?? "").trim();
-  const impact = String(record2.impact ?? "").trim();
-  return {
-    questionIndex: Number.isFinite(questionIndex) ? Math.max(0, Math.floor(questionIndex)) : 0,
-    question,
-    answer: value,
-    source,
-    answeredAt,
-    ...context.length ? { context: context.slice(0, 800) } : {},
-    ...defaultAssumption.length ? { defaultAssumption: defaultAssumption.slice(0, 800) } : {},
-    ...impact.length ? { impact: impact.slice(0, 800) } : {}
-  };
-}
-function resolvePlannerClarificationPolicy(args) {
-  const planningPhase = args.phaseCards?.find((phase) => phase.phaseKey === "planning") ?? args.phaseCards?.find((phase) => phase.name.trim().toLowerCase() === "planning") ?? null;
-  const phaseAsk = planningPhase?.askQuestions;
-  const phaseEnabled = phaseAsk?.enabled === true;
-  const enabled = args.allowPlanningQuestions || phaseEnabled;
-  const phaseMode = phaseAsk?.mode === "always" || phaseAsk?.mode === "auto_if_uncertain" || phaseAsk?.mode === "never" ? phaseAsk.mode : "auto_if_uncertain";
-  const mode = enabled ? phaseEnabled ? phaseMode : phaseMode === "never" ? "auto_if_uncertain" : phaseMode : "never";
-  const maxQuestions = clampQuestionCount(phaseEnabled ? phaseAsk?.maxQuestions : void 0);
-  if (!enabled) {
-    return {
-      enabled: false,
-      mode: "never",
-      maxQuestions
-    };
-  }
-  return {
-    enabled: true,
-    mode,
-    maxQuestions
-  };
-}
-function sha2563(input) {
-  return (0, import_node_crypto16.createHash)("sha256").update(input).digest("hex");
-}
-function stableStringify(value) {
-  const visit = (input) => {
-    if (Array.isArray(input)) return input.map((entry) => visit(entry));
-    if (!input || typeof input !== "object") return input;
-    const record2 = input;
-    const sortedKeys = Object.keys(record2).sort((a, b) => a.localeCompare(b));
-    const out = {};
-    for (const key of sortedKeys) out[key] = visit(record2[key]);
-    return out;
-  };
-  return JSON.stringify(visit(value));
-}
-function toStringArray(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
-}
-function toLowerSlug(input) {
-  const slug = input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
-  return slug.slice(0, 80);
-}
-function normalizeStepId(stepId, index) {
-  const normalized = toLowerSlug(stepId ?? "");
-  if (normalized.length > 0) return normalized;
-  return `plan-${String(index + 1).padStart(3, "0")}`;
-}
-function isGenericStepName(value) {
-  const normalized = value.trim();
-  if (!normalized.length) return true;
-  return GENERIC_STEP_NAME_RE.test(normalized);
-}
-function isGenericStepDescription(value) {
-  const normalized = value.trim();
-  if (!normalized.length) return true;
-  return GENERIC_STEP_DESCRIPTION_RE.test(normalized);
-}
-function normalizeText(input, fallback) {
-  const text = String(input ?? "").trim();
-  return text.length > 0 ? text : fallback;
-}
-function normalizePlannerMemoryContent(input, maxChars = 800) {
-  const text = String(input ?? "").replace(/\s+/g, " ").trim();
-  if (!text.length) return "";
-  return text.length > maxChars ? `${text.slice(0, Math.max(1, maxChars - 3)).trimEnd()}...` : text;
-}
-function toEnum(value, allowed, fallback) {
-  const text = String(value ?? "").trim();
-  return allowed.includes(text) ? text : fallback;
-}
-function toPositiveInt(value, fallback, min, max) {
-  const raw = Number(value);
-  if (!Number.isFinite(raw)) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(raw)));
-}
-function extractFirstJsonObject3(text) {
-  const raw = text.trim();
-  if (!raw) return null;
-  if (raw.startsWith("{") && raw.endsWith("}")) return raw;
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) {
-    const inner = fenced[1].trim();
-    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
-  }
-  const first = raw.indexOf("{");
-  const last = raw.lastIndexOf("}");
-  if (first >= 0 && last > first) {
-    const candidate = raw.slice(first, last + 1).trim();
-    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
-  }
-  return null;
-}
-function getPlannerArtifactsDir(projectRoot, missionId) {
-  return path22.join(projectRoot, ".ade", "missions", "planning", missionId);
-}
-function getPlannerRunArtifactPath(projectRoot, missionId, plannerRunId) {
-  return path22.join(getPlannerArtifactsDir(projectRoot, missionId), `${plannerRunId}.json`);
-}
-function writePlannerRunArtifact(args) {
-  try {
-    const outPath = getPlannerRunArtifactPath(args.projectRoot, args.missionId, args.plannerRunId);
-    fs21.mkdirSync(path22.dirname(outPath), { recursive: true });
-    const payload = {
-      schema: "ade.planner_run.v1",
-      savedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      missionId: args.missionId,
-      plannerRunId: args.plannerRunId,
-      run: args.run,
-      plan: args.plan
-    };
-    fs21.writeFileSync(outPath, JSON.stringify(payload, null, 2), "utf8");
-    return outPath;
-  } catch {
-    return null;
-  }
-}
-function plannerSchemaJson() {
-  const stepProperties = {
-    stepId: { type: "string" },
-    name: { type: "string" },
-    description: { type: "string" },
-    taskType: { type: "string", enum: TASK_TYPES },
-    executorHint: { type: "string", enum: ["unified", "manual", "either"] },
-    preferredScope: { type: "string", enum: ["lane", "file", "session", "global"] },
-    requiresContextProfiles: {
-      type: "array",
-      items: { type: "string", enum: CONTEXT_PROFILES2 },
-      minItems: 1
-    },
-    dependencies: { type: "array", items: { type: "string" } },
-    joinPolicy: { type: "string", enum: ["all_success", "any_success", "quorum"] },
-    joinQuorum: { type: "number" },
-    artifactHints: { type: "array", items: { type: "string" } },
-    claimPolicy: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        lanes: {
-          type: "array",
-          items: { type: "string", enum: CLAIM_LANES },
-          minItems: 1
-        },
-        filePatterns: { type: "array", items: { type: "string" } },
-        envKeys: { type: "array", items: { type: "string" } },
-        exclusive: { type: "boolean" }
-      },
-      required: ["lanes"]
-    },
-    timeoutMs: { type: "number" },
-    maxAttempts: { type: "number" },
-    retryPolicy: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        baseMs: { type: "number" },
-        maxMs: { type: "number" },
-        multiplier: { type: "number" },
-        maxRetries: { type: "number" }
-      },
-      required: ["baseMs", "maxMs", "multiplier", "maxRetries"]
-    },
-    outputContract: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        expectedSignals: { type: "array", items: { type: "string" } },
-        handoffTo: { type: "array", items: { type: "string" } },
-        completionCriteria: { type: "string" }
-      },
-      required: ["expectedSignals", "completionCriteria"]
-    }
-  };
-  return {
-    $schema: "https://json-schema.org/draft/2020-12/schema",
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      schemaVersion: { const: "1.0" },
-      clarifyingQuestions: {
-        type: "array",
-        maxItems: 10,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            question: { type: "string" },
-            context: { type: "string" },
-            defaultAssumption: { type: "string" },
-            impact: { type: "string" }
-          },
-          required: ["question"]
-        }
-      },
-      missionSummary: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          title: { type: "string" },
-          objective: { type: "string" },
-          domain: { type: "string", enum: ["backend", "frontend", "infra", "testing", "docs", "release", "mixed"] },
-          complexity: { type: "string", enum: ["low", "medium", "high"] },
-          strategy: { type: "string", enum: ["sequential", "parallel-lite", "parallel-first"] },
-          parallelismCap: { type: "number" },
-          parallelismRationale: { type: "string" }
-        },
-        required: ["title", "objective", "domain", "complexity", "strategy", "parallelismCap"]
-      },
-      assumptions: { type: "array", items: { type: "string" } },
-      risks: { type: "array", items: { type: "string" } },
-      steps: {
-        type: "array",
-        minItems: 1,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: stepProperties,
-          required: [
-            "stepId",
-            "name",
-            "description",
-            "taskType",
-            "executorHint",
-            "preferredScope",
-            "requiresContextProfiles",
-            "dependencies",
-            "artifactHints",
-            "claimPolicy",
-            "maxAttempts",
-            "retryPolicy",
-            "outputContract"
-          ]
-        }
-      },
-      handoffPolicy: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          externalConflictDefault: { type: "string", enum: ["intervention", "auto_internal_retry", "manual_merge_step"] }
-        },
-        required: ["externalConflictDefault"]
-      }
-    },
-    required: ["schemaVersion", "missionSummary", "assumptions", "risks", "steps", "handoffPolicy"]
-  };
-}
-function buildPlannerPrompt(args) {
-  const docsEntries = (args.contextBundle?.docsDigest ?? []).slice(0, 30);
-  const docsSection = docsEntries.length > 0 ? docsEntries.map((entry) => `- ${entry.path} (${entry.bytes} bytes, sha256 ${entry.sha256.slice(0, 12)})`).join("\n") : "- none";
-  const knowledgeEntries = (args.projectKnowledge ?? []).map((entry) => ({
-    category: String(entry.category ?? "fact").trim() || "fact",
-    content: normalizePlannerMemoryContent(entry.content)
-  })).filter((entry) => entry.content.length > 0).slice(0, 8);
-  const knowledgeSection = knowledgeEntries.length ? knowledgeEntries.map((entry) => `- [${entry.category}] ${entry.content}`).join("\n") : "- none";
-  const bundleConstraints = (args.contextBundle?.constraints ?? []).map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0).slice(0, 10);
-  const constraints = [
-    "AI owns mission strategy (planning, delegation, validation, replanning). Runtime enforces safety, budgets, and state integrity.",
-    "Return a single JSON object that matches the required schema exactly (no markdown, no explanations).",
-    "Use stable deterministic step IDs suitable for resume/replay.",
-    "Do not use generic names such as 'Step 1' or 'Task 2'. Step names must be specific and action-oriented.",
-    "Each step description must include concrete deliverables and verification intent.",
-    "Dependencies must reflect true execution order. Independent workstreams should not depend on each other.",
-    "Prefer minimal safe parallelism unless units are independent.",
-    "Recommend a parallelismCap (1-32) based on how many workstreams can truly run independently. Include a brief parallelismRationale in missionSummary explaining your reasoning.",
-    args.clarificationPolicy.enabled ? `Clarifying questions are enabled for planning (${args.clarificationPolicy.mode}, max ${args.clarificationPolicy.maxQuestions}).` : "Clarifying questions are disabled for planning. Fill assumptions conservatively and continue."
-  ].concat(bundleConstraints.map((entry) => `Mission runtime constraint: ${entry}`));
-  const lines = [
-    "You are a PLANNING agent. Your job is to analyze the request and produce a structured mission plan. You have READ-ONLY access to the codebase to understand the project structure. You MUST NOT write code or modify repository files.",
-    "",
-    "You are ADE mission planner.",
-    "Generate a deterministic mission plan object that matches the provided JSON schema exactly.",
-    "",
-    "Mission intake:",
-    `- title: ${args.title}`,
-    `- laneId: ${args.laneId ?? "none"}`,
-    "- user_prompt:",
-    args.prompt.trim(),
-    "",
-    "Context constraints:",
-    ...constraints.map((line) => `- ${line}`),
-    "",
-    "Strategic planning principles:",
-    "- CRITICAL PATH FIRST: Identify which steps block the most downstream work and front-load them.",
-    "- SMART PARALLELISM: Group truly independent work for parallel execution. Don't serialize what can safely run concurrently.",
-    "- HANDOFF DESIGN: Each step should produce a clear handoff summary for downstream consumers.",
-    "- VERIFY EARLY: Place validation close to implementation, not batched at the end.",
-    "- RIGHT-SIZE STEPS: One step = one agent, one session. If a step says 'implement X, Y, and Z' and they're independent, split them.",
-    `- Use only supported taskType values: ${TASK_TYPES.join(", ")}.`,
-    '- MILESTONE CHECKPOINTS: Insert a taskType "milestone" checkpoint every 3-5 implementation steps.',
-    "- MILESTONE SYNC BARRIER: Milestone steps are synchronization barriers; dependent streams wait until the milestone succeeds before fan-in/fan-out continues.",
-    '- MILESTONE VALIDATION: Milestone outputContract.completionCriteria must be explicit and verifiable (examples: "all_acceptance_criteria_met_and_no_open_blockers", "integration_smoke_checks_green_and_contracts_verified").',
-    "",
-    "Clarifying question policy:",
-    args.clarificationPolicy.enabled ? `- You MAY include a top-level "clarifyingQuestions" array with up to ${args.clarificationPolicy.maxQuestions} entries.` : '- Do not include a top-level "clarifyingQuestions" array.',
-    args.clarificationPolicy.enabled ? args.clarificationPolicy.mode === "always" ? '- Mode is "always": include at least one high-value clarifying question before execution planning.' : args.clarificationPolicy.mode === "auto_if_uncertain" ? '- Mode is "auto_if_uncertain": include clarifying questions only when ambiguity could cause meaningful rework.' : '- Mode is "never": do not include clarifying questions.' : "- If information is missing, add assumptions and risks instead of questions.",
-    args.clarificationPolicy.enabled ? "- For each clarifying question include: question, context, defaultAssumption, impact." : "- Keep the output focused on deterministic execution steps.",
-    args.clarificationPolicy.enabled ? "- Avoid obvious questions. Ask only what materially changes implementation or validation." : "- Runtime should proceed without operator input unless blocked by policy.",
-    "",
-    "Clarifying question output shape (optional):",
-    args.clarificationPolicy.enabled ? `- "clarifyingQuestions": [{ "question": string, "context": string, "defaultAssumption": string, "impact": string }] (max ${args.clarificationPolicy.maxQuestions})` : "- (disabled)",
-    "",
-    "Discovered documentation paths (read these directly if needed):",
-    docsSection,
-    "",
-    "Project knowledge (memory budget, standard):",
-    knowledgeSection,
-    "- Consider this knowledge when decomposing work, ordering dependencies, and defining validation checkpoints.",
-    "",
-    "Additional context bundle (JSON):",
-    stableStringify(args.contextBundle ?? {}),
-    "",
-    "## ADE Platform Capabilities",
-    "You are planning for the ADE (Autonomous Development Environment) platform. Available capabilities:",
-    "- **Lanes**: Isolated git worktrees for parallel development. Each step can execute in its own lane.",
-    "- **Merge Conflict Resolution**: Built-in AI-powered merge conflict detection and resolution.",
-    "- **Agent Teams**: Multiple AI agents can work in parallel on different steps.",
-    "- **MCP Tools**: Model Context Protocol tools for file operations, terminal commands, web access, and more.",
-    "- **Context Packs**: Curated sets of files and documentation that provide focused context to agents.",
-    "- **Integration Chain**: Automated PR creation, code review, and branch integration pipeline.",
-    "- **Parallel Execution**: Steps without dependencies can execute simultaneously across multiple agents.",
-    ""
-  ];
-  if (args.teamRuntime?.enabled) {
-    lines.push(
-      "## Agent Team Runtime (ENABLED)",
-      "This mission uses the ADE team runtime. The orchestrator operates as a coordinator with dedicated teammates.",
-      "- Teammates share a task list and dynamically claim work as it becomes available.",
-      "- Direct inter-agent communication is supported \u2014 teammates can message each other and the coordinator.",
-      "- The coordinator manages the lifecycle: spawning teammates, assigning initial tasks, validating completion.",
-      `- Target provider: ${args.teamRuntime.targetProvider}, teammate count: ${args.teamRuntime.teammateCount}.`,
-      "Plan accordingly \u2014 design steps that can be claimed and executed independently by teammates. Larger missions benefit from more granular steps.",
-      ""
-    );
-  }
-  if (args.policy) {
-    const p = args.policy;
-    lines.push(
-      "Execution policy constraints:",
-      `- Testing mode: ${p.testing.mode}.`,
-      `- Code review: ${p.codeReview.mode}.`,
-      `- Merge: ${p.merge.mode}.`,
-      `- Executor preferences: planning=${p.planning.model ?? "unified"}, implementation=${p.implementation.model ?? "unified"}, testing=${p.testing.model ?? "unified"}.`,
-      ""
-    );
-    if (p.testing.mode === "none") {
-      lines.push(
-        'HARD CONSTRAINT \u2014 TESTING DISABLED: The user has explicitly disabled testing. You MUST NOT generate any test, validation, or verification steps. Do not include steps of type "test", "validation", "test_review", "milestone", or any step whose purpose is running tests/validation gates. This is a non-negotiable requirement.',
-        ""
-      );
-    }
-  }
-  lines.push(
-    "Before finalizing your plan, validate it:",
-    "1. Every dependency in every step must reference a stepId that exists in your plan.",
-    "2. Every stepId must be unique across all steps.",
-    "3. No circular dependency chains.",
-    '4. Step names must be descriptive, not generic (no "Step 1", "Step 2").',
-    "5. Verify the JSON is well-formed and matches the required schema.",
-    "If you find issues, fix them before outputting the final JSON.",
-    ""
-  );
-  lines.push("Output: Return exactly one JSON object matching the schema. No markdown fences. No extra prose.");
-  return lines.join("\n");
-}
-function normalizePlannerStep(step, index) {
-  const record2 = isRecord(step) ? step : {};
-  return {
-    stepId: normalizeStepId(typeof record2.stepId === "string" ? record2.stepId : null, index),
-    name: normalizeText(record2.name, `Step ${index + 1}`),
-    description: normalizeText(record2.description, "Execute this step and verify completion criteria."),
-    taskType: toEnum(record2.taskType, TASK_TYPES, "code"),
-    executorHint: toEnum(record2.executorHint, ["unified", "manual", "either"], "either"),
-    preferredScope: toEnum(record2.preferredScope, ["lane", "file", "session", "global"], "lane"),
-    requiresContextProfiles: (() => {
-      const values = toStringArray(record2.requiresContextProfiles).map((entry) => toEnum(entry, CONTEXT_PROFILES2, "deterministic")).filter((entry, idx, arr) => arr.indexOf(entry) === idx);
-      return values.length > 0 ? values : ["deterministic"];
-    })(),
-    dependencies: toStringArray(record2.dependencies).filter(Boolean),
-    joinPolicy: (() => {
-      if (record2.joinPolicy == null) return void 0;
-      return toEnum(record2.joinPolicy, ["all_success", "any_success", "quorum"], "all_success");
-    })(),
-    joinQuorum: record2.joinQuorum == null ? void 0 : toPositiveInt(record2.joinQuorum, 1, 1, 16),
-    artifactHints: toStringArray(record2.artifactHints),
-    claimPolicy: (() => {
-      const claim = isRecord(record2.claimPolicy) ? record2.claimPolicy : {};
-      const lanes = toStringArray(claim.lanes).map((entry) => toEnum(entry, CLAIM_LANES, "analysis")).filter((entry, idx, arr) => arr.indexOf(entry) === idx);
-      return {
-        lanes,
-        filePatterns: toStringArray(claim.filePatterns),
-        envKeys: toStringArray(claim.envKeys),
-        exclusive: claim.exclusive === true
-      };
-    })(),
-    timeoutMs: record2.timeoutMs == null ? void 0 : toPositiveInt(record2.timeoutMs, 12e4, 1e3, 36e5),
-    maxAttempts: (() => {
-      const raw = Number(record2.maxAttempts);
-      if (!Number.isFinite(raw)) return 2;
-      return Math.floor(raw);
-    })(),
-    retryPolicy: (() => {
-      const retry = isRecord(record2.retryPolicy) ? record2.retryPolicy : {};
-      const baseMs = toPositiveInt(retry.baseMs, 5e3, 100, 6e5);
-      const maxMs = toPositiveInt(retry.maxMs, 12e4, baseMs, 36e5);
-      return {
-        baseMs,
-        maxMs,
-        multiplier: Math.max(1.1, Math.min(6, Number(retry.multiplier ?? 2))),
-        maxRetries: toPositiveInt(retry.maxRetries, 1, 0, 8)
-      };
-    })(),
-    outputContract: (() => {
-      const contract = isRecord(record2.outputContract) ? record2.outputContract : {};
-      return {
-        expectedSignals: toStringArray(contract.expectedSignals),
-        handoffTo: toStringArray(contract.handoffTo),
-        completionCriteria: normalizeText(contract.completionCriteria, "completion_signals_present")
-      };
-    })()
-  };
-}
-function validateAndCanonicalizePlannerPlan(raw) {
-  const source = isRecord(raw) ? raw : {};
-  const missionSummarySource = isRecord(source.missionSummary) ? source.missionSummary : {};
-  const clarifyingQuestions = Array.isArray(source.clarifyingQuestions) ? source.clarifyingQuestions.map((entry) => normalizePlannerQuestion(entry)).filter((entry) => entry != null).slice(0, 10) : [];
-  const clarifyingAnswers = Array.isArray(source.clarifyingAnswers) ? source.clarifyingAnswers.map((entry) => normalizePlannerAnswer(entry)).filter((entry) => entry != null).slice(0, 20) : [];
-  const stepsRaw = Array.isArray(source.steps) ? source.steps : [];
-  const normalizedSteps = stepsRaw.map((step, index) => normalizePlannerStep(step, index));
-  const validationErrors = [];
-  if (normalizedSteps.length === 0) validationErrors.push("Plan must include at least one step.");
-  const seen = /* @__PURE__ */ new Set();
-  for (const step of normalizedSteps) {
-    if (isGenericStepName(step.name)) {
-      validationErrors.push(`Step '${step.stepId}' uses a generic name ('${step.name}').`);
-    }
-    if (isGenericStepDescription(step.description)) {
-      validationErrors.push(`Step '${step.stepId}' uses an uninformative description.`);
-    }
-    if (seen.has(step.stepId)) validationErrors.push(`Duplicate stepId: ${step.stepId}`);
-    seen.add(step.stepId);
-  }
-  const stepById = /* @__PURE__ */ new Map();
-  for (const step of normalizedSteps) stepById.set(step.stepId, step);
-  for (const step of normalizedSteps) {
-    step.dependencies = step.dependencies.filter((dep) => dep !== step.stepId);
-    for (const dep of step.dependencies) {
-      if (!stepById.has(dep)) validationErrors.push(`Unresolved dependency '${dep}' in step '${step.stepId}'.`);
-    }
-    if (step.joinPolicy === "quorum") {
-      if (!step.joinQuorum || step.joinQuorum <= 0) {
-        validationErrors.push(`Step '${step.stepId}' uses joinPolicy=quorum without valid joinQuorum.`);
-      }
-    }
-    if (step.maxAttempts < 1 || step.maxAttempts > 8) {
-      validationErrors.push(`Step '${step.stepId}' has maxAttempts outside bounds [1..8].`);
-    }
-  }
-  const indegree = /* @__PURE__ */ new Map();
-  const adjacency = /* @__PURE__ */ new Map();
-  for (const step of normalizedSteps) {
-    indegree.set(step.stepId, 0);
-    adjacency.set(step.stepId, []);
-  }
-  for (const step of normalizedSteps) {
-    for (const dep of step.dependencies) {
-      adjacency.get(dep)?.push(step.stepId);
-      indegree.set(step.stepId, (indegree.get(step.stepId) ?? 0) + 1);
-    }
-  }
-  const originalOrder = /* @__PURE__ */ new Map();
-  normalizedSteps.forEach((step, index) => originalOrder.set(step.stepId, index));
-  const queue = [...normalizedSteps.filter((step) => (indegree.get(step.stepId) ?? 0) === 0)].sort((a, b) => {
-    const ao = originalOrder.get(a.stepId) ?? 0;
-    const bo = originalOrder.get(b.stepId) ?? 0;
-    return ao - bo || a.stepId.localeCompare(b.stepId);
-  });
-  const ordered = [];
-  while (queue.length > 0) {
-    const next = queue.shift();
-    ordered.push(next);
-    for (const dependent of adjacency.get(next.stepId) ?? []) {
-      indegree.set(dependent, (indegree.get(dependent) ?? 0) - 1);
-      if ((indegree.get(dependent) ?? 0) === 0) {
-        const candidate = stepById.get(dependent);
-        if (candidate) queue.push(candidate);
-      }
-    }
-    queue.sort((a, b) => {
-      const ao = originalOrder.get(a.stepId) ?? 0;
-      const bo = originalOrder.get(b.stepId) ?? 0;
-      return ao - bo || a.stepId.localeCompare(b.stepId);
-    });
-  }
-  if (ordered.length !== normalizedSteps.length) {
-    validationErrors.push("Dependency cycle detected in planner steps.");
-  }
-  if (validationErrors.length > 0) {
-    return {
-      plan: buildDeterministicPlannerPlan({
-        title: normalizeText(missionSummarySource.title, "Mission"),
-        prompt: normalizeText(source.prompt, ""),
-        laneId: null
-      }),
-      validationErrors
-    };
-  }
-  const plan = {
-    schemaVersion: "1.0",
-    ...clarifyingQuestions.length > 0 ? { clarifyingQuestions } : {},
-    ...clarifyingAnswers.length > 0 ? { clarifyingAnswers } : {},
-    missionSummary: {
-      title: normalizeText(missionSummarySource.title, "Mission"),
-      objective: normalizeText(missionSummarySource.objective, "Deliver mission objective with deterministic execution."),
-      domain: toEnum(
-        missionSummarySource.domain,
-        ["backend", "frontend", "infra", "testing", "docs", "release", "mixed"],
-        "mixed"
-      ),
-      complexity: toEnum(missionSummarySource.complexity, ["low", "medium", "high"], "medium"),
-      strategy: toEnum(missionSummarySource.strategy, ["sequential", "parallel-lite", "parallel-first"], "parallel-lite"),
-      parallelismCap: toPositiveInt(missionSummarySource.parallelismCap, 2, 1, 32),
-      parallelismRationale: typeof missionSummarySource.parallelismRationale === "string" ? missionSummarySource.parallelismRationale.slice(0, 500) : void 0
-    },
-    assumptions: toStringArray(source.assumptions),
-    risks: toStringArray(source.risks),
-    steps: ordered.map((step) => ({
-      ...step,
-      dependencies: [...new Set(step.dependencies)].sort((a, b) => a.localeCompare(b)),
-      artifactHints: [...new Set(step.artifactHints)],
-      outputContract: {
-        ...step.outputContract,
-        expectedSignals: [...new Set(step.outputContract.expectedSignals)],
-        handoffTo: [...new Set(step.outputContract.handoffTo ?? [])]
-      }
-    })),
-    handoffPolicy: {
-      externalConflictDefault: toEnum(
-        isRecord(source.handoffPolicy) ? source.handoffPolicy.externalConflictDefault : null,
-        ["intervention", "auto_internal_retry", "manual_merge_step"],
-        "intervention"
-      )
-    }
-  };
-  return {
-    plan,
-    validationErrors: []
-  };
-}
-function inferDomain(prompt) {
-  const lower = prompt.toLowerCase();
-  if (/\b(ui|frontend|css|layout|react|tailwind)\b/.test(lower)) return "frontend";
-  if (/\b(api|backend|database|server|orm)\b/.test(lower)) return "backend";
-  if (/\binfra|deploy|kubernetes|terraform|aws|ci\b/.test(lower)) return "infra";
-  if (/\btest|qa|verify|validation\b/.test(lower)) return "testing";
-  if (/\bdocs|documentation|readme\b/.test(lower)) return "docs";
-  if (/\brelease|changelog|version\b/.test(lower)) return "release";
-  return "mixed";
-}
-function inferComplexity(prompt) {
-  const lines = prompt.split("\n").length;
-  if (prompt.length < 120 && lines < 3) return "low";
-  if (prompt.length < 400 && lines < 8) return "medium";
-  return "high";
-}
-function mapDeterministicStrategy(strategy) {
-  if (strategy.includes("parallel")) return "parallel-first";
-  if (strategy.includes("integration_gate")) return "parallel-lite";
-  return "sequential";
-}
-function buildDeterministicPlannerPlan(args) {
-  const deterministic = buildDeterministicMissionPlan({
-    prompt: args.prompt,
-    laneId: args.laneId,
-    policy: args.policy
-  });
-  const idByIndex = deterministic.steps.map((_, index) => `plan-${String(index + 1).padStart(3, "0")}`);
-  const steps = deterministic.steps.map((step, index) => {
-    const metadata = step.metadata ?? {};
-    const depIndices = Array.isArray(metadata.dependencyIndices) ? metadata.dependencyIndices.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [];
-    const deps = depIndices.map((value) => idByIndex[Math.max(0, Math.floor(value))] ?? "").filter(Boolean);
-    const taskType = step.kind === "analysis" ? "analysis" : step.kind === "validation" ? "test" : step.kind === "integration" ? "integration" : step.kind === "summary" ? "review" : "code";
-    return {
-      stepId: idByIndex[index],
-      name: step.title,
-      description: step.detail,
-      taskType,
-      executorHint: "either",
-      preferredScope: "lane",
-      requiresContextProfiles: ["deterministic"],
-      dependencies: deps,
-      joinPolicy: metadata.joinPolicy ?? "all_success",
-      joinQuorum: Number.isFinite(Number(metadata.quorumCount)) ? Number(metadata.quorumCount) : void 0,
-      artifactHints: [],
-      claimPolicy: {
-        lanes: taskType === "integration" ? ["integration"] : ["backend"],
-        exclusive: true
-      },
-      timeoutMs: void 0,
-      maxAttempts: Number.isFinite(Number(metadata.retryLimit)) ? Math.max(1, Number(metadata.retryLimit) + 1) : 2,
-      retryPolicy: {
-        baseMs: 5e3,
-        maxMs: 12e4,
-        multiplier: 2,
-        maxRetries: Number.isFinite(Number(metadata.retryLimit)) ? Math.max(0, Number(metadata.retryLimit)) : 1
-      },
-      outputContract: {
-        expectedSignals: [],
-        handoffTo: [],
-        completionCriteria: typeof metadata.doneCriteria === "string" && metadata.doneCriteria.trim().length > 0 ? metadata.doneCriteria.trim() : "completion_signals_present"
-      }
-    };
-  });
-  const strategy = mapDeterministicStrategy(deterministic.strategy);
-  return {
-    schemaVersion: "1.0",
-    clarifyingQuestions: [],
-    clarifyingAnswers: [],
-    missionSummary: {
-      title: args.title,
-      objective: args.prompt.trim(),
-      domain: inferDomain(args.prompt),
-      complexity: inferComplexity(args.prompt),
-      strategy,
-      parallelismCap: strategy === "parallel-first" ? 3 : 2
-    },
-    assumptions: [],
-    risks: [],
-    steps,
-    handoffPolicy: {
-      externalConflictDefault: "intervention"
-    }
-  };
-}
-function plannerEngineOrder(requested, aiIntegrationService) {
-  const availability = aiIntegrationService?.getAvailability() ?? { claude: false, codex: false };
-  if (requested === "claude_cli") return availability.claude ? ["claude_cli"] : [];
-  if (requested === "codex_cli") return availability.codex ? ["codex_cli"] : [];
-  const ordered = [];
-  if (availability.claude) ordered.push("claude_cli");
-  if (availability.codex) ordered.push("codex_cli");
-  return ordered;
-}
-async function runPlannerAdapter(args) {
-  if (!args.aiIntegrationService || args.aiIntegrationService.getMode() === "guest") {
-    throw new Error("Mission planning AI is unavailable. Install/authenticate Claude Code or Codex.");
-  }
-  if (args.engine === "codex_cli" || args.engine === "claude_cli") {
-    const provider = args.engine === "codex_cli" ? "codex" : "claude";
-    const aiResult = await args.aiIntegrationService.planMission({
-      cwd: args.cwd,
-      prompt: args.prompt,
-      timeoutMs: args.timeoutMs,
-      model: args.model,
-      provider,
-      jsonSchema: plannerSchemaJson(),
-      permissionMode: "read-only"
-    });
-    const rawResponse = aiResult.structuredOutput != null && typeof aiResult.structuredOutput === "object" ? JSON.stringify(aiResult.structuredOutput) : aiResult.text;
-    return {
-      structuredOutput: aiResult.structuredOutput ?? null,
-      engine: args.engine,
-      rawResponse,
-      commandPreview: `aiIntegrationService.planMission(provider=${provider})`
-    };
-  }
-  throw new Error("Planner adapter is unavailable for the requested engine.");
-}
-function mapHintToExecutor(args) {
-  void args.taskType;
-  void args.executorPolicy;
-  if (args.hint === "manual") return "manual";
-  return "unified";
-}
-function inferReviewTarget(step) {
-  const label = `${step.name} ${step.description}`.toLowerCase();
-  if (/\b(test|tests|qa|verification|assert|spec)\b/.test(label)) return "tests";
-  return "code";
-}
-function inferRoleClass(step) {
-  if (step.taskType === "analysis") return "planning";
-  if (step.taskType === "code" || step.taskType === "deploy") return "implementation";
-  if (step.taskType === "test") return "testing";
-  if (step.taskType === "review" || step.taskType === "milestone") return "review";
-  if (step.taskType === "integration") return "integration";
-  if (step.taskType === "merge") return "merge";
-  return "handoff";
-}
-function toClaimScopes(step) {
-  const scopes = [];
-  for (const pattern of step.claimPolicy.filePatterns ?? []) {
-    const normalizedPattern = String(pattern ?? "").trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-    if (!normalizedPattern.length) continue;
-    scopes.push({
-      scopeKind: "file",
-      scopeValue: `glob:${normalizedPattern}`,
-      ttlMs: step.timeoutMs ?? 6e4
-    });
-  }
-  for (const envKey of step.claimPolicy.envKeys ?? []) {
-    scopes.push({
-      scopeKind: "env",
-      scopeValue: envKey,
-      ttlMs: step.timeoutMs ?? 6e4
-    });
-  }
-  return scopes;
-}
-function plannerPlanToMissionSteps(args) {
-  const indexByStepId = /* @__PURE__ */ new Map();
-  args.plan.steps.forEach((step, index) => indexByStepId.set(step.stepId, index));
-  return args.plan.steps.map((step, index) => {
-    const requiresNarrative = step.requiresContextProfiles.includes("deterministic_plus_narrative");
-    const retryLimit = Math.max(0, step.maxAttempts - 1);
-    const reviewTarget = step.taskType === "review" ? inferReviewTarget(step) : null;
-    const roleClass = inferRoleClass(step);
-    const dependencyIndices = step.dependencies.map((dep) => indexByStepId.get(dep)).filter((value) => typeof value === "number");
-    let executorKind;
-    if (args.policy) {
-      const taskType = step.taskType;
-      if (taskType === "analysis") {
-        executorKind = phaseModelToExecutorKind(args.policy.planning.model);
-      } else if (taskType === "code") {
-        executorKind = phaseModelToExecutorKind(args.policy.implementation.model);
-      } else if (taskType === "test") {
-        executorKind = phaseModelToExecutorKind(args.policy.testing.model);
-      } else if (taskType === "milestone") {
-        executorKind = phaseModelToExecutorKind(args.policy.validation.model);
-      } else if (taskType === "review") {
-        executorKind = reviewTarget === "tests" ? phaseModelToExecutorKind(args.policy.testReview.model) : phaseModelToExecutorKind(args.policy.codeReview.model);
-      } else if (taskType === "integration" || taskType === "merge") {
-        executorKind = phaseModelToExecutorKind(args.policy.implementation?.model);
-      } else {
-        executorKind = mapHintToExecutor({
-          hint: step.executorHint,
-          taskType: step.taskType,
-          executorPolicy: args.executorPolicy
-        });
-      }
-    } else {
-      executorKind = mapHintToExecutor({
-        hint: step.executorHint,
-        taskType: step.taskType,
-        executorPolicy: args.executorPolicy
-      });
-    }
-    let reasoningEffort;
-    if (args.policy) {
-      const taskType = step.taskType;
-      if (taskType === "analysis") {
-        reasoningEffort = args.policy.planning.reasoningEffort;
-      } else if (taskType === "code") {
-        reasoningEffort = args.policy.implementation.reasoningEffort;
-      } else if (taskType === "test") {
-        reasoningEffort = args.policy.testing.reasoningEffort;
-      } else if (taskType === "milestone") {
-        reasoningEffort = args.policy.validation.reasoningEffort;
-      } else if (taskType === "review") {
-        reasoningEffort = reviewTarget === "tests" ? args.policy.testReview.reasoningEffort : args.policy.codeReview.reasoningEffort;
-      } else if (taskType === "integration" || taskType === "merge") {
-        reasoningEffort = args.policy.implementation?.reasoningEffort;
-      }
-    }
-    const metadata = {
-      stepKey: step.stepId,
-      stepType: step.taskType,
-      dependencyStepKeys: step.dependencies,
-      dependencyIndices,
-      joinPolicy: step.joinPolicy ?? "all_success",
-      quorumCount: step.joinQuorum ?? null,
-      retryLimit,
-      executorKind,
-      doneCriteria: step.outputContract.completionCriteria,
-      expectedSignals: step.outputContract.expectedSignals,
-      artifactHints: step.artifactHints,
-      laneHints: step.claimPolicy.lanes,
-      planner: {
-        version: "ade.missionPlanner.v2",
-        schemaVersion: args.plan.schemaVersion,
-        missionStrategy: args.plan.missionSummary.strategy,
-        requestedEngine: args.requestedEngine,
-        resolvedEngine: args.resolvedEngine,
-        degraded: args.degraded,
-        reasonCode: args.reasonCode,
-        validationErrors: args.validationErrors
-      },
-      policy: {
-        includeNarrative: requiresNarrative,
-        includeFullDocs: step.taskType === "analysis" || step.taskType === "integration" || step.taskType === "review" || step.taskType === "milestone",
-        docsMaxBytes: requiresNarrative ? 22e4 : 12e4,
-        claimScopes: toClaimScopes(step)
-      },
-      roleClass,
-      requiresDedicatedWorker: roleClass === "review" || roleClass === "testing" || roleClass === "integration",
-      ...reviewTarget ? { reviewTarget } : {},
-      planStep: step,
-      ...args.plan.clarifyingQuestions?.length ? { plannerClarifyingQuestions: args.plan.clarifyingQuestions } : {},
-      ...args.plan.clarifyingAnswers?.length ? { plannerClarifyingAnswers: args.plan.clarifyingAnswers } : {}
-    };
-    if (reasoningEffort) {
-      metadata.reasoningEffort = reasoningEffort;
-    }
-    return {
-      index,
-      title: step.name,
-      detail: step.description,
-      kind: step.taskType === "analysis" ? "analysis" : step.taskType === "test" ? "validation" : step.taskType === "integration" || step.taskType === "merge" ? "integration" : step.taskType === "review" || step.taskType === "docs" || step.taskType === "milestone" ? "summary" : "implementation",
-      metadata
-    };
-  });
-}
-async function planMissionOnce(args) {
-  const startedAt = Date.now();
-  const plannerRunId = (0, import_node_crypto16.randomUUID)();
-  const memoryProjectId = String(args.memoryProjectId ?? "").trim();
-  const sourceRunId = String(args.sourceRunId ?? args.runId ?? "").trim() || plannerRunId;
-  const missionId = args.missionId ?? (0, import_node_crypto16.randomUUID)();
-  const timeoutMs = Math.max(5e3, Math.min(6e5, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS)));
-  const requestedEngine = args.plannerEngine ?? "auto";
-  const order = plannerEngineOrder(requestedEngine, args.aiIntegrationService);
-  const plannerAttempts = [];
-  const clarificationPolicy = resolvePlannerClarificationPolicy({
-    allowPlanningQuestions: args.allowPlanningQuestions === true,
-    phaseCards: args.phaseCards
-  });
-  const projectKnowledge = (() => {
-    if (!args.memoryService || !memoryProjectId.length) return [];
-    try {
-      const memories = args.memoryService.getMemoryBudget(memoryProjectId, "standard", { includeCandidates: true });
-      return memories.map((memory) => ({
-        category: String(memory.category ?? "fact").trim() || "fact",
-        content: normalizePlannerMemoryContent(memory.content)
-      })).filter((entry) => entry.content.length > 0).slice(0, 8);
-    } catch (error48) {
-      args.logger?.warn?.("missions.planner.memory_read_failed", {
-        plannerRunId,
-        projectId: memoryProjectId,
-        error: error48 instanceof Error ? error48.message : String(error48)
-      });
-      return [];
-    }
-  })();
-  const prompt = buildPlannerPrompt({
-    prompt: args.prompt,
-    title: args.title,
-    laneId: args.laneId,
-    clarificationPolicy,
-    contextBundle: args.contextBundle,
-    projectKnowledge,
-    policy: args.policy,
-    teamRuntime: args.teamRuntime
-  });
-  const runtimeErrors = [];
-  if (!order.length) {
-    throw new MissionPlanningError({
-      reasonCode: "planner_unavailable",
-      reasonDetail: "Selected planner adapter is unavailable on this machine.",
-      attempts: 0,
-      engine: null
-    });
-  }
-  for (const engine of order) {
-    try {
-      let adapterResult = await runPlannerAdapter({
-        engine,
-        cwd: args.projectRoot,
-        prompt,
-        timeoutMs,
-        model: args.model,
-        aiIntegrationService: args.aiIntegrationService
-      });
-      let rawJson = null;
-      let planSource = null;
-      if (adapterResult.structuredOutput != null && typeof adapterResult.structuredOutput === "object") {
-        try {
-          rawJson = JSON.stringify(adapterResult.structuredOutput);
-          planSource = "structured";
-        } catch {
-          rawJson = null;
-        }
-      }
-      if (!rawJson && adapterResult.rawResponse) {
-        rawJson = extractFirstJsonObject3(adapterResult.rawResponse);
-        if (rawJson) {
-          planSource = "text";
-        }
-      }
-      if (!rawJson) {
-        plannerAttempts.push({
-          id: (0, import_node_crypto16.randomUUID)(),
-          engine,
-          status: "failed",
-          reasonCode: "planner_parse_error",
-          detail: "Planner output did not contain a valid JSON plan.",
-          commandPreview: adapterResult.commandPreview,
-          rawResponse: adapterResult.rawResponse,
-          validationErrors: [],
-          createdAt: (/* @__PURE__ */ new Date()).toISOString()
-        });
-        runtimeErrors.push({
-          engine,
-          reasonCode: "planner_parse_error",
-          detail: "Planner output did not contain a valid JSON plan.",
-          rawResponse: adapterResult.rawResponse,
-          commandPreview: adapterResult.commandPreview
-        });
-        continue;
-      }
-      let parsed;
-      try {
-        parsed = JSON.parse(rawJson);
-      } catch (error48) {
-        plannerAttempts.push({
-          id: (0, import_node_crypto16.randomUUID)(),
-          engine,
-          status: "failed",
-          reasonCode: "planner_parse_error",
-          detail: error48 instanceof Error ? error48.message : String(error48),
-          commandPreview: adapterResult.commandPreview,
-          rawResponse: adapterResult.rawResponse,
-          validationErrors: [],
-          createdAt: (/* @__PURE__ */ new Date()).toISOString()
-        });
-        runtimeErrors.push({
-          engine,
-          reasonCode: "planner_parse_error",
-          detail: error48 instanceof Error ? error48.message : String(error48),
-          rawResponse: adapterResult.rawResponse,
-          commandPreview: adapterResult.commandPreview
-        });
-        continue;
-      }
-      let { plan, validationErrors } = validateAndCanonicalizePlannerPlan(parsed);
-      if (validationErrors.length > 0) {
-        let retrySucceeded = false;
-        for (let retryIdx = 0; retryIdx < MAX_PLANNER_VALIDATION_RETRIES; retryIdx++) {
-          args.logger?.warn?.("missions.planner.validation_retry", {
-            engine,
-            retry: retryIdx + 1,
-            maxRetries: MAX_PLANNER_VALIDATION_RETRIES,
-            validationErrors
-          });
-          const retryPrompt = prompt + "\n\n---\n\nYour previous plan output had validation errors:\n" + validationErrors.map((e, i) => `${i + 1}. ${e}`).join("\n") + "\n\nFix these issues and output a corrected plan. Keep all the same steps but fix the referenced problems.";
-          try {
-            const retryAdapterResult = await runPlannerAdapter({
-              engine,
-              cwd: args.projectRoot,
-              prompt: retryPrompt,
-              timeoutMs,
-              model: args.model,
-              aiIntegrationService: args.aiIntegrationService
-            });
-            const retryRawJson = extractFirstJsonObject3(retryAdapterResult.rawResponse);
-            if (!retryRawJson) {
-              plannerAttempts.push({
-                id: (0, import_node_crypto16.randomUUID)(),
-                engine,
-                status: "failed",
-                reasonCode: "planner_parse_error",
-                detail: `Validation retry ${retryIdx + 1}: output did not contain a JSON object.`,
-                commandPreview: retryAdapterResult.commandPreview,
-                rawResponse: retryAdapterResult.rawResponse,
-                validationErrors: [],
-                createdAt: (/* @__PURE__ */ new Date()).toISOString()
-              });
-              continue;
-            }
-            let retryParsed;
-            try {
-              retryParsed = JSON.parse(retryRawJson);
-            } catch (parseErr) {
-              plannerAttempts.push({
-                id: (0, import_node_crypto16.randomUUID)(),
-                engine,
-                status: "failed",
-                reasonCode: "planner_parse_error",
-                detail: `Validation retry ${retryIdx + 1}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
-                commandPreview: retryAdapterResult.commandPreview,
-                rawResponse: retryAdapterResult.rawResponse,
-                validationErrors: [],
-                createdAt: (/* @__PURE__ */ new Date()).toISOString()
-              });
-              continue;
-            }
-            const retryValidation = validateAndCanonicalizePlannerPlan(retryParsed);
-            if (retryValidation.validationErrors.length === 0) {
-              plan = retryValidation.plan;
-              validationErrors = [];
-              adapterResult = retryAdapterResult;
-              rawJson = retryRawJson;
-              parsed = retryParsed;
-              retrySucceeded = true;
-              args.logger?.info?.("missions.planner.validation_retry_success", {
-                engine,
-                retry: retryIdx + 1
-              });
-              break;
-            }
-            validationErrors = retryValidation.validationErrors;
-            plannerAttempts.push({
-              id: (0, import_node_crypto16.randomUUID)(),
-              engine,
-              status: "failed",
-              reasonCode: "planner_validation_error",
-              detail: `Validation retry ${retryIdx + 1}: ${retryValidation.validationErrors[0] ?? "Planner validation failed."}`,
-              commandPreview: retryAdapterResult.commandPreview,
-              rawResponse: retryAdapterResult.rawResponse,
-              validationErrors: retryValidation.validationErrors,
-              createdAt: (/* @__PURE__ */ new Date()).toISOString()
-            });
-          } catch (retryErr) {
-            args.logger?.warn?.("missions.planner.validation_retry_error", {
-              engine,
-              retry: retryIdx + 1,
-              error: retryErr instanceof Error ? retryErr.message : String(retryErr)
-            });
-            break;
-          }
-        }
-        if (!retrySucceeded) {
-          plannerAttempts.push({
-            id: (0, import_node_crypto16.randomUUID)(),
-            engine,
-            status: "failed",
-            reasonCode: "planner_validation_error",
-            detail: validationErrors[0] ?? "Planner validation failed.",
-            commandPreview: adapterResult.commandPreview,
-            rawResponse: adapterResult.rawResponse,
-            validationErrors,
-            createdAt: (/* @__PURE__ */ new Date()).toISOString()
-          });
-          runtimeErrors.push({
-            engine,
-            reasonCode: "planner_validation_error",
-            detail: validationErrors[0] ?? "Planner validation failed.",
-            validationErrors,
-            rawResponse: adapterResult.rawResponse,
-            commandPreview: adapterResult.commandPreview
-          });
-          continue;
-        }
-      }
-      if (clarificationPolicy.enabled) {
-        const boundedQuestions = (plan.clarifyingQuestions ?? []).slice(0, clarificationPolicy.maxQuestions);
-        plan.clarifyingQuestions = boundedQuestions;
-      } else {
-        delete plan.clarifyingQuestions;
-      }
-      const normalized = stableStringify(plan);
-      const normalizedPlanHash = sha2563(normalized);
-      const planHash = sha2563(rawJson);
-      plannerAttempts.push({
-        id: (0, import_node_crypto16.randomUUID)(),
-        engine,
-        status: "succeeded",
-        reasonCode: null,
-        detail: null,
-        commandPreview: adapterResult.commandPreview,
-        rawResponse: adapterResult.rawResponse,
-        validationErrors: [],
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      const run = {
-        id: plannerRunId,
-        missionId: args.missionId ?? "",
-        requestedEngine,
-        resolvedEngine: engine,
-        status: "succeeded",
-        degraded: false,
-        reasonCode: null,
-        reasonDetail: null,
-        planHash,
-        normalizedPlanHash,
-        commandPreview: adapterResult.commandPreview,
-        rawResponse: adapterResult.rawResponse,
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        durationMs: Date.now() - startedAt,
-        validationErrors: [],
-        attempts: plannerAttempts
-      };
-      const testingDisabled = args.policy?.testing?.mode === "none";
-      if (testingDisabled && plan.steps) {
-        plan.steps = plan.steps.filter(
-          (s) => !["test", "test_review"].includes(s.taskType ?? "")
-        );
-      }
-      if (args.memoryService && memoryProjectId.length) {
-        const assumptionCandidates = (plan.assumptions ?? []).map((entry) => normalizePlannerMemoryContent(entry, 400)).filter((entry) => entry.length > 0).filter((entry, idx, arr) => arr.indexOf(entry) === idx);
-        const riskCandidates = assumptionCandidates.length > 0 ? (plan.risks ?? []).map((entry) => normalizePlannerMemoryContent(`Risk to monitor: ${entry}`, 400)).filter((entry) => entry.length > 0).filter((entry, idx, arr) => arr.indexOf(entry) === idx) : [];
-        const memoryCandidates = [...assumptionCandidates, ...riskCandidates].slice(0, 5);
-        if (memoryCandidates.length > 0) {
-          try {
-            for (const content of memoryCandidates) {
-              args.memoryService.addCandidateMemory({
-                projectId: memoryProjectId,
-                scope: "project",
-                category: "decision",
-                content,
-                importance: "low",
-                confidence: 0.5,
-                sourceRunId
-              });
-            }
-          } catch (error48) {
-            args.logger?.warn?.("missions.planner.memory_writeback_failed", {
-              plannerRunId,
-              projectId: memoryProjectId,
-              sourceRunId,
-              error: error48 instanceof Error ? error48.message : String(error48)
-            });
-          }
-        }
-      }
-      const plannerArtifactPath = writePlannerRunArtifact({
-        projectRoot: args.projectRoot,
-        missionId,
-        plannerRunId,
-        plan,
-        run
-      });
-      args.logger?.info?.("missions.planner.success", {
-        plannerRunId,
-        requestedEngine,
-        resolvedEngine: engine,
-        planSource,
-        plannerArtifactPath,
-        durationMs: run.durationMs
-      });
-      return { plan, run };
-    } catch (error48) {
-      if (error48 instanceof MissionPlanningError) throw error48;
-      const message = error48 instanceof Error ? error48.message : String(error48);
-      const reasonCode = /timed out|timeout/i.test(message) ? "planner_timeout" : "planner_execution_error";
-      plannerAttempts.push({
-        id: (0, import_node_crypto16.randomUUID)(),
-        engine,
-        status: "failed",
-        reasonCode,
-        detail: message,
-        commandPreview: null,
-        rawResponse: null,
-        validationErrors: [],
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      runtimeErrors.push({
-        engine,
-        reasonCode,
-        detail: message
-      });
-    }
-  }
-  const allValidationErrors = runtimeErrors.flatMap((e) => e.validationErrors ?? []);
-  const summaryDetails = runtimeErrors.map((e) => `${e.engine}: ${e.detail}`).join("; ");
-  const best = runtimeErrors[runtimeErrors.length - 1];
-  throw new MissionPlanningError({
-    reasonCode: best?.reasonCode ?? "planner_unavailable",
-    reasonDetail: summaryDetails || "All planner engines failed.",
-    validationErrors: allValidationErrors,
-    attempts: plannerAttempts.length,
-    engine: best?.engine ?? null
-  });
 }
 
 // ../desktop/src/main/services/orchestrator/coordinatorAgent.ts
@@ -34955,7 +35344,7 @@ __export(util_exports, {
   required: () => required,
   safeExtend: () => safeExtend,
   shallowClone: () => shallowClone,
-  slugify: () => slugify4,
+  slugify: () => slugify3,
   stringifyPrimitive: () => stringifyPrimitive,
   uint8ArrayToBase64: () => uint8ArrayToBase64,
   uint8ArrayToBase64url: () => uint8ArrayToBase64url,
@@ -35096,7 +35485,7 @@ function randomString(length = 10) {
 function esc(str) {
   return JSON.stringify(str);
 }
-function slugify4(input) {
+function slugify3(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 var captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {
@@ -44830,7 +45219,7 @@ function _toUpperCase() {
 }
 // @__NO_SIDE_EFFECTS__
 function _slugify() {
-  return /* @__PURE__ */ _overwrite((input) => slugify4(input));
+  return /* @__PURE__ */ _overwrite((input) => slugify3(input));
 }
 // @__NO_SIDE_EFFECTS__
 function _array(Class2, element, params) {
@@ -48072,460 +48461,8 @@ config(en_default());
 
 // ../desktop/src/main/services/orchestrator/coordinatorTools.ts
 var import_node_crypto17 = require("crypto");
-var import_node_fs21 = __toESM(require("fs"), 1);
-var import_node_path23 = __toESM(require("path"), 1);
-
-// ../desktop/src/main/services/orchestrator/missionStateDoc.ts
-var import_promises = __toESM(require("fs/promises"), 1);
-var import_node_path22 = __toESM(require("path"), 1);
-var MISSION_STATE_DIR = ".ade";
-var COORDINATOR_CHECKPOINT_VERSION = 1;
-var MAX_DECISIONS = 30;
-var MAX_STEP_OUTCOMES = 40;
-var MAX_ACTIVE_ISSUES = 20;
-var MAX_PENDING_INTERVENTIONS = 10;
-var MAX_CHECKPOINT_SUMMARY_CHARS = 8e3;
-var missionStateWriteQueues = /* @__PURE__ */ new Map();
-var coordinatorCheckpointWriteQueues = /* @__PURE__ */ new Map();
-var stringOr = (value, fallback = "") => typeof value === "string" ? value : fallback;
-var clampNonNegativeInt = (value, fallback = 0) => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(0, Math.floor(parsed));
-};
-var normalizeStringArray = (value, max = 200) => {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const entry of value) {
-    if (out.length >= max) break;
-    const normalized = String(entry ?? "").trim();
-    if (!normalized.length || seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(normalized);
-  }
-  return out;
-};
-var trimSummary = (value) => value.trim().slice(0, 200);
-function missionStateQueueKey(projectRoot, runId) {
-  return `${projectRoot}::${runId}`;
-}
-function getMissionStateDocumentPath(projectRoot, runId) {
-  return import_node_path22.default.join(projectRoot, MISSION_STATE_DIR, `mission-state-${runId}.json`);
-}
-function getCoordinatorCheckpointPath(projectRoot, runId) {
-  return import_node_path22.default.join(projectRoot, MISSION_STATE_DIR, `coordinator-checkpoint-${runId}.json`);
-}
-function normalizeProgress(value) {
-  const raw = isRecord3(value) ? value : {};
-  return {
-    currentPhase: stringOr(raw.currentPhase, "unknown").trim() || "unknown",
-    completedSteps: clampNonNegativeInt(raw.completedSteps, 0),
-    totalSteps: clampNonNegativeInt(raw.totalSteps, 0),
-    activeWorkers: normalizeStringArray(raw.activeWorkers),
-    blockedSteps: normalizeStringArray(raw.blockedSteps),
-    failedSteps: normalizeStringArray(raw.failedSteps)
-  };
-}
-function normalizeStepOutcome(value) {
-  const raw = isRecord3(value) ? value : null;
-  if (!raw) return null;
-  const stepKey = stringOr(raw.stepKey).trim();
-  if (!stepKey.length) return null;
-  const status = raw.status === "succeeded" || raw.status === "failed" || raw.status === "skipped" || raw.status === "in_progress" ? raw.status : "in_progress";
-  const testsRunRaw = isRecord3(raw.testsRun) ? raw.testsRun : null;
-  const testsRun = testsRunRaw ? {
-    passed: clampNonNegativeInt(testsRunRaw.passed, 0),
-    failed: clampNonNegativeInt(testsRunRaw.failed, 0),
-    skipped: clampNonNegativeInt(testsRunRaw.skipped, 0)
-  } : void 0;
-  const validationRaw = isRecord3(raw.validation) ? raw.validation : null;
-  const validation = validationRaw ? (() => {
-    const verdict = validationRaw.verdict === "pass" || validationRaw.verdict === "fail" || validationRaw.verdict === null ? validationRaw.verdict : null;
-    return {
-      verdict,
-      findings: normalizeStringArray(validationRaw.findings, 40)
-    };
-  })() : void 0;
-  return {
-    stepKey,
-    stepName: stringOr(raw.stepName, stepKey).trim() || stepKey,
-    phase: stringOr(raw.phase, "unknown").trim() || "unknown",
-    status,
-    summary: trimSummary(stringOr(raw.summary)),
-    filesChanged: normalizeStringArray(raw.filesChanged, 50),
-    ...testsRun ? { testsRun } : {},
-    ...validation ? { validation } : {},
-    warnings: normalizeStringArray(raw.warnings, 40),
-    completedAt: raw.completedAt === null ? null : stringOr(raw.completedAt).trim() || null
-  };
-}
-function normalizeDecision(value) {
-  const raw = isRecord3(value) ? value : null;
-  if (!raw) return null;
-  const timestamp = stringOr(raw.timestamp).trim();
-  const decision = stringOr(raw.decision).trim();
-  const rationale = stringOr(raw.rationale).trim();
-  const context = stringOr(raw.context).trim();
-  if (!timestamp || !decision) return null;
-  return { timestamp, decision, rationale, context };
-}
-function normalizeIssue(value) {
-  const raw = isRecord3(value) ? value : null;
-  if (!raw) return null;
-  const id = stringOr(raw.id).trim();
-  if (!id.length) return null;
-  return {
-    id,
-    severity: raw.severity === "low" || raw.severity === "medium" || raw.severity === "high" ? raw.severity : "medium",
-    description: stringOr(raw.description).trim(),
-    affectedSteps: normalizeStringArray(raw.affectedSteps),
-    status: raw.status === "open" || raw.status === "mitigated" || raw.status === "resolved" ? raw.status : "open"
-  };
-}
-function normalizePendingIntervention(value) {
-  const raw = isRecord3(value) ? value : null;
-  if (!raw) return null;
-  const id = stringOr(raw.id).trim();
-  if (!id.length) return null;
-  return {
-    id,
-    type: stringOr(raw.type).trim() || "unknown",
-    title: stringOr(raw.title).trim() || id,
-    createdAt: stringOr(raw.createdAt).trim() || nowIso2()
-  };
-}
-function normalizeDocument(rawDoc) {
-  const raw = isRecord3(rawDoc) ? rawDoc : null;
-  if (!raw) return null;
-  if (Number(raw.schemaVersion) !== 1) return null;
-  const missionId = stringOr(raw.missionId).trim();
-  const runId = stringOr(raw.runId).trim();
-  if (!missionId.length || !runId.length) return null;
-  const stepOutcomes = Array.isArray(raw.stepOutcomes) ? raw.stepOutcomes.map((entry) => normalizeStepOutcome(entry)).filter((entry) => Boolean(entry)) : [];
-  const decisions = Array.isArray(raw.decisions) ? raw.decisions.map((entry) => normalizeDecision(entry)).filter((entry) => Boolean(entry)) : [];
-  const activeIssues = Array.isArray(raw.activeIssues) ? raw.activeIssues.map((entry) => normalizeIssue(entry)).filter((entry) => Boolean(entry)) : [];
-  const pendingInterventions = Array.isArray(raw.pendingInterventions) ? raw.pendingInterventions.map((entry) => normalizePendingIntervention(entry)).filter((entry) => Boolean(entry)) : [];
-  const modifiedFiles = normalizeStringArray(raw.modifiedFiles);
-  return {
-    schemaVersion: 1,
-    missionId,
-    runId,
-    goal: stringOr(raw.goal).trim(),
-    updatedAt: stringOr(raw.updatedAt).trim() || nowIso2(),
-    progress: normalizeProgress(raw.progress),
-    stepOutcomes: stepOutcomes.slice(-MAX_STEP_OUTCOMES),
-    decisions: decisions.slice(-MAX_DECISIONS),
-    activeIssues: activeIssues.slice(-MAX_ACTIVE_ISSUES),
-    modifiedFiles,
-    pendingInterventions: pendingInterventions.slice(-MAX_PENDING_INTERVENTIONS)
-  };
-}
-function normalizeCoordinatorCheckpoint(rawDoc) {
-  const raw = isRecord3(rawDoc) ? rawDoc : null;
-  if (!raw) return null;
-  const runId = stringOr(raw.runId).trim();
-  const missionId = stringOr(raw.missionId).trim();
-  if (!runId.length || !missionId.length) return null;
-  const lastEventTimestampRaw = raw.lastEventTimestamp;
-  const lastEventTimestamp = typeof lastEventTimestampRaw === "string" && lastEventTimestampRaw.trim().length > 0 ? lastEventTimestampRaw.trim() : null;
-  return {
-    version: COORDINATOR_CHECKPOINT_VERSION,
-    runId,
-    missionId,
-    conversationSummary: stringOr(raw.conversationSummary).trim().slice(0, MAX_CHECKPOINT_SUMMARY_CHARS),
-    lastEventTimestamp,
-    turnCount: clampNonNegativeInt(raw.turnCount, 0),
-    compactionCount: clampNonNegativeInt(raw.compactionCount, 0),
-    savedAt: stringOr(raw.savedAt).trim() || nowIso2()
-  };
-}
-function mergeStepOutcomeUpdates(current, updates) {
-  const testsRun = (() => {
-    if (updates.testsRun === void 0) return current.testsRun;
-    const existing = current.testsRun ?? { passed: 0, failed: 0, skipped: 0 };
-    return {
-      passed: clampNonNegativeInt(updates.testsRun.passed, existing.passed),
-      failed: clampNonNegativeInt(updates.testsRun.failed, existing.failed),
-      skipped: clampNonNegativeInt(updates.testsRun.skipped, existing.skipped)
-    };
-  })();
-  const validation = (() => {
-    if (updates.validation === void 0) return current.validation;
-    const existing = current.validation ?? { verdict: null, findings: [] };
-    return {
-      verdict: updates.validation.verdict === "pass" || updates.validation.verdict === "fail" || updates.validation.verdict === null ? updates.validation.verdict : existing.verdict,
-      findings: updates.validation.findings ? normalizeStringArray(updates.validation.findings) : existing.findings
-    };
-  })();
-  const status = updates.status === "succeeded" || updates.status === "failed" || updates.status === "skipped" || updates.status === "in_progress" ? updates.status : current.status;
-  return {
-    ...current,
-    stepName: updates.stepName ? updates.stepName.trim() || current.stepName : current.stepName,
-    phase: updates.phase ? updates.phase.trim() || current.phase : current.phase,
-    status,
-    summary: updates.summary !== void 0 ? trimSummary(updates.summary) : current.summary,
-    filesChanged: updates.filesChanged ? normalizeStringArray(updates.filesChanged, 50) : current.filesChanged,
-    warnings: updates.warnings ? normalizeStringArray(updates.warnings, 40) : current.warnings,
-    completedAt: updates.completedAt !== void 0 ? updates.completedAt : current.completedAt,
-    ...testsRun ? { testsRun } : {},
-    ...validation ? { validation } : {}
-  };
-}
-function createDefaultStepOutcome(stepKey) {
-  return {
-    stepKey,
-    stepName: stepKey,
-    phase: "unknown",
-    status: "in_progress",
-    summary: "",
-    filesChanged: [],
-    warnings: [],
-    completedAt: null
-  };
-}
-function applyPatch(doc, patch) {
-  const next = {
-    ...doc,
-    progress: { ...doc.progress },
-    stepOutcomes: [...doc.stepOutcomes],
-    decisions: [...doc.decisions],
-    activeIssues: [...doc.activeIssues],
-    modifiedFiles: [...doc.modifiedFiles],
-    pendingInterventions: [...doc.pendingInterventions],
-    updatedAt: nowIso2()
-  };
-  if (patch.updateProgress) {
-    const progress = patch.updateProgress;
-    if (progress.currentPhase !== void 0) next.progress.currentPhase = stringOr(progress.currentPhase, "unknown").trim() || "unknown";
-    if (progress.completedSteps !== void 0) next.progress.completedSteps = clampNonNegativeInt(progress.completedSteps, next.progress.completedSteps);
-    if (progress.totalSteps !== void 0) next.progress.totalSteps = clampNonNegativeInt(progress.totalSteps, next.progress.totalSteps);
-    if (progress.activeWorkers !== void 0) next.progress.activeWorkers = normalizeStringArray(progress.activeWorkers);
-    if (progress.blockedSteps !== void 0) next.progress.blockedSteps = normalizeStringArray(progress.blockedSteps);
-    if (progress.failedSteps !== void 0) next.progress.failedSteps = normalizeStringArray(progress.failedSteps);
-  }
-  if (patch.addStepOutcome) {
-    const normalized = normalizeStepOutcome(patch.addStepOutcome);
-    if (normalized) {
-      const idx = next.stepOutcomes.findIndex((entry) => entry.stepKey === normalized.stepKey);
-      if (idx >= 0) {
-        next.stepOutcomes[idx] = mergeStepOutcomeUpdates(next.stepOutcomes[idx], normalized);
-      } else {
-        next.stepOutcomes.push(normalized);
-      }
-    }
-  }
-  if (patch.updateStepOutcome) {
-    const stepKey = patch.updateStepOutcome.stepKey.trim();
-    if (stepKey.length) {
-      const idx = next.stepOutcomes.findIndex((entry) => entry.stepKey === stepKey);
-      const current = idx >= 0 ? next.stepOutcomes[idx] : createDefaultStepOutcome(stepKey);
-      const merged = mergeStepOutcomeUpdates(current, patch.updateStepOutcome.updates);
-      if (idx >= 0) {
-        next.stepOutcomes[idx] = merged;
-      } else {
-        next.stepOutcomes.push(merged);
-      }
-    }
-  }
-  if (patch.addDecision) {
-    const normalized = normalizeDecision(patch.addDecision);
-    if (normalized) {
-      next.decisions.push(normalized);
-    }
-  }
-  if (patch.addIssue) {
-    const normalized = normalizeIssue(patch.addIssue);
-    if (normalized) {
-      const idx = next.activeIssues.findIndex((entry) => entry.id === normalized.id);
-      if (idx >= 0) {
-        next.activeIssues[idx] = normalized;
-      } else {
-        next.activeIssues.push(normalized);
-      }
-    }
-  }
-  if (patch.resolveIssue) {
-    const issueId = patch.resolveIssue.id.trim();
-    const idx = next.activeIssues.findIndex((entry) => entry.id === issueId);
-    if (idx >= 0) {
-      next.activeIssues[idx] = {
-        ...next.activeIssues[idx],
-        status: "resolved"
-      };
-    }
-    const resolution = patch.resolveIssue.resolution.trim();
-    if (issueId.length && resolution.length) {
-      next.decisions.push({
-        timestamp: nowIso2(),
-        decision: `Resolved issue ${issueId}`,
-        rationale: resolution,
-        context: "Issue resolution"
-      });
-    }
-  }
-  if (patch.pendingInterventions) {
-    next.pendingInterventions = patch.pendingInterventions.map((entry) => normalizePendingIntervention(entry)).filter((entry) => Boolean(entry)).slice(-MAX_PENDING_INTERVENTIONS);
-  }
-  next.stepOutcomes = next.stepOutcomes.slice(-MAX_STEP_OUTCOMES);
-  next.decisions = next.decisions.slice(-MAX_DECISIONS);
-  next.activeIssues = next.activeIssues.slice(-MAX_ACTIVE_ISSUES);
-  next.modifiedFiles = normalizeStringArray(next.stepOutcomes.flatMap((entry) => entry.filesChanged), 150);
-  return next;
-}
-async function loadDocumentFromDisk(filePath) {
-  try {
-    const raw = await import_promises.default.readFile(filePath, "utf8");
-    return normalizeDocument(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
-async function writeDocumentToDisk(filePath, doc) {
-  await import_promises.default.mkdir(import_node_path22.default.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await import_promises.default.writeFile(tempPath, JSON.stringify(doc, null, 2), "utf8");
-  await import_promises.default.rename(tempPath, filePath);
-}
-function createInitialMissionStateDocument(args) {
-  return {
-    schemaVersion: 1,
-    missionId: args.missionId,
-    runId: args.runId,
-    goal: args.goal,
-    updatedAt: nowIso2(),
-    progress: normalizeProgress(args.progress),
-    stepOutcomes: [],
-    decisions: [],
-    activeIssues: [],
-    modifiedFiles: [],
-    pendingInterventions: []
-  };
-}
-async function updateMissionStateDocument(args) {
-  const filePath = getMissionStateDocumentPath(args.projectRoot, args.runId);
-  const key = missionStateQueueKey(args.projectRoot, args.runId);
-  const previous = missionStateWriteQueues.get(key) ?? Promise.resolve(
-    createInitialMissionStateDocument({
-      missionId: args.missionId,
-      runId: args.runId,
-      goal: args.goal,
-      progress: args.initialProgress
-    })
-  );
-  const nextJob = previous.catch(
-    () => createInitialMissionStateDocument({
-      missionId: args.missionId,
-      runId: args.runId,
-      goal: args.goal,
-      progress: args.initialProgress
-    })
-  ).then(async () => {
-    const existing = await loadDocumentFromDisk(filePath);
-    const base = existing ?? createInitialMissionStateDocument({
-      missionId: args.missionId,
-      runId: args.runId,
-      goal: args.goal,
-      progress: args.initialProgress
-    });
-    const nextDoc = applyPatch(base, args.patch);
-    await writeDocumentToDisk(filePath, nextDoc);
-    return nextDoc;
-  });
-  missionStateWriteQueues.set(key, nextJob);
-  try {
-    return await nextJob;
-  } finally {
-    if (missionStateWriteQueues.get(key) === nextJob) {
-      missionStateWriteQueues.delete(key);
-    }
-  }
-}
-async function readMissionStateDocument(args) {
-  const key = missionStateQueueKey(args.projectRoot, args.runId);
-  const pending = missionStateWriteQueues.get(key);
-  if (pending) {
-    try {
-      await pending;
-    } catch {
-    }
-  }
-  return loadDocumentFromDisk(getMissionStateDocumentPath(args.projectRoot, args.runId));
-}
-async function writeCoordinatorCheckpoint(projectRoot, runId, checkpoint) {
-  const filePath = getCoordinatorCheckpointPath(projectRoot, runId);
-  const key = missionStateQueueKey(projectRoot, runId);
-  const normalizedInput = normalizeCoordinatorCheckpoint({
-    ...checkpoint,
-    version: COORDINATOR_CHECKPOINT_VERSION,
-    runId
-  });
-  if (!normalizedInput) {
-    throw new Error(`Invalid coordinator checkpoint payload for run '${runId}'.`);
-  }
-  const previous = coordinatorCheckpointWriteQueues.get(key) ?? Promise.resolve(normalizedInput);
-  const nextJob = previous.catch(() => normalizedInput).then(async () => {
-    const normalized = normalizeCoordinatorCheckpoint(normalizedInput);
-    if (!normalized) {
-      throw new Error(`Unable to normalize coordinator checkpoint for run '${runId}'.`);
-    }
-    await writeDocumentToDisk(filePath, normalized);
-    return normalized;
-  });
-  coordinatorCheckpointWriteQueues.set(key, nextJob);
-  try {
-    return await nextJob;
-  } finally {
-    if (coordinatorCheckpointWriteQueues.get(key) === nextJob) {
-      coordinatorCheckpointWriteQueues.delete(key);
-    }
-  }
-}
-async function readCoordinatorCheckpoint(projectRoot, runId) {
-  const key = missionStateQueueKey(projectRoot, runId);
-  const pending = coordinatorCheckpointWriteQueues.get(key);
-  if (pending) {
-    try {
-      await pending;
-    } catch {
-    }
-  }
-  const filePath = getCoordinatorCheckpointPath(projectRoot, runId);
-  let raw;
-  try {
-    raw = await import_promises.default.readFile(filePath, "utf8");
-  } catch (error48) {
-    const code = error48.code;
-    if (code !== "ENOENT") {
-      console.warn(`[missionStateDoc] Failed to read coordinator checkpoint for run '${runId}':`, error48);
-    }
-    return null;
-  }
-  try {
-    return normalizeCoordinatorCheckpoint(JSON.parse(raw));
-  } catch (error48) {
-    console.warn(`[missionStateDoc] Corrupt coordinator checkpoint for run '${runId}' \u2014 ignoring:`, error48);
-    return null;
-  }
-}
-async function deleteCoordinatorCheckpoint(projectRoot, runId) {
-  const key = missionStateQueueKey(projectRoot, runId);
-  const pending = coordinatorCheckpointWriteQueues.get(key);
-  if (pending) {
-    try {
-      await pending;
-    } catch {
-    }
-  }
-  try {
-    await import_promises.default.unlink(getCoordinatorCheckpointPath(projectRoot, runId));
-  } catch (error48) {
-    const code = error48.code;
-    if (code !== "ENOENT") {
-      throw error48;
-    }
-  }
-}
+var import_node_fs22 = __toESM(require("fs"), 1);
+var import_node_path24 = __toESM(require("path"), 1);
 
 // ../desktop/src/main/services/orchestrator/teamRuntimeState.ts
 function normalizeTeamMemberSource(member) {
@@ -48926,7 +48863,7 @@ function createCoordinatorToolSet(deps) {
     onDagMutation
   } = deps;
   const missionLaneId = typeof deps.missionLaneId === "string" && deps.missionLaneId.trim().length > 0 ? deps.missionLaneId.trim() : null;
-  const resolvedProjectRoot = import_node_path23.default.resolve(projectRoot);
+  const resolvedProjectRoot = import_node_path24.default.resolve(projectRoot);
   const normalizeLaneId = (value) => {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
@@ -49099,6 +49036,8 @@ function createCoordinatorToolSet(deps) {
     );
     const explicitStepKey = args.stepKey?.trim() ?? "";
     const stepKey = explicitStepKey.length > 0 ? explicitStepKey : `worker_${args.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`;
+    const missionPhases = resolveMissionPhases();
+    const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
     const created = orchestratorService.addSteps({
       runId,
       steps: [
@@ -49110,6 +49049,7 @@ function createCoordinatorToolSet(deps) {
           dependencyStepKeys: args.dependsOn,
           executorKind: "unified",
           metadata: {
+            ...phaseMetadata,
             instructions: args.prompt,
             workerName: args.name,
             spawnedByCoordinator: true,
@@ -49204,6 +49144,68 @@ function createCoordinatorToolSet(deps) {
     } catch {
       return [];
     }
+  }
+  function resolvePhaseStepType(phaseKey) {
+    const normalized = phaseKey.trim().toLowerCase();
+    if (normalized === "planning" || normalized === "analysis") return "planning";
+    if (normalized === "development" || normalized === "implementation") return "implementation";
+    if (normalized === "testing" || normalized === "test") return "testing";
+    if (normalized === "validation") return "validation";
+    if (normalized === "code_review" || normalized === "review") return "review";
+    if (normalized === "test_review") return "test_review";
+    if (normalized === "integration" || normalized === "merge") return "integration";
+    return normalized || "implementation";
+  }
+  function resolveCurrentPhaseCard(g, phases) {
+    if (phases.length === 0) return null;
+    const runMeta = asRecord(g.run.metadata);
+    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+    const runtimePhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const runtimePhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    const sorted = [...phases].sort((a, b) => a.position - b.position);
+    if (runtimePhaseKey.length > 0) {
+      const byKey = sorted.find((phase) => phase.phaseKey === runtimePhaseKey);
+      if (byKey) return byKey;
+    }
+    if (runtimePhaseName.length > 0) {
+      const byName = sorted.find((phase) => phase.name === runtimePhaseName);
+      if (byName) return byName;
+    }
+    return sorted[0] ?? null;
+  }
+  function buildPhaseMetadataForNewStep(g, phases) {
+    const current = resolveCurrentPhaseCard(g, phases);
+    if (!current) return {};
+    const stepType = resolvePhaseStepType(current.phaseKey);
+    return {
+      phaseKey: current.phaseKey,
+      phaseName: current.name,
+      phasePosition: current.position,
+      phaseModel: current.model,
+      phaseInstructions: current.instructions,
+      phaseValidation: current.validationGate,
+      phaseBudget: current.budget ?? {},
+      stepType,
+      taskType: stepType,
+      readOnlyExecution: stepType === "planning"
+    };
+  }
+  function getPlanningQuizBlockReason(g) {
+    const phases = resolveMissionPhases();
+    const current = resolveCurrentPhaseCard(g, phases);
+    const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
+    if (currentKey !== "planning") return null;
+    const mission = missionService.get(missionId);
+    if (!mission) return null;
+    const blocking = mission.interventions.filter((entry) => {
+      if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
+      const metadata = asRecord(entry.metadata);
+      if (!metadata || metadata.quizMode !== true || metadata.source !== "ask_user") return false;
+      const phase = typeof metadata.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
+      return phase.length === 0 || phase === "planning";
+    });
+    if (blocking.length === 0) return null;
+    return `Planning clarification is still pending. Resolve ask_user quiz intervention${blocking.length > 1 ? "s" : ""} before executing planning actions.`;
   }
   function validatePhaseOrdering(phases, g) {
     if (phases.length === 0) return { valid: true };
@@ -49330,6 +49332,10 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ name, modelId, role, prompt, laneId, replacementForWorkerId, replacementReason, validationContract, dependsOn }) => {
       try {
         const g = graph();
+        const planningQuizBlockReason = getPlanningQuizBlockReason(g);
+        if (planningQuizBlockReason) {
+          return { ok: false, error: planningQuizBlockReason };
+        }
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const normalizedRole = typeof role === "string" ? role.trim() : "";
         if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
@@ -50222,6 +50228,49 @@ function createCoordinatorToolSet(deps) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.report_status.error", { workerId, error: msg });
+        return { ok: false, error: msg };
+      }
+    }
+  });
+  const reflection_add = (0, import_ai.tool)({
+    description: "Record a structured reflection entry for mission introspection and retrospective synthesis.",
+    inputSchema: external_exports.object({
+      workerId: external_exports.string().optional().describe("Optional worker step key used to infer step/attempt scope."),
+      stepId: external_exports.string().optional().describe("Optional explicit step ID."),
+      attemptId: external_exports.string().optional().describe("Optional explicit attempt ID."),
+      agentRole: external_exports.string().optional().describe("Role submitting the reflection (defaults to coordinator)."),
+      phase: external_exports.string().min(1).describe("Mission phase where this reflection was observed."),
+      signalType: external_exports.enum(["wish", "frustration", "idea", "pattern", "limitation"]),
+      observation: external_exports.string().min(1),
+      recommendation: external_exports.string().min(1),
+      context: external_exports.string().min(1),
+      occurredAt: external_exports.string().optional().describe("ISO-8601 timestamp; defaults to now.")
+    }),
+    execute: async ({ workerId, stepId, attemptId, agentRole, phase, signalType, observation, recommendation, context, occurredAt }) => {
+      try {
+        const g = graph();
+        const resolvedStep = workerId ? resolveStep(g, workerId) : null;
+        const resolvedStepId = typeof stepId === "string" && stepId.trim().length > 0 ? stepId.trim() : resolvedStep?.id ?? null;
+        const runningAttempt = resolvedStepId ? findRunningAttempt(g, resolvedStepId) : null;
+        const latestAttempt = resolvedStepId ? findLatestCompletedAttempt(g, resolvedStepId) : null;
+        const resolvedAttemptId = typeof attemptId === "string" && attemptId.trim().length > 0 ? attemptId.trim() : runningAttempt?.id ?? latestAttempt?.id ?? null;
+        const reflection = orchestratorService.addReflection({
+          missionId,
+          runId,
+          stepId: resolvedStepId,
+          attemptId: resolvedAttemptId,
+          agentRole: (agentRole ?? "coordinator").trim() || "coordinator",
+          phase: phase.trim(),
+          signalType,
+          observation: observation.trim(),
+          recommendation: recommendation.trim(),
+          context: context.trim(),
+          occurredAt: typeof occurredAt === "string" && occurredAt.trim().length > 0 ? occurredAt.trim() : nowIso2()
+        });
+        return { ok: true, reflection };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.reflection_add.error", { error: msg });
         return { ok: false, error: msg };
       }
     }
@@ -51151,6 +51200,153 @@ function createCoordinatorToolSet(deps) {
       }
     }
   });
+  const set_current_phase = (0, import_ai.tool)({
+    description: "Set the active mission phase. Use after planning is complete to transition into implementation/testing/validation phases.",
+    inputSchema: external_exports.object({
+      phaseKey: external_exports.string().describe("Phase key to activate, for example: planning, development, testing, validation"),
+      reason: external_exports.string().optional().describe("Optional reason for the phase transition")
+    }),
+    execute: async ({ phaseKey, reason }) => {
+      try {
+        const g = graph();
+        const missionPhases = [...resolveMissionPhases()].sort((a, b) => a.position - b.position);
+        if (missionPhases.length === 0) {
+          return { ok: false, error: "Mission phase configuration is unavailable." };
+        }
+        const normalizedKey = phaseKey.trim();
+        if (!normalizedKey.length) {
+          return { ok: false, error: "phaseKey is required." };
+        }
+        const targetPhase = missionPhases.find((phase) => phase.phaseKey === normalizedKey);
+        if (!targetPhase) {
+          return {
+            ok: false,
+            error: `Unknown phase '${normalizedKey}'. Available phases: ${missionPhases.map((phase) => phase.phaseKey).join(", ")}`
+          };
+        }
+        const currentPhase = resolveCurrentPhaseCard(g, missionPhases);
+        if (currentPhase?.phaseKey === targetPhase.phaseKey) {
+          return {
+            ok: true,
+            changed: false,
+            currentPhaseKey: currentPhase.phaseKey,
+            currentPhaseName: currentPhase.name
+          };
+        }
+        const stepsForPhase = (phase) => g.steps.filter((step) => {
+          const meta3 = asRecord(step.metadata);
+          const stepPhaseKey = typeof meta3?.phaseKey === "string" ? meta3.phaseKey.trim() : "";
+          const stepPhaseName = typeof meta3?.phaseName === "string" ? meta3.phaseName.trim() : "";
+          return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+        });
+        const hasTerminalStep = (phase) => stepsForPhase(phase).some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+        const targetIndex = missionPhases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
+        if (targetIndex < 0) {
+          return { ok: false, error: `Could not resolve target phase index for '${targetPhase.phaseKey}'.` };
+        }
+        if (currentPhase?.phaseKey === "planning" && targetPhase.phaseKey !== "planning" && !hasTerminalStep(currentPhase)) {
+          return {
+            ok: false,
+            error: "Planning phase has not completed yet. Complete at least one planning step before transitioning."
+          };
+        }
+        for (let i = 0; i < targetIndex; i += 1) {
+          const earlier = missionPhases[i];
+          const mustComplete = earlier.validationGate.required || earlier.orderingConstraints.mustBeFirst;
+          if (mustComplete && !hasTerminalStep(earlier)) {
+            return {
+              ok: false,
+              error: `Cannot enter phase '${targetPhase.name}' before '${earlier.name}' has completed.`
+            };
+          }
+        }
+        const mustFollow = targetPhase.orderingConstraints.mustFollow ?? [];
+        for (const rawPredecessor of mustFollow) {
+          const predecessorKey = rawPredecessor.trim();
+          if (!predecessorKey.length) continue;
+          const predecessor = missionPhases.find((phase) => phase.phaseKey === predecessorKey || phase.name === predecessorKey);
+          if (predecessor && !hasTerminalStep(predecessor)) {
+            return {
+              ok: false,
+              error: `Cannot enter phase '${targetPhase.name}' until '${predecessor.name}' completes (mustFollow).`
+            };
+          }
+        }
+        const now = nowIso2();
+        const runRow = db.get(
+          `select metadata_json from orchestrator_runs where id = ? limit 1`,
+          [runId]
+        );
+        const metadata = (() => {
+          try {
+            const parsed = runRow?.metadata_json ? JSON.parse(runRow.metadata_json) : {};
+            return asRecord(parsed) ?? {};
+          } catch {
+            return {};
+          }
+        })();
+        const phaseRuntimeSource = asRecord(metadata.phaseRuntime);
+        const phaseRuntime = phaseRuntimeSource ? { ...phaseRuntimeSource } : {};
+        const previousPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey : null;
+        const previousPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName : null;
+        const transitions = Array.isArray(phaseRuntime.transitions) ? [...phaseRuntime.transitions] : [];
+        const transitionReason = typeof reason === "string" && reason.trim().length > 0 ? reason.trim() : "coordinator_set_current_phase";
+        transitions.unshift({
+          fromPhaseKey: previousPhaseKey,
+          fromPhaseName: previousPhaseName,
+          toPhaseKey: targetPhase.phaseKey,
+          toPhaseName: targetPhase.name,
+          at: now,
+          reason: transitionReason
+        });
+        phaseRuntime.transitions = transitions.slice(0, 64);
+        phaseRuntime.currentPhaseKey = targetPhase.phaseKey;
+        phaseRuntime.currentPhaseName = targetPhase.name;
+        phaseRuntime.currentPhaseModel = targetPhase.model;
+        phaseRuntime.currentPhaseInstructions = targetPhase.instructions;
+        phaseRuntime.currentPhaseValidation = targetPhase.validationGate;
+        phaseRuntime.currentPhaseBudget = targetPhase.budget ?? {};
+        phaseRuntime.transitionedAt = now;
+        metadata.phaseRuntime = phaseRuntime;
+        db.run(
+          `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ?`,
+          [JSON.stringify(metadata), now, runId]
+        );
+        orchestratorService.appendTimelineEvent({
+          runId,
+          eventType: "phase_transition",
+          reason: transitionReason,
+          detail: {
+            fromPhaseKey: previousPhaseKey,
+            fromPhaseName: previousPhaseName,
+            toPhaseKey: targetPhase.phaseKey,
+            toPhaseName: targetPhase.name,
+            phaseModel: targetPhase.model,
+            phaseValidation: targetPhase.validationGate,
+            phaseBudget: targetPhase.budget ?? {},
+            transitionedAt: now,
+            source: "coordinator_set_current_phase"
+          }
+        });
+        orchestratorService.emitRuntimeUpdate({
+          runId,
+          reason: "phase_transition"
+        });
+        return {
+          ok: true,
+          changed: true,
+          previousPhaseKey,
+          previousPhaseName,
+          currentPhaseKey: targetPhase.phaseKey,
+          currentPhaseName: targetPhase.name
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.set_current_phase.error", { phaseKey, error: msg });
+        return { ok: false, error: msg };
+      }
+    }
+  });
   const create_task = (0, import_ai.tool)({
     description: "Create a task in the mission DAG. Tasks show up in the UI as a visual work breakdown. Use this to plan the work before spawning workers.",
     inputSchema: external_exports.object({
@@ -51162,6 +51358,12 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ key, title, description, dependsOn }) => {
       try {
         const g = graph();
+        const planningQuizBlockReason = getPlanningQuizBlockReason(g);
+        if (planningQuizBlockReason) {
+          return { ok: false, error: planningQuizBlockReason };
+        }
+        const missionPhases = resolveMissionPhases();
+        const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
         const maxIndex = g.steps.reduce(
           (max, s) => Math.max(max, s.stepIndex),
           -1
@@ -51175,7 +51377,11 @@ function createCoordinatorToolSet(deps) {
               stepIndex: maxIndex + 1,
               dependencyStepKeys: dependsOn,
               executorKind: "unified",
-              metadata: { instructions: description, isTask: true }
+              metadata: {
+                ...phaseMetadata,
+                instructions: description,
+                isTask: true
+              }
             }
           ]
         });
@@ -51598,6 +51804,10 @@ function createCoordinatorToolSet(deps) {
             `update orchestrator_runs set status = 'succeeded', completed_at = ?, updated_at = ? where id = ?`,
             [ts, ts, runId]
           );
+          try {
+            deps.orchestratorService.generateRunRetrospective({ runId });
+          } catch {
+          }
         }
         logger.info("coordinator.complete_mission", { runId, summary });
         return { ok: true, runId, summary };
@@ -51628,6 +51838,10 @@ function createCoordinatorToolSet(deps) {
             `update orchestrator_runs set status = 'failed', completed_at = ?, updated_at = ?, last_error = ? where id = ?`,
             [ts, ts, reason, runId]
           );
+          try {
+            deps.orchestratorService.generateRunRetrospective({ runId });
+          } catch {
+          }
         }
         logger.info("coordinator.fail_mission", { runId, reason });
         return { ok: true, runId, reason };
@@ -51853,20 +52067,78 @@ ${context}` : question;
     }
   });
   const ask_user = (0, import_ai.tool)({
-    description: "Escalate a genuinely blocking question to the human user. Creates an intervention visible in the UI.",
+    description: "Ask the user one or more structured clarification questions. Creates a single quiz-style intervention visible in the UI. Bundle all related questions in one call.",
     inputSchema: external_exports.object({
-      question: external_exports.string().describe("The question to ask the user"),
-      context: external_exports.string().optional().describe("Additional context for the question"),
-      urgency: external_exports.enum(["low", "normal", "high"]).default("normal")
+      questions: external_exports.array(external_exports.object({
+        question: external_exports.string().describe("The question text"),
+        context: external_exports.string().optional().describe("Additional context for this question"),
+        options: external_exports.array(external_exports.string()).optional().describe("Optional multiple-choice options"),
+        defaultAssumption: external_exports.string().optional().describe("What you will assume if the user does not answer"),
+        impact: external_exports.string().optional().describe("Why this question matters / what it affects")
+      })).min(1).describe("Array of structured questions to ask"),
+      phase: external_exports.string().optional().describe("Which phase this quiz is for")
     }),
-    execute: async ({ question, context, urgency }) => {
+    execute: async ({ questions, phase }) => {
       try {
-        return openHumanIntervention({
-          source: "ask_user",
-          question,
-          context: context ?? null,
-          urgency
+        const firstQuestion = questions[0].question.trim();
+        if (!firstQuestion.length) {
+          return { ok: false, error: "First question text is required." };
+        }
+        const mission = missionService.get(missionId);
+        if (!mission) {
+          return { ok: false, error: `Mission not found: ${missionId}` };
+        }
+        const title = questions.length === 1 ? firstQuestion.length > 96 ? "Coordinator clarification needed" : `Clarification: ${firstQuestion}` : `Coordinator has ${questions.length} clarification questions`;
+        const bodyLines = questions.map((q, i) => `Q${i + 1}: ${q.question}`);
+        const body = bodyLines.join("\n");
+        const intervention = missionService.addIntervention({
+          missionId,
+          interventionType: "manual_input",
+          title,
+          body,
+          requestedAction: "Answer the clarification questions to unblock coordinator execution.",
+          pauseMission: false,
+          metadata: {
+            source: "ask_user",
+            runId,
+            quizMode: true,
+            questions,
+            phase: phase ?? null,
+            questionCount: questions.length
+          }
         });
+        orchestratorService.appendRuntimeEvent({
+          runId,
+          eventType: "intervention_opened",
+          payload: {
+            missionId,
+            interventionId: intervention.id,
+            interventionType: intervention.interventionType,
+            source: "ask_user",
+            quizMode: true,
+            questionCount: questions.length,
+            phase: phase ?? null
+          }
+        });
+        orchestratorService.appendTimelineEvent({
+          runId,
+          eventType: "intervention_opened",
+          reason: "coordinator_escalation",
+          detail: {
+            interventionId: intervention.id,
+            source: "ask_user",
+            quizMode: true,
+            questionCount: questions.length
+          }
+        });
+        logger.info("coordinator.ask_user_quiz", {
+          runId,
+          missionId,
+          interventionId: intervention.id,
+          questionCount: questions.length,
+          phase: phase ?? null
+        });
+        return { ok: true, interventionId: intervention.id, questionCount: questions.length, deduped: false };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.ask_user.error", { error: msg });
@@ -51906,21 +52178,21 @@ ${context}` : question;
     }),
     execute: async ({ filePath, maxLines }) => {
       try {
-        const fullPath = import_node_path23.default.resolve(resolvedProjectRoot, filePath);
+        const fullPath = import_node_path24.default.resolve(resolvedProjectRoot, filePath);
         if (!isWithinDir(resolvedProjectRoot, fullPath)) {
           return { ok: false, error: "Path is outside project root" };
         }
         let stat;
         try {
-          stat = import_node_fs21.default.statSync(fullPath);
+          stat = import_node_fs22.default.statSync(fullPath);
         } catch {
           return { ok: false, error: `File not found: ${filePath}` };
         }
         if (stat.isDirectory()) {
-          const entries = import_node_fs21.default.readdirSync(fullPath).slice(0, 100);
+          const entries = import_node_fs22.default.readdirSync(fullPath).slice(0, 100);
           return { ok: true, type: "directory", entries };
         }
-        const content = import_node_fs21.default.readFileSync(fullPath, "utf-8");
+        const content = import_node_fs22.default.readFileSync(fullPath, "utf-8");
         const lines = content.split("\n");
         const limit = maxLines ?? 200;
         const truncated = lines.length > limit;
@@ -51947,13 +52219,13 @@ ${context}` : question;
     execute: async ({ stepKey }) => {
       try {
         const sanitized = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const filePath = import_node_path23.default.resolve(resolvedProjectRoot, `.ade/step-output-${sanitized}.md`);
+        const filePath = import_node_path24.default.resolve(resolvedProjectRoot, `.ade/step-output-${sanitized}.md`);
         if (!isWithinDir(resolvedProjectRoot, filePath)) {
           return { ok: false, error: "Path is outside project root" };
         }
         let content;
         try {
-          content = import_node_fs21.default.readFileSync(filePath, "utf-8");
+          content = import_node_fs22.default.readFileSync(filePath, "utf-8");
         } catch {
           return { ok: false, error: `Step output file not found for step: ${stepKey}` };
         }
@@ -51979,13 +52251,13 @@ ${context}` : question;
           const walkDir2 = (dir, depth = 0) => {
             if (depth > 6 || results2.length >= limit) return;
             try {
-              const entries = import_node_fs21.default.readdirSync(dir, { withFileTypes: true });
+              const entries = import_node_fs22.default.readdirSync(dir, { withFileTypes: true });
               for (const entry of entries) {
                 if (results2.length >= limit) break;
                 if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-                const rel = import_node_path23.default.relative(projectRoot, import_node_path23.default.join(dir, entry.name));
+                const rel = import_node_path24.default.relative(projectRoot, import_node_path24.default.join(dir, entry.name));
                 if (entry.isDirectory()) {
-                  walkDir2(import_node_path23.default.join(dir, entry.name), depth + 1);
+                  walkDir2(import_node_path24.default.join(dir, entry.name), depth + 1);
                 } else if (new RegExp(pattern.replace(/\*/g, ".*")).test(entry.name)) {
                   results2.push(rel);
                 }
@@ -52001,23 +52273,23 @@ ${context}` : question;
         const walkDir = (dir, depth = 0) => {
           if (depth > 6 || results.length >= limit) return;
           try {
-            const entries = import_node_fs21.default.readdirSync(dir, { withFileTypes: true });
+            const entries = import_node_fs22.default.readdirSync(dir, { withFileTypes: true });
             for (const entry of entries) {
               if (results.length >= limit) break;
               if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "dist") continue;
-              const fullPath = import_node_path23.default.join(dir, entry.name);
+              const fullPath = import_node_path24.default.join(dir, entry.name);
               if (entry.isDirectory()) {
                 walkDir(fullPath, depth + 1);
               } else {
                 try {
-                  const stat = import_node_fs21.default.statSync(fullPath);
+                  const stat = import_node_fs22.default.statSync(fullPath);
                   if (stat.size > 5e5) continue;
-                  const content = import_node_fs21.default.readFileSync(fullPath, "utf-8");
+                  const content = import_node_fs22.default.readFileSync(fullPath, "utf-8");
                   const lines = content.split("\n");
                   for (let i = 0; i < lines.length && results.length < limit; i++) {
                     if (regex.test(lines[i])) {
                       results.push({
-                        file: import_node_path23.default.relative(projectRoot, fullPath),
+                        file: import_node_path24.default.relative(projectRoot, fullPath),
                         line: i + 1,
                         text: lines[i].slice(0, 200)
                       });
@@ -52046,16 +52318,16 @@ ${context}` : question;
         const keyFiles = ["package.json", "tsconfig.json", "README.md", "CLAUDE.md"];
         const docs = {};
         for (const f of keyFiles) {
-          const fp = import_node_path23.default.resolve(projectRoot, f);
+          const fp = import_node_path24.default.resolve(projectRoot, f);
           try {
-            const content = import_node_fs21.default.readFileSync(fp, "utf-8");
+            const content = import_node_fs22.default.readFileSync(fp, "utf-8");
             docs[f] = content.slice(0, 4e3);
           } catch {
           }
         }
         let topLevel = [];
         try {
-          topLevel = import_node_fs21.default.readdirSync(projectRoot).filter((e) => !e.startsWith(".")).slice(0, 50);
+          topLevel = import_node_fs22.default.readdirSync(projectRoot).filter((e) => !e.startsWith(".")).slice(0, 50);
         } catch {
         }
         return {
@@ -52082,6 +52354,10 @@ ${context}` : question;
     execute: async ({ parentWorkerId, name, prompt, modelId, role }) => {
       try {
         const g = graph();
+        const planningQuizBlockReason = getPlanningQuizBlockReason(g);
+        if (planningQuizBlockReason) {
+          return { ok: false, error: planningQuizBlockReason };
+        }
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const subAgentsAllowed = teamRuntime?.allowSubAgents !== false;
         if (!subAgentsAllowed) {
@@ -52245,6 +52521,10 @@ ${context}` : question;
     execute: async ({ parentWorkerId, tasks }) => {
       try {
         const g = graph();
+        const planningQuizBlockReason = getPlanningQuizBlockReason(g);
+        if (planningQuizBlockReason) {
+          return { ok: false, error: planningQuizBlockReason };
+        }
         const teamRuntime = resolveTeamRuntimeConfig(g);
         if (teamRuntime?.allowSubAgents === false) {
           return { ok: false, error: "Sub-agent delegation is disabled (allowSubAgents=false). Use spawn_worker instead." };
@@ -52434,6 +52714,7 @@ ${context}` : question;
     get_worker_output,
     list_workers,
     report_status,
+    reflection_add,
     report_result,
     report_validation,
     read_mission_status,
@@ -52443,6 +52724,7 @@ ${context}` : question;
     update_tool_profiles,
     transfer_lane,
     provision_lane,
+    set_current_phase,
     create_task,
     update_task,
     assign_task,
@@ -53965,11 +54247,34 @@ ${ruleLines.join("\n")}`;
 ## Mission Phases (execute in order)
 These phases define WHAT work happens. You decide HOW \u2014 how many workers, what prompts, what approach.
 Clarification rules per phase govern when you may use the ask_user tool:
-- "auto_if_uncertain": Before starting phase work, ask only when ambiguity or risk could cause significant rework.
-- "always": Ask at least one clarifying question before starting that phase.
+- "auto_if_uncertain": You MAY use ask_user if you encounter genuine ambiguity that could cause significant rework. Do not ask for trivial things.
+- "always": You MUST use ask_user to gather clarifying questions from the user BEFORE spawning any workers or building the task DAG for that phase. This is mandatory.
 - "never": Do not ask questions in that phase; proceed with reasonable assumptions.
 - Respect each phase max question limit. Avoid obvious or low-value questions.
+- When using ask_user, bundle ALL your questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.
 ${phaseLines.join("\n")}`;
+    }
+    let planningPhaseSection = "";
+    if (phases?.some((p) => p.phaseKey === "planning")) {
+      planningPhaseSection = `
+## Planning Phase Protocol
+When you enter the Planning phase (your first phase), follow this protocol:
+1. IF the Planning phase has askQuestions enabled (mode "always" or "auto_if_uncertain"):
+   - You MUST use ask_user FIRST to gather clarifying questions from the user BEFORE spawning the planning worker or building the task DAG.
+   - Bundle all questions into one ask_user call. Wait for the user to respond before proceeding.
+   - Once the user has answered, incorporate their responses into your planning.
+2. Spawn ONE planning worker with a rich research prompt that includes the full mission goal and the planning phase instructions
+3. The planning worker should have READ-ONLY focus \u2014 its job is to research the codebase, not write code
+4. Wait for the planning worker to complete, then read its output via get_worker_output
+5. Use the research findings to build your task DAG via create_task:
+   - Create tasks with proper dependsOn relationships reflecting real code dependencies
+   - Set parallelism based on the planner\u2019s analysis of independent workstreams
+   - Each task should be scoped for ONE worker in ONE session
+   - The DAG is visible to the user in real-time \u2014 structure it clearly
+6. After planning output is captured, call set_current_phase with phaseKey "development" before starting implementation workers.
+7. Then begin development execution (spawn workers, delegate tasks, and continue phase-by-phase).
+
+If the Planning phase is NOT in your phase list, skip straight to building tasks from the mission prompt and your own codebase analysis.`;
     }
     let workersSection = `
 ## Available Workers
@@ -54048,7 +54353,7 @@ These flags are enforced deterministically by the tools \u2014 violations are re
 - **allowParallelAgents**: When false, spawn workers sequentially (one at a time).
 - **allowSubAgents**: When false, delegate_to_subagent is disabled. Use spawn_worker instead.
 - **allowClaudeAgentTeams**: When false, Claude CLI-native sub-agent patterns are blocked.
-${phasesSection}
+${phasesSection}${planningPhaseSection}
 ${workersSection}
 ${projectSection}
 
@@ -54066,7 +54371,7 @@ You are autonomous WITHIN user-configured settings. This means:
 - When to escalate to the user vs. handle it yourself
 
 **You FOLLOW (user constraints \u2014 never override):**
-- Which execution phases are enabled (planning, testing, validation, code review) \u2014 skip disabled phases, run enabled ones
+- Which execution phases are enabled (development, testing, validation, code review) \u2014 skip disabled phases, run enabled ones
 - Model selection \u2014 use the configured coordinator and worker models
 - PR strategy \u2014 create PRs according to the user's chosen strategy
 - Budget limits \u2014 hard caps on cost/tokens are guardrails, not suggestions
@@ -54184,6 +54489,11 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - Use read_mission_state before major plan changes or mission completion to refresh durable facts
 - Keep mission-state summaries concise: short outcomes, short decisions, actionable issue descriptions
 
+### 6.6 Reflection Protocol Discipline
+- Require workers to log high-signal reflections with \`reflection_add\` when they hit friction, find repeatable patterns, or identify improvements.
+- Ensure every major milestone has at least one reflection capturing what worked/failed and a concrete recommendation.
+- Before \`complete_mission\`, quickly verify reflection coverage so the terminal retrospective has meaningful signal.
+
 ### 7. Finalize When Done
 - Call list_tasks and read_mission_status to verify everything is complete
 - Optionally spawn a final validator for an integration check
@@ -54242,6 +54552,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Restructure the plan | revise_plan (with dependencyPatches) |
 | Persist durable memory | update_mission_state |
 | Reload durable memory | read_mission_state |
+| Log structured reflection signal | reflection_add |
 | Insert milestone | insert_milestone |
 | Request specialist | request_specialist |
 | Delegate subtask to child agent | delegate_to_subagent |
@@ -54400,51 +54711,6 @@ var PM_SYSTEM_PREAMBLE = [
   "",
   "Be decisive and maximize parallelism. You are a PM \u2014 direct, proactive, autonomous."
 ];
-
-// ../desktop/src/main/services/orchestrator/planningPipeline.ts
-function beginPlannerTurn(state) {
-  if (state.turn && !state.turn.settled) {
-    state.turn.resolve({
-      status: "interrupted",
-      rawOutput: state.rawOutput,
-      error: "Planner turn was interrupted by a newer turn."
-    });
-  }
-  state.rawOutput = "";
-  state.rawOutputTruncated = false;
-  state.streamBuffer = "";
-  state.lastStreamFlushAtMs = 0;
-  state.activeTurnId = null;
-  const turn = createDeferred();
-  state.turn = turn;
-  return turn;
-}
-function buildInterventionResolverPrompt(args) {
-  return [
-    `You are an AI orchestrator deciding how to handle an intervention during a mission.`,
-    ``,
-    `Mission: ${args.missionTitle}`,
-    `Prompt: ${args.missionPrompt.slice(0, 300)}`,
-    ``,
-    `Intervention: ${args.interventionDescription}`,
-    ``,
-    `Run context: ${args.runContext}`,
-    args.steeringContext.length > 0 ? `
-Steering context:
-${args.steeringContext}` : "",
-    ``,
-    `Confidence threshold for auto-resolution: ${args.confidenceThreshold}`,
-    ``,
-    `Respond with a JSON object:`,
-    `{`,
-    `  "autoResolvable": boolean,`,
-    `  "confidence": number (0-1),`,
-    `  "suggestedAction": "retry" | "skip" | "add_workaround" | "escalate",`,
-    `  "reasoning": string,`,
-    `  "retryInstructions": string (if action is retry)`,
-    `}`
-  ].join("\n");
-}
 
 // ../desktop/src/main/services/orchestrator/workerTracking.ts
 var import_node_crypto20 = require("crypto");
@@ -56918,6 +57184,32 @@ function routeMessageToWorkerCtx(ctx, message, deps) {
 }
 
 // ../desktop/src/main/services/orchestrator/aiOrchestratorService.ts
+function buildInterventionResolverPrompt(args) {
+  return [
+    `You are an AI orchestrator deciding how to handle an intervention during a mission.`,
+    ``,
+    `Mission: ${args.missionTitle}`,
+    `Prompt: ${args.missionPrompt.slice(0, 300)}`,
+    ``,
+    `Intervention: ${args.interventionDescription}`,
+    ``,
+    `Run context: ${args.runContext}`,
+    args.steeringContext.length > 0 ? `
+Steering context:
+${args.steeringContext}` : "",
+    ``,
+    `Confidence threshold for auto-resolution: ${args.confidenceThreshold}`,
+    ``,
+    `Respond with a JSON object:`,
+    `{`,
+    `  "autoResolvable": boolean,`,
+    `  "confidence": number (0-1),`,
+    `  "suggestedAction": "retry" | "skip" | "add_workaround" | "escalate",`,
+    `  "reasoning": string,`,
+    `  "retryInstructions": string (if action is retry)`,
+    `}`
+  ].join("\n");
+}
 function createAiOrchestratorService(args) {
   const {
     db,
@@ -56935,7 +57227,7 @@ function createAiOrchestratorService(args) {
     onDagMutation,
     hookCommandRunner = runOrchestratorHookCommand
   } = args;
-  const plannerMemoryService = createMemoryService(db);
+  const plannerMemoryService = createUnifiedMemoryService(db);
   const syncLocks = /* @__PURE__ */ new Set();
   const workerStates = /* @__PURE__ */ new Map();
   const activeSteeringDirectives = /* @__PURE__ */ new Map();
@@ -56943,8 +57235,6 @@ function createAiOrchestratorService(args) {
   const chatMessages = /* @__PURE__ */ new Map();
   const activeChatSessions = /* @__PURE__ */ new Map();
   const chatTurnQueues = /* @__PURE__ */ new Map();
-  const plannerSessionByMissionId = /* @__PURE__ */ new Map();
-  const plannerSessionBySessionId = /* @__PURE__ */ new Map();
   const activeHealthSweepRuns = /* @__PURE__ */ new Set();
   const sessionRuntimeSignals = /* @__PURE__ */ new Map();
   const attemptRuntimeTrackers = /* @__PURE__ */ new Map();
@@ -56989,8 +57279,6 @@ function createAiOrchestratorService(args) {
     chatMessages,
     activeChatSessions,
     chatTurnQueues,
-    plannerSessionByMissionId,
-    plannerSessionBySessionId,
     activeHealthSweepRuns,
     sessionRuntimeSignals,
     attemptRuntimeTrackers,
@@ -57440,9 +57728,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (projectRoot) {
       try {
         const sanitizedKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const outputPath = import_node_path25.default.resolve(projectRoot, `.ade/step-output-${sanitizedKey}.md`);
-        if (import_node_fs23.default.existsSync(outputPath)) {
-          stepOutputContent = import_node_fs23.default.readFileSync(outputPath, "utf-8").trim();
+        const outputPath = import_node_path26.default.resolve(projectRoot, `.ade/step-output-${sanitizedKey}.md`);
+        if (import_node_fs24.default.existsSync(outputPath)) {
+          stepOutputContent = import_node_fs24.default.readFileSync(outputPath, "utf-8").trim();
         }
       } catch {
       }
@@ -57473,177 +57761,11 @@ Check all worker statuses and continue managing the mission from here. Read work
       completedAt: MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status) ? step.completedAt ?? latestAttempt?.completedAt ?? nowIso2() : null
     };
   };
-  const upsertPlannerThread = (args2) => {
-    return upsertThread2({
-      missionId: args2.missionId,
-      threadId: plannerThreadId(args2.missionId),
-      threadType: "worker",
-      title: PLANNER_THREAD_TITLE,
-      target: {
-        kind: "worker",
-        runId: args2.runId ?? null,
-        stepId: args2.stepId ?? null,
-        stepKey: PLANNER_THREAD_STEP_KEY,
-        attemptId: null,
-        sessionId: args2.sessionId,
-        laneId: args2.laneId
-      },
-      metadata: {
-        role: "planner",
-        provider: args2.provider,
-        model: args2.model,
-        reasoningEffort: args2.reasoningEffort,
-        plannerThread: true
-      }
-    });
-  };
-  const appendPlannerWorkerMessage = (state, content, metadata) => {
-    const normalizedContent = content.trim();
-    if (!normalizedContent.length) return null;
-    return appendChatMessage({
-      id: (0, import_node_crypto21.randomUUID)(),
-      missionId: state.missionId,
-      role: "worker",
-      content: normalizedContent,
-      timestamp: nowIso2(),
-      threadId: state.threadId,
-      target: {
-        kind: "worker",
-        runId: state.runId ?? null,
-        stepId: state.stepId ?? null,
-        stepKey: PLANNER_THREAD_STEP_KEY,
-        attemptId: null,
-        sessionId: state.sessionId,
-        laneId: state.laneId
-      },
-      visibility: "full",
-      deliveryState: "delivered",
-      sourceSessionId: state.sessionId,
-      attemptId: null,
-      laneId: state.laneId,
-      runId: state.runId ?? null,
-      stepKey: PLANNER_THREAD_STEP_KEY,
-      metadata: metadata ?? null
-    });
-  };
-  const flushPlannerStreamBuffer = (state, force = false) => {
-    if (!state.streamBuffer.length) return;
-    if (!force) {
-      const hasParagraphBreak = /\n{2,}/.test(state.streamBuffer);
-      const trailingWindow = state.streamBuffer.slice(-200);
-      const hasSentenceBoundary = /[.!?](?:\s|\n|$)/.test(trailingWindow);
-      const exceededChunkThreshold = state.streamBuffer.length >= PLANNER_STREAM_FLUSH_CHARS;
-      const exceededInterval = Date.now() - state.lastStreamFlushAtMs >= PLANNER_STREAM_FLUSH_INTERVAL_MS && state.streamBuffer.length >= PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS;
-      if (!hasParagraphBreak && !hasSentenceBoundary && !exceededChunkThreshold && !exceededInterval) {
-        return;
-      }
-    }
-    if (!force && state.streamBuffer.trim().length < 10) {
-      return;
-    }
-    let chunk = state.streamBuffer;
-    if (!force) {
-      let boundary = Math.min(state.streamBuffer.length, PLANNER_STREAM_FLUSH_CHARS);
-      const paragraphBoundary = state.streamBuffer.lastIndexOf("\n\n", boundary);
-      if (paragraphBoundary >= 120) {
-        boundary = paragraphBoundary + 2;
-      } else {
-        const lastNewline = state.streamBuffer.lastIndexOf("\n", boundary);
-        if (lastNewline >= 120) {
-          boundary = lastNewline + 1;
-        } else {
-          const sentenceSlice = state.streamBuffer.slice(0, boundary);
-          const sentencePattern = /[.!?](?:\s|\n|$)/g;
-          let sentenceBoundary = -1;
-          let sentenceMatch = null;
-          while ((sentenceMatch = sentencePattern.exec(sentenceSlice)) !== null) {
-            sentenceBoundary = sentenceMatch.index + sentenceMatch[0].length;
-          }
-          if (sentenceBoundary >= 160) {
-            boundary = sentenceBoundary;
-          }
-        }
-      }
-      chunk = state.streamBuffer.slice(0, boundary);
-      state.streamBuffer = state.streamBuffer.slice(boundary);
-    } else {
-      state.streamBuffer = "";
-    }
-    state.lastStreamFlushAtMs = Date.now();
-    appendPlannerWorkerMessage(state, chunk, {
-      planner: {
-        stream: true,
-        sessionId: state.sessionId
-      }
-    });
-  };
-  const appendPlannerTextDelta = (state, rawDelta) => {
-    let delta = String(rawDelta ?? "");
-    if (delta.includes("<thinking>") || delta.includes("</thinking>")) {
-      delta = delta.replace(/<\/?thinking>/g, "");
-    }
-    if (!delta.trim().length) return;
-    if (state.rawOutput.length < MAX_PLANNER_RAW_OUTPUT_CHARS) {
-      const remaining = MAX_PLANNER_RAW_OUTPUT_CHARS - state.rawOutput.length;
-      const accepted = delta.slice(0, remaining);
-      state.rawOutput += accepted;
-      if (accepted.length < delta.length) {
-        state.rawOutputTruncated = true;
-      }
-    } else {
-      state.rawOutputTruncated = true;
-    }
-    state.streamBuffer += delta;
-    flushPlannerStreamBuffer(state, false);
-  };
-  const completePlannerTurn = (state, status, error48) => {
-    flushPlannerStreamBuffer(state, true);
-    if (state.rawOutputTruncated) {
-      appendPlannerWorkerMessage(
-        state,
-        "Planner output exceeded capture limit; response was truncated in-thread.",
-        {
-          planner: {
-            truncated: true,
-            sessionId: state.sessionId
-          }
-        }
-      );
-    }
-    const turn = state.turn;
-    if (!turn || turn.settled) return;
-    turn.resolve({
-      status,
-      rawOutput: state.rawOutput,
-      error: error48
-    });
-    state.turn = null;
-  };
-  const registerPlannerSession = (state) => {
-    const existingByMission = plannerSessionByMissionId.get(state.missionId);
-    if (existingByMission && existingByMission.sessionId !== state.sessionId) {
-      completePlannerTurn(
-        existingByMission,
-        "interrupted",
-        "Planner session was replaced by a newer planning run."
-      );
-      plannerSessionBySessionId.delete(existingByMission.sessionId);
-    }
-    plannerSessionByMissionId.set(state.missionId, state);
-    plannerSessionBySessionId.set(state.sessionId, state);
-  };
   const resolvePrimaryLaneId = async () => {
     if (!laneService || typeof laneService.list !== "function") return null;
     const lanes = await laneService.list({ includeArchived: false });
     const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
     return primary?.id?.trim() || null;
-  };
-  const resolvePlannerLaneId = async (mission) => {
-    const missionLaneId = toOptionalString2(mission.laneId);
-    if (missionLaneId) return missionLaneId;
-    const laneId = await resolvePrimaryLaneId();
-    if (!laneId) throw new Error("Mission planning lane could not be resolved.");
-    return laneId;
   };
   const createLaneFromBase = async (name, opts) => {
     if (!laneService) return null;
@@ -57669,7 +57791,7 @@ Check all worker statuses and continue managing the mission from here. Read work
   const createMissionLane = async (missionId, missionTitle) => {
     try {
       const result = await createLaneFromBase(
-        `m-${missionId.slice(0, 6)}-${slugify3(missionTitle)}`,
+        `m-${missionId.slice(0, 6)}-${slugify2(missionTitle)}`,
         { description: `Mission lane for ${missionTitle}`, folder: `Mission: ${missionTitle}`, missionId }
       );
       return result?.laneId ?? null;
@@ -58817,18 +58939,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     );
     return row?.project_id ? String(row.project_id).trim() : "";
   };
-  const inferPlannerProviderFromHint = (hint) => {
-    const raw = String(hint ?? "").trim();
-    if (!raw.length) return null;
-    if (raw === "claude" || raw === "codex") return raw;
-    const desc = getModelById(raw);
-    if (desc?.family === "anthropic") return "claude";
-    if (desc?.family === "openai") return "codex";
-    const lower = raw.toLowerCase();
-    if (lower.includes("claude") || lower.includes("anthropic")) return "claude";
-    if (lower.includes("codex") || lower.includes("gpt")) return "codex";
-    return null;
-  };
   const persistDiscoveredDocPathsToMemory = (args2) => {
     const missionProjectId = resolveMissionProjectId(args2.missionId);
     if (!missionProjectId.length || args2.docPaths.length === 0) return;
@@ -58864,13 +58974,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     } catch {
       return [];
     }
-  };
-  const resolvePlannerProviderForMission = (args2) => {
-    const explicit = inferPlannerProviderFromHint(args2.plannerProviderHint);
-    if (explicit) return explicit;
-    const runtimeHint = inferPlannerProviderFromHint(args2.runtimeProfile?.planning.preferProvider ?? null);
-    if (runtimeHint) return runtimeHint;
-    return resolveChatProvider(args2.missionId);
   };
   const getTeamMembersForRun2 = (runId) => getTeamMembersForRun(ctx, runId);
   const updateTeamRuntimePhase2 = (runId, phase, extra) => updateTeamRuntimePhase(ctx, runId, phase, extra);
@@ -58994,7 +59097,38 @@ Check all worker statuses and continue managing the mission from here. Read work
       persistRecoveryHandoff("recovery_handoff");
       transitionMissionStatus2(missionId, "failed");
     }
-    logger.info("ai_orchestrator.run_finalized", { runId, missionId, finalStatus, blockerCount: blockers.length });
+    const retrospective = (() => {
+      try {
+        return orchestratorService.generateRunRetrospective({ runId });
+      } catch (error48) {
+        logger.debug("ai_orchestrator.retrospective_generation_failed", {
+          runId,
+          missionId,
+          error: error48 instanceof Error ? error48.message : String(error48)
+        });
+        return null;
+      }
+    })();
+    if (retrospective && projectRoot) {
+      const missionForState = missionService.get(missionId);
+      void updateMissionStateDocument({
+        projectRoot,
+        missionId,
+        runId,
+        goal: missionForState?.prompt || missionForState?.title || "Mission run",
+        patch: {
+          reflections: orchestratorService.listReflections({ runId, limit: 200 }),
+          latestRetrospective: retrospective
+        }
+      }).catch((error48) => {
+        logger.debug("ai_orchestrator.retrospective_mission_state_sync_failed", {
+          runId,
+          missionId,
+          error: error48 instanceof Error ? error48.message : String(error48)
+        });
+      });
+    }
+    logger.info("ai_orchestrator.run_finalized", { runId, missionId, finalStatus, blockerCount: blockers.length, retrospectiveGenerated: Boolean(retrospective) });
     return { finalized: true, blockers: [], finalStatus };
   };
   const resumeActiveTeamRuntimes = () => {
@@ -59125,48 +59259,26 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!mission) return;
     const latestUserMessage = clipTextForContext(chatArgs.content, MAX_LATEST_CHAT_MESSAGE_CHARS);
     const runs = orchestratorService.listRuns({ missionId: chatArgs.missionId });
+    const latestRun = runs[0] ?? null;
+    if (latestRun && (latestRun.status === "succeeded" || latestRun.status === "failed" || latestRun.status === "canceled")) {
+      return;
+    }
     const activeRun = runs.find((r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused");
     if (activeRun) {
       const routed = routeUserMessageToCoordinator(chatArgs.missionId, activeRun.id, latestUserMessage);
       if (routed) return;
-    }
-    if (!aiIntegrationService || !projectRoot) return;
-    const provider = resolveChatProvider(chatArgs.missionId);
-    if (!provider) return;
-    const runSummary = summarizeRunForChat2(chatArgs.missionId);
-    const prompt = [
-      "You are the ADE mission coordinator. Respond to the user's message concisely.",
-      "Be direct, specific, and actionable. Reference step names and metrics.",
-      "",
-      `Mission: ${mission.title}`,
-      `Run summary: ${runSummary}`,
-      `User message: ${latestUserMessage}`
-    ].join("\n");
-    const configChat = resolveOrchestratorModelConfig2(chatArgs.missionId, "chat_response");
-    const chatCallConfig = resolveCallTypeConfig2(chatArgs.missionId, "chat_response");
-    try {
-      const result = await aiIntegrationService.executeTask({
-        feature: "orchestrator",
-        taskType: "review",
-        prompt,
-        cwd: projectRoot,
-        provider: chatCallConfig.provider,
-        model: modelConfigToServiceModel(configChat),
-        reasoningEffort: chatCallConfig.reasoningEffort,
-        permissionMode: "read-only",
-        oneShot: true,
-        timeoutMs: 3e4
-      });
-      const response = String(result.text ?? "").trim();
-      if (response.length > 0) {
-        emitOrchestratorMessage2(chatArgs.missionId, response);
+      if (activeRun.status === "paused") {
+        emitOrchestratorMessage2(
+          chatArgs.missionId,
+          "Orchestrator runtime is currently paused or unavailable. Resume or restart the run before sending additional directives."
+        );
+        return;
       }
-    } catch (error48) {
-      logger.debug("ai_orchestrator.chat_fallback_failed", {
-        missionId: chatArgs.missionId,
-        error: error48 instanceof Error ? error48.message : String(error48)
-      });
     }
+    emitOrchestratorMessage2(
+      chatArgs.missionId,
+      "Orchestrator runtime is not currently online for this mission. Start or resume the run to continue."
+    );
   };
   const enqueueChatResponse = (chatArgs, recentChatContext) => {
     const missionId = chatArgs.missionId;
@@ -59284,340 +59396,6 @@ Check all worker statuses and continue managing the mission from here. Read work
         });
       }
     })();
-  };
-  const canUsePlannerAgentSessions = () => {
-    return Boolean(
-      agentChatService && laneService && typeof agentChatService.createSession === "function" && typeof agentChatService.sendMessage === "function"
-    );
-  };
-  const createPlannerAgentIntegration = (args2) => {
-    if (!agentChatService) {
-      throw new Error("Planner agent chat service is unavailable.");
-    }
-    const providerAvailability = {
-      claude: args2.provider === "claude",
-      codex: args2.provider === "codex"
-    };
-    const planningReasoningEffort = typeof args2.policy?.planning.reasoningEffort === "string" && args2.policy.planning.reasoningEffort.trim().length ? args2.policy.planning.reasoningEffort.trim() : null;
-    const fallbackModel = args2.provider === "claude" ? "sonnet" : "gpt-5.3-codex";
-    return {
-      getMode: () => "subscription",
-      getAvailability: () => providerAvailability,
-      planMission: async (planArgs) => {
-        const startedAtMs = Date.now();
-        const laneId = await resolvePlannerLaneId(args2.mission);
-        const model = String(planArgs.model ?? args2.model ?? fallbackModel).trim() || fallbackModel;
-        const session = await agentChatService.createSession({
-          laneId,
-          provider: args2.provider,
-          model,
-          permissionMode: "plan",
-          ...planningReasoningEffort ? { reasoningEffort: planningReasoningEffort } : {}
-        });
-        const thread = upsertPlannerThread({
-          missionId: args2.mission.id,
-          laneId,
-          sessionId: session.id,
-          provider: args2.provider,
-          model: session.model,
-          reasoningEffort: session.reasoningEffort ?? planningReasoningEffort
-        });
-        const plannerState = {
-          missionId: args2.mission.id,
-          runId: null,
-          stepId: null,
-          threadId: thread.id,
-          sessionId: session.id,
-          laneId,
-          provider: args2.provider,
-          model: session.model,
-          reasoningEffort: session.reasoningEffort ?? planningReasoningEffort,
-          rawOutput: "",
-          rawOutputTruncated: false,
-          streamBuffer: "",
-          lastStreamFlushAtMs: 0,
-          turn: null,
-          activeTurnId: null,
-          createdAt: nowIso2(),
-          lastEventAt: nowIso2()
-        };
-        registerPlannerSession(plannerState);
-        updateMissionMetadata2(args2.mission.id, (metadata) => {
-          metadata.plannerAgent = {
-            sessionId: session.id,
-            threadId: thread.id,
-            laneId,
-            provider: args2.provider,
-            model: session.model,
-            reasoningEffort: session.reasoningEffort ?? planningReasoningEffort,
-            updatedAt: nowIso2()
-          };
-        });
-        appendPlannerWorkerMessage(
-          plannerState,
-          "Planner online. Prompt received \u2014 drafting the mission plan now.",
-          {
-            planner: {
-              event: "session_started",
-              sessionId: session.id,
-              provider: args2.provider,
-              model: session.model
-            }
-          }
-        );
-        const turn = beginPlannerTurn(plannerState);
-        appendPlannerWorkerMessage(
-          plannerState,
-          "Planning in progress. I will post the execution breakdown as soon as it is ready.",
-          {
-            planner: {
-              event: "turn_enqueued",
-              sessionId: session.id
-            }
-          }
-        );
-        try {
-          await agentChatService.sendMessage({
-            sessionId: session.id,
-            text: planArgs.prompt,
-            ...planningReasoningEffort ? { reasoningEffort: planningReasoningEffort } : {}
-          });
-          const completion = await turn.promise;
-          const text = completion.rawOutput.trim();
-          if (!text.length) {
-            if (completion.status !== "completed") {
-              throw new Error(completion.error ?? `Planner turn finished with status '${completion.status}'.`);
-            }
-            throw new Error("Planner turn completed without returning text.");
-          }
-          if (completion.status !== "completed") {
-            logger.warn("ai_orchestrator.planner_turn_non_success_with_output", {
-              missionId: args2.mission.id,
-              sessionId: session.id,
-              status: completion.status,
-              error: completion.error,
-              outputLength: text.length
-            });
-          }
-          appendPlannerWorkerMessage(
-            plannerState,
-            "Planner produced a candidate plan. Validating and applying steps...",
-            {
-              planner: {
-                event: "response_ready",
-                sessionId: session.id
-              }
-            }
-          );
-          return {
-            text,
-            structuredOutput: null,
-            provider: args2.provider,
-            model: session.model,
-            sessionId: session.id,
-            durationMs: Date.now() - startedAtMs,
-            inputTokens: null,
-            outputTokens: null
-          };
-        } catch (error48) {
-          const message = error48 instanceof Error ? error48.message : String(error48);
-          completePlannerTurn(plannerState, "failed", message);
-          appendPlannerWorkerMessage(
-            plannerState,
-            `Planner turn failed: ${message}`,
-            {
-              planner: {
-                event: "turn_failed",
-                sessionId: session.id
-              }
-            }
-          );
-          throw error48;
-        }
-      }
-    };
-  };
-  const planWithAI = async (args2) => {
-    const mission = missionService.get(args2.missionId);
-    if (!mission) {
-      logger.warn("ai_orchestrator.plan_with_ai_mission_not_found", { missionId: args2.missionId });
-      return;
-    }
-    const plannerSessionSupported = canUsePlannerAgentSessions();
-    if (!projectRoot || !aiIntegrationService && !plannerSessionSupported) {
-      logger.warn("ai_orchestrator.plan_with_ai_not_available", {
-        missionId: args2.missionId,
-        hasAiService: !!aiIntegrationService,
-        hasPlannerSessionSupport: plannerSessionSupported,
-        hasProjectRoot: !!projectRoot
-      });
-      throw new MissionPlanningError({
-        reasonCode: "planner_unavailable",
-        reasonDetail: "Planner execution service is not available.",
-        engine: null
-      });
-    }
-    try {
-      const plannerEngine = args2.provider === "codex" ? "codex_cli" : "claude_cli";
-      const planningIntegration = plannerSessionSupported ? createPlannerAgentIntegration({
-        mission,
-        provider: args2.provider,
-        model: args2.model,
-        policy: args2.policy
-      }) : aiIntegrationService ?? void 0;
-      const teamRuntimeCfgRaw = resolveMissionTeamRuntime2(args2.missionId);
-      const teamRuntimeCfg = teamRuntimeCfgRaw ? normalizeTeamRuntimeConfig2(args2.missionId, teamRuntimeCfgRaw) : null;
-      const phaseConfig = missionService.getPhaseConfiguration(args2.missionId);
-      const missionMetadata = getMissionMetadata2(args2.missionId);
-      const launchMetadata = isRecord3(missionMetadata.launch) ? missionMetadata.launch : null;
-      const agentRuntime = isRecord3(launchMetadata?.agentRuntime) ? launchMetadata.agentRuntime : null;
-      const missionProjectId = resolveMissionProjectId(args2.missionId);
-      const projectDocsContext = discoverProjectDocs2();
-      if (projectDocsContext.paths.length > 0) {
-        persistDiscoveredDocPathsToMemory({
-          missionId: args2.missionId,
-          docPaths: projectDocsContext.paths
-        });
-      }
-      const docsDigest = projectDocsContext.docs.slice(0, 40).map((entry) => ({
-        path: entry.path,
-        sha256: entry.sha256,
-        bytes: entry.bytes
-      }));
-      const plannerConstraints = (() => {
-        const constraints = [];
-        if (agentRuntime?.allowParallelAgents === false) {
-          constraints.push("Parallel agents are disabled by mission settings. Use sequential strategy and set missionSummary.parallelismCap=1.");
-        }
-        if (agentRuntime?.allowSubAgents === false) {
-          constraints.push("Nested sub-agent delegation is disabled by mission settings. Keep steps self-contained for single-agent execution.");
-        }
-        if (agentRuntime?.allowClaudeAgentTeams === false) {
-          constraints.push("Claude native agent teams are disabled by mission settings.");
-        }
-        return constraints;
-      })();
-      const planning = await planMissionOnce({
-        missionId: args2.missionId,
-        title: mission.title,
-        prompt: mission.prompt,
-        laneId: mission.laneId,
-        plannerEngine,
-        model: args2.model,
-        projectRoot,
-        allowPlanningQuestions: (() => {
-          return launchMetadata?.allowPlanningQuestions === true;
-        })(),
-        phaseCards: phaseConfig?.selectedPhases,
-        contextBundle: docsDigest.length > 0 || plannerConstraints.length > 0 ? {
-          ...docsDigest.length > 0 ? { docsDigest } : {},
-          ...plannerConstraints.length > 0 ? { constraints: plannerConstraints } : {}
-        } : void 0,
-        aiIntegrationService: planningIntegration,
-        memoryService: missionProjectId.length > 0 ? plannerMemoryService : void 0,
-        memoryProjectId: missionProjectId.length > 0 ? missionProjectId : void 0,
-        logger,
-        policy: args2.policy,
-        teamRuntime: teamRuntimeCfg ?? void 0
-      });
-      const plannedSteps = plannerPlanToMissionSteps({
-        plan: planning.plan,
-        requestedEngine: planning.run.requestedEngine,
-        resolvedEngine: planning.run.resolvedEngine,
-        executorPolicy: "both",
-        degraded: planning.run.degraded,
-        reasonCode: planning.run.reasonCode,
-        validationErrors: planning.run.validationErrors,
-        policy: args2.policy
-      });
-      if (!missionProjectId.length) return;
-      db.run(`delete from mission_steps where mission_id = ?`, [args2.missionId]);
-      const now = nowIso2();
-      for (const step of plannedSteps) {
-        db.run(
-          `insert into mission_steps(
-            id, mission_id, project_id, step_index, title, detail, kind,
-            lane_id, status, metadata_json, created_at, updated_at, started_at, completed_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, null, null)`,
-          [
-            (0, import_node_crypto21.randomUUID)(),
-            args2.missionId,
-            missionProjectId,
-            step.index,
-            step.title,
-            step.detail,
-            step.kind,
-            mission.laneId,
-            JSON.stringify(step.metadata),
-            now,
-            now
-          ]
-        );
-      }
-      const existingMetadata = (() => {
-        const row = db.get(
-          `select metadata_json from missions where id = ? limit 1`,
-          [args2.missionId]
-        );
-        if (!row?.metadata_json) return {};
-        try {
-          return JSON.parse(row.metadata_json);
-        } catch {
-          return {};
-        }
-      })();
-      const updatedMetadata = {
-        ...existingMetadata,
-        plannerPlan: {
-          schemaVersion: planning.plan.schemaVersion,
-          clarifyingQuestions: planning.plan.clarifyingQuestions ?? [],
-          clarifyingAnswers: planning.plan.clarifyingAnswers ?? [],
-          missionSummary: planning.plan.missionSummary,
-          assumptions: planning.plan.assumptions,
-          risks: planning.plan.risks,
-          stepCount: planning.plan.steps.length,
-          handoffPolicy: planning.plan.handoffPolicy
-        },
-        planner: {
-          id: planning.run.id,
-          requestedEngine: planning.run.requestedEngine,
-          resolvedEngine: planning.run.resolvedEngine,
-          status: planning.run.status,
-          degraded: planning.run.degraded,
-          reasonCode: planning.run.reasonCode,
-          reasonDetail: planning.run.reasonDetail,
-          planHash: planning.run.planHash,
-          normalizedPlanHash: planning.run.normalizedPlanHash,
-          durationMs: planning.run.durationMs,
-          validationErrors: planning.run.validationErrors
-        }
-      };
-      db.run(
-        `update missions set metadata_json = ?, updated_at = ? where id = ?`,
-        [JSON.stringify(updatedMetadata), now, args2.missionId]
-      );
-      emitOrchestratorMessage2(
-        args2.missionId,
-        (() => {
-          const titles = plannedSteps.map((step) => step.title);
-          const preview = titles.length <= 6 ? titles.join(", ") : `${titles.slice(0, 6).join(", ")} (+${titles.length - 6} more)`;
-          return `Planning complete. Created ${plannedSteps.length} steps: ${preview}.`;
-        })()
-      );
-      logger.info("ai_orchestrator.plan_with_ai_completed", {
-        missionId: args2.missionId,
-        provider: args2.provider,
-        plannerSessionSupported,
-        resolvedEngine: planning.run.resolvedEngine,
-        stepCount: plannedSteps.length
-      });
-    } catch (error48) {
-      logger.warn("ai_orchestrator.plan_with_ai_failed", {
-        missionId: args2.missionId,
-        error: error48 instanceof Error ? error48.message : String(error48)
-      });
-      throw error48;
-    }
   };
   const evaluateWorkerPlan = async (args2) => {
     if (!aiIntegrationService || !projectRoot) {
@@ -60670,15 +60448,14 @@ Conflicts auto-resolved by AI workers.`,
         } else try {
           const { settings: runPhaseSettings } = resolveActivePhaseSettings2(mission.id);
           const integrationPrPolicy = runPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
-          const teamManifest = runTeamManifests.get(runId);
-          const graphLaneCount = new Set(graph.steps.map((s) => s.laneId).filter(Boolean)).size;
-          const usedMultipleLanes = teamManifest && teamManifest.parallelLanes.length > 1 || graphLaneCount > 1;
+          const laneIdArrayBase = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))];
+          if (laneIdArrayBase.length === 0 && mission.laneId) laneIdArrayBase.push(mission.laneId);
           const prStrategy = runPhaseSettings.prStrategy ?? { kind: "manual" };
           if (prStrategy.kind === "manual") {
             logger.debug("ai_orchestrator.pr_strategy_manual", { missionId: mission.id, runId });
-          } else if (prStrategy.kind === "integration" && usedMultipleLanes && prService) {
+          } else if (prStrategy.kind === "integration" && prService) {
             try {
-              const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))];
+              const laneIdArray = laneIdArrayBase;
               const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
               const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
               const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
@@ -60705,7 +60482,7 @@ Lanes: ${laneIdArray.join(", ")}`,
             } catch (prError) {
               const prDepth = prStrategy.prDepth ?? integrationPrPolicy.prDepth ?? "resolve-conflicts";
               try {
-                const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))];
+                const laneIdArray = laneIdArrayBase;
                 const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
                 const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
                 emitOrchestratorMessage2(
@@ -60938,9 +60715,9 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
                 );
               }
             }
-          } else if (prStrategy.kind === "per-lane" && prService && usedMultipleLanes) {
+          } else if (prStrategy.kind === "per-lane" && prService) {
             try {
-              const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))];
+              const laneIdArray = laneIdArrayBase;
               const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
               const isDraft = prStrategy.draft ?? true;
               for (const laneId of laneIdArray) {
@@ -60984,9 +60761,9 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
                 error: perLaneError instanceof Error ? perLaneError.message : String(perLaneError)
               });
             }
-          } else if (prStrategy.kind === "queue" && prService && usedMultipleLanes) {
+          } else if (prStrategy.kind === "queue" && prService) {
             try {
-              const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))];
+              const laneIdArray = laneIdArrayBase;
               const targetBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
               const queueResult = await prService.createQueuePrs({
                 laneIds: laneIdArray,
@@ -61086,14 +60863,6 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
           activeSteeringDirectives.delete(mid);
           activeChatSessions.delete(mid);
           chatTurnQueues.delete(mid);
-          const plannerState = plannerSessionByMissionId.get(mid);
-          if (plannerState) {
-            plannerSessionByMissionId.delete(mid);
-            const sid = plannerState.sessionId;
-            plannerSessionBySessionId.delete(sid);
-            sessionRuntimeSignals.delete(sid);
-            sessionSignalQueues.delete(sid);
-          }
         }
       }
     } catch (error48) {
@@ -61114,69 +60883,6 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
     const initialMission = missionService.get(missionId);
     if (!initialMission) throw new Error(`Mission not found: ${missionId}`);
     const missionGoal = initialMission.prompt || initialMission.title;
-    if (args2.forcePlanReviewBypass) {
-      const existingRuns = orchestratorService.listRuns({ missionId });
-      const activeRun = existingRuns.find(
-        (r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused"
-      );
-      if (activeRun) {
-        const coordinatorModelConfig2 = resolveOrchestratorModelConfig2(missionId, "coordinator");
-        const { userRules: userRules2, projectCtx: projectCtx2, availableProviders: availableProviders2, phases: phases2 } = gatherCoordinatorContext(missionId, args2);
-        const resumeMissionLaneId = await ensureMissionLaneForRun({
-          runId: activeRun.id,
-          missionId,
-          missionTitle: initialMission.title
-        });
-        const resumedCoordinator = startCoordinatorAgentV2(missionId, activeRun.id, missionGoal, coordinatorModelConfig2, {
-          userRules: userRules2,
-          projectContext: projectCtx2,
-          availableProviders: availableProviders2,
-          phases: phases2,
-          missionLaneId: resumeMissionLaneId ?? void 0
-        });
-        const coordinatorStarted = Boolean(resumedCoordinator?.isAlive);
-        if (coordinatorStarted) {
-          const ts = nowIso2();
-          db.run(
-            `update orchestrator_runs set status = 'active', updated_at = ? where id = ? and status in ('bootstrapping', 'queued', 'paused')`,
-            [ts, activeRun.id]
-          );
-        } else {
-          pauseRunWithIntervention({
-            runId: activeRun.id,
-            missionId,
-            source: "transition_decision",
-            reasonCode: "coordinator_start_failed",
-            title: "Coordinator startup failed",
-            body: "Coordinator runtime failed to start while resuming this run. Activation was blocked to preserve coordinator-owned autonomy.",
-            requestedAction: "Resolve coordinator startup health, then resume the run.",
-            metadata: {
-              startupPath: "force_plan_review_bypass_resume"
-            }
-          });
-        }
-        const steps = orchestratorService.listSteps(activeRun.id);
-        const existingGraph = getRunGraphSafe2(activeRun.id);
-        updateMissionStateDoc(
-          activeRun.id,
-          {
-            ...existingGraph ? { updateProgress: buildMissionStateProgressFromGraph(existingGraph) } : {},
-            pendingInterventions: pendingInterventionsForMission(missionId)
-          },
-          { graph: existingGraph }
-        );
-        return {
-          blockedByPlanReview: false,
-          started: {
-            run: orchestratorService.listRuns({ limit: 1e3 }).find((entry) => entry.id === activeRun.id) ?? activeRun,
-            steps
-          },
-          mission: missionService.get(missionId)
-        };
-      }
-    }
-    const runtimeProfile = resolveActiveRuntimeProfile2(missionId);
-    const planningEnabled = runtimeProfile.planning.useAiPlanner;
     const missionMetadata = getMissionMetadata2(missionId);
     const launchMetadata = isRecord3(missionMetadata.launch) ? missionMetadata.launch : null;
     const launchTeamRuntime = isRecord3(launchMetadata?.teamRuntime) ? launchMetadata.teamRuntime : null;
@@ -61185,40 +60891,6 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
       allowSubAgents: true,
       allowClaudeAgentTeams: true
     };
-    const replanOnStart = launchMetadata?.replanOnStart === true;
-    const shouldPlanBeforeCoordinator = planningEnabled && (initialMission.steps.length === 0 || replanOnStart);
-    if (shouldPlanBeforeCoordinator) {
-      const plannerProvider = resolvePlannerProviderForMission({
-        missionId,
-        plannerProviderHint: args2.plannerProvider ?? null,
-        runtimeProfile
-      });
-      const plannerModelHint = runtimeProfile.planning.preferProvider;
-      const plannerModel = typeof plannerModelHint === "string" && plannerModelHint.trim().length > 0 && getModelById(plannerModelHint) ? plannerModelHint : void 0;
-      if (!plannerProvider) {
-        logger.warn("ai_orchestrator.start_mission_planner_unavailable", {
-          missionId,
-          preferProvider: runtimeProfile.planning.preferProvider
-        });
-      } else {
-        transitionMissionStatus2(missionId, "planning");
-        emitOrchestratorMessage2(
-          missionId,
-          `Planner starting (${plannerProvider}${plannerModel ? ` \xB7 ${plannerModel}` : ""}). Coordinator activation will begin after planning completes.`
-        );
-        await planWithAI({
-          missionId,
-          provider: plannerProvider,
-          ...plannerModel ? { model: plannerModel } : {},
-          policy: resolveActivePolicy2(missionId)
-        });
-      }
-    } else if (planningEnabled && initialMission.steps.length > 0) {
-      logger.info("ai_orchestrator.start_mission_reusing_existing_plan", {
-        missionId,
-        stepCount: initialMission.steps.length
-      });
-    }
     const missionAfterPlanning = missionService.get(missionId);
     const missionMetadataAfterPlanning = getMissionMetadata2(missionId);
     const plannerPlanMeta = isRecord3(missionMetadataAfterPlanning.plannerPlan) ? missionMetadataAfterPlanning.plannerPlan : null;
@@ -61239,6 +60911,35 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
         launchAgentRuntime.allowParallelAgents === false ? 1 : plannerParallelismCap ?? launchMaxParallel ?? 4
       )
     );
+    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args2);
+    const sortedPhases = [...phases].sort((a, b) => a.position - b.position);
+    const initialPhase = sortedPhases[0] ?? null;
+    const phaseRuntime = initialPhase ? {
+      currentPhaseKey: initialPhase.phaseKey,
+      currentPhaseName: initialPhase.name,
+      currentPhaseModel: initialPhase.model,
+      currentPhaseInstructions: initialPhase.instructions,
+      currentPhaseValidation: initialPhase.validationGate,
+      currentPhaseBudget: initialPhase.budget ?? {},
+      transitionedAt: nowIso2(),
+      transitions: [
+        {
+          fromPhaseKey: null,
+          fromPhaseName: null,
+          toPhaseKey: initialPhase.phaseKey,
+          toPhaseName: initialPhase.name,
+          at: nowIso2(),
+          reason: "run_initialized"
+        }
+      ],
+      phaseBudgets: {
+        [initialPhase.phaseKey]: {
+          enteredAt: nowIso2(),
+          usedTokens: 0,
+          usedCostUsd: 0
+        }
+      }
+    } : void 0;
     const started = orchestratorService.startRun({
       missionId,
       steps: [],
@@ -61265,10 +60966,10 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
           ...normalizeAgentRuntimeFlags(launchTeamRuntime)
         } : void 0,
         agentRuntime: normalizeAgentRuntimeFlags(launchAgentRuntime),
-        aiFirst: true
+        aiFirst: true,
+        ...phaseRuntime ? { phaseRuntime } : {}
       }
     });
-    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args2);
     const missionLaneId = await ensureMissionLaneForRun({
       runId: started.run.id,
       missionId,
@@ -61297,7 +60998,6 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
       });
       const failedRun = orchestratorService.listRuns({ limit: 1e3 }).find((entry) => entry.id === started.run.id) ?? started.run;
       return {
-        blockedByPlanReview: false,
         started: {
           run: failedRun,
           steps: orchestratorService.listSteps(started.run.id)
@@ -61326,7 +61026,6 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
     );
     void syncMissionFromRun(started.run.id, "mission_run_started");
     return {
-      blockedByPlanReview: false,
       started,
       mission: missionService.get(missionId)
     };
@@ -61412,42 +61111,6 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
     const phaseConfig = missionService.getPhaseConfiguration(missionId);
     const phases = phaseConfig?.selectedPhases ?? [];
     return { userRules, projectCtx, availableProviders, phases };
-  };
-  const approveMissionPlan = async (args2) => {
-    const missionId = String(args2.missionId ?? "").trim();
-    if (!missionId.length) throw new Error("missionId is required.");
-    const mission = missionService.get(missionId);
-    if (!mission) throw new Error(`Mission not found: ${missionId}`);
-    const runs = orchestratorService.listRuns({ missionId });
-    const activeRun = runs.find((entry) => entry.status === "active" || entry.status === "bootstrapping" || entry.status === "paused" || entry.status === "queued") ?? null;
-    for (const intervention of mission.interventions) {
-      if (intervention.status === "open" && intervention.interventionType === "approval_required" && intervention.title === PLAN_REVIEW_INTERVENTION_TITLE) {
-        try {
-          missionService.resolveIntervention({
-            missionId,
-            interventionId: intervention.id,
-            status: "resolved",
-            note: "Approved for execution."
-          });
-          if (activeRun) {
-            recordRuntimeEvent({
-              runId: activeRun.id,
-              eventType: "intervention_resolved",
-              eventKey: `intervention_resolved:${intervention.id}:plan_approval`,
-              payload: {
-                interventionId: intervention.id,
-                reason: "plan_approved"
-              }
-            });
-          }
-        } catch {
-        }
-      }
-    }
-    return startMissionRun({
-      ...args2,
-      forcePlanReviewBypass: true
-    });
   };
   const getRunGraphSafe2 = (runId) => {
     try {
@@ -61870,26 +61533,6 @@ Stop work and wrap up any in-flight operations.`;
         }
       );
     }
-    const plannerState = plannerSessionByMissionId.get(missionId);
-    if (plannerState && agentChatService) {
-      void (async () => {
-        try {
-          await sendWorkerMessageToSession(
-            plannerState.sessionId,
-            `[ADE ORCHESTRATOR STEERING]: ${directive.directive}`
-          );
-          logger.debug("ai_orchestrator.steering_delivered_to_planner", {
-            missionId,
-            directive: directive.directive.slice(0, 200)
-          });
-        } catch (deliveryError) {
-          logger.debug("ai_orchestrator.steering_planner_delivery_failed", {
-            missionId,
-            error: deliveryError instanceof Error ? deliveryError.message : String(deliveryError)
-          });
-        }
-      })();
-    }
     if (agentChatService) {
       const missionRunIds = /* @__PURE__ */ new Set();
       const stepIdToStepKey = /* @__PURE__ */ new Map();
@@ -62137,107 +61780,10 @@ Stop work and wrap up any in-flight operations.`;
     });
     sessionSignalQueues.set(sessionId, next);
   };
-  const handlePlannerAgentChatEvent = (envelope) => {
-    const sessionId = String(envelope.sessionId ?? "").trim();
-    if (!sessionId.length) return false;
-    const state = plannerSessionBySessionId.get(sessionId);
-    if (!state) return false;
-    state.lastEventAt = typeof envelope.timestamp === "string" && envelope.timestamp.trim().length ? envelope.timestamp : nowIso2();
-    const event = envelope.event;
-    if (event.type === "status") {
-      if (event.turnId) {
-        state.activeTurnId = event.turnId;
-      }
-      if (event.turnStatus === "started") {
-        appendPlannerWorkerMessage(
-          state,
-          "Planner started reasoning on the mission plan.",
-          {
-            planner: {
-              event: "turn_started",
-              sessionId: state.sessionId,
-              turnId: event.turnId ?? null
-            }
-          }
-        );
-      } else if (event.turnStatus === "failed" || event.turnStatus === "interrupted") {
-        const status = event.turnStatus === "failed" ? "failed" : "interrupted";
-        const message = typeof event.message === "string" && event.message.trim().length ? event.message.trim() : `Planner turn ${status}.`;
-        appendPlannerWorkerMessage(state, message, {
-          planner: {
-            event: "turn_status_terminal",
-            sessionId: state.sessionId,
-            status
-          }
-        });
-        completePlannerTurn(state, status, message);
-      }
-      return true;
-    }
-    if (event.type === "text") {
-      appendPlannerTextDelta(state, event.text);
-      return true;
-    }
-    if (event.type === "plan") {
-      appendPlannerWorkerMessage(
-        state,
-        `Planner proposed ${event.steps.length} plan step${event.steps.length === 1 ? "" : "s"}.`,
-        {
-          planner: {
-            event: "plan_outline",
-            sessionId: state.sessionId
-          }
-        }
-      );
-      return true;
-    }
-    if (event.type === "error") {
-      const rawMsg = String(event.message ?? "Planner session reported an error.").trim();
-      let displayMsg = rawMsg;
-      if (rawMsg.includes("File content") && rawMsg.includes("exceeds maximum")) {
-        displayMsg = "Reading large file in smaller chunks...";
-      } else if (rawMsg.includes("Sibling tool call errored")) {
-        return true;
-      } else if (rawMsg.includes("SANDBOX BLOCKED")) {
-        displayMsg = "Skipping restricted path, trying alternative approach...";
-      } else if (rawMsg.startsWith("Tool '") && rawMsg.includes("failed:")) {
-        const toolName = rawMsg.match(/Tool '(\w+)'/)?.[1] ?? "tool";
-        displayMsg = `${toolName} encountered an issue, adjusting approach...`;
-      }
-      if (displayMsg && displayMsg.length > 3) {
-        appendPlannerWorkerMessage(state, displayMsg, {
-          planner: {
-            event: "error",
-            sessionId: state.sessionId
-          }
-        });
-      }
-      completePlannerTurn(state, "failed", rawMsg);
-      return true;
-    }
-    if (event.type === "done") {
-      const status = event.status === "failed" ? "failed" : event.status === "interrupted" ? "interrupted" : "completed";
-      completePlannerTurn(state, status, status === "completed" ? null : `Planner turn ${status}.`);
-      appendPlannerWorkerMessage(
-        state,
-        status === "completed" ? "Planner completed the turn." : `Planner turn ${status}.`,
-        {
-          planner: {
-            event: "turn_done",
-            sessionId: state.sessionId,
-            status
-          }
-        }
-      );
-      return true;
-    }
-    return false;
-  };
   const onAgentChatEvent = (envelope) => {
     if (disposed) return;
     const sessionId = String(envelope.sessionId ?? "").trim();
     if (!sessionId.length) return;
-    handlePlannerAgentChatEvent(envelope);
     const event = envelope.event;
     const shouldReplay = event.type === "status" && (event.turnStatus === "completed" || event.turnStatus === "interrupted" || event.turnStatus === "failed") || event.type === "done" || event.type === "error";
     if (!shouldReplay) return;
@@ -62388,9 +61934,359 @@ Stop work and wrap up any in-flight operations.`;
       }
     }
   })();
+  const ALL_MISSION_LOG_CHANNELS = [
+    "timeline",
+    "runtime",
+    "chat",
+    "outputs",
+    "reflections",
+    "retrospectives",
+    "interventions"
+  ];
+  const normalizeMissionLogChannels = (channels) => {
+    if (!Array.isArray(channels) || channels.length === 0) return ALL_MISSION_LOG_CHANNELS;
+    const out = [];
+    for (const raw of channels) {
+      if (raw === "timeline" || raw === "runtime" || raw === "chat" || raw === "outputs" || raw === "reflections" || raw === "retrospectives" || raw === "interventions") {
+        if (!out.includes(raw)) out.push(raw);
+      }
+    }
+    return out.length > 0 ? out : ALL_MISSION_LOG_CHANNELS;
+  };
+  const toMissionLogLevel = (args2) => {
+    const text = `${args2.eventType ?? ""} ${args2.message ?? ""}`.toLowerCase();
+    if (text.includes("failed") || text.includes("error") || text.includes("unavailable") || text.includes("hard_cap") || text.includes("budget_exceeded")) {
+      return "error";
+    }
+    if (text.includes("warning") || text.includes("blocked") || text.includes("paused") || text.includes("retry")) {
+      return "warning";
+    }
+    return "info";
+  };
+  const pickMissionLogRunId = (missionId, requestedRunId) => {
+    const explicit = toOptionalString2(requestedRunId);
+    if (explicit) return explicit;
+    const runs = orchestratorService.listRuns({ missionId, limit: 200 });
+    return runs[0]?.id ?? null;
+  };
+  const getMissionLogs = async (args2) => {
+    const missionId = String(args2.missionId ?? "").trim();
+    if (!missionId.length) throw new Error("missionId is required.");
+    const mission = missionService.get(missionId);
+    if (!mission) throw new Error(`Mission not found: ${missionId}`);
+    const channels = normalizeMissionLogChannels(args2.channels);
+    const channelSet = new Set(channels);
+    const runId = pickMissionLogRunId(missionId, args2.runId);
+    const entries = [];
+    const pushEntry = (entry) => entries.push(entry);
+    if (channelSet.has("timeline")) {
+      for (const event of mission.events) {
+        pushEntry({
+          id: `mission-event:${event.id}`,
+          missionId,
+          runId: runId ?? null,
+          channel: "timeline",
+          level: toMissionLogLevel({ eventType: event.eventType, message: event.summary }),
+          at: event.createdAt,
+          title: event.eventType,
+          message: event.summary,
+          payload: event.payload
+        });
+      }
+    }
+    if (runId && channelSet.has("timeline")) {
+      const timeline = orchestratorService.listTimeline({ runId, limit: 4e3 });
+      for (const event of timeline) {
+        pushEntry({
+          id: `timeline:${event.id}`,
+          missionId,
+          runId,
+          channel: "timeline",
+          level: toMissionLogLevel({ eventType: event.eventType, message: event.reason }),
+          at: event.createdAt,
+          title: event.eventType,
+          message: event.reason,
+          stepId: event.stepId ?? null,
+          attemptId: event.attemptId ?? null,
+          payload: event.detail ?? null
+        });
+      }
+    }
+    if (runId && channelSet.has("runtime")) {
+      const runtimeEvents = orchestratorService.listRuntimeEvents({ runId, limit: 4e3 });
+      for (const event of runtimeEvents) {
+        const payload = isRecord3(event.payload) ? event.payload : null;
+        const summary = payload && typeof payload.summary === "string" && payload.summary.trim().length > 0 ? payload.summary.trim() : event.eventType;
+        pushEntry({
+          id: `runtime:${event.id}`,
+          missionId,
+          runId,
+          channel: "runtime",
+          level: toMissionLogLevel({ eventType: event.eventType, message: summary }),
+          at: event.occurredAt,
+          title: event.eventType,
+          message: summary,
+          stepId: event.stepId ?? null,
+          attemptId: event.attemptId ?? null,
+          payload
+        });
+      }
+    }
+    if (channelSet.has("chat")) {
+      const seenMessageIds = /* @__PURE__ */ new Set();
+      const addChatEntry = (message) => {
+        if (seenMessageIds.has(message.id)) return;
+        seenMessageIds.add(message.id);
+        const role = message.role;
+        const prefix = role === "user" ? "User" : role === "agent" ? "Agent" : role === "worker" ? "Worker" : "Orchestrator";
+        const text = String(message.content ?? "").trim();
+        pushEntry({
+          id: `chat:${message.id}`,
+          missionId,
+          runId: message.runId ?? runId ?? null,
+          channel: "chat",
+          level: role === "orchestrator" ? "warning" : "info",
+          at: message.timestamp,
+          title: `${prefix} message`,
+          message: text.length > 0 ? text : "(empty message)",
+          stepKey: message.stepKey ?? null,
+          threadId: message.threadId ?? null,
+          payload: isRecord3(message.metadata) ? message.metadata : null
+        });
+      };
+      const globalMessages = getGlobalChat({ missionId, limit: 2e3 });
+      for (const message of globalMessages) addChatEntry(message);
+      const threads = listChatThreads({ missionId, includeClosed: true });
+      for (const thread of threads) {
+        const threadMessages = getThreadMessages({ missionId, threadId: thread.id, limit: 500 });
+        for (const message of threadMessages) addChatEntry(message);
+      }
+    }
+    if (runId && channelSet.has("outputs")) {
+      const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const stepById = new Map(graph.steps.map((step) => [step.id, step]));
+      for (const attempt of graph.attempts) {
+        const summary = attempt.resultEnvelope?.summary?.trim();
+        const errorMessage = attempt.errorMessage?.trim();
+        if (!summary && !errorMessage) continue;
+        const step = stepById.get(attempt.stepId);
+        const msg = summary ?? errorMessage ?? `Attempt ${attempt.status}`;
+        pushEntry({
+          id: `output:${attempt.id}`,
+          missionId,
+          runId,
+          channel: "outputs",
+          level: attempt.status === "failed" ? "error" : attempt.status === "blocked" ? "warning" : "info",
+          at: attempt.completedAt ?? attempt.startedAt ?? attempt.createdAt,
+          title: step ? `Step output: ${step.stepKey}` : "Step output",
+          message: msg,
+          stepId: attempt.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: attempt.id,
+          payload: attempt.resultEnvelope?.outputs ?? null
+        });
+      }
+      const checkpoint = getContextCheckpoint2({ missionId });
+      if (checkpoint) {
+        pushEntry({
+          id: `output:checkpoint:${checkpoint.id}`,
+          missionId,
+          runId,
+          channel: "outputs",
+          level: "info",
+          at: checkpoint.createdAt,
+          title: "Context checkpoint",
+          message: `Checkpoint saved for ${checkpoint.trigger ?? "runtime state"}.`,
+          payload: {
+            trigger: checkpoint.trigger,
+            summary: checkpoint.summary
+          }
+        });
+      }
+    }
+    if (channelSet.has("reflections")) {
+      const reflections = orchestratorService.listReflections({
+        missionId,
+        ...runId ? { runId } : {},
+        limit: 500
+      });
+      for (const reflection of reflections) {
+        const message = `${reflection.observation} Recommendation: ${reflection.recommendation}`;
+        pushEntry({
+          id: `reflection:${reflection.id}`,
+          missionId,
+          runId: reflection.runId,
+          channel: "reflections",
+          level: "info",
+          at: reflection.occurredAt,
+          title: `Reflection (${reflection.signalType})`,
+          message,
+          stepId: reflection.stepId,
+          attemptId: reflection.attemptId,
+          payload: {
+            phase: reflection.phase,
+            agentRole: reflection.agentRole,
+            context: reflection.context
+          }
+        });
+      }
+    }
+    if (channelSet.has("retrospectives")) {
+      const retrospectives = orchestratorService.listRetrospectives({ missionId, limit: 100 });
+      for (const retrospective of retrospectives) {
+        if (runId && retrospective.runId !== runId) continue;
+        const summaryParts = [];
+        if (retrospective.wins.length > 0) summaryParts.push(`Wins: ${retrospective.wins.slice(0, 3).join("; ")}`);
+        if (retrospective.failures.length > 0) summaryParts.push(`Failures: ${retrospective.failures.slice(0, 3).join("; ")}`);
+        if (retrospective.followUpActions.length > 0) {
+          summaryParts.push(`Follow-ups: ${retrospective.followUpActions.slice(0, 3).join("; ")}`);
+        }
+        pushEntry({
+          id: `retrospective:${retrospective.id}`,
+          missionId,
+          runId: retrospective.runId,
+          channel: "retrospectives",
+          level: retrospective.finalStatus === "failed" ? "error" : retrospective.finalStatus === "canceled" ? "warning" : "info",
+          at: retrospective.generatedAt,
+          title: "Run retrospective",
+          message: summaryParts.length > 0 ? summaryParts.join(" | ") : "Retrospective generated.",
+          payload: {
+            finalStatus: retrospective.finalStatus,
+            wins: retrospective.wins,
+            failures: retrospective.failures,
+            unresolvedRisks: retrospective.unresolvedRisks,
+            followUpActions: retrospective.followUpActions,
+            topPainPoints: retrospective.topPainPoints,
+            topImprovements: retrospective.topImprovements,
+            estimatedImpact: retrospective.estimatedImpact
+          }
+        });
+      }
+    }
+    if (channelSet.has("interventions")) {
+      for (const intervention of mission.interventions) {
+        pushEntry({
+          id: `intervention:${intervention.id}`,
+          missionId,
+          runId: runId ?? null,
+          channel: "interventions",
+          level: intervention.status === "open" ? "warning" : "info",
+          at: intervention.updatedAt ?? intervention.createdAt,
+          title: intervention.title,
+          message: intervention.body,
+          interventionId: intervention.id,
+          payload: {
+            status: intervention.status,
+            interventionType: intervention.interventionType,
+            requestedAction: intervention.requestedAction,
+            resolutionNote: intervention.resolutionNote
+          }
+        });
+      }
+    }
+    const sorted = [...entries].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    const total = sorted.length;
+    const offsetRaw = Number(args2.cursor ?? "0");
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+    const limitRaw = Number(args2.limit ?? 200);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1e3, Math.floor(limitRaw))) : 200;
+    const paged = sorted.slice(offset, offset + limit);
+    const nextCursor = offset + limit < total ? String(offset + limit) : null;
+    return {
+      entries: paged,
+      nextCursor,
+      total
+    };
+  };
+  const exportMissionLogs = async (args2) => {
+    const missionId = String(args2.missionId ?? "").trim();
+    if (!missionId.length) throw new Error("missionId is required.");
+    const runId = pickMissionLogRunId(missionId, args2.runId);
+    const includeArtifacts = args2.includeArtifacts === true;
+    const channels = ALL_MISSION_LOG_CHANNELS;
+    const allEntries = [];
+    let cursor = null;
+    for (; ; ) {
+      const page = await getMissionLogs({
+        missionId,
+        runId,
+        channels,
+        cursor,
+        limit: 1e3
+      });
+      allEntries.push(...page.entries);
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    const root = projectRoot ?? process.cwd();
+    const runPart = runId ?? "latest";
+    const bundlePath = import_node_path26.default.join(root, ".ade", "log-bundles", missionId, runPart);
+    import_node_fs24.default.mkdirSync(bundlePath, { recursive: true });
+    const files = [];
+    const writeBundleFile = (name, content, entriesCount = 0) => {
+      const filePath = import_node_path26.default.join(bundlePath, name);
+      import_node_fs24.default.writeFileSync(filePath, content, "utf8");
+      files.push({
+        name,
+        path: filePath,
+        bytes: Buffer.byteLength(content, "utf8"),
+        entries: entriesCount
+      });
+    };
+    const grouped = /* @__PURE__ */ new Map();
+    for (const channel of channels) grouped.set(channel, []);
+    for (const entry of allEntries) {
+      const bucket = grouped.get(entry.channel);
+      if (bucket) bucket.push(entry);
+    }
+    for (const channel of channels) {
+      const channelEntries = grouped.get(channel) ?? [];
+      writeBundleFile(`${channel}.json`, `${JSON.stringify(channelEntries, null, 2)}
+`, channelEntries.length);
+    }
+    if (includeArtifacts) {
+      const mission = missionService.get(missionId);
+      if (mission) {
+        writeBundleFile(
+          "mission-detail.json",
+          `${JSON.stringify(
+            {
+              id: mission.id,
+              title: mission.title,
+              status: mission.status,
+              prompt: mission.prompt,
+              createdAt: mission.createdAt,
+              updatedAt: mission.updatedAt,
+              artifacts: mission.artifacts,
+              interventions: mission.interventions
+            },
+            null,
+            2
+          )}
+`
+        );
+      }
+    }
+    const exportedAt = nowIso2();
+    const manifest = {
+      schema: "ade.mission-log-bundle.v1",
+      missionId,
+      runId,
+      exportedAt,
+      channels,
+      entryCount: allEntries.length,
+      files,
+      includeArtifacts
+    };
+    writeBundleFile("manifest.json", `${JSON.stringify(manifest, null, 2)}
+`);
+    return {
+      bundlePath,
+      manifest
+    };
+  };
   return {
     startMissionRun,
-    approveMissionPlan,
     cancelRunGracefully,
     cleanupTeamResources,
     onOrchestratorRuntimeEvent(event) {
@@ -62555,7 +62451,6 @@ Stop work and wrap up any in-flight operations.`;
     onAgentChatEvent,
     syncMissionFromRun,
     getWorkerStates: getWorkerStates2,
-    planWithAI,
     evaluateWorkerPlan,
     handleInterventionWithAI,
     steerMission,
@@ -62591,6 +62486,8 @@ Stop work and wrap up any in-flight operations.`;
       return runRecoveryLoopStates.get(rlArgs.runId) ?? null;
     },
     runHealthSweep: (reason = "manual") => runHealthSweep(reason),
+    getMissionLogs,
+    exportMissionLogs,
     dispose: () => {
       disposed = true;
       disposedRef.current = true;
@@ -62616,8 +62513,6 @@ Stop work and wrap up any in-flight operations.`;
       chatMessages.clear();
       activeChatSessions.clear();
       chatTurnQueues.clear();
-      plannerSessionByMissionId.clear();
-      plannerSessionBySessionId.clear();
       activeHealthSweepRuns.clear();
       sessionRuntimeSignals.clear();
       attemptRuntimeTrackers.clear();
@@ -62643,7 +62538,7 @@ var import_ai13 = require("ai");
 
 // ../desktop/src/main/services/ai/tools/editFile.ts
 var import_ai5 = require("ai");
-var import_node_fs24 = __toESM(require("fs"), 1);
+var import_node_fs25 = __toESM(require("fs"), 1);
 var editFileTool = (0, import_ai5.tool)({
   description: "Make a targeted edit to a file by replacing an exact string match with new content. The old_string must appear exactly once in the file unless replace_all is true.",
   inputSchema: external_exports.object({
@@ -62654,10 +62549,10 @@ var editFileTool = (0, import_ai5.tool)({
   }),
   execute: async ({ file_path, old_string, new_string, replace_all }) => {
     try {
-      if (!import_node_fs24.default.existsSync(file_path)) {
+      if (!import_node_fs25.default.existsSync(file_path)) {
         return { success: false, message: `File not found: ${file_path}` };
       }
-      const content = import_node_fs24.default.readFileSync(file_path, "utf-8");
+      const content = import_node_fs25.default.readFileSync(file_path, "utf-8");
       if (!content.includes(old_string)) {
         return {
           success: false,
@@ -62675,7 +62570,7 @@ var editFileTool = (0, import_ai5.tool)({
         }
       }
       const updated = replace_all ? content.split(old_string).join(new_string) : content.replace(old_string, new_string);
-      import_node_fs24.default.writeFileSync(file_path, updated, "utf-8");
+      import_node_fs25.default.writeFileSync(file_path, updated, "utf-8");
       return { success: true, message: `Successfully edited ${file_path}` };
     } catch (err) {
       return {
@@ -62688,7 +62583,7 @@ var editFileTool = (0, import_ai5.tool)({
 
 // ../desktop/src/main/services/ai/tools/readFileRange.ts
 var import_ai6 = require("ai");
-var import_node_fs25 = __toESM(require("fs"), 1);
+var import_node_fs26 = __toESM(require("fs"), 1);
 var readFileRangeTool = (0, import_ai6.tool)({
   description: "Read a file's contents with line numbers. Can read specific ranges for large files.",
   inputSchema: external_exports.object({
@@ -62698,10 +62593,10 @@ var readFileRangeTool = (0, import_ai6.tool)({
   }),
   execute: async ({ file_path, offset, limit }) => {
     try {
-      if (!import_node_fs25.default.existsSync(file_path)) {
+      if (!import_node_fs26.default.existsSync(file_path)) {
         return { content: "", totalLines: 0, error: `File not found: ${file_path}` };
       }
-      const raw = import_node_fs25.default.readFileSync(file_path, "utf-8");
+      const raw = import_node_fs26.default.readFileSync(file_path, "utf-8");
       const allLines = raw.split("\n");
       const totalLines = allLines.length;
       const start = Math.max(1, offset ?? 1);
@@ -62728,8 +62623,8 @@ var readFileRangeTool = (0, import_ai6.tool)({
 var import_ai7 = require("ai");
 var import_node_child_process7 = require("child_process");
 var import_node_util = require("util");
-var import_node_fs26 = __toESM(require("fs"), 1);
-var import_node_path26 = __toESM(require("path"), 1);
+var import_node_fs27 = __toESM(require("fs"), 1);
+var import_node_path27 = __toESM(require("path"), 1);
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process7.execFile);
 var grepSearchTool = (0, import_ai7.tool)({
   description: "Search file contents using regex patterns. Returns matching lines with file paths and line numbers.",
@@ -62791,7 +62686,7 @@ async function jsFallbackGrep(pattern, target, fileGlob) {
   for (const filePath of files) {
     if (results.length >= 500) break;
     try {
-      const content = import_node_fs26.default.readFileSync(filePath, "utf-8");
+      const content = import_node_fs27.default.readFileSync(filePath, "utf-8");
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
         if (regex.test(lines[i])) {
@@ -62806,7 +62701,7 @@ async function jsFallbackGrep(pattern, target, fileGlob) {
 }
 var SKIP_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 async function collectFiles(dir, fileGlob, maxFiles = 5e3) {
-  const stat = import_node_fs26.default.statSync(dir);
+  const stat = import_node_fs27.default.statSync(dir);
   if (stat.isFile()) return [dir];
   const files = [];
   const globRegex = fileGlob ? globToRegex(fileGlob) : null;
@@ -62814,7 +62709,7 @@ async function collectFiles(dir, fileGlob, maxFiles = 5e3) {
     if (files.length >= maxFiles) return;
     let entries;
     try {
-      entries = import_node_fs26.default.readdirSync(current, { withFileTypes: true });
+      entries = import_node_fs27.default.readdirSync(current, { withFileTypes: true });
     } catch {
       return;
     }
@@ -62822,10 +62717,10 @@ async function collectFiles(dir, fileGlob, maxFiles = 5e3) {
       if (files.length >= maxFiles) return;
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
-          await walk(import_node_path26.default.join(current, entry.name));
+          await walk(import_node_path27.default.join(current, entry.name));
         }
       } else if (entry.isFile()) {
-        const fullPath = import_node_path26.default.join(current, entry.name);
+        const fullPath = import_node_path27.default.join(current, entry.name);
         if (!globRegex || globRegex.test(entry.name)) {
           files.push(fullPath);
         }
@@ -62847,8 +62742,8 @@ function globToRegex(glob) {
 
 // ../desktop/src/main/services/ai/tools/globSearch.ts
 var import_ai8 = require("ai");
-var import_node_fs27 = __toESM(require("fs"), 1);
-var import_node_path27 = __toESM(require("path"), 1);
+var import_node_fs28 = __toESM(require("fs"), 1);
+var import_node_path28 = __toESM(require("path"), 1);
 var SKIP_DIRS2 = /* @__PURE__ */ new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 var globSearchTool = (0, import_ai8.tool)({
   description: "Find files matching a glob pattern. Returns sorted file paths.",
@@ -62878,14 +62773,14 @@ function walkAndMatch(root, globPattern, maxFiles = 5e3) {
     if (results.length >= maxFiles) return;
     let entries;
     try {
-      entries = import_node_fs27.default.readdirSync(dir, { withFileTypes: true });
+      entries = import_node_fs28.default.readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
       if (results.length >= maxFiles) return;
-      const fullPath = import_node_path27.default.join(dir, entry.name);
-      const relativePath = import_node_path27.default.relative(root, fullPath);
+      const fullPath = import_node_path28.default.join(dir, entry.name);
+      const relativePath = import_node_path28.default.relative(root, fullPath);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS2.has(entry.name) && !entry.name.startsWith(".")) {
           walk(fullPath);
@@ -63001,27 +62896,53 @@ function mapCategoryToFactType(category) {
       return "api_pattern";
     case "gotcha":
       return "gotcha";
+    case "convention":
+    case "preference":
+      return "config";
     case "decision":
     case "fact":
+    case "episode":
+    case "procedure":
+    case "digest":
+    case "handoff":
     default:
       return "architectural";
   }
 }
-function createMemoryTools(memoryService, projectId, runId) {
+function createMemoryTools(memoryService, projectId, opts) {
+  const resolveScopeOwnerId = (scope, explicit) => {
+    if (explicit && explicit.trim().length > 0) return explicit.trim();
+    if (scope === "agent" && opts?.agentScopeOwnerId?.trim()) return opts.agentScopeOwnerId.trim();
+    if (scope === "mission" && opts?.runId) return opts.runId;
+    return void 0;
+  };
   const memorySearch = (0, import_ai11.tool)({
     description: "Search project memory for relevant context, patterns, decisions, or gotchas from previous sessions.",
     inputSchema: external_exports.object({
       query: external_exports.string().describe("Search query for finding relevant memories"),
-      scope: external_exports.enum(["user", "project", "lane", "mission"]).optional().describe("Scope to search within"),
+      scope: external_exports.enum(["project", "agent", "mission"]).optional().describe("Scope to search within"),
+      scopeOwnerId: external_exports.string().optional().describe("Optional owner id for agent/mission scope"),
       limit: external_exports.number().optional().default(5).describe("Maximum results to return")
     }),
-    execute: async ({ query, scope, limit }) => {
-      const memories = memoryService.searchMemories(query, projectId, scope, limit);
+    execute: async ({ query, scope, scopeOwnerId, limit }) => {
+      const memories = memoryService.search({
+        projectId,
+        query,
+        scope,
+        ...scope ? { scopeOwnerId: resolveScopeOwnerId(scope, scopeOwnerId) ?? null } : {},
+        limit
+      });
       return {
         memories: memories.map((m) => ({
+          id: m.id,
+          scope: m.scope,
+          tier: m.tier,
+          pinned: m.pinned,
           category: m.category,
           content: m.content,
           importance: m.importance,
+          confidence: m.confidence,
+          compositeScore: m.compositeScore,
           createdAt: m.createdAt
         })),
         count: memories.length
@@ -63032,38 +62953,79 @@ function createMemoryTools(memoryService, projectId, runId) {
     description: "Save an important finding, decision, pattern, or gotcha to project memory for future reference.",
     inputSchema: external_exports.object({
       content: external_exports.string().describe("The information to remember"),
-      category: external_exports.enum(["fact", "pattern", "decision", "gotcha"]).describe("Category of the memory"),
-      importance: external_exports.enum(["low", "medium", "high"]).optional().default("medium").describe("How important this memory is")
+      category: external_exports.enum(["fact", "convention", "pattern", "decision", "gotcha", "preference"]).describe("Category of the memory"),
+      scope: external_exports.enum(["project", "agent", "mission"]).optional().default("project").describe("Scope to write into"),
+      scopeOwnerId: external_exports.string().optional().describe("Optional owner id for agent/mission scope"),
+      importance: external_exports.enum(["low", "medium", "high"]).optional().default("medium").describe("How important this memory is"),
+      pin: external_exports.boolean().optional().default(false).describe("Pin as Tier-1 memory"),
+      writeMode: external_exports.enum(["default", "strict"]).optional().default("default").describe("Write-gate mode")
     }),
-    execute: async ({ content, category, importance }) => {
-      const memory = memoryService.addMemory({
+    execute: async ({ content, category, scope, scopeOwnerId, importance, pin, writeMode }) => {
+      const resolvedScopeOwnerId = resolveScopeOwnerId(scope, scopeOwnerId);
+      const result = memoryService.writeMemory({
         projectId,
-        scope: "project",
+        scope,
+        scopeOwnerId: resolvedScopeOwnerId,
+        tier: pin ? 1 : 2,
         category,
         content,
-        importance
+        importance,
+        pinned: pin,
+        status: "promoted",
+        confidence: 1,
+        writeGateMode: writeMode
       });
-      if (runId) {
+      if (!result.accepted || !result.memory) {
+        return {
+          saved: false,
+          reason: result.reason ?? "write gate rejected memory"
+        };
+      }
+      const memory = result.memory;
+      if (opts?.runId) {
         try {
           memoryService.addSharedFact({
-            runId,
+            runId: opts.runId,
+            ...opts.stepId ? { stepId: opts.stepId } : {},
             factType: mapCategoryToFactType(category),
             content
           });
         } catch {
         }
       }
-      return { saved: true, id: memory.id };
+      return {
+        saved: true,
+        id: memory.id,
+        tier: memory.tier,
+        deduped: result.deduped === true,
+        mergedIntoId: result.mergedIntoId ?? null
+      };
     }
   });
-  return { memorySearch, memoryAdd };
+  const memoryPin = (0, import_ai11.tool)({
+    description: "Pin or unpin an existing memory entry (Tier-1 when pinned).",
+    inputSchema: external_exports.object({
+      id: external_exports.string().describe("Memory id"),
+      pinned: external_exports.boolean().optional().default(true).describe("Whether to pin or unpin the memory")
+    }),
+    execute: async ({ id, pinned }) => {
+      const updated = pinned ? memoryService.pinMemory(id) : memoryService.unpinMemory(id);
+      return {
+        ok: !!updated,
+        id,
+        pinned: updated?.pinned ?? false,
+        tier: updated?.tier ?? null
+      };
+    }
+  });
+  return { memorySearch, memoryAdd, memoryPin };
 }
 
 // ../desktop/src/main/services/ai/tools/universalTools.ts
 var import_ai12 = require("ai");
-var import_node_fs28 = __toESM(require("fs"), 1);
+var import_node_fs29 = __toESM(require("fs"), 1);
 var import_node_os = __toESM(require("os"), 1);
-var import_node_path28 = __toESM(require("path"), 1);
+var import_node_path29 = __toESM(require("path"), 1);
 var import_node_child_process8 = require("child_process");
 var import_node_util2 = require("util");
 var execFileAsync2 = (0, import_node_util2.promisify)(import_node_child_process8.execFile);
@@ -63096,11 +63058,11 @@ function compileSandbox(config2) {
 }
 var WRITE_COMMAND_RE = /(?:>|>>|tee|cp\s|mv\s|rm\s|write|edit)/;
 function resolveAllowedWriteRoots(cwd, sandboxConfig) {
-  const roots = /* @__PURE__ */ new Set([import_node_path28.default.resolve(cwd)]);
+  const roots = /* @__PURE__ */ new Set([import_node_path29.default.resolve(cwd)]);
   if (sandboxConfig?.allowedPaths) {
     for (const allowedPath of sandboxConfig.allowedPaths) {
       if (typeof allowedPath !== "string" || allowedPath.trim().length === 0) continue;
-      roots.add(import_node_path28.default.resolve(cwd, allowedPath));
+      roots.add(import_node_path29.default.resolve(cwd, allowedPath));
     }
   }
   return [...roots];
@@ -63156,8 +63118,8 @@ function collectPathReferences(command, cwd) {
     if (!normalizedRaw.length) return;
     if (normalizedRaw === "/dev/null") return;
     if (normalizedRaw.includes("://")) return;
-    const expandedPath = normalizedRaw === "~" ? import_node_os.default.homedir() : normalizedRaw.startsWith("~/") ? import_node_path28.default.join(import_node_os.default.homedir(), normalizedRaw.slice(2)) : normalizedRaw;
-    const resolved = import_node_path28.default.resolve(cwd, expandedPath);
+    const expandedPath = normalizedRaw === "~" ? import_node_os.default.homedir() : normalizedRaw.startsWith("~/") ? import_node_path29.default.join(import_node_os.default.homedir(), normalizedRaw.slice(2)) : normalizedRaw;
+    const resolved = import_node_path29.default.resolve(cwd, expandedPath);
     const key = `${normalizedRaw}::${resolved}`;
     if (!refs.has(key)) refs.set(key, { raw: normalizedRaw, resolved });
   };
@@ -63186,14 +63148,14 @@ function checkWorkerSandbox(command, config2, projectRoot) {
     }
   }
   const safeMatch = compiled.safe.some((re) => re.test(command));
-  const rootResolved = import_node_path28.default.resolve(projectRoot);
+  const rootResolved = import_node_path29.default.resolve(projectRoot);
   const pathRefs = collectPathReferences(command, projectRoot);
   for (const entry of pathRefs) {
     const p = entry.raw;
     const resolved = entry.resolved;
     if (resolved.startsWith("/usr/bin/") || resolved.startsWith("/usr/local/bin/") || resolved === "/dev/null") continue;
     const withinAllowed = config2.allowedPaths.some((allowed) => {
-      const allowedAbs = import_node_path28.default.resolve(projectRoot, allowed);
+      const allowedAbs = import_node_path29.default.resolve(projectRoot, allowed);
       return isWithinDir(allowedAbs, resolved);
     });
     if (!withinAllowed && !isWithinDir(rootResolved, resolved)) {
@@ -63299,7 +63261,7 @@ function createWriteFileTool(cwd, mode, sandboxConfig) {
     })(),
     execute: async ({ file_path, content }) => {
       try {
-        const targetPath = import_node_path28.default.resolve(cwd, file_path);
+        const targetPath = import_node_path29.default.resolve(cwd, file_path);
         const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig);
         const withinAllowedRoots = allowedRoots.some((allowedRoot) => isWithinDir(allowedRoot, targetPath));
         if (!withinAllowedRoots) {
@@ -63308,8 +63270,8 @@ function createWriteFileTool(cwd, mode, sandboxConfig) {
             message: `Write path is outside allowed roots: ${file_path}`
           };
         }
-        import_node_fs28.default.mkdirSync(import_node_path28.default.dirname(targetPath), { recursive: true });
-        import_node_fs28.default.writeFileSync(targetPath, content, "utf-8");
+        import_node_fs29.default.mkdirSync(import_node_path29.default.dirname(targetPath), { recursive: true });
+        import_node_fs29.default.writeFileSync(targetPath, content, "utf-8");
         return { success: true, message: `Wrote ${content.length} characters to ${targetPath}` };
       } catch (err) {
         return {
@@ -63333,7 +63295,7 @@ function createListDirTool() {
           if (entries.length >= maxEntries) return;
           let items;
           try {
-            items = import_node_fs28.default.readdirSync(dir, { withFileTypes: true });
+            items = import_node_fs29.default.readdirSync(dir, { withFileTypes: true });
           } catch {
             return;
           }
@@ -63348,12 +63310,12 @@ function createListDirTool() {
             if (item.isDirectory()) {
               entries.push({ name: relName, type: "directory" });
               if (recursive && !item.name.startsWith(".") && item.name !== "node_modules") {
-                walk2(import_node_path28.default.join(dir, item.name), relName);
+                walk2(import_node_path29.default.join(dir, item.name), relName);
               }
             } else {
               let size;
               try {
-                size = import_node_fs28.default.statSync(import_node_path28.default.join(dir, item.name)).size;
+                size = import_node_fs29.default.statSync(import_node_path29.default.join(dir, item.name)).size;
               } catch {
               }
               entries.push({ name: relName, type: "file", size });
@@ -63361,10 +63323,10 @@ function createListDirTool() {
           }
         };
         var walk = walk2;
-        if (!import_node_fs28.default.existsSync(dirPath)) {
+        if (!import_node_fs29.default.existsSync(dirPath)) {
           return { entries: [], error: `Directory not found: ${dirPath}` };
         }
-        const stat = import_node_fs28.default.statSync(dirPath);
+        const stat = import_node_fs29.default.statSync(dirPath);
         if (!stat.isDirectory()) {
           return { entries: [], error: `Not a directory: ${dirPath}` };
         }
@@ -63480,8 +63442,35 @@ function createAskUserTool(onAskUser) {
     }
   });
 }
+function createMemoryUpdateCoreTool(onMemoryUpdateCore) {
+  return (0, import_ai12.tool)({
+    description: "Update CTO core memory (Tier-1) with durable project context fields.",
+    inputSchema: external_exports.object({
+      projectSummary: external_exports.string().optional(),
+      criticalConventions: external_exports.array(external_exports.string()).optional(),
+      userPreferences: external_exports.array(external_exports.string()).optional(),
+      activeFocus: external_exports.array(external_exports.string()).optional(),
+      notes: external_exports.array(external_exports.string()).optional()
+    }),
+    execute: async (patch) => {
+      const hasAnyValue = Object.values(patch).some((value) => value !== void 0);
+      if (!hasAnyValue) {
+        return {
+          updated: false,
+          error: "At least one core-memory field is required."
+        };
+      }
+      const next = onMemoryUpdateCore(patch);
+      return {
+        updated: true,
+        version: next.version,
+        updatedAt: next.updatedAt
+      };
+    }
+  });
+}
 function createUniversalToolSet(cwd, opts) {
-  const { permissionMode, memoryService, projectId, onAskUser, sandboxConfig } = opts;
+  const { permissionMode, memoryService, projectId, runId, stepId, agentScopeOwnerId, onAskUser, onMemoryUpdateCore, sandboxConfig } = opts;
   const effectiveSandboxConfig = sandboxConfig ?? DEFAULT_WORKER_SANDBOX_CONFIG;
   const tools = {
     // Read-only tools (auto-allowed in all modes)
@@ -63504,8 +63493,11 @@ function createUniversalToolSet(cwd, opts) {
     askUser: createAskUserTool(onAskUser)
   };
   if (memoryService && projectId) {
-    const memTools = createMemoryTools(memoryService, projectId);
+    const memTools = createMemoryTools(memoryService, projectId, { runId, stepId, agentScopeOwnerId });
     Object.assign(tools, memTools);
+  }
+  if (onMemoryUpdateCore) {
+    tools.memoryUpdateCore = createMemoryUpdateCoreTool(onMemoryUpdateCore);
   }
   return tools;
 }
@@ -63521,7 +63513,11 @@ function createCodingToolSet(_cwd, opts) {
     webSearch: webSearchTool
   };
   if (opts?.memoryService && opts?.projectId) {
-    const memTools = createMemoryTools(opts.memoryService, opts.projectId, opts.runId);
+    const memTools = createMemoryTools(opts.memoryService, opts.projectId, {
+      runId: opts.runId,
+      stepId: opts.stepId,
+      agentScopeOwnerId: opts.agentScopeOwnerId
+    });
     Object.assign(tools, memTools);
   }
   return tools;
@@ -63566,7 +63562,9 @@ async function* executeUnified(opts) {
     tools = createCodingToolSet(opts.cwd, {
       memoryService: opts.memoryService,
       projectId: opts.projectId,
-      runId: opts.runId
+      runId: opts.runId,
+      stepId: opts.stepId,
+      agentScopeOwnerId: opts.attemptId
     });
   }
   const stopCondition = opts.tools === "planning" ? (0, import_ai13.stepCountIs)(10) : void 0;
@@ -63804,13 +63802,13 @@ ${opts.prompt}`,
 
 // ../desktop/src/main/services/ai/modelsDevService.ts
 var import_promises2 = require("fs/promises");
-var import_node_path29 = require("path");
+var import_node_path30 = require("path");
 var import_node_os2 = require("os");
 var API_URL = "https://models.dev/api.json";
 var FETCH_TIMEOUT_MS = 1e4;
 var REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1e3;
-var CACHE_DIR = (0, import_node_path29.join)((0, import_node_os2.homedir)(), ".ade");
-var CACHE_FILE = (0, import_node_path29.join)(CACHE_DIR, "models-dev-cache.json");
+var CACHE_DIR = (0, import_node_path30.join)((0, import_node_os2.homedir)(), ".ade");
+var CACHE_FILE = (0, import_node_path30.join)(CACHE_DIR, "models-dev-cache.json");
 var modelDataMap = /* @__PURE__ */ new Map();
 var refreshTimer = null;
 var initialized = false;
@@ -64289,7 +64287,16 @@ function createAiIntegrationService(args) {
       tools: args2.taskType === "mission_planning" ? "planning" : args2.permissionMode === "read-only" ? "none" : "coding",
       timeout: args2.timeoutMs,
       jsonSchema: args2.jsonSchema,
-      reasoningEffort: args2.reasoningEffort
+      reasoningEffort: args2.reasoningEffort,
+      ...args2.projectId ? { projectId: args2.projectId } : {},
+      ...args2.runId ? { runId: args2.runId } : {},
+      ...args2.stepId ? { stepId: args2.stepId } : {},
+      ...args2.attemptId ? { attemptId: args2.attemptId } : {},
+      ...args2.projectId && args2.runId && args2.stepId && args2.attemptId ? { db, enableCompaction: true } : {},
+      ...args2.memoryService ? { memoryService: args2.memoryService } : {},
+      ...args2.memoryService && args2.runId ? {
+        addSharedFact: args2.memoryService.addSharedFact.bind(args2.memoryService)
+      } : {}
     })) {
       if (event.type === "text") text += event.content;
       if (event.type === "structured_output") structuredOutput = event.data;
@@ -64427,6 +64434,7 @@ function createAiIntegrationService(args) {
         return statusCache.result;
       }
       const auth = await detectAuth();
+      const available = getAvailableModels(auth);
       const cliStatuses = getCachedCliAuthStatuses();
       const availability = toCliAvailability(auth);
       const result = {
@@ -64436,7 +64444,8 @@ function createAiIntegrationService(args) {
           claude: availability.claude ? await listModels("claude") : [],
           codex: availability.codex ? await listModels("codex") : CODEX_FALLBACK_MODELS
         },
-        detectedAuth: redactDetectedAuth(auth, cliStatuses)
+        detectedAuth: redactDetectedAuth(auth, cliStatuses),
+        availableModelIds: available.map((descriptor) => descriptor.id)
       };
       statusCache = { result, cachedAt: Date.now() };
       return result;
@@ -64505,20 +64514,6 @@ function createAiIntegrationService(args) {
         model: args2.model,
         jsonSchema: args2.jsonSchema,
         permissionMode: "read-only",
-        oneShot: true
-      });
-    },
-    async planMission(args2) {
-      return await executeTask({
-        feature: "mission_planning",
-        taskType: "mission_planning",
-        prompt: args2.prompt,
-        cwd: args2.cwd,
-        provider: args2.provider,
-        timeoutMs: args2.timeoutMs,
-        model: args2.model,
-        jsonSchema: args2.jsonSchema,
-        permissionMode: args2.permissionMode ?? "read-only",
         oneShot: true
       });
     },
@@ -64628,19 +64623,19 @@ function createEventBuffer(capacity = 1e4) {
   };
 }
 function ensureAdePaths(projectRoot) {
-  const adeDir = import_node_path30.default.join(projectRoot, ".ade");
-  const logsDir = import_node_path30.default.join(adeDir, "logs");
-  const processLogsDir = import_node_path30.default.join(logsDir, "processes");
-  const testLogsDir = import_node_path30.default.join(logsDir, "tests");
-  const transcriptsDir = import_node_path30.default.join(adeDir, "transcripts");
-  const worktreesDir = import_node_path30.default.join(adeDir, "worktrees");
-  const packsDir = import_node_path30.default.join(adeDir, "packs");
-  const dbPath = import_node_path30.default.join(adeDir, "ade.db");
-  import_node_fs29.default.mkdirSync(processLogsDir, { recursive: true });
-  import_node_fs29.default.mkdirSync(testLogsDir, { recursive: true });
-  import_node_fs29.default.mkdirSync(transcriptsDir, { recursive: true });
-  import_node_fs29.default.mkdirSync(worktreesDir, { recursive: true });
-  import_node_fs29.default.mkdirSync(packsDir, { recursive: true });
+  const adeDir = import_node_path31.default.join(projectRoot, ".ade");
+  const logsDir = import_node_path31.default.join(adeDir, "logs");
+  const processLogsDir = import_node_path31.default.join(logsDir, "processes");
+  const testLogsDir = import_node_path31.default.join(logsDir, "tests");
+  const transcriptsDir = import_node_path31.default.join(adeDir, "transcripts");
+  const worktreesDir = import_node_path31.default.join(adeDir, "worktrees");
+  const packsDir = import_node_path31.default.join(adeDir, "packs");
+  const dbPath = import_node_path31.default.join(adeDir, "ade.db");
+  import_node_fs30.default.mkdirSync(processLogsDir, { recursive: true });
+  import_node_fs30.default.mkdirSync(testLogsDir, { recursive: true });
+  import_node_fs30.default.mkdirSync(transcriptsDir, { recursive: true });
+  import_node_fs30.default.mkdirSync(worktreesDir, { recursive: true });
+  import_node_fs30.default.mkdirSync(packsDir, { recursive: true });
   return {
     adeDir,
     logsDir,
@@ -64653,13 +64648,13 @@ function ensureAdePaths(projectRoot) {
   };
 }
 async function createAdeMcpRuntime(projectRootInput) {
-  const projectRoot = import_node_path30.default.resolve(projectRootInput);
-  if (!import_node_fs29.default.existsSync(projectRoot) || !import_node_fs29.default.statSync(projectRoot).isDirectory()) {
+  const projectRoot = import_node_path31.default.resolve(projectRootInput);
+  if (!import_node_fs30.default.existsSync(projectRoot) || !import_node_fs30.default.statSync(projectRoot).isDirectory()) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
   }
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
-  const logger = createFileLogger(import_node_path30.default.join(paths.logsDir, "mcp-server.jsonl"));
+  const logger = createFileLogger(import_node_path31.default.join(paths.logsDir, "mcp-server.jsonl"));
   const db = await openKvDb(paths.dbPath, logger);
   const project = toProjectInfo(projectRoot, baseRef);
   const { projectId } = upsertProjectRow({
@@ -64708,9 +64703,8 @@ async function createAdeMcpRuntime(projectRootInput) {
     projectRoot,
     laneService,
     projectConfigService,
-    packService,
     operationService,
-    conflictPacksDir: import_node_path30.default.join(paths.packsDir, "conflicts"),
+    conflictPacksDir: import_node_path31.default.join(paths.packsDir, "conflicts"),
     onEvent: () => {
     }
   });
@@ -64774,7 +64768,12 @@ async function createAdeMcpRuntime(projectRootInput) {
     ON orchestrator_evaluations(run_id, evaluated_at)
   `);
   const eventBuffer = createEventBuffer();
-  const memoryService = createMemoryService(db);
+  const memoryService = createUnifiedMemoryService(db);
+  const ctoStateService = createCtoStateService({
+    db,
+    projectId,
+    adeDir: paths.adeDir
+  });
   const orchestratorService = createOrchestratorService({
     db,
     projectId,
@@ -64850,6 +64849,7 @@ async function createAdeMcpRuntime(projectRootInput) {
     ptyService,
     testService,
     memoryService,
+    ctoStateService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
@@ -65181,8 +65181,8 @@ function startJsonRpcServer(handler, transport) {
 
 // src/mcpServer.ts
 var import_node_crypto23 = require("crypto");
-var import_node_fs30 = __toESM(require("fs"), 1);
-var import_node_path31 = __toESM(require("path"), 1);
+var import_node_fs31 = __toESM(require("fs"), 1);
+var import_node_path32 = __toESM(require("path"), 1);
 var DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 var DEFAULT_PTY_COLS = 120;
 var DEFAULT_PTY_ROWS = 36;
@@ -65344,7 +65344,49 @@ var TOOL_SPECS = [
       properties: {
         content: { type: "string", minLength: 1 },
         category: { type: "string", enum: ["fact", "preference", "pattern", "decision", "gotcha"] },
-        importance: { type: "string", enum: ["low", "medium", "high"], default: "medium" }
+        importance: { type: "string", enum: ["low", "medium", "high"], default: "medium" },
+        scope: { type: "string", enum: ["project", "mission", "agent"] }
+      }
+    }
+  },
+  {
+    name: "memory_update_core",
+    description: "Update CTO core memory Tier-1 fields (project summary, conventions, preferences, focus, notes).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        projectSummary: { type: "string" },
+        criticalConventions: { type: "array", items: { type: "string" } },
+        userPreferences: { type: "array", items: { type: "string" } },
+        activeFocus: { type: "array", items: { type: "string" } },
+        notes: { type: "array", items: { type: "string" } }
+      }
+    }
+  },
+  {
+    name: "reflection_add",
+    description: "Record a structured reflection entry for mission introspection and retrospective synthesis.",
+    inputSchema: {
+      type: "object",
+      required: ["signalType", "observation", "agentRole", "phase", "recommendation", "context", "occurredAt"],
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string" },
+        runId: { type: "string" },
+        stepId: { type: "string" },
+        attemptId: { type: "string" },
+        agentRole: { type: "string", minLength: 1 },
+        phase: { type: "string", minLength: 1 },
+        signalType: { type: "string", enum: ["wish", "frustration", "idea", "pattern", "limitation"] },
+        observation: { type: "string", minLength: 1 },
+        recommendation: { type: "string", minLength: 1 },
+        context: { type: "string", minLength: 1 },
+        occurredAt: {
+          type: "string",
+          minLength: 1,
+          pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$"
+        }
       }
     }
   },
@@ -65357,7 +65399,21 @@ var TOOL_SPECS = [
       additionalProperties: false,
       properties: {
         query: { type: "string", minLength: 1 },
+        scope: { type: "string", enum: ["project", "mission", "agent"] },
+        status: { type: "string", enum: ["promoted", "candidate", "archived", "all"], default: "promoted" },
         limit: { type: "number", minimum: 1, maximum: 50, default: 5 }
+      }
+    }
+  },
+  {
+    name: "memory_pin",
+    description: "Pin a memory entry into always-available Tier-1 context.",
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      additionalProperties: false,
+      properties: {
+        id: { type: "string", minLength: 1 }
       }
     }
   },
@@ -65594,20 +65650,6 @@ var TOOL_SPECS = [
     }
   },
   {
-    name: "approve_plan",
-    description: "Approve or reject a mission's execution plan.",
-    inputSchema: {
-      type: "object",
-      required: ["missionId", "approved"],
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", minLength: 1 },
-        approved: { type: "boolean" },
-        feedback: { type: "string" }
-      }
-    }
-  },
-  {
     name: "resolve_intervention",
     description: "Resolve an open mission intervention.",
     inputSchema: {
@@ -65693,6 +65735,42 @@ var TOOL_SPECS = [
         runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." },
         limit: { type: "number", minimum: 1, maximum: 1e3 },
         stepId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "list_retrospectives",
+    description: "List generated retrospectives. When called by a worker, missionId defaults to the worker mission.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", description: "Mission ID filter. Auto-populated from caller context if omitted." },
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      }
+    }
+  },
+  {
+    name: "list_reflection_trends",
+    description: "List cross-mission reflection trend entries linked to source retrospectives.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        missionId: { type: "string", description: "Mission ID filter. Auto-populated from caller context if omitted." },
+        runId: { type: "string", description: "Run ID filter. Auto-populated from caller context if omitted." },
+        limit: { type: "number", minimum: 1, maximum: 500 }
+      }
+    }
+  },
+  {
+    name: "list_reflection_pattern_stats",
+    description: "List reflection pattern repetition stats and candidate-promotion linkage.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        limit: { type: "number", minimum: 1, maximum: 500 }
       }
     }
   },
@@ -65879,6 +65957,9 @@ var MUTATION_TOOLS = /* @__PURE__ */ new Set([
   "rebase_lane",
   "land_queue_next",
   "memory_add",
+  "memory_pin",
+  "memory_update_core",
+  "reflection_add",
   "spawn_agent"
 ]);
 var ORCHESTRATION_TOOLS = /* @__PURE__ */ new Set([
@@ -65888,7 +65969,6 @@ var ORCHESTRATION_TOOLS = /* @__PURE__ */ new Set([
   "resume_mission",
   "cancel_mission",
   "steer_mission",
-  "approve_plan",
   "resolve_intervention"
 ]);
 var OBSERVATION_TOOLS = /* @__PURE__ */ new Set([
@@ -65898,6 +65978,9 @@ var OBSERVATION_TOOLS = /* @__PURE__ */ new Set([
   "get_step_output",
   "get_worker_states",
   "get_timeline",
+  "list_retrospectives",
+  "list_reflection_trends",
+  "list_reflection_pattern_stats",
   "get_mission_metrics",
   "get_final_diff",
   "get_pending_messages"
@@ -65909,7 +65992,7 @@ var EVALUATION_READ_TOOLS = /* @__PURE__ */ new Set([
   "list_evaluations",
   "get_evaluation_report"
 ]);
-function nowIso4() {
+function nowIso5() {
   return (/* @__PURE__ */ new Date()).toISOString();
 }
 function sleep(ms) {
@@ -65961,6 +66044,33 @@ function parseMemoryToolImportance(value) {
     return importance;
   }
   throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "importance must be one of: low, medium, high");
+}
+function parseMemoryToolScope(value, fallback) {
+  const scope = asOptionalTrimmedString(value) ?? fallback;
+  if (scope === "project" || scope === "mission" || scope === "agent") {
+    return scope;
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "scope must be one of: project, mission, agent");
+}
+function mapMemoryToolScopeToServiceScope(scope) {
+  if (scope === "agent") return "user";
+  return scope;
+}
+function resolveMemoryToolScopeOwnerId(scope, callerCtx) {
+  if (scope === "mission") {
+    return callerCtx.runId ?? null;
+  }
+  if (scope === "agent") {
+    return callerCtx.callerId ?? callerCtx.attemptId ?? null;
+  }
+  return null;
+}
+function parseMemoryToolSearchStatus(value) {
+  const status = asOptionalTrimmedString(value) ?? "promoted";
+  if (status === "promoted" || status === "candidate" || status === "archived" || status === "all") {
+    return status;
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "status must be one of: promoted, candidate, archived, all");
 }
 function mapMemoryCategoryToSharedFactType(category) {
   if (category === "pattern") return "api_pattern";
@@ -66057,17 +66167,17 @@ function resolveSpawnContextFile(args) {
     return { contextFilePath: null, contextDigest: null, contextBytes: null, approxTokens };
   }
   if (contextFilePathRaw.length) {
-    if (import_node_path31.default.isAbsolute(contextFilePathRaw)) {
+    if (import_node_path32.default.isAbsolute(contextFilePathRaw)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be a relative path within the project directory");
     }
-    const abs = import_node_path31.default.resolve(args.runtime.projectRoot, contextFilePathRaw);
-    if (!abs.startsWith(args.runtime.projectRoot + import_node_path31.default.sep) && abs !== args.runtime.projectRoot) {
+    const abs = import_node_path32.default.resolve(args.runtime.projectRoot, contextFilePathRaw);
+    if (!abs.startsWith(args.runtime.projectRoot + import_node_path32.default.sep) && abs !== args.runtime.projectRoot) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be within the project directory");
     }
-    if (!import_node_fs30.default.existsSync(abs)) {
+    if (!import_node_fs31.default.existsSync(abs)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `contextFilePath does not exist: ${contextFilePathRaw}`);
     }
-    const text = import_node_fs30.default.readFileSync(abs, "utf8");
+    const text = import_node_fs31.default.readFileSync(abs, "utf8");
     return {
       contextFilePath: abs,
       contextDigest: sha256Text(text),
@@ -66075,15 +66185,15 @@ function resolveSpawnContextFile(args) {
       approxTokens
     };
   }
-  const baseDir = import_node_path31.default.join(args.runtime.projectRoot, ".ade", "orchestrator", "mcp-context");
+  const baseDir = import_node_path32.default.join(args.runtime.projectRoot, ".ade", "orchestrator", "mcp-context");
   const runSegment = args.runId ?? "standalone";
-  const dir = import_node_path31.default.join(baseDir, runSegment);
-  import_node_fs30.default.mkdirSync(dir, { recursive: true });
+  const dir = import_node_path32.default.join(baseDir, runSegment);
+  import_node_fs31.default.mkdirSync(dir, { recursive: true });
   const filename = `${Date.now()}-${(0, import_node_crypto23.randomUUID)()}.json`;
-  const contextFilePath = import_node_path31.default.join(dir, filename);
+  const contextFilePath = import_node_path32.default.join(dir, filename);
   const payload = {
     schema: "ade.mcp.spawnAgentContext.v1",
-    generatedAt: nowIso4(),
+    generatedAt: nowIso5(),
     mission: {
       runId: args.runId,
       stepId: args.stepId,
@@ -66120,7 +66230,7 @@ function resolveSpawnContextFile(args) {
   };
   const serialized = `${JSON.stringify(payload, null, 2)}
 `;
-  import_node_fs30.default.writeFileSync(contextFilePath, serialized, "utf8");
+  import_node_fs31.default.writeFileSync(contextFilePath, serialized, "utf8");
   return {
     contextFilePath,
     contextDigest: sha256Text(serialized),
@@ -66471,19 +66581,23 @@ function getCoordinatorToolSet(args) {
     db: args.runtime.db,
     projectRoot: args.runtime.projectRoot,
     missionLaneId: missionLaneId ?? void 0,
+    onRunFinalize: ({ runId }) => {
+      args.runtime.aiOrchestratorService.finalizeRun({ runId, force: true });
+    },
     onDagMutation: (event) => {
       args.runtime.eventBuffer.push({
-        timestamp: nowIso4(),
+        timestamp: nowIso5(),
         category: "dag_mutation",
         payload: event
       });
     }
   });
+  const normalizedToolSet = toolSet;
   runtimeCache.set(args.runId, {
     missionId: args.missionId,
-    tools: toolSet
+    tools: normalizedToolSet
   });
-  return toolSet;
+  return normalizedToolSet;
 }
 function getTeamRuntimeContext(runtime) {
   return {
@@ -66609,7 +66723,7 @@ function ensureNativeTeammateRegistration(args) {
   }
   const parentMetadata = safeObject(parentStep.metadata);
   const inferredModel = asOptionalTrimmedString(parentMetadata.modelId) ?? "claude-native";
-  const now = nowIso4();
+  const now = nowIso5();
   if (existing) {
     updateTeamMemberStatus(getTeamRuntimeContext(args.runtime), nativeMemberId, {
       status: "active"
@@ -66668,7 +66782,7 @@ async function postProcessCoordinatorToolResult(args) {
     const nextAction = asOptionalTrimmedString(report.nextAction) ?? "status update";
     const blockers = Array.isArray(report.blockers) ? report.blockers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
     args.runtime.eventBuffer.push({
-      timestamp: nowIso4(),
+      timestamp: nowIso5(),
       category: "runtime",
       payload: {
         type: "worker_status_reported",
@@ -66930,13 +67044,17 @@ async function runTool(args) {
     const content = assertNonEmptyString(toolArgs.content, "content");
     const category = parseMemoryToolCategory(toolArgs.category);
     const importance = parseMemoryToolImportance(toolArgs.importance);
+    const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
+    const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
+    const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
     let memoryWritten = false;
     let memoryId = null;
     let memoryError = null;
     try {
       const memory = runtime.memoryService.addMemory({
         projectId: runtime.projectId,
-        scope: "project",
+        scope: serviceScope,
+        ...scopeOwnerId ? { scopeOwnerId } : {},
         category,
         content,
         importance,
@@ -66947,7 +67065,7 @@ async function runTool(args) {
     } catch (error48) {
       memoryError = error48 instanceof Error ? error48.message : String(error48);
     }
-    const sharedFactAttempted = Boolean(callerCtx.runId);
+    const sharedFactAttempted = Boolean(callerCtx.runId) && requestedScope === "mission";
     const sharedFactType = mapMemoryCategoryToSharedFactType(category);
     let sharedFactWritten = false;
     let sharedFactId = null;
@@ -66970,6 +67088,7 @@ async function runTool(args) {
       content,
       category,
       importance,
+      scope: requestedScope,
       memory: {
         written: memoryWritten,
         id: memoryId,
@@ -66989,21 +67108,123 @@ async function runTool(args) {
       wroteAny: memoryWritten || sharedFactWritten
     };
   }
+  if (name === "memory_update_core") {
+    ensureMemoryAddAllowed(session);
+    const patch = {};
+    if (typeof toolArgs.projectSummary === "string") {
+      patch.projectSummary = toolArgs.projectSummary;
+    }
+    if (Array.isArray(toolArgs.criticalConventions)) {
+      patch.criticalConventions = toolArgs.criticalConventions.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+    }
+    if (Array.isArray(toolArgs.userPreferences)) {
+      patch.userPreferences = toolArgs.userPreferences.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+    }
+    if (Array.isArray(toolArgs.activeFocus)) {
+      patch.activeFocus = toolArgs.activeFocus.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+    }
+    if (Array.isArray(toolArgs.notes)) {
+      patch.notes = toolArgs.notes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+    }
+    const hasPatch = Object.values(patch).some((value) => value !== void 0);
+    if (!hasPatch) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "memory_update_core requires at least one patch field.");
+    }
+    const snapshot = runtime.ctoStateService.updateCoreMemory(patch);
+    return {
+      updated: true,
+      version: snapshot.coreMemory.version,
+      updatedAt: snapshot.coreMemory.updatedAt,
+      coreMemory: snapshot.coreMemory
+    };
+  }
+  if (name === "reflection_add") {
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId;
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
+    const signalType = assertNonEmptyString(toolArgs.signalType, "signalType");
+    const observation = assertNonEmptyString(toolArgs.observation, "observation");
+    const agentRole = assertNonEmptyString(toolArgs.agentRole, "agentRole");
+    const phase = assertNonEmptyString(toolArgs.phase, "phase");
+    if (!missionId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "missionId is required (either argument or initialize identity).");
+    }
+    if (!runId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (either argument or initialize identity).");
+    }
+    let reflection;
+    try {
+      reflection = runtime.orchestratorService.addReflection({
+        missionId,
+        runId,
+        stepId: asOptionalTrimmedString(toolArgs.stepId) ?? callerCtx.stepId,
+        attemptId: asOptionalTrimmedString(toolArgs.attemptId) ?? callerCtx.attemptId,
+        signalType,
+        observation,
+        recommendation: assertNonEmptyString(toolArgs.recommendation, "recommendation"),
+        context: assertNonEmptyString(toolArgs.context, "context"),
+        agentRole,
+        phase,
+        occurredAt: assertNonEmptyString(toolArgs.occurredAt, "occurredAt")
+      });
+    } catch (error48) {
+      if (error48 instanceof ReflectionValidationError) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `Invalid reflection input [${error48.code}]: ${error48.message}`,
+          {
+            code: error48.code,
+            ...error48.details ? { details: error48.details } : {}
+          }
+        );
+      }
+      throw error48;
+    }
+    return { reflection };
+  }
   if (name === "memory_search") {
     ensureMemorySearchAllowed(session);
     const query = assertNonEmptyString(toolArgs.query, "query");
+    const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
+    const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
+    const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
+    const status = parseMemoryToolSearchStatus(toolArgs.status);
+    const statusFilter = status === "all" ? ["promoted", "candidate", "archived"] : status;
     const limit = Math.max(1, Math.min(50, Math.floor(asNumber2(toolArgs.limit, 5))));
-    const memories = runtime.memoryService.searchMemories(query, runtime.projectId, void 0, limit);
+    const memories = runtime.memoryService.searchMemories(
+      query,
+      runtime.projectId,
+      serviceScope,
+      limit,
+      statusFilter,
+      scopeOwnerId
+    );
     return {
       query,
+      scope: requestedScope,
+      status,
       count: memories.length,
       memories: memories.map((memory) => ({
         id: memory.id,
+        scope: memory.scope,
+        status: memory.status,
         category: memory.category,
         content: memory.content,
         importance: memory.importance,
-        createdAt: memory.createdAt
+        confidence: memory.confidence,
+        createdAt: memory.createdAt,
+        promotedAt: memory.promotedAt,
+        sourceRunId: memory.sourceRunId
       }))
+    };
+  }
+  if (name === "memory_pin") {
+    ensureMemoryAddAllowed(session);
+    const id = assertNonEmptyString(toolArgs.id, "id");
+    runtime.memoryService.pinMemory(id);
+    return {
+      id,
+      pinned: true,
+      tier: "pinned"
     };
   }
   if (name === "run_tests") {
@@ -67261,13 +67482,13 @@ async function runTool(args) {
       const claudePermission = permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : "acceptEdits";
       commandParts.push("--permission-mode", claudePermission);
       if (runId && attemptId) {
-        const mcpConfigDir = import_node_path31.default.join(runtime.projectRoot, ".ade", "orchestrator", "mcp-configs");
-        import_node_fs30.default.mkdirSync(mcpConfigDir, { recursive: true });
-        const mcpConfigPath = import_node_path31.default.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
-        const builtEntry = import_node_path31.default.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
-        const srcEntry = import_node_path31.default.join(runtime.projectRoot, "apps", "mcp-server", "src", "index.ts");
-        const mcpCmd = import_node_fs30.default.existsSync(builtEntry) ? "node" : "npx";
-        const mcpArgs = import_node_fs30.default.existsSync(builtEntry) ? [builtEntry, "--project-root", runtime.projectRoot] : ["tsx", srcEntry, "--project-root", runtime.projectRoot];
+        const mcpConfigDir = import_node_path32.default.join(runtime.projectRoot, ".ade", "orchestrator", "mcp-configs");
+        import_node_fs31.default.mkdirSync(mcpConfigDir, { recursive: true });
+        const mcpConfigPath = import_node_path32.default.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
+        const builtEntry = import_node_path32.default.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
+        const srcEntry = import_node_path32.default.join(runtime.projectRoot, "apps", "mcp-server", "src", "index.ts");
+        const mcpCmd = import_node_fs31.default.existsSync(builtEntry) ? "node" : "npx";
+        const mcpArgs = import_node_fs31.default.existsSync(builtEntry) ? [builtEntry, "--project-root", runtime.projectRoot] : ["tsx", srcEntry, "--project-root", runtime.projectRoot];
         const mcpConfig = {
           mcpServers: {
             ade: {
@@ -67284,7 +67505,7 @@ async function runTool(args) {
             }
           }
         };
-        import_node_fs30.default.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
+        import_node_fs31.default.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
         commandParts.push("--mcp-config", shellEscapeArg2(mcpConfigPath));
       }
     }
@@ -67340,7 +67561,7 @@ async function runTool(args) {
     if (executorPolicy) createArgs.executionPolicy = executorPolicy;
     const mission = runtime.missionService.create(createArgs);
     runtime.eventBuffer.push({
-      timestamp: nowIso4(),
+      timestamp: nowIso5(),
       category: "mission",
       payload: { type: "mission_created", missionId: mission.id }
     });
@@ -67358,7 +67579,7 @@ async function runTool(args) {
     const result = await runtime.aiOrchestratorService.startMissionRun(startArgs);
     const runId = result.started?.run.id ?? null;
     runtime.eventBuffer.push({
-      timestamp: nowIso4(),
+      timestamp: nowIso5(),
       category: "mission",
       payload: { type: "mission_started", missionId, runId }
     });
@@ -67402,33 +67623,6 @@ async function runTool(args) {
     });
     return result;
   }
-  if (name === "approve_plan") {
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
-    const approved = toolArgs.approved === true;
-    const feedback = asOptionalTrimmedString(toolArgs.feedback);
-    if (!approved) {
-      const intervention = runtime.missionService.addIntervention({
-        missionId,
-        interventionType: "manual_input",
-        title: "Plan rejected",
-        body: feedback ?? "Plan was rejected by evaluator."
-      });
-      const runs = runtime.orchestratorService.listRuns({ missionId, status: "active", limit: 1 });
-      let cancelledRunId = null;
-      if (runs.length > 0) {
-        try {
-          await runtime.aiOrchestratorService.cancelRunGracefully({ runId: runs[0].id, reason: "Plan rejected" });
-          cancelledRunId = runs[0].id;
-        } catch {
-        }
-      }
-      return { approved: false, intervention, cancelledRunId };
-    }
-    const result = await runtime.aiOrchestratorService.approveMissionPlan({
-      missionId
-    });
-    return { approved: true, ...result };
-  }
   if (name === "resolve_intervention") {
     const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
     const interventionId = assertNonEmptyString(toolArgs.interventionId, "interventionId");
@@ -67453,6 +67647,31 @@ async function runTool(args) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Mission not found: ${missionId}`);
     }
     return { mission };
+  }
+  if (name === "list_retrospectives") {
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId ?? void 0;
+    const limit = asNumber2(toolArgs.limit, 20);
+    const retrospectives = runtime.orchestratorService.listRetrospectives({
+      ...missionId ? { missionId } : {},
+      limit
+    });
+    return { retrospectives };
+  }
+  if (name === "list_reflection_trends") {
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId ?? void 0;
+    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId ?? void 0;
+    const limit = asNumber2(toolArgs.limit, 100);
+    const trends = runtime.orchestratorService.listRetrospectiveTrends({
+      ...missionId ? { missionId } : {},
+      ...runId ? { runId } : {},
+      limit
+    });
+    return { trends };
+  }
+  if (name === "list_reflection_pattern_stats") {
+    const limit = asNumber2(toolArgs.limit, 100);
+    const patternStats = runtime.orchestratorService.listRetrospectivePatternStats({ limit });
+    return { patternStats };
   }
   if (name === "get_run_graph") {
     const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
@@ -67617,7 +67836,7 @@ async function runTool(args) {
     const improvements = Array.isArray(toolArgs.improvements) ? toolArgs.improvements : [];
     const metadata = isRecord4(toolArgs.metadata) ? toolArgs.metadata : {};
     const id = (0, import_node_crypto23.randomUUID)();
-    const evaluatedAt = nowIso4();
+    const evaluatedAt = nowIso5();
     runtime.db.run(
       `INSERT INTO orchestrator_evaluations (id, project_id, run_id, mission_id, evaluator_id, scores_json, issues_json, summary, improvements_json, metadata_json, evaluated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -67974,7 +68193,7 @@ function createMcpRequestHandler(args) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Server must be initialized first.");
     }
     if (method === "ping") {
-      return { pong: true, at: nowIso4() };
+      return { pong: true, at: nowIso5() };
     }
     if (method === "tools/list") {
       return {
@@ -68059,13 +68278,13 @@ function createStdioTransport() {
 // src/index.ts
 function resolveProjectRoot() {
   const fromEnv = process.env.ADE_PROJECT_ROOT?.trim();
-  if (fromEnv) return import_node_path32.default.resolve(fromEnv);
+  if (fromEnv) return import_node_path33.default.resolve(fromEnv);
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 1) {
     const value = args[i];
     if (value === "--project-root") {
       const next = args[i + 1];
-      if (next?.trim()) return import_node_path32.default.resolve(next.trim());
+      if (next?.trim()) return import_node_path33.default.resolve(next.trim());
     }
   }
   return process.cwd();
@@ -68251,8 +68470,8 @@ async function startHeadless(projectRoot) {
 }
 async function main() {
   const projectRoot = resolveProjectRoot();
-  const socketPath = import_node_path32.default.join(projectRoot, ".ade", "mcp.sock");
-  if (import_node_fs31.default.existsSync(socketPath)) {
+  const socketPath = import_node_path33.default.join(projectRoot, ".ade", "mcp.sock");
+  if (import_node_fs32.default.existsSync(socketPath)) {
     const socket = import_node_net2.default.createConnection(socketPath);
     socket.on("error", (err) => {
       process.stderr.write(`[ade-mcp] Socket connect failed, falling back to headless: ${err.message}

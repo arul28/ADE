@@ -4,6 +4,7 @@ import type { OrchestratorStep, OrchestratorAttempt, OrchestratorClaim, DagMutat
 import { cn } from "../ui/cn";
 import { relativeWhen, formatTime } from "../../lib/format";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { isDisplayOnlyTaskStep } from "./missionHelpers";
 
 type Props = {
   steps: OrchestratorStep[];
@@ -530,6 +531,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
             const isSelected = selectedStepId === node.step.id;
             const phaseKind = getPhaseKind(node.step).toLowerCase();
             const phaseTint = PHASE_TINT[phaseKind] ?? "transparent";
+            const isPlanNode = isDisplayOnlyTaskStep(node.step);
             const isMergeNode = MERGE_NODE_KINDS.has(phaseKind);
             const isMilestoneNode = phaseKind === "milestone";
             const isGateNode = phaseKind === "review" || phaseKind === "validation";
@@ -593,28 +595,24 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                     transform: isHovered ? 'translateZ(10px) scale(1.05)' : 'scale(1)'
                   }}
                 >
-                {/* Running: spinning ring (thin blue border, 4s rotation) */}
+                {/* Running: subtle live outline */}
                 {isRunning && (
                   isMilestoneNode ? (
                     <polygon
                       points={`${nodeW / 2},-3 ${nodeW + 3},${NODE_H / 2} ${nodeW / 2},${NODE_H + 3} -3,${NODE_H / 2}`}
                       fill="none"
-                      stroke="#3b82f6"
+                      stroke={statusColor}
                       strokeWidth={1.5}
-                      strokeDasharray="12 8"
+                      strokeDasharray={isPlanNode ? "4 4" : "8 6"}
                       opacity={0.7}
                     >
-                      <animateTransform attributeName="transform" type="rotate"
-                        from={`0 ${nodeW / 2} ${NODE_H / 2}`} to={`360 ${nodeW / 2} ${NODE_H / 2}`}
-                        dur="4s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.75;0.25;0.75" dur="1.6s" repeatCount="indefinite" />
                     </polygon>
                   ) : (
                     <rect x={-3} y={-3} width={nodeW + 6} height={NODE_H + 6} rx={0}
-                      fill="none" stroke="#3b82f6" strokeWidth={1.5}
-                      strokeDasharray="12 8" opacity={0.7}>
-                      <animateTransform attributeName="transform" type="rotate"
-                        from={`0 ${nodeW / 2} ${NODE_H / 2}`} to={`360 ${nodeW / 2} ${NODE_H / 2}`}
-                        dur="4s" repeatCount="indefinite" />
+                      fill="none" stroke={statusColor} strokeWidth={1.5}
+                      strokeDasharray={isPlanNode ? "4 4" : "8 6"} opacity={0.7}>
+                      <animate attributeName="opacity" values="0.75;0.25;0.75" dur="1.6s" repeatCount="indefinite" />
                     </rect>
                   )
                 )}
@@ -706,6 +704,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                     fill={isHovered ? COLORS.hoverBg : COLORS.cardBg}
                     stroke={statusColor}
                     strokeWidth={isHovered ? 2 : 1.5}
+                    strokeDasharray={isPlanNode ? "5 3" : undefined}
                     opacity={0.9}
                   />
                 )}
@@ -757,6 +756,23 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                 >
                   {node.step.status}
                 </text>
+
+                {isPlanNode && (
+                  <g transform="translate(8, 8)">
+                    <rect width={28} height={12} rx={0} fill={`${COLORS.warning}18`} stroke={`${COLORS.warning}55`} />
+                    <text
+                      x={14}
+                      y={8.5}
+                      textAnchor="middle"
+                      fill={COLORS.warning}
+                      fontSize={8}
+                      fontWeight={700}
+                      fontFamily="JetBrains Mono, monospace"
+                    >
+                      PLAN
+                    </text>
+                  </g>
+                )}
 
                 {/* Completed: animated checkmark SVG */}
                 {isSucceeded && (

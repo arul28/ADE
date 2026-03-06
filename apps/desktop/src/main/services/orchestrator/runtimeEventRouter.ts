@@ -1,8 +1,8 @@
 /**
  * runtimeEventRouter.ts
  *
- * Event dispatch: onOrchestratorRuntimeEvent, onSessionRuntimeSignal,
- * onAgentChatEvent, updateWorkerStateFromEvent, buildRunStateSnapshot.
+ * Event dispatch helpers: onSessionRuntimeSignal, onAgentChatEvent,
+ * buildRunStateSnapshot, routeEventToCoordinator.
  *
  * Extracted from aiOrchestratorService.ts — pure refactor, no behavior changes.
  */
@@ -10,9 +10,6 @@
 import type {
   OrchestratorContext,
   SessionRuntimeSignal,
-  PlannerAgentSessionState,
-  PlannerTurnCompletionStatus,
-  OrchestratorChatMessage,
   AgentChatEventEnvelope,
   OrchestratorRuntimeEvent,
   OrchestratorRunGraph,
@@ -67,80 +64,15 @@ export function onSessionRuntimeSignal(
 }
 
 /**
- * Handle a planner agent chat event — returns true if consumed.
- */
-export function handlePlannerAgentChatEvent(
-  ctx: OrchestratorContext,
-  envelope: AgentChatEventEnvelope,
-  deps: {
-    appendPlannerTextDelta: (state: PlannerAgentSessionState, delta: string) => void;
-    completePlannerTurn: (state: PlannerAgentSessionState, status: PlannerTurnCompletionStatus, error: string | null) => void;
-    appendPlannerWorkerMessage: (state: PlannerAgentSessionState, content: string, metadata?: Record<string, unknown> | null) => OrchestratorChatMessage | null;
-  }
-): boolean {
-  const sessionId = String(envelope.sessionId ?? "").trim();
-  if (!sessionId.length) return false;
-  const state = ctx.plannerSessionBySessionId.get(sessionId);
-  if (!state) return false;
-
-  state.lastEventAt = nowIso();
-  const event = envelope.event;
-
-  switch (event.type) {
-    case "text":
-      if (typeof event.text === "string" && event.text.length > 0) {
-        deps.appendPlannerTextDelta(state, event.text);
-      }
-      break;
-
-    case "status":
-      if (event.turnStatus === "completed") {
-        deps.completePlannerTurn(state, "completed", null);
-      } else if (event.turnStatus === "failed" || event.turnStatus === "interrupted") {
-        const status = event.turnStatus === "failed" ? "failed" : "interrupted";
-        const message = typeof event.message === "string" && event.message.trim().length
-          ? event.message.trim()
-          : `Planner turn ended with status '${event.turnStatus}'.`;
-        deps.completePlannerTurn(state, status, message);
-      }
-      break;
-
-    case "error": {
-      const rawMsg = String(event.message ?? "Planner session reported an error.").trim();
-      deps.completePlannerTurn(state, "failed", rawMsg);
-      break;
-    }
-
-    case "done": {
-      const status: PlannerTurnCompletionStatus =
-        event.status === "completed" ? "completed"
-          : event.status === "failed" ? "failed"
-            : "interrupted";
-      const errorMsg = status === "failed" ? "Planner session ended with failure." : null;
-      deps.completePlannerTurn(state, status, errorMsg);
-      break;
-    }
-
-    default:
-      break;
-  }
-
-  return true;
-}
-
-/**
- * Handle a generic agent chat event (non-planner).
+ * Handle a generic agent chat event.
  */
 export function onAgentChatEvent(
   ctx: OrchestratorContext,
   envelope: AgentChatEventEnvelope,
   deps: {
-    handlePlannerAgentChatEvent: (envelope: AgentChatEventEnvelope) => boolean;
     replayQueuedWorkerMessages: (args: { reason: string; missionId?: string | null }) => Promise<void>;
   }
 ): void {
-  if (deps.handlePlannerAgentChatEvent(envelope)) return;
-
   const sessionId = String(envelope.sessionId ?? "").trim();
   if (!sessionId.length) return;
 
@@ -219,7 +151,7 @@ export function pruneSessionRuntimeSignals(ctx: OrchestratorContext): void {
 // ── Coordinator Agent Event Routing ──────────────────────────────
 
 import type { CoordinatorAgent } from "./coordinatorAgent";
-import { formatRuntimeEvent } from "./coordinatorEventFormatter";
+import { formatRuntimeEvent, formatStepCompletion, formatStepFailure } from "./coordinatorEventFormatter";
 
 const MAX_ROUTED_COORDINATOR_MESSAGE_CHARS = 6000;
 const COORDINATOR_EVENT_DEDUPE_WINDOW_MS = 750;
@@ -275,7 +207,24 @@ export function routeEventToCoordinator(
   event: OrchestratorRuntimeEvent,
   context?: { graph?: OrchestratorRunGraph },
 ): void {
-  const formatted = formatRuntimeEvent(event, context);
+  const resolvedStep =
+    context?.graph && event.stepId
+      ? context.graph.steps.find((candidate) => candidate.id === event.stepId)
+      : undefined;
+  const resolvedAttempt =
+    context?.graph && event.attemptId
+      ? context.graph.attempts.find((candidate) => candidate.id === event.attemptId)
+      : undefined;
+  const formatted =
+    context?.graph && resolvedStep && (event.reason === "attempt_completed" || event.reason === "skipped")
+      ? formatStepCompletion(resolvedStep, resolvedAttempt ?? null, context.graph)
+      : context?.graph && resolvedStep && event.reason === "failed"
+        ? formatStepFailure(resolvedStep, resolvedAttempt ?? null, resolvedAttempt?.errorMessage ?? "unknown error")
+        : formatRuntimeEvent(event, {
+          graph: context?.graph,
+          step: resolvedStep,
+          attempt: resolvedAttempt,
+        });
   let message = formatted.digest
     ? `${formatted.summary}\n${formatted.digest}`
     : formatted.summary;

@@ -298,7 +298,7 @@ This prevents:
 
 - **Job Engine**: Receives `onHeadChanged` callbacks when git operations modify HEAD, triggering pack refresh
 - **Renderer (via IPC)**: All git operations are exposed through 13 IPC channels under the `ade.git.*` namespace
-- **Pack Service**: Consumes git state (HEAD SHA, diff stats) during pack generation
+- **Pack Service**: Consumes git state (HEAD SHA, diff stats) when writing compatibility pack artifacts and history
 
 ### Event Flow
 
@@ -312,10 +312,12 @@ Renderer: user clicks "Commit"
         --> operationService.finish()
         --> onHeadChanged() (if HEAD moved)
           --> jobEngine.onHeadChanged()
-            --> packService.refreshLanePack()  (delegates to projectPackBuilder)
+            --> packService.refreshLanePack()   (compatibility artifact refresh)
             --> packService.refreshProjectPack()
   <-- GitActionResult { operationId, preHeadSha, postHeadSha }
 ```
+
+Live orchestrator/MCP context exports do not wait for those compatibility refreshes; they are generated directly from current local state.
 
 ---
 

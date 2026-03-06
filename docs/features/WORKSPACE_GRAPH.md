@@ -207,7 +207,7 @@ When a user clicks an edge, an overlay panel appears with merge simulation detai
 5. **Actions**:
    - "Proceed with Merge" button (executes the merge)
    - "Cancel" button (closes panel)
-   - "Open in Conflicts Tab" link (navigates to dedicated conflict resolution)
+   - Inline conflict actions for merge simulation and AI proposal workflows
 
 ### View Modes
 
@@ -251,7 +251,7 @@ Clicking a risk edge opens an inline **conflict panel** on the graph (rather tha
 
 - The two conflicting lanes and their overlapping files
 - File-level conflict details as they load from the conflict service
-- An "Open in Conflicts Tab" link for full resolution
+- Inline preparation, proposal, and apply actions without leaving Graph
 
 ### Integration Dialog
 
@@ -331,6 +331,8 @@ The graph feature has been decomposed from a single monolithic page component in
 | `LaneNode.tsx` | `graph/graphNodes/LaneNode.tsx` | ~137 | Unified custom React Flow node component (adapts by lane type + view mode) |
 | `ProposalNode.tsx` | `graph/graphNodes/ProposalNode.tsx` | ~53 | Node component for AI-generated proposal overlays |
 | `RiskEdge.tsx` | `graph/graphEdges/RiskEdge.tsx` | ~87 | Custom edge renderer for risk overlays (dashed, colored by severity) |
+| `RiskMatrix.tsx` | `graph/shared/RiskMatrix.tsx` | ~300 | Pairwise lane risk matrix reused by the Graph page |
+| `RiskTooltip.tsx` | `graph/shared/RiskTooltip.tsx` | ~120 | Hover tooltip for overlap files in the risk matrix |
 | `PrDialog.tsx` | `graph/graphDialogs/PrDialog.tsx` | ~280 | PR creation/linking dialog launched from canvas context menu |
 | `ConflictPanel.tsx` | `graph/graphDialogs/ConflictPanel.tsx` | ~314 | Inline conflict detail panel (shown on risk edge click) |
 | `IntegrationDialog.tsx` | `graph/graphDialogs/IntegrationDialog.tsx` | ~114 | Integration lane creation dialog |
@@ -353,6 +355,7 @@ WorkspaceGraphPage (route: /graph)
        |    +-- Built-in edge renderers (topology, stack)
        +-- MiniMap
        +-- Controls (zoom buttons, fit-to-view)
+  +-- RiskMatrix (graph/shared/RiskMatrix.tsx)
   +-- ConflictPanel (graphDialogs/ConflictPanel.tsx)
   +-- PrDialog (graphDialogs/PrDialog.tsx)
   +-- IntegrationDialog (graphDialogs/IntegrationDialog.tsx)

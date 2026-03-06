@@ -2,9 +2,11 @@ import React from "react";
 import { Info, Play } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
+import { primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { ToolLogo } from "./ToolLogos";
 
 /** Tool-type accent gradient for left bar — more vibrant, colorful palette */
 function toolAccentGradient(toolType: string | null | undefined): string {
@@ -58,9 +60,8 @@ export function SessionCard({
   const canResume = session.status !== "running" && Boolean(session.resumeCommand);
   const isEnded = session.status !== "running";
   const delta = useSessionDelta(session.id, isEnded);
-  const secondaryText = isEnded
-    ? truncateSummary(session.goal ?? session.title, 20)
-    : truncateSummary(session.summary, 20);
+  const primaryText = primarySessionLabel(session);
+  const secondaryText = truncateSummary(secondarySessionLabel(session), 20);
 
   return (
     <div className="group relative" onContextMenu={onContextMenu}>
@@ -97,6 +98,7 @@ export function SessionCard({
               title={dot.label}
               className={cn("h-2.5 w-2.5 shrink-0 rounded-full", dot.cls, dot.spinning && "animate-spin")}
             />
+            <ToolLogo toolType={session.toolType} size={12} />
             <span
               className="min-w-0 flex-1 truncate text-xs font-semibold"
               style={{
@@ -104,12 +106,18 @@ export function SessionCard({
                 color: isSelected ? COLORS.accent : undefined,
               }}
             >
-              {session.status !== "running" && session.summary ? session.summary : (session.goal ?? session.title).trim()}
+              {primaryText}
             </span>
           </div>
 
           {/* Bottom row: summary + badges */}
           <div className="mt-1 flex items-center gap-1.5 pl-[14px] min-w-0">
+            <span
+              className="shrink-0"
+              style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.accent }}
+            >
+              {session.laneName}
+            </span>
             {secondaryText ? (
               <span
                 className="truncate"
@@ -118,13 +126,6 @@ export function SessionCard({
                 {secondaryText}
               </span>
             ) : null}
-
-            <span
-              className="truncate"
-              style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim }}
-            >
-              {session.laneName}
-            </span>
 
             {/* Delta chips for ended sessions */}
             {delta && (delta.insertions > 0 || delta.deletions > 0) ? (

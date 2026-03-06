@@ -245,6 +245,7 @@ export type AiSettingsStatus = {
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
+  availableModelIds?: ModelId[];
 };
 export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 
@@ -316,7 +317,6 @@ export type AiOrchestratorHookConfig = {
 
 export type AiOrchestratorConfig = {
   teammatePlanMode?: "off" | "auto" | "required";
-  requirePlanReview?: boolean;
   maxParallelWorkers?: number;
   defaultMergePolicy?: "sequential" | "batch-at-end" | "per-step";
   defaultConflictHandoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
@@ -345,6 +345,9 @@ export type AiChatConfig = {
   defaultProvider?: "codex" | "claude" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
+  autoTitleEnabled?: boolean;
+  autoTitleModelId?: ModelId;
+  autoTitleRefreshOnComplete?: boolean;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;

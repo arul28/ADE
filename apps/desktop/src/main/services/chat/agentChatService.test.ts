@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("ai", () => ({
+  generateText: vi.fn(async () => ({ text: "" })),
   streamText: vi.fn(),
   stepCountIs: vi.fn(() => () => false),
   tool: vi.fn((def: unknown) => def),
@@ -41,9 +42,10 @@ vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => [])
 }));
 
-import { streamText } from "ai";
+import { generateText, streamText } from "ai";
 import { spawn } from "node:child_process";
 import { runGit } from "../git/git";
+import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
 import { createAgentChatService } from "./agentChatService";
 import type {
@@ -83,6 +85,14 @@ type CreatedFixture = {
   adeDir: string;
   transcriptsDir: string;
   laneWorktreePath: string;
+  packService: {
+    getProjectExport: ReturnType<typeof vi.fn>;
+    getLaneExport: ReturnType<typeof vi.fn>;
+    getConflictExport: ReturnType<typeof vi.fn>;
+    getPlanExport: ReturnType<typeof vi.fn>;
+    getFeatureExport: ReturnType<typeof vi.fn>;
+    getMissionExport: ReturnType<typeof vi.fn>;
+  };
   laneService: {
     getLaneBaseAndBranch: ReturnType<typeof vi.fn>;
   };
@@ -196,6 +206,30 @@ function createMockSessionService() {
       const row = rows.get(sessionId);
       if (!row) return;
       row.summary = summary;
+    }),
+
+    updateMeta: vi.fn((args: {
+      sessionId: string;
+      title?: string;
+      goal?: string | null;
+      toolType?: TerminalToolType | null;
+      resumeCommand?: string | null;
+    }) => {
+      const row = rows.get(args.sessionId);
+      if (!row) return null;
+      if (typeof args.title === "string" && args.title.trim().length) {
+        row.title = args.title.trim();
+      }
+      if (args.goal !== undefined) {
+        row.goal = args.goal ?? null;
+      }
+      if (args.toolType !== undefined) {
+        row.toolType = args.toolType ?? null;
+      }
+      if (args.resumeCommand !== undefined) {
+        row.resumeCommand = args.resumeCommand ?? null;
+      }
+      return row;
     }),
 
     setResumeCommand: vi.fn((sessionId: string, resumeCommand: string | null) => {
@@ -325,6 +359,14 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
   };
 
   const sessionService = createMockSessionService();
+  const packService = {
+    getProjectExport: vi.fn(async () => ({ content: "# Project\nLive export", truncated: false })),
+    getLaneExport: vi.fn(async ({ laneId }: { laneId: string }) => ({ content: `# Lane\n${laneId}`, truncated: false })),
+    getConflictExport: vi.fn(async ({ laneId }: { laneId: string }) => ({ content: `# Conflict\n${laneId}`, truncated: false })),
+    getPlanExport: vi.fn(async ({ laneId }: { laneId: string }) => ({ content: `# Plan\n${laneId}`, truncated: false })),
+    getFeatureExport: vi.fn(async ({ featureKey }: { featureKey: string }) => ({ content: `# Feature\n${featureKey}`, truncated: false })),
+    getMissionExport: vi.fn(async ({ missionId }: { missionId: string }) => ({ content: `# Mission\n${missionId}`, truncated: false })),
+  };
   const memoryService = {
     addMemory: vi.fn(() => ({
       id: "memory-1",
@@ -377,6 +419,7 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
     transcriptsDir,
     projectId: "project-1",
     memoryService: memoryService as any,
+    packService: packService as any,
     ctoStateService: ctoStateService as any,
     laneService: laneService as any,
     sessionService: sessionService as any,
@@ -397,6 +440,7 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
     adeDir,
     transcriptsDir,
     laneWorktreePath,
+    packService,
     laneService,
     projectConfigService,
     memoryService,
@@ -440,12 +484,16 @@ async function waitForCondition(
 
 const spawnMock = vi.mocked(spawn);
 const runGitMock = vi.mocked(runGit);
+const detectAllAuthMock = vi.mocked(detectAllAuth);
+const generateTextMock = vi.mocked(generateText);
 const streamTextMock = vi.mocked(streamText);
 
 describe("agentChatService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runGitMock.mockResolvedValue({ exitCode: 0, stdout: "abc123\n", stderr: "" } as any);
+    detectAllAuthMock.mockResolvedValue([]);
+    generateTextMock.mockResolvedValue({ text: "" } as any);
     streamTextMock.mockReset();
   });
 
@@ -1221,7 +1269,7 @@ describe("agentChatService", () => {
   });
 
   describe("Context packs", () => {
-    it("listContextPacks returns packs including project, lane, conflict, plan, mission", async () => {
+    it("listContextPacks returns live export options and keeps mission picker disabled", async () => {
       const fixture = createFixture("codex");
       const packs = await fixture.service.listContextPacks({ laneId: "lane-1" });
 
@@ -1232,22 +1280,31 @@ describe("agentChatService", () => {
       expect(scopes).toContain("plan");
       expect(scopes).toContain("mission");
 
-      for (const pack of packs) {
-        expect(pack.available).toBe(true);
-        expect(pack.label.length).toBeGreaterThan(0);
-      }
+      expect(packs.find((pack) => pack.scope === "project")?.description).toContain("Live project context export");
+      expect(packs.find((pack) => pack.scope === "mission")?.available).toBe(false);
 
       await fixture.service.disposeAll();
     });
 
-    it("fetchContextPack returns content with correct structure", async () => {
+    it("fetchContextPack returns live export content with correct structure", async () => {
       const fixture = createFixture("codex");
       const result = await fixture.service.fetchContextPack({ scope: "project" });
 
       expect(result.scope).toBe("project");
-      expect(typeof result.content).toBe("string");
-      expect(result.content.length).toBeGreaterThan(0);
+      expect(result.content).toContain("# Project");
       expect(typeof result.truncated).toBe("boolean");
+      expect(fixture.packService.getProjectExport).toHaveBeenCalledWith({ level: "standard" });
+
+      await fixture.service.disposeAll();
+    });
+
+    it("fetchContextPack maps renderer levels onto live export levels", async () => {
+      const fixture = createFixture("codex");
+      await fixture.service.fetchContextPack({ scope: "lane", laneId: "lane-1", level: "brief" });
+      await fixture.service.fetchContextPack({ scope: "plan", laneId: "lane-1", level: "detailed" });
+
+      expect(fixture.packService.getLaneExport).toHaveBeenCalledWith({ laneId: "lane-1", level: "lite" });
+      expect(fixture.packService.getPlanExport).toHaveBeenCalledWith({ laneId: "lane-1", level: "deep" });
 
       await fixture.service.disposeAll();
     });
@@ -1401,6 +1458,7 @@ describe("agentChatService", () => {
 
       const mcpServers = ((threadStart as any)?.params)?.mcpServers;
       expect(mcpServers?.ade?.command).toBeTruthy();
+      expect(mcpServers?.ade?.transport).toBe("stdio");
       expect(mcpServers?.ade?.env?.ADE_PROJECT_ROOT).toBe(fixture.projectRoot);
       expect(mcpServers?.ade?.env?.ADE_DEFAULT_ROLE).toBe("cto");
     });
@@ -1421,6 +1479,7 @@ describe("agentChatService", () => {
 
       const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
       expect(streamInput.model?.__options?.mcpServers?.ade).toBeTruthy();
+      expect(streamInput.model?.__options?.mcpServers?.ade?.type).toBe("stdio");
       expect(streamInput.model?.__options?.mcpServers?.ade?.env?.ADE_DEFAULT_ROLE).toBe("cto");
     });
 
@@ -1457,7 +1516,148 @@ describe("agentChatService", () => {
     });
   });
 
+  describe("Auto titles", () => {
+    it("generates a chat title after the first user message when enabled", async () => {
+      const fixture = createFixture("codex");
+      fixture.projectConfigService.get.mockReturnValue({
+        effective: {
+          ai: {
+            chat: {
+              defaultApprovalPolicy: "approve_mutations",
+              codexSandbox: "workspace-write",
+              claudePermissionMode: "acceptEdits",
+              sessionBudgetUsd: 10,
+              sendOnEnter: true,
+              autoTitleEnabled: true,
+              autoTitleModelId: "openai/codex-mini-latest",
+              autoTitleRefreshOnComplete: true,
+            },
+          },
+        },
+      });
+
+      detectAllAuthMock.mockResolvedValue([
+        { type: "cli-subscription", cli: "codex", key: "subscription" } as any,
+      ]);
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+      generateTextMock.mockResolvedValue({ text: "Fix chat selection bug" } as any);
+
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-auto-title" } }));
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-auto-title" } }));
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+      });
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "Please fix the chat selection bug." });
+      await waitForCondition(() => {
+        expect(fixture.sessionService.updateMeta).toHaveBeenCalledWith(
+          expect.objectContaining({
+            sessionId: session.id,
+            title: "Fix chat selection bug",
+          }),
+        );
+      });
+
+      resolveModelSpy.mockRestore();
+    });
+
+    it("ignores low-signal completion titles when refreshing the title on dispose", async () => {
+      const fixture = createFixture("codex");
+      fixture.projectConfigService.get.mockReturnValue({
+        effective: {
+          ai: {
+            chat: {
+              defaultApprovalPolicy: "approve_mutations",
+              codexSandbox: "workspace-write",
+              claudePermissionMode: "acceptEdits",
+              sessionBudgetUsd: 10,
+              sendOnEnter: true,
+              autoTitleEnabled: true,
+              autoTitleModelId: "openai/codex-mini-latest",
+              autoTitleRefreshOnComplete: true,
+            },
+          },
+        },
+      });
+
+      detectAllAuthMock.mockResolvedValue([
+        { type: "cli-subscription", cli: "codex", key: "subscription" } as any,
+      ]);
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+      generateTextMock
+        .mockResolvedValueOnce({ text: "Fix chat selection bug" } as any)
+        .mockResolvedValueOnce({ text: "Completed: READY." } as any);
+
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-auto-title-2" } }));
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-auto-title-2" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+      });
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "Please fix the chat selection bug." });
+      await waitForCondition(() => {
+        expect(fixture.sessionService.updateMeta).toHaveBeenCalledWith(
+          expect.objectContaining({
+            sessionId: session.id,
+            title: "Fix chat selection bug",
+          }),
+        );
+      });
+
+      await fixture.service.dispose({ sessionId: session.id });
+      await waitForCondition(() => {
+        expect(generateTextMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      });
+
+      const row = fixture.sessionService.__rows.get(session.id);
+      expect(row?.title).toBe("Fix chat selection bug");
+
+      resolveModelSpy.mockRestore();
+    });
+  });
+
   describe("Session integration", () => {
+    it("retargets a dormant session across runtimes before the first send", async () => {
+      const fixture = createFixture("codex");
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "openai/gpt-4.1",
+        modelId: "openai/gpt-4.1",
+      });
+
+      const updated = await fixture.service.updateSession({
+        sessionId: session.id,
+        modelId: "anthropic/claude-sonnet-4-6",
+      });
+
+      expect(updated.provider).toBe("claude");
+      expect(updated.modelId).toBe("anthropic/claude-sonnet-4-6");
+      expect(updated.model).toBe("sonnet");
+      expect(fixture.sessionService.updateMeta).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          title: "Claude Chat",
+          toolType: "claude-chat",
+          resumeCommand: `chat:claude:${session.id}`,
+        }),
+      );
+    });
+
     it("registers terminal_session rows with codex-chat and claude-chat tool types", async () => {
       const codexFixture = createFixture("codex");
       const codex = createMockCodexProcess();

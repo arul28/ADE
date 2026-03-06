@@ -3,11 +3,12 @@ import { Link, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
+import { RightEdgeFloatingPane } from "./RightEdgeFloatingPane";
 import { TabBackground } from "../ui/TabBackground";
 import { GenerateDocsModal } from "../context/GenerateDocsModal";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import type { ContextStatus, PackEvent, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
+import type { ContextStatus, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
@@ -96,12 +97,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const toastTimersRef = useRef<Map<string, number>>(new Map());
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{ createdAt: string } | null>(null);
-  const [aiRetrying, setAiRetrying] = useState(false);
   const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
-  const [contextGenerateOpen, setContextGenerateOpen] = useState<boolean>(false);
+  const [contextGenerateOpen, setContextGenerateOpen] = useState(false);
   const [projectMissing, setProjectMissing] = useState(false);
-  const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
     try {
       return window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === "1";
@@ -284,49 +283,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setAiFailure(null);
     setAiMockProvider(null);
-    if (providerMode !== "subscription") return;
-
-    const unsub = window.ade.packs.onEvent((ev: PackEvent) => {
-      if (ev.eventType === "narrative_failed") {
-        const payload = ev.payload ?? {};
-        const laneIdRaw = typeof payload.laneId === "string" ? (payload.laneId as string) : ev.packKey.startsWith("lane:") ? ev.packKey.slice("lane:".length) : null;
-        const jobId = typeof payload.jobId === "string" ? (payload.jobId as string) : null;
-        const status = typeof payload.status === "string" ? (payload.status as string) : null;
-        const error = typeof payload.error === "string" ? (payload.error as string) : "AI update failed.";
-        setAiFailure({
-          laneId: laneIdRaw,
-          jobId,
-          status,
-          error,
-          createdAt: ev.createdAt
-        });
-      }
-
-      if (ev.eventType === "narrative_update") {
-        const payload = ev.payload ?? {};
-        const provider = typeof payload.provider === "string" ? (payload.provider as string) : null;
-        if (provider === "mock") {
-          setAiMockProvider({ createdAt: ev.createdAt });
-        } else if (provider) {
-          setAiMockProvider(null);
-        }
-
-        const jobId = typeof payload.jobId === "string" ? (payload.jobId as string) : null;
-        setAiFailure((prev) => {
-          if (!prev) return prev;
-          if (jobId && prev.jobId && prev.jobId === jobId) return null;
-          return prev;
-        });
-      }
-    });
-
-    return () => {
-      try {
-        unsub();
-      } catch {
-        // ignore
-      }
-    };
   }, [providerMode]);
 
   const commandPaletteBinding = useMemo(
@@ -393,7 +349,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/lanes": "tab-tint-lanes",
       "/files": "tab-tint-files",
       "/work": "tab-tint-work",
-      "/conflicts": "tab-tint-conflicts",
       "/graph": "tab-tint-graph",
       "/prs": "tab-tint-prs",
       "/history": "tab-tint-history",
@@ -411,9 +366,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onOpenCommandPalette={() => setCommandOpen(true)}
           commandPaletteOpen={commandOpen}
           commandHint={
-            <>
-              <span className="font-mono">{commandHint}</span>
-            </>
+            <span className="font-mono">{commandHint}</span>
           }
         />
       </div>
@@ -511,27 +464,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               size="sm"
               variant="outline"
               className="h-6 px-2 text-[11px]"
-              disabled={aiRetrying || !aiFailure.laneId}
-              onClick={() => {
-                const laneId = aiFailure.laneId;
-                if (!laneId) return;
-                setAiRetrying(true);
-                void window.ade.packs
-                  .refreshLanePack(laneId)
-                  .catch((err: unknown) => {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    setAiFailure((prev) => (prev ? { ...prev, error: msg } : prev));
-                  })
-                  .finally(() => setAiRetrying(false));
-              }}
-              title="Retry AI narrative generation"
-            >
-              {aiRetrying ? "Retrying…" : "Retry"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
               disabled={!aiFailure.laneId}
               onClick={() => {
                 const laneId = aiFailure.laneId;
@@ -540,7 +472,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 setLaneInspectorTab(laneId, "context");
                 window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single&inspectorTab=context`;
               }}
-              title="Open lane packs"
+              title="Open lane memory"
             >
               Details
             </Button>
@@ -593,6 +525,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="relative z-[1] h-full min-h-0 w-full" data-tab-revisit={!isFirstVisit || undefined}>
             {children}
           </div>
+          <RightEdgeFloatingPane />
 
           {prToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">

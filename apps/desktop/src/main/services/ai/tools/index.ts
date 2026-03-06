@@ -6,13 +6,19 @@ import { globSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
 import { createMemoryTools } from "./memoryTools";
-import type { createMemoryService } from "../../memory/memoryService";
+import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
 
 export type CodingToolSet = Record<string, Tool>;
 
 export function createCodingToolSet(
   _cwd: string,
-  opts?: { memoryService?: ReturnType<typeof createMemoryService>; projectId?: string; runId?: string }
+  opts?: {
+    memoryService?: ReturnType<typeof createUnifiedMemoryService>;
+    projectId?: string;
+    runId?: string;
+    stepId?: string;
+    agentScopeOwnerId?: string;
+  }
 ): CodingToolSet {
   const tools: CodingToolSet = {
     edit: editFileTool,
@@ -23,7 +29,11 @@ export function createCodingToolSet(
     webSearch: webSearchTool,
   };
   if (opts?.memoryService && opts?.projectId) {
-    const memTools = createMemoryTools(opts.memoryService, opts.projectId, opts.runId);
+    const memTools = createMemoryTools(opts.memoryService, opts.projectId, {
+      runId: opts.runId,
+      stepId: opts.stepId,
+      agentScopeOwnerId: opts.agentScopeOwnerId,
+    });
     Object.assign(tools, memTools);
   }
   return tools;

@@ -33,7 +33,6 @@ const NEEDS_INPUT_PATTERNS: RegExp[] = [
   /\((?:y\/n|yes\/no)\)/i,
   /\[(?:y\/n|yes\/no)\]/i,
   /\b(?:enter|type)\b.{0,24}:\s*$/i,
-  /(?:^|\s)(?:[$#>%]|❯|›)\s*$/u
 ];
 
 function normalizeInlineWhitespace(raw: string): string {

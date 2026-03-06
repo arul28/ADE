@@ -31,7 +31,16 @@ This phase draws heavily from three open-source projects. Each workstream credit
 
 ### Execution Order
 
-Workstreams are numbered by topic but executed in dependency order. W1-W4 are complete. Remaining workstreams execute W6→W7→W5 (memory and learning directly strengthen CTO; Night Shift deferred until memory is solid).
+Workstreams are numbered by topic but executed in dependency order. W1-W4 and W6 are complete. Remaining workstreams execute W7→W5.
+
+Recent W6 closeout progress (2026-03-05):
+- Removed dead renderer compatibility wrappers under `components/packs/`.
+- Pruned unreferenced `packService` APIs (legacy refresh/version/diff/checkpoint/narrative helper surface) while keeping only explicit compatibility/export surfaces intact.
+- Removed the dead onboarding `generateInitialPacks` no-op and the uncalled two-step context-doc prepare/install IPC bridge.
+- Extracted context-doc runtime ownership into `contextDocService.ts` and session-delta ownership into `sessionDeltaService.ts`, so those IPC flows no longer route through `packService`.
+- Migrated orchestrator context snapshots to live exports rather than persisted pack bootstrap/head/delta reads.
+- Migrated external conflict resolver prompts to generated per-run context files instead of `.ade/packs/...` references.
+- Migrated agent chat project/lane/conflict/plan context fetches to live exports, leaving only mission selection as an explicit picker limitation.
 
 ```
 Wave 1 (complete):
@@ -40,15 +49,16 @@ Wave 1 (complete):
   W3: Heartbeat & Activation          ✅ shipped
   W4: Bidirectional Linear Sync       ✅ shipped
 
-Wave 2 (start next, sequential — W6a→W6b→W6c→W6d):
-  W6: Unified Memory System           ← knowledge foundation (replaces packs + memoryService + CTO state)
+Wave 2 (complete):
+  W6: Unified Memory System           ✅ complete (runtime migrated; compatibility pack surfaces retained explicitly)
+      Note: native sqlite-vec integration is deferred; current retrieval is lexical/composite scoring, and embeddings are not yet active in retrieval.
 
 Wave 3 (after W6):
   W7: Skills + Learning Pipeline      ← needs W6 (episodic → procedural → skill materialization)
   W8: External MCP Consumption        ← independent infra, can parallel with W7
 
 Wave 4 (after W6, can parallel with W7/W8):
-  W5: Night Shift Mode                ← needs W1 + benefits from W6 memory
+  W5: Automations Platform + Night Shift ← needs W1 + benefits from W6 memory
   W9: OpenClaw Bridge                 ← needs W1, W8
   W10: .ade/ Portable State           ← needs W1, W6
 ```
@@ -61,7 +71,7 @@ W1 (CTO Core) ──→ W2 (Workers) ──┐
      │
      ├──→ W6 (Unified Memory) ──→ W7 (Skills + Learning)
      │         │
-     │         ├──→ W5 (Night Shift)
+     │         ├──→ W5 (Automations + Night Shift)
      │         └──→ W10 (.ade/ State)
      │
      └──→ W9 (OpenClaw) ←── W8 (External MCP)
@@ -479,116 +489,125 @@ The CTO agent watches one or more Linear project boards and autonomously dispatc
 - Retry: exponential backoff on failure, short continuation retry on normal completion (consistent with Symphony §8.4).
 - Flow composer UI: policy validation and simulation, versioned history, and readable diff before activation.
 
-#### W5: Night Shift Mode (in Automations)
+#### W5: Automations Platform + Night Shift
 
-Night Shift becomes a mode within the existing Automations tab, not a separate agent type or tab.
+W5 turns Automations into a first-class product surface rather than a narrow trigger-action settings form. The Automations tab becomes the canonical place to create, simulate, run, and review background agent workflows. Settings holds defaults, connector auth, and policy presets, but not the main builder UI.
 
-- **Night Shift as an Automations mode**:
-  - The Automations tab gains a "Night Shift" section alongside existing automation rules.
-  - Night Shift queues missions and tasks for unattended overnight execution.
-  - Users configure: what tasks to run overnight, which models to use, budget caps, and stop conditions.
+- **Surface model**:
+  - `/automations` is the primary authoring and operations surface.
+  - Settings stores default model/provider policy, connector credentials, shared templates, Night Shift defaults, and org-wide guardrails.
+  - CTO/Employees remain the place where persistent workers live, but those workers can be assigned automations from the Automations tab.
+
+- **Automation rule model**:
+  ```typescript
+  interface AutomationRule {
+    id: string;
+    name: string;
+    triggers: AutomationTrigger[];
+    executor: {
+      mode: "automation-bot" | "employee" | "cto-route" | "night-shift";
+      targetId?: string;
+    };
+    templateId?: string;
+    prompt?: string;
+    toolPalette: string[];
+    memory: { mode: "none" | "automation" | "automation-plus-employee" };
+    guardrails: {
+      budgetUsd?: number;
+      maxDurationMin?: number;
+      activeHours?: { start: string; end: string; timezone: string };
+      verifyBeforePublish: boolean;
+    };
+  }
+  ```
+  - Automations can run as disposable automation bots, target a specific persistent employee, let the CTO route the work, or queue work for Night Shift.
+  - Automation-scoped memory persists per rule and combines with employee memory when the executor is persistent.
+
+- **Trigger coverage for W5**:
+  - Local triggers: `manual`, `schedule`, `commit`, `session-end`
+  - External triggers: `GitHub`, `Linear`, `webhook`
+  - Deferred connectors: Slack, PagerDuty, and similar event sources can plug into the same contract after the first connector set is stable.
+
+- **Tool palette model**:
+  - Replace the narrow fixed action enum with curated tool palettes per automation.
+  - Initial tool families: repo/code/test tools, GitHub actions (open PR/comment/review/request reviewers), Linear actions (create/update/comment/transition), MCP tool bundles, memory tools, mission launch/validation utilities.
+  - Each rule explicitly declares its available tools for safety, clarity, and reuse.
+
+- **Builder UX**:
+  - Template gallery with built-in recipes and user-created templates
+  - Natural-language create flow that drafts a rule from plain English
+  - Visual builder with explicit steps for Trigger, Run As, Tools, Memory, Guardrails, Output, and Verification
+  - Simulation / dry-run before activation
+  - Run history with rerun, pause, edit, and failure inspection
+
+- **Night Shift as an execution mode**:
+  - Night Shift is part of the automation system, not a separate agent type or separate tab.
+  - Users can assign any eligible automation to the Night Shift queue and configure overnight-only rules directly from `/automations`.
+  - Night Shift remains responsible for unattended scheduling, conservative permissions, overnight batching, and morning briefings.
 
 - **Night Shift configuration**:
   ```
   +------------------------------------------------------------------+
   | AUTOMATIONS                                                        |
-  | [Rules] [Night Shift]                                              |
+  | [Rules] [Templates] [History] [Night Shift]                        |
+  +------------------------------------------------------------------+
+  | RULE: "Triage new Linear bugs"                [SIMULATE] [ENABLE]  |
+  | Trigger: Linear -> Issue opened with label=bug                    |
+  | Run As: Backend Dev employee                                      |
+  | Tools: Linear, GitHub, repo tests, memory                         |
+  | Memory: automation + employee                                     |
+  | Output: verify before comment / open PR                           |
   +------------------------------------------------------------------+
   | NIGHT SHIFT                                           [CONFIGURE]  |
-  |                                                                    |
   | Schedule: 11:00 PM - 6:00 AM (Mon-Fri)                            |
-  | Mode: Conservative (60% capacity)                                  |
-  | Weekly reserve: 20%                                                |
-  |                                                                    |
-  | QUEUED TASKS                                           [+ ADD]     |
-  | 1. Refactor auth module          Claude Sonnet  Budget: $2         |
-  | 2. Update test coverage          Claude Haiku   Budget: $1         |
-  | 3. Harden API endpoints          Codex          Budget: $3         |
-  |                                                                    |
-  | SUBSCRIPTION STATUS                                                |
-  | Claude: Pro tier | Available tonight: ~3.2 hrs                     |
-  | [████████░░░░] 65% of capacity allocated                           |
+  | Mode: Conservative (60% capacity)                                 |
+  | Queue: 3 automations / 5 tasks                                    |
+  | Reserve: 20% weekly                                               |
   +------------------------------------------------------------------+
   ```
 
 - **Smart token budget management**:
-  - **Utilization modes** (user-selectable):
-    - `maximize`: Use all available capacity before the next reset window.
-    - `conservative` (default): Use up to a user-defined percentage of remaining capacity (default: 60%).
-    - `fixed`: Ignore subscription utilization — run with fixed per-task budgets.
-  - **Rate limit awareness**: Before starting each task, check current rate limit state. If a reset is due during the night, schedule a second batch after the reset.
-  - **Weekly reserve protection**: Users set a reserve (default: 20% of weekly budget) that Night Shift will not consume.
+  - Utilization modes: `maximize`, `conservative` (default), `fixed`
+  - Rate-limit awareness with optional multi-batch scheduling around reset windows
+  - Weekly reserve protection and global Night Shift caps on top of per-rule caps
 
 - **Strict guardrails**:
-  - Per-task budget caps (tokens, time, steps, USD).
-  - Global Night Shift budget cap (applies on top of per-task caps).
-  - Stop conditions: `first-failure`, `budget-exhaustion`, `intervention-threshold` (park if N intervention requests), `rate-limited`, `reserve-protected`.
-  - Risk restrictions: Night Shift tasks run with conservative permissions by default.
+  - Per-rule and per-run budget caps (tokens, time, steps, USD)
+  - Stop conditions: `first-failure`, `budget-exhaustion`, `intervention-threshold`, `rate-limited`, `reserve-protected`
+  - Verification gates before publishing comments, opening PRs, or escalating externally
+  - Conservative permission mode by default for unattended Night Shift work
 
-- **Morning Briefing sub-view**: Swipeable card interface for reviewing overnight results.
-  ```
-  +------------------------------------------------------------------+
-  | MORNING BRIEFING                    . . . o o  (3/5 reviewed)     |
-  +------------------------------------------------------------------+
-  |  NIGHT SHIFT - Refactor Auth Module                                |
-  |                                                                    |
-  |  STATUS: SUCCEEDED                                                 |
-  |  Model: Claude Sonnet · 12 steps · $1.84                          |
-  |                                                                    |
-  |  WHAT HAPPENED:                                                    |
-  |  Extracted auth middleware into dedicated module,                   |
-  |  added refresh token rotation, updated 8 test files.               |
-  |  All 142 tests passing.                                            |
-  |                                                                    |
-  |  CHANGES: +347 -128 across 12 files                                |
-  |  [View Diff]  [View PR #47]                                        |
-  |                                                                    |
-  |  CONFIDENCE: ████████░░ 82%                                        |
-  |                                                                    |
-  |  [APPROVE]    [DISMISS]    [INVESTIGATE LATER]                     |
-  +------------------------------------------------------------------+
-  | [BULK APPROVE ALL (3)]                    [SKIP TO SUMMARY]        |
-  +------------------------------------------------------------------+
-  ```
+- **Morning Briefing**:
+  - Swipeable card interface for reviewing overnight results
+  - Per-run summary with model, budget used, diff stats, test status, confidence, and linked artifacts
+  - Modal on next app open after Night Shift completes, plus persistent access from Automations history
 
-  - **Card types**: Succeeded (diff stats, PR link, confidence, test results) and Failed/Parked (failure reason, partial changes, error context).
-  - **Interaction**: Swipe right = approve, left = dismiss, up = investigate later. Keyboard shortcuts: Right/Left/Up arrows, Space = expand.
-  - **Trigger**: Modal overlay on app launch after Night Shift completes. Also accessible from Automations tab.
+- **Automation services**:
+  - `automationRuleService`: persistence, validation, templates, activation state
+  - `automationTriggerService`: local events plus GitHub/Linear/webhook adapters
+  - `automationExecutionService`: dispatch to automation bots, employees, CTO route, or Night Shift queue
+  - `automationMemoryService`: automation-scoped memories and carry-forward summaries
+  - `nightShiftService`: overnight queue orchestration, utilization management, morning briefing digest
 
-- **Night Shift service** (`nightShiftService`):
-  - Manages the Night Shift queue and executes tasks via the mission orchestrator with Night Shift-specific guardrails.
-  - Generates a structured digest artifact at the end of each session:
-    ```typescript
-    interface NightShiftDigest {
-      id: string;
-      generatedAt: string;
-      sessionId: string;
-      tasks: NightShiftTaskEntry[];
-      totalBudgetUsed: BudgetSummary;
-      subscriptionUtilization: {
-        claude?: { tier: string; tokensUsedOvernight: number; capacityUtilized: number; tasksSkippedDueToLimits: number; };
-        codex?: { tier: string; tokensUsedOvernight: number; capacityUtilized: number; };
-        weeklyReserveRemaining: number;
-      };
-      pendingReviews: number;
-      requiresAttention: number;
-    }
-    ```
+- **Settings integration**:
+  - Connector auth and health for GitHub, Linear, and webhooks
+  - Default provider/model routing, budget presets, approval policy, and active hours
+  - Shared templates and default tool palettes
+  - Default Night Shift window, reserve policy, and notification delivery
 
-- **Settings integration** (Automations → Night Shift section):
-  - Default time window, morning briefing delivery time, global budget cap.
-  - Utilization mode selector, conservative mode percentage slider, weekly reserve slider.
-  - Multi-batch scheduling toggle, subscription status panel.
-
-- **Renderer**: Night Shift tab within Automations, task queue UI, Morning Briefing modal overlay, subscription status panel.
+- **Renderer**:
+  - Automations tab with Rules, Templates, History, and Night Shift views
+  - Builder + simulation flow
+  - Run detail/history inspector
+  - Morning Briefing modal overlay and Night Shift queue controls
 
 **Tests:**
-- Stop conditions: first-failure, budget-exhaustion, intervention-threshold, rate-limited, reserve-protected.
-- Subscription-aware scheduling: utilization modes, rate limit awareness, weekly reserve protection.
-- Multi-batch scheduling across rate limit resets.
-- Morning briefing card rendering and interaction (approve/dismiss/investigate).
-- Bulk action tests.
-- Digest generation accuracy.
+- Trigger adapters for local events plus GitHub, Linear, and webhook flows
+- Executor dispatch to automation bots, persistent employees, CTO-routed execution, and Night Shift queue
+- Template application, tool palette enforcement, and verification gates
+- Automation-scoped memory persistence and employee-memory composition
+- Simulation previews and run history accuracy
+- Night Shift stop conditions, utilization modes, multi-batch scheduling, and morning briefing generation
 
 #### W6: Unified Memory System
 
@@ -615,7 +634,7 @@ The implementing agent **must** read these references before starting work. Each
 | [Paperclip Spec](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) | §2 Agent Model, §3 Org Structure, §6 Cost Tracking | Agent identity schema, org hierarchy context injection, budget-gated memory operations |
 | [Factory.ai Missions](https://factory.ai/news/missions) | Blog post — skill extraction from mission runs | Skills compound over time from agent work; procedural knowledge extracted from successful patterns (W7 input) |
 
-W6 replaces three overlapping systems — context packs, the basic `memoryService`, and CTO core memory — with a single unified memory service. One service, three scopes (project / agent / mission), three tiers (pinned / hot / cold). This is the largest architectural change in Phase 4.
+W6 replaces the old `memoryService` with a single unified memory backend and moves the renderer inspection surface over to that backend. As of 2026-03-05, this work is complete as a runtime migration: durable project/agent/mission memory runs through unified memory, and runtime context assembly no longer depends on persisted pack files. Deterministic pack exports still remain, but only as explicit compatibility/audit surfaces over live local state.
 
 ##### Why: The Current Problem
 
@@ -695,7 +714,7 @@ interface UnifiedMemoryEntry {
 }
 ```
 
-SQLite table: `unified_memories` replaces `memories` table and `shared_facts` table.
+SQLite table: `unified_memories` is the canonical durable memory store and receives a one-time backfill from the legacy `memories` table. `orchestrator_shared_facts` still remains live as a separate run-scoped coordination table.
 
 ##### Three-Tier Details Per Scope
 
@@ -742,35 +761,30 @@ Tier 2 only (everything is hot during active mission):
   - Shared facts: "API endpoint changed from /v1 to /v2"
   - Coordinator decisions: "splitting into 3 parallel steps because X"
   - Step handoffs: "Step A completed, output: new middleware added at /api/auth"
-  - Replaces: shared_facts table, handoff digests
+  - Current status: mission-scoped entries exist in unified memory, but `orchestrator_shared_facts` and handoff tables are still part of the live run-state model
 
 After mission completes:
-  - Episodic summary auto-generated → promoted to project memory
-  - High-confidence discoveries auto-promoted to project memory
-  - Rest archived to Tier 3 (queryable for audits, not actively searched)
+  - Shared facts are reviewed and promoted into project memory on successful run completion
+  - Candidate memories remain available for manual promotion/archive review
+  - Automatic episodic-summary generation remains future work
 ```
 
-##### Vector Search with sqlite-vec
+##### Retrieval and Ranking (Shipped Baseline)
 
-> Reference: [sqlite-vec API docs](https://alexgarcia.xyz/sqlite-vec/), [all-MiniLM-L6-v2 model card](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), [BM25 algorithm](https://en.wikipedia.org/wiki/Okapi_BM25), [MMR paper (Carbonell & Goldstein 1998)](https://www.cs.cmu.edu/~jgc/publication/The_Use_MMR_Diversity_Based_LTMIR_1998.pdf)
+The current W6 implementation is intentionally native/local and does **not** require a vector DB migration. The shipped path is:
 
-- Add [sqlite-vec](https://github.com/asg017/sqlite-vec) extension to the existing SQLite database. Use the `vec0` virtual table with `vec_distance_cosine()` for similarity queries. See [sqlite-vec docs](https://alexgarcia.xyz/sqlite-vec/) for table creation, insertion, and query patterns.
-- Store embeddings in `unified_memory_vectors` table (foreign key to `unified_memories`).
-- **Hybrid search**: Run BM25 keyword search (via SQLite FTS5) and vector cosine search in parallel, then merge results with weighted score fusion (30% BM25 + 70% vector). This is the same hybrid approach used by [OpenClaw's search pipeline](https://github.com/nichochar/openclaw/tree/main/src/openclaw/memory). Over-fetch 4x the budget to leave room for re-ranking.
-- **MMR re-ranking**: After score fusion, apply [Maximal Marginal Relevance](https://www.cs.cmu.edu/~jgc/publication/The_Use_MMR_Diversity_Based_LTMIR_1998.pdf) (lambda=0.7) to reduce redundancy — penalize candidates that are too similar to already-selected entries. This prevents returning 5 entries that all say the same thing.
-- **Embedding model**: local [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) GGUF (~25MB, 384 dimensions) for offline operation, `text-embedding-3-small` (1536 dimensions) as online fallback. Retrieval pipeline normalizes across both dimension sizes.
-- **Scalability**: sqlite-vec uses brute-force KNN — performant up to ~100K vectors, sufficient for per-project memory. Exclude Tier 3 (cold/archived) entries from the vector index to keep the active set small.
-- **Embedding cache**: Content-hash the entry text before embedding. If the hash matches an existing entry's hash, reuse the stored embedding. Same approach as [OpenClaw's embedding cache](https://github.com/nichochar/openclaw/tree/main/src/openclaw/memory).
+- Search uses SQL filtering plus service-level lexical/composite scoring from `unifiedMemoryService.ts`.
+- Ranking uses query coverage, recency decay, importance, confidence, access frequency, and tier/pin boosts.
 - **Budget tiers**: Control how many results are returned per search — **Lite (3 entries)** for quick tasks and chat sessions, **Standard (8 entries)** for normal work, **Deep (20 entries)** for mission planning and CTO activation.
 - **Access tracking**: Every time an entry is returned from search, bump its `accessCount` and `lastAccessedAt`. This feeds the composite scoring formula and prevents useful entries from decaying.
 
-##### Composite Scoring for Retrieval
+`unified_memory_embeddings` exists in schema, but embeddings are **not part of the active retrieval path yet**. There is currently no shipped BM25/FTS fusion, query embedding, cosine similarity search, or MMR pass. Those remain later-phase enhancements if we decide lexical retrieval is no longer sufficient.
 
-> Reference: [CrewAI memory scoring](https://docs.crewai.com/concepts/memory) — multi-signal ranking. The weighting below is tuned for developer knowledge where recency and semantic relevance matter most.
+##### Composite Scoring for Retrieval
 
 Every search result is ranked by composite score, not just semantic similarity. The formula combines five signals:
 
-- **Semantic similarity (40%)**: The hybrid BM25+vector score from the search phase.
+- **Lexical query match (40%)**: Query-word coverage plus a small exact-phrase bonus.
 - **Recency (20%)**: Exponential decay with 30-day half-life on `lastAccessedAt`. An entry untouched for 30 days scores 0.50; at 90 days, 0.125; at 180 days, effectively zero. This is standard [exponential decay](https://en.wikipedia.org/wiki/Exponential_decay) — same math as radioactive half-life.
 - **Importance (15%)**: High=1.0, Medium=0.6, Low=0.3. User-confirmed entries and conventions get high importance.
 - **Confidence (15%)**: The entry's `confidence` field (0-1). Grows with observations and confirmations, decays on contradictions.
@@ -778,55 +792,41 @@ Every search result is ranked by composite score, not just semantic similarity. 
 
 ##### Write Gate: Preventing Memory Bloat
 
-> Reference: Study [Mem0's write pipeline](https://docs.mem0.ai/overview) — their "How Mem0 Works" diagrams show the extract → dedup → consolidate → store flow. Read [Mem0 `main.py` source](https://github.com/mem0ai/mem0/blob/main/mem0/memory/main.py), especially the `add()` method, for the full dedup/consolidation pattern. Also see [LangMem consolidation](https://langchain-ai.github.io/langmem/concepts/) for semantic dedup and merge strategies.
-
-Every write goes through a four-stage gate. This runs **on every single write** — it's the primary defense against memory bloat. The goal: the memory store never grows faster than the rate of genuinely new knowledge.
+The shipped write gate is smaller than the aspirational Mem0-style design. Today every write goes through:
 
 **Stage 1 — Category filter (instant, no AI)**: Reject transient noise (tool invocation logs, raw diffs, step lifecycle events, reasoning preamble, one-line fragments). Accept only entries with valid categories (fact, convention, pattern, decision, gotcha, preference, episode, procedure, digest, handoff). Entries with high importance in knowledge-bearing categories (convention, decision, preference) pass directly as "promoted". Everything else enters as "candidate" status with low initial confidence — needs multiple observations to earn promotion. User-written entries always pass. Truncate content over 2,000 chars.
 
-**Stage 2 — Vector dedup (embedding similarity, no AI)**: Embed the new entry and search existing entries in the same scope using cosine similarity. Only search Tier 1 + Tier 2 (not archived Tier 3). Three outcomes based on [Mem0's similarity thresholds](https://github.com/mem0ai/mem0/blob/main/mem0/memory/main.py):
-- **Exact duplicate (cosine > 0.95)**: Silently discard the new entry. Reinforce the existing one by bumping its `accessCount`, `observationCount`, and `confidence`. Example: "use vitest" vs "always use vitest not jest" — same knowledge, minor rewording.
-- **Near duplicate (0.85-0.95)**: Proceed to Stage 3 for LLM judgment. Example: "auth uses JWT" vs "auth module uses JWT with 1hr expiry" — same topic, but the new entry might add detail.
-- **No match (< 0.85)**: Save directly — this is genuinely new knowledge.
+**Stage 2 — Lexical dedupe / merge (shipped)**: Search recent Tier 1/Tier 2 entries in the same scope and compare normalized content plus token overlap.
+- Exact duplicate: reinforce the existing row.
+- Near duplicate: merge content directly and boost confidence/observations.
+- Otherwise: insert a new row.
 
-**Stage 3 — LLM consolidation (only when Stage 2 finds near-duplicates)**: Send the new entry and its near-duplicate(s) to a cheap, fast LLM (haiku-class, 300-token max). The LLM decides one of four actions, following [Mem0's PASS/REPLACE/APPEND/DELETE pattern](https://docs.mem0.ai/overview):
-- **PASS**: New entry is redundant — discard it, boost existing confidence.
-- **REPLACE**: New entry supersedes existing — update the existing entry's content with merged information.
-- **APPEND**: Both contain unique info — merge into a single richer entry.
-- **DELETE**: Existing entry is obsolete/wrong — delete it, save the new one.
-
-This is the key insight from Mem0: rather than just checking "is this a duplicate?", the LLM makes a nuanced decision about how to reconcile overlapping knowledge. The merged content preserves all unique information while reducing entry count. In practice, Stage 3 fires on <10% of writes because most are either exact duplicates (caught by Stage 2) or genuinely novel.
+There is currently **no** embedding-based dedupe and **no** LLM PASS/REPLACE/APPEND/DELETE consolidation step in the shipped backend.
 
 **Stage 4 — Chat session strictness (for regular chat sessions only)**: Regular chat sessions (non-CTO, non-mission) write to project memory with a higher bar — only `importance: "high"` entries with categories `convention | pattern | gotcha | decision` pass. The agent's `memoryAdd` tool prompt instructs: _"Only save discoveries that other agents working on this project would need."_
 
-**Pipeline order**: Stage 4 (cheapest) → Stage 1 (category filter) → Stage 2 (vector dedup) → Stage 3 (LLM, only if needed).
+**Pipeline order (current)**: Stage 4 (when applicable) → Stage 1 → Stage 2.
 
 ##### Memory Lifecycle: Decay, Compaction, and Upkeep
 
-> Reference: [OpenClaw temporal decay with evergreen exemptions](https://docs.openclaw.ai/concepts/memory) — exemptions for pinned/critical entries. [Mem0 memory lifecycle](https://docs.mem0.ai/overview) — how entries age and get consolidated. [LangMem consolidation](https://langchain-ai.github.io/langmem/concepts/) — clustering and merging strategies. The decay math uses standard [exponential decay / half-life](https://en.wikipedia.org/wiki/Exponential_decay).
+Current shipped lifecycle behavior:
 
-Memory management runs at four levels, from continuous to periodic. Together they guarantee the memory store stays bounded, high-quality, and relevant without manual intervention.
+- **Ranking decay is live**: recency decay is part of composite search scoring.
+- **Access tracking is live**: reads bump `accessCount` and `lastAccessedAt`.
+- **Manual state changes are live**: candidate review, promote, archive, and pin flows exist in the service and UI tooling.
+- **Legacy backfill is live**: the old `memories` table is copied forward into `unified_memories` during schema bootstrap.
+- **Successful-run promotion is live**: `orchestrator_shared_facts` are promoted into project memory on successful mission completion.
 
-**1. Temporal Decay (continuous, passive)**: No background job — the composite scoring formula includes a 30-day half-life on `lastAccessedAt`. Entries that are never retrieved naturally sink in ranking and become invisible to budget-limited searches. This is implicit in every search — stale entries lose to fresh ones automatically. **Evergreen exemption** (from [OpenClaw](https://docs.openclaw.ai/concepts/memory)): Tier 1 pinned entries and entries with `importance: "high"` + `confidence >= 0.9` are exempt from tier demotion. They still decay in composite scoring but are never auto-demoted. Only the user or CTO can unpin/archive them.
+Not yet shipped:
 
-**2. Periodic Sweep (at safe checkpoints: app startup, mission completion, CTO session end, every 6 hours)**: Four jobs:
-- **Promote mature candidates**: Candidates with `confidence >= 0.7` and `observationCount >= 2` become "promoted" — they've proven their worth through repeated observation.
-- **Archive stale candidates**: Candidates older than 14 days with `confidence < 0.3` are archived — they never got confirmed, likely noise.
-- **Demote stale Tier 2 → Tier 3**: Promoted entries not accessed for 90 days (with `importance != "high"`) demote to cold storage. Also removes them from the vector index to save space.
-- **Archive cold Tier 3**: Tier 3 entries not accessed for 180 days with `confidence < 0.5` get archived status — excluded from all searches but retained in DB for audit.
-- **Enforce hard limits** (see below).
-
-**3. Consolidation Batch (weekly or on-demand)**: This is the equivalent of LSM-tree compaction for memories. Scan all Tier 2 promoted entries within a scope, cluster them by embedding similarity (threshold 0.80 — entries about the same topic), and for each cluster with 3+ entries, invoke an LLM to merge them into a single richer entry. The original entries are archived (not deleted — audit trail). This reduces entry count while preserving knowledge density. Same pattern as [Mem0's consolidation flow](https://github.com/mem0ai/mem0/blob/main/mem0/memory/main.py) and [LangMem's merge strategies](https://langchain-ai.github.io/langmem/concepts/). Triggered weekly on a timer, manually via Settings > Memory "Consolidate Now", or automatically when entry count exceeds 75% of hard limit.
-
-**4. Hard Limits (safety nets)**: Absolute upper bounds regardless of what other algorithms do. Project: max 2,000 active entries (Tier 1 + Tier 2), Agent: max 500, Mission: max 200, Tier 1 pinned: max 20 per scope. When exceeded, lowest-scoring Tier 2 entries demote to Tier 3. Tier 1 also has a **token budget** (~2-4K tokens total) — if pinned entries exceed the budget, the least-important ones demote to Tier 2.
-
-**Metrics and observability**: Track per-scope entry counts, tier distribution, write gate rejection rate (by stage), consolidation merge rate, decay demotion rate, candidate promotion rate, hard limit eviction count. Surface in Settings > Memory as a health dashboard. Emit `memory:sweep-complete` and `memory:consolidation-complete` events for UI refresh.
+- Periodic sweeps for stale candidates or automatic tier demotion
+- Weekly/on-demand consolidation batches
+- Hard-limit enforcement and health-dashboard events
+- Automatic episodic-summary generation for every mission/session
 
 ##### Pre-Compaction Memory Flush
 
-> Reference: [OpenClaw pre-compaction flush](https://docs.openclaw.ai/concepts/memory) — a silent agentic turn before context eviction to persist important state. Critical for long-running sessions (CTO chat, coordinator) where context compaction happens multiple times.
-
-Before context compaction (at compaction threshold), trigger a silent agentic turn where the agent is prompted to review its current context and persist important memories via `memoryAdd` before they're lost. Uses the agent's own intelligence to decide what matters. A flush counter (monotonic ID per compaction event) prevents double-flushing. Integrates with existing `compactionEngine.ts` via a `beforeCompaction` hook. All writes from the flush still go through the full write gate (dedup, consolidation, etc.). Applies to: CTO chat sessions, CTO worker sessions, coordinator agent, regular chat sessions.
+The current compaction path still writes summaries/shared facts, but it does **not** yet run the fully documented silent `memoryAdd` flush workflow. Treat the full OpenClaw-style pre-compaction memory flush as future work unless it is explicitly wired in code.
 
 ##### Mission Memory Lifecycle
 
@@ -835,7 +835,7 @@ Before context compaction (at compaction threshold), trigger a silent agentic tu
 - Coordinator writes decisions and plan rationale via `memoryAdd` with `scope: "mission"`.
 - Mission workers write shared facts and handoffs via `memoryAdd` with `scope: "mission"`.
 - Workers read mission memory via `memorySearch` with `scope: "mission"` to find peer discoveries.
-- The worker briefing (L0/L1/L2 assembly in `orchestratorService.ts`) pulls relevant mission memory entries instead of building markdown packs.
+- Worker prompts currently inject shared facts, project knowledge, and mission memory highlights, but structured lane/project context assembly still depends on pack exports.
 
 **On mission completion**:
 - System generates an episodic summary (structured: what happened, outcome, tools used, patterns found, gotchas):
@@ -859,11 +859,7 @@ Before context compaction (at compaction threshold), trigger a silent agentic tu
 - High-confidence discoveries (confidence >= 0.7) auto-promoted to project memory.
 - Everything else archived to Tier 3 (retained for audit, excluded from search).
 
-**Promotion decision logic**: The system (not an AI agent) decides promotion. Rules:
-1. Any entry with `importance: "high"` and `confidence >= 0.7` → auto-promote.
-2. Any entry with `category: "pattern" | "gotcha" | "convention"` and `observationCount >= 2` → auto-promote.
-3. Any entry matching an existing project memory entry (cosine similarity > 0.85) → merge into existing (boost confidence/access count).
-4. Everything else → archive. CTO can later review archived mission memories and manually promote.
+**Promotion decision logic (current)**: successful mission runs promote persisted shared facts into project memory using fixed fact-type confidence thresholds. This is a deterministic promotion path, not a semantic/vector merge pipeline.
 
 ##### Human Work Ingestion (User-Only Changes)
 
@@ -876,43 +872,47 @@ Users frequently change code/config outside agent runs. Without ingestion, agent
 
 ##### Memory Tools for Agents
 
-- **`memorySearch`** — Hybrid BM25+vector search, ranked by composite score. Scope-aware (defaults to project, can specify agent/mission).
-- **`memoryAdd`** — With write gate (dedup + consolidation). Scope-aware. Chat sessions get strict mode (high-importance only).
+- **`memorySearch`** — Lexical/composite search over `unified_memories`, scope-aware (`project`, `agent`, `mission`).
+- **`memoryAdd`** — Scope-aware writes through the current write gate (category filter + lexical dedupe/merge; chat sessions still use strict mode where configured).
 - **`memoryUpdateCore`** — Self-edit Tier 1 pinned entries for the current agent. CTO edits project Tier 1, workers edit their own agent Tier 1.
-- **`memoryPin`** — Pin a Tier 2 entry to Tier 1 (always in context, bypasses retrieval scoring). Subject to Tier 1 max (20 entries).
+- **`memoryPin`** — Pin a Tier 2 entry to Tier 1 (always in context, bypasses retrieval scoring).
 
 All four tools available to: CTO sessions, CTO worker sessions, mission workers, regular chat sessions (with strict write gate for chat).
 
-##### Context Pack Removal
+##### Context Export Compatibility Inventory
 
-W6 deletes the entire context pack system. This is a hard removal, not a deprecation.
+W6 renderer cutover and backend runtime migration are complete. The remaining deterministic export surfaces are intentional compatibility layers, not open migration blockers.
 
-**Files to delete** (~10,300 lines of backend + ~1,700 lines of UI):
-- `src/main/services/packs/packService.ts` (3,282 lines)
-- `src/main/services/packs/projectPackBuilder.ts` (992 lines)
-- `src/main/services/packs/missionPackBuilder.ts` (1,047 lines)
-- `src/main/services/packs/conflictPackBuilder.ts` (321 lines)
-- `src/main/services/packs/packExports.ts` (665 lines)
-- `src/main/services/packs/packUtils.ts` (554 lines)
-- `src/main/services/packs/packSections.ts` (165 lines)
-- `src/main/services/packs/lanePackTemplate.ts` (211 lines)
-- `src/main/services/packs/transcriptInsights.ts` (228 lines)
-- All test files in `src/main/services/packs/` (~800 lines)
-- `src/renderer/components/packs/PackViewer.tsx` (363 lines)
-- `src/renderer/components/packs/PackFreshnessIndicator.tsx` (25 lines)
-- `src/renderer/components/settings/ContextSection.tsx` (1,092 lines) — replaced by Memory Inspector
-- `src/shared/types/packs.ts` — all pack-related types
+**Current status (2026-03-05):**
+- Removed: renderer pack wrappers (`PackViewer.tsx`, `PackFreshnessIndicator.tsx`) and context UI moved to memory inspector.
+- Removed from `packService` runtime ownership: context-doc IPC flows and session-delta IPC reads.
+- Removed as runtime blockers: orchestrator pack bootstrap/head/delta reads and pack-backed conflict resolver references.
+- Still live intentionally: MCP `read_context` / `ade://pack/...`, optional persisted pack refresh/version history, mission-pack refresh hooks for compatibility, and import/UI aliases such as `memoryService.ts` and `ContextSection.tsx`.
+- Rule: delete pack modules only when the remaining compatibility contracts are intentionally replaced or versioned away.
 
-**Consumers to migrate** (22 files reference packService):
+**Deletion candidates once consumers are migrated:**
+- `src/main/services/packs/packService.ts`
+- `src/main/services/packs/projectPackBuilder.ts`
+- `src/main/services/packs/missionPackBuilder.ts`
+- `src/main/services/packs/conflictPackBuilder.ts`
+- `src/main/services/packs/packExports.ts`
+- `src/main/services/packs/packUtils.ts`
+- `src/main/services/packs/packSections.ts`
+- `src/main/services/packs/lanePackTemplate.ts`
+- `src/main/services/packs/transcriptInsights.ts`
+- Remaining tests under `src/main/services/packs/`
+- `src/shared/types/packs.ts` (only after no runtime consumer imports remain)
+
+**Consumers to migrate** (live compatibility surface):
 - `orchestratorService.ts`: Replace `packService.getProjectExport()` / `packService.getLaneExport()` calls with `unifiedMemoryService.search({ scope: "project", budget: "standard" })`. The worker briefing assembly (L0/L1/L2) stays as structured prompt assembly but pulls from memory queries instead of pack markdown.
-- `aiOrchestratorService.ts`: Remove pack version tracking from mission run metadata.
-- `registerIpc.ts`: Remove pack-related IPC handlers (`refreshLanePack`, `getPackHead`, `getPackBody`, `listPackVersions`, `listPackEvents`, `getDeltaDigest`, etc.). Add memory IPC handlers.
-- `main.ts`: Replace `createPackService()` with `createUnifiedMemoryService()`.
-- `jobEngine.ts`: Remove pack refresh jobs. Add memory sweep/consolidation jobs.
+- `mcpServer.ts` / `bootstrap.ts`: Replace pack-backed `read_context` resources and `ade://pack/...` resources with memory/context-native exports, or explicitly keep them as compatibility resources.
 - `conflictService.ts`: Query memory for conflict-relevant entries instead of reading conflict packs.
-- `automationService.ts`: Query memory instead of reading packs.
-- `onboardingService.ts`: Bootstrap scan writes to project memory instead of building project pack.
-- `prService.ts`: Query memory for PR context instead of reading pack exports.
+- `main.ts`: `packService` construction remains required until the consumers above are migrated or explicitly retained.
+
+**Consumers already migrated off `packService` in this branch:**
+- `registerIpc.ts`: context-doc status/generate/open now route through `contextDocService`; `ade.sessions.getDelta` now routes through `sessionDeltaService`.
+- `MemoryInspector.tsx` / `ContextSection.tsx`: renderer inspection surface is memory-first via `window.ade.memory.*`.
+- `memoryService.ts`: compatibility alias over `createUnifiedMemoryService(db)`.
 
 **What stays**:
 - `.ade/context/PRD.ade.md` and `ARCHITECTURE.ade.md` — user-editable reference docs. Indexed into project memory (Tier 2) by the bootstrap scan. `GenerateDocsModal.tsx` stays.
@@ -935,7 +935,7 @@ W6 deletes the entire context pack system. This is a hard removal, not a depreca
 **W6a — Memory engine** (core infrastructure):
 - `unifiedMemoryService.ts`: CRUD, scoping, tiering, write gate (stages 1-2), temporal decay, candidate sweep.
 - `unified_memories` SQLite table + migration from `memories` and `shared_facts`.
-- sqlite-vec integration: embedding pipeline, hybrid search, MMR re-ranking.
+- Embeddings table reserved for future retrieval work; active shipped retrieval remains lexical/composite scoring (native sqlite-vec integration deferred).
 - Composite scoring function.
 - Memory tools: `memorySearch`, `memoryAdd`, `memoryUpdateCore`, `memoryPin`.
 - Tests: search accuracy, dedup, scoring, tier promotion/demotion, candidate sweep, hard limits.
@@ -970,7 +970,7 @@ W6 deletes the entire context pack system. This is a hard removal, not a depreca
 - Tests: consumer migration (orchestrator reads memory instead of packs), UI rendering, IPC handlers.
 
 **Tests (comprehensive):**
-- Vector search accuracy: hybrid BM25+vector vs keyword-only retrieval quality.
+- Lexical retrieval quality: current shipped retrieval is keyword/composite only, so vector/BM25/MMR evaluation remains future work rather than current behavior.
 - Write gate: dedup detection at 0.95 threshold, near-dedup at 0.85, LLM consolidation PASS/REPLACE/APPEND/DELETE.
 - Composite scoring: recency decay with 30-day half-life, importance weighting, confidence boost, access boost capping.
 - Tier lifecycle: Tier 2 → Tier 3 decay (90 days), Tier 3 → archived (180 days), Tier 2 → Tier 1 pinning, Tier 1 max enforcement.
@@ -1250,9 +1250,9 @@ Consolidates the project-level `.ade/` directory structure, git-tracking policy,
 - Multi-adapter pattern supports claude-local, codex-local, openclaw-webhook, and process backends.
 - Task session persistence enables workers to resume context when re-invoked on the same task.
 - CTO and worker memory persists across sessions via `.ade/cto/` and `.ade/agents/` directories.
-- Night Shift mode in Automations tab provides overnight execution with subscription-aware scheduling and guardrails.
+- Automations tab provides trigger-driven workflows, template-driven setup, executor routing, and Night Shift scheduling with subscription-aware guardrails.
 - Morning Briefing provides a swipeable card interface for reviewing overnight results.
-- Memory retrieval uses hybrid BM25+vector search with composite scoring.
+- Memory retrieval uses composite scoring, with embedding-backed/BM25 hybrid retrieval remaining optional future work rather than a baseline requirement.
 - Pre-compaction flush prevents memory loss during context compaction.
 - Memory consolidation prevents unbounded growth via real-time deduplication on save.
 - Episodic memories are generated after session/mission completion.

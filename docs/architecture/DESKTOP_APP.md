@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-05
 
 This document describes the Electron desktop runtime in `apps/desktop`, including process boundaries, service initialization, IPC contracts, and lifecycle behavior.
 
@@ -71,7 +71,7 @@ Core service groups:
 
 - **Project/context bootstrapping**: project service, config service, keybindings, terminal profiles, agent tools, onboarding, CI
 - **Core execution**: lane/session/pty/file/diff/git/process/test/history
-- **Context and risk systems**: pack service (decomposed: `packService.ts` core + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts`), conflict service, rebase suggestion service, auto-rebase service, job engine
+- **Context and risk systems**: pack service (decomposed: `packService.ts` core + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts`) for remaining compatibility exports, plus `contextDocService.ts`, `sessionDeltaService.ts`, conflict service, rebase suggestion service, auto-rebase service, job engine
 - **AI Integration**: AI integration service (unified executor, `modelId`-first routing), AI orchestrator service (decomposed: `aiOrchestratorService.ts` core + `chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`), orchestrator service (decomposed: `orchestratorService.ts` core + `orchestratorQueries.ts`, `stepPolicyResolver.ts`, `orchestratorConstants.ts`), MCP server, GitHub service, PR service + polling, models.dev service (dynamic pricing/capabilities), middleware (logging, retry, cost guard, reasoning extraction), provider options (tier passthrough), universal tools (API-key/local model support). See `docs/ORCHESTRATOR_OVERHAUL.md` for runtime contracts.
 - **Agent Chat**: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn, unified runtime for API-key/local models with permission modes, persisted as `codex-chat` / `claude-chat` / `ai-chat` sessions)
 - **Agents / Automations (current runtime)**: automation service + automation planner service (automation, Night Shift, watcher, review flows under the current Automations domain model)
@@ -90,7 +90,7 @@ Additional runtime loops:
 
 IPC channel constants live in `apps/desktop/src/shared/ipc.ts` and are registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
-As of 2026-02-23, the contract includes `292` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github, agents/missions, layout/graph, processes/tests, and settings/config domains.
+The contract spans app/project, lanes, sessions/pty, files/git, conflicts/context/memory, PRs/github, agents/missions, layout/graph, processes/tests, and settings/config domains.
 
 High-frequency/broadcast event channels include:
 
@@ -100,7 +100,6 @@ High-frequency/broadcast event channels include:
 - `ade.processes.event`
 - `ade.tests.event`
 - `ade.conflicts.event`
-- `ade.packs.event`
 - `ade.prs.event`
 - `ade.agents.event`
 - `ade.missions.event`
@@ -153,7 +152,7 @@ Desktop architecture is mature and production-oriented for current scope:
 - Project switching is implemented with full context teardown/rebuild.
 - Broad typed IPC contract is implemented and actively used by renderer surfaces.
 - Security boundaries (`contextIsolation`, preload-only IPC surface) are enforced.
-- Head-change and session-end pipelines keep packs/conflicts/agents synchronized.
+- Head-change and session-end pipelines keep memory/conflicts/compat exports synchronized.
 - AI integration service provides local AI execution via AgentExecutor interface (dual SDK) and MCP server.
 - Agent chat service provides native interactive chat with Codex (via App Server) and Claude (via community provider) with full session tracking.
 - Type system modularized: 17 domain-scoped type modules in `src/shared/types/` replace the former monolithic `types.ts`.

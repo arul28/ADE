@@ -50,7 +50,6 @@ export type MissionPermissionConfig = {
 export type MissionStatus =
   | "queued"
   | "planning"
-  | "plan_review"
   | "in_progress"
   | "intervention_required"
   | "completed"
@@ -86,7 +85,6 @@ export type MissionInterventionType =
 export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
 
 export type MissionPlannerEngine = "auto" | "claude_cli" | "codex_cli";
-
 
 export type MissionPlannerResolvedEngine =
   | "claude_cli"
@@ -824,7 +822,9 @@ export type UserSteeringDirective = {
   targetStepKey?: string | null;
 };
 
-export type SteerMissionArgs = UserSteeringDirective;
+export type SteerMissionArgs = UserSteeringDirective & {
+  interventionId?: string | null;
+};
 
 export type SteerMissionResult = {
   acknowledged: boolean;

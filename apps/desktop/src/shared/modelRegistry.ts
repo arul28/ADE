@@ -29,6 +29,7 @@ export type ModelCapabilities = {
 export type ModelDescriptor = {
   id: string;
   shortId: string;
+  aliases?: string[];
   displayName: string;
   family: ProviderFamily;
   authTypes: AuthType[];
@@ -313,6 +314,44 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
 
   // ---- OpenAI (API key direct) ----
   {
+    id: "openai/gpt-5.4",
+    shortId: "gpt-5.4",
+    aliases: ["gpt-5.4-2026-03-05"],
+    displayName: "GPT-5.4",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
+    color: "#10A37F",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.4",
+    isCliWrapped: false,
+    inputPricePer1M: 2.5,
+    outputPricePer1M: 15,
+    costTier: "high",
+  },
+  {
+    id: "openai/gpt-5.4-pro",
+    shortId: "gpt-5.4-pro",
+    aliases: ["gpt-5.4-pro-2026-03-05"],
+    displayName: "GPT-5.4 Pro",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["medium", "high", "xhigh"],
+    color: "#0F766E",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.4-pro",
+    isCliWrapped: false,
+    inputPricePer1M: 30,
+    outputPricePer1M: 180,
+    costTier: "very_high",
+  },
+  {
     id: "openai/gpt-4.1",
     shortId: "gpt-4.1",
     displayName: "GPT-4.1",
@@ -535,13 +574,22 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
 
 let byId = new Map<string, ModelDescriptor>();
 let byShortId = new Map<string, ModelDescriptor>();
+let byAlias = new Map<string, ModelDescriptor>();
+let bySdkModelId = new Map<string, ModelDescriptor>();
 
 function rebuildIndexes() {
   byId = new Map<string, ModelDescriptor>();
   byShortId = new Map<string, ModelDescriptor>();
+  byAlias = new Map<string, ModelDescriptor>();
+  bySdkModelId = new Map<string, ModelDescriptor>();
   for (const m of MODEL_REGISTRY) {
     byId.set(m.id, m);
     byShortId.set(m.shortId, m);
+    bySdkModelId.set(m.sdkModelId, m);
+    for (const alias of m.aliases ?? []) {
+      const normalized = alias.trim().toLowerCase();
+      if (normalized.length) byAlias.set(normalized, m);
+    }
   }
 }
 
@@ -604,7 +652,7 @@ export function getAvailableModels(
 
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
   const normalized = alias.trim().toLowerCase();
-  return byId.get(normalized) ?? byShortId.get(normalized);
+  return byId.get(normalized) ?? byShortId.get(normalized) ?? byAlias.get(normalized);
 }
 
 export function resolveModelDescriptor(modelRef: string): ModelDescriptor | undefined {
@@ -674,12 +722,9 @@ export function enrichModelRegistry(enrichments: Map<string, ModelEnrichment>): 
  * then falls back to the static pricing in MODEL_REGISTRY.
  */
 export function getModelPricing(sdkModelId: string): { input: number; output: number } | undefined {
-  // Check dynamic overrides first
-  if (_dynamicPricingOverrides[sdkModelId]) {
-    return _dynamicPricingOverrides[sdkModelId];
-  }
-  // Fall back to registry data
-  const model = MODEL_REGISTRY.find((m) => m.sdkModelId === sdkModelId);
+  const override = _dynamicPricingOverrides[sdkModelId];
+  if (override) return override;
+  const model = bySdkModelId.get(sdkModelId);
   if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
     return { input: model.inputPricePer1M, output: model.outputPricePer1M };
   }

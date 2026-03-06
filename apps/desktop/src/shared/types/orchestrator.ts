@@ -986,7 +986,6 @@ export type StartMissionRunWithAIArgs = {
   defaultExecutorKind?: OrchestratorExecutorKind;
   defaultRetryLimit?: number;
   metadata?: Record<string, unknown> | null;
-  forcePlanReviewBypass?: boolean;
   plannerProvider?: OrchestratorPlannerProvider;
   defaultModelId?: ModelId;
   /** Team runtime configuration */

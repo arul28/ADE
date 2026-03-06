@@ -741,6 +741,287 @@ h6 {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Right Edge Floating Pane
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-right-pane-launcher {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+  border-right: none;
+  border-radius: 12px 0 0 12px;
+  color: color-mix(in srgb, var(--color-fg) 88%, var(--color-accent));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-overlay) 96%, var(--color-accent) 4%),
+    color-mix(in srgb, var(--color-surface-recessed) 95%, var(--color-accent) 5%)
+  );
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow:
+    0 8px 20px -14px color-mix(in srgb, var(--color-accent) 44%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 10%, transparent);
+  transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, color 120ms ease, background 180ms ease;
+  cursor: pointer;
+  outline: none;
+}
+
+.ade-right-pane-launcher:hover {
+  color: var(--color-fg);
+  box-shadow:
+    0 12px 26px -14px color-mix(in srgb, var(--color-accent) 50%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.ade-right-pane-launcher:focus-visible {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 36%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent),
+    0 12px 26px -14px color-mix(in srgb, var(--color-accent) 48%, transparent);
+}
+
+.ade-right-pane-launcher.dragging {
+  cursor: ns-resize;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 56%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+.ade-right-floating-pane {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 14%, var(--color-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-overlay) 94%, var(--color-accent) 6%),
+    color-mix(in srgb, var(--color-surface) 96%, var(--color-bg) 4%)
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow:
+    0 18px 44px -26px color-mix(in srgb, black 68%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 8%, transparent);
+  overflow: hidden;
+}
+
+.ade-right-floating-pane.dragging {
+  box-shadow:
+    0 20px 50px -24px color-mix(in srgb, black 74%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.ade-right-floating-pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 10%, var(--color-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-accent) 5%, var(--color-surface-raised)),
+    color-mix(in srgb, var(--color-surface-raised) 92%, transparent)
+  );
+  cursor: grab;
+  user-select: none;
+}
+
+.ade-right-floating-pane.dragging .ade-right-floating-pane-toolbar {
+  cursor: grabbing;
+}
+
+.ade-right-pane-toolbar-left {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.ade-right-pane-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ade-right-pane-lane-select {
+  height: 28px;
+  min-width: 130px;
+  max-width: 190px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 14%, var(--color-border));
+  background: color-mix(in srgb, var(--color-surface-recessed) 80%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0 8px;
+  outline: none;
+  appearance: none;
+}
+
+.ade-right-pane-view-tabs {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ade-right-pane-view-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.ade-right-pane-view-tab {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.ade-right-pane-view-tab:hover {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.ade-right-pane-view-tab.active {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+}
+
+.ade-right-floating-pane-hide {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 12%, var(--color-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-surface-recessed) 76%, transparent);
+  color: color-mix(in srgb, var(--color-muted-fg) 82%, var(--color-fg));
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.ade-right-floating-pane-hide:hover {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.ade-right-pane-workspace {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ade-right-pane-empty-state {
+  height: 100%;
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-top: 1px solid color-mix(in srgb, var(--color-accent) 8%, var(--color-border));
+  color: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg));
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+
+.ade-right-pane-resize-handle {
+  position: absolute;
+  z-index: 6;
+}
+
+.ade-right-pane-resize-handle.dir-n {
+  top: -4px;
+  left: 10px;
+  right: 10px;
+  height: 8px;
+  cursor: n-resize;
+}
+
+.ade-right-pane-resize-handle.dir-s {
+  bottom: -4px;
+  left: 10px;
+  right: 10px;
+  height: 8px;
+  cursor: s-resize;
+}
+
+.ade-right-pane-resize-handle.dir-e {
+  right: -4px;
+  top: 10px;
+  bottom: 10px;
+  width: 8px;
+  cursor: e-resize;
+}
+
+.ade-right-pane-resize-handle.dir-w {
+  left: -4px;
+  top: 10px;
+  bottom: 10px;
+  width: 8px;
+  cursor: w-resize;
+}
+
+.ade-right-pane-resize-handle.dir-ne {
+  right: -5px;
+  top: -5px;
+  width: 12px;
+  height: 12px;
+  cursor: ne-resize;
+}
+
+.ade-right-pane-resize-handle.dir-nw {
+  left: -5px;
+  top: -5px;
+  width: 12px;
+  height: 12px;
+  cursor: nw-resize;
+}
+
+.ade-right-pane-resize-handle.dir-se {
+  right: -5px;
+  bottom: -5px;
+  width: 12px;
+  height: 12px;
+  cursor: se-resize;
+}
+
+.ade-right-pane-resize-handle.dir-sw {
+  left: -5px;
+  bottom: -5px;
+  width: 12px;
+  height: 12px;
+  cursor: sw-resize;
+}
+
+/* ═══════════════════════════════════════════════════════════
    Pane Gutters (inside floating pane containers)
    ═══════════════════════════════════════════════════════════ */
 

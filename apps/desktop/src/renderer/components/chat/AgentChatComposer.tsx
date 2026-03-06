@@ -35,7 +35,7 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
     <div
       className={cn(
         "pointer-events-none absolute z-50 w-[260px]",
-        "border border-violet-500/20 bg-[#0D0B13]",
+        "border border-border/20 bg-surface-overlay/95 shadow-[var(--shadow-panel)] backdrop-blur-md",
         "border-l-2",
         colors.border
       )}
@@ -46,7 +46,7 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
       }}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 border-b border-violet-500/10 px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-border/12 px-3 py-2">
         <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-fg/85">
           {opt.label}
         </span>
@@ -108,8 +108,7 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
 
       {/* Arrow pointing down */}
       <div
-        className="absolute left-1/2 top-full -translate-x-1/2 border-[5px] border-transparent border-t-violet-500/20"
-        style={{ borderTopColor: "rgba(139, 92, 246, 0.20)" }}
+        className="absolute left-1/2 top-full -translate-x-1/2 border-[5px] border-transparent border-t-border/30"
       />
       {/* Arrow inner fill */}
       <div
@@ -117,7 +116,7 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
         style={{
           borderLeft: "4px solid transparent",
           borderRight: "4px solid transparent",
-          borderTop: "4px solid #0D0B13",
+          borderTop: "4px solid var(--color-surface-overlay)",
           marginTop: "-1px",
         }}
       />
@@ -313,27 +312,20 @@ export function AgentChatComposer({
     onDraftChange(`${cmd.command} `);
   };
 
+  const packMatches = (a: ContextPackOption, b: ContextPackOption) =>
+    a.scope === b.scope && a.featureKey === b.featureKey && a.missionId === b.missionId;
+
   const toggleContextPack = (pack: ContextPackOption) => {
-    const isSelected = selectedContextPacks.some(
-      (p) => p.scope === pack.scope && p.featureKey === pack.featureKey && p.missionId === pack.missionId
-    );
+    const isSelected = selectedContextPacks.some((p) => packMatches(p, pack));
     if (isSelected) {
-      onContextPacksChange(
-        selectedContextPacks.filter(
-          (p) => !(p.scope === pack.scope && p.featureKey === pack.featureKey && p.missionId === pack.missionId)
-        )
-      );
+      onContextPacksChange(selectedContextPacks.filter((p) => !packMatches(p, pack)));
     } else {
       onContextPacksChange([...selectedContextPacks, pack]);
     }
   };
 
   const removeContextPack = (pack: ContextPackOption) => {
-    onContextPacksChange(
-      selectedContextPacks.filter(
-        (p) => !(p.scope === pack.scope && p.featureKey === pack.featureKey && p.missionId === pack.missionId)
-      )
-    );
+    onContextPacksChange(selectedContextPacks.filter((p) => !packMatches(p, pack)));
   };
 
   const permissionOptions = getPermissionOptions({
@@ -486,7 +478,7 @@ export function AgentChatComposer({
       <div className="relative">
         {/* Slash command picker */}
         {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-          <div className="absolute bottom-full left-0 z-10 mb-0 w-72 border border-border/15 bg-[#0F0D14]/98 shadow-[0_-8px_32px_-8px_rgba(0,0,0,0.7)]">
+          <div className="absolute bottom-full left-0 z-10 mb-0 w-72 border border-border/15 bg-surface-overlay/95 shadow-[var(--shadow-float)] backdrop-blur-md">
             <div className="border-b border-border/8 px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">
               Commands
             </div>
@@ -512,16 +504,14 @@ export function AgentChatComposer({
 
         {/* Context pack picker */}
         {contextPickerOpen ? (
-          <div className="absolute bottom-full left-0 z-10 mb-0 w-80 border border-border/15 bg-[#0F0D14]/98 shadow-[0_-8px_32px_-8px_rgba(0,0,0,0.7)]">
+          <div className="absolute bottom-full left-0 z-10 mb-0 w-80 border border-border/15 bg-surface-overlay/95 shadow-[var(--shadow-float)] backdrop-blur-md">
             <div className="border-b border-border/8 px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">
               Context Packs
             </div>
             <div className="max-h-52 overflow-auto py-1">
               {contextPacks.length ? (
                 contextPacks.map((pack, index) => {
-                  const isSelected = selectedContextPacks.some(
-                    (p) => p.scope === pack.scope && p.featureKey === pack.featureKey && p.missionId === pack.missionId
-                  );
+                  const isSelected = selectedContextPacks.some((p) => packMatches(p, pack));
                   return (
                     <button
                       key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`}

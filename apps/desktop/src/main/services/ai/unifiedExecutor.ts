@@ -97,6 +97,8 @@ export async function* executeUnified(
       memoryService: opts.memoryService as any,
       projectId: opts.projectId,
       runId: opts.runId,
+      stepId: opts.stepId,
+      agentScopeOwnerId: opts.attemptId,
     });
   }
 

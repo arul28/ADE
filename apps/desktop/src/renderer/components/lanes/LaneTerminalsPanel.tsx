@@ -17,7 +17,8 @@ import { TerminalSettingsDialog, readLaunchTracked, persistLaunchTracked } from 
 import { TilingLayout } from "./TilingLayout";
 import { useNavigate } from "react-router-dom";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
-import { isChatToolType } from "../../lib/sessions";
+import { isChatToolType, primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
+import { ToolLogo } from "../terminals/ToolLogos";
 
 const tabTrigger =
   "flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:bg-accent/10 data-[state=active]:ring-1 data-[state=active]:ring-accent/50";
@@ -31,14 +32,10 @@ function statusDot(indicator: ReturnType<typeof sessionIndicatorState>) {
 }
 
 function sessionTabLabel(session: TerminalSessionSummary): string {
-  const base = ((session.goal ?? "").trim() || session.title).trim() || "session";
-  if (session.status === "running" && session.ptyId) return base;
-
-  const tool = session.toolType ?? "shell";
-  const outcome = session.exitCode != null ? `exit ${session.exitCode}` : session.status;
-  const summary = (session.summary ?? "").trim();
-  if (summary) return `${tool} · ${outcome} · ${summary}`.slice(0, 180);
-  return `${tool} · ${outcome} · ${base}`.slice(0, 180);
+  const base = primarySessionLabel(session);
+  const secondary = secondarySessionLabel(session);
+  if (!secondary) return base.slice(0, 180);
+  return `${base} · ${secondary}`.slice(0, 180);
 }
 
 function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
@@ -50,6 +47,12 @@ function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
   if (id === "cursor") return "cursor";
   if (id === "continue") return "continue";
   return "other";
+}
+
+function profileButtonLabel(profile: TerminalLaunchProfile): string {
+  if ((DEFAULT_PROFILE_IDS as readonly string[]).includes(profile.id)) return "Launch session";
+  const name = String(profile.name ?? "").trim();
+  return name.length ? name : "Launch session";
 }
 
 export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string | null } = {}) {
@@ -307,29 +310,28 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   key={profile.id}
                   variant={profile.id === "shell" ? "outline" : "primary"}
                   size="sm"
-                  className="h-7 px-2 text-xs"
+                  className="h-7 w-7 p-0"
                   style={profile.color ? { backgroundColor: profile.color, borderColor: profile.color, color: "#fff" } : undefined}
                   onClick={() => launchFromProfile(profile)}
-                  title={profile.command ? `${profile.name} (${profile.command})` : profile.name}
+                  title={profile.command ? `${profileButtonLabel(profile)} (${profile.command})` : profileButtonLabel(profile)}
+                  aria-label={profileButtonLabel(profile)}
                 >
-                  {profile.color ? <span className="h-2 w-2 rounded-full bg-white/40" /> : null}
-                  {profile.name}
+                  <ToolLogo toolType={toolTypeFromProfileId(profile.id)} size={14} className={profile.color ? "text-white" : undefined} />
                 </Button>
               ))}
           </div>
           <Button
             variant="outline"
             size="sm"
-            className="h-7 px-2 text-xs"
-            title="Open in Terminals tab"
+            className="h-7 w-7 p-0"
+            title="Open workspace view"
             onClick={() => {
               navigate(`/work?laneId=${encodeURIComponent(laneId)}&status=running`);
             }}
           >
             <ArrowSquareOut size={14} />
-            Terminals
           </Button>
-          <Button variant="outline" size="sm" className="h-7 w-7 p-0" title="Terminal settings" onClick={openSettings}>
+          <Button variant="outline" size="sm" className="h-7 w-7 p-0" title="Session settings" onClick={openSettings}>
             <GearSix size={16} />
           </Button>
         </div>
@@ -337,7 +339,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
 
       {sessions.length === 0 ? (
         <div className="flex min-h-0 flex-1 items-center justify-center p-3">
-          <EmptyState title="No sessions yet" description="Start a terminal session for this lane." />
+          <EmptyState title="No sessions yet" description="Start a workspace session for this lane." />
         </div>
       ) : viewMode === "tabs" ? (
         <Tabs.Root
@@ -361,6 +363,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   className={cn("h-2 w-2 rounded-full", !profileColor && dotClass, dotSpin && "animate-spin")}
                   style={profileColor ? { backgroundColor: profileColor } : undefined}
                 />
+                <ToolLogo toolType={s.toolType} size={12} />
                 <span className="max-w-[260px] truncate">{sessionTabLabel(s)}</span>
                 {!s.tracked ? <span className="rounded border border-border px-1 text-[11px] text-muted-fg">no ctx</span> : null}
                 {s.status === "running" && s.ptyId ? (
@@ -398,8 +401,8 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
             {current && current.status === "running" && current.ptyId ? (
               <div className="flex items-center justify-between gap-2 rounded border border-border bg-card/50 px-2 py-1 mb-2 shrink-0">
                 <div className="min-w-0 flex items-center gap-2">
-                  <div className="truncate text-xs font-semibold text-fg">{current.title}</div>
-                  {current.toolType ? <Chip className="text-[11px]">{current.toolType}</Chip> : null}
+                  <ToolLogo toolType={current.toolType} size={13} />
+                  <div className="truncate text-xs font-semibold text-fg">{primarySessionLabel(current)}</div>
                   {!current.tracked ? <Chip className="text-[11px]">no context</Chip> : null}
                 </div>
                 <div className="shrink-0 text-xs text-muted-fg">{new Date(current.startedAt).toLocaleString()}</div>
@@ -423,13 +426,13 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   )}
                   {current && current.status === "running" && current.ptyId ? null : (
                     <div className="absolute inset-0 flex items-center justify-center rounded border border-border bg-card/20 p-3">
-                      <EmptyState title="Session not running" description="Pick a running session tab to view its terminal." />
+                      <EmptyState title="Session not running" description="Pick a running session tab to view its output." />
                     </div>
                   )}
                 </div>
               ) : (
                 <div className="flex h-full items-center justify-center rounded border border-border bg-card/20 p-3">
-                  <EmptyState title="Session not running" description="Pick a running session tab to view its terminal." />
+                  <EmptyState title="Session not running" description="Pick a running session tab to view its output." />
                 </div>
               )}
             </div>

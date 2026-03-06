@@ -869,9 +869,9 @@ export function LanesPage() {
   const openRebaseDetails = useCallback(() => { navigate("/prs?tab=rebase"); }, [navigate]);
 
   const openRebaseConflictResolver = useCallback((laneId: string, parentLaneId: string | null) => {
-    const search = new URLSearchParams({ tab: "merge-one", laneAId: laneId });
-    if (parentLaneId) search.set("laneBId", parentLaneId);
-    navigate(`/conflicts?${search.toString()}`);
+    const search = new URLSearchParams({ tab: "rebase", laneId });
+    if (parentLaneId) search.set("parentLaneId", parentLaneId);
+    navigate(`/prs?${search.toString()}`);
   }, [navigate]);
 
   /* ---- Detail handlers ---- */

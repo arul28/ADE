@@ -86,6 +86,121 @@ function resolveEvaluationProvider(attempt: {
   return "claude";
 }
 
+function resolveWorkerLifecyclePhaseLabel(step: OrchestratorRunGraph["steps"][number] | undefined): "planning" | "validation" | "implementation" {
+  const stepMeta = isRecord(step?.metadata) ? step?.metadata : {};
+  const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+  const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+  const readOnlyExecution = stepMeta.readOnlyExecution === true;
+  if (phaseKey === "planning" || stepType === "planning" || readOnlyExecution) {
+    return "planning";
+  }
+  if (phaseKey === "validation" || stepType === "validation") {
+    return "validation";
+  }
+  return "implementation";
+}
+
+function buildWorkerLifecycleStartMessage(step: OrchestratorRunGraph["steps"][number] | undefined): string {
+  const phaseLabel = resolveWorkerLifecyclePhaseLabel(step);
+  if (phaseLabel === "planning") {
+    return "I’m starting the planning pass now. I’m reviewing the relevant files and I’ll send a concrete plan back to the coordinator.";
+  }
+  if (phaseLabel === "validation") {
+    return "I’m starting validation now. I’m checking the completed work against the mission requirements.";
+  }
+  return "I’m starting this task now. I’m making the requested changes and I’ll report back with what changed.";
+}
+
+function buildWorkerLifecycleCompletionMessage(
+  step: OrchestratorRunGraph["steps"][number] | undefined,
+  summary: string | null | undefined,
+): string {
+  const compactSummary = typeof summary === "string"
+    ? summary.replace(/\s+/g, " ").trim()
+    : "";
+  const clippedSummary = compactSummary.length > 0 ? compactSummary.slice(0, 180) : "";
+  const phaseLabel = resolveWorkerLifecyclePhaseLabel(step);
+  if (phaseLabel === "planning") {
+    return clippedSummary.length > 0
+      ? `I finished the planning pass and reported back: ${clippedSummary}`
+      : "I finished the planning pass and sent the coordinator a concrete plan.";
+  }
+  if (phaseLabel === "validation") {
+    return clippedSummary.length > 0
+      ? `I finished validation and reported back: ${clippedSummary}`
+      : "I finished validation and reported the result back to the coordinator.";
+  }
+  return clippedSummary.length > 0
+    ? `I finished this task and reported back: ${clippedSummary}`
+    : "I finished this task and reported the outcome back to the coordinator.";
+}
+
+function buildWorkerLifecycleFailureMessage(attempt: {
+  errorMessage: string | null;
+}): string {
+  const errorText = typeof attempt.errorMessage === "string"
+    ? attempt.errorMessage.replace(/\s+/g, " ").trim()
+    : "";
+  if (!errorText.length) {
+    return "I hit an issue while working on this task and reported it back to the coordinator.";
+  }
+  return `I hit an issue while working on this task and reported it back: ${errorText.slice(0, 180)}`;
+}
+
+function appendWorkerThreadLifecycleMessage(args: {
+  ctx: OrchestratorContext;
+  deps: UpdateWorkerStateDeps;
+  missionId: string;
+  attempt: OrchestratorRunGraph["attempts"][number];
+  step: OrchestratorRunGraph["steps"][number] | undefined;
+  stepTitle: string;
+  stepKey: string | null;
+  content: string;
+  metadataSource: string;
+}): void {
+  const thread = ensureThreadForTarget(args.ctx, {
+    missionId: args.missionId,
+    target: {
+      kind: "worker",
+      runId: args.attempt.runId,
+      stepId: args.attempt.stepId,
+      stepKey: args.stepKey,
+      attemptId: args.attempt.id,
+      sessionId: args.attempt.executorSessionId ?? null,
+      laneId: args.step?.laneId ?? null,
+    },
+    fallbackTitle: `Worker: ${args.stepTitle}`,
+  });
+
+  args.deps.appendChatMessage({
+    id: randomUUID(),
+    missionId: args.missionId,
+    threadId: thread.id,
+    role: "worker",
+    content: args.content,
+    timestamp: nowIso(),
+    stepKey: args.stepKey,
+    target: {
+      kind: "worker",
+      runId: args.attempt.runId,
+      stepId: args.attempt.stepId,
+      stepKey: args.stepKey,
+      attemptId: args.attempt.id,
+      sessionId: args.attempt.executorSessionId ?? null,
+      laneId: args.step?.laneId ?? null,
+    },
+    visibility: "full",
+    deliveryState: "delivered",
+    sourceSessionId: args.attempt.executorSessionId ?? null,
+    attemptId: args.attempt.id,
+    laneId: args.step?.laneId ?? null,
+    runId: args.attempt.runId,
+    metadata: {
+      source: args.metadataSource,
+    },
+  });
+}
+
 export function upsertWorkerState(
   ctx: OrchestratorContext,
   attemptId: string,
@@ -651,7 +766,7 @@ export function updateWorkerStateFromEventCtx(
         emitOrchestratorMessage(
           ctx,
           graph.run.missionId,
-          `Worker started on step "${stepTitle}" using ${attempt.executorKind}.`,
+          `Started worker "${stepTitle}". It is now working on this step.`,
           stepKey,
           null,
           { appendChatMessage: deps.appendChatMessage }
@@ -675,6 +790,17 @@ export function updateWorkerStateFromEventCtx(
         } catch (_threadErr) {
           /* best-effort */
         }
+        appendWorkerThreadLifecycleMessage({
+          ctx,
+          deps,
+          missionId: graph.run.missionId,
+          attempt,
+          step: stepForAttempt,
+          stepTitle,
+          stepKey,
+          content: buildWorkerLifecycleStartMessage(stepForAttempt),
+          metadataSource: "worker_lifecycle_started",
+        });
       }
       recordMissionMetricSample(ctx, {
         missionId: graph.run.missionId,
@@ -693,6 +819,8 @@ export function updateWorkerStateFromEventCtx(
       deletePersistedAttemptRuntimeState(ctx, attempt.id);
       const outcomeTags = extractOutcomeTags(attempt);
       const digest = emitWorkerDigest(ctx, buildWorkerDigestFromAttempt({ graph, attempt }));
+      const existing = ctx.workerStates.get(attempt.id);
+      const shouldAnnounceCompletion = !existing || existing.state !== "completed";
       upsertWorkerState(ctx, attempt.id, {
         stepId: attempt.stepId,
         runId: attempt.runId,
@@ -705,14 +833,27 @@ export function updateWorkerStateFromEventCtx(
       const resultSummary = attempt.resultEnvelope?.summary
         ? ` — ${attempt.resultEnvelope.summary.slice(0, 120)}`
         : "";
-      emitOrchestratorMessage(
-        ctx,
-        graph.run.missionId,
-        `Step "${stepTitle}" completed${resultSummary}`,
-        stepKey,
-        null,
-        { appendChatMessage: deps.appendChatMessage }
-      );
+      if (shouldAnnounceCompletion) {
+        emitOrchestratorMessage(
+          ctx,
+          graph.run.missionId,
+          `Finished "${stepTitle}"${resultSummary}`,
+          stepKey,
+          null,
+          { appendChatMessage: deps.appendChatMessage }
+        );
+        appendWorkerThreadLifecycleMessage({
+          ctx,
+          deps,
+          missionId: graph.run.missionId,
+          attempt,
+          step: stepForAttempt,
+          stepTitle,
+          stepKey,
+          content: buildWorkerLifecycleCompletionMessage(stepForAttempt, attempt.resultEnvelope?.summary),
+          metadataSource: "worker_lifecycle_completed",
+        });
+      }
       if (digest.tokens?.total != null) {
         recordMissionMetricSample(ctx, {
           missionId: graph.run.missionId,
@@ -801,6 +942,8 @@ export function updateWorkerStateFromEventCtx(
       deletePersistedAttemptRuntimeState(ctx, attempt.id);
       const outcomeTags = extractOutcomeTags(attempt);
       const digest = emitWorkerDigest(ctx, buildWorkerDigestFromAttempt({ graph, attempt }));
+      const existing = ctx.workerStates.get(attempt.id);
+      const shouldAnnounceFailure = !existing || existing.state !== "failed";
       upsertWorkerState(ctx, attempt.id, {
         stepId: attempt.stepId,
         runId: attempt.runId,
@@ -815,18 +958,31 @@ export function updateWorkerStateFromEventCtx(
       const step = graph.steps.find((s) => s.id === attempt.stepId);
       const retryQueued = isRetryQueuedForStep(step);
       const retriesLeft = step ? Math.max(0, step.retryLimit - step.retryCount) : 0;
-      emitOrchestratorMessage(
-        ctx,
-        graph.run.missionId,
-        `Step "${stepTitle}" failed: ${attempt.errorMessage ?? "unknown error"}. ${
-          retryQueued
-            ? `Retry scheduled${retriesLeft > 0 ? ` (${retriesLeft} retries left).` : "."}`
-            : "No retries remaining."
-        }`,
-        stepKey,
-        null,
-        { appendChatMessage: deps.appendChatMessage }
-      );
+      if (shouldAnnounceFailure) {
+        emitOrchestratorMessage(
+          ctx,
+          graph.run.missionId,
+          `Step "${stepTitle}" failed: ${attempt.errorMessage ?? "unknown error"}. ${
+            retryQueued
+              ? `Retry scheduled${retriesLeft > 0 ? ` (${retriesLeft} retries left).` : "."}`
+              : "No retries remaining."
+          }`,
+          stepKey,
+          null,
+          { appendChatMessage: deps.appendChatMessage }
+        );
+        appendWorkerThreadLifecycleMessage({
+          ctx,
+          deps,
+          missionId: graph.run.missionId,
+          attempt,
+          step: stepForAttempt,
+          stepTitle,
+          stepKey,
+          content: buildWorkerLifecycleFailureMessage(attempt),
+          metadataSource: "worker_lifecycle_failed",
+        });
+      }
       recordMissionMetricSample(ctx, {
         missionId: graph.run.missionId,
         runId: attempt.runId,

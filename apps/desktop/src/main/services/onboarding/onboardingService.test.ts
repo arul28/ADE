@@ -66,7 +66,6 @@ describe("onboardingService integration", () => {
         projectId: "proj",
         baseRef: "main",
         laneService: { list: async () => [] } as any,
-        packService: { refreshProjectPack: async () => {}, refreshLanePack: async () => {} } as any,
         projectConfigService: createInMemoryProjectConfigService()
       });
 
@@ -82,41 +81,4 @@ describe("onboardingService integration", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
-
-  it("generates initial packs for project + lane ids", async () => {
-    const calls: Array<{ kind: "project" | "lane"; args: any }> = [];
-
-    const service = createOnboardingService({
-      db: createInMemoryAdeDb(),
-      logger: createLogger(),
-      projectRoot: "/tmp",
-      projectId: "proj",
-      baseRef: "main",
-      laneService: {
-        list: async () => [
-          { id: "lane1", archivedAt: null },
-          { id: "lane2", archivedAt: null }
-        ]
-      } as any,
-      packService: {
-        refreshProjectPack: async (args: any) => {
-          calls.push({ kind: "project", args });
-        },
-        refreshLanePack: async (args: any) => {
-          calls.push({ kind: "lane", args });
-        }
-      } as any,
-      projectConfigService: createInMemoryProjectConfigService()
-    });
-
-    await service.generateInitialPacks();
-
-    expect(calls[0]).toEqual({ kind: "project", args: { reason: "onboarding_init" } });
-    const laneCalls = calls.filter((c) => c.kind === "lane");
-    expect(laneCalls.map((c) => c.args)).toEqual([
-      { laneId: "lane1", reason: "onboarding_init" },
-      { laneId: "lane2", reason: "onboarding_init" }
-    ]);
-  });
 });
-

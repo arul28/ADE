@@ -1,0 +1,64 @@
+model = "gpt-5.3-codex"
+model_reasoning_effort = "xhigh"
+personality = "friendly"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+web_search = "live"
+
+[projects."/Users/admin/Projects/Versic"]
+trust_level = "trusted"
+
+[projects."/Users/admin/Projects/ADE"]
+trust_level = "trusted"
+
+[mcp_servers.context7]
+command = "npx"
+args = [ "-y", "@upstash/context7-mcp", "--api-key", "ctx7sk-c4b516a0-2407-457e-a7c8-e95717070f68" ]
+startup_timeout_sec = 20
+
+[mcp_servers.playwright]
+command = "npx"
+args = [ "@playwright/mcp@latest" ]
+
+[mcp_servers.posthog]
+command = "npx"
+args = [ "-y", "mcp-remote@latest", "https://mcp.posthog.com/sse", "--header", "Authorization:${POSTHOG_AUTH_HEADER}" ]
+
+[mcp_servers.posthog.env]
+POSTHOG_AUTH_HEADER = "Bearer phx_YF44kkEAWZdU5tSJMSDR5ATXBPvxnEL7nGJofKjITyofDMS"
+
+[mcp_servers.shadcn]
+command = "npx"
+args = [ "shadcn@latest", "mcp" ]
+
+[mcp_servers.sentry]
+command = "npx"
+args = [ "-y", "mcp-remote@latest", "https://mcp.sentry.dev/mcp" ]
+
+[mcp_servers.linear]
+url = "https://mcp.linear.app/mcp"
+
+[mcp_servers.pencil]
+command = "/Applications/Pencil.app/Contents/Resources/app.asar.unpacked/out/mcp-server-darwin-arm64"
+args = [ "--app", "desktop" ]
+
+[notice]
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+
+[notice.model_migrations]
+"gpt-5.2" = "gpt-5.2-codex"
+"gpt-5.1-codex-max" = "gpt-5.2-codex"
+
+[sandbox_workspace_write]
+network_access = true
+writable_roots = [
+  "/Users/admin/.codex/memories",
+  "/Users/admin/Projects/ADE",
+  "/Users/admin/Projects/ADE/.git",
+  "/Users/admin/Projects/ADE/.git/worktrees",
+  "/tmp",
+  "/var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T",
+]
+
+[features]
+multi_agent = true

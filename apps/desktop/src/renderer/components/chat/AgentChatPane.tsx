@@ -15,6 +15,7 @@ import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 import { isChatToolType } from "../../lib/sessions";
+import { ToolLogo } from "../terminals/ToolLogos";
 
 type PendingApproval = {
   itemId: string;
@@ -212,6 +213,66 @@ function resolveCliRegistryModelId(provider: "codex" | "claude", value: string |
   return match?.id ?? null;
 }
 
+function chatToolTypeForProvider(provider: string | null | undefined): "codex-chat" | "claude-chat" | "ai-chat" {
+  if (provider === "codex") return "codex-chat";
+  if (provider === "claude") return "claude-chat";
+  return "ai-chat";
+}
+
+function normalizeChatLabel(raw: string | null | undefined): string | null {
+  const normalized = String(raw ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length ? normalized : null;
+}
+
+function isLowSignalChatLabel(raw: string | null | undefined): boolean {
+  const normalized = normalizeChatLabel(raw);
+  if (!normalized) return false;
+
+  const collapsed = normalized
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .toLowerCase();
+
+  if (!collapsed.length) return true;
+  if (collapsed.includes("ai apicallerror")) return true;
+
+  if (/^(session closed|chat completed)\b/u.test(collapsed)) {
+    return true;
+  }
+
+  if (/^(completed?|done|finished|resolved|success)\b/u.test(collapsed)) {
+    const remainder = collapsed.replace(/^(completed?|done|finished|resolved|success)\b/u, "").trim();
+    const remainderTokens = remainder.length ? remainder.split(/\s+/).filter(Boolean) : [];
+    const genericRemainder = remainderTokens.every((token) =>
+      /^(ok|okay|ready|hello|hi|test|yes|no|true|false|response|reply|result|output|pass|passed)$/u.test(token)
+    );
+    return !remainderTokens.length || remainderTokens.length <= 2 || genericRemainder;
+  }
+
+  return false;
+}
+
+function preferredChatLabel(raw: string | null | undefined): string | null {
+  const normalized = normalizeChatLabel(raw);
+  if (!normalized || isLowSignalChatLabel(normalized)) return null;
+  return normalized;
+}
+
+function chatSessionTitle(session: AgentChatSessionSummary): string {
+  const explicitTitle = preferredChatLabel(session.title);
+  if (explicitTitle) return explicitTitle;
+
+  const explicitGoal = preferredChatLabel(session.goal);
+  if (explicitGoal) return explicitGoal;
+
+  const summary = preferredChatLabel(session.summary);
+  if (summary) return summary;
+
+  const descriptor = session.modelId ? getModelById(session.modelId) : null;
+  return descriptor?.displayName ?? `${session.provider}/${session.model}`;
+}
+
 function hasConfiguredNonCliAuth(model: ModelDescriptor, detectedAuth: AiDetectedAuth[]): boolean {
   return model.authTypes.some((authType) => {
     if (authType === "api-key") {
@@ -234,8 +295,18 @@ function deriveConfiguredModelIdsFromStatus(status: {
   availableProviders: { codex: boolean; claude: boolean };
   models: { codex: Array<{ id: string }>; claude: Array<{ id: string }> };
   detectedAuth?: AiDetectedAuth[];
+  availableModelIds?: string[];
 }): string[] {
   const available = new Set<string>();
+
+  for (const modelId of status.availableModelIds ?? []) {
+    const normalized = String(modelId ?? "").trim();
+    if (!normalized.length) continue;
+    const descriptor = getModelById(normalized);
+    if (descriptor && !descriptor.deprecated) {
+      available.add(descriptor.id);
+    }
+  }
 
   if (status.availableProviders.codex) {
     for (const model of status.models.codex ?? []) {
@@ -252,7 +323,7 @@ function deriveConfiguredModelIdsFromStatus(status: {
   }
 
   const detectedAuth = status.detectedAuth ?? [];
-  if (detectedAuth.length) {
+  if (!available.size && detectedAuth.length) {
     for (const model of MODEL_REGISTRY) {
       if (model.deprecated || model.isCliWrapped) continue;
       if (hasConfiguredNonCliAuth(model, detectedAuth)) {
@@ -290,8 +361,10 @@ export function AgentChatPane({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
   const draftSelectionLockedRef = useRef(false);
+  const optimisticSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
@@ -310,6 +383,18 @@ export function AgentChatPane({
   const pendingApproval = selectedSessionId ? (approvalsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
+
+  const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
+    if (!session) return;
+    const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
+    if (nextModelId) {
+      setModelId(nextModelId);
+    }
+    setReasoningEffort(session.reasoningEffort ?? null);
+    if (session.permissionMode) {
+      setPermissionMode(session.permissionMode);
+    }
+  }, []);
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
@@ -387,20 +472,23 @@ export function AgentChatPane({
     const rows = await window.ade.agentChat.list({ laneId });
     rows.sort(byStartedDesc);
     setSessions(rows);
+    for (const row of rows) {
+      optimisticSessionIdsRef.current.delete(row.sessionId);
+    }
 
-    const pinned = lockSessionId ?? initialSessionId ?? null;
-    if (pinned) {
+    if (lockSessionId) {
       draftSelectionLockedRef.current = false;
-      setSelectedSessionId(pinned);
+      setSelectedSessionId(lockSessionId);
       return;
     }
 
     setSelectedSessionId((current) => {
       if (!current && draftSelectionLockedRef.current) return null;
       if (current && rows.some((row) => row.sessionId === current)) return current;
+      if (current && optimisticSessionIdsRef.current.has(current)) return current;
       return rows[0]?.sessionId ?? null;
     });
-  }, [initialSessionId, laneId, lockSessionId]);
+  }, [laneId, lockSessionId]);
 
   const loadHistory = useCallback(async (sessionId: string) => {
     if (loadedHistoryRef.current.has(sessionId)) return;
@@ -432,19 +520,27 @@ export function AgentChatPane({
   }, [lockSessionId]);
 
   useEffect(() => {
+    const nextInitialSessionId = initialSessionId ?? null;
+    if (!nextInitialSessionId) {
+      appliedInitialSessionIdRef.current = null;
+      return;
+    }
+    if (lockSessionId) return;
+    if (appliedInitialSessionIdRef.current === nextInitialSessionId) return;
+    appliedInitialSessionIdRef.current = nextInitialSessionId;
     draftSelectionLockedRef.current = false;
+    setSelectedSessionId(nextInitialSessionId);
+  }, [initialSessionId, lockSessionId]);
+
+  useEffect(() => {
+    draftSelectionLockedRef.current = false;
+    optimisticSessionIdsRef.current.clear();
+    appliedInitialSessionIdRef.current = initialSessionId ?? null;
   }, [laneId]);
 
   useEffect(() => {
-    if (!selectedSession) return;
-    if (selectedSessionModelId) {
-      setModelId(selectedSessionModelId);
-    }
-    setReasoningEffort(selectedSession.reasoningEffort ?? null);
-    if (selectedSession.permissionMode) {
-      setPermissionMode(selectedSession.permissionMode);
-    }
-  }, [selectedSession?.sessionId, selectedSessionModelId]);
+    syncComposerToSession(selectedSession);
+  }, [selectedSession?.sessionId, selectedSessionModelId, syncComposerToSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -641,6 +737,7 @@ export function AgentChatPane({
       permissionMode
     });
     loadedHistoryRef.current.delete(created.id);
+    optimisticSessionIdsRef.current.add(created.id);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(created.id);
     void refreshSessions().catch(() => {});
@@ -682,7 +779,20 @@ export function AgentChatPane({
         Boolean(selectedSessionId)
         && Boolean(selectedSessionModelId)
         && selectedSessionModelId !== modelId;
-      if (!sessionId || selectedModelChanged) {
+      const canRetargetSelectedSession =
+        Boolean(sessionId)
+        && selectedModelChanged
+        && selectedEvents.length === 0
+        && !turnActive;
+      if (canRetargetSelectedSession && sessionId) {
+        await window.ade.agentChat.updateSession({
+          sessionId,
+          modelId,
+          reasoningEffort,
+          permissionMode
+        });
+        await refreshSessions();
+      } else if (!sessionId || selectedModelChanged) {
         sessionId = await createSession();
       }
       if (!sessionId) {
@@ -720,9 +830,12 @@ export function AgentChatPane({
     modelId,
     reasoningEffort,
     refreshSessions,
+    permissionMode,
     selectedContextPacks,
+    selectedEvents.length,
     selectedSessionId,
     selectedSessionModelId,
+    turnActive,
     turnActiveBySession
   ]);
 
@@ -777,6 +890,7 @@ export function AgentChatPane({
   }
 
   const sessionModelDesc = selectedSession?.modelId ? getModelById(selectedSession.modelId) : null;
+  const sessionTitle = selectedSession ? chatSessionTitle(selectedSession) : null;
   const sessionLabel = sessionModelDesc?.displayName
     ?? (selectedSession ? `${selectedSession.provider}/${selectedSession.model}` : null);
   const sessionModelColor = sessionModelDesc?.color ?? selectedModelDesc?.color ?? "#A78BFA";
@@ -789,28 +903,54 @@ export function AgentChatPane({
           <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
             {sessions.map((session, index) => {
               const desc = session.modelId ? getModelById(session.modelId) : MODEL_REGISTRY.find((m) => m.shortId === session.model);
-              const label = desc?.displayName ?? `${session.provider}/${session.model}`;
+              const title = chatSessionTitle(session);
+              const secondaryCandidate = preferredChatLabel(session.summary);
+              const secondary = secondaryCandidate && secondaryCandidate !== title
+                ? secondaryCandidate
+                : desc?.displayName ?? `${session.provider}/${session.model}`;
               const isActive = session.sessionId === selectedSessionId;
+              const isRunning = turnActiveBySession[session.sessionId] ?? false;
               return (
                 <button
                   key={session.sessionId}
                   type="button"
                   className={cn(
-                    "flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 font-mono text-[10px] transition-colors",
+                    "group flex shrink-0 flex-col items-start gap-1 border-b-2 px-3 py-2 text-left transition-colors",
                     isActive
-                      ? "border-b-accent bg-accent/[0.04] text-fg/90"
-                      : "border-b-transparent text-fg/40 hover:bg-border/6 hover:text-fg/60"
+                      ? "border-b-accent bg-accent/[0.06] text-fg/95"
+                      : "border-b-transparent text-fg/50 hover:bg-border/6 hover:text-fg/75"
                   )}
+                  style={{
+                    minWidth: 180,
+                    backgroundImage: isActive
+                      ? `linear-gradient(180deg, ${desc?.color ?? "var(--color-accent)"}14 0%, transparent 100%)`
+                      : undefined,
+                  }}
                   onClick={() => {
                     draftSelectionLockedRef.current = false;
+                    syncComposerToSession(session);
                     setSelectedSessionId(session.sessionId);
                   }}
                 >
-                  {desc?.color ? (
-                    <span className="inline-block h-1.5 w-1.5 flex-shrink-0" style={{ backgroundColor: desc.color }} />
-                  ) : null}
-                  <span className="max-w-[140px] truncate">
-                    {String(index + 1).padStart(2, "0")} · {label}
+                  <span className="flex w-full items-center gap-2">
+                    <span
+                      className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]"
+                      style={{ color: isActive ? desc?.color ?? "var(--color-accent)" : "var(--color-muted-fg)" }}
+                    >
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
+                    <ToolLogo toolType={chatToolTypeForProvider(session.provider)} size={12} />
+                    <span className="truncate font-mono text-[11px] text-fg/90">{title}</span>
+                    <span
+                      className={cn(
+                        "ml-auto h-2 w-2 rounded-full transition-opacity",
+                        isRunning ? "animate-pulse opacity-100" : "opacity-70"
+                      )}
+                      style={{ backgroundColor: desc?.color ?? "#A78BFA" }}
+                    />
+                  </span>
+                  <span className="max-w-[170px] truncate font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/60">
+                    {secondary.length ? secondary : desc?.displayName ?? `${session.provider}/${session.model}`}
                   </span>
                 </button>
               );
@@ -845,14 +985,14 @@ export function AgentChatPane({
           }}
         >
           <span className="inline-block h-1.5 w-1.5" style={{ backgroundColor: sessionModelColor }} />
-          {sessionLabel ?? selectedModelDesc?.displayName ?? "No model"}
+          {sessionTitle ?? sessionLabel ?? selectedModelDesc?.displayName ?? "No model"}
         </span>
 
-        {selectedSession ? (
+        {selectedSession ? sessionLabel && sessionTitle !== sessionLabel ? (
           <span className="font-mono text-[10px] text-muted-fg/30">
-            {selectedSession.sessionId.slice(0, 11)} · primary
+            {sessionLabel}
           </span>
-        ) : null}
+        ) : null : null}
 
         {turnActive ? (
           <span className="inline-flex items-center gap-1 font-mono text-[9px] font-bold uppercase tracking-widest text-accent/60">
