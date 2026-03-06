@@ -368,6 +368,11 @@ import type {
   CtoResolveLinearSyncQueueItemArgs,
   LinearSyncConfig,
   NormalizedLinearIssue,
+  UsageSnapshot,
+  BudgetCheckResult,
+  BudgetCapScope,
+  BudgetCapProvider,
+  BudgetCapConfig,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -421,6 +426,8 @@ import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearRoutingService } from "../cto/linearRoutingService";
 import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
+import type { createUsageTrackingService } from "../usage/usageTrackingService";
+import type { createBudgetCapService } from "../usage/budgetCapService";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
 
 export type AppContext = {
@@ -478,6 +485,8 @@ export type AppContext = {
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
+  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   mcpSocketServer?: import("node:net").Server;
   mcpSocketPath?: string;
 };
@@ -1728,6 +1737,54 @@ export function registerIpc({
   ipcMain.handle(IPC.getAggregatedUsage, (_e, arg) => {
     const ctx = getCtx();
     return ctx.aiOrchestratorService.getAggregatedUsage(arg ?? {});
+  });
+
+  // ── Usage tracking + budget cap IPC ──────────────────────────
+  ipcMain.handle(IPC.usageGetSnapshot, async (): Promise<UsageSnapshot | null> => {
+    const ctx = getCtx();
+    return ctx.usageTrackingService?.getUsageSnapshot() ?? null;
+  });
+
+  ipcMain.handle(IPC.usageRefresh, async (): Promise<UsageSnapshot | null> => {
+    const ctx = getCtx();
+    return (await ctx.usageTrackingService?.forceRefresh()) ?? null;
+  });
+
+  ipcMain.handle(
+    IPC.usageCheckBudget,
+    async (
+      _event,
+      arg: { scope: BudgetCapScope; scopeId?: string; provider: BudgetCapProvider }
+    ): Promise<BudgetCheckResult> => {
+      const ctx = getCtx();
+      if (!ctx.budgetCapService) {
+        return { allowed: true, warnings: [] };
+      }
+      return ctx.budgetCapService.checkBudget(arg.scope, arg.scopeId ?? "all", arg.provider);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.usageGetCumulativeUsage,
+    async (
+      _event,
+      arg: { scope: BudgetCapScope; scopeId?: string; provider?: BudgetCapProvider }
+    ): Promise<{ totalTokens: number; totalCostUsd: number; weekKey: string }> => {
+      const ctx = getCtx();
+      if (!ctx.budgetCapService) {
+        return { totalTokens: 0, totalCostUsd: 0, weekKey: "" };
+      }
+      return ctx.budgetCapService.getCumulativeUsage(
+        arg.scope,
+        arg.scopeId ?? "all",
+        arg.provider ?? "any"
+      );
+    }
+  );
+
+  ipcMain.handle(IPC.usageGetBudgetConfig, async (): Promise<BudgetCapConfig> => {
+    const ctx = getCtx();
+    return ctx.budgetCapService?.getConfig() ?? {};
   });
 
   ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {

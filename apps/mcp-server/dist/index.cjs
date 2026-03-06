@@ -94,14 +94,14 @@ var init_apiKeyStore = __esm({
 });
 
 // src/index.ts
-var import_node_fs32 = __toESM(require("fs"), 1);
+var import_node_fs33 = __toESM(require("fs"), 1);
 var import_node_buffer2 = require("buffer");
 var import_node_net2 = __toESM(require("net"), 1);
-var import_node_path33 = __toESM(require("path"), 1);
+var import_node_path34 = __toESM(require("path"), 1);
 
 // src/bootstrap.ts
-var import_node_fs30 = __toESM(require("fs"), 1);
-var import_node_path31 = __toESM(require("path"), 1);
+var import_node_fs31 = __toESM(require("fs"), 1);
+var import_node_path32 = __toESM(require("path"), 1);
 var nodePty = __toESM(require("node-pty"), 1);
 
 // ../desktop/src/main/services/logging/logger.ts
@@ -131,6 +131,8 @@ function getRotatedLogFilePath(logFilePath) {
 }
 function createConsoleMirror(level, event, meta3) {
   if (!process.env.VITE_DEV_SERVER_URL) return;
+  if (process.env.ADE_STDIO_TRANSPORT === "1") return;
+  if (!process.stdout.isTTY) return;
   const fn = level === "error" ? console.error : level === "warn" ? console.warn : level === "debug" ? console.debug : console.log;
   fn(`[${level}] ${event}`, meta3 ?? "");
 }
@@ -2045,6 +2047,21 @@ function migrate(db) {
     )
   `);
   db.run("create index if not exists idx_cto_flow_policy_revisions_project_created on cto_flow_policy_revisions(project_id, created_at)");
+  db.run(`
+    create table if not exists budget_usage_records (
+      id text primary key,
+      scope text not null,
+      scope_id text not null,
+      provider text not null,
+      tokens_used integer not null default 0,
+      cost_usd real not null default 0,
+      week_key text not null,
+      recorded_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_budget_usage_records_scope_week on budget_usage_records(scope, scope_id, week_key)");
+  db.run("create index if not exists idx_budget_usage_records_week on budget_usage_records(week_key)");
+  db.run("create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key)");
 }
 async function openKvDb(dbPath, logger) {
   const wasmDir = resolveSqlJsWasmDir();
@@ -2278,8 +2295,8 @@ function normalizeConflictType(raw) {
 function parseMergeTreeConflicts(output) {
   const lines = output.split(/\r?\n/);
   const byPath = /* @__PURE__ */ new Map();
-  const addConflict = (path32, type, markerPreview) => {
-    const clean = path32.trim();
+  const addConflict = (path33, type, markerPreview) => {
+    const clean = path33.trim();
     if (!clean.length) return;
     if (byPath.has(clean)) return;
     byPath.set(clean, { path: clean, conflictType: type, markerPreview });
@@ -2289,9 +2306,9 @@ function parseMergeTreeConflicts(output) {
     const conflictMatch = line.match(/^CONFLICT \(([^)]+)\): .* in (.+)$/);
     if (conflictMatch) {
       const type = normalizeConflictType(conflictMatch[1] ?? "");
-      const path32 = (conflictMatch[2] ?? "").trim();
+      const path33 = (conflictMatch[2] ?? "").trim();
       const markerPreview = [lines[i], lines[i + 1], lines[i + 2]].filter(Boolean).join("\n");
-      addConflict(path32, type, markerPreview);
+      addConflict(path33, type, markerPreview);
       continue;
     }
     const autoMergingMatch = line.match(/^Auto-merging (.+)$/);
@@ -2299,9 +2316,9 @@ function parseMergeTreeConflicts(output) {
       const next = lines[i + 1] ?? "";
       const typeMatch = next.match(/^CONFLICT \(([^)]+)\):/);
       const type = normalizeConflictType(typeMatch?.[1] ?? "");
-      const path32 = (autoMergingMatch[1] ?? "").trim();
+      const path33 = (autoMergingMatch[1] ?? "").trim();
       const markerPreview = [line, next, lines[i + 2]].filter(Boolean).join("\n");
-      addConflict(path32, type, markerPreview);
+      addConflict(path33, type, markerPreview);
     }
   }
   return Array.from(byPath.values());
@@ -4136,7 +4153,8 @@ function createSessionService({ db }) {
         `,
         [sessionId]
       );
-      return row ? {
+      if (!row) return null;
+      return {
         ...row,
         tracked: row.tracked === 1,
         pinned: row.pinned === 1,
@@ -4144,7 +4162,7 @@ function createSessionService({ db }) {
         toolType: normalizeToolType2(row.toolType),
         runtimeState: runtimeStateFromStatus(row.status),
         resumeCommand: row.resumeCommand ?? null
-      } : null;
+      };
     },
     updateMeta(args) {
       const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
@@ -4174,7 +4192,7 @@ function createSessionService({ db }) {
       if (args.resumeCommand !== void 0) {
         const next = typeof args.resumeCommand === "string" ? args.resumeCommand.trim() : "";
         sets.push("resume_command = ?");
-        params.push(next ? next : null);
+        params.push(next || null);
       }
       if (sets.length) {
         params.push(sessionId);
@@ -4255,7 +4273,7 @@ function createSessionService({ db }) {
     },
     setResumeCommand(sessionId, resumeCommand) {
       const next = typeof resumeCommand === "string" ? resumeCommand.trim() : "";
-      db.run("update terminal_sessions set resume_command = ? where id = ?", [next ? next : null, sessionId]);
+      db.run("update terminal_sessions set resume_command = ? where id = ?", [next || null, sessionId]);
     },
     end({
       sessionId,
@@ -4315,8 +4333,7 @@ function asString2(value) {
 }
 function asStringArray(value) {
   if (!Array.isArray(value)) return void 0;
-  const out = value.filter((v) => typeof v === "string").map((v) => v.trim()).filter(Boolean);
-  return out;
+  return value.filter((v) => typeof v === "string").map((v) => v.trim()).filter(Boolean);
 }
 function asLaneTypeArray(value) {
   const out = asStringArray(value);
@@ -4956,12 +4973,8 @@ function coerceConfigFile(value) {
   const laneOverlayPolicies = Array.isArray(value.laneOverlayPolicies) ? value.laneOverlayPolicies.map(coerceLaneOverlayPolicy).filter((x) => x != null) : [];
   const automations = Array.isArray(value.automations) ? value.automations.map(coerceAutomationRule).filter((x) => x != null) : [];
   const environments = Array.isArray(value.environments) ? value.environments.map(coerceEnvironmentMapping).filter((x) => x != null) : [];
-  const github = isRecord(value.github) && asNumber(value.github.prPollingIntervalSeconds) != null ? {
-    ...asNumber(value.github.prPollingIntervalSeconds) != null ? { prPollingIntervalSeconds: asNumber(value.github.prPollingIntervalSeconds) } : {}
-  } : void 0;
-  const git = isRecord(value.git) && asBool(value.git.autoRebaseOnHeadChange) != null ? {
-    ...asBool(value.git.autoRebaseOnHeadChange) != null ? { autoRebaseOnHeadChange: asBool(value.git.autoRebaseOnHeadChange) } : {}
-  } : void 0;
+  const github = isRecord(value.github) && asNumber(value.github.prPollingIntervalSeconds) != null ? { prPollingIntervalSeconds: asNumber(value.github.prPollingIntervalSeconds) } : void 0;
+  const git = isRecord(value.git) && asBool(value.git.autoRebaseOnHeadChange) != null ? { autoRebaseOnHeadChange: asBool(value.git.autoRebaseOnHeadChange) } : void 0;
   const providersRaw = isRecord(value.providers) ? { ...value.providers } : void 0;
   const ai = coerceAiConfig(value.ai);
   const linearSync = coerceLinearSync(value.linearSync);
@@ -5735,1189 +5748,37 @@ var import_node_crypto7 = require("crypto");
 var import_node_fs12 = __toESM(require("fs"), 1);
 var import_node_path12 = __toESM(require("path"), 1);
 
-// ../desktop/src/shared/contextContract.ts
-var ADE_INTENT_START = "<!-- ADE_INTENT_START -->";
-var ADE_INTENT_END = "<!-- ADE_INTENT_END -->";
-var ADE_TODOS_START = "<!-- ADE_TODOS_START -->";
-var ADE_TODOS_END = "<!-- ADE_TODOS_END -->";
-var ADE_NARRATIVE_START = "<!-- ADE_NARRATIVE_START -->";
-var ADE_NARRATIVE_END = "<!-- ADE_NARRATIVE_END -->";
-var ADE_TASK_SPEC_START = "<!-- ADE_TASK_SPEC_START -->";
-var ADE_TASK_SPEC_END = "<!-- ADE_TASK_SPEC_END -->";
-var CONTEXT_HEADER_SCHEMA_V1 = "ade.context.v1";
-var CONTEXT_CONTRACT_VERSION = 4;
-
-// ../desktop/src/main/services/packs/transcriptInsights.ts
-function normalize(raw) {
-  return stripAnsi(String(raw ?? "")).replace(/\r\n/g, "\n");
-}
-function lastIndexOfRegex(text, pattern) {
-  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-  const re = new RegExp(pattern.source, flags);
-  let last = -1;
-  let match;
-  while ((match = re.exec(text)) != null) {
-    last = match.index;
-  }
-  return last;
-}
-function lineAt(text, idx) {
-  if (idx < 0) return "";
-  const start = text.lastIndexOf("\n", idx);
-  const end = text.indexOf("\n", idx);
-  const slice = text.slice(start < 0 ? 0 : start + 1, end < 0 ? text.length : end);
-  return slice.trim();
-}
-function inferTestOutcomeFromText(rawText) {
-  const text = normalize(rawText);
-  if (!text.trim()) return null;
-  const passPatterns = [
-    /\bAll\b.{0,120}\btests?\b.{0,120}\bpass(?:ed)?\b/gi,
-    /\bTest Suites?:\s*\d+\s*passed\b/gi,
-    /\bTests?:\s*\d+\s*passed\b/gi,
-    /\bTest Files?:\s*\d+\s*passed\b/gi
-  ];
-  const failPatterns = [
-    /\bAll\b.{0,120}\btests?\b.{0,120}\bfail(?:ed)?\b/gi,
-    /\bTest Suites?:\s*\d+\s*failed\b/gi,
-    /\bTests?:\s*\d+\s*failed\b/gi,
-    /\bFAIL\b.{0,160}\btest\b/gi,
-    /\btest\b.{0,160}\bFAIL\b/gi
-  ];
-  let passIdx = -1;
-  for (const pattern of passPatterns) passIdx = Math.max(passIdx, lastIndexOfRegex(text, pattern));
-  let failIdx = -1;
-  for (const pattern of failPatterns) failIdx = Math.max(failIdx, lastIndexOfRegex(text, pattern));
-  if (passIdx < 0 && failIdx < 0) return null;
-  const status = failIdx > passIdx ? "fail" : "pass";
-  const idx = status === "fail" ? failIdx : passIdx;
-  const evidence = lineAt(text, idx) || (status === "fail" ? "tests failed" : "tests passed");
-  return { status, evidence };
-}
-
-// ../desktop/src/main/services/packs/lanePackTemplate.ts
-function fmtChange(insertions, deletions) {
-  if (insertions == null || deletions == null) return "binary";
-  return `+${insertions}/-${deletions}`;
-}
-function mdCode(value) {
-  const clean = value.replace(/`/g, "'");
-  return `\`${clean}\``;
-}
-function renderLanePackMarkdown(args) {
-  const shortSha = args.headSha ? args.headSha.slice(0, 8) : "unknown";
-  const cleanliness = args.dirty ? "dirty" : "clean";
-  const lines = [];
-  lines.push("```json");
-  lines.push(
-    JSON.stringify(
-      {
-        schema: CONTEXT_HEADER_SCHEMA_V1,
-        contractVersion: CONTEXT_CONTRACT_VERSION,
-        projectId: args.projectId,
-        packKey: args.packKey,
-        packType: "lane",
-        laneId: args.laneId,
-        peerKey: null,
-        baseRef: args.baseRef,
-        headSha: args.headSha,
-        deterministicUpdatedAt: args.deterministicUpdatedAt,
-        versionId: null,
-        versionNumber: null,
-        contentHash: null,
-        providerMode: args.providerMode,
-        graph: args.graph ?? null,
-        dependencyState: args.dependencyState ?? null,
-        conflictState: args.conflictState ?? null
-      },
-      null,
-      2
-    )
-  );
-  lines.push("```");
-  lines.push("");
-  lines.push(`# Lane: ${stripAnsi(args.laneName)}`);
-  lines.push(`> Branch: ${mdCode(stripAnsi(args.branchRef))} | Base: ${mdCode(stripAnsi(args.baseRef))} | HEAD: ${mdCode(shortSha)} | ${cleanliness} \xB7 ahead ${args.ahead} \xB7 behind ${args.behind}`);
-  if (args.parentName) lines.push(`> Parent: ${stripAnsi(args.parentName)}`);
-  lines.push("");
-  const laneDesc = stripAnsi(args.laneDescription).trim();
-  if (laneDesc) {
-    lines.push("## Original Intent");
-    lines.push(laneDesc);
-    lines.push("");
-  }
-  lines.push("## What Changed");
-  if (args.whatChangedLines.length) {
-    for (const entry of args.whatChangedLines) lines.push(`- ${stripAnsi(entry)}`);
-  } else {
-    lines.push("- No changes detected yet.");
-  }
-  lines.push("");
-  lines.push("## Why");
-  lines.push(args.userIntentMarkers.start);
-  lines.push(stripAnsi(args.userIntent).trim().length ? stripAnsi(args.userIntent).trim() : "Intent not set \u2014 click to add.");
-  lines.push(args.userIntentMarkers.end);
-  if (args.inferredWhyLines.length) {
-    lines.push("");
-    lines.push("Inferred from commits:");
-    for (const entry of args.inferredWhyLines) lines.push(`- ${stripAnsi(entry)}`);
-  }
-  lines.push("");
-  lines.push("## Task Spec");
-  lines.push(args.taskSpecMarkers.start);
-  lines.push(stripAnsi(args.taskSpec).trim().length ? stripAnsi(args.taskSpec).trim() : "- (add task spec here)");
-  lines.push(args.taskSpecMarkers.end);
-  lines.push("");
-  lines.push("## Validation");
-  if (args.validationLines.length) {
-    for (const entry of args.validationLines) lines.push(`- ${stripAnsi(entry)}`);
-  } else {
-    lines.push("- Tests: NOT RUN");
-    lines.push("- Lint: NOT RUN");
-  }
-  lines.push("");
-  lines.push(`## Key Files (${args.keyFiles.length} files touched)`);
-  if (!args.keyFiles.length) {
-    lines.push("No files touched.");
-    lines.push("");
-  } else {
-    lines.push("| File | Change |");
-    lines.push("|------|--------|");
-    for (const row of args.keyFiles.slice(0, 25)) {
-      lines.push(`| ${mdCode(stripAnsi(row.file))} | ${fmtChange(row.insertions, row.deletions)} |`);
-    }
-    lines.push("");
-  }
-  lines.push("## Errors & Issues");
-  if (!args.errors.length) {
-    lines.push("No errors detected.");
-  } else {
-    for (const entry of args.errors.slice(0, 30)) lines.push(`- ${stripAnsi(entry)}`);
-  }
-  lines.push("");
-  lines.push(`## Sessions (${args.sessionsTotal} total, ${args.sessionsRunning} running)`);
-  if (args.sessionsDetailed.length) {
-    for (const [idx, row] of args.sessionsDetailed.slice(0, 30).entries()) {
-      lines.push(`### Session ${idx + 1}: ${stripAnsi(row.when)} \u2014 ${stripAnsi(row.tool)}`);
-      const prompt = stripAnsi(row.prompt).trim();
-      if (prompt) {
-        lines.push(`- **Prompt**: ${prompt}`);
-      }
-      lines.push(`- **Goal**: ${stripAnsi(row.goal)}`);
-      lines.push(`- **Result**: ${stripAnsi(row.result)}`);
-      lines.push(`- **Delta**: ${stripAnsi(row.delta)}`);
-      if (row.commands.length) {
-        lines.push(`- **Commands**: ${row.commands.map((c) => mdCode(stripAnsi(c))).join(", ")}`);
-      }
-      if (row.filesTouched.length) {
-        lines.push(`- **Files touched**: ${row.filesTouched.map((f) => mdCode(stripAnsi(f))).join(", ")}`);
-      }
-      if (row.errors.length) {
-        lines.push(`- **Errors**: ${row.errors.map((e) => stripAnsi(e)).join("; ")}`);
-      }
-      lines.push("");
-    }
-  } else {
-    lines.push("No sessions recorded yet.");
-    lines.push("");
-  }
-  if (args.sessionsTotal > args.sessionsDetailed.length) {
-    lines.push(`Showing ${args.sessionsDetailed.length} most recent sessions out of ${args.sessionsTotal} total.`);
-    lines.push("");
-  }
-  lines.push("## Open Questions / Next Steps");
-  if (args.nextSteps.length) {
-    for (const entry of args.nextSteps) lines.push(`- ${stripAnsi(entry)}`);
-  } else {
-    lines.push("- (none detected)");
-  }
-  lines.push("");
-  lines.push(args.userTodosMarkers.start);
-  lines.push(stripAnsi(args.userTodos).trim().length ? stripAnsi(args.userTodos).trim() : "- (add notes/todos here)");
-  lines.push(args.userTodosMarkers.end);
-  lines.push("");
-  lines.push("---");
-  lines.push(
-    `*Updated: ${stripAnsi(args.deterministicUpdatedAt)} | Trigger: ${stripAnsi(args.trigger)} | Provider: ${stripAnsi(args.providerMode)} | [View history \u2192](ade://packs/versions/${stripAnsi(args.packKey)})*`
-  );
-  lines.push("");
-  return `${lines.join("\n")}
-`;
-}
-
-// ../desktop/src/main/services/packs/packSections.ts
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function findLineEnd(content, fromIndex) {
-  const idx = content.indexOf("\n", fromIndex);
-  return idx >= 0 ? idx + 1 : content.length;
-}
-function findNextIndex(content, regex, fromIndex) {
-  let flags = regex.flags;
-  if (!flags.includes("g")) flags += "g";
-  if (!flags.includes("m")) flags += "m";
-  const re = new RegExp(regex.source, flags);
-  re.lastIndex = Math.max(0, fromIndex);
-  const match = re.exec(content);
-  return match ? match.index : -1;
-}
-function extractBetweenMarkers(content, startMarker, endMarker) {
-  const startIdx = content.indexOf(startMarker);
-  const endIdx = content.indexOf(endMarker);
-  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return null;
-  const body = content.slice(startIdx + startMarker.length, endIdx).trim();
-  return body.length ? body : "";
-}
-function extractSectionByHeading(content, heading) {
-  const headingRe = new RegExp(`^${escapeRegExp(heading)}\\s*$`, "m");
-  const match = headingRe.exec(content);
-  if (!match?.index && match?.index !== 0) return null;
-  const headingStart = match.index;
-  const headingLineEnd = findLineEnd(content, headingStart);
-  const nextHeadingIdx = findNextIndex(content, /^##\s+/gm, headingLineEnd);
-  const nextHrIdx = findNextIndex(content, /^---\s*$/gm, headingLineEnd);
-  const candidates = [nextHeadingIdx, nextHrIdx].filter((idx) => idx >= 0);
-  const sectionEnd = candidates.length ? Math.min(...candidates) : content.length;
-  const body = content.slice(headingLineEnd, sectionEnd).trim();
-  return body.length ? body : "";
-}
-function extractSectionContent(content, locator) {
-  if (locator.kind === "markers") return extractBetweenMarkers(content, locator.startMarker, locator.endMarker);
-  if (locator.kind === "heading") return extractSectionByHeading(content, locator.heading);
-  return null;
-}
-function computeSectionChanges(args) {
-  const norm = (value) => {
-    if (value == null) return null;
-    return String(value).replace(/\r\n/g, "\n").trim();
-  };
-  const beforeContent = args.before ?? "";
-  const out = [];
-  for (const locator of args.locators) {
-    const a = norm(extractSectionContent(beforeContent, locator));
-    const b = norm(extractSectionContent(args.after, locator));
-    if (a == null && b == null) continue;
-    if (a == null && b != null) {
-      out.push({ sectionId: locator.id, changeType: "added" });
-      continue;
-    }
-    if (a != null && b == null) {
-      out.push({ sectionId: locator.id, changeType: "removed" });
-      continue;
-    }
-    if (a !== b) out.push({ sectionId: locator.id, changeType: "modified" });
-  }
-  return out;
-}
-function renderJsonSection(heading, value, opts = {}) {
-  const pretty = opts.pretty !== false;
-  let json2 = "";
-  try {
-    json2 = pretty ? JSON.stringify(value ?? null, null, 2) : JSON.stringify(value ?? null);
-  } catch {
-    json2 = pretty ? JSON.stringify({ error: "Failed to serialize JSON section." }, null, 2) : JSON.stringify({ error: "Failed to serialize JSON section." });
-  }
-  return [heading, "```json", json2, "```", ""];
-}
-
-// ../desktop/src/main/services/packs/packExports.ts
-var DEFAULT_BUDGETS = {
-  project: {
-    lite: { maxTokens: 900 },
-    standard: { maxTokens: 2500 },
-    deep: { maxTokens: 6500 }
-  },
-  lane: {
-    lite: { maxTokens: 800 },
-    standard: { maxTokens: 2800 },
-    deep: { maxTokens: 8e3 }
-  },
-  conflict: {
-    lite: { maxTokens: 1100 },
-    standard: { maxTokens: 3200 },
-    deep: { maxTokens: 9e3 }
-  },
-  feature: {
-    lite: { maxTokens: 1e3 },
-    standard: { maxTokens: 2800 },
-    deep: { maxTokens: 8e3 }
-  },
-  plan: {
-    lite: { maxTokens: 1100 },
-    standard: { maxTokens: 3200 },
-    deep: { maxTokens: 9e3 }
-  },
-  mission: {
-    lite: { maxTokens: 1200 },
-    standard: { maxTokens: 3600 },
-    deep: { maxTokens: 9e3 }
-  }
-};
-function approxTokensFromText(text) {
-  return Math.max(0, Math.ceil((text ?? "").length / 4));
-}
-function normalizeForExport(text) {
-  return stripAnsi(String(text ?? "")).replace(/\r\n/g, "\n");
-}
-function renderHeaderFence(header, opts = {}) {
-  const pretty = opts.pretty !== false;
-  return ["```json", pretty ? JSON.stringify(header, null, 2) : JSON.stringify(header), "```", ""].join("\n");
-}
-function ensureBudgetOmission(omissions, truncated) {
-  if (!truncated) return omissions;
-  if (omissions.some((o) => o.sectionId === "export" && o.reason === "budget_clipped")) return omissions;
-  return [
-    ...omissions,
-    {
-      sectionId: "export",
-      reason: "budget_clipped",
-      detail: "Export clipped to fit token budget.",
-      recommendedLevel: "deep"
-    }
-  ];
-}
-function takeLines(lines, max) {
-  if (lines.length <= max) return { lines, truncated: false };
-  return { lines: lines.slice(0, Math.max(0, max)), truncated: true };
-}
-function clipBlock(text, maxChars) {
-  const normalized = normalizeForExport(text ?? "").trim();
-  if (maxChars <= 0) return { text: normalized, truncated: false };
-  if (normalized.length <= maxChars) return { text: normalized, truncated: false };
-  const clipped = `${normalized.slice(0, Math.max(0, maxChars - 20)).trimEnd()}
-...(truncated)...
-`;
-  return { text: clipped, truncated: true };
-}
-function extractSectionLines(args) {
-  const raw = normalizeForExport(args.content);
-  const lines = raw.split("\n");
-  const startIdx = lines.findIndex((line) => line.trim() === args.headingPrefix || line.startsWith(args.headingPrefix));
-  if (startIdx < 0) return { lines: [], truncated: false };
-  const out = [];
-  let inCodeFence = false;
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    const line = lines[i] ?? "";
-    const trimmed = line.trim();
-    if (trimmed.startsWith("```")) inCodeFence = !inCodeFence;
-    if (!inCodeFence && trimmed.startsWith("## ")) break;
-    if (!inCodeFence && trimmed === "---") break;
-    out.push(line);
-  }
-  while (out.length && !out[0].trim()) out.shift();
-  while (out.length && !out[out.length - 1].trim()) out.pop();
-  return takeLines(out, args.maxLines);
-}
-function clipToBudget(args) {
-  const normalized = normalizeForExport(args.content);
-  const approx = approxTokensFromText(normalized);
-  if (approx <= args.maxTokens) return { content: normalized, truncated: false };
-  const maxChars = Math.max(0, args.maxTokens * 4);
-  if (normalized.length <= maxChars) return { content: normalized, truncated: false };
-  const clipped = `${normalized.slice(0, Math.max(0, maxChars - 20)).trimEnd()}
-
-...(truncated)...
-`;
-  return { content: clipped, truncated: true };
-}
-function buildLaneExport(args) {
-  const level = args.level;
-  const budget = DEFAULT_BUDGETS.lane[level];
-  const body = normalizeForExport(args.pack.body ?? "");
-  const taskSpecRaw = extractBetweenMarkers(body, args.markers.taskSpecStart, args.markers.taskSpecEnd) ?? "(task spec missing; refresh lane pack to upgrade markers)";
-  const intentRaw = extractBetweenMarkers(body, args.markers.intentStart, args.markers.intentEnd) ?? "(intent missing; refresh lane pack to upgrade markers)";
-  const todosRaw = extractBetweenMarkers(body, args.markers.todosStart, args.markers.todosEnd) ?? "";
-  const narrativeRaw = extractBetweenMarkers(body, args.markers.narrativeStart, args.markers.narrativeEnd) ?? "";
-  const whatChanged = extractSectionLines({
-    content: body,
-    headingPrefix: "## What Changed",
-    maxLines: level === "lite" ? 10 : level === "standard" ? 24 : 80
-  });
-  const validation = extractSectionLines({
-    content: body,
-    headingPrefix: "## Validation",
-    maxLines: level === "lite" ? 8 : level === "standard" ? 16 : 40
-  });
-  const keyFiles = extractSectionLines({
-    content: body,
-    headingPrefix: "## Key Files",
-    maxLines: level === "lite" ? 10 : level === "standard" ? 20 : 60
-  });
-  const errors = extractSectionLines({
-    content: body,
-    headingPrefix: "## Errors & Issues",
-    maxLines: level === "lite" ? 12 : level === "standard" ? 30 : 120
-  });
-  const sessions = extractSectionLines({
-    content: body,
-    headingPrefix: "## Sessions",
-    maxLines: level === "lite" ? 12 : level === "standard" ? 24 : 80
-  });
-  const nextSteps = extractSectionLines({
-    content: body,
-    headingPrefix: "## Open Questions / Next Steps",
-    maxLines: level === "lite" ? 16 : level === "standard" ? 40 : 120
-  });
-  const warnings = [];
-  const omissionsBase = [];
-  const userBlockLimits = level === "lite" ? { taskSpecChars: 650, intentChars: 360, todosChars: 450, narrativeChars: 0 } : level === "standard" ? { taskSpecChars: 2200, intentChars: 1400, todosChars: 1200, narrativeChars: 0 } : { taskSpecChars: 4e3, intentChars: 2200, todosChars: 2e3, narrativeChars: 5e3 };
-  const taskSpec = clipBlock(taskSpecRaw, userBlockLimits.taskSpecChars);
-  const intent = clipBlock(intentRaw, userBlockLimits.intentChars);
-  const todos = clipBlock(todosRaw, userBlockLimits.todosChars);
-  const narrative = clipBlock(narrativeRaw, userBlockLimits.narrativeChars);
-  if (taskSpec.truncated) {
-    warnings.push("Task Spec section truncated for export budget.");
-    omissionsBase.push({ sectionId: "task_spec", reason: "truncated_section", detail: "Task Spec truncated." });
-  }
-  if (intent.truncated) {
-    warnings.push("Intent section truncated for export budget.");
-    omissionsBase.push({ sectionId: "intent", reason: "truncated_section", detail: "Intent truncated." });
-  }
-  if (todos.truncated) {
-    warnings.push("Todos section truncated for export budget.");
-    omissionsBase.push({ sectionId: "todos", reason: "truncated_section", detail: "Todos truncated." });
-  }
-  if (narrative.truncated) {
-    warnings.push("Narrative section truncated for export budget.");
-    omissionsBase.push({ sectionId: "narrative", reason: "truncated_section", detail: "Narrative truncated." });
-  }
-  if (whatChanged.truncated) {
-    warnings.push("What Changed section truncated for export budget.");
-    omissionsBase.push({ sectionId: "what_changed", reason: "truncated_section", detail: "What Changed truncated." });
-  }
-  if (validation.truncated) {
-    warnings.push("Validation section truncated for export budget.");
-    omissionsBase.push({ sectionId: "validation", reason: "truncated_section", detail: "Validation truncated." });
-  }
-  if (keyFiles.truncated) {
-    warnings.push("Key Files section truncated for export budget.");
-    omissionsBase.push({ sectionId: "key_files", reason: "truncated_section", detail: "Key Files truncated." });
-  }
-  if (errors.truncated) {
-    warnings.push("Errors section truncated for export budget.");
-    omissionsBase.push({ sectionId: "errors", reason: "truncated_section", detail: "Errors truncated." });
-  }
-  if (sessions.truncated) {
-    warnings.push("Sessions section truncated for export budget.");
-    omissionsBase.push({ sectionId: "sessions", reason: "truncated_section", detail: "Sessions truncated." });
-  }
-  if (nextSteps.truncated) {
-    warnings.push("Next Steps section truncated for export budget.");
-    omissionsBase.push({ sectionId: "next_steps", reason: "truncated_section", detail: "Next Steps truncated." });
-  }
-  const exportedAt = (/* @__PURE__ */ new Date()).toISOString();
-  const header = {
-    schema: CONTEXT_HEADER_SCHEMA_V1,
-    contractVersion: CONTEXT_CONTRACT_VERSION,
-    projectId: args.projectId,
-    packKey: args.pack.packKey,
-    packType: "lane",
-    exportLevel: level,
-    laneId: args.laneId,
-    peerKey: null,
-    baseRef: args.baseRef,
-    headSha: args.headSha,
-    deterministicUpdatedAt: args.pack.deterministicUpdatedAt,
-    narrativeUpdatedAt: args.pack.narrativeUpdatedAt,
-    versionId: args.pack.versionId ?? null,
-    versionNumber: args.pack.versionNumber ?? null,
-    contentHash: args.pack.contentHash ?? null,
-    providerMode: args.providerMode,
-    exportedAt,
-    apiBaseUrl: args.apiBaseUrl,
-    remoteProjectId: args.remoteProjectId,
-    graph: args.graph ?? null,
-    dependencyState: args.dependencyState ?? null,
-    conflictState: args.conflictState ?? null,
-    omissions: null
-  };
-  const lines = [];
-  lines.push(`# Lane Export (${level.toUpperCase()})`);
-  lines.push(
-    `> Lane: ${normalizeForExport(args.laneName)} | Branch: \`${normalizeForExport(args.branchRef)}\` | Base: \`${normalizeForExport(args.baseRef)}\``
-  );
-  lines.push("");
-  if (args.manifest) {
-    const liteManifest = level === "lite" ? {
-      schema: args.manifest.schema,
-      projectId: args.manifest.projectId,
-      laneId: args.manifest.laneId,
-      laneName: args.manifest.laneName,
-      laneType: args.manifest.laneType,
-      branchRef: args.manifest.branchRef,
-      baseRef: args.manifest.baseRef,
-      lineage: args.manifest.lineage,
-      mergeConstraints: args.manifest.mergeConstraints,
-      branchState: {
-        baseRef: args.manifest.branchState?.baseRef ?? null,
-        headRef: args.manifest.branchState?.headRef ?? null,
-        headSha: args.manifest.branchState?.headSha ?? null,
-        lastPackRefreshAt: args.manifest.branchState?.lastPackRefreshAt ?? null,
-        isEditProtected: args.manifest.branchState?.isEditProtected ?? null,
-        packStale: args.manifest.branchState?.packStale ?? null,
-        ...args.manifest.branchState?.packStaleReason ? { packStaleReason: args.manifest.branchState.packStaleReason } : {}
-      },
-      conflicts: {
-        activeConflictPackKeys: args.manifest.conflicts?.activeConflictPackKeys ?? [],
-        unresolvedPairCount: args.manifest.conflicts?.unresolvedPairCount ?? 0,
-        lastConflictRefreshAt: args.manifest.conflicts?.lastConflictRefreshAt ?? null,
-        lastConflictRefreshAgeMs: args.manifest.conflicts?.lastConflictRefreshAgeMs ?? null,
-        ...args.manifest.conflicts?.predictionStale != null ? { predictionStale: args.manifest.conflicts.predictionStale } : {},
-        ...args.manifest.conflicts?.stalePolicy ? { stalePolicy: args.manifest.conflicts.stalePolicy } : {},
-        ...args.manifest.conflicts?.staleReason ? { staleReason: args.manifest.conflicts.staleReason } : {}
-      }
-    } : args.manifest;
-    lines.push(...renderJsonSection("## Manifest", liteManifest, { pretty: level !== "lite" }));
-  } else {
-    lines.push(...renderJsonSection("## Manifest", { schema: "ade.manifest.lane.v1", unavailable: true }, { pretty: level !== "lite" }));
-    omissionsBase.push({ sectionId: "manifest", reason: "data_unavailable", detail: "Manifest unavailable." });
-  }
-  lines.push("## Task Spec");
-  lines.push(args.markers.taskSpecStart);
-  lines.push(taskSpec.text);
-  lines.push(args.markers.taskSpecEnd);
-  lines.push("");
-  lines.push("## Intent");
-  lines.push(args.markers.intentStart);
-  lines.push(intent.text);
-  lines.push(args.markers.intentEnd);
-  lines.push("");
-  lines.push("## Conflict Risk Summary");
-  if (args.conflictRiskSummaryLines.length) {
-    const max = level === "lite" ? 8 : args.conflictRiskSummaryLines.length;
-    for (const line of args.conflictRiskSummaryLines.slice(0, max)) lines.push(line);
-  } else {
-    lines.push("- Conflict status: unknown (prediction not available yet)");
-  }
-  lines.push("");
-  if (whatChanged.lines.length) {
-    lines.push("## What Changed");
-    lines.push(...whatChanged.lines);
-    lines.push("");
-  }
-  if (validation.lines.length) {
-    lines.push("## Validation");
-    lines.push(...validation.lines);
-    lines.push("");
-  }
-  if (keyFiles.lines.length) {
-    lines.push("## Key Files");
-    lines.push(...keyFiles.lines);
-    lines.push("");
-  }
-  if (errors.lines.length) {
-    lines.push("## Errors & Issues");
-    lines.push(...errors.lines);
-    lines.push("");
-  }
-  if (sessions.lines.length) {
-    lines.push("## Sessions");
-    lines.push(...sessions.lines);
-    lines.push("");
-  }
-  if (nextSteps.lines.length) {
-    lines.push("## Next Steps");
-    lines.push(...nextSteps.lines);
-    lines.push("");
-  }
-  if (todos.text.trim().length) {
-    lines.push("## Notes / Todos");
-    lines.push(args.markers.todosStart);
-    lines.push(todos.text);
-    lines.push(args.markers.todosEnd);
-    lines.push("");
-  }
-  if (level === "deep" && narrative.text.trim().length) {
-    lines.push("## Narrative (Deep)");
-    lines.push(args.markers.narrativeStart);
-    lines.push(narrative.text);
-    lines.push(args.markers.narrativeEnd);
-    lines.push("");
-  } else if (level !== "deep") {
-    omissionsBase.push({
-      sectionId: "narrative",
-      reason: "omitted_by_level",
-      detail: "Narrative is only included at deep export level.",
-      recommendedLevel: "deep"
-    });
-  }
-  const buildContent = (omissions) => {
-    header.omissions = omissions.length ? omissions : null;
-    header.maxTokens = budget.maxTokens;
-    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}
-`;
-    return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
-  };
-  let clipped = buildContent(omissionsBase);
-  const omissionsFinal = ensureBudgetOmission(omissionsBase, clipped.truncated);
-  if (omissionsFinal !== omissionsBase) {
-    clipped = buildContent(omissionsFinal);
-  }
-  const approxTokens = approxTokensFromText(clipped.content);
-  header.approxTokens = approxTokens;
-  return {
-    packKey: args.pack.packKey,
-    packType: "lane",
-    level,
-    header,
-    content: clipped.content,
-    approxTokens,
-    maxTokens: budget.maxTokens,
-    truncated: clipped.truncated,
-    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
-    clipReason: clipped.truncated ? "budget_clipped" : null,
-    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
-  };
-}
-function buildProjectExport(args) {
-  const level = args.level;
-  const budget = DEFAULT_BUDGETS.project[level];
-  const body = normalizeForExport(args.pack.body ?? "");
-  const overview = extractSectionLines({
-    content: body,
-    headingPrefix: "# Project Pack",
-    maxLines: level === "lite" ? 60 : level === "standard" ? 140 : 400
-  });
-  const warnings = [];
-  const omissionsBase = [];
-  const exportedAt = (/* @__PURE__ */ new Date()).toISOString();
-  const header = {
-    schema: CONTEXT_HEADER_SCHEMA_V1,
-    contractVersion: CONTEXT_CONTRACT_VERSION,
-    projectId: args.projectId,
-    packKey: args.pack.packKey,
-    packType: "project",
-    exportLevel: level,
-    laneId: null,
-    peerKey: null,
-    baseRef: null,
-    headSha: null,
-    deterministicUpdatedAt: args.pack.deterministicUpdatedAt,
-    narrativeUpdatedAt: args.pack.narrativeUpdatedAt,
-    versionId: args.pack.versionId ?? null,
-    versionNumber: args.pack.versionNumber ?? null,
-    contentHash: args.pack.contentHash ?? null,
-    providerMode: args.providerMode,
-    exportedAt,
-    apiBaseUrl: args.apiBaseUrl,
-    remoteProjectId: args.remoteProjectId,
-    graph: args.graph ?? null,
-    omissions: null
-  };
-  const lines = [];
-  lines.push(`# Project Export (${level.toUpperCase()})`);
-  lines.push("");
-  if (args.manifest) {
-    lines.push(...renderJsonSection("## Manifest", args.manifest, { pretty: level !== "lite" }));
-  } else {
-    lines.push(...renderJsonSection("## Manifest", { schema: "ade.manifest.project.v1", unavailable: true }, { pretty: level !== "lite" }));
-    omissionsBase.push({ sectionId: "manifest", reason: "data_unavailable", detail: "Manifest unavailable." });
-  }
-  if (overview.lines.length) {
-    lines.push("## Snapshot");
-    lines.push(...overview.lines);
-    lines.push("");
-  } else {
-    lines.push("## Snapshot");
-    lines.push("- Project pack is empty. Refresh deterministic packs first.");
-    lines.push("");
-    omissionsBase.push({ sectionId: "snapshot", reason: "data_unavailable", detail: "Snapshot unavailable." });
-  }
-  if (overview.truncated) {
-    warnings.push("Project snapshot truncated for export budget.");
-    omissionsBase.push({ sectionId: "snapshot", reason: "truncated_section", detail: "Snapshot truncated." });
-  }
-  const buildContent = (omissions) => {
-    header.omissions = omissions.length ? omissions : null;
-    header.maxTokens = budget.maxTokens;
-    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}
-`;
-    return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
-  };
-  let clipped = buildContent(omissionsBase);
-  const omissionsFinal = ensureBudgetOmission(omissionsBase, clipped.truncated);
-  if (omissionsFinal !== omissionsBase) {
-    clipped = buildContent(omissionsFinal);
-  }
-  const approxTokens = approxTokensFromText(clipped.content);
-  header.approxTokens = approxTokens;
-  return {
-    packKey: args.pack.packKey,
-    packType: "project",
-    level,
-    header,
-    content: clipped.content,
-    approxTokens,
-    maxTokens: budget.maxTokens,
-    truncated: clipped.truncated,
-    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
-    clipReason: clipped.truncated ? "budget_clipped" : null,
-    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
-  };
-}
-function buildConflictExport(args) {
-  const level = args.level;
-  const budget = DEFAULT_BUDGETS.conflict[level];
-  const body = normalizeForExport(args.pack.body ?? "");
-  const overlapLines = extractSectionLines({
-    content: body,
-    headingPrefix: "## Overlapping Files",
-    maxLines: level === "lite" ? 24 : level === "standard" ? 60 : 220
-  });
-  const conflictsLines = extractSectionLines({
-    content: body,
-    headingPrefix: "## Conflicts (merge-tree)",
-    maxLines: level === "lite" ? 60 : level === "standard" ? 140 : 400
-  });
-  const warnings = [];
-  const omissionsBase = [];
-  if (overlapLines.truncated) warnings.push("Overlap list truncated for export budget.");
-  if (conflictsLines.truncated) warnings.push("Conflicts section truncated for export budget.");
-  if (overlapLines.truncated) omissionsBase.push({ sectionId: "overlap_files", reason: "truncated_section", detail: "Overlap list truncated." });
-  if (conflictsLines.truncated) omissionsBase.push({ sectionId: "merge_tree", reason: "truncated_section", detail: "Merge-tree conflicts truncated." });
-  const exportedAt = (/* @__PURE__ */ new Date()).toISOString();
-  const header = {
-    schema: CONTEXT_HEADER_SCHEMA_V1,
-    contractVersion: CONTEXT_CONTRACT_VERSION,
-    projectId: args.projectId,
-    packKey: args.packKey,
-    packType: "conflict",
-    exportLevel: level,
-    laneId: args.laneId,
-    peerKey: args.peerLabel,
-    baseRef: null,
-    headSha: args.pack.lastHeadSha ?? null,
-    deterministicUpdatedAt: args.pack.deterministicUpdatedAt,
-    narrativeUpdatedAt: args.pack.narrativeUpdatedAt,
-    versionId: args.pack.versionId ?? null,
-    versionNumber: args.pack.versionNumber ?? null,
-    contentHash: args.pack.contentHash ?? null,
-    providerMode: args.providerMode,
-    exportedAt,
-    apiBaseUrl: args.apiBaseUrl,
-    remoteProjectId: args.remoteProjectId,
-    graph: args.graph ?? null,
-    omissions: null
-  };
-  const lines = [];
-  lines.push(`# Conflict Export (${level.toUpperCase()})`);
-  lines.push(`> Lane: ${args.laneId} | Peer: ${normalizeForExport(args.peerLabel)}`);
-  lines.push("");
-  if (args.lineage) {
-    lines.push(...renderJsonSection("## Conflict Lineage", args.lineage, { pretty: level !== "lite" }));
-  } else {
-    omissionsBase.push({ sectionId: "conflict_lineage", reason: "data_unavailable", detail: "Conflict lineage unavailable." });
-  }
-  lines.push("## Overlapping Files");
-  if (overlapLines.lines.length) lines.push(...overlapLines.lines);
-  else lines.push("- (none listed; refresh conflict pack)");
-  lines.push("");
-  lines.push("## Conflicts (merge-tree)");
-  if (conflictsLines.lines.length) lines.push(...conflictsLines.lines);
-  else lines.push("- (none listed; refresh conflict pack)");
-  lines.push("");
-  const buildContent = (omissions) => {
-    header.omissions = omissions.length ? omissions : null;
-    header.maxTokens = budget.maxTokens;
-    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}
-`;
-    return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
-  };
-  let clipped = buildContent(omissionsBase);
-  const omissionsFinal = ensureBudgetOmission(omissionsBase, clipped.truncated);
-  if (omissionsFinal !== omissionsBase) {
-    clipped = buildContent(omissionsFinal);
-  }
-  const approxTokens = approxTokensFromText(clipped.content);
-  header.approxTokens = approxTokens;
-  return {
-    packKey: args.packKey,
-    packType: "conflict",
-    level,
-    header,
-    content: clipped.content,
-    approxTokens,
-    maxTokens: budget.maxTokens,
-    truncated: clipped.truncated,
-    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
-    clipReason: clipped.truncated ? "budget_clipped" : null,
-    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
-  };
-}
-
-// ../desktop/src/main/services/packs/packUtils.ts
-var import_node_fs8 = __toESM(require("fs"), 1);
-var import_node_path8 = __toESM(require("path"), 1);
-function safeJsonParseArray(raw) {
-  const parsed = safeJsonParse(raw, null);
-  if (!Array.isArray(parsed)) return [];
-  return parsed.map((entry) => String(entry));
-}
-function readFileIfExists(filePath) {
-  try {
-    return import_node_fs8.default.readFileSync(filePath, "utf8");
-  } catch {
-    return "";
-  }
-}
-function ensureDirFor(filePath) {
-  import_node_fs8.default.mkdirSync(import_node_path8.default.dirname(filePath), { recursive: true });
-}
-function ensureDir(dirPath) {
-  import_node_fs8.default.mkdirSync(dirPath, { recursive: true });
-}
-function safeSegment(raw) {
-  const trimmed = raw.trim();
-  if (!trimmed) return "untitled";
-  return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
-}
-function parsePackMetadataJson(raw) {
-  if (!raw || !raw.trim()) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-function parseNumStat(stdout) {
-  const files = /* @__PURE__ */ new Set();
-  let insertions = 0;
-  let deletions = 0;
-  const lines = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  for (const line of lines) {
-    const parts = line.split("	");
-    if (parts.length < 3) continue;
-    const ins = parts[0] ?? "0";
-    const del = parts[1] ?? "0";
-    const filePath = parts.slice(2).join("	").trim();
-    if (filePath.length) files.add(filePath);
-    const insNum = ins === "-" ? 0 : Number(ins);
-    const delNum = del === "-" ? 0 : Number(del);
-    if (Number.isFinite(insNum)) insertions += insNum;
-    if (Number.isFinite(delNum)) deletions += delNum;
-  }
-  return { insertions, deletions, files };
-}
-function parsePorcelainPaths(stdout) {
-  const out = /* @__PURE__ */ new Set();
-  const lines = stdout.split("\n").map((line) => line.trimEnd()).filter(Boolean);
-  for (const line of lines) {
-    if (line.startsWith("??")) {
-      const rel = line.slice(2).trim();
-      if (rel.length) out.add(rel);
-      continue;
-    }
-    const raw = line.slice(2).trim();
-    const arrow = raw.indexOf("->");
-    if (arrow >= 0) {
-      const rel = raw.slice(arrow + 2).trim();
-      if (rel.length) out.add(rel);
-      continue;
-    }
-    if (raw.length) out.add(raw);
-  }
-  return [...out];
-}
-function parseChatTranscriptDelta(rawTranscript) {
-  const touched = /* @__PURE__ */ new Set();
-  const failureLines = [];
-  const seenFailure = /* @__PURE__ */ new Set();
-  const pushFailure = (value) => {
-    const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
-    if (!normalized.length) return;
-    const clipped = normalized.length > 320 ? normalized.slice(0, 320) : normalized;
-    if (seenFailure.has(clipped)) return;
-    seenFailure.add(clipped);
-    failureLines.push(clipped);
-  };
-  for (const rawLine of rawTranscript.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line.length) continue;
-    let parsed;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-    const event = parsed.event;
-    if (!event || typeof event !== "object" || Array.isArray(event)) continue;
-    const eventRecord = event;
-    const type = typeof eventRecord.type === "string" ? eventRecord.type : "";
-    if (type === "file_change") {
-      const pathValue = String(eventRecord.path ?? "").trim();
-      if (pathValue.length && !pathValue.startsWith("(")) touched.add(pathValue);
-      continue;
-    }
-    if (type === "command") {
-      const command = String(eventRecord.command ?? "").trim();
-      const output = String(eventRecord.output ?? "");
-      const status = String(eventRecord.status ?? "").trim();
-      const exitCode = typeof eventRecord.exitCode === "number" ? eventRecord.exitCode : null;
-      if (status === "failed" || exitCode != null && exitCode !== 0) {
-        pushFailure(command.length ? `Command failed: ${command}` : "Command failed.");
-      }
-      for (const outputLine of output.split(/\r?\n/)) {
-        const normalized = outputLine.replace(/\s+/g, " ").trim();
-        if (!normalized.length) continue;
-        if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(normalized)) continue;
-        pushFailure(normalized);
-      }
-      continue;
-    }
-    if (type === "error") {
-      pushFailure(String(eventRecord.message ?? "Chat error."));
-      continue;
-    }
-    if (type === "status") {
-      const turnStatus = String(eventRecord.turnStatus ?? "").trim();
-      if (turnStatus === "failed") {
-        pushFailure(String(eventRecord.message ?? "Turn failed."));
-      }
-    }
-  }
-  return {
-    touchedFiles: [...new Set(touched)].sort(),
-    failureLines: failureLines.slice(-16)
-  };
-}
-function extractSection(existing, start, end, fallback) {
-  const startIdx = existing.indexOf(start);
-  const endIdx = existing.indexOf(end);
-  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return fallback;
-  const body = existing.slice(startIdx + start.length, endIdx).trim();
-  return body.length ? body : fallback;
-}
-function extractSectionByHeading2(existing, heading) {
-  const re = new RegExp(`^${heading.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\s*$`, "m");
-  const match = re.exec(existing);
-  if (!match?.index && match?.index !== 0) return null;
-  const headingStart = match.index;
-  const headingLineEnd = existing.indexOf("\n", headingStart);
-  const sectionStart = headingLineEnd >= 0 ? headingLineEnd + 1 : existing.length;
-  const nextHeading = (() => {
-    const r = /^##\s+/gm;
-    r.lastIndex = sectionStart;
-    const m = r.exec(existing);
-    return m ? m.index : -1;
-  })();
-  const nextHr = (() => {
-    const r = /^---\s*$/gm;
-    r.lastIndex = sectionStart;
-    const m = r.exec(existing);
-    return m ? m.index : -1;
-  })();
-  const candidates = [nextHeading, nextHr].filter((idx) => idx >= 0);
-  const sectionEnd = candidates.length ? Math.min(...candidates) : existing.length;
-  const body = existing.slice(sectionStart, sectionEnd).trim();
-  return body.length ? body : "";
-}
-function statusFromCode(status) {
-  if (status === "passed") return "PASS";
-  if (status === "failed") return "FAIL";
-  if (status === "running") return "RUNNING";
-  if (status === "canceled") return "CANCELED";
-  return "TIMED_OUT";
-}
-function humanToolLabel(toolType) {
-  const normalized = String(toolType ?? "").trim().toLowerCase();
-  if (!normalized) return "Shell";
-  if (normalized === "claude") return "Claude";
-  if (normalized === "codex") return "Codex";
-  if (normalized === "cursor") return "Cursor";
-  if (normalized === "aider") return "Aider";
-  if (normalized === "continue") return "Continue";
-  if (normalized === "shell") return "Shell";
-  return normalized.slice(0, 1).toUpperCase() + normalized.slice(1);
-}
-function shellQuoteArg(arg) {
-  const value = String(arg);
-  if (!value.length) return "''";
-  if (/^[a-zA-Z0-9_./:-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-function formatCommand(command) {
-  if (Array.isArray(command)) return command.map((part) => shellQuoteArg(String(part))).join(" ");
-  if (typeof command === "string") return command.trim();
-  return JSON.stringify(command);
-}
-function moduleFromPath(relPath) {
-  const normalized = relPath.replace(/\\/g, "/");
-  const first = normalized.split("/")[0] ?? normalized;
-  return first || ".";
-}
-function normalizeConflictStatus(value) {
-  const v = value.trim();
-  if (v === "merge-ready" || v === "behind-base" || v === "conflict-predicted" || v === "conflict-active" || v === "unknown") {
-    return v;
-  }
-  return null;
-}
-function normalizeRiskLevel(value) {
-  const v = value.trim();
-  if (v === "none" || v === "low" || v === "medium" || v === "high") return v;
-  return null;
-}
-function isRecord2(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-function asString3(value) {
-  return typeof value === "string" ? value : "";
-}
-function parseRecord(raw) {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return isRecord2(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function computeMergeReadiness(args) {
-  if (args.requiredMerges.length) return "blocked";
-  if (args.conflictStatus === "unknown" || args.conflictStatus == null) return "unknown";
-  if (args.conflictStatus === "conflict-active" || args.conflictStatus === "conflict-predicted") return "blocked";
-  if (args.behindCount > 0) return "needs_sync";
-  return "ready";
-}
-function buildGraphEnvelope(relations) {
-  return {
-    schema: "ade.packGraph.v1",
-    relations
-  };
-}
-function importanceRank(value) {
-  const v = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (v === "high") return 3;
-  if (v === "medium") return 2;
-  if (v === "low") return 1;
-  return 0;
-}
-function getDefaultSectionLocators(packType) {
-  if (packType === "lane") {
-    return [
-      { id: "task_spec", kind: "markers", startMarker: ADE_TASK_SPEC_START, endMarker: ADE_TASK_SPEC_END },
-      { id: "intent", kind: "markers", startMarker: ADE_INTENT_START, endMarker: ADE_INTENT_END },
-      { id: "todos", kind: "markers", startMarker: ADE_TODOS_START, endMarker: ADE_TODOS_END },
-      { id: "narrative", kind: "markers", startMarker: ADE_NARRATIVE_START, endMarker: ADE_NARRATIVE_END },
-      { id: "what_changed", kind: "heading", heading: "## What Changed" },
-      { id: "validation", kind: "heading", heading: "## Validation" },
-      { id: "errors", kind: "heading", heading: "## Errors & Issues" },
-      { id: "sessions", kind: "heading", heading: "## Sessions" }
-    ];
-  }
-  if (packType === "conflict") {
-    return [
-      { id: "overlap", kind: "heading", heading: "## Overlapping Files" },
-      { id: "conflicts", kind: "heading", heading: "## Conflicts (merge-tree)" },
-      { id: "lane_excerpt", kind: "heading", heading: "## Lane Pack (Excerpt)" }
-    ];
-  }
-  return [
-    { id: "bootstrap", kind: "heading", heading: "## Bootstrap context (codebase + docs)" },
-    { id: "lane_snapshot", kind: "heading", heading: "## Lane Snapshot" }
-  ];
-}
-function rowToSessionDelta(row) {
-  return {
-    sessionId: row.session_id,
-    laneId: row.lane_id,
-    startedAt: row.started_at,
-    endedAt: row.ended_at,
-    headShaStart: row.head_sha_start,
-    headShaEnd: row.head_sha_end,
-    filesChanged: Number(row.files_changed ?? 0),
-    insertions: Number(row.insertions ?? 0),
-    deletions: Number(row.deletions ?? 0),
-    touchedFiles: safeJsonParseArray(row.touched_files_json),
-    failureLines: safeJsonParseArray(row.failure_lines_json),
-    computedAt: row.computed_at ?? null
-  };
-}
-function upsertPackIndex({
-  db,
-  projectId,
-  packKey,
-  laneId,
-  packType,
-  packPath,
-  deterministicUpdatedAt,
-  narrativeUpdatedAt,
-  lastHeadSha,
-  metadata
-}) {
-  db.run(
-    `
-      insert into packs_index(
-        pack_key,
-        project_id,
-        lane_id,
-        pack_type,
-        pack_path,
-        deterministic_updated_at,
-        narrative_updated_at,
-        last_head_sha,
-        metadata_json
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      on conflict(pack_key) do update set
-        project_id = excluded.project_id,
-        lane_id = excluded.lane_id,
-        pack_type = excluded.pack_type,
-        pack_path = excluded.pack_path,
-        deterministic_updated_at = excluded.deterministic_updated_at,
-        narrative_updated_at = excluded.narrative_updated_at,
-        last_head_sha = excluded.last_head_sha,
-        metadata_json = excluded.metadata_json
-    `,
-    [
-      packKey,
-      projectId,
-      laneId,
-      packType,
-      packPath,
-      deterministicUpdatedAt,
-      narrativeUpdatedAt ?? null,
-      lastHeadSha ?? null,
-      JSON.stringify(metadata ?? {})
-    ]
-  );
-}
-function toPackSummaryFromRow(args) {
-  const packType = args.row?.pack_type ?? "project";
-  const packPath = args.row?.pack_path ?? "";
-  const body = packPath ? readFileIfExists(packPath) : "";
-  const exists = packPath.length ? import_node_fs8.default.existsSync(packPath) : false;
-  const metadata = parsePackMetadataJson(args.row?.metadata_json);
-  return {
-    packKey: args.packKey,
-    packType,
-    path: packPath,
-    exists,
-    deterministicUpdatedAt: args.row?.deterministic_updated_at ?? null,
-    narrativeUpdatedAt: args.row?.narrative_updated_at ?? null,
-    lastHeadSha: args.row?.last_head_sha ?? null,
-    versionId: args.version?.versionId ?? null,
-    versionNumber: args.version?.versionNumber ?? null,
-    contentHash: args.version?.contentHash ?? null,
-    metadata,
-    body
-  };
-}
-
 // ../desktop/src/main/services/packs/projectPackBuilder.ts
 var import_node_crypto6 = require("crypto");
 var import_node_fs10 = __toESM(require("fs"), 1);
 var import_node_path10 = __toESM(require("path"), 1);
 
+// ../desktop/src/main/services/ai/utils.ts
+var import_node_child_process2 = require("child_process");
+function extractFirstJsonObject(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("{") && raw.endsWith("}")) return raw;
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    const inner = fenced[1].trim();
+    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
+  }
+  const first = raw.indexOf("{");
+  const last = raw.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    const candidate = raw.slice(first, last + 1).trim();
+    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
+  }
+  return null;
+}
+
 // ../desktop/src/main/services/orchestrator/stepPolicyResolver.ts
-var import_node_path9 = __toESM(require("path"), 1);
+var import_node_path8 = __toESM(require("path"), 1);
 
 // ../desktop/src/main/services/orchestrator/orchestratorContext.ts
 var import_node_crypto5 = require("crypto");
-var import_node_child_process2 = require("child_process");
+var import_node_child_process3 = require("child_process");
 var STEERING_DIRECTIVES_METADATA_KEY = "steeringDirectives";
 var ORCHESTRATOR_CHAT_METADATA_KEY = "orchestratorChat";
 var ORCHESTRATOR_CHAT_SESSION_METADATA_KEY = "orchestratorChatSession";
@@ -7017,21 +5878,30 @@ async function runBestEffortWithTimeout(args) {
     }
   }
 }
-function isRecord3(value) {
+function isRecord2(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function asRecord(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
+function isDisplayOnlyTaskStep(step) {
+  const metadata = asRecord(step?.metadata);
+  return metadata?.displayOnlyTask === true;
+}
+function filterExecutionSteps(steps) {
+  return steps.filter(
+    (step) => !isDisplayOnlyTaskStep(step)
+  );
+}
 function asBool2(value, fallback = false) {
   return typeof value === "boolean" ? value : fallback;
 }
-function asString4(value) {
+function asString3(value) {
   return typeof value === "string" ? value : null;
 }
 function parseSteeringDirective(value, missionId) {
-  if (!isRecord3(value)) return null;
+  if (!isRecord2(value)) return null;
   const directive = typeof value.directive === "string" ? value.directive.trim() : "";
   if (!directive.length) return null;
   const priority = value.priority === "instruction" || value.priority === "override" ? value.priority : "suggestion";
@@ -7051,7 +5921,7 @@ function parseChatDeliveryState(value) {
   return null;
 }
 function parseChatTarget(value) {
-  if (!isRecord3(value)) return null;
+  if (!isRecord2(value)) return null;
   const kind = value.kind === "coordinator" || value.kind === "teammate" || value.kind === "worker" || value.kind === "workers" ? value.kind : null;
   if (!kind) return null;
   if (kind === "coordinator") {
@@ -7091,7 +5961,7 @@ function parseThreadType(value) {
   return null;
 }
 function parseChatMessage(value, missionId) {
-  if (!isRecord3(value)) return null;
+  if (!isRecord2(value)) return null;
   const role = value.role === "user" || value.role === "orchestrator" || value.role === "worker" ? value.role : null;
   if (!role) return null;
   const content = typeof value.content === "string" ? value.content.trim() : "";
@@ -7114,11 +5984,11 @@ function parseChatMessage(value, missionId) {
     attemptId: typeof value.attemptId === "string" ? value.attemptId : void 0,
     laneId: typeof value.laneId === "string" ? value.laneId : void 0,
     runId: typeof value.runId === "string" ? value.runId : void 0,
-    metadata: isRecord3(value.metadata) ? value.metadata : null
+    metadata: isRecord2(value.metadata) ? value.metadata : null
   };
 }
 function parseChatSessionState(value) {
-  if (!isRecord3(value)) return null;
+  if (!isRecord2(value)) return null;
   const provider = value.provider === "claude" || value.provider === "codex" ? value.provider : null;
   const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
   if (!provider || !sessionId.length) return null;
@@ -7157,7 +6027,7 @@ function buildQuestionReplyLink(args) {
   };
 }
 function parseQuestionLink(value) {
-  if (!isRecord3(value)) return null;
+  if (!isRecord2(value)) return null;
   const threadId = typeof value.threadId === "string" ? value.threadId.trim() : "";
   const messageId = typeof value.messageId === "string" ? value.messageId.trim() : "";
   const replyToRaw = typeof value.replyTo === "string" ? value.replyTo.trim() : "";
@@ -7208,7 +6078,7 @@ function clipHookLogText(value) {
   return normalized.length > ORCHESTRATOR_HOOK_LOG_PREVIEW_CHARS ? normalized.slice(0, ORCHESTRATOR_HOOK_LOG_PREVIEW_CHARS) + "..." : normalized;
 }
 function parseOrchestratorHookConfig(raw) {
-  if (!isRecord3(raw)) return null;
+  if (!isRecord2(raw)) return null;
   const command = String(raw.command ?? "").trim();
   if (!command.length) return null;
   const timeoutRaw = Number(raw.timeoutMs);
@@ -7216,7 +6086,7 @@ function parseOrchestratorHookConfig(raw) {
   return { command, timeoutMs };
 }
 function readOrchestratorHooksConfig(orchestrator) {
-  const hooksRaw = isRecord3(orchestrator.hooks) ? orchestrator.hooks : null;
+  const hooksRaw = isRecord2(orchestrator.hooks) ? orchestrator.hooks : null;
   if (!hooksRaw) return {};
   const hooks = {};
   const teammateIdle = parseOrchestratorHookConfig(hooksRaw.TeammateIdle ?? hooksRaw.teammateIdle ?? hooksRaw.teammate_idle);
@@ -7229,7 +6099,7 @@ function parseJsonRecord(raw) {
   if (!raw || typeof raw !== "string") return null;
   try {
     const parsed = JSON.parse(raw);
-    return isRecord3(parsed) ? parsed : null;
+    return isRecord2(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -7338,11 +6208,11 @@ function deriveThreadTitle(args) {
 function readConfig(projectConfigService) {
   const snapshot = projectConfigService?.get();
   const ai = snapshot?.effective?.ai;
-  const orchestrator = isRecord3(ai) && isRecord3(ai.orchestrator) ? ai.orchestrator : {};
-  const defaultPlannerProviderRaw = asString4(orchestrator.defaultPlannerProvider);
+  const orchestrator = isRecord2(ai) && isRecord2(ai.orchestrator) ? ai.orchestrator : {};
+  const defaultPlannerProviderRaw = asString3(orchestrator.defaultPlannerProvider);
   const defaultPlannerProvider = defaultPlannerProviderRaw && defaultPlannerProviderRaw.trim().length > 0 ? defaultPlannerProviderRaw.trim() : null;
-  const defaultExecutionPolicy = isRecord3(orchestrator.defaultExecutionPolicy) ? orchestrator.defaultExecutionPolicy : null;
-  const defaultMissionLevelSettings = isRecord3(orchestrator.defaultMissionLevelSettings) ? orchestrator.defaultMissionLevelSettings : null;
+  const defaultExecutionPolicy = isRecord2(orchestrator.defaultExecutionPolicy) ? orchestrator.defaultExecutionPolicy : null;
+  const defaultMissionLevelSettings = isRecord2(orchestrator.defaultMissionLevelSettings) ? orchestrator.defaultMissionLevelSettings : null;
   const hooks = readOrchestratorHooksConfig(orchestrator);
   return {
     defaultPlannerProvider,
@@ -7376,12 +6246,20 @@ function mapOrchestratorStepStatus(status) {
   }
 }
 function deriveMissionStatusFromRun(graph, mission) {
-  if (graph.run.status === "active" || graph.run.status === "bootstrapping" || graph.run.status === "queued" || graph.run.status === "completing") return "in_progress";
+  const hasBlockingIntervention = mission.interventions.some((entry) => {
+    if (entry.status !== "open") return false;
+    if (entry.interventionType !== "manual_input") return true;
+    const metadata = isRecord2(entry.metadata) ? entry.metadata : null;
+    return metadata?.canProceedWithoutAnswer !== true;
+  });
   if (graph.run.status === "paused") return "intervention_required";
+  if (hasBlockingIntervention) return "intervention_required";
+  if (graph.run.status === "active" || graph.run.status === "bootstrapping" || graph.run.status === "queued" || graph.run.status === "completing") return "in_progress";
   if (graph.run.status === "succeeded") {
     return "completed";
   }
   if (graph.run.status === "failed") return "failed";
+  if (graph.run.status === "canceled") return "canceled";
   return mission.status;
 }
 function buildOutcomeSummary(graph) {
@@ -7466,7 +6344,7 @@ var runOrchestratorHookCommand = async (args) => {
     };
     let child;
     try {
-      child = (0, import_node_child_process2.spawn)(args.command, {
+      child = (0, import_node_child_process3.spawn)(args.command, {
         cwd: args.cwd,
         env: args.env,
         shell: true,
@@ -8187,7 +7065,7 @@ function clipText(value, maxChars) {
 }
 
 // ../desktop/src/main/services/orchestrator/stepPolicyResolver.ts
-var import_node_fs9 = __toESM(require("fs"), 1);
+var import_node_fs8 = __toESM(require("fs"), 1);
 var DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG = {
   teammatePlanMode: "auto",
   maxParallelWorkers: 4,
@@ -8308,11 +7186,11 @@ function readyStepOrderComparator(a, b) {
 function normalizeRepoRelativePath(projectRoot, rawPath) {
   let value = String(rawPath ?? "").trim();
   if (!value.length) return null;
-  if (import_node_path9.default.isAbsolute(value)) {
-    value = import_node_path9.default.relative(projectRoot, value);
+  if (import_node_path8.default.isAbsolute(value)) {
+    value = import_node_path8.default.relative(projectRoot, value);
   }
   value = value.replace(/\\/g, "/");
-  value = import_node_path9.default.posix.normalize(value);
+  value = import_node_path8.default.posix.normalize(value);
   while (value.startsWith("./")) value = value.slice(2);
   if (!value.length || value === ".") return null;
   if (value.startsWith("../")) return null;
@@ -8412,9 +7290,9 @@ function readDocPaths(projectRoot) {
   const scannedSet = /* @__PURE__ */ new Set();
   const addPriorityPath = (absPath) => {
     try {
-      const stat = import_node_fs9.default.statSync(absPath);
+      const stat = import_node_fs8.default.statSync(absPath);
       if (!stat.isFile()) return;
-      const normalized = import_node_path9.default.normalize(absPath);
+      const normalized = import_node_path8.default.normalize(absPath);
       if (prioritySet.has(normalized)) return;
       prioritySet.add(normalized);
       priorityPaths.push(normalized);
@@ -8422,31 +7300,31 @@ function readDocPaths(projectRoot) {
     }
   };
   for (const relPath of DOC_PRIORITY_REL_PATHS) {
-    addPriorityPath(import_node_path9.default.join(projectRoot, relPath));
+    addPriorityPath(import_node_path8.default.join(projectRoot, relPath));
   }
   const walk = (root, depth) => {
     if (depth < 0) return;
     let entries = [];
     try {
-      entries = import_node_fs9.default.readdirSync(root, { withFileTypes: true });
+      entries = import_node_fs8.default.readdirSync(root, { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
       if (entry.name.startsWith(".") && entry.name !== ".ade") continue;
       if (DOC_SCAN_SKIP_DIRS.has(entry.name)) continue;
-      const abs = import_node_path9.default.join(root, entry.name);
+      const abs = import_node_path8.default.join(root, entry.name);
       if (entry.isDirectory()) {
         walk(abs, depth - 1);
         continue;
       }
       if (!entry.isFile()) continue;
       if (!DOC_FILE_EXT_RE.test(entry.name)) continue;
-      const rel = import_node_path9.default.relative(projectRoot, abs).replace(/\\/g, "/");
+      const rel = import_node_path8.default.relative(projectRoot, abs).replace(/\\/g, "/");
       const inDocsDir = /(^|\/)docs\//i.test(rel);
       const hinted = DOC_FILE_NAME_HINT_RE.test(entry.name) || inDocsDir || rel.startsWith(".ade/context/");
       if (!hinted) continue;
-      const normalized = import_node_path9.default.normalize(abs);
+      const normalized = import_node_path8.default.normalize(abs);
       if (!prioritySet.has(normalized)) scannedSet.add(normalized);
     }
   };
@@ -8455,6 +7333,381 @@ function readDocPaths(projectRoot) {
   const paths = [...priorityPaths, ...scannedPaths];
   docPathsCache.set(projectRoot, { paths, expiresAt: Date.now() + DOC_PATHS_CACHE_TTL_MS });
   return paths;
+}
+
+// ../desktop/src/main/services/packs/packUtils.ts
+var import_node_fs9 = __toESM(require("fs"), 1);
+var import_node_path9 = __toESM(require("path"), 1);
+
+// ../desktop/src/shared/contextContract.ts
+var ADE_INTENT_START = "<!-- ADE_INTENT_START -->";
+var ADE_INTENT_END = "<!-- ADE_INTENT_END -->";
+var ADE_TODOS_START = "<!-- ADE_TODOS_START -->";
+var ADE_TODOS_END = "<!-- ADE_TODOS_END -->";
+var ADE_NARRATIVE_START = "<!-- ADE_NARRATIVE_START -->";
+var ADE_NARRATIVE_END = "<!-- ADE_NARRATIVE_END -->";
+var ADE_TASK_SPEC_START = "<!-- ADE_TASK_SPEC_START -->";
+var ADE_TASK_SPEC_END = "<!-- ADE_TASK_SPEC_END -->";
+var CONTEXT_HEADER_SCHEMA_V1 = "ade.context.v1";
+var CONTEXT_CONTRACT_VERSION = 4;
+
+// ../desktop/src/main/services/packs/packUtils.ts
+function safeJsonParseArray(raw) {
+  const parsed = safeJsonParse(raw, null);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((entry) => String(entry));
+}
+function readFileIfExists(filePath) {
+  try {
+    return import_node_fs9.default.readFileSync(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+function ensureDirFor(filePath) {
+  import_node_fs9.default.mkdirSync(import_node_path9.default.dirname(filePath), { recursive: true });
+}
+function ensureDir(dirPath) {
+  import_node_fs9.default.mkdirSync(dirPath, { recursive: true });
+}
+function safeSegment(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return "untitled";
+  return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
+}
+function parsePackMetadataJson(raw) {
+  if (!raw || !raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function parseNumStat(stdout) {
+  const files = /* @__PURE__ */ new Set();
+  let insertions = 0;
+  let deletions = 0;
+  const lines = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    const parts = line.split("	");
+    if (parts.length < 3) continue;
+    const ins = parts[0] ?? "0";
+    const del = parts[1] ?? "0";
+    const filePath = parts.slice(2).join("	").trim();
+    if (filePath.length) files.add(filePath);
+    const insNum = ins === "-" ? 0 : Number(ins);
+    const delNum = del === "-" ? 0 : Number(del);
+    if (Number.isFinite(insNum)) insertions += insNum;
+    if (Number.isFinite(delNum)) deletions += delNum;
+  }
+  return { insertions, deletions, files };
+}
+function parsePorcelainPaths(stdout) {
+  const out = /* @__PURE__ */ new Set();
+  const lines = stdout.split("\n").map((line) => line.trimEnd()).filter(Boolean);
+  for (const line of lines) {
+    if (line.startsWith("??")) {
+      const rel = line.slice(2).trim();
+      if (rel.length) out.add(rel);
+      continue;
+    }
+    const raw = line.slice(2).trim();
+    const arrow = raw.indexOf("->");
+    if (arrow >= 0) {
+      const rel = raw.slice(arrow + 2).trim();
+      if (rel.length) out.add(rel);
+      continue;
+    }
+    if (raw.length) out.add(raw);
+  }
+  return [...out];
+}
+function parseChatTranscriptDelta(rawTranscript) {
+  const touched = /* @__PURE__ */ new Set();
+  const failureLines = [];
+  const seenFailure = /* @__PURE__ */ new Set();
+  const pushFailure = (value) => {
+    const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+    if (!normalized.length) return;
+    const clipped = normalized.length > 320 ? normalized.slice(0, 320) : normalized;
+    if (seenFailure.has(clipped)) return;
+    seenFailure.add(clipped);
+    failureLines.push(clipped);
+  };
+  for (const rawLine of rawTranscript.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.length) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    const event = parsed.event;
+    if (!event || typeof event !== "object" || Array.isArray(event)) continue;
+    const eventRecord = event;
+    const type = typeof eventRecord.type === "string" ? eventRecord.type : "";
+    if (type === "file_change") {
+      const pathValue = String(eventRecord.path ?? "").trim();
+      if (pathValue.length && !pathValue.startsWith("(")) touched.add(pathValue);
+      continue;
+    }
+    if (type === "command") {
+      const command = String(eventRecord.command ?? "").trim();
+      const output = String(eventRecord.output ?? "");
+      const status = String(eventRecord.status ?? "").trim();
+      const exitCode = typeof eventRecord.exitCode === "number" ? eventRecord.exitCode : null;
+      if (status === "failed" || exitCode != null && exitCode !== 0) {
+        pushFailure(command.length ? `Command failed: ${command}` : "Command failed.");
+      }
+      for (const outputLine of output.split(/\r?\n/)) {
+        const normalized = outputLine.replace(/\s+/g, " ").trim();
+        if (!normalized.length) continue;
+        if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(normalized)) continue;
+        pushFailure(normalized);
+      }
+      continue;
+    }
+    if (type === "error") {
+      pushFailure(String(eventRecord.message ?? "Chat error."));
+      continue;
+    }
+    if (type === "status") {
+      const turnStatus = String(eventRecord.turnStatus ?? "").trim();
+      if (turnStatus === "failed") {
+        pushFailure(String(eventRecord.message ?? "Turn failed."));
+      }
+    }
+  }
+  return {
+    touchedFiles: [...new Set(touched)].sort(),
+    failureLines: failureLines.slice(-16)
+  };
+}
+function extractSection(existing, start, end, fallback) {
+  const startIdx = existing.indexOf(start);
+  const endIdx = existing.indexOf(end);
+  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return fallback;
+  const body = existing.slice(startIdx + start.length, endIdx).trim();
+  return body.length ? body : fallback;
+}
+function extractSectionByHeading(existing, heading) {
+  const re = new RegExp(`^${heading.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\s*$`, "m");
+  const match = re.exec(existing);
+  if (!match?.index && match?.index !== 0) return null;
+  const headingStart = match.index;
+  const headingLineEnd = existing.indexOf("\n", headingStart);
+  const sectionStart = headingLineEnd >= 0 ? headingLineEnd + 1 : existing.length;
+  const nextHeading = (() => {
+    const r = /^##\s+/gm;
+    r.lastIndex = sectionStart;
+    const m = r.exec(existing);
+    return m ? m.index : -1;
+  })();
+  const nextHr = (() => {
+    const r = /^---\s*$/gm;
+    r.lastIndex = sectionStart;
+    const m = r.exec(existing);
+    return m ? m.index : -1;
+  })();
+  const candidates = [nextHeading, nextHr].filter((idx) => idx >= 0);
+  const sectionEnd = candidates.length ? Math.min(...candidates) : existing.length;
+  const body = existing.slice(sectionStart, sectionEnd).trim();
+  return body.length ? body : "";
+}
+function statusFromCode(status) {
+  if (status === "passed") return "PASS";
+  if (status === "failed") return "FAIL";
+  if (status === "running") return "RUNNING";
+  if (status === "canceled") return "CANCELED";
+  return "TIMED_OUT";
+}
+function humanToolLabel(toolType) {
+  const normalized = String(toolType ?? "").trim().toLowerCase();
+  if (!normalized) return "Shell";
+  if (normalized === "claude") return "Claude";
+  if (normalized === "codex") return "Codex";
+  if (normalized === "cursor") return "Cursor";
+  if (normalized === "aider") return "Aider";
+  if (normalized === "continue") return "Continue";
+  if (normalized === "shell") return "Shell";
+  return normalized.slice(0, 1).toUpperCase() + normalized.slice(1);
+}
+function shellQuoteArg(arg) {
+  const value = String(arg);
+  if (!value.length) return "''";
+  if (/^[a-zA-Z0-9_./:-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+function formatCommand(command) {
+  if (Array.isArray(command)) return command.map((part) => shellQuoteArg(String(part))).join(" ");
+  if (typeof command === "string") return command.trim();
+  return JSON.stringify(command);
+}
+function moduleFromPath(relPath) {
+  const normalized = relPath.replace(/\\/g, "/");
+  const first = normalized.split("/")[0] ?? normalized;
+  return first || ".";
+}
+function normalizeConflictStatus(value) {
+  const v = value.trim();
+  if (v === "merge-ready" || v === "behind-base" || v === "conflict-predicted" || v === "conflict-active" || v === "unknown") {
+    return v;
+  }
+  return null;
+}
+function normalizeRiskLevel(value) {
+  const v = value.trim();
+  if (v === "none" || v === "low" || v === "medium" || v === "high") return v;
+  return null;
+}
+function isRecord3(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function asString4(value) {
+  return typeof value === "string" ? value : "";
+}
+function parseRecord(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return isRecord3(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function computeMergeReadiness(args) {
+  if (args.requiredMerges.length) return "blocked";
+  if (args.conflictStatus === "unknown" || args.conflictStatus == null) return "unknown";
+  if (args.conflictStatus === "conflict-active" || args.conflictStatus === "conflict-predicted") return "blocked";
+  if (args.behindCount > 0) return "needs_sync";
+  return "ready";
+}
+function buildGraphEnvelope(relations) {
+  return {
+    schema: "ade.packGraph.v1",
+    relations
+  };
+}
+function importanceRank(value) {
+  const v = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (v === "high") return 3;
+  if (v === "medium") return 2;
+  if (v === "low") return 1;
+  return 0;
+}
+function getDefaultSectionLocators(packType) {
+  if (packType === "lane") {
+    return [
+      { id: "task_spec", kind: "markers", startMarker: ADE_TASK_SPEC_START, endMarker: ADE_TASK_SPEC_END },
+      { id: "intent", kind: "markers", startMarker: ADE_INTENT_START, endMarker: ADE_INTENT_END },
+      { id: "todos", kind: "markers", startMarker: ADE_TODOS_START, endMarker: ADE_TODOS_END },
+      { id: "narrative", kind: "markers", startMarker: ADE_NARRATIVE_START, endMarker: ADE_NARRATIVE_END },
+      { id: "what_changed", kind: "heading", heading: "## What Changed" },
+      { id: "validation", kind: "heading", heading: "## Validation" },
+      { id: "errors", kind: "heading", heading: "## Errors & Issues" },
+      { id: "sessions", kind: "heading", heading: "## Sessions" }
+    ];
+  }
+  if (packType === "conflict") {
+    return [
+      { id: "overlap", kind: "heading", heading: "## Overlapping Files" },
+      { id: "conflicts", kind: "heading", heading: "## Conflicts (merge-tree)" },
+      { id: "lane_excerpt", kind: "heading", heading: "## Lane Pack (Excerpt)" }
+    ];
+  }
+  return [
+    { id: "bootstrap", kind: "heading", heading: "## Bootstrap context (codebase + docs)" },
+    { id: "lane_snapshot", kind: "heading", heading: "## Lane Snapshot" }
+  ];
+}
+function rowToSessionDelta(row) {
+  return {
+    sessionId: row.session_id,
+    laneId: row.lane_id,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    headShaStart: row.head_sha_start,
+    headShaEnd: row.head_sha_end,
+    filesChanged: Number(row.files_changed ?? 0),
+    insertions: Number(row.insertions ?? 0),
+    deletions: Number(row.deletions ?? 0),
+    touchedFiles: safeJsonParseArray(row.touched_files_json),
+    failureLines: safeJsonParseArray(row.failure_lines_json),
+    computedAt: row.computed_at ?? null
+  };
+}
+function upsertPackIndex({
+  db,
+  projectId,
+  packKey,
+  laneId,
+  packType,
+  packPath,
+  deterministicUpdatedAt,
+  narrativeUpdatedAt,
+  lastHeadSha,
+  metadata
+}) {
+  db.run(
+    `
+      insert into packs_index(
+        pack_key,
+        project_id,
+        lane_id,
+        pack_type,
+        pack_path,
+        deterministic_updated_at,
+        narrative_updated_at,
+        last_head_sha,
+        metadata_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(pack_key) do update set
+        project_id = excluded.project_id,
+        lane_id = excluded.lane_id,
+        pack_type = excluded.pack_type,
+        pack_path = excluded.pack_path,
+        deterministic_updated_at = excluded.deterministic_updated_at,
+        narrative_updated_at = excluded.narrative_updated_at,
+        last_head_sha = excluded.last_head_sha,
+        metadata_json = excluded.metadata_json
+    `,
+    [
+      packKey,
+      projectId,
+      laneId,
+      packType,
+      packPath,
+      deterministicUpdatedAt,
+      narrativeUpdatedAt ?? null,
+      lastHeadSha ?? null,
+      JSON.stringify(metadata ?? {})
+    ]
+  );
+}
+function toPackSummaryFromRow(args) {
+  const packType = args.row?.pack_type ?? "project";
+  const packPath = args.row?.pack_path ?? "";
+  const body = packPath ? readFileIfExists(packPath) : "";
+  const exists = packPath.length ? import_node_fs9.default.existsSync(packPath) : false;
+  const metadata = parsePackMetadataJson(args.row?.metadata_json);
+  return {
+    packKey: args.packKey,
+    packType,
+    path: packPath,
+    exists,
+    deterministicUpdatedAt: args.row?.deterministic_updated_at ?? null,
+    narrativeUpdatedAt: args.row?.narrative_updated_at ?? null,
+    lastHeadSha: args.row?.last_head_sha ?? null,
+    versionId: args.version?.versionId ?? null,
+    versionNumber: args.version?.versionNumber ?? null,
+    contentHash: args.version?.contentHash ?? null,
+    metadata,
+    body
+  };
 }
 
 // ../desktop/src/main/services/packs/projectPackBuilder.ts
@@ -8470,9 +7723,8 @@ var DOC_PRD_HINT_RE = /(prd|product|roadmap|feature|requirement|spec|user-story|
 var DOC_ARCH_HINT_RE = /(architecture|system|design|technical|infra|platform|lanes|conflict|pack)/i;
 var DOC_GUIDE_HINT_RE = /(readme|guide|overview|context|contributing|claude|agents)/i;
 var sha256 = (input) => (0, import_node_crypto6.createHash)("sha256").update(input).digest("hex");
-var nowIso3 = () => (/* @__PURE__ */ new Date()).toISOString();
 var nowTimestampSegment = () => {
-  const iso = nowIso3();
+  const iso = nowIso();
   return iso.replace(/[:]/g, "-").replace(/\..+$/, "Z");
 };
 var safeReadDoc = (absPath, maxBytes) => {
@@ -8537,23 +7789,6 @@ var formatDocDigest = (args) => {
   }
   return { content: `${lines.join("\n").trim()}
 `, warnings };
-};
-var extractFirstJsonObject = (text) => {
-  const raw = text.trim();
-  if (!raw) return null;
-  if (raw.startsWith("{") && raw.endsWith("}")) return raw;
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) {
-    const inner = fenced[1].trim();
-    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
-  }
-  const first = raw.indexOf("{");
-  const last = raw.lastIndexOf("}");
-  if (first >= 0 && last > first) {
-    const candidate = raw.slice(first, last + 1).trim();
-    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
-  }
-  return null;
 };
 var writeDocWithFallback = (args) => {
   try {
@@ -8748,7 +7983,7 @@ function readContextStatus(deps) {
     if (!projectPackIndex?.metadata_json) return {};
     try {
       const parsed = JSON.parse(projectPackIndex.metadata_json);
-      return isRecord2(parsed) ? parsed : {};
+      return isRecord3(parsed) ? parsed : {};
     } catch {
       return {};
     }
@@ -8789,7 +8024,7 @@ async function runContextDocGeneration(deps, args) {
   const modelId = typeof args.modelId === "string" && args.modelId.trim().length > 0 ? args.modelId.trim() : null;
   const reasoningEffort = typeof args.reasoningEffort === "string" && args.reasoningEffort.trim().length > 0 ? args.reasoningEffort.trim() : null;
   const providerHint = provider === "codex" || provider === "claude" ? provider : void 0;
-  const generatedAt = nowIso3();
+  const generatedAt = nowIso();
   const warnings = [];
   const canonicalPaths = collectContextDocPaths(deps.projectRoot).filter((rel) => !rel.endsWith(".ade.md"));
   const rankedCanonicalPaths = rankDocPathsByRelevance(canonicalPaths);
@@ -8851,19 +8086,19 @@ async function runContextDocGeneration(deps, args) {
         }
       });
       outputPreview = aiResult.text.trim().slice(0, 1500);
-      const structured = isRecord2(aiResult.structuredOutput) ? aiResult.structuredOutput : null;
+      const structured = isRecord3(aiResult.structuredOutput) ? aiResult.structuredOutput : null;
       if (structured) {
-        generatedPrd = asString3(structured.prd).trim();
-        generatedArch = asString3(structured.architecture).trim();
+        generatedPrd = asString4(structured.prd).trim();
+        generatedArch = asString4(structured.architecture).trim();
       }
       if (!generatedPrd || !generatedArch) {
         const rawJson = extractFirstJsonObject(aiResult.text);
         if (rawJson) {
           try {
             const parsed = JSON.parse(rawJson);
-            if (isRecord2(parsed)) {
-              if (!generatedPrd) generatedPrd = asString3(parsed.prd).trim();
-              if (!generatedArch) generatedArch = asString3(parsed.architecture).trim();
+            if (isRecord3(parsed)) {
+              if (!generatedPrd) generatedPrd = asString4(parsed.prd).trim();
+              if (!generatedArch) generatedArch = asString4(parsed.architecture).trim();
             }
           } catch {
           }
@@ -9129,6 +8364,1222 @@ async function buildProjectPackBody(deps, args) {
   lines.push("");
   return `${lines.join("\n")}
 `;
+}
+
+// ../desktop/src/main/services/context/contextDocService.ts
+var CONTEXT_DOC_PREFS_KEY = "context:docs:preferences.v1";
+var CONTEXT_DOC_LAST_RUN_KEY2 = "context:docs:lastRun.v1";
+var AUTO_REFRESH_MIN_INTERVAL_MS = {
+  per_mission: 15 * 6e4,
+  per_pr: 15 * 6e4,
+  per_lane_refresh: 45 * 6e4
+};
+function nowIso3() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function normalizeRefreshTrigger(value) {
+  const normalized = String(value ?? "").trim();
+  if (normalized === "per_mission" || normalized === "per_pr" || normalized === "per_lane_refresh") return normalized;
+  return "manual";
+}
+function normalizeContextProvider(value) {
+  const normalized = String(value ?? "").trim();
+  if (normalized === "codex" || normalized === "claude") return normalized;
+  return "unified";
+}
+function createContextDocService(args) {
+  const {
+    db,
+    logger,
+    projectRoot,
+    projectId,
+    packsDir,
+    laneService,
+    projectConfigService,
+    aiIntegrationService
+  } = args;
+  const projectPackBuilderDeps = {
+    db,
+    logger,
+    projectRoot,
+    projectId,
+    packsDir,
+    laneService,
+    projectConfigService,
+    aiIntegrationService
+  };
+  const readContextDocRefreshPrefs = () => {
+    const raw = db.getJson(CONTEXT_DOC_PREFS_KEY);
+    if (!raw) return null;
+    return {
+      cadence: normalizeRefreshTrigger(raw.cadence),
+      provider: normalizeContextProvider(raw.provider),
+      modelId: toOptionalString(raw.modelId),
+      reasoningEffort: toOptionalString(raw.reasoningEffort),
+      updatedAt: toOptionalString(raw.updatedAt) ?? nowIso3()
+    };
+  };
+  const persistContextDocRefreshPrefs = (docArgs) => {
+    const prefs = {
+      cadence: normalizeRefreshTrigger(docArgs.trigger),
+      provider: normalizeContextProvider(docArgs.provider),
+      modelId: toOptionalString(docArgs.modelId),
+      reasoningEffort: toOptionalString(docArgs.reasoningEffort),
+      updatedAt: nowIso3()
+    };
+    db.setJson(CONTEXT_DOC_PREFS_KEY, prefs);
+    return prefs;
+  };
+  const readLastContextDocRunAt = () => {
+    const raw = db.getJson(CONTEXT_DOC_LAST_RUN_KEY2);
+    const generatedAt = toOptionalString(raw?.generatedAt);
+    if (!generatedAt) return null;
+    const ts = Date.parse(generatedAt);
+    return Number.isFinite(ts) ? ts : null;
+  };
+  const generateDocs = async (docArgs) => {
+    persistContextDocRefreshPrefs(docArgs);
+    return await runContextDocGeneration(projectPackBuilderDeps, docArgs);
+  };
+  const maybeAutoRefreshDocs = async (docArgs) => {
+    const trigger = normalizeRefreshTrigger(docArgs.trigger);
+    if (trigger === "manual") return null;
+    const prefs = readContextDocRefreshPrefs();
+    if (!prefs || prefs.cadence !== trigger) return null;
+    const minIntervalMs = AUTO_REFRESH_MIN_INTERVAL_MS[trigger];
+    if (!docArgs.force) {
+      const lastRunAt = readLastContextDocRunAt();
+      if (lastRunAt != null && Date.now() - lastRunAt < minIntervalMs) {
+        logger.debug("context_docs.auto_refresh_skipped_recent", {
+          trigger,
+          reason: docArgs.reason ?? null,
+          minIntervalMs
+        });
+        return null;
+      }
+    }
+    try {
+      logger.info("context_docs.auto_refresh_start", {
+        trigger,
+        reason: docArgs.reason ?? null,
+        provider: prefs.provider,
+        modelId: prefs.modelId
+      });
+      return await generateDocs({
+        provider: prefs.provider,
+        ...prefs.modelId ? { modelId: prefs.modelId } : {},
+        ...prefs.reasoningEffort ? { reasoningEffort: prefs.reasoningEffort } : {},
+        trigger
+      });
+    } catch (error48) {
+      logger.warn("context_docs.auto_refresh_failed", {
+        trigger,
+        reason: docArgs.reason ?? null,
+        error: getErrorMessage(error48)
+      });
+      return null;
+    }
+  };
+  return {
+    getDocMeta() {
+      return readContextDocMeta(projectRoot);
+    },
+    getStatus() {
+      return readContextStatus({ db, projectId, projectRoot, packsDir });
+    },
+    generateDocs,
+    maybeAutoRefreshDocs,
+    getDocPath(docId) {
+      return resolveContextDocPath(projectRoot, docId);
+    }
+  };
+}
+
+// ../desktop/src/main/services/sessions/sessionDeltaService.ts
+function createSessionDeltaService(args) {
+  const { db, projectId, laneService, sessionService } = args;
+  const getSessionRow = (sessionId) => db.get(
+    `
+        select
+          id,
+          lane_id,
+          tracked,
+          started_at,
+          ended_at,
+          head_sha_start,
+          head_sha_end,
+          transcript_path
+        from terminal_sessions
+        where id = ?
+        limit 1
+      `,
+    [sessionId]
+  );
+  const getSessionDeltaRow = (sessionId) => db.get(
+    `
+        select
+          session_id,
+          lane_id,
+          started_at,
+          ended_at,
+          head_sha_start,
+          head_sha_end,
+          files_changed,
+          insertions,
+          deletions,
+          touched_files_json,
+          failure_lines_json,
+          computed_at
+        from session_deltas
+        where session_id = ?
+        limit 1
+      `,
+    [sessionId]
+  );
+  const listRecentLaneSessionDeltas = (laneId, limit) => {
+    const rows = db.all(
+      `
+        select
+          d.session_id,
+          d.lane_id,
+          d.started_at,
+          d.ended_at,
+          d.head_sha_start,
+          d.head_sha_end,
+          d.files_changed,
+          d.insertions,
+          d.deletions,
+          d.touched_files_json,
+          d.failure_lines_json,
+          d.computed_at
+        from session_deltas d
+        where d.lane_id = ?
+        order by d.started_at desc
+        limit ?
+      `,
+      [laneId, limit]
+    );
+    return rows.map(rowToSessionDelta);
+  };
+  const getSessionDelta = (sessionId) => {
+    const row = getSessionDeltaRow(sessionId);
+    return row ? rowToSessionDelta(row) : null;
+  };
+  const computeSessionDelta = async (sessionId) => {
+    const session = getSessionRow(sessionId);
+    if (!session || session.tracked !== 1) return null;
+    const lane = laneService.getLaneBaseAndBranch(session.lane_id);
+    const diffRef = session.head_sha_start?.trim() || "HEAD";
+    const numStatRes = await runGit(["diff", "--numstat", diffRef], { cwd: lane.worktreePath, timeoutMs: 2e4 });
+    const nameRes = await runGit(["diff", "--name-only", diffRef], { cwd: lane.worktreePath, timeoutMs: 2e4 });
+    const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 8e3 });
+    const parsedStat = parseNumStat(numStatRes.stdout);
+    const touched = /* @__PURE__ */ new Set([...parsedStat.files]);
+    if (nameRes.exitCode === 0) {
+      for (const line of nameRes.stdout.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
+        touched.add(line);
+      }
+    }
+    if (statusRes.exitCode === 0) {
+      for (const rel of parsePorcelainPaths(statusRes.stdout)) {
+        touched.add(rel);
+      }
+    }
+    const isChatTranscript = session.transcript_path.endsWith(".chat.jsonl");
+    const transcript = sessionService.readTranscriptTail(
+      session.transcript_path,
+      22e4,
+      isChatTranscript ? { raw: true, alignToLineBoundary: true } : void 0
+    );
+    const failureLines = (() => {
+      const out = [];
+      const seen = /* @__PURE__ */ new Set();
+      const push = (value) => {
+        const normalized = stripAnsi(String(value ?? "")).replace(/\s+/g, " ").trim();
+        if (!normalized.length || seen.has(normalized)) return;
+        seen.add(normalized);
+        out.push(normalized);
+      };
+      for (const rawLine of transcript.split("\n")) {
+        const line = stripAnsi(rawLine).trim();
+        if (!line) continue;
+        if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(line)) continue;
+        push(line);
+      }
+      if (isChatTranscript) {
+        const chatDelta = parseChatTranscriptDelta(transcript);
+        for (const touchedPath of chatDelta.touchedFiles) {
+          touched.add(touchedPath);
+        }
+        for (const line of chatDelta.failureLines) {
+          push(line);
+        }
+      }
+      return out.slice(-8);
+    })();
+    const touchedFiles = [...touched].sort();
+    const computedAt = (/* @__PURE__ */ new Date()).toISOString();
+    db.run(
+      `
+        insert into session_deltas(
+          session_id,
+          project_id,
+          lane_id,
+          started_at,
+          ended_at,
+          head_sha_start,
+          head_sha_end,
+          files_changed,
+          insertions,
+          deletions,
+          touched_files_json,
+          failure_lines_json,
+          computed_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(session_id) do update set
+          project_id = excluded.project_id,
+          lane_id = excluded.lane_id,
+          started_at = excluded.started_at,
+          ended_at = excluded.ended_at,
+          head_sha_start = excluded.head_sha_start,
+          head_sha_end = excluded.head_sha_end,
+          files_changed = excluded.files_changed,
+          insertions = excluded.insertions,
+          deletions = excluded.deletions,
+          touched_files_json = excluded.touched_files_json,
+          failure_lines_json = excluded.failure_lines_json,
+          computed_at = excluded.computed_at
+      `,
+      [
+        session.id,
+        projectId,
+        session.lane_id,
+        session.started_at,
+        session.ended_at,
+        session.head_sha_start,
+        session.head_sha_end,
+        touchedFiles.length,
+        parsedStat.insertions,
+        parsedStat.deletions,
+        JSON.stringify(touchedFiles),
+        JSON.stringify(failureLines),
+        computedAt
+      ]
+    );
+    return {
+      sessionId: session.id,
+      laneId: session.lane_id,
+      startedAt: session.started_at,
+      endedAt: session.ended_at,
+      headShaStart: session.head_sha_start,
+      headShaEnd: session.head_sha_end,
+      filesChanged: touchedFiles.length,
+      insertions: parsedStat.insertions,
+      deletions: parsedStat.deletions,
+      touchedFiles,
+      failureLines,
+      computedAt
+    };
+  };
+  return {
+    getSessionDelta,
+    computeSessionDelta,
+    listRecentLaneSessionDeltas
+  };
+}
+
+// ../desktop/src/main/services/packs/transcriptInsights.ts
+function normalize(raw) {
+  return stripAnsi(String(raw ?? "")).replace(/\r\n/g, "\n");
+}
+function lastIndexOfRegex(text, pattern) {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const re = new RegExp(pattern.source, flags);
+  let last = -1;
+  let match;
+  while ((match = re.exec(text)) != null) {
+    last = match.index;
+  }
+  return last;
+}
+function lineAt(text, idx) {
+  if (idx < 0) return "";
+  const start = text.lastIndexOf("\n", idx);
+  const end = text.indexOf("\n", idx);
+  const slice = text.slice(start < 0 ? 0 : start + 1, end < 0 ? text.length : end);
+  return slice.trim();
+}
+function isNoiseLine(line) {
+  const t = line.trim();
+  if (!t) return true;
+  if (t.startsWith("\u273B")) return true;
+  const lower = t.toLowerCase();
+  if (lower.startsWith("cooked for")) return true;
+  return false;
+}
+function parseFileCandidates(lines) {
+  const files = /* @__PURE__ */ new Set();
+  for (const line of lines) {
+    for (const match of line.matchAll(/`([a-zA-Z0-9_./-]+\.[a-zA-Z0-9_]+)`/g)) {
+      const file2 = (match[1] ?? "").trim();
+      if (file2) files.add(file2);
+    }
+    for (const match of line.matchAll(/\b(?:[a-zA-Z0-9_.-]+\/)+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9_]+\b/g)) {
+      const file2 = (match[0] ?? "").trim();
+      if (file2) files.add(file2);
+    }
+  }
+  return Array.from(files).sort((a, b) => a.localeCompare(b));
+}
+function clipList(values, maxItems, omissionTags, tag) {
+  if (values.length <= maxItems) return values;
+  omissionTags.push(tag);
+  return values.slice(0, Math.max(0, maxItems));
+}
+function parseExplicitFinalBlock(text) {
+  const lines = text.split("\n");
+  let anchorIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]?.trim() ?? "";
+    if (!line) continue;
+    if (/^(done\.?|all done\.?|completed\.?)\b/i.test(line) || /here'?s what (?:i|we) (?:changed|did|updated|fixed)/i.test(line) || /^summary\s*:/i.test(line) || /^final summary\s*:?/i.test(line)) {
+      anchorIdx = i;
+      break;
+    }
+  }
+  if (anchorIdx < 0) return null;
+  const block = lines.slice(anchorIdx, lines.length).map((line) => line.trim()).filter((line) => !isNoiseLine(line));
+  if (!block.length) return null;
+  const bullets = block.filter((line) => /^[-*•]\s+/.test(line) || /^\d+\.\s+/.test(line)).map((line) => line.replace(/^[-*•]\s+/, "").replace(/^\d+\.\s+/, "").trim()).filter(Boolean);
+  const summary = block.join(" ").replace(/\s+/g, " ").trim();
+  if (!summary) return null;
+  const omissionTags = [];
+  const clippedBullets = clipList(bullets, 6, omissionTags, "bullets_clipped");
+  const files = clipList(parseFileCandidates(block), 12, omissionTags, "files_clipped");
+  return {
+    summary,
+    bullets: clippedBullets,
+    files,
+    source: "explicit_final_block",
+    confidence: "high",
+    omissionTags
+  };
+}
+function parseHeuristicTail(text) {
+  if (!text.trim()) return null;
+  const passAnchors = [
+    /\bAll\b.{0,120}\btests?\b.{0,120}\bpass(?:ed)?\b/gi,
+    /\bTest Suites?:\s*\d+\s*passed\b/gi,
+    /\bTests?:\s*\d+\s*passed\b/gi
+  ];
+  const summaryAnchors = [
+    /\bHere's what I (?:added|changed|did)\b/gi,
+    /\bSummary\b\s*:/gi
+  ];
+  let passIdx = -1;
+  for (const anchor of passAnchors) passIdx = Math.max(passIdx, lastIndexOfRegex(text, anchor));
+  let summaryIdx = -1;
+  for (const anchor of summaryAnchors) summaryIdx = Math.max(summaryIdx, lastIndexOfRegex(text, anchor));
+  const idx = passIdx >= 0 && summaryIdx >= 0 ? Math.min(passIdx, summaryIdx) : Math.max(passIdx, summaryIdx);
+  const slice = idx >= 0 ? text.slice(idx) : text.split("\n").slice(-24).join("\n");
+  const lines = slice.split("\n").map((line) => line.trim()).filter((line) => !isNoiseLine(line));
+  const summary = lines.slice(0, 18).join(" ").replace(/\s+/g, " ").trim();
+  if (!summary) return null;
+  const omissionTags = [];
+  const files = clipList(parseFileCandidates(lines), 12, omissionTags, "files_clipped");
+  return {
+    summary,
+    bullets: [],
+    files,
+    source: "heuristic_tail",
+    confidence: "medium",
+    omissionTags
+  };
+}
+function parseTranscriptSummary(rawText) {
+  const text = normalize(rawText);
+  if (!text.trim()) return null;
+  return parseExplicitFinalBlock(text) ?? parseHeuristicTail(text);
+}
+function deriveSessionSummaryFromText(rawText) {
+  return parseTranscriptSummary(rawText)?.summary ?? "";
+}
+function inferTestOutcomeFromText(rawText) {
+  const text = normalize(rawText);
+  if (!text.trim()) return null;
+  const passPatterns = [
+    /\bAll\b.{0,120}\btests?\b.{0,120}\bpass(?:ed)?\b/gi,
+    /\bTest Suites?:\s*\d+\s*passed\b/gi,
+    /\bTests?:\s*\d+\s*passed\b/gi,
+    /\bTest Files?:\s*\d+\s*passed\b/gi
+  ];
+  const failPatterns = [
+    /\bAll\b.{0,120}\btests?\b.{0,120}\bfail(?:ed)?\b/gi,
+    /\bTest Suites?:\s*\d+\s*failed\b/gi,
+    /\bTests?:\s*\d+\s*failed\b/gi,
+    /\bFAIL\b.{0,160}\btest\b/gi,
+    /\btest\b.{0,160}\bFAIL\b/gi
+  ];
+  let passIdx = -1;
+  for (const pattern of passPatterns) passIdx = Math.max(passIdx, lastIndexOfRegex(text, pattern));
+  let failIdx = -1;
+  for (const pattern of failPatterns) failIdx = Math.max(failIdx, lastIndexOfRegex(text, pattern));
+  if (passIdx < 0 && failIdx < 0) return null;
+  const status = failIdx > passIdx ? "fail" : "pass";
+  const idx = status === "fail" ? failIdx : passIdx;
+  const evidence = lineAt(text, idx) || (status === "fail" ? "tests failed" : "tests passed");
+  return { status, evidence };
+}
+
+// ../desktop/src/main/services/packs/lanePackTemplate.ts
+function fmtChange(insertions, deletions) {
+  if (insertions == null || deletions == null) return "binary";
+  return `+${insertions}/-${deletions}`;
+}
+function mdCode(value) {
+  const clean = value.replace(/`/g, "'");
+  return `\`${clean}\``;
+}
+function renderLanePackMarkdown(args) {
+  const shortSha = args.headSha ? args.headSha.slice(0, 8) : "unknown";
+  const cleanliness = args.dirty ? "dirty" : "clean";
+  const lines = [];
+  lines.push("```json");
+  lines.push(
+    JSON.stringify(
+      {
+        schema: CONTEXT_HEADER_SCHEMA_V1,
+        contractVersion: CONTEXT_CONTRACT_VERSION,
+        projectId: args.projectId,
+        packKey: args.packKey,
+        packType: "lane",
+        laneId: args.laneId,
+        peerKey: null,
+        baseRef: args.baseRef,
+        headSha: args.headSha,
+        deterministicUpdatedAt: args.deterministicUpdatedAt,
+        versionId: null,
+        versionNumber: null,
+        contentHash: null,
+        providerMode: args.providerMode,
+        graph: args.graph ?? null,
+        dependencyState: args.dependencyState ?? null,
+        conflictState: args.conflictState ?? null
+      },
+      null,
+      2
+    )
+  );
+  lines.push("```");
+  lines.push("");
+  lines.push(`# Lane: ${stripAnsi(args.laneName)}`);
+  lines.push(`> Branch: ${mdCode(stripAnsi(args.branchRef))} | Base: ${mdCode(stripAnsi(args.baseRef))} | HEAD: ${mdCode(shortSha)} | ${cleanliness} \xB7 ahead ${args.ahead} \xB7 behind ${args.behind}`);
+  if (args.parentName) lines.push(`> Parent: ${stripAnsi(args.parentName)}`);
+  lines.push("");
+  const laneDesc = stripAnsi(args.laneDescription).trim();
+  if (laneDesc) {
+    lines.push("## Original Intent");
+    lines.push(laneDesc);
+    lines.push("");
+  }
+  lines.push("## What Changed");
+  if (args.whatChangedLines.length) {
+    for (const entry of args.whatChangedLines) lines.push(`- ${stripAnsi(entry)}`);
+  } else {
+    lines.push("- No changes detected yet.");
+  }
+  lines.push("");
+  lines.push("## Why");
+  lines.push(args.userIntentMarkers.start);
+  lines.push(stripAnsi(args.userIntent).trim().length ? stripAnsi(args.userIntent).trim() : "Intent not set \u2014 click to add.");
+  lines.push(args.userIntentMarkers.end);
+  if (args.inferredWhyLines.length) {
+    lines.push("");
+    lines.push("Inferred from commits:");
+    for (const entry of args.inferredWhyLines) lines.push(`- ${stripAnsi(entry)}`);
+  }
+  lines.push("");
+  lines.push("## Task Spec");
+  lines.push(args.taskSpecMarkers.start);
+  lines.push(stripAnsi(args.taskSpec).trim().length ? stripAnsi(args.taskSpec).trim() : "- (add task spec here)");
+  lines.push(args.taskSpecMarkers.end);
+  lines.push("");
+  lines.push("## Validation");
+  if (args.validationLines.length) {
+    for (const entry of args.validationLines) lines.push(`- ${stripAnsi(entry)}`);
+  } else {
+    lines.push("- Tests: NOT RUN");
+    lines.push("- Lint: NOT RUN");
+  }
+  lines.push("");
+  lines.push(`## Key Files (${args.keyFiles.length} files touched)`);
+  if (!args.keyFiles.length) {
+    lines.push("No files touched.");
+    lines.push("");
+  } else {
+    lines.push("| File | Change |");
+    lines.push("|------|--------|");
+    for (const row of args.keyFiles.slice(0, 25)) {
+      lines.push(`| ${mdCode(stripAnsi(row.file))} | ${fmtChange(row.insertions, row.deletions)} |`);
+    }
+    lines.push("");
+  }
+  lines.push("## Errors & Issues");
+  if (!args.errors.length) {
+    lines.push("No errors detected.");
+  } else {
+    for (const entry of args.errors.slice(0, 30)) lines.push(`- ${stripAnsi(entry)}`);
+  }
+  lines.push("");
+  lines.push(`## Sessions (${args.sessionsTotal} total, ${args.sessionsRunning} running)`);
+  if (args.sessionsDetailed.length) {
+    for (const [idx, row] of args.sessionsDetailed.slice(0, 30).entries()) {
+      lines.push(`### Session ${idx + 1}: ${stripAnsi(row.when)} \u2014 ${stripAnsi(row.tool)}`);
+      const prompt = stripAnsi(row.prompt).trim();
+      if (prompt) {
+        lines.push(`- **Prompt**: ${prompt}`);
+      }
+      lines.push(`- **Goal**: ${stripAnsi(row.goal)}`);
+      lines.push(`- **Result**: ${stripAnsi(row.result)}`);
+      lines.push(`- **Delta**: ${stripAnsi(row.delta)}`);
+      if (row.commands.length) {
+        lines.push(`- **Commands**: ${row.commands.map((c) => mdCode(stripAnsi(c))).join(", ")}`);
+      }
+      if (row.filesTouched.length) {
+        lines.push(`- **Files touched**: ${row.filesTouched.map((f) => mdCode(stripAnsi(f))).join(", ")}`);
+      }
+      if (row.errors.length) {
+        lines.push(`- **Errors**: ${row.errors.map((e) => stripAnsi(e)).join("; ")}`);
+      }
+      lines.push("");
+    }
+  } else {
+    lines.push("No sessions recorded yet.");
+    lines.push("");
+  }
+  if (args.sessionsTotal > args.sessionsDetailed.length) {
+    lines.push(`Showing ${args.sessionsDetailed.length} most recent sessions out of ${args.sessionsTotal} total.`);
+    lines.push("");
+  }
+  lines.push("## Open Questions / Next Steps");
+  if (args.nextSteps.length) {
+    for (const entry of args.nextSteps) lines.push(`- ${stripAnsi(entry)}`);
+  } else {
+    lines.push("- (none detected)");
+  }
+  lines.push("");
+  lines.push(args.userTodosMarkers.start);
+  lines.push(stripAnsi(args.userTodos).trim().length ? stripAnsi(args.userTodos).trim() : "- (add notes/todos here)");
+  lines.push(args.userTodosMarkers.end);
+  lines.push("");
+  lines.push("---");
+  lines.push(
+    `*Updated: ${stripAnsi(args.deterministicUpdatedAt)} | Trigger: ${stripAnsi(args.trigger)} | Provider: ${stripAnsi(args.providerMode)} | [View history \u2192](ade://packs/versions/${stripAnsi(args.packKey)})*`
+  );
+  lines.push("");
+  return `${lines.join("\n")}
+`;
+}
+
+// ../desktop/src/main/services/packs/packSections.ts
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function findLineEnd(content, fromIndex) {
+  const idx = content.indexOf("\n", fromIndex);
+  return idx >= 0 ? idx + 1 : content.length;
+}
+function findNextIndex(content, regex, fromIndex) {
+  let flags = regex.flags;
+  if (!flags.includes("g")) flags += "g";
+  if (!flags.includes("m")) flags += "m";
+  const re = new RegExp(regex.source, flags);
+  re.lastIndex = Math.max(0, fromIndex);
+  const match = re.exec(content);
+  return match ? match.index : -1;
+}
+function extractBetweenMarkers(content, startMarker, endMarker) {
+  const startIdx = content.indexOf(startMarker);
+  const endIdx = content.indexOf(endMarker);
+  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return null;
+  const body = content.slice(startIdx + startMarker.length, endIdx).trim();
+  return body.length ? body : "";
+}
+function extractSectionByHeading2(content, heading) {
+  const headingRe = new RegExp(`^${escapeRegExp(heading)}\\s*$`, "m");
+  const match = headingRe.exec(content);
+  if (!match?.index && match?.index !== 0) return null;
+  const headingStart = match.index;
+  const headingLineEnd = findLineEnd(content, headingStart);
+  const nextHeadingIdx = findNextIndex(content, /^##\s+/gm, headingLineEnd);
+  const nextHrIdx = findNextIndex(content, /^---\s*$/gm, headingLineEnd);
+  const candidates = [nextHeadingIdx, nextHrIdx].filter((idx) => idx >= 0);
+  const sectionEnd = candidates.length ? Math.min(...candidates) : content.length;
+  const body = content.slice(headingLineEnd, sectionEnd).trim();
+  return body.length ? body : "";
+}
+function extractSectionContent(content, locator) {
+  if (locator.kind === "markers") return extractBetweenMarkers(content, locator.startMarker, locator.endMarker);
+  if (locator.kind === "heading") return extractSectionByHeading2(content, locator.heading);
+  return null;
+}
+function computeSectionChanges(args) {
+  const norm = (value) => {
+    if (value == null) return null;
+    return String(value).replace(/\r\n/g, "\n").trim();
+  };
+  const beforeContent = args.before ?? "";
+  const out = [];
+  for (const locator of args.locators) {
+    const a = norm(extractSectionContent(beforeContent, locator));
+    const b = norm(extractSectionContent(args.after, locator));
+    if (a == null && b == null) continue;
+    if (a == null && b != null) {
+      out.push({ sectionId: locator.id, changeType: "added" });
+      continue;
+    }
+    if (a != null && b == null) {
+      out.push({ sectionId: locator.id, changeType: "removed" });
+      continue;
+    }
+    if (a !== b) out.push({ sectionId: locator.id, changeType: "modified" });
+  }
+  return out;
+}
+function renderJsonSection(heading, value, opts = {}) {
+  const pretty = opts.pretty !== false;
+  let json2 = "";
+  try {
+    json2 = pretty ? JSON.stringify(value ?? null, null, 2) : JSON.stringify(value ?? null);
+  } catch {
+    json2 = pretty ? JSON.stringify({ error: "Failed to serialize JSON section." }, null, 2) : JSON.stringify({ error: "Failed to serialize JSON section." });
+  }
+  return [heading, "```json", json2, "```", ""];
+}
+
+// ../desktop/src/main/services/packs/packExports.ts
+var DEFAULT_BUDGETS = {
+  project: {
+    lite: { maxTokens: 900 },
+    standard: { maxTokens: 2500 },
+    deep: { maxTokens: 6500 }
+  },
+  lane: {
+    lite: { maxTokens: 800 },
+    standard: { maxTokens: 2800 },
+    deep: { maxTokens: 8e3 }
+  },
+  conflict: {
+    lite: { maxTokens: 1100 },
+    standard: { maxTokens: 3200 },
+    deep: { maxTokens: 9e3 }
+  },
+  feature: {
+    lite: { maxTokens: 1e3 },
+    standard: { maxTokens: 2800 },
+    deep: { maxTokens: 8e3 }
+  },
+  plan: {
+    lite: { maxTokens: 1100 },
+    standard: { maxTokens: 3200 },
+    deep: { maxTokens: 9e3 }
+  },
+  mission: {
+    lite: { maxTokens: 1200 },
+    standard: { maxTokens: 3600 },
+    deep: { maxTokens: 9e3 }
+  }
+};
+function approxTokensFromText(text) {
+  return Math.max(0, Math.ceil((text ?? "").length / 4));
+}
+function normalizeForExport(text) {
+  return stripAnsi(String(text ?? "")).replace(/\r\n/g, "\n");
+}
+function renderHeaderFence(header, opts = {}) {
+  const pretty = opts.pretty !== false;
+  return ["```json", pretty ? JSON.stringify(header, null, 2) : JSON.stringify(header), "```", ""].join("\n");
+}
+function ensureBudgetOmission(omissions, truncated) {
+  if (!truncated) return omissions;
+  if (omissions.some((o) => o.sectionId === "export" && o.reason === "budget_clipped")) return omissions;
+  return [
+    ...omissions,
+    {
+      sectionId: "export",
+      reason: "budget_clipped",
+      detail: "Export clipped to fit token budget.",
+      recommendedLevel: "deep"
+    }
+  ];
+}
+function takeLines(lines, max) {
+  if (lines.length <= max) return { lines, truncated: false };
+  return { lines: lines.slice(0, Math.max(0, max)), truncated: true };
+}
+function clipBlock(text, maxChars) {
+  const normalized = normalizeForExport(text ?? "").trim();
+  if (maxChars <= 0) return { text: normalized, truncated: false };
+  if (normalized.length <= maxChars) return { text: normalized, truncated: false };
+  const clipped = `${normalized.slice(0, Math.max(0, maxChars - 20)).trimEnd()}
+...(truncated)...
+`;
+  return { text: clipped, truncated: true };
+}
+function extractSectionLines(args) {
+  const raw = normalizeForExport(args.content);
+  const lines = raw.split("\n");
+  const startIdx = lines.findIndex((line) => line.trim() === args.headingPrefix || line.startsWith(args.headingPrefix));
+  if (startIdx < 0) return { lines: [], truncated: false };
+  const out = [];
+  let inCodeFence = false;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) inCodeFence = !inCodeFence;
+    if (!inCodeFence && trimmed.startsWith("## ")) break;
+    if (!inCodeFence && trimmed === "---") break;
+    out.push(line);
+  }
+  while (out.length && !out[0].trim()) out.shift();
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  return takeLines(out, args.maxLines);
+}
+function clipToBudget(args) {
+  const normalized = normalizeForExport(args.content);
+  const approx = approxTokensFromText(normalized);
+  if (approx <= args.maxTokens) return { content: normalized, truncated: false };
+  const maxChars = Math.max(0, args.maxTokens * 4);
+  if (normalized.length <= maxChars) return { content: normalized, truncated: false };
+  const clipped = `${normalized.slice(0, Math.max(0, maxChars - 20)).trimEnd()}
+
+...(truncated)...
+`;
+  return { content: clipped, truncated: true };
+}
+function buildLaneExport(args) {
+  const level = args.level;
+  const budget = DEFAULT_BUDGETS.lane[level];
+  const body = normalizeForExport(args.pack.body ?? "");
+  const taskSpecRaw = extractBetweenMarkers(body, args.markers.taskSpecStart, args.markers.taskSpecEnd) ?? "(task spec missing; lane context markers unavailable)";
+  const intentRaw = extractBetweenMarkers(body, args.markers.intentStart, args.markers.intentEnd) ?? "(intent missing; lane context markers unavailable)";
+  const todosRaw = extractBetweenMarkers(body, args.markers.todosStart, args.markers.todosEnd) ?? "";
+  const narrativeRaw = extractBetweenMarkers(body, args.markers.narrativeStart, args.markers.narrativeEnd) ?? "";
+  const whatChanged = extractSectionLines({
+    content: body,
+    headingPrefix: "## What Changed",
+    maxLines: level === "lite" ? 10 : level === "standard" ? 24 : 80
+  });
+  const validation = extractSectionLines({
+    content: body,
+    headingPrefix: "## Validation",
+    maxLines: level === "lite" ? 8 : level === "standard" ? 16 : 40
+  });
+  const keyFiles = extractSectionLines({
+    content: body,
+    headingPrefix: "## Key Files",
+    maxLines: level === "lite" ? 10 : level === "standard" ? 20 : 60
+  });
+  const errors = extractSectionLines({
+    content: body,
+    headingPrefix: "## Errors & Issues",
+    maxLines: level === "lite" ? 12 : level === "standard" ? 30 : 120
+  });
+  const sessions = extractSectionLines({
+    content: body,
+    headingPrefix: "## Sessions",
+    maxLines: level === "lite" ? 12 : level === "standard" ? 24 : 80
+  });
+  const nextSteps = extractSectionLines({
+    content: body,
+    headingPrefix: "## Open Questions / Next Steps",
+    maxLines: level === "lite" ? 16 : level === "standard" ? 40 : 120
+  });
+  const warnings = [];
+  const omissionsBase = [];
+  const userBlockLimits = level === "lite" ? { taskSpecChars: 650, intentChars: 360, todosChars: 450, narrativeChars: 0 } : level === "standard" ? { taskSpecChars: 2200, intentChars: 1400, todosChars: 1200, narrativeChars: 0 } : { taskSpecChars: 4e3, intentChars: 2200, todosChars: 2e3, narrativeChars: 5e3 };
+  const taskSpec = clipBlock(taskSpecRaw, userBlockLimits.taskSpecChars);
+  const intent = clipBlock(intentRaw, userBlockLimits.intentChars);
+  const todos = clipBlock(todosRaw, userBlockLimits.todosChars);
+  const narrative = clipBlock(narrativeRaw, userBlockLimits.narrativeChars);
+  if (taskSpec.truncated) {
+    warnings.push("Task Spec section truncated for export budget.");
+    omissionsBase.push({ sectionId: "task_spec", reason: "truncated_section", detail: "Task Spec truncated." });
+  }
+  if (intent.truncated) {
+    warnings.push("Intent section truncated for export budget.");
+    omissionsBase.push({ sectionId: "intent", reason: "truncated_section", detail: "Intent truncated." });
+  }
+  if (todos.truncated) {
+    warnings.push("Todos section truncated for export budget.");
+    omissionsBase.push({ sectionId: "todos", reason: "truncated_section", detail: "Todos truncated." });
+  }
+  if (narrative.truncated) {
+    warnings.push("Narrative section truncated for export budget.");
+    omissionsBase.push({ sectionId: "narrative", reason: "truncated_section", detail: "Narrative truncated." });
+  }
+  if (whatChanged.truncated) {
+    warnings.push("What Changed section truncated for export budget.");
+    omissionsBase.push({ sectionId: "what_changed", reason: "truncated_section", detail: "What Changed truncated." });
+  }
+  if (validation.truncated) {
+    warnings.push("Validation section truncated for export budget.");
+    omissionsBase.push({ sectionId: "validation", reason: "truncated_section", detail: "Validation truncated." });
+  }
+  if (keyFiles.truncated) {
+    warnings.push("Key Files section truncated for export budget.");
+    omissionsBase.push({ sectionId: "key_files", reason: "truncated_section", detail: "Key Files truncated." });
+  }
+  if (errors.truncated) {
+    warnings.push("Errors section truncated for export budget.");
+    omissionsBase.push({ sectionId: "errors", reason: "truncated_section", detail: "Errors truncated." });
+  }
+  if (sessions.truncated) {
+    warnings.push("Sessions section truncated for export budget.");
+    omissionsBase.push({ sectionId: "sessions", reason: "truncated_section", detail: "Sessions truncated." });
+  }
+  if (nextSteps.truncated) {
+    warnings.push("Next Steps section truncated for export budget.");
+    omissionsBase.push({ sectionId: "next_steps", reason: "truncated_section", detail: "Next Steps truncated." });
+  }
+  const exportedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const header = {
+    schema: CONTEXT_HEADER_SCHEMA_V1,
+    contractVersion: CONTEXT_CONTRACT_VERSION,
+    projectId: args.projectId,
+    packKey: args.pack.packKey,
+    packType: "lane",
+    exportLevel: level,
+    laneId: args.laneId,
+    peerKey: null,
+    baseRef: args.baseRef,
+    headSha: args.headSha,
+    deterministicUpdatedAt: args.pack.deterministicUpdatedAt,
+    narrativeUpdatedAt: args.pack.narrativeUpdatedAt,
+    versionId: args.pack.versionId ?? null,
+    versionNumber: args.pack.versionNumber ?? null,
+    contentHash: args.pack.contentHash ?? null,
+    providerMode: args.providerMode,
+    exportedAt,
+    apiBaseUrl: args.apiBaseUrl,
+    remoteProjectId: args.remoteProjectId,
+    graph: args.graph ?? null,
+    dependencyState: args.dependencyState ?? null,
+    conflictState: args.conflictState ?? null,
+    omissions: null
+  };
+  const lines = [];
+  lines.push(`# Lane Export (${level.toUpperCase()})`);
+  lines.push(
+    `> Lane: ${normalizeForExport(args.laneName)} | Branch: \`${normalizeForExport(args.branchRef)}\` | Base: \`${normalizeForExport(args.baseRef)}\``
+  );
+  lines.push("");
+  if (args.manifest) {
+    const liteManifest = level === "lite" ? {
+      schema: args.manifest.schema,
+      projectId: args.manifest.projectId,
+      laneId: args.manifest.laneId,
+      laneName: args.manifest.laneName,
+      laneType: args.manifest.laneType,
+      branchRef: args.manifest.branchRef,
+      baseRef: args.manifest.baseRef,
+      lineage: args.manifest.lineage,
+      mergeConstraints: args.manifest.mergeConstraints,
+      branchState: {
+        baseRef: args.manifest.branchState?.baseRef ?? null,
+        headRef: args.manifest.branchState?.headRef ?? null,
+        headSha: args.manifest.branchState?.headSha ?? null,
+        lastPackRefreshAt: args.manifest.branchState?.lastPackRefreshAt ?? null,
+        isEditProtected: args.manifest.branchState?.isEditProtected ?? null,
+        packStale: args.manifest.branchState?.packStale ?? null,
+        ...args.manifest.branchState?.packStaleReason ? { packStaleReason: args.manifest.branchState.packStaleReason } : {}
+      },
+      conflicts: {
+        activeConflictPackKeys: args.manifest.conflicts?.activeConflictPackKeys ?? [],
+        unresolvedPairCount: args.manifest.conflicts?.unresolvedPairCount ?? 0,
+        lastConflictRefreshAt: args.manifest.conflicts?.lastConflictRefreshAt ?? null,
+        lastConflictRefreshAgeMs: args.manifest.conflicts?.lastConflictRefreshAgeMs ?? null,
+        ...args.manifest.conflicts?.predictionStale != null ? { predictionStale: args.manifest.conflicts.predictionStale } : {},
+        ...args.manifest.conflicts?.stalePolicy ? { stalePolicy: args.manifest.conflicts.stalePolicy } : {},
+        ...args.manifest.conflicts?.staleReason ? { staleReason: args.manifest.conflicts.staleReason } : {}
+      }
+    } : args.manifest;
+    lines.push(...renderJsonSection("## Manifest", liteManifest, { pretty: level !== "lite" }));
+  } else {
+    lines.push(...renderJsonSection("## Manifest", { schema: "ade.manifest.lane.v1", unavailable: true }, { pretty: level !== "lite" }));
+    omissionsBase.push({ sectionId: "manifest", reason: "data_unavailable", detail: "Manifest unavailable." });
+  }
+  lines.push("## Task Spec");
+  lines.push(args.markers.taskSpecStart);
+  lines.push(taskSpec.text);
+  lines.push(args.markers.taskSpecEnd);
+  lines.push("");
+  lines.push("## Intent");
+  lines.push(args.markers.intentStart);
+  lines.push(intent.text);
+  lines.push(args.markers.intentEnd);
+  lines.push("");
+  lines.push("## Conflict Risk Summary");
+  if (args.conflictRiskSummaryLines.length) {
+    const max = level === "lite" ? 8 : args.conflictRiskSummaryLines.length;
+    for (const line of args.conflictRiskSummaryLines.slice(0, max)) lines.push(line);
+  } else {
+    lines.push("- Conflict status: unknown (prediction not available yet)");
+  }
+  lines.push("");
+  if (whatChanged.lines.length) {
+    lines.push("## What Changed");
+    lines.push(...whatChanged.lines);
+    lines.push("");
+  }
+  if (validation.lines.length) {
+    lines.push("## Validation");
+    lines.push(...validation.lines);
+    lines.push("");
+  }
+  if (keyFiles.lines.length) {
+    lines.push("## Key Files");
+    lines.push(...keyFiles.lines);
+    lines.push("");
+  }
+  if (errors.lines.length) {
+    lines.push("## Errors & Issues");
+    lines.push(...errors.lines);
+    lines.push("");
+  }
+  if (sessions.lines.length) {
+    lines.push("## Sessions");
+    lines.push(...sessions.lines);
+    lines.push("");
+  }
+  if (nextSteps.lines.length) {
+    lines.push("## Next Steps");
+    lines.push(...nextSteps.lines);
+    lines.push("");
+  }
+  if (todos.text.trim().length) {
+    lines.push("## Notes / Todos");
+    lines.push(args.markers.todosStart);
+    lines.push(todos.text);
+    lines.push(args.markers.todosEnd);
+    lines.push("");
+  }
+  if (level === "deep" && narrative.text.trim().length) {
+    lines.push("## Narrative (Deep)");
+    lines.push(args.markers.narrativeStart);
+    lines.push(narrative.text);
+    lines.push(args.markers.narrativeEnd);
+    lines.push("");
+  } else if (level !== "deep") {
+    omissionsBase.push({
+      sectionId: "narrative",
+      reason: "omitted_by_level",
+      detail: "Narrative is only included at deep export level.",
+      recommendedLevel: "deep"
+    });
+  }
+  const buildContent = (omissions) => {
+    header.omissions = omissions.length ? omissions : null;
+    header.maxTokens = budget.maxTokens;
+    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}
+`;
+    return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
+  };
+  let clipped = buildContent(omissionsBase);
+  const omissionsFinal = ensureBudgetOmission(omissionsBase, clipped.truncated);
+  if (omissionsFinal !== omissionsBase) {
+    clipped = buildContent(omissionsFinal);
+  }
+  const approxTokens = approxTokensFromText(clipped.content);
+  header.approxTokens = approxTokens;
+  return {
+    packKey: args.pack.packKey,
+    packType: "lane",
+    level,
+    header,
+    content: clipped.content,
+    approxTokens,
+    maxTokens: budget.maxTokens,
+    truncated: clipped.truncated,
+    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
+    clipReason: clipped.truncated ? "budget_clipped" : null,
+    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
+  };
+}
+function buildProjectExport(args) {
+  const level = args.level;
+  const budget = DEFAULT_BUDGETS.project[level];
+  const body = normalizeForExport(args.pack.body ?? "");
+  const overview = extractSectionLines({
+    content: body,
+    headingPrefix: "# Project Pack",
+    maxLines: level === "lite" ? 60 : level === "standard" ? 140 : 400
+  });
+  const warnings = [];
+  const omissionsBase = [];
+  const exportedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const header = {
+    schema: CONTEXT_HEADER_SCHEMA_V1,
+    contractVersion: CONTEXT_CONTRACT_VERSION,
+    projectId: args.projectId,
+    packKey: args.pack.packKey,
+    packType: "project",
+    exportLevel: level,
+    laneId: null,
+    peerKey: null,
+    baseRef: null,
+    headSha: null,
+    deterministicUpdatedAt: args.pack.deterministicUpdatedAt,
+    narrativeUpdatedAt: args.pack.narrativeUpdatedAt,
+    versionId: args.pack.versionId ?? null,
+    versionNumber: args.pack.versionNumber ?? null,
+    contentHash: args.pack.contentHash ?? null,
+    providerMode: args.providerMode,
+    exportedAt,
+    apiBaseUrl: args.apiBaseUrl,
+    remoteProjectId: args.remoteProjectId,
+    graph: args.graph ?? null,
+    omissions: null
+  };
+  const lines = [];
+  lines.push(`# Project Export (${level.toUpperCase()})`);
+  lines.push("");
+  if (args.manifest) {
+    lines.push(...renderJsonSection("## Manifest", args.manifest, { pretty: level !== "lite" }));
+  } else {
+    lines.push(...renderJsonSection("## Manifest", { schema: "ade.manifest.project.v1", unavailable: true }, { pretty: level !== "lite" }));
+    omissionsBase.push({ sectionId: "manifest", reason: "data_unavailable", detail: "Manifest unavailable." });
+  }
+  if (overview.lines.length) {
+    lines.push("## Snapshot");
+    lines.push(...overview.lines);
+    lines.push("");
+  } else {
+    lines.push("## Snapshot");
+    lines.push("- Project context is currently unavailable.");
+    lines.push("");
+    omissionsBase.push({ sectionId: "snapshot", reason: "data_unavailable", detail: "Snapshot unavailable." });
+  }
+  if (overview.truncated) {
+    warnings.push("Project snapshot truncated for export budget.");
+    omissionsBase.push({ sectionId: "snapshot", reason: "truncated_section", detail: "Snapshot truncated." });
+  }
+  const buildContent = (omissions) => {
+    header.omissions = omissions.length ? omissions : null;
+    header.maxTokens = budget.maxTokens;
+    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}
+`;
+    return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
+  };
+  let clipped = buildContent(omissionsBase);
+  const omissionsFinal = ensureBudgetOmission(omissionsBase, clipped.truncated);
+  if (omissionsFinal !== omissionsBase) {
+    clipped = buildContent(omissionsFinal);
+  }
+  const approxTokens = approxTokensFromText(clipped.content);
+  header.approxTokens = approxTokens;
+  return {
+    packKey: args.pack.packKey,
+    packType: "project",
+    level,
+    header,
+    content: clipped.content,
+    approxTokens,
+    maxTokens: budget.maxTokens,
+    truncated: clipped.truncated,
+    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
+    clipReason: clipped.truncated ? "budget_clipped" : null,
+    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
+  };
+}
+function buildConflictExport(args) {
+  const level = args.level;
+  const budget = DEFAULT_BUDGETS.conflict[level];
+  const body = normalizeForExport(args.pack.body ?? "");
+  const overlapLines = extractSectionLines({
+    content: body,
+    headingPrefix: "## Overlapping Files",
+    maxLines: level === "lite" ? 24 : level === "standard" ? 60 : 220
+  });
+  const conflictsLines = extractSectionLines({
+    content: body,
+    headingPrefix: "## Conflicts (merge-tree)",
+    maxLines: level === "lite" ? 60 : level === "standard" ? 140 : 400
+  });
+  const warnings = [];
+  const omissionsBase = [];
+  if (overlapLines.truncated) warnings.push("Overlap list truncated for export budget.");
+  if (conflictsLines.truncated) warnings.push("Conflicts section truncated for export budget.");
+  if (overlapLines.truncated) omissionsBase.push({ sectionId: "overlap_files", reason: "truncated_section", detail: "Overlap list truncated." });
+  if (conflictsLines.truncated) omissionsBase.push({ sectionId: "merge_tree", reason: "truncated_section", detail: "Merge-tree conflicts truncated." });
+  const exportedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const header = {
+    schema: CONTEXT_HEADER_SCHEMA_V1,
+    contractVersion: CONTEXT_CONTRACT_VERSION,
+    projectId: args.projectId,
+    packKey: args.packKey,
+    packType: "conflict",
+    exportLevel: level,
+    laneId: args.laneId,
+    peerKey: args.peerLabel,
+    baseRef: null,
+    headSha: args.pack.lastHeadSha ?? null,
+    deterministicUpdatedAt: args.pack.deterministicUpdatedAt,
+    narrativeUpdatedAt: args.pack.narrativeUpdatedAt,
+    versionId: args.pack.versionId ?? null,
+    versionNumber: args.pack.versionNumber ?? null,
+    contentHash: args.pack.contentHash ?? null,
+    providerMode: args.providerMode,
+    exportedAt,
+    apiBaseUrl: args.apiBaseUrl,
+    remoteProjectId: args.remoteProjectId,
+    graph: args.graph ?? null,
+    omissions: null
+  };
+  const lines = [];
+  lines.push(`# Conflict Export (${level.toUpperCase()})`);
+  lines.push(`> Lane: ${args.laneId} | Peer: ${normalizeForExport(args.peerLabel)}`);
+  lines.push("");
+  if (args.lineage) {
+    lines.push(...renderJsonSection("## Conflict Lineage", args.lineage, { pretty: level !== "lite" }));
+  } else {
+    omissionsBase.push({ sectionId: "conflict_lineage", reason: "data_unavailable", detail: "Conflict lineage unavailable." });
+  }
+  lines.push("## Overlapping Files");
+  if (overlapLines.lines.length) lines.push(...overlapLines.lines);
+  else lines.push("- (none listed; live conflict context is unavailable)");
+  lines.push("");
+  lines.push("## Conflicts (merge-tree)");
+  if (conflictsLines.lines.length) lines.push(...conflictsLines.lines);
+  else lines.push("- (none listed; live conflict context is unavailable)");
+  lines.push("");
+  const buildContent = (omissions) => {
+    header.omissions = omissions.length ? omissions : null;
+    header.maxTokens = budget.maxTokens;
+    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}
+`;
+    return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
+  };
+  let clipped = buildContent(omissionsBase);
+  const omissionsFinal = ensureBudgetOmission(omissionsBase, clipped.truncated);
+  if (omissionsFinal !== omissionsBase) {
+    clipped = buildContent(omissionsFinal);
+  }
+  const approxTokens = approxTokensFromText(clipped.content);
+  header.approxTokens = approxTokens;
+  return {
+    packKey: args.packKey,
+    packType: "conflict",
+    level,
+    header,
+    content: clipped.content,
+    approxTokens,
+    maxTokens: budget.maxTokens,
+    truncated: clipped.truncated,
+    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
+    clipReason: clipped.truncated ? "budget_clipped" : null,
+    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
+  };
 }
 
 // ../desktop/src/main/services/packs/missionPackBuilder.ts
@@ -9418,11 +9869,11 @@ async function buildMissionPackBody(deps, args) {
   }
   lines.push("");
   if (mission.lane_id) {
-    const lanePack = readFileIfExists(deps.getLanePackPath(mission.lane_id));
+    const lanePack = await deps.getLanePackBody(mission.lane_id);
     if (lanePack.trim().length) {
-      lines.push("## Lane Pack Reference");
-      lines.push(`- Lane pack key: lane:${mission.lane_id}`);
-      lines.push(`- Lane pack path: ${deps.getLanePackPath(mission.lane_id)}`);
+      lines.push("## Lane Context Reference");
+      lines.push(`- Lane context key: lane:${mission.lane_id}`);
+      lines.push("- Lane context source: live lane export compatibility view");
       lines.push("");
     }
   }
@@ -9554,7 +10005,7 @@ async function buildPlanPackBody(deps, args) {
       }
     }
   } else {
-    const lanePackBody = readFileIfExists(deps.getLanePackPath(args.laneId));
+    const lanePackBody = await deps.getLanePackBody(args.laneId);
     const intent = extractSection(lanePackBody, ADE_INTENT_START, ADE_INTENT_END, "");
     const taskSpec = extractSection(lanePackBody, ADE_TASK_SPEC_START, ADE_TASK_SPEC_END, "");
     lines.push(`# Plan: ${lane.name}`);
@@ -9593,7 +10044,7 @@ async function buildPlanPackBody(deps, args) {
     const packRow = deps.getPackIndexRow(packKey);
     if (packRow?.metadata_json) {
       const packMeta = parseRecord(packRow.metadata_json);
-      if (packMeta?.graph && isRecord2(packMeta.graph)) {
+      if (packMeta?.graph && isRecord3(packMeta.graph)) {
         const graphRelations = Array.isArray(packMeta.graph.relations) ? packMeta.graph.relations : [];
         const blockingRels = graphRelations.filter(
           (r) => r.relationType === "blocked_by" || r.relationType === "depends_on"
@@ -9634,6 +10085,14 @@ async function buildFeaturePackBody(deps, args) {
   const { db, projectId, projectRoot } = deps;
   const lanes = await deps.laneService.list({ includeArchived: false });
   const matching = lanes.filter((lane) => lane.tags.includes(args.featureKey));
+  const lanePackBodyCache = /* @__PURE__ */ new Map();
+  const getLanePackBody = async (laneId) => {
+    const cached2 = lanePackBodyCache.get(laneId);
+    if (cached2 != null) return cached2;
+    const body = await deps.getLanePackBody(laneId);
+    lanePackBodyCache.set(laneId, body);
+    return body;
+  };
   const lines = [];
   lines.push("```json");
   lines.push(
@@ -9788,8 +10247,8 @@ async function buildFeaturePackBody(deps, args) {
     for (const ov of overlaps) {
       if (!ov || !ov.peerId) continue;
       if (!matchingIds.has(ov.peerId)) continue;
-      const peerName = asString3(ov.peerName).trim() || ov.peerId;
-      const riskLevel = asString3(ov.riskLevel).trim() || "unknown";
+      const peerName = asString4(ov.peerName).trim() || ov.peerId;
+      const riskLevel = asString4(ov.riskLevel).trim() || "unknown";
       const fileCount = Array.isArray(ov.files) ? ov.files.length : 0;
       conflictEntries.push(`- ${lane.name} <-> ${peerName}: risk=\`${riskLevel}\`, ${fileCount} overlapping files`);
     }
@@ -9833,8 +10292,8 @@ async function buildFeaturePackBody(deps, args) {
   lines.push("## Combined Errors");
   const allErrors = [];
   for (const lane of matching) {
-    const lanePackBody = readFileIfExists(deps.getLanePackPath(lane.id));
-    const errSection = extractSectionByHeading2(lanePackBody, "## Errors & Issues");
+    const lanePackBody = await getLanePackBody(lane.id);
+    const errSection = extractSectionByHeading(lanePackBody, "## Errors & Issues");
     if (errSection && errSection.trim() !== "No errors detected.") {
       for (const errLine of errSection.split("\n").map((l) => l.trim()).filter(Boolean)) {
         const cleaned = errLine.startsWith("- ") ? errLine.slice(2) : errLine;
@@ -9851,7 +10310,7 @@ async function buildFeaturePackBody(deps, args) {
   }
   lines.push("");
   for (const lane of matching.sort((a, b) => a.stackDepth - b.stackDepth || a.name.localeCompare(b.name))) {
-    const lanePackBody = readFileIfExists(deps.getLanePackPath(lane.id));
+    const lanePackBody = await getLanePackBody(lane.id);
     const intent = extractSection(lanePackBody, ADE_INTENT_START, ADE_INTENT_END, "");
     const laneTest = db.get(
       `
@@ -9863,15 +10322,8 @@ async function buildFeaturePackBody(deps, args) {
       `,
       [projectId, lane.id]
     );
-    const laneFileCount = (() => {
-      try {
-        const lanePackContent = readFileIfExists(deps.getLanePackPath(lane.id));
-        const keyFilesMatch = /## Key Files \((\d+) files touched\)/.exec(lanePackContent);
-        if (keyFilesMatch) return Number(keyFilesMatch[1]);
-      } catch {
-      }
-      return 0;
-    })();
+    const keyFilesMatch = /## Key Files \((\d+) files touched\)/.exec(lanePackBody);
+    const laneFileCount = keyFilesMatch ? Number(keyFilesMatch[1]) : 0;
     lines.push(`### Lane: ${lane.name}`);
     lines.push(`- Branch: \`${lane.branchRef}\` | Status: ${lane.status.dirty ? "dirty" : "clean"} | Ahead: ${lane.status.ahead} | Behind: ${lane.status.behind}`);
     if (intent.trim().length) {
@@ -9902,7 +10354,7 @@ function readConflictPredictionPack(deps, laneId) {
   try {
     const raw = import_node_fs11.default.readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw);
-    if (!isRecord2(parsed)) return null;
+    if (!isRecord3(parsed)) return null;
     return parsed;
   } catch {
     return null;
@@ -9929,16 +10381,16 @@ async function readGitConflictState(deps, laneId) {
 }
 function deriveConflictStateForLane(deps, laneId) {
   const pack = readConflictPredictionPack(deps, laneId);
-  if (!pack || !isRecord2(pack.status)) return null;
+  if (!pack || !isRecord3(pack.status)) return null;
   const status = pack.status;
-  const statusValue = normalizeConflictStatus(asString3(status.status).trim()) ?? "unknown";
+  const statusValue = normalizeConflictStatus(asString4(status.status).trim()) ?? "unknown";
   const overlappingFileCount = Number(status.overlappingFileCount ?? 0);
   const peerConflictCount = Number(status.peerConflictCount ?? 0);
-  const lastPredictedAt = asString3(status.lastPredictedAt).trim() || null;
-  const strategy = asString3(pack.strategy).trim() || void 0;
+  const lastPredictedAt = asString4(status.lastPredictedAt).trim() || null;
+  const strategy = asString4(pack.strategy).trim() || void 0;
   const pairwisePairsComputed = Number.isFinite(Number(pack.pairwisePairsComputed)) ? Number(pack.pairwisePairsComputed) : void 0;
   const pairwisePairsTotal = Number.isFinite(Number(pack.pairwisePairsTotal)) ? Number(pack.pairwisePairsTotal) : void 0;
-  const lastRecomputedAt = asString3(pack.lastRecomputedAt).trim() || asString3(pack.generatedAt).trim() || null;
+  const lastRecomputedAt = asString4(pack.lastRecomputedAt).trim() || asString4(pack.generatedAt).trim() || null;
   return {
     status: statusValue,
     lastPredictedAt,
@@ -9975,18 +10427,18 @@ function computeLaneLineage(args) {
 }
 function buildLaneConflictRiskSummaryLines(deps, laneId) {
   const pack = readConflictPredictionPack(deps, laneId);
-  if (!pack || !isRecord2(pack.status)) return [];
+  if (!pack || !isRecord3(pack.status)) return [];
   const status = pack.status;
-  const statusValue = asString3(status.status).trim() || "unknown";
+  const statusValue = asString4(status.status).trim() || "unknown";
   const overlappingFileCount = Number(status.overlappingFileCount ?? 0);
   const peerConflictCount = Number(status.peerConflictCount ?? 0);
-  const lastPredictedAt = asString3(status.lastPredictedAt).trim() || null;
+  const lastPredictedAt = asString4(status.lastPredictedAt).trim() || null;
   const lines = [];
   lines.push(`- Conflict status: \`${statusValue}\``);
   lines.push(`- Overlapping files: ${Number.isFinite(overlappingFileCount) ? overlappingFileCount : 0}`);
   lines.push(`- Peer conflicts: ${Number.isFinite(peerConflictCount) ? peerConflictCount : 0}`);
   if (lastPredictedAt) lines.push(`- Last predicted: ${lastPredictedAt}`);
-  if (asString3(pack.generatedAt).trim()) lines.push(`- Generated: ${asString3(pack.generatedAt).trim()}`);
+  if (asString4(pack.generatedAt).trim()) lines.push(`- Generated: ${asString4(pack.generatedAt).trim()}`);
   const overlaps = Array.isArray(pack.overlaps) ? pack.overlaps : [];
   const riskScore = (riskLevel) => {
     const normalized = riskLevel.trim().toLowerCase();
@@ -9997,8 +10449,8 @@ function buildLaneConflictRiskSummaryLines(deps, laneId) {
     return 0;
   };
   const peers = overlaps.filter((ov) => ov && ov.peerId != null).map((ov) => {
-    const peerName = asString3(ov.peerName).trim() || "Unknown lane";
-    const riskLevel = asString3(ov.riskLevel).trim() || "unknown";
+    const peerName = asString4(ov.peerName).trim() || "Unknown lane";
+    const riskLevel = asString4(ov.riskLevel).trim() || "unknown";
     const fileCount = Array.isArray(ov.files) ? ov.files.length : 0;
     return { peerName, riskLevel, fileCount, score: riskScore(riskLevel) };
   }).filter((ov) => ov.score > 0 || ov.fileCount > 0).sort((a, b) => b.score - a.score || b.fileCount - a.fileCount || a.peerName.localeCompare(b.peerName)).slice(0, 5);
@@ -10009,7 +10461,7 @@ function buildLaneConflictRiskSummaryLines(deps, laneId) {
     }
   }
   if (pack.truncated) {
-    const strategyValue = asString3(pack.strategy).trim() || "partial";
+    const strategyValue = asString4(pack.strategy).trim() || "partial";
     const computed = Number(pack.pairwisePairsComputed ?? NaN);
     const total = Number(pack.pairwisePairsTotal ?? NaN);
     if (Number.isFinite(computed) && Number.isFinite(total) && total > 0) {
@@ -10167,6 +10619,10 @@ function createPackService({
     projectConfigService,
     aiIntegrationService
   };
+  const contextDocService = createContextDocService({
+    ...projectPackBuilderDeps,
+    packsDir
+  });
   const conflictPackBuilderDeps = {
     projectRoot,
     laneService,
@@ -10178,99 +10634,7 @@ function createPackService({
   const deriveConflictStateForLane2 = (laneId) => deriveConflictStateForLane(conflictPackBuilderDeps, laneId);
   const computeLaneLineage2 = (args) => computeLaneLineage(args);
   const buildLaneConflictRiskSummaryLines2 = (laneId) => buildLaneConflictRiskSummaryLines(conflictPackBuilderDeps, laneId);
-  const readContextDocMeta2 = () => readContextDocMeta(projectRoot);
-  const readContextStatus2 = () => readContextStatus({ db, projectId, projectRoot, packsDir });
-  const CONTEXT_DOC_PREFS_KEY = "context:docs:preferences.v1";
-  const CONTEXT_DOC_LAST_RUN_KEY2 = "context:docs:lastRun.v1";
-  const AUTO_REFRESH_MIN_INTERVAL_MS = {
-    per_mission: 15 * 6e4,
-    per_pr: 15 * 6e4,
-    per_lane_refresh: 45 * 6e4
-  };
-  const normalizeRefreshTrigger = (value) => {
-    const normalized = String(value ?? "").trim();
-    if (normalized === "per_mission" || normalized === "per_pr" || normalized === "per_lane_refresh") return normalized;
-    return "manual";
-  };
-  const normalizeContextProvider = (value) => {
-    const normalized = String(value ?? "").trim();
-    if (normalized === "codex" || normalized === "claude") return normalized;
-    return "unified";
-  };
-  const normalizeOptionalString = toOptionalString;
-  const readContextDocRefreshPrefs = () => {
-    const raw = db.getJson(CONTEXT_DOC_PREFS_KEY);
-    if (!raw) return null;
-    return {
-      cadence: normalizeRefreshTrigger(raw.cadence),
-      provider: normalizeContextProvider(raw.provider),
-      modelId: normalizeOptionalString(raw.modelId),
-      reasoningEffort: normalizeOptionalString(raw.reasoningEffort),
-      updatedAt: normalizeOptionalString(raw.updatedAt) ?? nowIso6()
-    };
-  };
-  const persistContextDocRefreshPrefs = (args) => {
-    const prefs = {
-      cadence: normalizeRefreshTrigger(args.trigger),
-      provider: normalizeContextProvider(args.provider),
-      modelId: normalizeOptionalString(args.modelId),
-      reasoningEffort: normalizeOptionalString(args.reasoningEffort),
-      updatedAt: nowIso6()
-    };
-    db.setJson(CONTEXT_DOC_PREFS_KEY, prefs);
-    return prefs;
-  };
-  const readLastContextDocRunAt = () => {
-    const raw = db.getJson(CONTEXT_DOC_LAST_RUN_KEY2);
-    const generatedAt = normalizeOptionalString(raw?.generatedAt);
-    if (!generatedAt) return null;
-    const ts = Date.parse(generatedAt);
-    return Number.isFinite(ts) ? ts : null;
-  };
-  const runContextDocGeneration2 = async (args) => {
-    persistContextDocRefreshPrefs(args);
-    return await runContextDocGeneration(projectPackBuilderDeps, args);
-  };
-  const maybeAutoRefreshContextDocs = async (args) => {
-    const trigger = normalizeRefreshTrigger(args.trigger);
-    if (trigger === "manual") return null;
-    const prefs = readContextDocRefreshPrefs();
-    if (!prefs || prefs.cadence !== trigger) return null;
-    const minIntervalMs = AUTO_REFRESH_MIN_INTERVAL_MS[trigger];
-    if (!args.force) {
-      const lastRunAt = readLastContextDocRunAt();
-      if (lastRunAt != null && Date.now() - lastRunAt < minIntervalMs) {
-        logger.debug("packs.context_docs.auto_refresh_skipped_recent", {
-          trigger,
-          reason: args.reason ?? null,
-          minIntervalMs
-        });
-        return null;
-      }
-    }
-    try {
-      logger.info("packs.context_docs.auto_refresh_start", {
-        trigger,
-        reason: args.reason ?? null,
-        provider: prefs.provider,
-        modelId: prefs.modelId
-      });
-      return await runContextDocGeneration2({
-        provider: prefs.provider,
-        ...prefs.modelId ? { modelId: prefs.modelId } : {},
-        ...prefs.reasoningEffort ? { reasoningEffort: prefs.reasoningEffort } : {},
-        trigger
-      });
-    } catch (error48) {
-      logger.warn("packs.context_docs.auto_refresh_failed", {
-        trigger,
-        reason: args.reason ?? null,
-        error: getErrorMessage(error48)
-      });
-      return null;
-    }
-  };
-  const resolveContextDocPath2 = (docId) => resolveContextDocPath(projectRoot, docId);
+  const readContextDocMeta2 = () => contextDocService.getDocMeta();
   const buildProjectPackBody2 = (args) => buildProjectPackBody(projectPackBuilderDeps, args);
   const findBaselineVersionAtOrBefore = (args) => {
     const row = db.get(
@@ -10733,75 +11097,13 @@ function createPackService({
       createdAt
     };
   };
-  const getSessionRow = (sessionId) => db.get(
-    `
-        select
-          id,
-          lane_id,
-          tracked,
-          started_at,
-          ended_at,
-          head_sha_start,
-          head_sha_end,
-          transcript_path
-        from terminal_sessions
-        where id = ?
-        limit 1
-      `,
-    [sessionId]
-  );
-  const getSessionDeltaRow = (sessionId) => db.get(
-    `
-        select
-          session_id,
-          lane_id,
-          started_at,
-          ended_at,
-          head_sha_start,
-          head_sha_end,
-          files_changed,
-          insertions,
-          deletions,
-          touched_files_json,
-          failure_lines_json,
-          computed_at
-        from session_deltas
-        where session_id = ?
-        limit 1
-      `,
-    [sessionId]
-  );
   const getHeadSha3 = async (worktreePath) => {
     const res = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8e3 });
     if (res.exitCode !== 0) return null;
     const sha = res.stdout.trim();
     return sha.length ? sha : null;
   };
-  const listRecentLaneSessionDeltas = (laneId, limit) => {
-    const rows = db.all(
-      `
-        select
-          d.session_id,
-          d.lane_id,
-          d.started_at,
-          d.ended_at,
-          d.head_sha_start,
-          d.head_sha_end,
-          d.files_changed,
-          d.insertions,
-          d.deletions,
-          d.touched_files_json,
-          d.failure_lines_json,
-          d.computed_at
-        from session_deltas d
-        where d.lane_id = ?
-        order by d.started_at desc
-        limit ?
-      `,
-      [laneId, limit]
-    );
-    return rows.map(rowToSessionDelta);
-  };
+  const sessionDeltaService = createSessionDeltaService({ db, projectId, laneService, sessionService });
   const buildLanePackBody = async ({
     laneId,
     reason,
@@ -11218,6 +11520,117 @@ function createPackService({
     const version2 = readCurrentPackVersion(packKey);
     return toPackSummaryFromRow({ packKey, row: effectiveRow, version: version2 });
   };
+  const buildLiveLanePackSummary = async (args) => {
+    const storedPack = getPackSummaryForKey(`lane:${args.laneId}`, {
+      packType: "lane",
+      packPath: getLanePackPath(args.laneId)
+    });
+    const deterministicUpdatedAt = nowIso6();
+    const latestDelta = sessionDeltaService.listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
+    const { body, lastHeadSha } = await buildLanePackBody({
+      laneId: args.laneId,
+      reason: args.reason,
+      latestDelta,
+      deterministicUpdatedAt
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt,
+      lastHeadSha
+    });
+  };
+  const buildLiveProjectPackSummary = async (args) => {
+    const storedPack = getPackSummaryForKey("project", {
+      packType: "project",
+      packPath: projectPackPath
+    });
+    const deterministicUpdatedAt = nowIso6();
+    const body = await buildProjectPackBody2({
+      reason: args.reason,
+      deterministicUpdatedAt,
+      sourceLaneId: args.sourceLaneId
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt
+    });
+  };
+  const buildLiveConflictPackSummary = async (args) => {
+    const lane = laneService.getLaneBaseAndBranch(args.laneId);
+    const peerKey = args.peerLaneId ?? lane.baseRef;
+    const storedPack = getPackSummaryForKey(`conflict:${args.laneId}:${peerKey}`, {
+      packType: "conflict",
+      packPath: getConflictPackPath(args.laneId, peerKey)
+    });
+    const deterministicUpdatedAt = nowIso6();
+    const { body, lastHeadSha } = await buildConflictPackBody2({
+      laneId: args.laneId,
+      peerLaneId: args.peerLaneId,
+      reason: args.reason,
+      deterministicUpdatedAt
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt,
+      lastHeadSha
+    });
+  };
+  const buildLivePlanPackSummary = async (args) => {
+    const storedPack = getPackSummaryForKey(`plan:${args.laneId}`, {
+      packType: "plan",
+      packPath: getPlanPackPath(args.laneId)
+    });
+    const deterministicUpdatedAt = nowIso6();
+    const { body, headSha } = await buildPlanPackBody2({
+      laneId: args.laneId,
+      reason: args.reason,
+      deterministicUpdatedAt
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt,
+      lastHeadSha: headSha
+    });
+  };
+  const buildLiveFeaturePackSummary = async (args) => {
+    const storedPack = getPackSummaryForKey(`feature:${args.featureKey}`, {
+      packType: "feature",
+      packPath: getFeaturePackPath(args.featureKey)
+    });
+    const deterministicUpdatedAt = nowIso6();
+    const { body } = await buildFeaturePackBody2({
+      featureKey: args.featureKey,
+      reason: args.reason,
+      deterministicUpdatedAt
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt
+    });
+  };
+  const buildLiveMissionPackSummary = async (args) => {
+    const storedPack = getPackSummaryForKey(`mission:${args.missionId}`, {
+      packType: "mission",
+      packPath: getMissionPackPath(args.missionId)
+    });
+    const deterministicUpdatedAt = nowIso6();
+    const { body } = await buildMissionPackBody2({
+      missionId: args.missionId,
+      reason: args.reason,
+      deterministicUpdatedAt,
+      runId: null
+    });
+    return buildLivePackSummary({
+      storedPack,
+      body,
+      deterministicUpdatedAt
+    });
+  };
   const missionPackBuilderDeps = {
     db,
     logger,
@@ -11226,7 +11639,13 @@ function createPackService({
     packsDir,
     laneService,
     projectConfigService,
-    getLanePackPath,
+    getLanePackBody: async (laneId) => {
+      const pack = await buildLiveLanePackSummary({
+        laneId,
+        reason: "context_export_dependency"
+      });
+      return pack.body;
+    },
     readConflictPredictionPack: readConflictPredictionPack2,
     getHeadSha: getHeadSha3,
     getPackIndexRow
@@ -11235,6 +11654,55 @@ function createPackService({
   const buildPlanPackBody2 = (args) => buildPlanPackBody(missionPackBuilderDeps, args);
   const buildMissionPackBody2 = (args) => buildMissionPackBody(missionPackBuilderDeps, args);
   const buildConflictPackBody2 = (args) => buildConflictPackBody(conflictPackBuilderDeps, args);
+  const buildLivePackSummary = (args) => {
+    const contentHash = sha2563(args.body);
+    const reuseStoredVersion = typeof args.storedPack.contentHash === "string" && args.storedPack.contentHash === contentHash && typeof args.storedPack.versionId === "string" && args.storedPack.versionId.trim().length > 0;
+    const versionId = reuseStoredVersion ? args.storedPack.versionId ?? null : `live:${args.storedPack.packKey}:${contentHash.slice(0, 16)}`;
+    const versionNumber = reuseStoredVersion ? args.storedPack.versionNumber ?? null : null;
+    return {
+      ...args.storedPack,
+      exists: args.body.trim().length > 0 || args.storedPack.exists,
+      deterministicUpdatedAt: args.deterministicUpdatedAt,
+      narrativeUpdatedAt: args.narrativeUpdatedAt ?? args.storedPack.narrativeUpdatedAt ?? null,
+      lastHeadSha: args.lastHeadSha ?? args.storedPack.lastHeadSha ?? null,
+      versionId,
+      versionNumber,
+      contentHash,
+      metadata: args.metadata ?? args.storedPack.metadata ?? null,
+      body: args.body
+    };
+  };
+  const buildBasicExport = (args) => {
+    const header = {
+      schema: CONTEXT_HEADER_SCHEMA_V1,
+      contractVersion: CONTEXT_CONTRACT_VERSION,
+      projectId,
+      packKey: args.packKey,
+      packType: args.packType,
+      exportLevel: args.level,
+      deterministicUpdatedAt: args.pack.deterministicUpdatedAt ?? null,
+      narrativeUpdatedAt: args.pack.narrativeUpdatedAt ?? null,
+      versionId: args.pack.versionId ?? null,
+      versionNumber: args.pack.versionNumber ?? null,
+      contentHash: args.pack.contentHash ?? null
+    };
+    const content = args.pack.body;
+    const approxTokens = Math.ceil(content.length / 4);
+    const maxTokens = args.level === "lite" ? 3e4 : args.level === "standard" ? 6e4 : 12e4;
+    const truncated = approxTokens > maxTokens;
+    const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
+    return {
+      packKey: args.packKey,
+      packType: args.packType,
+      level: args.level,
+      header,
+      content: finalContent,
+      approxTokens: Math.ceil(finalContent.length / 4),
+      maxTokens,
+      truncated,
+      warnings: truncated ? [`${args.packType[0].toUpperCase()}${args.packType.slice(1)} pack content was truncated to fit token budget.`] : []
+    };
+  };
   return {
     getProjectPack() {
       const row = db.get(
@@ -11271,18 +11739,6 @@ function createPackService({
         metadata: null,
         body
       };
-    },
-    getContextStatus() {
-      return readContextStatus2();
-    },
-    async generateContextDocs(args) {
-      return runContextDocGeneration2(args);
-    },
-    async maybeAutoRefreshContextDocs(args) {
-      return await maybeAutoRefreshContextDocs(args);
-    },
-    getContextDocPath(docId) {
-      return resolveContextDocPath2(docId);
     },
     getLanePack(laneId) {
       const row = db.get(
@@ -11349,136 +11805,6 @@ function createPackService({
       const packKey = `mission:${id}`;
       return getPackSummaryForKey(packKey, { packType: "mission", packPath: getMissionPackPath(id) });
     },
-    getSessionDelta(sessionId) {
-      const row = getSessionDeltaRow(sessionId);
-      if (!row) return null;
-      return rowToSessionDelta(row);
-    },
-    async computeSessionDelta(sessionId) {
-      const session = getSessionRow(sessionId);
-      if (!session) return null;
-      if (session.tracked !== 1) return null;
-      const lane = laneService.getLaneBaseAndBranch(session.lane_id);
-      const diffRef = session.head_sha_start?.trim() || "HEAD";
-      const numStatRes = await runGit(["diff", "--numstat", diffRef], { cwd: lane.worktreePath, timeoutMs: 2e4 });
-      const nameRes = await runGit(["diff", "--name-only", diffRef], { cwd: lane.worktreePath, timeoutMs: 2e4 });
-      const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 8e3 });
-      const parsedStat = parseNumStat(numStatRes.stdout);
-      const touched = /* @__PURE__ */ new Set([...parsedStat.files]);
-      if (nameRes.exitCode === 0) {
-        for (const line of nameRes.stdout.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
-          touched.add(line);
-        }
-      }
-      if (statusRes.exitCode === 0) {
-        for (const rel of parsePorcelainPaths(statusRes.stdout)) {
-          touched.add(rel);
-        }
-      }
-      const isChatTranscript = session.transcript_path.endsWith(".chat.jsonl");
-      const transcript = sessionService.readTranscriptTail(
-        session.transcript_path,
-        22e4,
-        isChatTranscript ? { raw: true, alignToLineBoundary: true } : void 0
-      );
-      const failureLines = (() => {
-        const out = [];
-        const seen = /* @__PURE__ */ new Set();
-        const push = (value) => {
-          const normalized = stripAnsi(String(value ?? "")).replace(/\s+/g, " ").trim();
-          if (!normalized.length) return;
-          if (seen.has(normalized)) return;
-          seen.add(normalized);
-          out.push(normalized);
-        };
-        for (const rawLine of transcript.split("\n")) {
-          const line = stripAnsi(rawLine).trim();
-          if (!line) continue;
-          if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(line)) continue;
-          push(line);
-        }
-        if (isChatTranscript) {
-          const chatDelta = parseChatTranscriptDelta(transcript);
-          for (const touchedPath of chatDelta.touchedFiles) {
-            touched.add(touchedPath);
-          }
-          for (const line of chatDelta.failureLines) {
-            push(line);
-          }
-        }
-        return out.slice(-8);
-      })();
-      const touchedFiles = [...touched].sort();
-      const computedAt = (/* @__PURE__ */ new Date()).toISOString();
-      db.run(
-        `
-          insert into session_deltas(
-            session_id,
-            project_id,
-            lane_id,
-            started_at,
-            ended_at,
-            head_sha_start,
-            head_sha_end,
-            files_changed,
-            insertions,
-            deletions,
-            touched_files_json,
-            failure_lines_json,
-            computed_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          on conflict(session_id) do update set
-            project_id = excluded.project_id,
-            lane_id = excluded.lane_id,
-            started_at = excluded.started_at,
-            ended_at = excluded.ended_at,
-            head_sha_start = excluded.head_sha_start,
-            head_sha_end = excluded.head_sha_end,
-            files_changed = excluded.files_changed,
-            insertions = excluded.insertions,
-            deletions = excluded.deletions,
-            touched_files_json = excluded.touched_files_json,
-            failure_lines_json = excluded.failure_lines_json,
-            computed_at = excluded.computed_at
-        `,
-        [
-          session.id,
-          projectId,
-          session.lane_id,
-          session.started_at,
-          session.ended_at,
-          session.head_sha_start,
-          session.head_sha_end,
-          touchedFiles.length,
-          parsedStat.insertions,
-          parsedStat.deletions,
-          JSON.stringify(touchedFiles),
-          JSON.stringify(failureLines),
-          computedAt
-        ]
-      );
-      logger.info("packs.session_delta_updated", {
-        sessionId,
-        laneId: session.lane_id,
-        filesChanged: touchedFiles.length,
-        insertions: parsedStat.insertions,
-        deletions: parsedStat.deletions
-      });
-      return {
-        sessionId: session.id,
-        laneId: session.lane_id,
-        startedAt: session.started_at,
-        endedAt: session.ended_at,
-        headShaStart: session.head_sha_start,
-        headShaEnd: session.head_sha_end,
-        filesChanged: touchedFiles.length,
-        insertions: parsedStat.insertions,
-        deletions: parsedStat.deletions,
-        touchedFiles,
-        failureLines,
-        computedAt
-      };
-    },
     async refreshLanePack(args) {
       const op = operationService.start({
         laneId: args.laneId,
@@ -11489,7 +11815,7 @@ function createPackService({
         }
       });
       try {
-        const latestDelta = args.sessionId ? await this.computeSessionDelta(args.sessionId) : listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
+        const latestDelta = args.sessionId ? await sessionDeltaService.computeSessionDelta(args.sessionId) : sessionDeltaService.listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
         const deterministicUpdatedAt = nowIso6();
         const { body, lastHeadSha } = await buildLanePackBody({
           laneId: args.laneId,
@@ -11892,10 +12218,10 @@ function createPackService({
       const lanes = await laneService.list({ includeArchived: true });
       const lane = lanes.find((entry) => entry.id === laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
-      const pack = this.getLanePack(laneId);
-      if (!pack.exists || !pack.body.trim().length) {
-        throw new Error("Lane pack is empty. Refresh deterministic packs first.");
-      }
+      const pack = await buildLiveLanePackSummary({
+        laneId,
+        reason: "context_export"
+      });
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
       const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
       const docsMeta = readContextDocMeta2();
@@ -11913,15 +12239,8 @@ function createPackService({
           conflictStatus: conflictState?.status ?? null
         })
       };
-      const packRefreshAt = pack.deterministicUpdatedAt ?? null;
-      const packRefreshAgeMs = (() => {
-        if (!packRefreshAt) return null;
-        const ts = Date.parse(packRefreshAt);
-        if (!Number.isFinite(ts)) return null;
-        return Math.max(0, Date.now() - ts);
-      })();
       const predictionPack = readConflictPredictionPack2(laneId);
-      const lastConflictRefreshAt = asString3(predictionPack?.lastRecomputedAt).trim() || asString3(predictionPack?.generatedAt).trim() || null;
+      const lastConflictRefreshAt = asString4(predictionPack?.lastRecomputedAt).trim() || asString4(predictionPack?.generatedAt).trim() || null;
       const lastConflictRefreshAgeMs = (() => {
         if (!lastConflictRefreshAt) return null;
         const ts = Date.parse(lastConflictRefreshAt);
@@ -11938,8 +12257,8 @@ function createPackService({
         const overlaps = Array.isArray(predictionPack?.overlaps) ? predictionPack.overlaps : [];
         const score = (v) => v === "high" ? 3 : v === "medium" ? 2 : v === "low" ? 1 : 0;
         const peers = overlaps.filter((ov) => ov && ov.peerId != null).map((ov) => ({
-          peerId: asString3(ov.peerId).trim(),
-          riskLevel: normalizeRiskLevel(asString3(ov.riskLevel)) ?? "none",
+          peerId: asString4(ov.peerId).trim(),
+          riskLevel: normalizeRiskLevel(asString4(ov.riskLevel)) ?? "none",
           fileCount: Array.isArray(ov.files) ? ov.files.length : 0
         })).filter((ov) => ov.peerId.length).sort((a, b) => score(b.riskLevel) - score(a.riskLevel) || b.fileCount - a.fileCount || a.peerId.localeCompare(b.peerId)).slice(0, 6);
         for (const peer of peers) out.push(`conflict:${laneId}:${peer.peerId}`);
@@ -12008,10 +12327,9 @@ function createPackService({
           baseRef: lane.baseRef,
           headRef: lane.branchRef,
           headSha: pack.lastHeadSha ?? null,
-          lastPackRefreshAt: packRefreshAt,
+          lastPackRefreshAt: pack.deterministicUpdatedAt ?? null,
           isEditProtected: lane.isEditProtected,
-          packStale: packRefreshAgeMs != null ? packRefreshAgeMs > 10 * 6e4 : null,
-          ...packRefreshAgeMs != null && packRefreshAgeMs > 10 * 6e4 ? { packStaleReason: `lastPackRefreshAgeMs=${packRefreshAgeMs}` } : {}
+          packStale: false
         },
         conflicts: {
           activeConflictPackKeys,
@@ -12019,7 +12337,7 @@ function createPackService({
           lastConflictRefreshAt,
           lastConflictRefreshAgeMs,
           ...predictionPack?.truncated != null ? { truncated: Boolean(predictionPack.truncated) } : {},
-          ...asString3(predictionPack?.strategy).trim() ? { strategy: asString3(predictionPack?.strategy).trim() } : {},
+          ...asString4(predictionPack?.strategy).trim() ? { strategy: asString4(predictionPack?.strategy).trim() } : {},
           ...Number.isFinite(Number(predictionPack?.pairwisePairsComputed)) ? { pairwisePairsComputed: Number(predictionPack?.pairwisePairsComputed) } : {},
           ...Number.isFinite(Number(predictionPack?.pairwisePairsTotal)) ? { pairwisePairsTotal: Number(predictionPack?.pairwisePairsTotal) } : {},
           predictionStale,
@@ -12098,7 +12416,9 @@ function createPackService({
       if (level !== "lite" && level !== "standard" && level !== "deep") {
         throw new Error(`Invalid export level: ${String(level)}`);
       }
-      const pack = this.getProjectPack();
+      const pack = await buildLiveProjectPackSummary({
+        reason: "context_export"
+      });
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
       const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
       const docsMeta = readContextDocMeta2();
@@ -12116,14 +12436,6 @@ function createPackService({
           behindCount: lane.status.behind,
           conflictStatus: conflictState?.status ?? null
         });
-        const packRow = getPackIndexRow(`lane:${lane.id}`);
-        const packRefreshAt = packRow?.deterministic_updated_at ?? null;
-        const packRefreshAgeMs = (() => {
-          if (!packRefreshAt) return null;
-          const ts = Date.parse(packRefreshAt);
-          if (!Number.isFinite(ts)) return null;
-          return Math.max(0, Date.now() - ts);
-        })();
         return {
           laneId: lane.id,
           laneName: lane.name,
@@ -12143,10 +12455,9 @@ function createPackService({
             baseRef: lane.baseRef,
             headRef: lane.branchRef,
             headSha: null,
-            lastPackRefreshAt: packRefreshAt,
+            lastPackRefreshAt: null,
             isEditProtected: lane.isEditProtected,
-            packStale: packRefreshAgeMs != null ? packRefreshAgeMs > 10 * 6e4 : null,
-            ...packRefreshAgeMs != null && packRefreshAgeMs > 10 * 6e4 ? { packStaleReason: `lastPackRefreshAgeMs=${packRefreshAgeMs}` } : {}
+            packStale: false
           },
           conflictState
         };
@@ -12188,20 +12499,24 @@ function createPackService({
       const peerKey = peerLaneId ?? lane.baseRef;
       const packKey = `conflict:${laneId}:${peerKey}`;
       const peerLabel = peerLaneId ? `lane:${peerLaneId}` : `base:${lane.baseRef}`;
-      const pack = this.getConflictPack({ laneId, peerLaneId });
+      const pack = await buildLiveConflictPackSummary({
+        laneId,
+        peerLaneId,
+        reason: "context_export"
+      });
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
       const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
       const predictionPack = readConflictPredictionPack2(laneId);
       const matrix = Array.isArray(predictionPack?.matrix) ? predictionPack.matrix : [];
-      const entry = peerLaneId == null ? matrix.find((m) => asString3(m.laneAId).trim() === laneId && asString3(m.laneBId).trim() === laneId) ?? null : matrix.find((m) => {
-        const a = asString3(m.laneAId).trim();
-        const b = asString3(m.laneBId).trim();
+      const entry = peerLaneId == null ? matrix.find((m) => asString4(m.laneAId).trim() === laneId && asString4(m.laneBId).trim() === laneId) ?? null : matrix.find((m) => {
+        const a = asString4(m.laneAId).trim();
+        const b = asString4(m.laneBId).trim();
         return a === laneId && b === peerLaneId || a === peerLaneId && b === laneId;
       }) ?? null;
       const ttlMs = Number(predictionPack?.stalePolicy?.ttlMs ?? NaN);
       const staleTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 5 * 6e4;
       const nowMs = Date.now();
-      const predictionAt = asString3(entry?.computedAt).trim() || asString3(predictionPack?.predictionAt).trim() || asString3(predictionPack?.status?.lastPredictedAt).trim() || null;
+      const predictionAt = asString4(entry?.computedAt).trim() || asString4(predictionPack?.predictionAt).trim() || asString4(predictionPack?.status?.lastPredictedAt).trim() || null;
       const predictionAgeMs = (() => {
         if (!predictionAt) return null;
         const ts = Date.parse(predictionAt);
@@ -12214,8 +12529,8 @@ function createPackService({
         const raw = Array.isArray(predictionPack?.openConflictSummaries) ? predictionPack.openConflictSummaries : null;
         if (raw) {
           return raw.map((s) => {
-            const riskLevel = normalizeRiskLevel(asString3(s.riskLevel)) ?? "none";
-            const lastSeenAt = asString3(s.lastSeenAt).trim() || null;
+            const riskLevel = normalizeRiskLevel(asString4(s.riskLevel)) ?? "none";
+            const lastSeenAt = asString4(s.lastSeenAt).trim() || null;
             const lastSeenAgeMs = (() => {
               if (!lastSeenAt) return null;
               const ts = Date.parse(lastSeenAt);
@@ -12224,7 +12539,7 @@ function createPackService({
             })();
             return {
               peerId: s.peerId ?? null,
-              peerLabel: asString3(s.peerLabel).trim() || "unknown",
+              peerLabel: asString4(s.peerLabel).trim() || "unknown",
               riskLevel,
               fileCount: Number.isFinite(Number(s.fileCount)) ? Number(s.fileCount) : 0,
               lastSeenAt,
@@ -12238,7 +12553,7 @@ function createPackService({
         for (const ov of overlaps) {
           const peerId = ov.peerId ?? null;
           const peerLabel2 = peerId ? `lane:${peerId}` : `base:${lane.baseRef}`;
-          const riskLevel = normalizeRiskLevel(asString3(ov.riskLevel)) ?? "none";
+          const riskLevel = normalizeRiskLevel(asString4(ov.riskLevel)) ?? "none";
           const fileCount = Array.isArray(ov.files) ? ov.files.length : 0;
           const signals = [];
           if (riskLevel === "high") signals.push("high_risk");
@@ -12264,9 +12579,9 @@ function createPackService({
         predictionAgeMs,
         predictionStale,
         ...staleReason ? { staleReason } : {},
-        lastRecomputedAt: asString3(predictionPack?.lastRecomputedAt).trim() || asString3(predictionPack?.generatedAt).trim() || null,
+        lastRecomputedAt: asString4(predictionPack?.lastRecomputedAt).trim() || asString4(predictionPack?.generatedAt).trim() || null,
         truncated: predictionPack?.truncated != null ? Boolean(predictionPack.truncated) : null,
-        strategy: asString3(predictionPack?.strategy).trim() || null,
+        strategy: asString4(predictionPack?.strategy).trim() || null,
         pairwisePairsComputed: Number.isFinite(Number(predictionPack?.pairwisePairsComputed)) ? Number(predictionPack?.pairwisePairsComputed) : null,
         pairwisePairsTotal: Number.isFinite(Number(predictionPack?.pairwisePairsTotal)) ? Number(predictionPack?.pairwisePairsTotal) : null,
         stalePolicy: { ttlMs: staleTtlMs },
@@ -12323,32 +12638,12 @@ function createPackService({
       if (level !== "lite" && level !== "standard" && level !== "deep") {
         throw new Error(`Invalid export level: ${String(level)}`);
       }
-      const pack = this.getFeaturePack(featureKey);
       const packKey = `feature:${featureKey}`;
-      const header = {
-        schema: CONTEXT_HEADER_SCHEMA_V1,
-        contractVersion: CONTEXT_CONTRACT_VERSION,
-        projectId,
-        packKey,
-        packType: "feature",
-        exportLevel: level
-      };
-      const content = pack.exists ? pack.body : "";
-      const approxTokens = Math.ceil(content.length / 4);
-      const maxTokens = level === "lite" ? 3e4 : level === "standard" ? 6e4 : 12e4;
-      const truncated = approxTokens > maxTokens;
-      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
-      return {
-        packKey,
-        packType: "feature",
-        level,
-        header,
-        content: finalContent,
-        approxTokens: Math.ceil(finalContent.length / 4),
-        maxTokens,
-        truncated,
-        warnings: truncated ? ["Feature pack content was truncated to fit token budget."] : []
-      };
+      const pack = await buildLiveFeaturePackSummary({
+        featureKey,
+        reason: "context_export"
+      });
+      return buildBasicExport({ packKey, packType: "feature", level, pack });
     },
     async getPlanExport(args) {
       const laneId = args.laneId.trim();
@@ -12357,32 +12652,12 @@ function createPackService({
       if (level !== "lite" && level !== "standard" && level !== "deep") {
         throw new Error(`Invalid export level: ${String(level)}`);
       }
-      const pack = this.getPlanPack(laneId);
       const packKey = `plan:${laneId}`;
-      const header = {
-        schema: CONTEXT_HEADER_SCHEMA_V1,
-        contractVersion: CONTEXT_CONTRACT_VERSION,
-        projectId,
-        packKey,
-        packType: "plan",
-        exportLevel: level
-      };
-      const content = pack.exists ? pack.body : "";
-      const approxTokens = Math.ceil(content.length / 4);
-      const maxTokens = level === "lite" ? 3e4 : level === "standard" ? 6e4 : 12e4;
-      const truncated = approxTokens > maxTokens;
-      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
-      return {
-        packKey,
-        packType: "plan",
-        level,
-        header,
-        content: finalContent,
-        approxTokens: Math.ceil(finalContent.length / 4),
-        maxTokens,
-        truncated,
-        warnings: truncated ? ["Plan pack content was truncated to fit token budget."] : []
-      };
+      const pack = await buildLivePlanPackSummary({
+        laneId,
+        reason: "context_export"
+      });
+      return buildBasicExport({ packKey, packType: "plan", level, pack });
     },
     async getMissionExport(args) {
       const missionId = args.missionId.trim();
@@ -12391,39 +12666,19 @@ function createPackService({
       if (level !== "lite" && level !== "standard" && level !== "deep") {
         throw new Error(`Invalid export level: ${String(level)}`);
       }
-      const pack = this.getMissionPack(missionId);
       const packKey = `mission:${missionId}`;
-      const header = {
-        schema: CONTEXT_HEADER_SCHEMA_V1,
-        contractVersion: CONTEXT_CONTRACT_VERSION,
-        projectId,
-        packKey,
-        packType: "mission",
-        exportLevel: level
-      };
-      const content = pack.exists ? pack.body : "";
-      const approxTokens = Math.ceil(content.length / 4);
-      const maxTokens = level === "lite" ? 3e4 : level === "standard" ? 6e4 : 12e4;
-      const truncated = approxTokens > maxTokens;
-      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
-      return {
-        packKey,
-        packType: "mission",
-        level,
-        header,
-        content: finalContent,
-        approxTokens: Math.ceil(finalContent.length / 4),
-        maxTokens,
-        truncated,
-        warnings: truncated ? ["Mission pack content was truncated to fit token budget."] : []
-      };
+      const pack = await buildLiveMissionPackSummary({
+        missionId,
+        reason: "context_export"
+      });
+      return buildBasicExport({ packKey, packType: "mission", level, pack });
     }
   };
 }
 
 // ../desktop/src/main/services/conflicts/conflictService.ts
 var import_node_crypto8 = require("crypto");
-var import_node_child_process3 = require("child_process");
+var import_node_child_process4 = require("child_process");
 var import_node_fs13 = __toESM(require("fs"), 1);
 var import_node_path13 = __toESM(require("path"), 1);
 
@@ -12559,11 +12814,6 @@ async function readDiffNumstat(cwd, mergeBase, headSha) {
   }
   return { files, insertions, deletions };
 }
-function safeSegment2(raw) {
-  const trimmed = raw.trim();
-  if (!trimmed) return "untitled";
-  return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
-}
 function latestPerPair(rows) {
   const out = /* @__PURE__ */ new Map();
   for (const row of rows) {
@@ -12602,8 +12852,8 @@ function buildConflictFiles(conflicting, overlapFiles) {
       markerPreview: file2.markerPreview ?? ""
     });
   }
-  for (const path32 of overlapFiles) {
-    const clean = path32.trim();
+  for (const path33 of overlapFiles) {
+    const clean = path33.trim();
     if (!clean || seen.has(clean)) continue;
     seen.add(clean);
     out.push({
@@ -12705,25 +12955,8 @@ function extractDiffPatchFromText(text) {
 function stripDiffFence(text) {
   return text.replace(/```diff\s*\n[\s\S]*?\n```/gi, "").trim();
 }
-function extractFirstJsonObject2(text) {
-  const raw = text.trim();
-  if (!raw) return null;
-  if (raw.startsWith("{") && raw.endsWith("}")) return raw;
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) {
-    const inner = fenced[1].trim();
-    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
-  }
-  const first = raw.indexOf("{");
-  const last = raw.lastIndexOf("}");
-  if (first >= 0 && last > first) {
-    const candidate = raw.slice(first, last + 1).trim();
-    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
-  }
-  return null;
-}
 function parseStructuredObject(text) {
-  const candidate = extractFirstJsonObject2(text);
+  const candidate = extractFirstJsonObject(text);
   if (!candidate) return null;
   try {
     const parsed = JSON.parse(candidate);
@@ -12844,9 +13077,6 @@ function createConflictService({
   };
   const packsRootDir = conflictPacksDir ? import_node_path13.default.dirname(conflictPacksDir) : null;
   const resolvedPacksRootDir = packsRootDir ?? import_node_path13.default.join(projectRoot, ".ade", "packs");
-  const projectPackPath = import_node_path13.default.join(resolvedPacksRootDir, "project_pack.md");
-  const lanePackPath = (laneId) => import_node_path13.default.join(resolvedPacksRootDir, "lanes", laneId, "lane_pack.md");
-  const conflictPackPath = (laneId, peerKey) => import_node_path13.default.join(resolvedPacksRootDir, "conflicts", "v2", `${laneId}__${safeSegment2(peerKey)}.md`);
   const contextDocPaths = uniqueSorted([
     import_node_path13.default.join(projectRoot, ".ade/context/PRD.ade.md"),
     import_node_path13.default.join(projectRoot, ".ade/context/ARCHITECTURE.ade.md"),
@@ -12872,7 +13102,78 @@ function createConflictService({
     }
   };
   const externalRunsRootDir = import_node_path13.default.join(resolvedPacksRootDir, "external-resolver-runs");
-  const buildExternalResolverPackRefs = (args) => {
+  const buildProjectContextBody = (args) => {
+    const relevantLaneIds = uniqueSorted([
+      args.targetLaneId,
+      args.cwdLaneId,
+      ...args.integrationLaneId ? [args.integrationLaneId] : [],
+      ...args.sourceLaneIds
+    ]);
+    const lines = [];
+    lines.push("# ADE Project Context");
+    lines.push("");
+    lines.push("## Resolver Scope");
+    lines.push(`- Target lane: ${args.targetLaneId}`);
+    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
+    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
+    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
+    lines.push("");
+    lines.push("## Relevant Lanes");
+    for (const laneId of relevantLaneIds) {
+      const lane = args.lanesById.get(laneId);
+      if (!lane) {
+        lines.push(`- ${laneId}: unavailable`);
+        continue;
+      }
+      lines.push(
+        `- ${lane.id}: ${lane.name} | branch=${lane.branchRef} | base=${lane.baseRef} | dirty=${lane.status.dirty ? "yes" : "no"} | ahead=${lane.status.ahead} | behind=${lane.status.behind}`
+      );
+    }
+    lines.push("");
+    const docs = contextDocPaths.filter((absPath) => import_node_fs13.default.existsSync(absPath)).map((absPath) => toRepoRelativePath(absPath));
+    if (docs.length) {
+      lines.push("## Optional Docs");
+      for (const docPath of docs) lines.push(`- ${docPath}`);
+      lines.push("");
+    }
+    return `${lines.join("\n").trim()}
+`;
+  };
+  const buildLaneContextBody = (lane) => {
+    const lines = [];
+    lines.push(`# ADE Lane Context: ${lane.name}`);
+    lines.push("");
+    lines.push(`- Lane ID: ${lane.id}`);
+    lines.push(`- Branch: ${lane.branchRef}`);
+    lines.push(`- Base: ${lane.baseRef}`);
+    lines.push(`- Worktree: ${lane.worktreePath}`);
+    lines.push(`- Dirty: ${lane.status.dirty ? "yes" : "no"}`);
+    lines.push(`- Ahead: ${lane.status.ahead}`);
+    lines.push(`- Behind: ${lane.status.behind}`);
+    lines.push(`- Parent lane: ${lane.parentLaneId ?? "(none)"}`);
+    if (lane.tags.length) lines.push(`- Tags: ${lane.tags.join(", ")}`);
+    if (lane.description?.trim()) lines.push(`- Description: ${lane.description.trim()}`);
+    lines.push("");
+    return `${lines.join("\n").trim()}
+`;
+  };
+  const buildConflictContextBody = (args) => `${JSON.stringify(
+    {
+      laneId: args.laneId,
+      peerLaneId: args.peerLaneId,
+      preparedAt: args.preview.preparedAt,
+      contextDigest: args.preview.contextDigest,
+      existingProposalId: args.preview.existingProposalId ?? null,
+      warnings: args.preview.warnings,
+      stats: args.preview.stats,
+      files: args.preview.files,
+      conflictContext: args.conflictContext ?? null
+    },
+    null,
+    2
+  )}
+`;
+  const buildExternalResolverContextRefs = (args) => {
     const refs = /* @__PURE__ */ new Map();
     const addRef = (ref) => {
       const key = `${ref.kind}:${ref.absPath}`;
@@ -12885,11 +13186,25 @@ function createConflictService({
         exists: import_node_fs13.default.existsSync(absPath)
       });
     };
+    const writeGeneratedRef = (relativeName, content) => {
+      const absPath = import_node_path13.default.join(args.runDir, relativeName);
+      import_node_fs13.default.writeFileSync(absPath, content, "utf8");
+      return absPath;
+    };
     addRef({
-      kind: "project_pack",
+      kind: "project_context",
       laneId: null,
       peerLaneId: null,
-      absPath: projectPackPath,
+      absPath: writeGeneratedRef(
+        "project-context.md",
+        buildProjectContextBody({
+          targetLaneId: args.targetLaneId,
+          sourceLaneIds: args.sourceLaneIds,
+          cwdLaneId: args.cwdLaneId,
+          integrationLaneId: args.integrationLaneId,
+          lanesById: args.lanesById
+        })
+      ),
       required: true
     });
     const relevantLaneIds = uniqueSorted([
@@ -12899,22 +13214,27 @@ function createConflictService({
       ...args.sourceLaneIds
     ]);
     for (const laneId of relevantLaneIds) {
+      const lane = args.lanesById.get(laneId);
+      if (!lane) continue;
       addRef({
-        kind: "lane_pack",
+        kind: "lane_context",
         laneId,
         peerLaneId: null,
-        absPath: lanePackPath(laneId),
+        absPath: writeGeneratedRef(`lane-context-${safeSegment(laneId)}.md`, buildLaneContextBody(lane)),
         required: true
       });
     }
     for (const ctx of args.contexts) {
-      const peerKey = (ctx.peerLaneId?.trim() || laneService.getLaneBaseAndBranch(ctx.laneId).baseRef || "").trim();
+      const peerKey = (ctx.peerLaneId?.trim() || "base").trim();
       if (!peerKey) continue;
       addRef({
-        kind: "conflict_pack",
+        kind: "conflict_context",
         laneId: ctx.laneId,
         peerLaneId: ctx.peerLaneId ?? null,
-        absPath: conflictPackPath(ctx.laneId, peerKey),
+        absPath: writeGeneratedRef(
+          `conflict-context-${safeSegment(ctx.laneId)}-to-${safeSegment(peerKey)}.json`,
+          buildConflictContextBody(ctx)
+        ),
         required: true
       });
     }
@@ -12929,9 +13249,9 @@ function createConflictService({
     }
     return [...refs.values()].sort((a, b) => {
       const rank = (value) => {
-        if (value === "project_pack") return 1;
+        if (value === "project_context") return 1;
         if (value === "project_doc") return 2;
-        if (value === "lane_pack") return 3;
+        if (value === "lane_context") return 3;
         return 4;
       };
       const rankDelta = rank(a.kind) - rank(b.kind);
@@ -13308,8 +13628,8 @@ function createConflictService({
     const foldRow = (row) => {
       const conflicting = safeJsonArray(row.conflicting_files_json);
       const overlapFiles = safeJsonArray(row.overlap_files_json);
-      for (const path32 of overlapFiles) {
-        const clean = path32.trim();
+      for (const path33 of overlapFiles) {
+        const clean = path33.trim();
         if (clean) overlapSet.add(clean);
       }
       for (const file2 of conflicting) {
@@ -14543,10 +14863,10 @@ function createConflictService({
       parentLaneId: args.targetLaneId
     });
   };
-  const buildPackRefsBlock = (packRefs) => {
+  const buildContextRefsBlock = (contextRefs) => {
     const lines = [];
-    lines.push("## ADE Pack References");
-    for (const ref of packRefs) {
+    lines.push("## ADE Context Files");
+    for (const ref of contextRefs) {
       const tags = [ref.required ? "required" : "optional", ref.exists ? "present" : "missing"];
       const laneInfo = ref.laneId ? ` lane=${ref.laneId}` : "";
       const peerInfo = ref.peerLaneId ? ` peer=${ref.peerLaneId}` : "";
@@ -14621,7 +14941,7 @@ function createConflictService({
     lines.push("# ADE External Conflict Resolver");
     lines.push("");
     lines.push("## Objective");
-    lines.push("- Resolve merge conflicts using ADE context packs first, then code/docs as needed.");
+    lines.push("- Resolve merge conflicts using generated ADE context files first, then code/docs as needed.");
     lines.push("- Apply edits in the execution lane worktree only.");
     lines.push("- Do not commit, push, or stage changes.");
     lines.push("");
@@ -14633,15 +14953,15 @@ function createConflictService({
     lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
     lines.push("");
     lines.push("## Required Read Order");
-    lines.push("1) Read all required ADE pack files listed below.");
+    lines.push("1) Read all required generated ADE context files listed below.");
     lines.push("2) Read optional ADE docs if present.");
     lines.push("3) Read additional repository files only when needed to resolve conflicts safely.");
     lines.push("");
-    lines.push(...buildPackRefsBlock(args.packRefs));
+    lines.push(...buildContextRefsBlock(args.contextRefs));
     lines.push(...buildGuardrailsBlock());
     lines.push("## Strategy");
     lines.push("- Merge the single source lane into the target lane.");
-    lines.push("- Resolve each conflicting file using pack context to determine correct resolution.");
+    lines.push("- Resolve each conflicting file using the generated context files to determine correct resolution.");
     lines.push("- Verify that no unrelated files are modified.");
     lines.push("");
     lines.push(...buildPairContextBlock(args.contexts));
@@ -14666,11 +14986,11 @@ function createConflictService({
     lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
     lines.push("");
     lines.push("## Required Read Order");
-    lines.push("1) Read all required ADE pack files listed below.");
+    lines.push("1) Read all required generated ADE context files listed below.");
     lines.push("2) Read optional ADE docs if present.");
     lines.push("3) Read additional repository files only when needed to resolve conflicts safely.");
     lines.push("");
-    lines.push(...buildPackRefsBlock(args.packRefs));
+    lines.push(...buildContextRefsBlock(args.contextRefs));
     lines.push(...buildGuardrailsBlock());
     lines.push("## Strategy");
     lines.push("- Process source lanes in order: " + args.sourceLaneIds.join(" -> ") + ".");
@@ -14700,11 +15020,11 @@ function createConflictService({
     lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
     lines.push("");
     lines.push("## Required Read Order");
-    lines.push("1) Read all required ADE pack files listed below.");
+    lines.push("1) Read all required generated ADE context files listed below.");
     lines.push("2) Read optional ADE docs if present.");
     lines.push("3) Read additional repository files only when needed to resolve conflicts safely.");
     lines.push("");
-    lines.push(...buildPackRefsBlock(args.packRefs));
+    lines.push(...buildContextRefsBlock(args.contextRefs));
     lines.push(...buildGuardrailsBlock());
     lines.push("## Strategy");
     lines.push("- The integration lane aggregates changes from all source lanes.");
@@ -14741,6 +15061,7 @@ function createConflictService({
     if (!targetLane) throw new Error(`Target lane not found: ${targetLaneId}`);
     const integrationLane = sourceLaneIds.length > 1 ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName }) : null;
     const cwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0] : integrationLane.id;
+    if (integrationLane) laneByIdMap.set(integrationLane.id, integrationLane);
     const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
     if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
     const contexts = [];
@@ -14774,17 +15095,19 @@ function createConflictService({
         conflictContext: prepared?.conflictContext ?? null
       });
     }
-    const packRefs = buildExternalResolverPackRefs({
+    const runId = (0, import_node_crypto8.randomUUID)();
+    const runDir = import_node_path13.default.join(externalRunsRootDir, runId);
+    import_node_fs13.default.mkdirSync(runDir, { recursive: true });
+    const contextRefs = buildExternalResolverContextRefs({
+      runDir,
       targetLaneId,
       sourceLaneIds,
       cwdLaneId,
       integrationLaneId: integrationLane?.id ?? null,
-      contexts: contexts.map((entry) => ({ laneId: entry.laneId, peerLaneId: entry.peerLaneId }))
+      contexts,
+      lanesById: laneByIdMap
     });
-    const missingRequiredPacks = packRefs.filter((entry) => entry.required && !entry.exists).map((entry) => entry.repoRelativePath);
-    const runId = (0, import_node_crypto8.randomUUID)();
-    const runDir = import_node_path13.default.join(externalRunsRootDir, runId);
-    import_node_fs13.default.mkdirSync(runDir, { recursive: true });
+    const missingRequiredContexts = contextRefs.filter((entry) => entry.required && !entry.exists).map((entry) => entry.repoRelativePath);
     const startedAt = (/* @__PURE__ */ new Date()).toISOString();
     if (contextGaps.length > 0) {
       const blocked = {
@@ -14806,7 +15129,7 @@ function createConflictService({
         contextGaps,
         warnings: [
           "insufficient_context_blocked",
-          ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
+          ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
         ],
         committedAt: null,
         commitSha: null,
@@ -14820,7 +15143,7 @@ function createConflictService({
       targetLaneId,
       sourceLaneIds,
       contexts,
-      packRefs,
+      contextRefs,
       cwdLaneId,
       integrationLaneId: integrationLane?.id ?? null
     });
@@ -14847,7 +15170,7 @@ function createConflictService({
         contextGaps: [],
         warnings: [
           "resolver_command_missing_in_config",
-          ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
+          ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
         ],
         committedAt: null,
         commitSha: null,
@@ -14864,7 +15187,7 @@ function createConflictService({
     if (!bin) {
       throw new Error("Invalid external resolver command template");
     }
-    const proc = (0, import_node_child_process3.spawnSync)(bin, renderedCommand.slice(1), {
+    const proc = (0, import_node_child_process4.spawnSync)(bin, renderedCommand.slice(1), {
       cwd: cwdLane.worktreePath,
       encoding: "utf8",
       timeout: 8 * 6e4,
@@ -14911,7 +15234,7 @@ ${stderr}
         ...proc.signal ? [`process_signal:${proc.signal}`] : [],
         ...diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : [],
         ...diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : [],
-        ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
+        ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
       ],
       committedAt: null,
       commitSha: null,
@@ -15167,6 +15490,7 @@ ${stderr}
     if (!targetLane) throw new Error(`Target lane not found: ${targetLaneId}`);
     const scenario = args.scenario ?? (sourceLaneIds.length === 1 ? "single-merge" : args.integrationLaneName ? "integration-merge" : "sequential-merge");
     const integrationLane = scenario === "integration-merge" ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName }) : null;
+    if (integrationLane) laneByIdMap.set(integrationLane.id, integrationLane);
     const requestedCwdLaneId = typeof args.cwdLaneId === "string" ? args.cwdLaneId.trim() : "";
     const defaultCwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0] : integrationLane?.id ?? sourceLaneIds[0];
     let cwdLaneId = defaultCwdLaneId;
@@ -15208,26 +15532,28 @@ ${stderr}
         conflictContext: prepared?.conflictContext ?? null
       });
     }
-    const packRefs = buildExternalResolverPackRefs({
+    const runId = (0, import_node_crypto8.randomUUID)();
+    const runDir = import_node_path13.default.join(externalRunsRootDir, runId);
+    import_node_fs13.default.mkdirSync(runDir, { recursive: true });
+    const contextRefs = buildExternalResolverContextRefs({
+      runDir,
       targetLaneId,
       sourceLaneIds,
       cwdLaneId,
       integrationLaneId: integrationLane?.id ?? null,
-      contexts: contexts.map((entry) => ({ laneId: entry.laneId, peerLaneId: entry.peerLaneId }))
+      contexts,
+      lanesById: laneByIdMap
     });
-    const missingRequiredPacks = packRefs.filter((entry) => entry.required && !entry.exists).map((entry) => entry.repoRelativePath);
+    const missingRequiredContexts = contextRefs.filter((entry) => entry.required && !entry.exists).map((entry) => entry.repoRelativePath);
     const warnings = [
-      ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
+      ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
     ];
     const status = contextGaps.length > 0 ? "blocked" : "ready";
-    const runId = (0, import_node_crypto8.randomUUID)();
-    const runDir = import_node_path13.default.join(externalRunsRootDir, runId);
-    import_node_fs13.default.mkdirSync(runDir, { recursive: true });
     const prompt = buildExternalResolverPrompt({
       targetLaneId,
       sourceLaneIds,
       contexts,
-      packRefs,
+      contextRefs,
       cwdLaneId,
       integrationLaneId: integrationLane?.id ?? null,
       scenario
@@ -17112,13 +17438,16 @@ var MODEL_REGISTRY = [
 var byId = /* @__PURE__ */ new Map();
 var byShortId = /* @__PURE__ */ new Map();
 var byAlias = /* @__PURE__ */ new Map();
+var bySdkModelId = /* @__PURE__ */ new Map();
 function rebuildIndexes() {
   byId = /* @__PURE__ */ new Map();
   byShortId = /* @__PURE__ */ new Map();
   byAlias = /* @__PURE__ */ new Map();
+  bySdkModelId = /* @__PURE__ */ new Map();
   for (const m of MODEL_REGISTRY) {
     byId.set(m.id, m);
     byShortId.set(m.shortId, m);
+    bySdkModelId.set(m.sdkModelId, m);
     for (const alias of m.aliases ?? []) {
       const normalized = alias.trim().toLowerCase();
       if (normalized.length) byAlias.set(normalized, m);
@@ -17203,10 +17532,9 @@ function enrichModelRegistry(enrichments) {
   return updated;
 }
 function getModelPricing(sdkModelId) {
-  if (_dynamicPricingOverrides[sdkModelId]) {
-    return _dynamicPricingOverrides[sdkModelId];
-  }
-  const model = MODEL_REGISTRY.find((m) => m.sdkModelId === sdkModelId);
+  const override = _dynamicPricingOverrides[sdkModelId];
+  if (override) return override;
+  const model = bySdkModelId.get(sdkModelId);
   if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
     return { input: model.inputPricePer1M, output: model.outputPricePer1M };
   }
@@ -17296,10 +17624,11 @@ function stepTypeToPhase(stepType, taskType) {
   return null;
 }
 function evaluateRunCompletion(steps, policy) {
+  const relevantSteps = filterExecutionSteps(steps);
   const diagnostics = [];
   const riskFactors = [];
   const phaseSteps = /* @__PURE__ */ new Map();
-  for (const step of steps) {
+  for (const step of relevantSteps) {
     const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
     const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
     const phase = stepTypeToPhase(stepType, taskType);
@@ -17316,7 +17645,7 @@ function evaluateRunCompletion(steps, policy) {
     validation: policy.validation.mode === "required",
     codeReview: policy.codeReview.mode === "required",
     testReview: policy.testReview.mode === "required",
-    integration: !!policy.integrationPr && hasMultipleLanes(steps)
+    integration: !!policy.integrationPr && hasMultipleLanes(relevantSteps)
   };
   const allPhases = [
     "implementation",
@@ -17381,7 +17710,7 @@ function evaluateRunCompletion(steps, policy) {
       });
     }
   }
-  const requiredValidationMissingStepKeys = steps.filter((step) => step.status === "succeeded").filter((step) => {
+  const requiredValidationMissingStepKeys = relevantSteps.filter((step) => step.status === "succeeded").filter((step) => {
     const meta3 = step.metadata ?? {};
     const validationContract = typeof meta3.validationContract === "object" && meta3.validationContract ? meta3.validationContract : null;
     if (validationContract?.required !== true) return false;
@@ -17407,7 +17736,7 @@ function evaluateRunCompletion(steps, policy) {
   const hasBlockingDiagnostics = diagnostics.some((d) => d.blocking);
   const anyPhaseFailed = diagnostics.some((d) => d.code === "phase_failed");
   const anyPhaseInProgress = diagnostics.some((d) => d.code === "phase_in_progress");
-  const allStepStatuses = steps.map((s) => s.status);
+  const allStepStatuses = relevantSteps.map((s) => s.status);
   const allStepsTerminal = allStepStatuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
   const anyStepBlocked = allStepStatuses.some((s) => s === "blocked");
   const anyStepRunning = allStepStatuses.some((s) => s === "running" || s === "ready" || s === "pending");
@@ -17436,6 +17765,7 @@ function evaluateRunCompletion(steps, policy) {
   return { status, diagnostics, riskFactors, completionReady };
 }
 function validateRunCompletion(_run, steps, attempts, claims, _runState, interventions) {
+  const relevantSteps = filterExecutionSteps(steps);
   const blockers = [];
   const activeAttempts = attempts.filter(
     (a) => a.status === "running" || a.status === "queued"
@@ -17447,7 +17777,7 @@ function validateRunCompletion(_run, steps, attempts, claims, _runState, interve
       detail: { attemptIds: activeAttempts.map((a) => a.id) }
     });
   }
-  const claimedSteps = steps.filter((s) => s.status === "claimed");
+  const claimedSteps = relevantSteps.filter((s) => s.status === "claimed");
   const activeTaskClaims = claims.filter(
     (c) => c.state === "active" && c.scopeKind === "task"
   );
@@ -17502,10 +17832,11 @@ function phaseKeyToExecutionPhase(phaseKey) {
   return null;
 }
 function evaluateRunCompletionFromPhases(steps, phases, settings) {
+  const relevantSteps = filterExecutionSteps(steps);
   const diagnostics = [];
   const riskFactors = [];
   const phaseSteps = /* @__PURE__ */ new Map();
-  for (const step of steps) {
+  for (const step of relevantSteps) {
     const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
     const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
     const phase = stepTypeToPhase(stepType, taskType);
@@ -17532,7 +17863,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
   }
   enabledPhases.add("implementation");
   requiredPhases.add("implementation");
-  if (settings.integrationPr && hasMultipleLanes(steps)) {
+  if (settings.integrationPr && hasMultipleLanes(relevantSteps)) {
     enabledPhases.add("integration");
   }
   const allPhases = [
@@ -17600,7 +17931,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
       });
     }
   }
-  const requiredValidationMissingStepKeys = steps.filter((step) => step.status === "succeeded").filter((step) => {
+  const requiredValidationMissingStepKeys = relevantSteps.filter((step) => step.status === "succeeded").filter((step) => {
     const meta3 = step.metadata ?? {};
     const validationContract = typeof meta3.validationContract === "object" && meta3.validationContract ? meta3.validationContract : null;
     if (validationContract?.required !== true) return false;
@@ -17623,7 +17954,7 @@ function evaluateRunCompletionFromPhases(steps, phases, settings) {
   const hasBlockingDiagnostics = diagnostics.some((d) => d.blocking);
   const anyPhaseFailed = diagnostics.some((d) => d.code === "phase_failed");
   const anyPhaseInProgress = diagnostics.some((d) => d.code === "phase_in_progress");
-  const allStepStatuses = steps.map((s) => s.status);
+  const allStepStatuses = relevantSteps.map((s) => s.status);
   const allStepsTerminal = allStepStatuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
   const anyStepBlocked = allStepStatuses.some((s) => s === "blocked");
   const anyStepRunning = allStepStatuses.some((s) => s === "running" || s === "ready" || s === "pending");
@@ -17985,10 +18316,10 @@ function normalizeAgentRuntimeFlags(raw) {
   };
 }
 function toClampedToolProfileMap(value) {
-  if (!isRecord3(value)) return void 0;
+  if (!isRecord2(value)) return void 0;
   const out = {};
   for (const [key, raw] of Object.entries(value)) {
-    if (!isRecord3(raw)) continue;
+    if (!isRecord2(raw)) continue;
     const allowedTools = Array.isArray(raw.allowedTools) ? raw.allowedTools.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
     if (!allowedTools.length) continue;
     const blockedTools = Array.isArray(raw.blockedTools) ? raw.blockedTools.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : void 0;
@@ -18003,7 +18334,7 @@ function toClampedToolProfileMap(value) {
   return Object.keys(out).length > 0 ? out : void 0;
 }
 function parsePolicyFlags(value) {
-  if (!isRecord3(value)) return void 0;
+  if (!isRecord2(value)) return void 0;
   const maxQuestions = Number(value.maxClarificationQuestions);
   const maxParallelWorkers = Number(value.maxParallelWorkers);
   return {
@@ -18016,7 +18347,7 @@ function parsePolicyFlags(value) {
   };
 }
 function parseRoleDefinition(value) {
-  if (!isRecord3(value)) return null;
+  if (!isRecord2(value)) return null;
   const name = typeof value.name === "string" ? value.name.trim() : "";
   if (!name.length) return null;
   const description = typeof value.description === "string" ? value.description.trim() : "";
@@ -18030,11 +18361,11 @@ function parseRoleDefinition(value) {
   };
 }
 function parseTeamTemplate(value) {
-  if (!isRecord3(value)) return null;
+  if (!isRecord2(value)) return null;
   const id = typeof value.id === "string" && value.id.trim().length > 0 ? value.id.trim() : DEFAULT_TEAM_TEMPLATE.id;
   const name = typeof value.name === "string" && value.name.trim().length > 0 ? value.name.trim() : DEFAULT_TEAM_TEMPLATE.name;
   const roles = Array.isArray(value.roles) ? value.roles.map((entry) => parseRoleDefinition(entry)).filter((entry) => !!entry) : [];
-  const constraints = isRecord3(value.constraints) ? value.constraints : null;
+  const constraints = isRecord2(value.constraints) ? value.constraints : null;
   const maxWorkersRaw = Number(constraints?.maxWorkers);
   const requiredRoles = Array.isArray(constraints?.requiredRoles) ? constraints.requiredRoles.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [...REQUIRED_TEAM_CAPABILITIES];
   return {
@@ -18074,8 +18405,8 @@ function resolveMissionTeamRuntime(ctx, missionId) {
     );
     if (row?.metadata_json) {
       const metadata = JSON.parse(row.metadata_json);
-      const launch = isRecord3(metadata.launch) ? metadata.launch : null;
-      const teamRuntime = launch && isRecord3(launch.teamRuntime) ? launch.teamRuntime : null;
+      const launch = isRecord2(metadata.launch) ? metadata.launch : null;
+      const teamRuntime = launch && isRecord2(launch.teamRuntime) ? launch.teamRuntime : null;
       if (teamRuntime && teamRuntime.enabled === true) {
         const parsedTemplate = parseTeamTemplate(teamRuntime.template);
         const template = parsedTemplate ?? DEFAULT_TEAM_TEMPLATE;
@@ -19997,47 +20328,34 @@ function createMissionService({
           phaseCount: selectedPhases.length,
           phases: selectedPhases
         },
-        planner: plannerRun ? {
-          id: plannerRun.id,
-          requestedEngine: plannerRun.requestedEngine,
-          resolvedEngine: plannerRun.resolvedEngine,
-          status: plannerRun.status,
-          degraded: plannerRun.degraded,
-          reasonCode: plannerRun.reasonCode,
-          reasonDetail: plannerRun.reasonDetail,
-          planHash: plannerRun.planHash,
-          normalizedPlanHash: plannerRun.normalizedPlanHash,
-          commandPreview: plannerRun.commandPreview,
-          rawResponse: truncateForMetadata(plannerRun.rawResponse, 2e5),
-          durationMs: plannerRun.durationMs,
-          validationErrors: plannerRun.validationErrors,
-          attempts: plannerRun.attempts.map((attempt) => ({
-            id: attempt.id,
-            engine: attempt.engine,
-            status: attempt.status,
-            reasonCode: attempt.reasonCode,
-            detail: attempt.detail,
-            commandPreview: attempt.commandPreview,
-            rawResponse: truncateForMetadata(attempt.rawResponse, 5e4),
-            validationErrors: attempt.validationErrors,
-            createdAt: attempt.createdAt
-          }))
-        } : {
-          id: null,
-          requestedEngine: args.plannerEngine ?? "auto",
-          resolvedEngine: null,
-          status: "skipped",
-          degraded: false,
-          reasonCode: "planner_unavailable",
-          reasonDetail: "Planner run was not provided.",
-          planHash: null,
-          normalizedPlanHash: null,
-          commandPreview: null,
-          rawResponse: null,
-          durationMs: null,
-          validationErrors: [],
-          attempts: []
-        },
+        ...plannerRun ? {
+          planner: {
+            id: plannerRun.id,
+            requestedEngine: plannerRun.requestedEngine,
+            resolvedEngine: plannerRun.resolvedEngine,
+            status: plannerRun.status,
+            degraded: plannerRun.degraded,
+            reasonCode: plannerRun.reasonCode,
+            reasonDetail: plannerRun.reasonDetail,
+            planHash: plannerRun.planHash,
+            normalizedPlanHash: plannerRun.normalizedPlanHash,
+            commandPreview: plannerRun.commandPreview,
+            rawResponse: truncateForMetadata(plannerRun.rawResponse, 2e5),
+            durationMs: plannerRun.durationMs,
+            validationErrors: plannerRun.validationErrors,
+            attempts: plannerRun.attempts.map((attempt) => ({
+              id: attempt.id,
+              engine: attempt.engine,
+              status: attempt.status,
+              reasonCode: attempt.reasonCode,
+              detail: attempt.detail,
+              commandPreview: attempt.commandPreview,
+              rawResponse: truncateForMetadata(attempt.rawResponse, 5e4),
+              validationErrors: attempt.validationErrors,
+              createdAt: attempt.createdAt
+            }))
+          }
+        } : {},
         plannerPlan: plannerPlan ? {
           schemaVersion: plannerPlan.schemaVersion,
           clarifyingQuestions: plannerClarifyingQuestions,
@@ -20190,6 +20508,7 @@ function createMissionService({
           }
         });
       }
+      db.flushNow();
       emit({ missionId: id, reason: "created" });
       const detail = this.get(id);
       if (!detail) throw new Error("Mission creation failed");
@@ -20320,6 +20639,7 @@ function createMissionService({
           });
         }
       }
+      db.flushNow();
       emit({ missionId, reason: "updated" });
       const detail = this.get(missionId);
       if (!detail) throw new Error("Mission update failed");
@@ -20339,6 +20659,7 @@ function createMissionService({
         `update missions set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
         [JSON.stringify(next), nowIso(), id, projectId]
       );
+      db.flushNow();
     },
     delete(args) {
       const missionId = args.missionId.trim();
@@ -20628,6 +20949,7 @@ function createMissionService({
         `,
         [projectId, missionId]
       );
+      db.flushNow();
       emit({ missionId, reason: "deleted" });
     },
     updateStep(args) {
@@ -21798,7 +22120,7 @@ function createPtyService({
 var import_node_fs17 = __toESM(require("fs"), 1);
 var import_node_path18 = __toESM(require("path"), 1);
 var import_node_crypto11 = require("crypto");
-var import_node_child_process4 = require("child_process");
+var import_node_child_process5 = require("child_process");
 
 // ../desktop/src/main/services/config/laneOverlayMatcher.ts
 function escapeRegExp2(value) {
@@ -22069,7 +22391,7 @@ function createTestService({
         return 0;
       }
     })();
-    const child = (0, import_node_child_process4.spawn)(suite.command[0], suite.command.slice(1), {
+    const child = (0, import_node_child_process5.spawn)(suite.command[0], suite.command.slice(1), {
       cwd,
       env: { ...process.env, ...suite.env, ...overlay.env ?? {} },
       shell: false,
@@ -22886,7 +23208,7 @@ function createUnifiedMemoryService(db) {
         params.push(`%${word}%`);
       }
     }
-    const fetchLimit = Math.max(limit * 4, limit);
+    const fetchLimit = limit * 4;
     sql += ` ORDER BY pinned DESC, tier ASC, updated_at DESC LIMIT ?`;
     params.push(fetchLimit);
     const rows = db.all(sql, params);
@@ -22918,22 +23240,6 @@ function createUnifiedMemoryService(db) {
       status,
       ...scopeOwnerId !== void 0 ? { scopeOwnerId } : {}
     });
-  }
-  function getRecentMemories(projectId, scope, limit = 10) {
-    const normalizedScope = normalizeScope(scope);
-    const rows = db.all(
-      `
-        SELECT *
-        FROM unified_memories
-        WHERE project_id = ?
-          AND scope = ?
-          AND status != 'archived'
-        ORDER BY last_accessed_at DESC
-        LIMIT ?
-      `,
-      [projectId, normalizedScope, limit]
-    );
-    return rows.map(mapMemoryRow);
   }
   function getMemoryBudget(projectId, level, opts) {
     const limits = {
@@ -22985,10 +23291,6 @@ function createUnifiedMemoryService(db) {
     );
     return rows.map(mapSharedFactRow);
   }
-  function deleteMemory(id) {
-    db.run(`DELETE FROM unified_memory_embeddings WHERE memory_id = ?`, [id]);
-    db.run(`DELETE FROM unified_memories WHERE id = ?`, [id]);
-  }
   return {
     writeMemory,
     search,
@@ -23000,11 +23302,9 @@ function createUnifiedMemoryService(db) {
     unpinMemory,
     getCandidateMemories,
     searchMemories,
-    getRecentMemories,
     getMemoryBudget,
     addSharedFact,
-    getSharedFacts,
-    deleteMemory
+    getSharedFacts
   };
 }
 
@@ -23472,7 +23772,7 @@ function createCtoStateService(args) {
 
 // ../desktop/src/main/services/orchestrator/orchestratorService.ts
 var import_node_crypto16 = require("crypto");
-var import_node_child_process5 = require("child_process");
+var import_node_child_process6 = require("child_process");
 var import_node_fs21 = __toESM(require("fs"), 1);
 var import_node_path23 = __toESM(require("path"), 1);
 
@@ -23483,6 +23783,9 @@ var import_node_path20 = __toESM(require("path"), 1);
 // ../desktop/src/main/services/orchestrator/baseOrchestratorAdapter.ts
 function shellEscapeArg(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+function shellInlineDecodedArg(value) {
+  return `"$(node -e 'process.stdout.write(JSON.parse(process.argv[1]))' ${shellEscapeArg(JSON.stringify(value))})"`;
 }
 function compactText(value, maxChars = 220) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -23595,6 +23898,26 @@ ${instructions}`);
     systemParts.push(`Phase-level guidance:
 ${phaseInstructions}`);
   }
+  const requiresPlanApproval = step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
+  const readOnlyExecution = step.metadata?.readOnlyExecution === true || requiresPlanApproval;
+  if (readOnlyExecution) {
+    systemParts.push(
+      "IMPORTANT: This step is READ-ONLY. Do NOT modify files, stage changes, or run write operations. Research, review, and return findings or a plan only."
+    );
+  }
+  systemParts.push(
+    [
+      "RESULT REPORTING:",
+      "- Use `report_status` for short progress updates when you make meaningful progress or hit a blocker.",
+      "- Before you exit, ALWAYS call `report_result` with your outcome, summary, filesChanged, and testsRun fields filled in as accurately as possible.",
+      ...readOnlyExecution ? [
+        "- This step cannot write files. Do NOT attempt `.ade/checkpoints/...` or `.ade/step-output-...md` writes.",
+        "- Put your findings, plan, warnings, and suggested next steps into `report_result` instead."
+      ] : [
+        "- After calling `report_result`, also write the checkpoint and step-output files described below."
+      ]
+    ].join("\n")
+  );
   const steeringDirectives = Array.isArray(step.metadata?.steeringDirectives) ? step.metadata.steeringDirectives.map((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
     const record2 = entry;
@@ -23768,7 +24091,7 @@ ${slashTranslation.prompt}`);
       );
     }
   }
-  {
+  if (!readOnlyExecution) {
     const sanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
     systemParts.push(
       [
@@ -23791,7 +24114,7 @@ ${slashTranslation.prompt}`);
       "3. Any risks or known issues (edge cases not covered, flaky tests)"
     ].join("\n")
   );
-  {
+  if (!readOnlyExecution) {
     const sanitizedStepKeyForOutput = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
     systemParts.push(
       [
@@ -24193,6 +24516,15 @@ function workerLocalMcpConfigFileName(attemptId) {
   const sanitized = attemptId.replace(/[^a-zA-Z0-9_-]/g, "_");
   return `.ade-worker-mcp-${sanitized}.json`;
 }
+function workerPromptFilePath(projectRoot, attemptId) {
+  return import_node_path20.default.join(projectRoot, ".ade", "orchestrator", "worker-prompts", `worker-${attemptId}.txt`);
+}
+function writeWorkerPromptFile(args) {
+  const promptPath = workerPromptFilePath(args.projectRoot, args.attemptId);
+  import_node_fs19.default.mkdirSync(import_node_path20.default.dirname(promptPath), { recursive: true });
+  import_node_fs19.default.writeFileSync(promptPath, args.prompt, "utf8");
+  return promptPath;
+}
 function resolveUnifiedRuntimeRoot() {
   let dir = process.cwd();
   for (let i = 0; i < 10; i++) {
@@ -24218,21 +24550,21 @@ function buildCodexMcpConfigFlags(args) {
   const argsToml = `[${launch.cmdArgs.map((a) => `"${a.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`;
   const flags = [
     "-c",
-    `mcp_servers.ade.command="${launch.command}"`,
+    shellEscapeArg(`mcp_servers.ade.command="${launch.command}"`),
     "-c",
-    `mcp_servers.ade.args=${argsToml}`,
+    shellEscapeArg(`mcp_servers.ade.args=${argsToml}`),
     "-c",
-    `mcp_servers.ade.env.ADE_PROJECT_ROOT="${launch.env.ADE_PROJECT_ROOT}"`,
+    shellEscapeArg(`mcp_servers.ade.env.ADE_PROJECT_ROOT="${launch.env.ADE_PROJECT_ROOT}"`),
     "-c",
-    `mcp_servers.ade.env.ADE_MISSION_ID="${launch.env.ADE_MISSION_ID}"`,
+    shellEscapeArg(`mcp_servers.ade.env.ADE_MISSION_ID="${launch.env.ADE_MISSION_ID}"`),
     "-c",
-    `mcp_servers.ade.env.ADE_RUN_ID="${launch.env.ADE_RUN_ID}"`,
+    shellEscapeArg(`mcp_servers.ade.env.ADE_RUN_ID="${launch.env.ADE_RUN_ID}"`),
     "-c",
-    `mcp_servers.ade.env.ADE_STEP_ID="${launch.env.ADE_STEP_ID}"`,
+    shellEscapeArg(`mcp_servers.ade.env.ADE_STEP_ID="${launch.env.ADE_STEP_ID}"`),
     "-c",
-    `mcp_servers.ade.env.ADE_ATTEMPT_ID="${launch.env.ADE_ATTEMPT_ID}"`,
+    shellEscapeArg(`mcp_servers.ade.env.ADE_ATTEMPT_ID="${launch.env.ADE_ATTEMPT_ID}"`),
     "-c",
-    `mcp_servers.ade.env.ADE_DEFAULT_ROLE="${launch.env.ADE_DEFAULT_ROLE}"`
+    shellEscapeArg(`mcp_servers.ade.env.ADE_DEFAULT_ROLE="${launch.env.ADE_DEFAULT_ROLE}"`)
   ];
   return flags;
 }
@@ -24249,6 +24581,10 @@ function cleanupMcpConfigFile(projectRoot, attemptId, laneWorktreePath) {
     } catch {
     }
   }
+  try {
+    import_node_fs19.default.unlinkSync(workerPromptFilePath(projectRoot, attemptId));
+  } catch {
+  }
 }
 function cleanupStaleMcpConfigFiles(projectRoot) {
   const configDir = import_node_path20.default.join(projectRoot, ".ade", "orchestrator", "mcp-configs");
@@ -24264,6 +24600,31 @@ function cleanupStaleMcpConfigFiles(projectRoot) {
     }
   } catch {
   }
+  const promptDir = import_node_path20.default.join(projectRoot, ".ade", "orchestrator", "worker-prompts");
+  try {
+    const entries = import_node_fs19.default.readdirSync(promptDir);
+    for (const entry of entries) {
+      if (entry.startsWith("worker-") && entry.endsWith(".txt")) {
+        try {
+          import_node_fs19.default.unlinkSync(import_node_path20.default.join(promptDir, entry));
+        } catch {
+        }
+      }
+    }
+  } catch {
+  }
+}
+function forceReadOnlyPermissionConfig(permissionConfig, readOnlyExecution) {
+  if (!readOnlyExecution) return permissionConfig;
+  const providers = normalizeMissionPermissions(permissionConfig);
+  return providerPermissionsToLegacyConfig({
+    ...providers,
+    claude: "plan",
+    codex: "plan",
+    unified: "plan",
+    codexSandbox: "read-only",
+    writablePaths: []
+  });
 }
 function createUnifiedOrchestratorAdapter(options) {
   const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length ? options.runtimeRoot.trim() : resolveUnifiedRuntimeRoot();
@@ -24273,10 +24634,13 @@ function createUnifiedOrchestratorAdapter(options) {
     executorKind: "unified",
     sessionType: "ai-orchestrated",
     buildOverrideCommand: ({ prompt }) => {
-      return `exec claude -p ${shellEscapeArg(prompt)}`;
+      return `exec claude -p ${shellInlineDecodedArg(prompt)}`;
     },
     buildStartupCommand: ({ prompt, model, step, run, attempt, permissionConfig, teamRuntime }) => {
       const descriptor = getModelById(model) ?? resolveModelAlias(model);
+      const requiresPlanApproval = step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
+      const readOnlyExecution = step.metadata?.readOnlyExecution === true || requiresPlanApproval;
+      const effectivePermissionConfig = forceReadOnlyPermissionConfig(permissionConfig, readOnlyExecution);
       const workerEnv = buildWorkerEnvVars({
         missionId: run.missionId,
         runId: run.id,
@@ -24293,11 +24657,11 @@ function createUnifiedOrchestratorAdapter(options) {
       };
       if (descriptor?.isCliWrapped && descriptor.family === "anthropic") {
         const cliModel = resolveClaudeCliModel(descriptor?.sdkModelId ?? model);
-        const claudeProviderMode = permissionConfig?._providers?.claude;
+        const claudeProviderMode = effectivePermissionConfig?._providers?.claude;
         const mappedClaude = mapPermissionToClaude(claudeProviderMode);
-        const dangerouslySkip = mappedClaude === "bypassPermissions";
-        const permissionMode = mappedClaude === "bypassPermissions" ? "acceptEdits" : mappedClaude;
-        const allowedTools = permissionConfig?._providers?.allowedTools ?? permissionConfig?.cli?.allowedTools ?? [];
+        const dangerouslySkip = !readOnlyExecution && mappedClaude === "bypassPermissions";
+        const permissionMode = readOnlyExecution ? "plan" : mappedClaude === "bypassPermissions" ? "acceptEdits" : mappedClaude;
+        const allowedTools = effectivePermissionConfig?._providers?.allowedTools ?? effectivePermissionConfig?.cli?.allowedTools ?? [];
         const parts = ["claude", "--model", shellEscapeArg(cliModel)];
         if (dangerouslySkip) {
           parts.push("--dangerously-skip-permissions");
@@ -24309,8 +24673,13 @@ function createUnifiedOrchestratorAdapter(options) {
         }
         const mcpConfigPath = writeMcpConfigFile(mcpIdentity);
         const localMcpConfigName = workerLocalMcpConfigFileName(attempt.id);
+        const promptFilePath = writeWorkerPromptFile({
+          projectRoot: workspaceRoot,
+          attemptId: attempt.id,
+          prompt
+        });
         parts.push("--mcp-config", shellEscapeArg(localMcpConfigName));
-        parts.push("-p", shellEscapeArg(prompt));
+        parts.push("-p", `"$(cat ${shellEscapeArg(promptFilePath)})"`);
         const envParts = [...workerEnv];
         if (teamRuntime?.enabled && teamRuntime.allowClaudeAgentTeams !== false && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")) {
           envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
@@ -24321,11 +24690,11 @@ function createUnifiedOrchestratorAdapter(options) {
         return envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
       }
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
-        const codexProviderMode = permissionConfig?._providers?.codex;
+        const codexProviderMode = effectivePermissionConfig?._providers?.codex;
         const mappedCodex = mapPermissionToCodex(codexProviderMode);
         const approvalPolicy = mappedCodex?.approvalPolicy ?? "untrusted";
-        const sandboxMode = permissionConfig?._providers?.codexSandbox ?? permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
-        const writablePaths = permissionConfig?._providers?.writablePaths ?? permissionConfig?.cli?.writablePaths ?? [];
+        const sandboxMode = readOnlyExecution ? "read-only" : effectivePermissionConfig?._providers?.codexSandbox ?? effectivePermissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+        const writablePaths = effectivePermissionConfig?._providers?.writablePaths ?? effectivePermissionConfig?.cli?.writablePaths ?? [];
         const parts = [
           "codex",
           "--model",
@@ -24340,10 +24709,16 @@ function createUnifiedOrchestratorAdapter(options) {
         for (const wp of writablePaths) {
           if (wp.trim().length) parts.push("--add-dir", shellEscapeArg(wp.trim()));
         }
-        parts.push(shellEscapeArg(prompt));
+        parts.push("-");
         const envParts = [...workerEnv];
         const cmd = parts.join(" ");
-        return envParts.length > 0 ? `${envParts.join(" ")} exec ${cmd}` : `exec ${cmd}`;
+        const promptFilePath = writeWorkerPromptFile({
+          projectRoot: workspaceRoot,
+          attemptId: attempt.id,
+          prompt
+        });
+        const startup = `${envParts.length > 0 ? `${envParts.join(" ")} ` : ""}exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
+        return startup;
       }
       const unsupportedReason = getUnifiedUnsupportedModelReason(model) ?? `Model '${model}' is not supported by unified adapter.`;
       const failureMessage = `[ADE] Unified orchestrator adapter currently supports CLI-wrapped Anthropic/OpenAI models only. ${unsupportedReason} Select a CLI model for this worker.`;
@@ -24436,7 +24811,7 @@ function getRunMetadata(ctx, runId) {
   if (!row?.metadata_json) return {};
   try {
     const parsed = JSON.parse(row.metadata_json);
-    return isRecord3(parsed) ? parsed : {};
+    return isRecord2(parsed) ? parsed : {};
   } catch {
     return {};
   }
@@ -24451,7 +24826,7 @@ function updateRunMetadata(ctx, runId, mutate) {
     if (!row.metadata_json) return {};
     try {
       const parsed = JSON.parse(row.metadata_json);
-      return isRecord3(parsed) ? parsed : {};
+      return isRecord2(parsed) ? parsed : {};
     } catch {
       return {};
     }
@@ -24894,8 +25269,8 @@ function summarizeRunForChat(ctx, missionId) {
     ).length;
     const failed = graph.steps.filter((step) => step.status === "failed").length;
     const blocked = graph.steps.filter((step) => step.status === "blocked").length;
-    const runMeta = isRecord3(graph.run.metadata) ? graph.run.metadata : {};
-    const autopilot = isRecord3(runMeta.autopilot) ? runMeta.autopilot : null;
+    const runMeta = isRecord2(graph.run.metadata) ? graph.run.metadata : {};
+    const autopilot = isRecord2(runMeta.autopilot) ? runMeta.autopilot : null;
     const parallelCap = autopilot && Number.isFinite(Number(autopilot.parallelismCap)) ? Math.max(1, Math.floor(Number(autopilot.parallelismCap))) : null;
     const runningSteps = graph.steps.filter((step) => step.status === "running").slice(0, 3).map((step) => `${step.title || step.stepKey}${step.laneId ? ` @${step.laneId}` : ""}`);
     const readySteps = graph.steps.filter((step) => step.status === "ready").slice(0, 3).map((step) => `${step.title || step.stepKey}${step.laneId ? ` @${step.laneId}` : ""}`);
@@ -24915,7 +25290,7 @@ function persistUpdatedChatMessage(ctx, next) {
     target: sanitizeChatTarget(next.target ?? null),
     visibility: normalizeChatVisibility(next.visibility),
     deliveryState: normalizeChatDeliveryState(next.deliveryState),
-    metadata: isRecord3(next.metadata) ? next.metadata : null
+    metadata: isRecord2(next.metadata) ? next.metadata : null
   };
   ctx.db.run(
     `
@@ -25000,7 +25375,7 @@ function appendChatMessageCtx(ctx, message) {
       target: sanitizeChatTarget(message.target ?? null),
       visibility: normalizeChatVisibility(message.visibility),
       deliveryState: normalizeChatDeliveryState(message.deliveryState),
-      metadata: isRecord3(message.metadata) ? message.metadata : null
+      metadata: isRecord2(message.metadata) ? message.metadata : null
     };
   }
   const thread = ensureThreadForTarget(ctx, {
@@ -25014,7 +25389,7 @@ function appendChatMessageCtx(ctx, message) {
     visibility: normalizeChatVisibility(message.visibility),
     deliveryState: normalizeChatDeliveryState(message.deliveryState),
     target: sanitizeChatTarget(message.target ?? null),
-    metadata: isRecord3(message.metadata) ? message.metadata : null
+    metadata: isRecord2(message.metadata) ? message.metadata : null
   };
   const existing = ctx.chatMessages.has(normalized.missionId) ? ctx.chatMessages.get(normalized.missionId) ?? [] : loadChatMessagesFromMetadata(ctx, normalized.missionId);
   const next = [...existing, normalized].slice(-MAX_PERSISTED_CHAT_MESSAGES);
@@ -25174,7 +25549,7 @@ function getThreadMessagesCtx(ctx, threadArgs) {
 }
 function sendWorkersBroadcastMessageCtx(ctx, threadArgs, target, deps) {
   const missionThread = ensureMissionThread(ctx, threadArgs.missionId);
-  const metadata = isRecord3(threadArgs.metadata) ? threadArgs.metadata : null;
+  const metadata = isRecord2(threadArgs.metadata) ? threadArgs.metadata : null;
   const broadcastMessage = appendChatMessageCtx(ctx, {
     id: (0, import_node_crypto14.randomUUID)(),
     missionId: threadArgs.missionId,
@@ -25711,7 +26086,7 @@ function extractOutcomeTags(attempt) {
   if (attempt.resultEnvelope) {
     const envelope = attempt.resultEnvelope;
     if (envelope.warnings?.length) tags.push("has_warnings", `warnings:${envelope.warnings.length}`);
-    if (envelope.outputs && isRecord3(envelope.outputs)) {
+    if (envelope.outputs && isRecord2(envelope.outputs)) {
       const filesModified = Number(envelope.outputs.filesModified ?? envelope.outputs.files_modified);
       if (Number.isFinite(filesModified)) tags.push(`files_modified:${filesModified}`);
       const testsPassed = Number(envelope.outputs.testsPassed ?? envelope.outputs.tests_passed);
@@ -25726,11 +26101,11 @@ function extractOutcomeTags(attempt) {
   return tags;
 }
 function resolveAttemptOwnerId(run, attempt) {
-  const attemptMeta = isRecord3(attempt.metadata) ? attempt.metadata : {};
+  const attemptMeta = isRecord2(attempt.metadata) ? attempt.metadata : {};
   const explicitOwner = typeof attemptMeta.ownerId === "string" ? attemptMeta.ownerId.trim() : "";
   if (explicitOwner.length > 0) return explicitOwner;
-  const runMeta = isRecord3(run.metadata) ? run.metadata : {};
-  const autopilot = isRecord3(runMeta.autopilot) ? runMeta.autopilot : null;
+  const runMeta = isRecord2(run.metadata) ? run.metadata : {};
+  const autopilot = isRecord2(runMeta.autopilot) ? runMeta.autopilot : null;
   const runOwner = autopilot && typeof autopilot.ownerId === "string" ? autopilot.ownerId.trim() : "";
   if (runOwner.length > 0) return runOwner;
   return "orchestrator-autopilot";
@@ -25740,7 +26115,7 @@ function resolveAttemptOwnerIdFromRows(attemptMetadataJson, runMetadataJson) {
   const explicitOwner = typeof attemptMeta?.ownerId === "string" ? attemptMeta.ownerId.trim() : "";
   if (explicitOwner.length > 0) return explicitOwner;
   const runMeta = parseJsonRecord(runMetadataJson);
-  const autopilot = runMeta && isRecord3(runMeta.autopilot) ? runMeta.autopilot : null;
+  const autopilot = runMeta && isRecord2(runMeta.autopilot) ? runMeta.autopilot : null;
   const owner = autopilot && typeof autopilot.ownerId === "string" ? autopilot.ownerId.trim() : "";
   if (owner.length > 0) return owner;
   return "orchestrator-autopilot";
@@ -25759,9 +26134,6 @@ function inferRoleFromStepMetadata(metadata, kind) {
 function parseNumericDependencyIndices(metadata) {
   if (!Array.isArray(metadata.dependencyIndices)) return [];
   return metadata.dependencyIndices.map((value) => Number(value)).filter((value) => Number.isFinite(value)).map((value) => Math.floor(value));
-}
-function slugify2(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "").slice(0, 28) || "lane";
 }
 var TERMINAL_PHASE_STEP_STATUSES = /* @__PURE__ */ new Set([
   "succeeded",
@@ -25815,7 +26187,7 @@ function discoverProjectDocs(ctx) {
 function resolveActivePolicy(ctx, missionId) {
   const metadata = getMissionMetadata(ctx, missionId);
   const config2 = readConfig(ctx.projectConfigService);
-  if (isRecord3(metadata.executionPolicy)) {
+  if (isRecord2(metadata.executionPolicy)) {
     return resolveExecutionPolicy({
       missionMetadata: metadata.executionPolicy
     });
@@ -25842,7 +26214,7 @@ var DEFAULT_MISSION_LEVEL_SETTINGS = {
 function resolveActivePhaseSettings(ctx, missionId) {
   const metadata = getMissionMetadata(ctx, missionId);
   let phases = [];
-  if (isRecord3(metadata.phaseConfiguration)) {
+  if (isRecord2(metadata.phaseConfiguration)) {
     const config2 = metadata.phaseConfiguration;
     if (Array.isArray(config2.selectedPhases)) {
       phases = config2.selectedPhases;
@@ -25851,7 +26223,7 @@ function resolveActivePhaseSettings(ctx, missionId) {
     }
   }
   let settings;
-  if (isRecord3(metadata.missionLevelSettings)) {
+  if (isRecord2(metadata.missionLevelSettings)) {
     settings = metadata.missionLevelSettings;
   } else {
     settings = { ...DEFAULT_MISSION_LEVEL_SETTINGS };
@@ -26103,7 +26475,7 @@ function getCoordinatorCheckpointPath(projectRoot, runId) {
   return import_node_path22.default.join(projectRoot, MISSION_STATE_DIR, `coordinator-checkpoint-${runId}.json`);
 }
 function normalizeProgress(value) {
-  const raw = isRecord3(value) ? value : {};
+  const raw = isRecord2(value) ? value : {};
   return {
     currentPhase: stringOr(raw.currentPhase, "unknown").trim() || "unknown",
     completedSteps: clampNonNegativeInt(raw.completedSteps, 0),
@@ -26114,18 +26486,18 @@ function normalizeProgress(value) {
   };
 }
 function normalizeStepOutcome(value) {
-  const raw = isRecord3(value) ? value : null;
+  const raw = isRecord2(value) ? value : null;
   if (!raw) return null;
   const stepKey = stringOr(raw.stepKey).trim();
   if (!stepKey.length) return null;
   const status = raw.status === "succeeded" || raw.status === "failed" || raw.status === "skipped" || raw.status === "in_progress" ? raw.status : "in_progress";
-  const testsRunRaw = isRecord3(raw.testsRun) ? raw.testsRun : null;
+  const testsRunRaw = isRecord2(raw.testsRun) ? raw.testsRun : null;
   const testsRun = testsRunRaw ? {
     passed: clampNonNegativeInt(testsRunRaw.passed, 0),
     failed: clampNonNegativeInt(testsRunRaw.failed, 0),
     skipped: clampNonNegativeInt(testsRunRaw.skipped, 0)
   } : void 0;
-  const validationRaw = isRecord3(raw.validation) ? raw.validation : null;
+  const validationRaw = isRecord2(raw.validation) ? raw.validation : null;
   const validation = validationRaw ? (() => {
     const verdict = validationRaw.verdict === "pass" || validationRaw.verdict === "fail" || validationRaw.verdict === null ? validationRaw.verdict : null;
     return {
@@ -26147,7 +26519,7 @@ function normalizeStepOutcome(value) {
   };
 }
 function normalizeDecision(value) {
-  const raw = isRecord3(value) ? value : null;
+  const raw = isRecord2(value) ? value : null;
   if (!raw) return null;
   const timestamp = stringOr(raw.timestamp).trim();
   const decision = stringOr(raw.decision).trim();
@@ -26157,7 +26529,7 @@ function normalizeDecision(value) {
   return { timestamp, decision, rationale, context };
 }
 function normalizeIssue(value) {
-  const raw = isRecord3(value) ? value : null;
+  const raw = isRecord2(value) ? value : null;
   if (!raw) return null;
   const id = stringOr(raw.id).trim();
   if (!id.length) return null;
@@ -26170,7 +26542,7 @@ function normalizeIssue(value) {
   };
 }
 function normalizePendingIntervention(value) {
-  const raw = isRecord3(value) ? value : null;
+  const raw = isRecord2(value) ? value : null;
   if (!raw) return null;
   const id = stringOr(raw.id).trim();
   if (!id.length) return null;
@@ -26182,7 +26554,7 @@ function normalizePendingIntervention(value) {
   };
 }
 function normalizeReflectionEntry(value) {
-  const raw = isRecord3(value) ? value : null;
+  const raw = isRecord2(value) ? value : null;
   if (!raw) return null;
   const id = stringOr(raw.id).trim();
   const missionId = stringOr(raw.missionId).trim();
@@ -26210,7 +26582,7 @@ function normalizeReflectionEntry(value) {
   };
 }
 function normalizeRetrospective(value) {
-  const raw = isRecord3(value) ? value : null;
+  const raw = isRecord2(value) ? value : null;
   if (!raw) return null;
   const id = stringOr(raw.id).trim();
   const missionId = stringOr(raw.missionId).trim();
@@ -26234,7 +26606,7 @@ function normalizeRetrospective(value) {
     patternsToCapture: normalizeStringArray(raw.patternsToCapture, 30),
     estimatedImpact: stringOr(raw.estimatedImpact).trim(),
     changelog: Array.isArray(raw.changelog) ? raw.changelog.filter(
-      (x) => isRecord3(x) && typeof x.previousPainPoint === "string" && typeof x.currentState === "string" && (x.status === "resolved" || x.status === "still_open" || x.status === "worsened")
+      (x) => isRecord2(x) && typeof x.previousPainPoint === "string" && typeof x.currentState === "string" && (x.status === "resolved" || x.status === "still_open" || x.status === "worsened")
     ).map((x) => {
       const previousPainScore = Number(x.previousPainScore);
       const currentPainScore = Number(x.currentPainScore);
@@ -26253,7 +26625,7 @@ function normalizeRetrospective(value) {
   };
 }
 function normalizeDocument(rawDoc) {
-  const raw = isRecord3(rawDoc) ? rawDoc : null;
+  const raw = isRecord2(rawDoc) ? rawDoc : null;
   if (!raw) return null;
   if (Number(raw.schemaVersion) !== 1) return null;
   const missionId = stringOr(raw.missionId).trim();
@@ -26281,7 +26653,7 @@ function normalizeDocument(rawDoc) {
   };
 }
 function normalizeCoordinatorCheckpoint(rawDoc) {
-  const raw = isRecord3(rawDoc) ? rawDoc : null;
+  const raw = isRecord2(rawDoc) ? rawDoc : null;
   if (!raw) return null;
   const runId = stringOr(raw.runId).trim();
   const missionId = stringOr(raw.missionId).trim();
@@ -26596,6 +26968,21 @@ async function deleteCoordinatorCheckpoint(projectRoot, runId) {
   }
 }
 
+// ../desktop/src/shared/workerRuntimeNoise.ts
+var ANSI_PATTERN = /\u001b\[[0-9;]*[A-Za-z]/g;
+var SHELL_PROMPT_PATTERN = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\s+.+\s[%#$]$/;
+var WORKER_PROMPT_PATH_PATTERN = /(?:^|[\\/])(?:orchestrator[\\/])?worker-prompts[\\/]worker-[a-f0-9-]+(?:\.[A-Za-z0-9._-]+)?/i;
+var MCP_CONFIG_PATH_PATTERN = /(?:^|[\\/])\.ade-worker-mcp-[a-f0-9-]+\.json/i;
+function stripWorkerRuntimeAnsi(text) {
+  return text.replace(ANSI_PATTERN, "");
+}
+function isWorkerBootstrapNoiseLine(line) {
+  const normalized = stripWorkerRuntimeAnsi(line).trim();
+  if (!normalized.length) return false;
+  const lower = normalized.toLowerCase();
+  return lower.startsWith("ade_mission_id=") || lower.startsWith('-p "$(cat ') || /^cp\s+'.+worker-[a-f0-9-]+\.json'\s+'.+\.json'(\s+&&\s+exec\b.*)?$/i.test(normalized) || WORKER_PROMPT_PATH_PATTERN.test(normalized) || MCP_CONFIG_PATH_PATTERN.test(normalized) || lower.includes("exec claude --model") || /\bexec codex\b/i.test(normalized) || /^\/users\/.+\.zshrc:\d+:/i.test(lower) || /command not found:\s*compdef/i.test(normalized) || /^EOF['"]?\s+in\s+\/Users\//i.test(normalized) || SHELL_PROMPT_PATTERN.test(normalized);
+}
+
 // ../desktop/src/main/services/orchestrator/orchestratorService.ts
 function sha2562(data) {
   return (0, import_node_crypto16.createHash)("sha256").update(data).digest("hex");
@@ -26732,6 +27119,65 @@ function loadMissionStateDocCounts(projectRoot, runId) {
   } catch {
     return { decisions: 0, activeIssues: 0, pendingInterventions: 0, stepOutcomes: 0 };
   }
+}
+function readUtf8Tail(filePath, maxBytes = 64 * 1024) {
+  const stat = import_node_fs21.default.statSync(filePath);
+  const size = Math.max(0, Number(stat.size) || 0);
+  if (size <= maxBytes) {
+    return import_node_fs21.default.readFileSync(filePath, "utf8");
+  }
+  const fd = import_node_fs21.default.openSync(filePath, "r");
+  try {
+    const start = Math.max(0, size - maxBytes);
+    const length = size - start;
+    const buffer = Buffer.alloc(length);
+    import_node_fs21.default.readSync(fd, buffer, 0, length, start);
+    return buffer.toString("utf8");
+  } finally {
+    import_node_fs21.default.closeSync(fd);
+  }
+}
+function deriveTranscriptSummaryFromPath(filePath) {
+  const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
+  if (!normalizedPath || !import_node_fs21.default.existsSync(normalizedPath)) return null;
+  try {
+    const rawTail = readUtf8Tail(normalizedPath);
+    const sanitizedTail = rawTail.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0).filter((line) => !isWorkerBootstrapNoiseLine(line)).join("\n");
+    const summary = deriveSessionSummaryFromText(sanitizedTail).trim();
+    if (!summary.length) return null;
+    const lowerSummary = summary.toLowerCase();
+    if (lowerSummary.startsWith("ade_mission_id=") || lowerSummary.startsWith('-p "$(cat ') || lowerSummary.includes("worker-prompts/worker-") || lowerSummary.includes("exec claude --model") || lowerSummary.includes("exec codex ")) {
+      return null;
+    }
+    return summary;
+  } catch {
+    return null;
+  }
+}
+function resolveRunPhaseCardsFromMetadata(runMetadata) {
+  if (!runMetadata) return null;
+  const phaseConfig = typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration ? runMetadata.phaseConfiguration : null;
+  const phaseCards = phaseConfig && Array.isArray(phaseConfig.phases) ? phaseConfig.phases : phaseConfig && Array.isArray(phaseConfig.selectedPhases) ? phaseConfig.selectedPhases : Array.isArray(runMetadata.phaseOverride) ? runMetadata.phaseOverride : null;
+  return phaseCards && phaseCards.length > 0 ? phaseCards : null;
+}
+function resolveRunMissionLevelSettingsFromMetadata(runMetadata) {
+  if (!runMetadata) return null;
+  if (typeof runMetadata.missionLevelSettings === "object" && runMetadata.missionLevelSettings) {
+    return runMetadata.missionLevelSettings;
+  }
+  const executionPolicy = isExecutionPolicyRecord(runMetadata.executionPolicy) ? runMetadata.executionPolicy : null;
+  if (!executionPolicy && !Array.isArray(runMetadata.phaseOverride)) return null;
+  return {
+    prStrategy: executionPolicy?.prStrategy ?? { kind: "manual" },
+    ...executionPolicy?.integrationPr ? { integrationPr: executionPolicy.integrationPr } : {},
+    ...executionPolicy?.teamRuntime ? { teamRuntime: executionPolicy.teamRuntime } : {}
+  };
+}
+function isPlanningLikeStepMetadata(stepMetadata) {
+  if (!stepMetadata) return false;
+  const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim().toLowerCase() : "";
+  const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim().toLowerCase() : "";
+  return stepMetadata.readOnlyExecution === true || stepType === "planning" || phaseKey === "planning";
 }
 function createOrchestratorService({
   db,
@@ -27631,7 +28077,7 @@ function createOrchestratorService({
       );
       const laneRoot = typeof laneRow?.worktree_path === "string" && laneRow.worktree_path.trim().length ? laneRow.worktree_path.trim() : projectRoot;
       try {
-        const status = (0, import_node_child_process5.spawnSync)("git", ["-C", laneRoot, "status", "--porcelain=v1", "--untracked-files=all"], {
+        const status = (0, import_node_child_process6.spawnSync)("git", ["-C", laneRoot, "status", "--porcelain=v1", "--untracked-files=all"], {
           encoding: "utf8"
         });
         if (status.status === 0 && typeof status.stdout === "string" && status.stdout.trim().length > 0) {
@@ -27825,9 +28271,8 @@ function createOrchestratorService({
     const steps = listStepRows(runId).map(toStep);
     const runRow = getRunRow(runId);
     const runMetadata = runRow ? parseJsonRecord(runRow.metadata_json) : null;
-    const phaseConfig = runMetadata && typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration ? runMetadata.phaseConfiguration : null;
-    const rawPhases = phaseConfig && Array.isArray(phaseConfig.phases) ? phaseConfig.phases : phaseConfig && Array.isArray(phaseConfig.selectedPhases) ? phaseConfig.selectedPhases : null;
-    const missionLevelSettings = runMetadata && typeof runMetadata.missionLevelSettings === "object" && runMetadata.missionLevelSettings ? runMetadata.missionLevelSettings : null;
+    const rawPhases = resolveRunPhaseCardsFromMetadata(runMetadata);
+    const missionLevelSettings = resolveRunMissionLevelSettingsFromMetadata(runMetadata);
     const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy) ? runMetadata.executionPolicy : DEFAULT_EXECUTION_POLICY;
     const evaluation = rawPhases && rawPhases.length > 0 && missionLevelSettings ? evaluateRunCompletionFromPhases(steps, rawPhases, missionLevelSettings) : evaluateRunCompletion(steps, executionPolicy);
     if (evaluation.completionReady) {
@@ -27917,39 +28362,10 @@ function createOrchestratorService({
     const laneExportLevel = (stepType === "integration" || stepType === "merge") && args.contextProfile.includeNarrative ? "deep" : args.contextProfile.laneExportLevel;
     const projectExportLevel = stepType === "analysis" ? "standard" : args.contextProfile.projectExportLevel;
     const lanePackKey = args.step.laneId ? `lane:${args.step.laneId}` : null;
-    const laneExport = await (async () => {
-      if (!args.step.laneId) return null;
-      const laneId = args.step.laneId;
-      try {
-        return await packService.getLaneExport({
-          laneId,
-          level: laneExportLevel
-        });
-      } catch (error48) {
-        const message = error48 instanceof Error ? error48.message : String(error48);
-        if (!message.includes("Lane pack is empty")) {
-          throw error48;
-        }
-        await packService.refreshLanePack({
-          laneId,
-          reason: "orchestrator_context_bootstrap"
-        });
-        appendTimelineEvent({
-          runId: args.run.id,
-          stepId: args.step.id,
-          attemptId: args.attemptId,
-          eventType: "context_pack_bootstrap",
-          reason: "lane_pack_refreshed",
-          detail: {
-            laneId
-          }
-        });
-        return await packService.getLaneExport({
-          laneId,
-          level: laneExportLevel
-        });
-      }
-    })();
+    const laneExport = args.step.laneId ? await packService.getLaneExport({
+      laneId: args.step.laneId,
+      level: laneExportLevel
+    }) : null;
     const projectExport = await packService.getProjectExport({
       level: projectExportLevel
     });
@@ -28005,19 +28421,7 @@ function createOrchestratorService({
       }
       if (remainingBytes <= 0 && args.contextProfile.docsMode === "full_docs") break;
     }
-    const packDeltaDigest = await (async () => {
-      if (!lanePackKey || !previousPackDeltaSince) return null;
-      try {
-        return await packService.getDeltaDigest({
-          packKey: lanePackKey,
-          sinceTimestamp: previousPackDeltaSince,
-          minimumImportance: "medium",
-          limit: 60
-        });
-      } catch {
-        return null;
-      }
-    })();
+    const packDeltaDigest = null;
     const missionStepIds = /* @__PURE__ */ new Set();
     if (args.step.missionStepId) missionStepIds.add(args.step.missionStepId);
     if (args.step.dependencyStepIds.length) {
@@ -28352,15 +28756,15 @@ function createOrchestratorService({
       l1: memoryL1,
       l2: memoryL2
     };
-    const laneHead = lanePackKey ? packService.getHeadVersion({ packKey: lanePackKey }) : null;
-    const projectHead = packService.getHeadVersion({ packKey: "project" });
+    const laneVersionId = laneExport?.header.versionId ?? laneExport?.header.contentHash ?? (laneExport ? `live:${laneExport.packKey}:${sha2562(laneExport.content)}` : null);
+    const projectVersionId = projectExport.header.versionId ?? projectExport.header.contentHash ?? `live:${projectExport.packKey}:${sha2562(projectExport.content)}`;
     const cursor = {
       lanePackKey,
-      lanePackVersionId: laneHead?.versionId ?? null,
-      lanePackVersionNumber: laneHead?.versionNumber ?? null,
+      lanePackVersionId: laneVersionId,
+      lanePackVersionNumber: laneExport?.header.versionNumber ?? null,
       projectPackKey: "project",
-      projectPackVersionId: projectHead.versionId,
-      projectPackVersionNumber: projectHead.versionNumber,
+      projectPackVersionId: projectVersionId,
+      projectPackVersionNumber: projectExport.header.versionNumber ?? null,
       packDeltaSince: previousPackDeltaSince,
       docs: docsRefs,
       packDeltaDigest,
@@ -28375,8 +28779,8 @@ function createOrchestratorService({
         "execution_pack_v2",
         "deep_pack_v2",
         "memory_hierarchy_v1",
-        `pack:project:${projectExport.level}`,
-        ...lanePackKey ? [`pack:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : [],
+        `context_export:project:${projectExport.level}`,
+        ...lanePackKey ? [`context_export:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : [],
         ...packDeltaDigest ? ["delta_digest"] : [],
         ...missionHandoffIds.length ? ["mission_handoffs"] : [],
         ...missionHandoffDigest ? ["mission_handoff_digest"] : [],
@@ -29148,7 +29552,7 @@ function createOrchestratorService({
               commandParts.push("--permission-mode", readOnlyExecution || cliMode === "read-only" ? "plan" : "acceptEdits");
             }
           }
-          commandParts.push(shellEscapeArg(prompt));
+          commandParts.push(shellInlineDecodedArg(prompt));
           const startupCommand = commandParts.join(" ");
           const session = await args.createTrackedSession({
             laneId: args.step.laneId,
@@ -29909,9 +30313,8 @@ function createOrchestratorService({
       const run = toRun(runRow);
       const steps = listStepRows(args.runId).map(toStep);
       const runMetadata = run.metadata ?? {};
-      const phaseConfig = typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration ? runMetadata.phaseConfiguration : null;
-      const graphPhases = phaseConfig && Array.isArray(phaseConfig.phases) ? phaseConfig.phases : phaseConfig && Array.isArray(phaseConfig.selectedPhases) ? phaseConfig.selectedPhases : null;
-      const graphSettings = typeof runMetadata.missionLevelSettings === "object" && runMetadata.missionLevelSettings ? runMetadata.missionLevelSettings : null;
+      const graphPhases = resolveRunPhaseCardsFromMetadata(runMetadata);
+      const graphSettings = resolveRunMissionLevelSettingsFromMetadata(runMetadata);
       let completion;
       if (graphPhases && graphPhases.length > 0 && graphSettings) {
         completion = evaluateRunCompletionFromPhases(steps, graphPhases, graphSettings);
@@ -30217,7 +30620,7 @@ function createOrchestratorService({
           }
           let runningAttemptCount = listAttemptRows(runId).map(toAttempt).filter((attempt) => attempt.status === "running").length;
           if (runningAttemptCount >= effectiveCap) break;
-          const readySteps = listStepRows(runId).map(toStep).filter((step) => step.status === "ready").sort(readyStepOrderComparator);
+          const readySteps = filterExecutionSteps(listStepRows(runId).map(toStep)).filter((step) => step.status === "ready").sort(readyStepOrderComparator);
           if (!readySteps.length) break;
           const spawnDescriptors = [];
           for (const step of readySteps) {
@@ -30402,6 +30805,17 @@ function createOrchestratorService({
       const touchedRunIds = /* @__PURE__ */ new Set();
       for (const attempt of runningAttempts) {
         touchedRunIds.add(attempt.run_id);
+        const stepRow = getStepRow(attempt.step_id);
+        const step = stepRow ? toStep(stepRow) : null;
+        const stepMetadata = asRecord(step?.metadata) ?? {};
+        const attemptMetadata = parseJsonRecord(attempt.metadata_json);
+        const transcriptPath = typeof attemptMetadata?.transcriptPath === "string" ? attemptMetadata.transcriptPath.trim() : "";
+        const transcriptSummary = deriveTranscriptSummaryFromPath(transcriptPath);
+        const completionForAttempt = completion.status === "succeeded" && isPlanningLikeStepMetadata(stepMetadata) && !transcriptSummary ? {
+          status: "failed",
+          errorClass: "executor_failure",
+          errorMessage: "Planning worker exited without reporting a usable plan."
+        } : completion;
         persistRuntimeEvent({
           runId: attempt.run_id,
           stepId: attempt.step_id,
@@ -30416,10 +30830,10 @@ function createOrchestratorService({
         });
         this.completeAttempt({
           attemptId: attempt.id,
-          status: completion.status,
-          ...completion.errorClass ? {
-            errorClass: completion.errorClass,
-            errorMessage: completion.errorMessage
+          status: completionForAttempt.status,
+          ...completionForAttempt.errorClass ? {
+            errorClass: completionForAttempt.errorClass,
+            errorMessage: completionForAttempt.errorMessage
           } : {},
           metadata: {
             reconciledFromTrackedSession: true,
@@ -30446,7 +30860,6 @@ function createOrchestratorService({
         `
           select
             s.id as session_id,
-            s.lane_id as lane_id,
             s.ended_at as ended_at,
             (
               select d.computed_at
@@ -30463,14 +30876,7 @@ function createOrchestratorService({
                 and c.session_id = s.id
               order by c.created_at desc
               limit 1
-            ) as checkpoint_at,
-            (
-              select p.deterministic_updated_at
-              from packs_index p
-              where p.project_id = ?
-                and p.pack_key = ('lane:' || s.lane_id)
-              limit 1
-            ) as lane_pack_at
+            ) as checkpoint_at
           from terminal_sessions s
           join lanes l on l.id = s.lane_id
           where l.project_id = ?
@@ -30479,20 +30885,21 @@ function createOrchestratorService({
           order by s.ended_at desc
           limit 400
         `,
-        [projectId, projectId, projectId, projectId]
+        [projectId, projectId, projectId]
       );
       const pipelineSamples = pipelineRows.map((row) => {
         const endedAt = row.ended_at ? Date.parse(row.ended_at) : NaN;
-        const packAt = row.lane_pack_at ? Date.parse(row.lane_pack_at) : NaN;
-        if (!Number.isFinite(endedAt) || !Number.isFinite(packAt)) return null;
-        return Math.max(0, packAt - endedAt);
+        if (!Number.isFinite(endedAt)) return null;
+        const materializedAt = [row.delta_at, row.checkpoint_at].map((value) => value ? Date.parse(value) : NaN).filter((value) => Number.isFinite(value));
+        if (!materializedAt.length) return null;
+        return Math.max(0, Math.max(...materializedAt) - endedAt);
       }).filter((value) => Number.isFinite(value));
       const pipelineWithin = pipelineSamples.filter((value) => value <= GATE_THRESHOLDS.maxTrackedPipelineLatencyMs).length;
       const pipelineRate = pipelineSamples.length > 0 ? pipelineWithin / pipelineSamples.length : 0;
       const averagePipelineLatency = pipelineSamples.length > 0 ? Math.round(pipelineSamples.reduce((sum, value) => sum + value, 0) / pipelineSamples.length) : 0;
       gateEntries.push({
         key: "session_delta_checkpoint_pack_latency",
-        label: "Tracked session -> delta -> checkpoint -> lane pack latency",
+        label: "Tracked session -> delta/checkpoint latency",
         status: pipelineSamples.length === 0 ? "warn" : averagePipelineLatency <= GATE_THRESHOLDS.maxTrackedPipelineLatencyMs ? "pass" : "fail",
         measuredValue: averagePipelineLatency,
         threshold: GATE_THRESHOLDS.maxTrackedPipelineLatencyMs,
@@ -30503,33 +30910,36 @@ function createOrchestratorService({
           withinBudgetRate: pipelineSamples.length > 0 ? pipelineRate : 0
         }
       });
-      const packRows = db.all(
+      const snapshotRows = db.all(
         `
-          select pack_type, deterministic_updated_at
-          from packs_index
+          select created_at
+          from orchestrator_context_snapshots
           where project_id = ?
+          order by created_at desc
+          limit 400
         `,
         [projectId]
       );
-      const freshCount = packRows.filter((row) => {
-        const updatedAt = row.deterministic_updated_at ? Date.parse(row.deterministic_updated_at) : NaN;
+      const freshnessWindowMs = GATE_THRESHOLDS.freshnessMaxAgeByPackTypeMs.lane;
+      const freshCount = snapshotRows.filter((row) => {
+        const updatedAt = row.created_at ? Date.parse(row.created_at) : NaN;
         if (!Number.isFinite(updatedAt)) return false;
-        const maxAge = GATE_THRESHOLDS.freshnessMaxAgeByPackTypeMs[row.pack_type] ?? GATE_THRESHOLDS.freshnessMaxAgeByPackTypeMs.project;
-        return now - updatedAt <= maxAge;
+        return now - updatedAt <= freshnessWindowMs;
       }).length;
-      const freshnessRate = packRows.length > 0 ? freshCount / packRows.length : 0;
+      const freshnessRate = snapshotRows.length > 0 ? freshCount / snapshotRows.length : 0;
       gateEntries.push({
         key: "pack_freshness_by_type",
-        label: "Pack freshness by type",
-        status: packRows.length === 0 ? "warn" : freshnessRate >= GATE_THRESHOLDS.minFreshnessByTypeRate ? "pass" : "fail",
+        label: "Live context snapshot freshness",
+        status: snapshotRows.length === 0 ? "warn" : freshnessRate >= GATE_THRESHOLDS.minFreshnessByTypeRate ? "pass" : "fail",
         measuredValue: Number(freshnessRate.toFixed(4)),
         threshold: GATE_THRESHOLDS.minFreshnessByTypeRate,
         comparator: ">=",
-        samples: packRows.length,
-        reasons: packRows.length === 0 ? ["No packs indexed yet."] : freshnessRate >= GATE_THRESHOLDS.minFreshnessByTypeRate ? [] : [`Fresh packs ${freshCount}/${packRows.length} fell below threshold.`],
+        samples: snapshotRows.length,
+        reasons: snapshotRows.length === 0 ? ["No context snapshots exist yet."] : freshnessRate >= GATE_THRESHOLDS.minFreshnessByTypeRate ? [] : [`Fresh context snapshots ${freshCount}/${snapshotRows.length} fell below threshold.`],
         metadata: {
           freshCount,
-          total: packRows.length
+          total: snapshotRows.length,
+          freshnessWindowMs
         }
       });
       const attemptRows = db.all(
@@ -30829,16 +31239,6 @@ function createOrchestratorService({
             dependencyStepIds: depIds
           }
         });
-      }
-      try {
-        if (typeof packService.refreshMissionPack === "function") {
-          void packService.refreshMissionPack({
-            missionId,
-            reason: "orchestrator_run_started",
-            runId
-          });
-        }
-      } catch {
       }
       const run = toRun(
         getRunRow(runId) ?? {
@@ -31864,7 +32264,11 @@ function createOrchestratorService({
             }).catch(() => {
             });
           }, 200);
-          if (acceptedSessionId) {
+          const stepMeta = asRecord(step.metadata) ?? {};
+          const stepPhaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+          const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+          const skipStartupVerification = stepMeta.readOnlyExecution === true || stepPhaseKey === "planning" || stepType === "planning";
+          if (acceptedSessionId && !skipStartupVerification) {
             setTimeout(() => {
               try {
                 const verifyRow = db.get(
@@ -31942,6 +32346,7 @@ function createOrchestratorService({
       if (!stepRow) throw new Error(`Step not found for attempt: ${args.attemptId}`);
       const runRow = getRunRow(attemptRow.run_id);
       if (!runRow) throw new Error(`Run not found for attempt: ${args.attemptId}`);
+      const attempt = toAttempt(attemptRow);
       const step = toStep(stepRow);
       const run = toRun(runRow);
       const completedAt = nowIso2();
@@ -31974,12 +32379,41 @@ function createOrchestratorService({
       );
       const aiRetryBackoffMs = Number.isFinite(aiRetryBackoffRaw) && aiRetryBackoffRaw >= 0 ? Math.min(10 * 6e4, Math.floor(aiRetryBackoffRaw)) : null;
       const computedBackoff = shouldRetry ? aiRetryBackoffMs ?? 0 : 0;
-      const defaultSummary = status === "succeeded" ? "Step completed." : status === "failed" ? effectiveErrorMessage?.trim() || "Step attempt failed." : status === "blocked" ? effectiveErrorMessage?.trim() || "Step attempt blocked." : "Step attempt canceled.";
+      const stepMetadata = asRecord(step.metadata) ?? {};
+      const lastResultReport = asRecord(stepMetadata.lastResultReport);
+      const reportedSummary = typeof lastResultReport?.summary === "string" ? lastResultReport.summary.trim() : "";
+      const transcriptPath = typeof attempt.metadata?.transcriptPath === "string" ? attempt.metadata.transcriptPath.trim() : "";
+      const transcriptSummary = !args.result && status === "succeeded" ? deriveTranscriptSummaryFromPath(transcriptPath) : null;
+      const reportedFilesChanged = Array.isArray(lastResultReport?.filesChanged) ? lastResultReport.filesChanged.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
+      const reportedTests = asRecord(lastResultReport?.testsRun);
+      const implicitOutputs = (() => {
+        if (status !== "succeeded") return null;
+        const outputs = {};
+        if (reportedFilesChanged.length > 0) {
+          outputs.filesChanged = reportedFilesChanged;
+        }
+        if (reportedTests) {
+          if (typeof reportedTests.command === "string" && reportedTests.command.trim().length > 0) {
+            outputs.testsCommand = reportedTests.command.trim();
+          }
+          const passed = Number(reportedTests.passed);
+          if (Number.isFinite(passed)) outputs.testsPassed = Math.max(0, Math.floor(passed));
+          const failed = Number(reportedTests.failed);
+          if (Number.isFinite(failed)) outputs.testsFailed = Math.max(0, Math.floor(failed));
+          const skipped = Number(reportedTests.skipped);
+          if (Number.isFinite(skipped)) outputs.testsSkipped = Math.max(0, Math.floor(skipped));
+          if (typeof reportedTests.raw === "string" && reportedTests.raw.trim().length > 0) {
+            outputs.testsSummary = reportedTests.raw.trim();
+          }
+        }
+        return Object.keys(outputs).length > 0 ? outputs : null;
+      })();
+      const defaultSummary = status === "succeeded" ? reportedSummary || transcriptSummary || (stepMetadata.readOnlyExecution === true || String(stepMetadata.stepType ?? "").trim().toLowerCase() === "planning" ? "Planning session completed." : "Step completed.") : status === "failed" ? effectiveErrorMessage?.trim() || "Step attempt failed." : status === "blocked" ? effectiveErrorMessage?.trim() || "Step attempt blocked." : "Step attempt canceled.";
       const envelope = normalizeEnvelope(
         args.result ?? {
           success: status === "succeeded",
           summary: defaultSummary,
-          outputs: null,
+          outputs: implicitOutputs,
           warnings: status === "failed" || status === "blocked" ? [defaultSummary] : [],
           sessionId: attemptRow.executor_session_id,
           trackedSession: true
@@ -32098,11 +32532,11 @@ function createOrchestratorService({
         const isAutoSpawnedValidationStep = latestStepMeta.autoSpawnedValidation === true;
         if (!isAutoSpawnedValidationStep) {
           const runMetadata = asRecord(run.metadata);
-          const phaseConfig = asRecord(runMetadata?.phaseConfiguration);
-          const phaseCards = Array.isArray(phaseConfig?.selectedPhases) ? phaseConfig.selectedPhases : Array.isArray(phaseConfig?.phases) ? phaseConfig.phases : [];
+          const phaseCards = resolveRunPhaseCardsFromMetadata(runMetadata) ?? [];
           const stepPhaseKey = typeof latestStepMeta.phaseKey === "string" ? latestStepMeta.phaseKey.trim() : "";
           const stepPhaseName = typeof latestStepMeta.phaseName === "string" ? latestStepMeta.phaseName.trim() : "";
           const phaseCard = phaseCards.find((phase) => phase.phaseKey === stepPhaseKey) ?? phaseCards.find((phase) => phase.name === stepPhaseName) ?? null;
+          const validationPhaseCard = phaseCards.find((phase) => phase.phaseKey.trim().toLowerCase() === "validation") ?? phaseCards.find((phase) => phase.name.trim().toLowerCase() === "validation") ?? null;
           const phaseTier = normalizeValidationTier(phaseCard?.validationGate?.tier);
           const phaseRequiresValidation = phaseCard?.validationGate?.required === true && phaseTier !== "none";
           const existingContract = parseValidationContract(latestStepMeta.validationContract ?? null);
@@ -32192,8 +32626,9 @@ function createOrchestratorService({
                     return capabilities.some((entry) => entry.includes("validation") || entry.includes("review"));
                   }) ?? null;
                   const validatorRoleName = typeof validatorRole?.name === "string" && validatorRole.name.trim().length > 0 ? validatorRole.name.trim() : "validator";
+                  const validatorPhaseModel = asRecord(validationPhaseCard?.model);
                   const phaseModel = asRecord(latestStepMeta.phaseModel);
-                  const phaseModelId = typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";
+                  const phaseModelId = typeof validatorPhaseModel?.modelId === "string" ? validatorPhaseModel.modelId.trim() : typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";
                   const runtimePhaseModel = asRecord(asRecord(runMetadata?.phaseRuntime)?.currentPhaseModel);
                   const runtimePhaseModelId = typeof runtimePhaseModel?.modelId === "string" ? runtimePhaseModel.modelId.trim() : "";
                   const candidateModelIds = [
@@ -32282,9 +32717,13 @@ function createOrchestratorService({
                             targetStepKey: latestStep.stepKey,
                             targetAttemptId: args.attemptId,
                             targetStepSummary: envelope.summary,
-                            phaseKey: stepPhaseKey || phaseCard?.phaseKey || null,
-                            phaseName: stepPhaseName || phaseCard?.name || null,
-                            phasePosition: typeof latestStepMeta.phasePosition === "number" ? latestStepMeta.phasePosition : phaseCard?.position ?? null,
+                            phaseKey: validationPhaseCard?.phaseKey ?? (stepPhaseKey || phaseCard?.phaseKey || null),
+                            phaseName: validationPhaseCard?.name ?? (stepPhaseName || phaseCard?.name || null),
+                            phasePosition: validationPhaseCard?.position ?? (typeof latestStepMeta.phasePosition === "number" ? latestStepMeta.phasePosition : phaseCard?.position ?? null),
+                            ...validationPhaseCard?.model ? { phaseModel: validationPhaseCard.model } : {},
+                            ...typeof validationPhaseCard?.instructions === "string" && validationPhaseCard.instructions.trim().length > 0 ? { phaseInstructions: validationPhaseCard.instructions.trim() } : {},
+                            ...validationPhaseCard?.validationGate ? { phaseValidation: validationPhaseCard.validationGate } : {},
+                            ...validationPhaseCard?.budget ? { phaseBudget: validationPhaseCard.budget } : {},
                             validationContract: normalizedContract
                           }
                         }
@@ -33727,7 +34166,7 @@ ${st.instructions}`).join("\n\n");
       const stepRow = getStepRow(stepId);
       if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
       const step = toStep(stepRow);
-      if (TERMINAL_STEP_STATUSES.has(step.status)) {
+      if (!args.allowTerminal && TERMINAL_STEP_STATUSES.has(step.status)) {
         throw new Error(`Step is already terminal (status: ${step.status}).`);
       }
       const existingMeta = step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata) ? step.metadata : {};
@@ -34390,9 +34829,8 @@ ${st.instructions}`).join("\n\n");
         };
       }
       const finalRunMeta = parseJsonRecord(runRow.metadata_json);
-      const finalPhaseConfig = finalRunMeta && typeof finalRunMeta.phaseConfiguration === "object" && finalRunMeta.phaseConfiguration ? finalRunMeta.phaseConfiguration : null;
-      const finalPhases = finalPhaseConfig && Array.isArray(finalPhaseConfig.phases) ? finalPhaseConfig.phases : finalPhaseConfig && Array.isArray(finalPhaseConfig.selectedPhases) ? finalPhaseConfig.selectedPhases : null;
-      const finalSettings = finalRunMeta && typeof finalRunMeta.missionLevelSettings === "object" && finalRunMeta.missionLevelSettings ? finalRunMeta.missionLevelSettings : null;
+      const finalPhases = resolveRunPhaseCardsFromMetadata(finalRunMeta);
+      const finalSettings = resolveRunMissionLevelSettingsFromMetadata(finalRunMeta);
       let evaluation;
       if (finalPhases && finalPhases.length > 0 && finalSettings) {
         evaluation = evaluateRunCompletionFromPhases(steps, finalPhases, finalSettings);
@@ -34403,7 +34841,7 @@ ${st.instructions}`).join("\n\n");
         );
       }
       let finalStatus;
-      const allStepStatuses = steps.map((s) => s.status);
+      const allStepStatuses = filterExecutionSteps(steps).map((s) => s.status);
       const anyFailed = allStepStatuses.some((s) => s === "failed");
       const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
       if (anyFailed) {
@@ -34621,8 +35059,8 @@ ${st.instructions}`).join("\n\n");
 
 // ../desktop/src/main/services/orchestrator/aiOrchestratorService.ts
 var import_node_crypto21 = require("crypto");
-var import_node_fs24 = __toESM(require("fs"), 1);
-var import_node_path26 = __toESM(require("path"), 1);
+var import_node_fs25 = __toESM(require("fs"), 1);
+var import_node_path27 = __toESM(require("path"), 1);
 
 // ../desktop/src/shared/modelProfiles.ts
 function providerFromFamily(family) {
@@ -34686,6 +35124,8 @@ function updateModelPricing(updates) {
 }
 
 // ../desktop/src/main/services/orchestrator/coordinatorAgent.ts
+var import_node_fs24 = __toESM(require("fs"), 1);
+var import_node_path26 = __toESM(require("path"), 1);
 var import_ai4 = require("ai");
 
 // ../desktop/src/main/services/orchestrator/coordinatorTools.ts
@@ -35344,7 +35784,7 @@ __export(util_exports, {
   required: () => required,
   safeExtend: () => safeExtend,
   shallowClone: () => shallowClone,
-  slugify: () => slugify3,
+  slugify: () => slugify2,
   stringifyPrimitive: () => stringifyPrimitive,
   uint8ArrayToBase64: () => uint8ArrayToBase64,
   uint8ArrayToBase64url: () => uint8ArrayToBase64url,
@@ -35458,10 +35898,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path32) {
-  if (!path32)
+function getElementAtPath(obj, path33) {
+  if (!path33)
     return obj;
-  return path32.reduce((acc, key) => acc?.[key], obj);
+  return path33.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -35485,7 +35925,7 @@ function randomString(length = 10) {
 function esc(str) {
   return JSON.stringify(str);
 }
-function slugify3(input) {
+function slugify2(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 var captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {
@@ -35844,11 +36284,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path32, issues) {
+function prefixIssues(path33, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path32);
+    iss.path.unshift(path33);
     return iss;
   });
 }
@@ -36031,7 +36471,7 @@ function formatError(error48, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error48, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error49, path32 = []) => {
+  const processError = (error49, path33 = []) => {
     var _a2, _b;
     for (const issue2 of error49.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
@@ -36041,7 +36481,7 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
       } else if (issue2.code === "invalid_element") {
         processError({ issues: issue2.issues }, issue2.path);
       } else {
-        const fullpath = [...path32, ...issue2.path];
+        const fullpath = [...path33, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -36073,8 +36513,8 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path32 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path32) {
+  const path33 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path33) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -45219,7 +45659,7 @@ function _toUpperCase() {
 }
 // @__NO_SIDE_EFFECTS__
 function _slugify() {
-  return /* @__PURE__ */ _overwrite((input) => slugify3(input));
+  return /* @__PURE__ */ _overwrite((input) => slugify2(input));
 }
 // @__NO_SIDE_EFFECTS__
 function _array(Class2, element, params) {
@@ -48051,13 +48491,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path32 = ref.slice(1).split("/").filter(Boolean);
-  if (path32.length === 0) {
+  const path33 = ref.slice(1).split("/").filter(Boolean);
+  if (path33.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path32[0] === defsKey) {
-    const key = path32[1];
+  if (path33[0] === defsKey) {
+    const key = path33[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -48717,7 +49157,8 @@ function resolveCurrentPhase(graph) {
   if (phaseName.length > 0) return phaseName;
   const phaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
   if (phaseKey.length > 0) return phaseKey;
-  const activeStep = graph.steps.find((step) => !TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
+  const relevantSteps = filterExecutionSteps(graph.steps);
+  const activeStep = relevantSteps.find((step) => !TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
   const stepMeta = asRecord(activeStep?.metadata);
   const fromStepName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
   if (fromStepName.length > 0) return fromStepName;
@@ -48726,15 +49167,61 @@ function resolveCurrentPhase(graph) {
   return "unknown";
 }
 function buildMissionStateProgress(graph) {
-  const completedSteps = graph.steps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status)).length;
+  const relevantSteps = filterExecutionSteps(graph.steps);
+  const completedSteps = relevantSteps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status)).length;
   return {
     currentPhase: resolveCurrentPhase(graph),
     completedSteps,
-    totalSteps: graph.steps.length,
-    activeWorkers: graph.steps.filter((step) => step.status === "running").map((step) => step.stepKey),
-    blockedSteps: graph.steps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
-    failedSteps: graph.steps.filter((step) => step.status === "failed").map((step) => step.stepKey)
+    totalSteps: relevantSteps.length,
+    activeWorkers: relevantSteps.filter((step) => step.status === "running").map((step) => step.stepKey),
+    blockedSteps: relevantSteps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
+    failedSteps: relevantSteps.filter((step) => step.status === "failed").map((step) => step.stepKey)
   };
+}
+function resolveDependencyStepKeys(graph, step) {
+  return step.dependencyStepIds.map((depId) => graph.steps.find((candidate) => candidate.id === depId)?.stepKey ?? "").filter((depKey) => depKey.length > 0);
+}
+function dedupeKeys(keys) {
+  if (!Array.isArray(keys)) return [];
+  return [
+    ...new Set(
+      keys.map((key) => String(key ?? "").trim()).filter((key) => key.length > 0)
+    )
+  ];
+}
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function resolveExecutableDependencyKeys(graph, dependencyKeys) {
+  const visited = /* @__PURE__ */ new Set();
+  const resolved = [];
+  const visit = (stepKey) => {
+    const normalizedKey = stepKey.trim();
+    if (!normalizedKey || visited.has(normalizedKey)) return;
+    visited.add(normalizedKey);
+    const step = resolveStep(graph, normalizedKey);
+    if (!step) {
+      resolved.push(normalizedKey);
+      return;
+    }
+    if (!isDisplayOnlyTaskStep(step)) {
+      resolved.push(step.stepKey);
+      return;
+    }
+    const meta3 = asRecord(step.metadata) ?? {};
+    const assignedTo = typeof meta3.assignedTo === "string" ? meta3.assignedTo.trim() : "";
+    if (assignedTo.length > 0) {
+      visit(assignedTo);
+      return;
+    }
+    for (const dependencyKey of resolveDependencyStepKeys(graph, step)) {
+      visit(dependencyKey);
+    }
+  };
+  for (const dependencyKey of dependencyKeys) {
+    visit(dependencyKey);
+  }
+  return dedupeKeys(resolved);
 }
 function resolveTeamRuntimeConfig(graph) {
   const runMeta = asRecord(graph.run.metadata);
@@ -48809,7 +49296,8 @@ function resolveValidationStateFromStepMetadata(metadata) {
 function buildStalenessSignals(graph) {
   const signals = [];
   const nowMs = Date.now();
-  const repeatedFailures = graph.steps.filter((step) => step.status === "failed" && step.retryCount >= step.retryLimit && step.retryLimit > 0);
+  const relevantSteps = filterExecutionSteps(graph.steps);
+  const repeatedFailures = relevantSteps.filter((step) => step.status === "failed" && step.retryCount >= step.retryLimit && step.retryLimit > 0);
   if (repeatedFailures.length > 0) {
     signals.push(`${repeatedFailures.length} step(s) exhausted retries`);
   }
@@ -48818,11 +49306,11 @@ function buildStalenessSignals(graph) {
   if (staleRunning.length > 0) {
     signals.push(`${staleRunning.length} running attempt(s) older than 10 minutes`);
   }
-  const blockedSteps = graph.steps.filter((step) => step.status === "blocked");
+  const blockedSteps = relevantSteps.filter((step) => step.status === "blocked");
   if (blockedSteps.length > 0) {
     signals.push(`${blockedSteps.length} blocked step(s)`);
   }
-  const validationEscalations = graph.steps.filter(
+  const validationEscalations = relevantSteps.filter(
     (step) => asRecord(step.metadata)?.validationEscalationRequired === true
   );
   if (validationEscalations.length > 0) {
@@ -49007,6 +49495,14 @@ function createCoordinatorToolSet(deps) {
   }
   const spawnWorkerStep = (args) => {
     const g = graph();
+    const requestedDependencyStepKeys = dedupeKeys(args.requestedDependsOn ?? args.dependsOn);
+    const inferredDependencyStepKeys = dedupeKeys(args.inferredDependsOn);
+    const resolvedDependencyStepKeys = dedupeKeys(args.dependsOn);
+    const executableDependencyStepKeys = resolveExecutableDependencyKeys(g, resolvedDependencyStepKeys);
+    const displayDependencyTaskKeys = requestedDependencyStepKeys.filter((dependencyKey) => {
+      const dependencyStep = resolveStep(g, dependencyKey);
+      return Boolean(dependencyStep && isDisplayOnlyTaskStep(dependencyStep));
+    });
     const teamRuntime = resolveTeamRuntimeConfig(g);
     const roleDef = args.roleName ? resolveRoleDefinition(teamRuntime, args.roleName) : null;
     const roleName = roleDef?.name ?? (args.roleName?.trim().length ? args.roleName.trim() : null);
@@ -49038,6 +49534,62 @@ function createCoordinatorToolSet(deps) {
     const stepKey = explicitStepKey.length > 0 ? explicitStepKey : `worker_${args.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`;
     const missionPhases = resolveMissionPhases();
     const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
+    const reusableDisplayTask = !replacementSourceStep ? (() => {
+      const candidate = resolveStep(g, stepKey);
+      if (!candidate) return null;
+      if (!isDisplayOnlyTaskStep(candidate)) return null;
+      if (TERMINAL_STEP_STATUSES.has(candidate.status)) return null;
+      return candidate;
+    })() : null;
+    if (reusableDisplayTask) {
+      let preparedStep = orchestratorService.updateStepMetadata({
+        runId,
+        stepId: reusableDisplayTask.id,
+        metadata: {
+          ...phaseMetadata,
+          executorKind: "unified",
+          instructions: args.prompt,
+          workerName: args.name,
+          requestedDependencyStepKeys,
+          ...inferredDependencyStepKeys.length > 0 ? { inferredDependencyStepKeys } : {},
+          planningTaskDependencies: displayDependencyTaskKeys,
+          spawnedByCoordinator: true,
+          modelId: resolvedModelId,
+          modelProviderHint: resolvedProvider,
+          modelExecutionPath: resolvedDescriptor ? classifyWorkerExecutionPath(resolvedDescriptor) : "api",
+          role: roleName,
+          roleCapabilities: roleDef?.capabilities ?? [],
+          toolProfile: toolProfile ?? null,
+          mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
+          displayOnlyTask: false,
+          isTask: false,
+          convertedFromDisplayTask: true,
+          ...args.validationContract ? { validationContract: args.validationContract } : {}
+        }
+      });
+      if ((preparedStep.laneId ?? null) !== (effectiveLaneId ?? null)) {
+        preparedStep = orchestratorService.transferStepLane({
+          runId,
+          stepId: preparedStep.id,
+          laneId: effectiveLaneId,
+          reason: "Converted display-only task into an executable worker step.",
+          transferredBy: "coordinator"
+        });
+      }
+      preparedStep = orchestratorService.updateStepDependencies({
+        runId,
+        stepId: preparedStep.id,
+        dependencyStepKeys: executableDependencyStepKeys
+      });
+      return {
+        workerId: preparedStep.stepKey,
+        step: preparedStep,
+        roleName,
+        modelId: resolvedModelId,
+        toolProfile,
+        reusedExistingStep: true
+      };
+    }
     const created = orchestratorService.addSteps({
       runId,
       steps: [
@@ -49046,12 +49598,15 @@ function createCoordinatorToolSet(deps) {
           title: args.name,
           stepIndex: maxIndex + 1,
           laneId: effectiveLaneId,
-          dependencyStepKeys: args.dependsOn,
+          dependencyStepKeys: executableDependencyStepKeys,
           executorKind: "unified",
           metadata: {
             ...phaseMetadata,
             instructions: args.prompt,
             workerName: args.name,
+            requestedDependencyStepKeys,
+            ...inferredDependencyStepKeys.length > 0 ? { inferredDependencyStepKeys } : {},
+            planningTaskDependencies: displayDependencyTaskKeys,
             spawnedByCoordinator: true,
             modelId: resolvedModelId,
             modelProviderHint: resolvedProvider,
@@ -49121,11 +49676,24 @@ function createCoordinatorToolSet(deps) {
       step: created[0] ?? null,
       roleName,
       modelId: resolvedModelId,
-      toolProfile
+      toolProfile,
+      reusedExistingStep: false
     };
   };
-  function resolveMissionPhases() {
+  function resolveMissionPhases(g) {
     try {
+      const runMeta = g ? asRecord(g.run.metadata) : null;
+      const runPhaseConfig = asRecord(runMeta?.phaseConfiguration);
+      if (runPhaseConfig) {
+        if (Array.isArray(runPhaseConfig.selectedPhases)) return runPhaseConfig.selectedPhases;
+        if (Array.isArray(runPhaseConfig.phases)) return runPhaseConfig.phases;
+      }
+      const runPhaseOverride = asRecord(runMeta?.phaseOverride);
+      if (runPhaseOverride) {
+        if (Array.isArray(runPhaseOverride.selectedPhases)) return runPhaseOverride.selectedPhases;
+        if (Array.isArray(runPhaseOverride.phases)) return runPhaseOverride.phases;
+      }
+      if (Array.isArray(runMeta?.phases)) return runMeta.phases;
       const missionRow = db.get(
         `select metadata_json from missions where id = ? limit 1`,
         [missionId]
@@ -49190,22 +49758,97 @@ function createCoordinatorToolSet(deps) {
       readOnlyExecution: stepType === "planning"
     };
   }
-  function getPlanningQuizBlockReason(g) {
-    const phases = resolveMissionPhases();
+  function stepBelongsToPhase(step, phase) {
+    const stepMeta = asRecord(step.metadata);
+    const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+    const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
+    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    const phaseName = phase.name.trim().toLowerCase();
+    return stepPhaseKey === phaseKey || stepPhaseName === phaseName;
+  }
+  function isImplicitDependencyCandidate(step) {
+    if (isDisplayOnlyTaskStep(step)) return false;
+    return step.status === "succeeded" || step.status === "running" || step.status === "blocked";
+  }
+  function resolveImplicitDependencyStepKeys(g, phases) {
+    const currentPhase = resolveCurrentPhaseCard(g, phases);
+    const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+    const currentPhaseName = currentPhase?.name.trim().toLowerCase() ?? "";
+    if (!currentPhase || currentPhaseKey === "planning" || currentPhaseName === "planning") {
+      return [];
+    }
+    const sorted = [...phases].sort((a, b) => a.position - b.position);
+    const currentIndex = sorted.findIndex((phase) => phase.id === currentPhase.id);
+    if (currentIndex > 0) {
+      for (let index = currentIndex - 1; index >= 0; index -= 1) {
+        const priorPhase = sorted[index];
+        if (!priorPhase) continue;
+        const priorPhaseStepKeys = filterExecutionSteps(g.steps).filter((step) => stepBelongsToPhase(step, priorPhase)).filter(isImplicitDependencyCandidate).map((step) => step.stepKey);
+        if (priorPhaseStepKeys.length > 0) {
+          return dedupeKeys(priorPhaseStepKeys);
+        }
+      }
+    }
+    return filterExecutionSteps(g.steps).filter(isPlanningExecutionStep).filter(isImplicitDependencyCandidate).map((step) => step.stepKey);
+  }
+  function getPlanningInputBlockReason(g) {
+    const phases = resolveMissionPhases(g);
     const current = resolveCurrentPhaseCard(g, phases);
     const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
-    if (currentKey !== "planning") return null;
+    const currentName = current?.name.trim().toLowerCase() ?? "";
+    if (currentKey !== "planning" && currentName !== "planning") return null;
     const mission = missionService.get(missionId);
     if (!mission) return null;
     const blocking = mission.interventions.filter((entry) => {
       if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
       const metadata = asRecord(entry.metadata);
-      if (!metadata || metadata.quizMode !== true || metadata.source !== "ask_user") return false;
-      const phase = typeof metadata.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
-      return phase.length === 0 || phase === "planning";
+      if (metadata?.canProceedWithoutAnswer === true) return false;
+      const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
+      return phase.length === 0 || phase === "planning" || phase === currentKey || phase === currentName;
     });
     if (blocking.length === 0) return null;
-    return `Planning clarification is still pending. Resolve ask_user quiz intervention${blocking.length > 1 ? "s" : ""} before executing planning actions.`;
+    return `Planning input is still pending. Resolve ${blocking.length === 1 ? "the open clarification" : "the open clarifications"} before executing planning actions.`;
+  }
+  function promptContainsImplementationDirectives(prompt) {
+    const compact = prompt.trim();
+    if (!compact.length) return false;
+    const normalized = compact.toLowerCase();
+    return normalized.includes("all file edits must") || normalized.includes("files to change") || normalized.includes("files to modify") || normalized.includes("files to edit") || normalized.includes("exact changes required") || normalized.includes("i have already researched the codebase") || normalized.includes("here is the complete plan") || normalized.includes("please output a brief confirmation of this plan") || normalized.includes("create new file") || normalized.includes("new file:") || normalized.includes("run `git add") || normalized.includes("run `git commit") || normalized.includes("done criteria") || normalized.includes("apply in the worktree") || /(?:^|\n)###\s*\d+\.\s*(?:create|edit)\b/i.test(compact) || /(?:^|\n)\d+\.\s+new file:/i.test(compact) || /(?:^|\n)-\s*add\b.+\bimport\b/i.test(compact) || /(?:^|\n)-\s*add\b.+\broute\b/i.test(compact) || /(?:^|\n)-\s*edit\s+`[^`]+`/i.test(compact);
+  }
+  function looksLikeValidationWorkerRequest(args) {
+    if (args.validationContract?.level === "step" || args.validationContract?.level === "milestone" || args.validationContract?.level === "mission") {
+      return true;
+    }
+    const name = args.name.trim().toLowerCase();
+    const roleName = args.roleName?.trim().toLowerCase() ?? "";
+    const prompt = args.prompt.trim().toLowerCase();
+    return /\b(validat(?:e|ion|or))\b/.test(name) || /\b(validat(?:e|ion|or))\b/.test(roleName) || prompt.includes("report_validation") || prompt.includes("validation checklist") || prompt.includes('verdict: "pass"') || prompt.includes('verdict "pass"');
+  }
+  function isPlanningExecutionStep(step) {
+    const stepMeta = asRecord(step.metadata);
+    const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+    const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
+    const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
+    return !isDisplayOnly && (stepPhaseKey === "planning" || stepPhaseName === "planning");
+  }
+  function phaseHasCompletionEligibleStep(phase, stepsForPhase) {
+    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    const phaseName = phase.name.trim().toLowerCase();
+    const phaseSteps = stepsForPhase(phase);
+    if (phaseKey === "planning" || phaseName === "planning") {
+      return phaseSteps.some((step) => isPlanningExecutionStep(step) && step.status === "succeeded");
+    }
+    return phaseSteps.some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+  }
+  function stopReasonLooksLikeNormalCompletion(reason) {
+    const normalized = reason.trim().toLowerCase();
+    if (!normalized.length) return false;
+    return normalized.includes("work is committed and complete") || normalized.includes("proceed to validation") || normalized.includes("normal completion") || normalized.includes("finished successfully") || normalized.includes("already complete");
+  }
+  function stopReasonIndicatesHardFailure(reason) {
+    const normalized = reason.trim().toLowerCase();
+    if (!normalized.length) return false;
+    return normalized.includes("fatal") || normalized.includes("panic") || normalized.includes("crash") || normalized.includes("exception") || normalized.includes("process exited unexpectedly") || normalized.includes("session exited unexpectedly") || normalized.includes("hard failure") || normalized.includes("unrecoverable error");
   }
   function validatePhaseOrdering(phases, g) {
     if (phases.length === 0) return { valid: true };
@@ -49230,8 +49873,25 @@ function createCoordinatorToolSet(deps) {
       const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
       return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
     });
-    const phaseHasTerminalStep = (phase) => stepsForPhase(phase).some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+    const phaseHasTerminalStep = (phase) => phaseHasCompletionEligibleStep(phase, stepsForPhase);
     const phaseHasNonTerminalStep = (phase) => stepsForPhase(phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+    const currentPhaseKeyNormalized = currentPhase.phaseKey.trim().toLowerCase();
+    const currentPhaseNameNormalized = currentPhase.name.trim().toLowerCase();
+    if (currentPhaseKeyNormalized === "planning" || currentPhaseNameNormalized === "planning") {
+      const planningExecutionSteps = filterExecutionSteps(stepsForPhase(currentPhase));
+      if (planningExecutionSteps.some((step) => !TERMINAL_STEP_STATUSES.has(step.status))) {
+        return {
+          valid: false,
+          reason: "Planning already has an active worker. Wait for it to finish before spawning another planning worker."
+        };
+      }
+      if (planningExecutionSteps.some((step) => step.status === "succeeded")) {
+        return {
+          valid: false,
+          reason: 'Planning phase already produced a completed worker result. Call set_current_phase with phaseKey "development" before spawning more workers.'
+        };
+      }
+    }
     const mustFollow = currentPhase.orderingConstraints.mustFollow;
     if (mustFollow && mustFollow.length > 0) {
       for (const predecessor of mustFollow) {
@@ -49332,10 +49992,28 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ name, modelId, role, prompt, laneId, replacementForWorkerId, replacementReason, validationContract, dependsOn }) => {
       try {
         const g = graph();
-        const planningQuizBlockReason = getPlanningQuizBlockReason(g);
-        if (planningQuizBlockReason) {
-          return { ok: false, error: planningQuizBlockReason };
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
         }
+        const normalizedName = normalizeText(name);
+        if (!normalizedName.length) {
+          return { ok: false, error: "Worker name is required." };
+        }
+        const normalizedPrompt = normalizeText(prompt);
+        if (!normalizedPrompt.length) {
+          return { ok: false, error: "Worker prompt is required." };
+        }
+        const missionPhases = resolveMissionPhases(g);
+        const currentPhaseForPromptGuard = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const currentPhaseKeyForPromptGuard = currentPhaseForPromptGuard?.phaseKey.trim().toLowerCase() ?? "";
+        if (currentPhaseKeyForPromptGuard === "planning" && promptContainsImplementationDirectives(normalizedPrompt)) {
+          return {
+            ok: false,
+            error: 'Current phase is "planning". Planning workers must stay read-only and produce research/plan output only. This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
+          };
+        }
+        const requestedDependsOn = dedupeKeys(dependsOn);
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const normalizedRole = typeof role === "string" ? role.trim() : "";
         if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
@@ -49348,6 +50026,21 @@ function createCoordinatorToolSet(deps) {
         const parsedContract = parseValidationContract2(validationContract ?? null);
         if (validationContract && !parsedContract) {
           return { ok: false, error: "Invalid validationContract payload." };
+        }
+        const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        const inferredDependsOn = requestedDependsOn.length === 0 && missionPhases.length > 0 ? resolveImplicitDependencyStepKeys(g, missionPhases) : [];
+        const normalizedDependsOn = requestedDependsOn.length > 0 ? requestedDependsOn : inferredDependsOn;
+        if (currentPhaseKey !== "validation" && looksLikeValidationWorkerRequest({
+          name: normalizedName,
+          roleName: normalizedRole.length > 0 ? normalizedRole : null,
+          prompt: normalizedPrompt,
+          validationContract: parsedContract
+        })) {
+          return {
+            ok: false,
+            error: 'Validation workers can only be spawned during the "validation" phase. Finish the active work, call set_current_phase with phaseKey "validation", and depend on the worker you are validating.'
+          };
         }
         const explicitModelId = typeof modelId === "string" ? modelId.trim() : "";
         let resolvedModelId = explicitModelId;
@@ -49363,6 +50056,17 @@ function createCoordinatorToolSet(deps) {
           return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
         }
         const resolvedProvider = resolvedDescriptor.family === "anthropic" ? "claude" : resolvedDescriptor.family === "openai" ? "codex" : resolvedDescriptor.family;
+        const currentPhaseModelId = typeof currentPhase?.model?.modelId === "string" ? currentPhase.model.modelId.trim() : "";
+        if (explicitModelId.length > 0 && currentPhase && currentPhaseModelId.length > 0) {
+          const currentPhaseDescriptor = resolveModelDescriptor(currentPhaseModelId);
+          const normalizedPhaseModelId = currentPhaseDescriptor?.id ?? currentPhaseModelId;
+          if (resolvedDescriptor.id !== normalizedPhaseModelId) {
+            return {
+              ok: false,
+              error: `Current phase "${currentPhase.name}" is configured for model "${normalizedPhaseModelId}". Omit modelId to use the phase model, or call set_current_phase before switching models.`
+            };
+          }
+        }
         const budgetCheck = await checkBudgetHardCaps({
           failClosedOnTelemetryError: true,
           operation: "spawn_worker"
@@ -49397,7 +50101,6 @@ function createCoordinatorToolSet(deps) {
             };
           }
         }
-        const missionPhases = resolveMissionPhases();
         if (missionPhases.length > 0) {
           const phaseCheck = validatePhaseOrdering(missionPhases, g);
           if (!phaseCheck.valid) {
@@ -49414,7 +50117,10 @@ function createCoordinatorToolSet(deps) {
               reason: validationGateCheck.reason
             });
             const gateBlockedAt = nowIso2();
-            const graphStep = resolveStep(g, replacementSourceWorkerId.length > 0 ? replacementSourceWorkerId : dependsOn[dependsOn.length - 1] ?? "");
+            const graphStep = resolveStep(
+              g,
+              replacementSourceWorkerId.length > 0 ? replacementSourceWorkerId : normalizedDependsOn[normalizedDependsOn.length - 1] ?? ""
+            );
             const gateBlockedDetail = {
               workerName: name,
               requestedRole: normalizedRole.length > 0 ? normalizedRole : null,
@@ -49446,19 +50152,38 @@ function createCoordinatorToolSet(deps) {
             });
             return { ok: false, error: validationGateCheck.reason };
           }
+          const currentPhase2 = resolveCurrentPhaseCard(g, missionPhases);
+          const currentPhaseKey2 = currentPhase2?.phaseKey.trim().toLowerCase() ?? "";
+          if (currentPhaseKey2 === "planning") {
+            const completedPlanningWorker = g.steps.some((step) => {
+              const stepMeta = asRecord(step.metadata);
+              const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+              const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
+              const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
+              return !isDisplayOnly && (stepPhaseKey === "planning" || stepPhaseName === "planning") && step.status === "succeeded";
+            });
+            if (completedPlanningWorker) {
+              return {
+                ok: false,
+                error: 'Planning phase already produced a completed worker result. Call set_current_phase with phaseKey "development" before spawning more workers.'
+              };
+            }
+          }
         }
-        const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
-          name,
+        const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile, reusedExistingStep } = spawnWorkerStep({
+          name: normalizedName,
           modelId: resolvedModelId,
-          prompt,
-          dependsOn,
+          prompt: normalizedPrompt,
+          dependsOn: normalizedDependsOn,
+          requestedDependsOn,
+          inferredDependsOn,
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
           laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
           replacementForWorkerId: replacementSourceWorkerId || null,
           replacementReason: replacementReason?.trim() || null,
           validationContract: parsedContract
         });
-        if (newStep) {
+        if (newStep && !reusedExistingStep) {
           onDagMutation({
             runId,
             mutation: { type: "step_added", step: newStep },
@@ -49504,7 +50229,7 @@ function createCoordinatorToolSet(deps) {
           source: "ade-worker"
         });
         logger.info("coordinator.spawn_worker", {
-          name,
+          name: normalizedName,
           workerId,
           provider: resolvedProvider,
           role: roleName,
@@ -49518,7 +50243,7 @@ function createCoordinatorToolSet(deps) {
           ...launchNote ? { launchNote } : {},
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown",
-          name,
+          name: normalizedName,
           modelId: spawnedModelId,
           provider: resolvedProvider,
           role: roleName,
@@ -49543,17 +50268,15 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ name, dependsOn, validationCriteria, gatesSteps }) => {
       try {
         const g = graph();
-        const normalizedName = name.trim();
+        const normalizedName = normalizeText(name);
         if (!normalizedName.length) {
           return { ok: false, error: "Milestone name is required." };
         }
-        const normalizedCriteria = validationCriteria.trim();
+        const normalizedCriteria = normalizeText(validationCriteria);
         if (!normalizedCriteria.length) {
           return { ok: false, error: "validationCriteria is required for insert_milestone." };
         }
-        const normalizedDependsOn = [...new Set(
-          dependsOn.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-        )];
+        const normalizedDependsOn = dedupeKeys(dependsOn);
         const unknownDependsOn = normalizedDependsOn.filter((entry) => !resolveStep(g, entry));
         if (unknownDependsOn.length > 0) {
           return {
@@ -49561,9 +50284,7 @@ function createCoordinatorToolSet(deps) {
             error: `Unknown dependency step keys: ${unknownDependsOn.join(", ")}`
           };
         }
-        const normalizedGatesSteps = [...new Set(
-          (gatesSteps ?? []).map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-        )];
+        const normalizedGatesSteps = dedupeKeys(gatesSteps);
         const unknownGates = normalizedGatesSteps.filter((entry) => !resolveStep(g, entry));
         if (unknownGates.length > 0) {
           return {
@@ -49699,14 +50420,21 @@ function createCoordinatorToolSet(deps) {
       try {
         const g = graph();
         const teamRuntime = resolveTeamRuntimeConfig(g);
-        const roleDef = resolveRoleDefinition(teamRuntime, role);
+        const normalizedRole = normalizeText(role);
+        const roleDef = resolveRoleDefinition(teamRuntime, normalizedRole);
         if (!roleDef) {
-          return { ok: false, error: `Unknown specialist role '${role}'.` };
+          return { ok: false, error: `Unknown specialist role '${normalizedRole || role}'.` };
         }
-        if (!reason.trim().length) {
+        const normalizedReason = normalizeText(reason);
+        if (!normalizedReason.length) {
           return { ok: false, error: "Specialist request requires a non-empty reason." };
         }
-        const workerName = (name?.trim().length ? name.trim() : `${roleDef.name}-specialist`).slice(0, 80);
+        const normalizedObjective = normalizeText(objective);
+        if (!normalizedObjective.length) {
+          return { ok: false, error: "Specialist request requires a non-empty objective." };
+        }
+        const normalizedDependsOn = dedupeKeys(dependsOn);
+        const workerName = (normalizeText(name) || `${roleDef.name}-specialist`).slice(0, 80);
         const parsedLaneId = laneId?.trim().length ? laneId.trim() : null;
         const replacementSourceWorkerId = replacementForWorkerId?.trim().length ? replacementForWorkerId.trim() : null;
         if (replacementSourceWorkerId && !resolveStep(g, replacementSourceWorkerId)) {
@@ -49717,7 +50445,7 @@ function createCoordinatorToolSet(deps) {
           operation: "request_specialist"
         });
         if (budgetCheck.blocked) {
-          logger.warn("coordinator.request_specialist.hard_cap_blocked", { role, detail: budgetCheck.detail });
+          logger.warn("coordinator.request_specialist.hard_cap_blocked", { role: normalizedRole, detail: budgetCheck.detail });
           return {
             ok: false,
             error: `Cannot spawn specialist: ${budgetCheck.detail}. Mission pausing.`,
@@ -49733,15 +50461,15 @@ function createCoordinatorToolSet(deps) {
         const { workerId, step, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: workerName,
           modelId: specialistModelId,
-          prompt: objective,
-          dependsOn,
+          prompt: normalizedObjective,
+          dependsOn: normalizedDependsOn,
           roleName: roleDef.name,
           laneId: parsedLaneId,
           replacementForWorkerId: replacementSourceWorkerId,
-          replacementReason: replacementReason?.trim() || reason.trim(),
+          replacementReason: replacementReason?.trim() || normalizedReason,
           specialistRequest: {
             requestedBy: requestedByWorkerId?.trim() || null,
-            reason: reason.trim()
+            reason: normalizedReason
           }
         });
         const specialistDescriptor = resolveModelDescriptor(spawnedModelId);
@@ -49769,7 +50497,7 @@ function createCoordinatorToolSet(deps) {
             type: "specialist_requested",
             requestedByWorkerId: requestedByWorkerId ?? null,
             role: roleDef.name,
-            reason: reason.trim(),
+            reason: normalizedReason,
             workerId
           }
         });
@@ -49807,26 +50535,47 @@ function createCoordinatorToolSet(deps) {
     }),
     execute: async ({ workerId, reason }) => {
       try {
+        const normalizedReason = typeof reason === "string" ? reason.trim() : "";
+        if (!normalizedReason.length) {
+          return {
+            ok: false,
+            error: "Cancellation reason is required. stop_worker is a destructive cancel tool; use it only when abandoning a stuck or off-track worker, not for normal completion."
+          };
+        }
         const g = graph();
         const step = resolveStep(g, workerId);
         if (!step)
           return { ok: false, error: `Worker not found: ${workerId}` };
+        if (stopReasonLooksLikeNormalCompletion(normalizedReason)) {
+          return {
+            ok: false,
+            error: "stop_worker is cancel-only. Do not use it to end successful work or advance phases after completion. Let the worker finish and read its output instead."
+          };
+        }
         const attempt = findRunningAttempt(g, step.id);
         if (!attempt)
           return {
             ok: false,
             error: `No running attempt found for worker '${workerId}'`
           };
+        const currentPhase = resolveCurrentPhaseCard(g, resolveMissionPhases(g));
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        if (currentPhaseKey === "planning" && isPlanningExecutionStep(step) && !stopReasonIndicatesHardFailure(normalizedReason)) {
+          return {
+            ok: false,
+            error: "Do not cancel the active planning worker just because the coordinator believes planning is complete. Wait for the planner to finish, or let runtime surface a concrete failure before retrying."
+          };
+        }
         orchestratorService.completeAttempt({
           attemptId: attempt.id,
           status: "canceled",
           errorClass: "canceled",
-          errorMessage: reason
+          errorMessage: normalizedReason
         });
         logger.info("coordinator.stop_worker", {
           workerId,
           attemptId: attempt.id,
-          reason
+          reason: normalizedReason
         });
         return { ok: true, workerId, attemptId: attempt.id };
       } catch (err) {
@@ -50082,6 +50831,10 @@ function createCoordinatorToolSet(deps) {
         const step = resolveStep(g, workerId);
         if (!step)
           return { ok: false, error: `Worker not found: ${workerId}` };
+        const stepMeta = asRecord(step.metadata) ?? {};
+        const stepPhaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+        const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+        const isReadOnlyPlanningStep = stepMeta.readOnlyExecution === true || stepPhaseKey === "planning" || stepType === "planning";
         const completedAttempts = g.attempts.filter(
           (a) => a.stepId === step.id && (a.status === "succeeded" || a.status === "failed")
         ).sort((a, b) => {
@@ -50136,7 +50889,23 @@ function createCoordinatorToolSet(deps) {
           ok: true,
           workerId,
           status: "running",
-          summary: "Worker is still running."
+          summary: (() => {
+            const lastStatusReport = asRecord(stepMeta.lastStatusReport);
+            const nextAction = typeof lastStatusReport?.nextAction === "string" ? lastStatusReport.nextAction.trim() : "";
+            const details = typeof lastStatusReport?.details === "string" ? lastStatusReport.details.trim() : "";
+            if (details.length > 0) {
+              return details;
+            }
+            if (nextAction.length > 0) {
+              return `Worker is still running. Latest next action: ${nextAction}`;
+            }
+            if (isReadOnlyPlanningStep) {
+              return "Planning worker is still running. Planning/research workers can stay quiet for a while before they report back. Do not cancel solely for lack of terminal output unless the session exits or reports an explicit error.";
+            }
+            return "Worker is still running.";
+          })(),
+          progressPct: Number.isFinite(Number(asRecord(stepMeta.lastStatusReport)?.progressPct)) ? Number(asRecord(stepMeta.lastStatusReport)?.progressPct) : null,
+          blockers: Array.isArray(asRecord(stepMeta.lastStatusReport)?.blockers) ? (asRecord(stepMeta.lastStatusReport)?.blockers).map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : []
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -50187,18 +50956,23 @@ function createCoordinatorToolSet(deps) {
         const g = graph();
         const step = resolveStep(g, workerId);
         if (!step) return { ok: false, error: `Worker not found: ${workerId}` };
+        const normalizedProgressPct = Math.max(0, Math.min(100, Math.round(Number(progressPct) || 0)));
+        const normalizedBlockers = Array.isArray(blockers) ? blockers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
+        const normalizedConfidence = Number(confidence);
+        const normalizedNextAction = typeof nextAction === "string" ? nextAction.trim() : "";
+        const normalizedDetails = typeof details === "string" ? details : details == null ? null : String(details);
         const report = {
           workerId,
           stepId: step.id,
           stepKey: step.stepKey,
           runId,
           missionId,
-          progressPct: Math.max(0, Math.min(100, Math.round(progressPct))),
-          blockers: blockers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0),
-          confidence: confidence == null ? null : Math.max(0, Math.min(1, Number(confidence))),
-          nextAction: nextAction.trim(),
+          progressPct: normalizedProgressPct,
+          blockers: normalizedBlockers,
+          confidence: Number.isFinite(normalizedConfidence) ? Math.max(0, Math.min(1, normalizedConfidence)) : null,
+          nextAction: normalizedNextAction || "continue working",
           laneId: laneId ?? step.laneId,
-          details: details ?? null,
+          details: normalizedDetails,
           reportedAt: nowIso2()
         };
         const existingMeta = asRecord(step.metadata) ?? {};
@@ -50209,7 +50983,8 @@ function createCoordinatorToolSet(deps) {
         orchestratorService.updateStepMetadata({
           runId,
           stepId: step.id,
-          metadata
+          metadata,
+          allowTerminal: true
         });
         orchestratorService.appendRuntimeEvent({
           runId,
@@ -50304,6 +51079,9 @@ function createCoordinatorToolSet(deps) {
         const g = graph();
         const step = resolveStep(g, workerId);
         if (!step) return { ok: false, error: `Worker not found: ${workerId}` };
+        const normalizedArtifacts = Array.isArray(artifacts) ? artifacts : [];
+        const normalizedFilesChanged = Array.isArray(filesChanged) ? filesChanged : [];
+        const normalizedSummary = typeof summary === "string" ? summary.trim() : "";
         const report = {
           workerId,
           stepId: step.id,
@@ -50311,14 +51089,14 @@ function createCoordinatorToolSet(deps) {
           runId,
           missionId,
           outcome,
-          summary: summary.trim(),
-          artifacts: artifacts.map((artifact) => ({
-            type: artifact.type,
-            title: artifact.title,
+          summary: normalizedSummary || "Worker completed without a structured summary.",
+          artifacts: normalizedArtifacts.map((artifact) => ({
+            type: typeof artifact?.type === "string" ? artifact.type : "artifact",
+            title: typeof artifact?.title === "string" ? artifact.title : "Untitled artifact",
             uri: artifact.uri ?? null,
             metadata: artifact.metadata
           })),
-          filesChanged: filesChanged.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0),
+          filesChanged: normalizedFilesChanged.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0),
           testsRun: testsRun ? {
             ...testsRun.command ? { command: testsRun.command } : {},
             ...Number.isFinite(Number(testsRun.passed)) ? { passed: Number(testsRun.passed) } : {},
@@ -50337,7 +51115,8 @@ function createCoordinatorToolSet(deps) {
         orchestratorService.updateStepMetadata({
           runId,
           stepId: step.id,
-          metadata
+          metadata,
+          allowTerminal: true
         });
         orchestratorService.appendRuntimeEvent({
           runId,
@@ -50426,8 +51205,10 @@ function createCoordinatorToolSet(deps) {
         const history = Array.isArray(existingMeta.validationHistory) ? existingMeta.validationHistory.filter((entry) => asRecord(entry)) : [];
         const priorFailureCount = history.filter((entry) => asRecord(entry)?.verdict === "fail").length;
         const normalizedRetriesUsed = Number.isFinite(Number(retriesUsed)) ? Math.max(0, Math.min(50, Math.floor(Number(retriesUsed)))) : verdict === "fail" ? priorFailureCount + 1 : priorFailureCount;
-        const normalizedFindings = findings.map((entry) => parseValidationFinding(entry)).filter((entry) => Boolean(entry));
-        const normalizedRemediation = remediationInstructions.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
+        const findingsInput = Array.isArray(findings) ? findings : [];
+        const remediationInput = Array.isArray(remediationInstructions) ? remediationInstructions : [];
+        const normalizedFindings = findingsInput.map((entry) => parseValidationFinding(entry)).filter((entry) => Boolean(entry));
+        const normalizedRemediation = remediationInput.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
         const report = {
           validationId: validationId?.trim().length ? validationId.trim() : (0, import_node_crypto17.randomUUID)(),
           scope: {
@@ -50466,7 +51247,8 @@ function createCoordinatorToolSet(deps) {
           orchestratorService.updateStepMetadata({
             runId,
             stepId: targetStep.id,
-            metadata: nextMetadata
+            metadata: nextMetadata,
+            allowTerminal: true
           });
         }
         let milestoneMarkedComplete = false;
@@ -50582,9 +51364,10 @@ function createCoordinatorToolSet(deps) {
     execute: async () => {
       try {
         const g = graph();
-        const activeSteps = g.steps.filter((step) => !TERMINAL_STEP_STATUSES.has(step.status));
-        const completedSteps = g.steps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status));
-        const openObligations = g.steps.flatMap((step) => {
+        const relevantSteps = filterExecutionSteps(g.steps);
+        const activeSteps = relevantSteps.filter((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+        const completedSteps = relevantSteps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status));
+        const openObligations = relevantSteps.flatMap((step) => {
           const stepMeta = asRecord(step.metadata) ?? {};
           const lastStatusReport = asRecord(stepMeta.lastStatusReport);
           const lastResultReport = asRecord(stepMeta.lastResultReport);
@@ -50634,7 +51417,7 @@ function createCoordinatorToolSet(deps) {
           }
           return obligations;
         });
-        const workerReports = g.steps.map((step) => ({
+        const workerReports = relevantSteps.map((step) => ({
           workerId: step.stepKey,
           stepId: step.id,
           status: step.status,
@@ -50650,7 +51433,7 @@ function createCoordinatorToolSet(deps) {
           runId,
           runStatus: g.run.status,
           counts: {
-            total: g.steps.length,
+            total: relevantSteps.length,
             active: activeSteps.length,
             completed: completedSteps.length,
             runningAttempts: g.attempts.filter((attempt) => attempt.status === "running").length
@@ -50790,21 +51573,26 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ mode, replaceStepKeys, replacementMap, dependencyPatches, reason, newSteps }) => {
       try {
         const initialGraph = graph();
+        const normalizedReason = normalizeText(reason) || "Plan revision requested.";
+        const normalizedNewSteps = Array.isArray(newSteps) ? newSteps : [];
+        const normalizedReplacementMap = Array.isArray(replacementMap) ? replacementMap : [];
+        const normalizedDependencyPatches = Array.isArray(dependencyPatches) ? dependencyPatches : [];
+        const normalizedReplaceStepKeys = dedupeKeys(replaceStepKeys);
         const replacementTargets = (() => {
           if (mode === "full") {
             return initialGraph.steps.filter((step) => !TERMINAL_STEP_STATUSES.has(step.status)).map((step) => step.stepKey);
           }
           return [
-            ...replaceStepKeys.map((entry) => entry.trim()),
-            ...replacementMap.map((entry) => entry.oldStepKey.trim()),
-            ...newSteps.flatMap((entry) => entry.replaces.map((candidate) => candidate.trim()))
+            ...normalizedReplaceStepKeys,
+            ...normalizedReplacementMap.map((entry) => normalizeText(entry.oldStepKey)).filter((entry) => entry.length > 0),
+            ...normalizedNewSteps.flatMap((entry) => dedupeKeys(entry.replaces))
           ].filter((entry) => entry.length > 0);
         })();
         const uniqueTargets = [...new Set(replacementTargets)];
-        if (!uniqueTargets.length && newSteps.length === 0 && dependencyPatches.length === 0) {
+        if (!uniqueTargets.length && normalizedNewSteps.length === 0 && normalizedDependencyPatches.length === 0) {
           return { ok: false, error: "No steps selected for replacement." };
         }
-        if (newSteps.length > 0) {
+        if (normalizedNewSteps.length > 0) {
           const budgetCheck = await checkBudgetHardCaps({
             failClosedOnTelemetryError: true,
             operation: "revise_plan"
@@ -50832,15 +51620,23 @@ function createCoordinatorToolSet(deps) {
             return { ok: false, error: `Replacement target step '${targetKey}' was not found.` };
           }
         }
-        for (const entry of newSteps) {
-          const normalizedKey = entry.key.trim();
+        for (const entry of normalizedNewSteps) {
+          const normalizedKey = normalizeText(entry.key);
           if (!normalizedKey.length) {
             return { ok: false, error: "Each new plan step requires a non-empty key." };
+          }
+          const normalizedTitle = normalizeText(entry.title);
+          if (!normalizedTitle.length) {
+            return { ok: false, error: `New step '${normalizedKey}' requires a non-empty title.` };
+          }
+          const normalizedDescription = normalizeText(entry.description);
+          if (!normalizedDescription.length) {
+            return { ok: false, error: `New step '${normalizedKey}' requires a non-empty description.` };
           }
           if (requestNewStepKeys.has(normalizedKey)) {
             return { ok: false, error: `Duplicate new step key '${normalizedKey}' in revise_plan request.` };
           }
-          const replaces = [...new Set(entry.replaces.map((candidate) => candidate.trim()).filter((candidate) => candidate.length > 0))];
+          const replaces = dedupeKeys(entry.replaces);
           const unknownReplacements = replaces.filter((candidate) => !stepByKey.has(candidate));
           if (unknownReplacements.length > 0) {
             return {
@@ -50851,7 +51647,7 @@ function createCoordinatorToolSet(deps) {
           if (existingStepKeys.has(normalizedKey) && !uniqueTargets.includes(normalizedKey) && !replaces.includes(normalizedKey)) {
             return { ok: false, error: `Step key '${normalizedKey}' already exists.` };
           }
-          const normalizedRole = entry.role?.trim() ?? "";
+          const normalizedRole = normalizeText(entry.role);
           const roleDef = normalizedRole.length > 0 ? resolveRoleDefinition(teamRuntime, normalizedRole) : null;
           if (normalizedRole.length > 0 && !roleDef) {
             return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
@@ -50860,10 +51656,10 @@ function createCoordinatorToolSet(deps) {
           if (entry.validationContract && !parsedContract) {
             return { ok: false, error: `Invalid validation contract for step '${entry.key}'.` };
           }
-          const dependsOn = [...new Set(entry.dependsOn.map((candidate) => candidate.trim()).filter((candidate) => candidate.length > 0))];
+          const dependsOn = dedupeKeys(entry.dependsOn);
           const replacementSourceStep = replaces.length > 0 ? stepByKey.get(replaces[0]) ?? null : null;
           const phaseModelResolution = resolveModelFromPhaseModel(initialGraph);
-          const modelOverride = typeof entry.modelId === "string" ? entry.modelId.trim() : "";
+          const modelOverride = normalizeText(entry.modelId);
           const resolvedModel = modelOverride.length > 0 ? modelOverride : phaseModelResolution.ok ? phaseModelResolution.modelId : "";
           if (!resolvedModel.length) {
             return {
@@ -50877,8 +51673,8 @@ function createCoordinatorToolSet(deps) {
           }
           parsedNewSteps.push({
             key: normalizedKey,
-            title: entry.title,
-            description: entry.description,
+            title: normalizedTitle,
+            description: normalizedDescription,
             modelId: descriptor.id,
             roleName: normalizedRole.length > 0 ? normalizedRole : null,
             laneId: entry.laneId ?? replacementSourceStep?.laneId ?? null,
@@ -50902,13 +51698,13 @@ function createCoordinatorToolSet(deps) {
             };
           }
         }
-        for (const entry of replacementMap) {
-          const oldStepKey = entry.oldStepKey.trim();
+        for (const entry of normalizedReplacementMap) {
+          const oldStepKey = normalizeText(entry.oldStepKey);
           if (!oldStepKey.length) continue;
           if (!stepByKey.has(oldStepKey)) {
             return { ok: false, error: `replacementMap references unknown oldStepKey '${oldStepKey}'.` };
           }
-          const newStepKey = entry.newStepKey?.trim() ?? "";
+          const newStepKey = normalizeText(entry.newStepKey);
           if (!newStepKey.length) {
             replacementPlanByOldStepKey.set(oldStepKey, null);
             continue;
@@ -50918,13 +51714,13 @@ function createCoordinatorToolSet(deps) {
           }
           replacementPlanByOldStepKey.set(oldStepKey, newStepKey);
         }
-        for (const patch of dependencyPatches) {
-          const stepKey = patch.stepKey.trim();
+        for (const patch of normalizedDependencyPatches) {
+          const stepKey = normalizeText(patch.stepKey);
           if (!stepKey.length) continue;
           if (!knownStepKeysAfterCreation.has(stepKey)) {
             return { ok: false, error: `dependencyPatches references unknown step '${stepKey}'.` };
           }
-          const nextDeps = [...new Set(patch.dependencyStepKeys.map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
+          const nextDeps = dedupeKeys(patch.dependencyStepKeys);
           const unknownDeps = nextDeps.filter((depKey) => !knownStepKeysAfterCreation.has(depKey));
           if (unknownDeps.length > 0) {
             return {
@@ -50946,7 +51742,7 @@ function createCoordinatorToolSet(deps) {
             roleName: plannedStep.roleName,
             laneId: plannedStep.laneId,
             replacementForWorkerId: plannedStep.replacementSourceStep?.stepKey ?? null,
-            replacementReason: `Plan revised: ${reason.trim()}`,
+            replacementReason: `Plan revised: ${normalizedReason}`,
             validationContract: plannedStep.parsedContract
           });
           if (spawnResult.step) {
@@ -50984,7 +51780,7 @@ function createCoordinatorToolSet(deps) {
             stepId: targetStep.id,
             replacementStepId: replacement?.id ?? null,
             replacementStepKey: replacement?.stepKey ?? null,
-            reason
+            reason: normalizedReason
           });
           superseded.push({
             stepKey: targetStep.stepKey,
@@ -51030,10 +51826,10 @@ function createCoordinatorToolSet(deps) {
           eventType: "plan_revised",
           payload: {
             mode,
-            reason,
+            reason: normalizedReason,
             replacedStepKeys: uniqueTargets,
             newStepKeys: createdSteps.map((step) => step.stepKey),
-            dependencyPatchesApplied: dependencyPatches.length,
+            dependencyPatchesApplied: normalizedDependencyPatches.length,
             warnings
           }
         });
@@ -51043,10 +51839,10 @@ function createCoordinatorToolSet(deps) {
           reason: "revise_plan",
           detail: {
             mode,
-            reason,
+            reason: normalizedReason,
             superseded,
             newStepKeys: createdSteps.map((step) => step.stepKey),
-            dependencyPatchesApplied: dependencyPatches.length,
+            dependencyPatchesApplied: normalizedDependencyPatches.length,
             warnings
           }
         });
@@ -51064,10 +51860,10 @@ function createCoordinatorToolSet(deps) {
         return {
           ok: true,
           mode,
-          reason,
+          reason: normalizedReason,
           superseded,
           newStepKeys: createdSteps.map((step) => step.stepKey),
-          dependencyPatchesApplied: dependencyPatches.length,
+          dependencyPatchesApplied: normalizedDependencyPatches.length,
           warnings
         };
       } catch (err) {
@@ -51096,12 +51892,15 @@ function createCoordinatorToolSet(deps) {
         const metadata = runRow.metadata_json ? JSON.parse(runRow.metadata_json) : {};
         const teamRuntime = asRecord(metadata.teamRuntime) ?? {};
         const currentProfiles = asRecord(teamRuntime.toolProfiles) ?? {};
-        const normalizedRole = role.trim().toLowerCase();
+        const normalizedRole = normalizeText(role).toLowerCase();
+        if (!normalizedRole.length) {
+          return { ok: false, error: "Role is required." };
+        }
         currentProfiles[normalizedRole] = {
-          allowedTools: allowedTools.map((entry) => entry.trim()).filter((entry) => entry.length > 0),
-          ...blockedTools && blockedTools.length > 0 ? { blockedTools: blockedTools.map((entry) => entry.trim()).filter((entry) => entry.length > 0) } : {},
-          ...mcpServers && mcpServers.length > 0 ? { mcpServers: mcpServers.map((entry) => entry.trim()).filter((entry) => entry.length > 0) } : {},
-          ...notes && notes.trim().length > 0 ? { notes: notes.trim() } : {}
+          allowedTools: dedupeKeys(allowedTools),
+          ...Array.isArray(blockedTools) && blockedTools.length > 0 ? { blockedTools: dedupeKeys(blockedTools) } : {},
+          ...Array.isArray(mcpServers) && mcpServers.length > 0 ? { mcpServers: dedupeKeys(mcpServers) } : {},
+          ...normalizeText(notes).length > 0 ? { notes: normalizeText(notes) } : {}
         };
         metadata.teamRuntime = {
           ...teamRuntime,
@@ -51209,7 +52008,7 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ phaseKey, reason }) => {
       try {
         const g = graph();
-        const missionPhases = [...resolveMissionPhases()].sort((a, b) => a.position - b.position);
+        const missionPhases = [...resolveMissionPhases(g)].sort((a, b) => a.position - b.position);
         if (missionPhases.length === 0) {
           return { ok: false, error: "Mission phase configuration is unavailable." };
         }
@@ -51239,7 +52038,7 @@ function createCoordinatorToolSet(deps) {
           const stepPhaseName = typeof meta3?.phaseName === "string" ? meta3.phaseName.trim() : "";
           return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
         });
-        const hasTerminalStep = (phase) => stepsForPhase(phase).some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+        const hasTerminalStep = (phase) => phaseHasCompletionEligibleStep(phase, stepsForPhase);
         const targetIndex = missionPhases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
         if (targetIndex < 0) {
           return { ok: false, error: `Could not resolve target phase index for '${targetPhase.phaseKey}'.` };
@@ -51247,7 +52046,7 @@ function createCoordinatorToolSet(deps) {
         if (currentPhase?.phaseKey === "planning" && targetPhase.phaseKey !== "planning" && !hasTerminalStep(currentPhase)) {
           return {
             ok: false,
-            error: "Planning phase has not completed yet. Complete at least one planning step before transitioning."
+            error: "Planning phase has not completed yet. Wait for a planning worker to succeed before transitioning."
           };
         }
         for (let i = 0; i < targetIndex; i += 1) {
@@ -51358,11 +52157,34 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ key, title, description, dependsOn }) => {
       try {
         const g = graph();
-        const planningQuizBlockReason = getPlanningQuizBlockReason(g);
-        if (planningQuizBlockReason) {
-          return { ok: false, error: planningQuizBlockReason };
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
         }
-        const missionPhases = resolveMissionPhases();
+        const missionPhases = resolveMissionPhases(g);
+        const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        if (currentPhaseKey === "planning") {
+          return {
+            ok: false,
+            error: 'Planning should be represented by the planning worker itself. Spawn the read-only planning worker, review its output, then call set_current_phase with phaseKey "development" before creating execution tasks.'
+          };
+        }
+        const normalizedKey = String(key ?? "").trim();
+        const normalizedTitle = String(title ?? "").trim();
+        const normalizedDescription = String(description ?? "").trim();
+        const requestedDependsOn = dedupeKeys(dependsOn);
+        if (!normalizedKey.length) {
+          return { ok: false, error: "Task key is required." };
+        }
+        if (!normalizedTitle.length) {
+          return { ok: false, error: "Task title is required." };
+        }
+        if (!normalizedDescription.length) {
+          return { ok: false, error: "Task description is required." };
+        }
+        const inferredDependsOn = requestedDependsOn.length === 0 && missionPhases.length > 0 ? resolveImplicitDependencyStepKeys(g, missionPhases) : [];
+        const normalizedDependsOn = requestedDependsOn.length > 0 ? requestedDependsOn : inferredDependsOn;
         const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
         const maxIndex = g.steps.reduce(
           (max, s) => Math.max(max, s.stepIndex),
@@ -51372,15 +52194,18 @@ function createCoordinatorToolSet(deps) {
           runId,
           steps: [
             {
-              stepKey: key,
-              title,
+              stepKey: normalizedKey,
+              title: normalizedTitle,
               stepIndex: maxIndex + 1,
-              dependencyStepKeys: dependsOn,
-              executorKind: "unified",
+              dependencyStepKeys: normalizedDependsOn,
+              executorKind: "manual",
               metadata: {
                 ...phaseMetadata,
-                instructions: description,
-                isTask: true
+                instructions: normalizedDescription,
+                isTask: true,
+                displayOnlyTask: true,
+                requestedDependencyStepKeys: requestedDependsOn,
+                ...inferredDependsOn.length > 0 ? { inferredDependencyStepKeys: inferredDependsOn } : {}
               }
             }
           ]
@@ -51394,10 +52219,10 @@ function createCoordinatorToolSet(deps) {
             source: "coordinator"
           });
         }
-        logger.info("coordinator.create_task", { key, title });
+        logger.info("coordinator.create_task", { key: normalizedKey, title: normalizedTitle });
         return {
           ok: true,
-          taskKey: key,
+          taskKey: normalizedKey,
           stepId: newStep?.id ?? null,
           status: newStep?.status ?? "unknown"
         };
@@ -51482,9 +52307,10 @@ function createCoordinatorToolSet(deps) {
     execute: async () => {
       try {
         const g = graph();
-        const total = g.steps.length;
+        const relevantSteps = filterExecutionSteps(g.steps);
+        const total = relevantSteps.length;
         const byStatus = {};
-        for (const step of g.steps) {
+        for (const step of relevantSteps) {
           byStatus[step.status] = (byStatus[step.status] ?? 0) + 1;
         }
         const terminal = (byStatus.succeeded ?? 0) + (byStatus.failed ?? 0) + (byStatus.skipped ?? 0) + (byStatus.superseded ?? 0) + (byStatus.canceled ?? 0);
@@ -51498,7 +52324,8 @@ function createCoordinatorToolSet(deps) {
             status: s.status,
             assignedTo: meta3.assignedTo ?? null,
             hasRunningWorker: !!attempt,
-            retryCount: s.retryCount
+            retryCount: s.retryCount,
+            displayOnly: isDisplayOnlyTaskStep(s)
           };
         });
         return {
@@ -51754,7 +52581,20 @@ function createCoordinatorToolSet(deps) {
     execute: async ({ summary }) => {
       try {
         const g = graph();
-        const blockers = g.steps.filter((step) => step.status === "succeeded").flatMap((step) => {
+        const relevantSteps = filterExecutionSteps(g.steps);
+        const activeWorkers = relevantSteps.filter((step) => step.status === "running").map((step) => ({
+          stepKey: step.stepKey,
+          title: step.title
+        }));
+        if (activeWorkers.length > 0) {
+          return {
+            ok: false,
+            error: `Mission cannot be completed while ${activeWorkers.length} worker(s) are still running.`,
+            hint: "Wait for running workers to finish, or cancel them explicitly if the work should be abandoned.",
+            activeWorkers
+          };
+        }
+        const blockers = relevantSteps.filter((step) => step.status === "succeeded").flatMap((step) => {
           const stepMeta = asRecord(step.metadata) ?? {};
           const validationContract = parseValidationContract2(stepMeta.validationContract ?? null);
           if (!validationContract?.required) return [];
@@ -51781,7 +52621,7 @@ function createCoordinatorToolSet(deps) {
           eventType: "done",
           payload: { summary, completedBy: "coordinator" }
         });
-        for (const step of g.steps) {
+        for (const step of relevantSteps) {
           if (step.status === "ready" || step.status === "blocked" || step.status === "pending") {
             orchestratorService.skipStep({
               runId,
@@ -51863,6 +52703,8 @@ function createCoordinatorToolSet(deps) {
     if (!mission) {
       return { ok: false, error: `Mission not found: ${missionId}` };
     }
+    const currentGraph = graph();
+    const currentPhase = resolveCurrentPhaseCard(currentGraph, resolveMissionPhases(currentGraph));
     const existing = mission.interventions.find((entry) => {
       if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
       const metadata = asRecord(entry.metadata);
@@ -51894,7 +52736,9 @@ ${context}` : question;
         question,
         context: context.length > 0 ? context : null,
         urgency,
-        canProceedWithoutAnswer: args.canProceedWithoutAnswer === true
+        canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+        phase: currentPhase?.phaseKey ?? null,
+        phaseName: currentPhase?.name ?? null
       }
     });
     orchestratorService.appendRuntimeEvent({
@@ -51907,7 +52751,9 @@ ${context}` : question;
         source: args.source,
         question,
         context: context.length > 0 ? context : null,
-        urgency
+        urgency,
+        canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+        phase: currentPhase?.phaseKey ?? null
       }
     });
     orchestratorService.appendTimelineEvent({
@@ -52102,6 +52948,7 @@ ${context}` : question;
             source: "ask_user",
             runId,
             quizMode: true,
+            canProceedWithoutAnswer: false,
             questions,
             phase: phase ?? null,
             questionCount: questions.length
@@ -52354,9 +53201,9 @@ ${context}` : question;
     execute: async ({ parentWorkerId, name, prompt, modelId, role }) => {
       try {
         const g = graph();
-        const planningQuizBlockReason = getPlanningQuizBlockReason(g);
-        if (planningQuizBlockReason) {
-          return { ok: false, error: planningQuizBlockReason };
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
         }
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const subAgentsAllowed = teamRuntime?.allowSubAgents !== false;
@@ -52521,9 +53368,9 @@ ${context}` : question;
     execute: async ({ parentWorkerId, tasks }) => {
       try {
         const g = graph();
-        const planningQuizBlockReason = getPlanningQuizBlockReason(g);
-        if (planningQuizBlockReason) {
-          return { ok: false, error: planningQuizBlockReason };
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
         }
         const teamRuntime = resolveTeamRuntimeConfig(g);
         if (teamRuntime?.allowSubAgents === false) {
@@ -52759,6 +53606,30 @@ function progressFraction(graph) {
   const pct = total > 0 ? Math.round(done / total * 100) : 0;
   return { done, total, pct };
 }
+function stepStatusIcon(status) {
+  switch (status) {
+    case "succeeded":
+      return "\u2713";
+    case "failed":
+      return "\u2717";
+    case "running":
+      return "\u25B6";
+    case "ready":
+      return "\u25CB";
+    case "pending":
+      return "\u25CB";
+    case "blocked":
+      return "\u26A0";
+    case "skipped":
+      return "\u2192";
+    case "superseded":
+      return "\u2248";
+    case "canceled":
+      return "\u2205";
+    default:
+      return "?";
+  }
+}
 function readyStepKeys(graph) {
   return graph.steps.filter((s) => s.status === "ready").map((s) => s.stepKey);
 }
@@ -52768,6 +53639,47 @@ function failedStepSummaries(graph) {
     const errMsg = lastAttempt?.errorMessage ?? "unknown error";
     return `${s.stepKey}: ${errMsg}`;
   });
+}
+function readRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function resolveRunPhase(graph) {
+  const runMeta = readRecord(graph.run.metadata);
+  const phaseRuntime = readRecord(runMeta.phaseRuntime);
+  return {
+    phaseKey: typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim().toLowerCase() : "",
+    phaseName: typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim().toLowerCase() : ""
+  };
+}
+function resolveStepPhase(step) {
+  const stepMeta = readRecord(step?.metadata);
+  return {
+    phaseKey: typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "",
+    phaseName: typeof stepMeta.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : ""
+  };
+}
+function buildCoordinatorActionHints(event, graph, step) {
+  const reason = String(event.reason ?? "").trim().toLowerCase();
+  if (reason !== "attempt_completed" && reason !== "completed" && reason !== "skipped") {
+    return [];
+  }
+  const hints = [];
+  const runPhase = resolveRunPhase(graph);
+  const stepPhase = resolveStepPhase(step);
+  const planningPhase = stepPhase.phaseKey === "planning" || stepPhase.phaseName === "planning" || runPhase.phaseKey === "planning" || runPhase.phaseName === "planning";
+  if (planningPhase && step?.status === "succeeded") {
+    hints.push(
+      'Coordinator action: this completion is still labeled Planning. Review the worker output, create/update the visible DAG if needed, then call set_current_phase with phaseKey "development" before spawning any code-changing worker.'
+    );
+  }
+  const allStepsTerminal = graph.steps.length > 0 && graph.steps.every((candidate) => TERMINAL_STATUSES.has(candidate.status));
+  const hasRunningAttempt = graph.attempts.some((candidate) => candidate.status === "running");
+  if (graph.run.status === "active" && allStepsTerminal && !hasRunningAttempt) {
+    hints.push(
+      "Coordinator action: no workers are running and all tracked steps are terminal. If the mission goal is satisfied, call complete_mission. Otherwise transition to the next phase and spawn the next worker."
+    );
+  }
+  return hints;
 }
 function formatRuntimeEvent(event, context) {
   const { graph: g, step, attempt } = context ?? {};
@@ -52792,9 +53704,66 @@ function formatRuntimeEvent(event, context) {
     if (attempt?.resultEnvelope?.summary) {
       parts.push(`Result: ${attempt.resultEnvelope.summary}`);
     }
+    const actionHints = buildCoordinatorActionHints(event, g, step);
+    if (actionHints.length > 0) {
+      parts.push(...actionHints);
+    }
     digest = parts.join("\n");
   }
   return { tier: g ? 2 : 1, summary, digest };
+}
+function formatStepCompletion(step, attempt, graph) {
+  const { done, total, pct } = progressFraction(graph);
+  const icon = stepStatusIcon(step.status);
+  const summary = `[STEP_DONE] ${step.stepKey} ${icon} (${done}/${total}, ${pct}%)`;
+  const parts = [summary];
+  if (attempt?.resultEnvelope?.summary) {
+    parts.push(`Summary: ${attempt.resultEnvelope.summary}`);
+  }
+  if (attempt?.resultEnvelope?.warnings?.length) {
+    parts.push(`Warnings: ${attempt.resultEnvelope.warnings.join("; ")}`);
+  }
+  const ready = readyStepKeys(graph);
+  if (ready.length > 0) {
+    parts.push(`Next ready: ${ready.join(", ")}`);
+  }
+  const running = graph.steps.filter((s) => s.status === "running");
+  if (running.length > 0) {
+    parts.push(`Running: ${running.map((s) => s.stepKey).join(", ")}`);
+  }
+  const actionHints = buildCoordinatorActionHints(
+    {
+      type: "orchestrator-step-updated",
+      runId: graph.run.id,
+      stepId: step.id,
+      attemptId: attempt?.id ?? void 0,
+      at: attempt?.completedAt ?? step.completedAt ?? step.updatedAt,
+      reason: step.status === "skipped" ? "skipped" : "attempt_completed"
+    },
+    graph,
+    step
+  );
+  if (actionHints.length > 0) {
+    parts.push(...actionHints);
+  }
+  const digest = parts.join("\n");
+  const fullOutput = attempt?.resultEnvelope ? JSON.stringify(attempt.resultEnvelope, null, 2) : void 0;
+  return { tier: 2, summary, digest, fullOutput };
+}
+function formatStepFailure(step, attempt, errorMessage) {
+  const retryInfo = step.retryLimit > 0 ? ` (retry ${step.retryCount}/${step.retryLimit})` : "";
+  const summary = `[STEP_FAIL] ${step.stepKey} \u2717${retryInfo}`;
+  const parts = [summary, `Error: ${errorMessage}`];
+  if (attempt?.errorClass && attempt.errorClass !== "none") {
+    parts.push(`Class: ${attempt.errorClass}`);
+  }
+  if (step.retryCount < step.retryLimit) {
+    parts.push(`Action: Will retry (attempt ${step.retryCount + 1}/${step.retryLimit})`);
+  } else if (step.retryLimit > 0) {
+    parts.push("Action: Retries exhausted, needs intervention");
+  }
+  const digest = parts.join("\n");
+  return { tier: 2, summary, digest };
 }
 
 // ../desktop/src/main/services/ai/compactionEngine.ts
@@ -53091,11 +54060,31 @@ async function resolveOpenAiCompatibleModelId(sdkModelId, endpoint, providerName
   if (sdkModelId !== "auto") return sdkModelId;
   return resolveAutoModelIdFromOpenAiCompatibleEndpoint(endpoint, providerName);
 }
+function normalizeCliMcpServers(provider, mcpServers) {
+  if (!mcpServers) return void 0;
+  return Object.fromEntries(
+    Object.entries(mcpServers).map(([name, server]) => {
+      if (typeof server !== "object" || server === null) {
+        return [name, server];
+      }
+      const record2 = server;
+      const { type, transport, ...rest } = record2;
+      if (provider === "codex") {
+        const resolvedTransport = typeof transport === "string" && transport.trim().length > 0 ? transport : typeof type === "string" && type.trim().length > 0 ? type : "stdio";
+        return [name, { ...rest, transport: resolvedTransport }];
+      }
+      const resolvedType = typeof type === "string" && type.trim().length > 0 ? type : typeof transport === "string" && transport.trim().length > 0 ? transport : typeof rest.command === "string" && rest.command.trim().length > 0 ? "stdio" : void 0;
+      return [name, resolvedType ? { ...rest, type: resolvedType } : { ...rest }];
+    })
+  );
+}
 function buildCliDefaultSettings(provider, opts) {
   const settings = {};
   const cwd = opts?.cwd?.trim() || process.cwd();
   settings.cwd = cwd;
-  if (opts?.cli?.mcpServers) settings.mcpServers = opts.cli.mcpServers;
+  if (opts?.cli?.mcpServers) {
+    settings.mcpServers = normalizeCliMcpServers(provider, opts.cli.mcpServers);
+  }
   const providerOverrides = provider === "claude" ? opts?.cli?.claude : opts?.cli?.codex;
   if (providerOverrides && typeof providerOverrides === "object") {
     Object.assign(settings, providerOverrides);
@@ -53223,7 +54212,7 @@ async function resolveDirectProvider(descriptor, auth) {
 }
 
 // ../desktop/src/main/services/ai/authDetector.ts
-var import_node_child_process6 = require("child_process");
+var import_node_child_process7 = require("child_process");
 var CLI_AUTH_PROBES = {
   claude: [
     ["auth", "status", "--json"],
@@ -53269,7 +54258,7 @@ function hasPattern(text, patterns) {
 }
 function spawnAsync(command, args, timeoutMs) {
   return new Promise((resolve) => {
-    const child = (0, import_node_child_process6.spawn)(command, args, { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
+    const child = (0, import_node_child_process7.spawn)(command, args, { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk) => {
@@ -53384,13 +54373,20 @@ async function readStoredApiKeys() {
     return {};
   }
 }
-async function checkLocalEndpoint(url2, timeoutMs = 2e3) {
+async function checkLocalEndpointHasModels(provider, url2, timeoutMs = 2e3) {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(url2, { method: "GET", signal: controller.signal });
     clearTimeout(timer);
-    return res.ok;
+    if (!res.ok) return false;
+    const payload = await res.json();
+    if (provider === "ollama") {
+      const models2 = Array.isArray(payload?.models) ? payload.models ?? [] : [];
+      return models2.some((entry) => typeof entry?.name === "string" && entry.name.trim().length > 0);
+    }
+    const models = Array.isArray(payload?.data) ? payload.data ?? [] : [];
+    return models.some((entry) => typeof entry?.id === "string" && entry.id.trim().length > 0);
   } catch {
     return false;
   }
@@ -53407,7 +54403,7 @@ async function detectLocalProviders() {
   ];
   const localChecks = await Promise.allSettled(
     localEndpoints.map(async ({ provider, url: url2 }) => {
-      const alive = await checkLocalEndpoint(url2, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
+      const alive = await checkLocalEndpointHasModels(provider, url2, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
       if (!alive) return null;
       const endpoint = url2.replace(/\/api\/tags$|\/v1\/models$/, "");
       return { provider, endpoint };
@@ -53620,12 +54616,12 @@ async function detectCliAuthStatuses() {
   const statuses = await Promise.all(
     cliChecks.map(async (cli) => {
       const installed = await commandExists(cli);
-      const path32 = installed ? await commandPath(cli) : null;
+      const path33 = installed ? await commandPath(cli) : null;
       const auth = installed ? await inspectCliAuthentication(cli) : { authenticated: false, verified: false };
       return {
         cli,
         installed,
-        path: path32,
+        path: path33,
         authenticated: auth.authenticated,
         verified: auth.verified
       };
@@ -53889,12 +54885,40 @@ var MAX_CONVERSATION_HISTORY = 200;
 var MAX_EVENT_RETRY_COUNT = 2;
 var CHECKPOINT_TURN_INTERVAL = 5;
 var CHECKPOINT_SUMMARY_MAX_CHARS = 8e3;
+var COORDINATOR_TURN_TIMEOUT_MS = 12e4;
 var CHECKPOINT_DAG_MUTATION_TOOLS = /* @__PURE__ */ new Set([
   "spawn_worker",
   "revise_plan",
   "mark_step_complete",
   "complete_mission"
 ]);
+function shouldUseSdkTools(modelId) {
+  const descriptor = resolveModelDescriptor(modelId);
+  if (!descriptor?.isCliWrapped) return true;
+  if (descriptor.family === "anthropic") return false;
+  return true;
+}
+function buildCoordinatorCliOptions(args) {
+  const descriptor = resolveModelDescriptor(args.modelId);
+  if (!descriptor?.isCliWrapped) {
+    return void 0;
+  }
+  const cli = {};
+  if (args.mcpServers) {
+    cli.mcpServers = args.mcpServers;
+  }
+  if (descriptor.family === "anthropic") {
+    const logDir = import_node_path26.default.join(args.projectRoot, ".ade", "logs");
+    import_node_fs24.default.mkdirSync(logDir, { recursive: true });
+    cli.claude = {
+      permissionMode: "bypassPermissions",
+      allowedTools: ["mcp__ade"],
+      settingSources: [],
+      debugFile: import_node_path26.default.join(logDir, `coordinator-${args.runId}.claude.log`)
+    };
+  }
+  return Object.keys(cli).length > 0 ? cli : void 0;
+}
 var CoordinatorAgent = class {
   deps;
   eventQueue = [];
@@ -54013,7 +55037,7 @@ var CoordinatorAgent = class {
         await this.compactHistory();
       }
     } catch (err) {
-      this.deps.logger.debug("coordinator_agent.batch_failed", {
+      this.deps.logger.warn("coordinator_agent.batch_failed", {
         runId: this.deps.runId,
         error: err instanceof Error ? err.message : String(err)
       });
@@ -54084,47 +55108,80 @@ var CoordinatorAgent = class {
   }
   async runTurn() {
     const sdkModel = await this.resolveModel();
-    const descriptor = resolveModelDescriptor(this.deps.modelId);
-    const useSdkTools = !(descriptor?.isCliWrapped && (descriptor.family === "anthropic" || descriptor.family === "openai"));
-    const result = (0, import_ai4.streamText)({
-      model: sdkModel,
-      system: this.systemPrompt,
-      messages: this.conversationHistory,
-      ...useSdkTools ? { tools: this.tools } : {},
-      stopWhen: (0, import_ai4.stepCountIs)(MAX_TOOL_STEPS_PER_TURN)
+    const useSdkTools = shouldUseSdkTools(this.deps.modelId);
+    const abortController = new AbortController();
+    const timeoutHandle = setTimeout(() => abortController.abort(), COORDINATOR_TURN_TIMEOUT_MS);
+    this.deps.logger.info("coordinator_agent.turn_started", {
+      runId: this.deps.runId,
+      modelId: this.deps.modelId,
+      useSdkTools,
+      historyLength: this.conversationHistory.length,
+      timeoutMs: COORDINATOR_TURN_TIMEOUT_MS
     });
-    let assistantText = "";
-    for await (const part of result.fullStream) {
-      if (part.type === "text-delta") {
-        assistantText += part.text;
+    try {
+      const result = (0, import_ai4.streamText)({
+        model: sdkModel,
+        system: this.systemPrompt,
+        messages: this.conversationHistory,
+        ...useSdkTools ? { tools: this.tools } : {},
+        stopWhen: (0, import_ai4.stepCountIs)(MAX_TOOL_STEPS_PER_TURN),
+        abortSignal: abortController.signal
+      });
+      let assistantText = "";
+      let sawStreamPart = false;
+      for await (const part of result.fullStream) {
+        sawStreamPart = true;
+        if (part.type === "text-delta") {
+          assistantText += part.text;
+        }
       }
-    }
-    if (this.compactionMonitor) {
+      if (this.compactionMonitor) {
+        try {
+          const usage = await result.usage;
+          if (usage) {
+            this.compactionMonitor.recordTokens(
+              usage.inputTokens ?? 0,
+              usage.outputTokens ?? 0
+            );
+          }
+        } catch {
+        }
+      }
       try {
-        const usage = await result.usage;
-        if (usage) {
-          this.compactionMonitor.recordTokens(
-            usage.inputTokens ?? 0,
-            usage.outputTokens ?? 0
-          );
+        const responseMessages = await result.response;
+        if (responseMessages.messages && responseMessages.messages.length > 0) {
+          this.conversationHistory.push(...responseMessages.messages);
+        } else if (assistantText.trim()) {
+          this.conversationHistory.push({ role: "assistant", content: assistantText });
         }
       } catch {
+        if (assistantText.trim()) {
+          this.conversationHistory.push({ role: "assistant", content: assistantText });
+        }
       }
-    }
-    try {
-      const responseMessages = await result.response;
-      if (responseMessages.messages && responseMessages.messages.length > 0) {
-        this.conversationHistory.push(...responseMessages.messages);
-      } else if (assistantText.trim()) {
-        this.conversationHistory.push({ role: "assistant", content: assistantText });
+      if (assistantText.trim() && this.deps.onCoordinatorMessage) {
+        this.deps.onCoordinatorMessage(assistantText.trim());
       }
-    } catch {
-      if (assistantText.trim()) {
-        this.conversationHistory.push({ role: "assistant", content: assistantText });
-      }
-    }
-    if (assistantText.trim() && this.deps.onCoordinatorMessage) {
-      this.deps.onCoordinatorMessage(assistantText.trim());
+      this.deps.logger.info("coordinator_agent.turn_completed", {
+        runId: this.deps.runId,
+        modelId: this.deps.modelId,
+        useSdkTools,
+        sawStreamPart,
+        assistantTextLength: assistantText.trim().length
+      });
+    } catch (error48) {
+      const aborted2 = abortController.signal.aborted;
+      this.deps.logger.warn("coordinator_agent.turn_failed", {
+        runId: this.deps.runId,
+        modelId: this.deps.modelId,
+        useSdkTools,
+        timeoutMs: COORDINATOR_TURN_TIMEOUT_MS,
+        aborted: aborted2,
+        error: error48 instanceof Error ? error48.message : String(error48)
+      });
+      throw error48;
+    } finally {
+      clearTimeout(timeoutHandle);
     }
   }
   // ─── Compaction ──────────────────────────────────────────────────
@@ -54264,15 +55321,21 @@ When you enter the Planning phase (your first phase), follow this protocol:
    - Bundle all questions into one ask_user call. Wait for the user to respond before proceeding.
    - Once the user has answered, incorporate their responses into your planning.
 2. Spawn ONE planning worker with a rich research prompt that includes the full mission goal and the planning phase instructions
+   - The planning prompt must ask the worker to DISCOVER the plan.
+   - Do NOT hand the planning worker a pre-written implementation plan, exact edit list, commit message, or "confirm this plan" instructions.
 3. The planning worker should have READ-ONLY focus \u2014 its job is to research the codebase, not write code
 4. Wait for the planning worker to complete, then read its output via get_worker_output
-5. Use the research findings to build your task DAG via create_task:
+5. Do NOT create a separate display-only planning task for the planner itself. The planning worker IS the planning phase execution record.
+6. After the planning worker finishes, call set_current_phase with phaseKey "development" before creating implementation tasks or spawning code-changing workers.
+7. Once you are in Development, use the research findings to build the implementation DAG via create_task:
    - Create tasks with proper dependsOn relationships reflecting real code dependencies
    - Set parallelism based on the planner\u2019s analysis of independent workstreams
    - Each task should be scoped for ONE worker in ONE session
    - The DAG is visible to the user in real-time \u2014 structure it clearly
-6. After planning output is captured, call set_current_phase with phaseKey "development" before starting implementation workers.
-7. Then begin development execution (spawn workers, delegate tasks, and continue phase-by-phase).
+   - create_task is for user-visible implementation work breakdown, not for the planning worker itself.
+   - When you later spawn_worker, dependsOn should reference EXECUTABLE prerequisite workers, not just display-only task cards
+8. Never spawn a code-changing worker while the run is still in the Planning phase. Planning workers must stay read-only; transition phases first.
+9. Then begin development execution (spawn workers, delegate tasks, and continue phase-by-phase).
 
 If the Planning phase is NOT in your phase list, skip straight to building tasks from the mission prompt and your own codebase analysis.`;
     }
@@ -54389,6 +55452,7 @@ Match your approach to the mission's actual complexity:
 - Changes are sequential (each depends on the previous)
 - Total context fits comfortably in a single agent session
 - No file-level conflicts possible between parallel edits
+- Planner signals low complexity, low uncertainty, and little meaningful parallelism
 
 **MULTIPLE workers when:**
 - Genuinely independent workstreams exist (e.g., frontend + backend + tests)
@@ -54408,7 +55472,7 @@ Match your approach to the mission's actual complexity:
 - Each lane is a fresh git worktree branching from the base \u2014 cheap to create
 - Lanes merge back via the configured PR strategy
 
-Do NOT overcomplicate simple tasks. A one-file bug fix does not need 3 workers, 5 milestones, and a validation gate. Read the code, understand the scope, and scale your approach accordingly. The overhead of coordination should never exceed the cost of the work itself.
+Do NOT overcomplicate simple tasks. A one-file bug fix does not need 3 workers, 5 milestones, and a validation gate. If planning is enabled and the task is tiny, default to one planning worker, one implementation worker on the mission lane, and one validator only if validation is enabled or the change is genuinely risky. Read the code, understand the scope, and scale your approach accordingly. The overhead of coordination should never exceed the cost of the work itself.
 
 ## Lane Management Rules
 
@@ -54429,10 +55493,13 @@ After workers complete, use \`get_worker_output\` to check which files were modi
 
 ### 1. Understand Before Planning
 Before creating a single task, build your own understanding:
-- Call get_project_context and read_file on key files relevant to the mission
-- Understand the architecture, patterns, conventions, and test infrastructure
-- Identify risks, unknowns, and dependencies
-- You need this context to write good worker prompts \u2014 workers start cold, so YOU must give them the context they need
+- If Planning is enabled, do only the minimum coordinator-side prep needed to brief the planning worker.
+- Call get_project_context.
+- Read only a few obvious anchor files when necessary to avoid sending the planner in blind.
+- Identify the key unknowns, constraints, and hotspots the planner should investigate.
+- Do NOT do deep repo research, exact implementation scoping, or file-by-file edit planning while still in Planning. That belongs to the planning worker.
+- Once the planner returns, use its findings to build the implementation DAG and write precise worker prompts.
+- If Planning is disabled, then you must do the codebase analysis yourself before spawning implementation workers.
 
 ### 2. Decompose Into Tasks With Dependencies
 Break the mission into tasks that represent real work units:
@@ -54458,12 +55525,17 @@ This is where you earn your keep. When a worker completes:
 - If the work is solid: mark_step_complete and move to the next task
 - If the work is poor: mark_step_failed, then DECIDE \u2014 retry with better instructions? Spawn a different approach? Skip if non-critical?
 - For critical milestones, spawn a dedicated validator worker to review accumulated changes
+- Never use stop_worker as a cleanup step after reading output. stop_worker is destructive and cancels the attempt.
 
 When a worker is running:
+- If get_worker_output says the worker is still running, that is NOT a completion signal. Wait, steer it with send_message, or let it finish on its own.
+- Do NOT busy-poll running workers. After spawning a worker, give it breathing room; avoid repeated get_worker_output calls more than roughly every 15-20 seconds unless a fresh runtime event suggests something changed.
+- Planning/research workers may stay quiet for a while before they report back. Do not cancel a planning worker solely because its terminal output is quiet.
 - If events suggest it's drifting, use send_message to course-correct in real time
 - Always check send_message/message_worker/broadcast response fields (delivered, method, reason) before assuming a worker saw your guidance
 - method: "steer" with delivered: false means the message is queued and will only be seen after the worker's current turn completes
-- If it's stuck or going in circles, stop_worker and spawn a replacement with better context
+- Only use stop_worker when you are intentionally ABANDONING the current attempt because it is stuck, looping, or irrecoverably off-track. Do not use stop_worker for normal completion.
+- If it's stuck or going in circles, stop_worker with an explicit cancellation reason and then spawn a replacement with better context
 - Use read_mission_status to get the full DAG picture before making decisions
 
 ### 5. Handle Failures Like a Senior Engineer
@@ -54497,6 +55569,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 ### 7. Finalize When Done
 - Call list_tasks and read_mission_status to verify everything is complete
 - Optionally spawn a final validator for an integration check
+- If all tracked steps are terminal and no workers are still running, do not stop there: either transition to the next phase and continue, or call complete_mission.
 - Call complete_mission with a clear summary of what was accomplished
 - If the mission is truly impossible, call fail_mission with a detailed explanation
 
@@ -54605,7 +55678,12 @@ Your initial plan is a hypothesis. Adjust it as you learn:
     })();
     const model = await resolveModel(this.deps.modelId, auth, {
       cwd: this.deps.projectRoot,
-      cli: mcpServers ? { mcpServers } : void 0
+      cli: buildCoordinatorCliOptions({
+        modelId: this.deps.modelId,
+        projectRoot: this.deps.projectRoot,
+        runId: this.deps.runId,
+        mcpServers
+      })
     });
     this.cachedSdkModel = model;
     this.cachedModelAt = now;
@@ -54657,7 +55735,13 @@ function clipRoutedCoordinatorMessage(message) {
   return `${normalized.slice(0, MAX_ROUTED_COORDINATOR_MESSAGE_CHARS - suffix.length)}${suffix}`;
 }
 function routeEventToCoordinator(coordinator, event, context) {
-  const formatted = formatRuntimeEvent(event, context);
+  const resolvedStep = context?.graph && event.stepId ? context.graph.steps.find((candidate) => candidate.id === event.stepId) : void 0;
+  const resolvedAttempt = context?.graph && event.attemptId ? context.graph.attempts.find((candidate) => candidate.id === event.attemptId) : void 0;
+  const formatted = context?.graph && resolvedStep && (event.reason === "attempt_completed" || event.reason === "skipped") ? formatStepCompletion(resolvedStep, resolvedAttempt ?? null, context.graph) : context?.graph && resolvedStep && event.reason === "failed" ? formatStepFailure(resolvedStep, resolvedAttempt ?? null, resolvedAttempt?.errorMessage ?? "unknown error") : formatRuntimeEvent(event, {
+    graph: context?.graph,
+    step: resolvedStep,
+    attempt: resolvedAttempt
+  });
   let message = formatted.digest ? `${formatted.summary}
 ${formatted.digest}` : formatted.summary;
   const nowMs = Date.now();
@@ -55315,10 +56399,10 @@ function resolveCallTypeConfigUncached(ctx, missionId, callType) {
     );
     if (row?.metadata_json) {
       const metadata = JSON.parse(row.metadata_json);
-      const launch = isRecord3(metadata.launch) ? metadata.launch : null;
-      const intelligenceConfig = launch && isRecord3(launch.intelligenceConfig) ? launch.intelligenceConfig : null;
+      const launch = isRecord2(metadata.launch) ? metadata.launch : null;
+      const intelligenceConfig = launch && isRecord2(launch.intelligenceConfig) ? launch.intelligenceConfig : null;
       if (intelligenceConfig) {
-        const callConfig = isRecord3(intelligenceConfig[callType]) ? intelligenceConfig[callType] : null;
+        const callConfig = isRecord2(intelligenceConfig[callType]) ? intelligenceConfig[callType] : null;
         if (callConfig) {
           const modelIdRaw = typeof callConfig.modelId === "string" ? callConfig.modelId.trim() : "";
           const descriptor = resolveModelDescriptor(modelIdRaw);
@@ -55342,9 +56426,18 @@ var DEFAULT_ORCHESTRATOR_MODEL_CONFIG = {
   provider: "anthropic",
   thinkingLevel: "medium"
 };
+function resolveMissionLaunchModelConfig(metadata) {
+  const directModelConfig = isRecord2(metadata.modelConfig) ? metadata.modelConfig : null;
+  if (directModelConfig) {
+    return directModelConfig;
+  }
+  const launch = isRecord2(metadata.launch) ? metadata.launch : null;
+  const launchModelConfig = launch && isRecord2(launch.modelConfig) ? launch.modelConfig : null;
+  return launchModelConfig ? launchModelConfig : null;
+}
 function resolveMissionDecisionTimeoutCapMs(ctx, missionId) {
   const metadata = getMissionMetadata(ctx, missionId);
-  const modelConfig = isRecord3(metadata.modelConfig) ? metadata.modelConfig : null;
+  const modelConfig = resolveMissionLaunchModelConfig(metadata);
   const rawHours = Number(modelConfig?.decisionTimeoutCapHours ?? Number.NaN);
   const normalizedHours = Number.isFinite(rawHours) ? Math.floor(rawHours) : 24;
   return DECISION_TIMEOUT_CAP_MS_BY_HOURS[normalizedHours] ?? DECISION_TIMEOUT_CAP_MS_BY_HOURS[24];
@@ -55354,7 +56447,7 @@ function resolveAiDecisionLikeTimeoutMs(_ctx, _missionId) {
 }
 function resolveOrchestratorModelConfig(ctx, missionId, callType) {
   const metadata = getMissionMetadata(ctx, missionId);
-  const missionModelConfig = metadata?.modelConfig;
+  const missionModelConfig = resolveMissionLaunchModelConfig(metadata);
   if (missionModelConfig) {
     return resolveCallTypeModel(
       callType,
@@ -55374,13 +56467,97 @@ function getWorkerStates(ctx, args) {
   return result;
 }
 function resolveEvaluationProvider(attempt) {
-  const metadata = isRecord3(attempt.metadata) ? attempt.metadata : null;
+  const metadata = isRecord2(attempt.metadata) ? attempt.metadata : null;
   const modelRef = typeof metadata?.modelId === "string" ? metadata.modelId : null;
   if (modelRef) {
     const descriptor = getModelById(modelRef);
     if (descriptor?.family === "openai") return "codex";
   }
   return "claude";
+}
+function resolveWorkerLifecyclePhaseLabel(step) {
+  const stepMeta = isRecord2(step?.metadata) ? step?.metadata : {};
+  const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+  const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+  const readOnlyExecution = stepMeta.readOnlyExecution === true;
+  if (phaseKey === "planning" || stepType === "planning" || readOnlyExecution) {
+    return "planning";
+  }
+  if (phaseKey === "validation" || stepType === "validation") {
+    return "validation";
+  }
+  return "implementation";
+}
+function buildWorkerLifecycleStartMessage(step) {
+  const phaseLabel = resolveWorkerLifecyclePhaseLabel(step);
+  if (phaseLabel === "planning") {
+    return "I\u2019m starting the planning pass now. I\u2019m reviewing the relevant files and I\u2019ll send a concrete plan back to the coordinator.";
+  }
+  if (phaseLabel === "validation") {
+    return "I\u2019m starting validation now. I\u2019m checking the completed work against the mission requirements.";
+  }
+  return "I\u2019m starting this task now. I\u2019m making the requested changes and I\u2019ll report back with what changed.";
+}
+function buildWorkerLifecycleCompletionMessage(step, summary) {
+  const compactSummary = typeof summary === "string" ? summary.replace(/\s+/g, " ").trim() : "";
+  const clippedSummary = compactSummary.length > 0 ? compactSummary.slice(0, 180) : "";
+  const phaseLabel = resolveWorkerLifecyclePhaseLabel(step);
+  if (phaseLabel === "planning") {
+    return clippedSummary.length > 0 ? `I finished the planning pass and reported back: ${clippedSummary}` : "I finished the planning pass and sent the coordinator a concrete plan.";
+  }
+  if (phaseLabel === "validation") {
+    return clippedSummary.length > 0 ? `I finished validation and reported back: ${clippedSummary}` : "I finished validation and reported the result back to the coordinator.";
+  }
+  return clippedSummary.length > 0 ? `I finished this task and reported back: ${clippedSummary}` : "I finished this task and reported the outcome back to the coordinator.";
+}
+function buildWorkerLifecycleFailureMessage(attempt) {
+  const errorText = typeof attempt.errorMessage === "string" ? attempt.errorMessage.replace(/\s+/g, " ").trim() : "";
+  if (!errorText.length) {
+    return "I hit an issue while working on this task and reported it back to the coordinator.";
+  }
+  return `I hit an issue while working on this task and reported it back: ${errorText.slice(0, 180)}`;
+}
+function appendWorkerThreadLifecycleMessage(args) {
+  const thread = ensureThreadForTarget(args.ctx, {
+    missionId: args.missionId,
+    target: {
+      kind: "worker",
+      runId: args.attempt.runId,
+      stepId: args.attempt.stepId,
+      stepKey: args.stepKey,
+      attemptId: args.attempt.id,
+      sessionId: args.attempt.executorSessionId ?? null,
+      laneId: args.step?.laneId ?? null
+    },
+    fallbackTitle: `Worker: ${args.stepTitle}`
+  });
+  args.deps.appendChatMessage({
+    id: (0, import_node_crypto20.randomUUID)(),
+    missionId: args.missionId,
+    threadId: thread.id,
+    role: "worker",
+    content: args.content,
+    timestamp: nowIso2(),
+    stepKey: args.stepKey,
+    target: {
+      kind: "worker",
+      runId: args.attempt.runId,
+      stepId: args.attempt.stepId,
+      stepKey: args.stepKey,
+      attemptId: args.attempt.id,
+      sessionId: args.attempt.executorSessionId ?? null,
+      laneId: args.step?.laneId ?? null
+    },
+    visibility: "full",
+    deliveryState: "delivered",
+    sourceSessionId: args.attempt.executorSessionId ?? null,
+    attemptId: args.attempt.id,
+    laneId: args.step?.laneId ?? null,
+    runId: args.attempt.runId,
+    metadata: {
+      source: args.metadataSource
+    }
+  });
 }
 function upsertWorkerState(ctx, attemptId, update) {
   const now = nowIso2();
@@ -55693,10 +56870,10 @@ function extractAndRegisterArtifacts(ctx, args) {
     const envelope = attempt.resultEnvelope;
     if (!envelope) return;
     const outputs = envelope.outputs;
-    if (!outputs || !isRecord3(outputs)) return;
+    if (!outputs || !isRecord2(outputs)) return;
     const step = graph.steps.find((s) => s.id === attempt.stepId);
-    const stepMeta = step && isRecord3(step.metadata) ? step.metadata : {};
-    const planStep = isRecord3(stepMeta.planStep) ? stepMeta.planStep : null;
+    const stepMeta = step && isRecord2(step.metadata) ? step.metadata : {};
+    const planStep = isRecord2(stepMeta.planStep) ? stepMeta.planStep : null;
     const artifactHints = Array.isArray(planStep?.artifactHints) ? planStep.artifactHints.map((h) => String(h ?? "").trim()).filter(Boolean) : [];
     const declaredKeySet = new Set(artifactHints);
     const registeredKeys = /* @__PURE__ */ new Set();
@@ -55813,7 +56990,7 @@ function updateWorkerStateFromEventCtx(ctx, event, deps) {
         emitOrchestratorMessage(
           ctx,
           graph.run.missionId,
-          `Worker started on step "${stepTitle}" using ${attempt.executorKind}.`,
+          `Started worker "${stepTitle}". It is now working on this step.`,
           stepKey,
           null,
           { appendChatMessage: deps.appendChatMessage }
@@ -55835,6 +57012,17 @@ function updateWorkerStateFromEventCtx(ctx, event, deps) {
           });
         } catch (_threadErr) {
         }
+        appendWorkerThreadLifecycleMessage({
+          ctx,
+          deps,
+          missionId: graph.run.missionId,
+          attempt,
+          step: stepForAttempt,
+          stepTitle,
+          stepKey,
+          content: buildWorkerLifecycleStartMessage(stepForAttempt),
+          metadataSource: "worker_lifecycle_started"
+        });
       }
       recordMissionMetricSample(ctx, {
         missionId: graph.run.missionId,
@@ -55853,6 +57041,8 @@ function updateWorkerStateFromEventCtx(ctx, event, deps) {
       deletePersistedAttemptRuntimeState(ctx, attempt.id);
       const outcomeTags = extractOutcomeTags(attempt);
       const digest = emitWorkerDigest(ctx, buildWorkerDigestFromAttempt({ graph, attempt }));
+      const existing = ctx.workerStates.get(attempt.id);
+      const shouldAnnounceCompletion = !existing || existing.state !== "completed";
       upsertWorkerState(ctx, attempt.id, {
         stepId: attempt.stepId,
         runId: attempt.runId,
@@ -55863,14 +57053,27 @@ function updateWorkerStateFromEventCtx(ctx, event, deps) {
         completedAt: attempt.completedAt ?? nowIso2()
       });
       const resultSummary = attempt.resultEnvelope?.summary ? ` \u2014 ${attempt.resultEnvelope.summary.slice(0, 120)}` : "";
-      emitOrchestratorMessage(
-        ctx,
-        graph.run.missionId,
-        `Step "${stepTitle}" completed${resultSummary}`,
-        stepKey,
-        null,
-        { appendChatMessage: deps.appendChatMessage }
-      );
+      if (shouldAnnounceCompletion) {
+        emitOrchestratorMessage(
+          ctx,
+          graph.run.missionId,
+          `Finished "${stepTitle}"${resultSummary}`,
+          stepKey,
+          null,
+          { appendChatMessage: deps.appendChatMessage }
+        );
+        appendWorkerThreadLifecycleMessage({
+          ctx,
+          deps,
+          missionId: graph.run.missionId,
+          attempt,
+          step: stepForAttempt,
+          stepTitle,
+          stepKey,
+          content: buildWorkerLifecycleCompletionMessage(stepForAttempt, attempt.resultEnvelope?.summary),
+          metadataSource: "worker_lifecycle_completed"
+        });
+      }
       if (digest.tokens?.total != null) {
         recordMissionMetricSample(ctx, {
           missionId: graph.run.missionId,
@@ -55898,7 +57101,7 @@ function updateWorkerStateFromEventCtx(ctx, event, deps) {
         const isFinalStep = graph.steps.every(
           (s) => s.id === step.id || s.status === "succeeded" || s.status === "failed" || s.status === "skipped"
         );
-        const stepMeta = isRecord3(step.metadata) ? step.metadata : {};
+        const stepMeta = isRecord2(step.metadata) ? step.metadata : {};
         const completionCriteria = typeof stepMeta.completionCriteria === "string" ? stepMeta.completionCriteria : "";
         const hasCriteria = completionCriteria.length > 0 && completionCriteria !== "step_done";
         const coordForEval = ctx.coordinatorAgents.get(attempt.runId);
@@ -55948,6 +57151,8 @@ function updateWorkerStateFromEventCtx(ctx, event, deps) {
       deletePersistedAttemptRuntimeState(ctx, attempt.id);
       const outcomeTags = extractOutcomeTags(attempt);
       const digest = emitWorkerDigest(ctx, buildWorkerDigestFromAttempt({ graph, attempt }));
+      const existing = ctx.workerStates.get(attempt.id);
+      const shouldAnnounceFailure = !existing || existing.state !== "failed";
       upsertWorkerState(ctx, attempt.id, {
         stepId: attempt.stepId,
         runId: attempt.runId,
@@ -55960,14 +57165,27 @@ function updateWorkerStateFromEventCtx(ctx, event, deps) {
       const step = graph.steps.find((s) => s.id === attempt.stepId);
       const retryQueued = isRetryQueuedForStep(step);
       const retriesLeft = step ? Math.max(0, step.retryLimit - step.retryCount) : 0;
-      emitOrchestratorMessage(
-        ctx,
-        graph.run.missionId,
-        `Step "${stepTitle}" failed: ${attempt.errorMessage ?? "unknown error"}. ${retryQueued ? `Retry scheduled${retriesLeft > 0 ? ` (${retriesLeft} retries left).` : "."}` : "No retries remaining."}`,
-        stepKey,
-        null,
-        { appendChatMessage: deps.appendChatMessage }
-      );
+      if (shouldAnnounceFailure) {
+        emitOrchestratorMessage(
+          ctx,
+          graph.run.missionId,
+          `Step "${stepTitle}" failed: ${attempt.errorMessage ?? "unknown error"}. ${retryQueued ? `Retry scheduled${retriesLeft > 0 ? ` (${retriesLeft} retries left).` : "."}` : "No retries remaining."}`,
+          stepKey,
+          null,
+          { appendChatMessage: deps.appendChatMessage }
+        );
+        appendWorkerThreadLifecycleMessage({
+          ctx,
+          deps,
+          missionId: graph.run.missionId,
+          attempt,
+          step: stepForAttempt,
+          stepTitle,
+          stepKey,
+          content: buildWorkerLifecycleFailureMessage(attempt),
+          metadataSource: "worker_lifecycle_failed"
+        });
+      }
       recordMissionMetricSample(ctx, {
         missionId: graph.run.missionId,
         runId: attempt.runId,
@@ -56055,7 +57273,7 @@ function updateWorkerStateFromEventCtx(ctx, event, deps) {
                   `Failed step: "${stepTitleForMessage(step)}" (key: ${step.stepKey})`,
                   `Retries: ${step.retryCount}/${step.retryLimit}`,
                   `Last error: ${attempt.errorMessage ?? "unknown"}`,
-                  `Step instructions: ${isRecord3(step.metadata) && typeof step.metadata.instructions === "string" ? step.metadata.instructions.slice(0, 500) : "N/A"}`,
+                  `Step instructions: ${isRecord2(step.metadata) && typeof step.metadata.instructions === "string" ? step.metadata.instructions.slice(0, 500) : "N/A"}`,
                   succeededContext.length > 0 ? `
 Completed steps for context:
 ${succeededContext.join("\n")}` : "",
@@ -56101,7 +57319,7 @@ Steps BLOCKED by this failure: ${blockedByThis.map((s) => `"${s.title}"`).join("
                   oneShot: true,
                   timeoutMs: 45e3
                 });
-                const diagParsed = isRecord3(diagResult.structuredOutput) ? diagResult.structuredOutput : null;
+                const diagParsed = isRecord2(diagResult.structuredOutput) ? diagResult.structuredOutput : null;
                 const recommendation = String(diagParsed?.recommendation ?? "escalate");
                 const rootCause = String(diagParsed?.rootCause ?? diagResult.text?.slice(0, 500) ?? "Unknown");
                 ctx.logger.info("ai_orchestrator.failure_diagnosis_completed", {
@@ -56141,7 +57359,7 @@ Steps BLOCKED by this failure: ${blockedByThis.map((s) => `"${s.title}"`).join("
                   } catch (skipErr) {
                     ctx.logger.debug("ai_orchestrator.diagnosis_skip_failed", { error: skipErr instanceof Error ? skipErr.message : String(skipErr) });
                   }
-                } else if (recommendation === "workaround" && isRecord3(diagParsed?.workaroundStep)) {
+                } else if (recommendation === "workaround" && isRecord2(diagParsed?.workaroundStep)) {
                   try {
                     const ws = diagParsed.workaroundStep;
                     const workaroundKey = `workaround-${step.stepKey}-${Date.now()}`;
@@ -56223,8 +57441,8 @@ Steps BLOCKED by this failure: ${blockedByThis.map((s) => `"${s.title}"`).join("
 
 // ../desktop/src/main/services/orchestrator/workerDeliveryService.ts
 function readWorkerDeliveryMetadataCtx(_ctx, message) {
-  const metadata = isRecord3(message.metadata) ? { ...message.metadata } : {};
-  const workerDelivery = isRecord3(metadata.workerDelivery) ? { ...metadata.workerDelivery } : {};
+  const metadata = isRecord2(message.metadata) ? { ...message.metadata } : {};
+  const workerDelivery = isRecord2(metadata.workerDelivery) ? { ...metadata.workerDelivery } : {};
   const retries = Number.isFinite(Number(workerDelivery.retries)) ? Math.max(0, Math.floor(Number(workerDelivery.retries))) : 0;
   const maxRetries = Number.isFinite(Number(workerDelivery.maxRetries)) ? Math.max(1, Math.floor(Number(workerDelivery.maxRetries))) : WORKER_MESSAGE_RETRY_BUDGET;
   const nextRetryAtRaw = typeof workerDelivery.nextRetryAt === "string" ? workerDelivery.nextRetryAt : "";
@@ -56419,7 +57637,7 @@ function upsertWorkerDeliveryInterventionCtx(ctx, args, deps) {
   }
   const existing = mission.interventions.find((entry) => {
     if (entry.status !== "open") return false;
-    if (!isRecord3(entry.metadata)) return false;
+    if (!isRecord2(entry.metadata)) return false;
     return entry.metadata.sourceMessageId === args.message.id;
   });
   if (existing) {
@@ -57210,6 +58428,186 @@ ${args.steeringContext}` : "",
     `}`
   ].join("\n");
 }
+function buildCoordinatorEvaluationActionHints(graph) {
+  const hints = [];
+  const executionSteps = filterExecutionSteps(graph.steps);
+  if (executionSteps.length === 0) return hints;
+  const runMeta = isRecord2(graph.run.metadata) ? graph.run.metadata : null;
+  const phaseRuntime = isRecord2(runMeta?.phaseRuntime) ? runMeta.phaseRuntime : null;
+  const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim().toLowerCase() : "";
+  const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim().toLowerCase() : "";
+  const stepsInCurrentPhase = executionSteps.filter((step) => {
+    const stepMeta = isRecord2(step.metadata) ? step.metadata : null;
+    const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+    const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
+    if (currentPhaseKey.length > 0 && stepPhaseKey === currentPhaseKey) return true;
+    if (currentPhaseName.length > 0 && stepPhaseName === currentPhaseName) return true;
+    return false;
+  });
+  const currentPhaseTerminal = stepsInCurrentPhase.filter((step) => TERMINAL_PHASE_STEP_STATUSES.has(step.status));
+  const currentPhaseNonTerminal = stepsInCurrentPhase.filter((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status));
+  const remainingExecution = executionSteps.filter((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status));
+  const currentPhasePlanningSucceeded = currentPhaseKey === "planning" || currentPhaseName === "planning" ? stepsInCurrentPhase.some((step) => step.status === "succeeded") : false;
+  if ((currentPhaseKey === "planning" || currentPhaseName === "planning") && currentPhasePlanningSucceeded && currentPhaseTerminal.length > 0 && currentPhaseNonTerminal.length === 0) {
+    hints.push('REQUIRED NEXT ACTION: Planning work is complete. Call set_current_phase with phaseKey "development" before spawning any implementation workers.');
+  }
+  if (remainingExecution.length === 0) {
+    if (currentPhaseKey === "planning" || currentPhaseName === "planning") {
+      if (currentPhasePlanningSucceeded) {
+        hints.push("REQUIRED NEXT ACTION: The run has no executable work left but is still in planning. Advance to the next phase and spawn the implementation work, or call fail_mission if the mission cannot proceed.");
+      } else {
+        hints.push("REQUIRED NEXT ACTION: Planning has no active executable work and no successful planner result yet. Spawn a replacement planning worker or fail the mission if planning cannot proceed.");
+      }
+    } else {
+      hints.push("REQUIRED NEXT ACTION: All executable steps are terminal. If the mission goal is satisfied, call complete_mission with a concise summary. Otherwise create or spawn the missing follow-up work now.");
+    }
+  }
+  return hints;
+}
+function sortStepsForPhaseSync(steps) {
+  return [...steps].sort((a, b) => {
+    const aMeta = isRecord2(a.metadata) ? a.metadata : {};
+    const bMeta = isRecord2(b.metadata) ? b.metadata : {};
+    const aPhasePos = Number(aMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
+    const bPhasePos = Number(bMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
+    if (Number.isFinite(aPhasePos) && Number.isFinite(bPhasePos) && aPhasePos !== bPhasePos) {
+      return aPhasePos - bPhasePos;
+    }
+    if (a.stepIndex !== b.stepIndex) return a.stepIndex - b.stepIndex;
+    return a.title.localeCompare(b.title);
+  });
+}
+function deriveConfiguredPhasesForSync(graph) {
+  const runMeta = isRecord2(graph.run.metadata) ? graph.run.metadata : {};
+  const rawPhases = Array.isArray(runMeta.phaseOverride) ? runMeta.phaseOverride : [];
+  return rawPhases.map((entry) => {
+    const phase = asRecord(entry);
+    if (!phase) return null;
+    const phaseKey = typeof phase.phaseKey === "string" ? phase.phaseKey.trim() : "";
+    const name = typeof phase.name === "string" ? phase.name.trim() : "";
+    if (!phaseKey.length || !name.length) return null;
+    const positionRaw = Number(phase.position ?? Number.MAX_SAFE_INTEGER);
+    return {
+      phaseKey,
+      name,
+      position: Number.isFinite(positionRaw) ? positionRaw : Number.MAX_SAFE_INTEGER,
+      model: asRecord(phase.model),
+      instructions: typeof phase.instructions === "string" && phase.instructions.trim().length > 0 ? phase.instructions.trim() : null,
+      validationGate: asRecord(phase.validationGate),
+      budget: asRecord(phase.budget)
+    };
+  }).filter((phase) => phase !== null).sort((a, b) => a.position - b.position);
+}
+function stepMatchesPhaseForSync(step, phase) {
+  const meta3 = isRecord2(step.metadata) ? step.metadata : {};
+  const stepPhaseKey = typeof meta3.phaseKey === "string" ? meta3.phaseKey.trim() : "";
+  const stepPhaseName = typeof meta3.phaseName === "string" ? meta3.phaseName.trim() : "";
+  return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+}
+function phaseStepCountsAsCompleteForSync(step, phase) {
+  const phaseKey = phase.phaseKey.trim().toLowerCase();
+  const phaseName = phase.name.trim().toLowerCase();
+  if (phaseKey === "planning" || phaseName === "planning") {
+    return step.status === "succeeded";
+  }
+  return TERMINAL_PHASE_STEP_STATUSES.has(step.status);
+}
+function buildPhaseSyncTargetFromCard(card, sourceStepId) {
+  return {
+    phaseKey: card.phaseKey,
+    phaseName: card.name,
+    phaseModel: card.model,
+    phaseInstructions: card.instructions,
+    phaseValidation: card.validationGate,
+    phaseBudget: card.budget,
+    sourceStepId
+  };
+}
+function deriveMissionPhaseSyncTarget(graph) {
+  const executionSteps = sortStepsForPhaseSync(filterExecutionSteps(graph.steps));
+  const runMeta = isRecord2(graph.run.metadata) ? graph.run.metadata : {};
+  const phaseRuntime = isRecord2(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
+  const currentPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+  const currentPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+  const configuredPhases = deriveConfiguredPhasesForSync(graph);
+  if (configuredPhases.length > 0) {
+    const currentPhaseIndex = configuredPhases.findIndex(
+      (phase) => phase.phaseKey === currentPhaseKey || phase.name === currentPhaseName
+    );
+    if (currentPhaseIndex >= 0) {
+      const currentPhase = configuredPhases[currentPhaseIndex];
+      const currentPhaseExecutionSteps = executionSteps.filter((step) => stepMatchesPhaseForSync(step, currentPhase));
+      if (currentPhaseExecutionSteps.length === 0) {
+        return buildPhaseSyncTargetFromCard(currentPhase, null);
+      }
+      if (currentPhaseExecutionSteps.length > 0 && currentPhaseExecutionSteps.every((step) => TERMINAL_PHASE_STEP_STATUSES.has(step.status))) {
+        const planningPhase = currentPhase.phaseKey.trim().toLowerCase() === "planning" || currentPhase.name.trim().toLowerCase() === "planning";
+        const currentPhaseCompleted = currentPhaseExecutionSteps.some(
+          (step) => phaseStepCountsAsCompleteForSync(step, currentPhase)
+        );
+        if (!planningPhase || currentPhaseCompleted) {
+          const nextPhase = configuredPhases[currentPhaseIndex + 1];
+          if (nextPhase) {
+            const sourceStepId = currentPhaseExecutionSteps[currentPhaseExecutionSteps.length - 1]?.id ?? null;
+            return buildPhaseSyncTargetFromCard(nextPhase, sourceStepId);
+          }
+        }
+      }
+    }
+  }
+  const activeExecutionStep = executionSteps.find((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status)) ?? executionSteps[executionSteps.length - 1] ?? null;
+  if (!activeExecutionStep) return null;
+  const stepMeta = isRecord2(activeExecutionStep.metadata) ? activeExecutionStep.metadata : {};
+  return {
+    phaseKey: typeof stepMeta.phaseKey === "string" && stepMeta.phaseKey.trim().length > 0 ? stepMeta.phaseKey.trim() : "development",
+    phaseName: typeof stepMeta.phaseName === "string" && stepMeta.phaseName.trim().length > 0 ? stepMeta.phaseName.trim() : "Development",
+    phaseModel: asRecord(stepMeta.phaseModel),
+    phaseInstructions: typeof stepMeta.phaseInstructions === "string" && stepMeta.phaseInstructions.trim().length > 0 ? stepMeta.phaseInstructions.trim() : null,
+    phaseValidation: asRecord(stepMeta.phaseValidation),
+    phaseBudget: asRecord(stepMeta.phaseBudget),
+    sourceStepId: activeExecutionStep.id
+  };
+}
+function normalizeCoordinatorUpdateForChat(message) {
+  const compact = message.replace(/\u001b\[[0-9;]*m/g, "").replace(/^\[Coordinator\]\s*/i, "").replace(/([.!?])([A-Z])/g, "$1 $2").replace(/\s+/g, " ").trim();
+  if (!compact.length) return null;
+  if (/^\{/.test(compact) || /^tool\s+/i.test(compact) || /^mcp__/i.test(compact) || /^assistant:/i.test(compact) || /^user:/i.test(compact)) {
+    return null;
+  }
+  const lowerCompact = compact.toLowerCase();
+  if (lowerCompact.includes("reviewing the mission, building the plan")) {
+    return "Planning is active. I\u2019m briefing the planning worker now.";
+  }
+  if (lowerCompact.includes("moving through planning, implementation, and validation")) {
+    return "Mission started. I\u2019m following the enabled phases and will hand work to workers as each phase opens.";
+  }
+  if (lowerCompact.includes("read the key files") || lowerCompact.includes("review the key files")) {
+    return "I\u2019m reviewing the relevant files and mapping out the next step.";
+  }
+  if (lowerCompact.includes("look at the router") || lowerCompact.includes("look at the route")) {
+    return "I\u2019m checking the routing setup so I can line up the next task cleanly.";
+  }
+  if (lowerCompact.includes("planning task") || lowerCompact.includes("planning tasks")) {
+    return "I\u2019m turning the mission into concrete planning tasks now.";
+  }
+  if (lowerCompact.includes("spawn the planning worker")) {
+    return "I\u2019ve prepared the planning task and I\u2019m starting the worker now.";
+  }
+  if (lowerCompact.includes("spawn") && lowerCompact.includes("worker")) {
+    return "I\u2019ve prepared the next task and I\u2019m starting the worker now.";
+  }
+  if (lowerCompact.includes("transition") && lowerCompact.includes("phase")) {
+    return "I\u2019m wrapping up this phase and moving the run to the next one.";
+  }
+  const normalized = compact.split(/(?<=[.!?])\s+/).map((entry) => entry.trim()).filter((entry) => {
+    const lowered = entry.toLowerCase();
+    return entry.length > 0 && !/^i have (?:all|enough|the)\b/.test(lowered) && !/^i now have\b/.test(lowered) && !/^the mission is clear\b/.test(lowered) && !/^the implementation is clear\b/.test(lowered);
+  }).slice(0, 2).join(" ").replace(/\b(?:Now\s+)?I need to\b.*$/i, "").replace(/\b(?:Next,\s*)?I should\b.*$/i, "").replace(/\s+/g, " ").trim();
+  if (!normalized.length) return null;
+  const alphaChars = normalized.match(/[A-Za-z]/g)?.length ?? 0;
+  if (alphaChars < 12) return null;
+  return clipTextForContext(normalized, 220);
+}
 function createAiOrchestratorService(args) {
   const {
     db,
@@ -57249,6 +58647,8 @@ function createAiOrchestratorService(args) {
   const runWatchdogTimers = /* @__PURE__ */ new Map();
   const subagentCompletionRollupSent = /* @__PURE__ */ new Set();
   const validationSystemSignalDedupe = /* @__PURE__ */ new Set();
+  const workerProgressChatState = /* @__PURE__ */ new Map();
+  const coordinatorProgressChatState = /* @__PURE__ */ new Map();
   const coordinatorAgents = /* @__PURE__ */ new Map();
   const coordinatorRecoveryAttempts = /* @__PURE__ */ new Map();
   const teamRuntimeStates = /* @__PURE__ */ new Map();
@@ -57306,6 +58706,7 @@ function createAiOrchestratorService(args) {
     runRecoveryLoopStates.delete(runId);
     pendingIntegrations.delete(runId);
     teamRuntimeStates.delete(runId);
+    coordinatorProgressChatState.delete(runId);
     for (const key of milestoneReadyNotificationSignatures.keys()) {
       if (key.startsWith(`${runId}::`)) {
         milestoneReadyNotificationSignatures.delete(key);
@@ -57340,6 +58741,127 @@ function createAiOrchestratorService(args) {
   const loadSteeringDirectivesFromMetadata2 = (missionId) => loadSteeringDirectivesFromMetadata(ctx, missionId);
   const loadChatSessionStateFromMetadata2 = (missionId) => loadChatSessionStateFromMetadata(ctx, missionId);
   const appendChatMessage = (message) => appendChatMessageCtx(ctx, message);
+  const WORKER_PROGRESS_CHAT_MIN_INTERVAL_MS = 12e3;
+  const WORKER_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 45e3;
+  const COORDINATOR_PROGRESS_CHAT_MIN_INTERVAL_MS = 1e4;
+  const COORDINATOR_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 3e4;
+  const emitWorkerThreadMessage = (args2) => {
+    const threadId = typeof args2.attemptId === "string" && args2.attemptId.trim().length > 0 ? `worker:${args2.missionId}:${args2.attemptId.trim()}` : null;
+    if (threadId) {
+      upsertThread2({
+        missionId: args2.missionId,
+        threadId,
+        threadType: "worker",
+        title: `Worker: ${args2.step.stepKey}`,
+        target: {
+          kind: "worker",
+          runId: args2.runId,
+          stepId: args2.step.id,
+          stepKey: args2.step.stepKey,
+          attemptId: args2.attemptId,
+          sessionId: args2.sessionId,
+          laneId: args2.laneId ?? args2.step.laneId ?? null
+        },
+        status: "active"
+      });
+    }
+    return appendChatMessage({
+      id: (0, import_node_crypto21.randomUUID)(),
+      missionId: args2.missionId,
+      threadId,
+      role: "worker",
+      content: args2.content,
+      timestamp: nowIso2(),
+      stepKey: args2.step.stepKey,
+      target: {
+        kind: "worker",
+        runId: args2.runId,
+        stepId: args2.step.id,
+        stepKey: args2.step.stepKey,
+        attemptId: args2.attemptId,
+        sessionId: args2.sessionId,
+        laneId: args2.laneId ?? args2.step.laneId ?? null
+      },
+      visibility: "full",
+      deliveryState: "delivered",
+      sourceSessionId: args2.sessionId,
+      attemptId: args2.attemptId,
+      laneId: args2.laneId ?? args2.step.laneId ?? null,
+      runId: args2.runId,
+      metadata: args2.metadata ?? null
+    });
+  };
+  const normalizeWorkerProgressPreviewForChat = (preview) => {
+    const compact = preview.replace(/\u001b\[[0-9;]*m/g, "").replace(/([.!?])([A-Z])/g, "$1 $2").replace(/\s+/g, " ").trim();
+    if (!compact.length) return null;
+    if (isWorkerBootstrapNoiseLine(compact)) return null;
+    if (/^You are an ADE /i.test(compact) || /^Mission goal:/i.test(compact) || /^Mission Plan:/i.test(compact) || /^Step instructions:/i.test(compact) || /^Phase-level guidance:/i.test(compact) || /^Referenced docs:/i.test(compact) || /^tool ade\./i.test(compact) || /^"(?:workerId|text|content|summary|outcome|stepId|stepKey|laneId|reportedAt|type)"\s*:/i.test(compact) || /^\{\s*"ok"\s*:/i.test(compact) || /^quote>\s*/i.test(compact) || /^-p\s+"\$\(cat\s+/i.test(compact) || /^cp\s+'.+worker-[a-f0-9-]+\.json'\s+'.+\.json'(\s+&&\s+exec\b.*)?$/i.test(compact) || /^ade_[a-z0-9_]+=.+/i.test(compact) || /(?:^|[\\/])(?:orchestrator[\\/])?worker-prompts[\\/]worker-[a-f0-9-]+(?:\.[A-Za-z0-9._-]+)?/i.test(compact) || /\.ade-worker-mcp-[a-f0-9-]+\.json/i.test(compact) || /(?:^|[-*]\s+)?`?\.ade\/(?:step-output|checkpoints)-worker_[^`\s]+\.md`?/i.test(compact) || /[A-Za-z0-9._-]+\.(?:txt|json)['")]+$/i.test(compact) || /^"(?:missionId|runId|stepId|stepKey|laneId|attemptId)\b/i.test(compact) || /^[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|json|md|txt):\d+(?::\d+)?:/i.test(compact) || /^\]\s+as\s+[A-Za-z]/i.test(compact) || /^EOF"\s+in\s+\/Users\//i.test(compact) || /^\/users\/.+\.zshrc:\d+:/i.test(compact) || /command not found:\s*compdef/i.test(compact) || /exec claude --model/i.test(compact) || /exec codex\b/i.test(compact) || /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\s+.+\s[%#$]$/.test(compact)) {
+      return null;
+    }
+    const fileUpdateMatch = compact.match(/^-?\s*(Created|Updated|Added|Removed)\s+\[([^\]]+)\]/i);
+    if (fileUpdateMatch) {
+      const verb = fileUpdateMatch[1].charAt(0).toUpperCase() + fileUpdateMatch[1].slice(1).toLowerCase();
+      const fileName = import_node_path27.default.basename(fileUpdateMatch[2].trim());
+      return `${verb} ${fileName}.`;
+    }
+    if (/^(?:\/bin\/(?:zsh|bash)|zsh|bash|git|pnpm|npm|npx|node|sed|rg|cat|ls|cp|mv|rm|apply_patch)\b/i.test(compact) || /^(?:diff --git|index [0-9a-f]{7,}\.\.[0-9a-f]{7,}|@@|--- |\+\+\+ )/i.test(compact) || /^[+\-@{}[\]()<>|]+$/.test(compact) || /^(?:<Route\b|import\b|export\b|const\b|function\b|return\b)/.test(compact)) {
+      return null;
+    }
+    const alphaChars = compact.match(/[A-Za-z]/g)?.length ?? 0;
+    if (alphaChars < 6) return null;
+    return clipTextForContext(compact, 180);
+  };
+  const maybeEmitCoordinatorProgressChatUpdate = (args2) => {
+    const content = normalizeCoordinatorUpdateForChat(args2.message);
+    if (!content) return;
+    const digest = digestSignalText(content);
+    const nowMs = Date.now();
+    const lastState = coordinatorProgressChatState.get(args2.runId) ?? {
+      lastDigest: null,
+      lastEmittedAtMs: 0
+    };
+    const sameDigest = digest != null && lastState.lastDigest === digest;
+    const minIntervalMs = sameDigest ? COORDINATOR_PROGRESS_CHAT_REPEAT_INTERVAL_MS : COORDINATOR_PROGRESS_CHAT_MIN_INTERVAL_MS;
+    if (nowMs - lastState.lastEmittedAtMs < minIntervalMs) return;
+    coordinatorProgressChatState.set(args2.runId, {
+      lastDigest: digest,
+      lastEmittedAtMs: nowMs
+    });
+    emitOrchestratorMessage2(args2.missionId, content, null, {
+      role: "coordinator_v2",
+      runId: args2.runId,
+      source: "coordinator_progress"
+    });
+  };
+  const maybeEmitWorkerProgressChatUpdate = (args2) => {
+    const content = normalizeWorkerProgressPreviewForChat(args2.preview);
+    if (!content) return;
+    const digest = digestSignalText(content);
+    const nowMs = Date.now();
+    const lastState = workerProgressChatState.get(args2.attemptId) ?? {
+      lastDigest: null,
+      lastEmittedAtMs: 0
+    };
+    const sameDigest = digest != null && lastState.lastDigest === digest;
+    const minIntervalMs = sameDigest ? WORKER_PROGRESS_CHAT_REPEAT_INTERVAL_MS : WORKER_PROGRESS_CHAT_MIN_INTERVAL_MS;
+    if (nowMs - lastState.lastEmittedAtMs < minIntervalMs) return;
+    workerProgressChatState.set(args2.attemptId, {
+      lastDigest: digest,
+      lastEmittedAtMs: nowMs
+    });
+    emitWorkerThreadMessage({
+      missionId: args2.missionId,
+      runId: args2.runId,
+      step: args2.step,
+      attemptId: args2.attemptId,
+      sessionId: args2.sessionId,
+      laneId: args2.laneId,
+      content,
+      metadata: {
+        source: "runtime_signal_progress"
+      }
+    });
+  };
   const startCoordinatorAgentV2 = (missionId, runId, missionGoal, modelConfig, opts) => {
     if (!projectRoot) {
       logger.debug("ai_orchestrator.coordinator_agent_v2_skip", {
@@ -57373,10 +58895,7 @@ function createAiOrchestratorService(args) {
           if (onDagMutation) onDagMutation(event);
         },
         onCoordinatorMessage: (message) => {
-          emitOrchestratorMessage2(missionId, `[Coordinator] ${message}`, null, {
-            role: "coordinator_v2",
-            runId
-          });
+          maybeEmitCoordinatorProgressChatUpdate({ missionId, runId, message });
         },
         onRunFinalize: (args2) => {
           if (args2.succeeded) {
@@ -57436,9 +58955,10 @@ You have full authority. Read the mission, think about the approach, create task
         runId,
         modelId
       });
+      const initialCoordinatorPhase = Array.isArray(opts?.phases) ? [...opts.phases].sort((a, b) => a.position - b.position)[0] ?? null : null;
       emitOrchestratorMessage2(
         missionId,
-        "Orchestrator online. The AI is now in full control of the mission.",
+        initialCoordinatorPhase?.phaseKey.trim().toLowerCase() === "planning" ? "Orchestrator online. Planning is active, and I\u2019m briefing the planning worker now." : "Orchestrator online. I\u2019m aligning the active phase and will start the first worker shortly.",
         null,
         {
           role: "coordinator_v2",
@@ -57595,7 +59115,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (args2.event.stepId && entry.stepId) return entry.stepId === args2.event.stepId;
         return true;
       });
-      const detail = isRecord3(gateEvent?.detail) ? gateEvent.detail : {};
+      const detail = isRecord2(gateEvent?.detail) ? gateEvent.detail : {};
       const reasonText = typeof detail.reason === "string" ? detail.reason.trim() : "";
       const phaseText = typeof detail.phase === "string" ? detail.phase.trim() : "";
       if (reasonText.length > 0) metadata.reason = reasonText;
@@ -57631,28 +59151,32 @@ Check all worker statuses and continue managing the mission from here. Read work
     return `Mission ${missionId}`;
   };
   const currentPhaseFromGraph = (graph) => {
-    const runMeta = isRecord3(graph.run.metadata) ? graph.run.metadata : {};
-    const phaseRuntime = isRecord3(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
+    const runMeta = isRecord2(graph.run.metadata) ? graph.run.metadata : {};
+    const phaseRuntime = isRecord2(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
     const phaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
     if (phaseName.length > 0) return phaseName;
     const phaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
     if (phaseKey.length > 0) return phaseKey;
-    const activeStep = graph.steps.find((step) => !MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
-    const activeMeta = isRecord3(activeStep?.metadata) ? activeStep.metadata : {};
+    const relevantSteps = filterExecutionSteps(graph.steps);
+    const activeStep = relevantSteps.find((step) => !MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)) ?? null;
+    const activeMeta = isRecord2(activeStep?.metadata) ? activeStep.metadata : {};
     const activePhaseName = typeof activeMeta.phaseName === "string" ? activeMeta.phaseName.trim() : "";
     if (activePhaseName.length > 0) return activePhaseName;
     const activePhaseKey = typeof activeMeta.phaseKey === "string" ? activeMeta.phaseKey.trim() : "";
     if (activePhaseKey.length > 0) return activePhaseKey;
     return "unknown";
   };
-  const buildMissionStateProgressFromGraph = (graph) => ({
-    currentPhase: currentPhaseFromGraph(graph),
-    completedSteps: graph.steps.filter((step) => MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)).length,
-    totalSteps: graph.steps.length,
-    activeWorkers: graph.steps.filter((step) => step.status === "running").map((step) => step.stepKey),
-    blockedSteps: graph.steps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
-    failedSteps: graph.steps.filter((step) => step.status === "failed").map((step) => step.stepKey)
-  });
+  const buildMissionStateProgressFromGraph = (graph) => {
+    const relevantSteps = filterExecutionSteps(graph.steps);
+    return {
+      currentPhase: currentPhaseFromGraph(graph),
+      completedSteps: relevantSteps.filter((step) => MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)).length,
+      totalSteps: relevantSteps.length,
+      activeWorkers: relevantSteps.filter((step) => step.status === "running").map((step) => step.stepKey),
+      blockedSteps: relevantSteps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
+      failedSteps: relevantSteps.filter((step) => step.status === "failed").map((step) => step.stepKey)
+    };
+  };
   const pendingInterventionsForMission = (missionId) => {
     const mission = missionService.get(missionId);
     if (!mission) return [];
@@ -57700,7 +59224,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     });
   };
   const resolveMissionStateStepPhase = (step) => {
-    const stepMeta = isRecord3(step.metadata) ? step.metadata : {};
+    const stepMeta = isRecord2(step.metadata) ? step.metadata : {};
     const phaseName = typeof stepMeta.phaseName === "string" ? stepMeta.phaseName.trim() : "";
     if (phaseName.length > 0) return phaseName;
     const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
@@ -57709,7 +59233,7 @@ Check all worker statuses and continue managing the mission from here. Read work
   };
   const buildMissionStateStepOutcomeFromGraph = (graph, stepId) => {
     const step = graph.steps.find((entry) => entry.id === stepId) ?? null;
-    if (!step) return null;
+    if (!step || isDisplayOnlyTaskStep(step)) return null;
     const attemptsForStep = graph.attempts.filter((attempt) => attempt.stepId === step.id).sort((a, b) => {
       const aTime = Date.parse(a.completedAt ?? a.startedAt ?? a.createdAt);
       const bTime = Date.parse(b.completedAt ?? b.startedAt ?? b.createdAt);
@@ -57728,9 +59252,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (projectRoot) {
       try {
         const sanitizedKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const outputPath = import_node_path26.default.resolve(projectRoot, `.ade/step-output-${sanitizedKey}.md`);
-        if (import_node_fs24.default.existsSync(outputPath)) {
-          stepOutputContent = import_node_fs24.default.readFileSync(outputPath, "utf-8").trim();
+        const outputPath = import_node_path27.default.resolve(projectRoot, `.ade/step-output-${sanitizedKey}.md`);
+        if (import_node_fs25.default.existsSync(outputPath)) {
+          stepOutputContent = import_node_fs25.default.readFileSync(outputPath, "utf-8").trim();
         }
       } catch {
       }
@@ -57790,8 +59314,9 @@ Check all worker statuses and continue managing the mission from here. Read work
   };
   const createMissionLane = async (missionId, missionTitle) => {
     try {
+      const laneName = missionTitle.trim().length > 0 ? missionTitle.trim() : `Mission ${missionId.slice(0, 6)}`;
       const result = await createLaneFromBase(
-        `m-${missionId.slice(0, 6)}-${slugify2(missionTitle)}`,
+        laneName,
         { description: `Mission lane for ${missionTitle}`, folder: `Mission: ${missionTitle}`, missionId }
       );
       return result?.laneId ?? null;
@@ -57806,10 +59331,10 @@ Check all worker statuses and continue managing the mission from here. Read work
   const readMissionLaneIdFromRunMetadata = (metadata) => {
     const directLaneId = toOptionalString2(metadata.missionLaneId);
     if (directLaneId) return directLaneId;
-    const coordinatorMeta = isRecord3(metadata.coordinator) ? metadata.coordinator : null;
+    const coordinatorMeta = isRecord2(metadata.coordinator) ? metadata.coordinator : null;
     const coordinatorLaneId = coordinatorMeta ? toOptionalString2(coordinatorMeta.missionLaneId) : null;
     if (coordinatorLaneId) return coordinatorLaneId;
-    const teamRuntimeMeta = isRecord3(metadata.teamRuntime) ? metadata.teamRuntime : null;
+    const teamRuntimeMeta = isRecord2(metadata.teamRuntime) ? metadata.teamRuntime : null;
     return teamRuntimeMeta ? toOptionalString2(teamRuntimeMeta.missionLaneId) : null;
   };
   const persistMissionLaneIdForRun = (runId, laneId) => {
@@ -57818,10 +59343,10 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!normalizedRunId || !normalizedLaneId) return;
     updateRunMetadata2(normalizedRunId, (metadata) => {
       metadata.missionLaneId = normalizedLaneId;
-      const coordinatorMeta = isRecord3(metadata.coordinator) ? { ...metadata.coordinator } : {};
+      const coordinatorMeta = isRecord2(metadata.coordinator) ? { ...metadata.coordinator } : {};
       coordinatorMeta.missionLaneId = normalizedLaneId;
       metadata.coordinator = coordinatorMeta;
-      const teamRuntimeMeta = isRecord3(metadata.teamRuntime) ? { ...metadata.teamRuntime } : {};
+      const teamRuntimeMeta = isRecord2(metadata.teamRuntime) ? { ...metadata.teamRuntime } : {};
       teamRuntimeMeta.missionLaneId = normalizedLaneId;
       metadata.teamRuntime = teamRuntimeMeta;
     });
@@ -57862,11 +59387,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     try {
       orchestratorService.appendRuntimeEvent(args2);
       if (args2.eventType === "validation_report") {
-        const payload = isRecord3(args2.payload) ? args2.payload : {};
-        const scope = isRecord3(payload.scope) ? payload.scope : {};
+        const payload = isRecord2(args2.payload) ? args2.payload : {};
+        const scope = isRecord2(payload.scope) ? payload.scope : {};
         const verdict = payload.verdict === "pass" || payload.verdict === "fail" ? payload.verdict : null;
         const findings = Array.isArray(payload.findings) ? payload.findings.map((entry) => {
-          if (!isRecord3(entry)) return "";
+          if (!isRecord2(entry)) return "";
           const severity = typeof entry.severity === "string" ? entry.severity.trim() : "";
           const code = typeof entry.code === "string" ? entry.code.trim() : "";
           const message = typeof entry.message === "string" ? entry.message.trim() : "";
@@ -57887,7 +59412,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         })();
         const stepKey = targetStep?.stepKey ?? (typeof scope.stepKey === "string" ? scope.stepKey.trim() : "");
         if (stepKey.length > 0) {
-          const stepMeta = isRecord3(targetStep?.metadata) ? targetStep.metadata : {};
+          const stepMeta = isRecord2(targetStep?.metadata) ? targetStep.metadata : {};
           const phase = typeof stepMeta.phaseName === "string" && stepMeta.phaseName.trim().length > 0 ? stepMeta.phaseName.trim() : typeof stepMeta.phaseKey === "string" && stepMeta.phaseKey.trim().length > 0 ? stepMeta.phaseKey.trim() : "unknown";
           updateMissionStateDoc(args2.runId, {
             updateStepOutcome: {
@@ -57903,7 +59428,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           }, { graph });
         }
       } else if (args2.eventType === "validation_contract_unfulfilled") {
-        const payload = isRecord3(args2.payload) ? args2.payload : {};
+        const payload = isRecord2(args2.payload) ? args2.payload : {};
         const stepKey = typeof payload.stepKey === "string" ? payload.stepKey.trim() : "";
         const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
         const description = detail.length > 0 ? detail : "A required validation contract was not fulfilled for a completed step.";
@@ -57917,7 +59442,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           }
         });
       } else if (args2.eventType === "validation_gate_blocked") {
-        const payload = isRecord3(args2.payload) ? args2.payload : {};
+        const payload = isRecord2(args2.payload) ? args2.payload : {};
         const detail = typeof payload.reason === "string" ? payload.reason.trim() : "";
         const stepKey = typeof payload.stepKey === "string" ? payload.stepKey.trim() : "";
         updateMissionStateDoc(args2.runId, {
@@ -57930,7 +59455,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           }
         });
       } else if (args2.eventType === "plan_revised") {
-        const payload = isRecord3(args2.payload) ? args2.payload : {};
+        const payload = isRecord2(args2.payload) ? args2.payload : {};
         const reason = typeof payload.reason === "string" ? payload.reason.trim() : "Coordinator revised the plan.";
         const replaced = Array.isArray(payload.replacedStepKeys) ? payload.replacedStepKeys.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
         const added = Array.isArray(payload.newStepKeys) ? payload.newStepKeys.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
@@ -58007,9 +59532,9 @@ Check all worker statuses and continue managing the mission from here. Read work
       for (const step of graph.steps) {
         if (step.status !== "pending" && step.status !== "ready" && step.status !== "running" && step.status !== "blocked") continue;
         if (targetStepKey.length > 0 && step.stepKey !== targetStepKey) continue;
-        const nextMetadata = isRecord3(step.metadata) ? { ...step.metadata } : {};
+        const nextMetadata = isRecord2(step.metadata) ? { ...step.metadata } : {};
         const existing = Array.isArray(nextMetadata.steeringDirectives) ? nextMetadata.steeringDirectives : [];
-        const normalizedExisting = existing.map((entry) => isRecord3(entry) ? entry : null).filter((entry) => !!entry).map((entry) => {
+        const normalizedExisting = existing.map((entry) => isRecord2(entry) ? entry : null).filter((entry) => !!entry).map((entry) => {
           const text = typeof entry.directive === "string" ? entry.directive.trim() : "";
           if (!text.length) return null;
           const priority = entry.priority === "instruction" || entry.priority === "override" ? entry.priority : "suggestion";
@@ -58062,7 +59587,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!events.length) return;
     const isSyntheticSweepHeartbeat = (event) => {
       if (event.eventType !== "heartbeat") return false;
-      const payload = isRecord3(event.payload) ? event.payload : null;
+      const payload = isRecord2(event.payload) ? event.payload : null;
       return payload?.source === "health_sweep";
     };
     const latestBySession = /* @__PURE__ */ new Map();
@@ -58076,7 +59601,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       const sessionId = event.sessionId?.trim() ?? "";
       if (!sessionId.length) continue;
       const runtimeState = event.eventType === "session_ended" ? "exited" : event.eventType === "question" ? "waiting-input" : "running";
-      const payload = isRecord3(event.payload) ? event.payload : null;
+      const payload = isRecord2(event.payload) ? event.payload : null;
       const preview = payload && typeof payload.preview === "string" && payload.preview.trim().length > 0 ? payload.preview.trim() : null;
       const existing = sessionRuntimeSignals.get(sessionId);
       const existingMs = existing ? Date.parse(existing.at) : Number.NaN;
@@ -58107,7 +59632,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           tracker.lastQuestionMessageId = questionLink.messageId;
         }
       } else if (event.eventType === "progress") {
-        const payload = isRecord3(event.payload) ? event.payload : null;
+        const payload = isRecord2(event.payload) ? event.payload : null;
         const transition = typeof payload?.transition === "string" ? payload.transition.trim() : "";
         if (transition === "question_answered_resume") {
           const questionLink = event.questionLink ?? parseQuestionLink(event.payload);
@@ -58149,7 +59674,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const attemptId = typeof event.attemptId === "string" ? event.attemptId.trim() : "";
         if (!attemptId.length || latestByAttempt.has(attemptId)) continue;
         if (event.eventType === "progress") {
-          const payload = isRecord3(event.payload) ? event.payload : null;
+          const payload = isRecord2(event.payload) ? event.payload : null;
           const transition = typeof payload?.transition === "string" ? payload.transition.trim() : "";
           if (transition !== "question_answered_resume") continue;
         }
@@ -58161,7 +59686,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (!attempt || attempt.status !== "running") continue;
         const step = stepById.get(attempt.stepId);
         if (!step) continue;
-        const payload = isRecord3(event.payload) ? event.payload : null;
+        const payload = isRecord2(event.payload) ? event.payload : null;
         const questionLink = parseQuestionLink(payload) ?? buildQuestionThreadLink({
           attemptId,
           occurredAt: event.occurredAt,
@@ -58199,7 +59724,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!mission) return;
     const existing = mission.interventions.find((entry) => {
       if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
-      if (!isRecord3(entry.metadata)) return false;
+      if (!isRecord2(entry.metadata)) return false;
       return entry.metadata.attemptId === args2.attemptId;
     });
     if (existing) return existing;
@@ -58223,6 +59748,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         stepId: args2.stepId,
         runId: args2.runId,
         sessionId: args2.sessionId,
+        canProceedWithoutAnswer: false,
         threadId: args2.questionLink.threadId,
         messageId: args2.questionLink.messageId,
         replyTo: args2.questionLink.replyTo,
@@ -58259,8 +59785,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     return intervention;
   };
   const resolveStepTimeoutMs = (args2) => {
-    const stepMeta = isRecord3(args2.step.metadata) ? args2.step.metadata : {};
-    const planStep = isRecord3(stepMeta.planStep) ? stepMeta.planStep : null;
+    const stepMeta = isRecord2(args2.step.metadata) ? args2.step.metadata : {};
+    const planStep = isRecord2(stepMeta.planStep) ? stepMeta.planStep : null;
     const aiStepTimeout = Number(stepMeta.aiTimeoutMs);
     const explicitStepTimeout = Number(stepMeta.timeoutMs);
     const planStepTimeout = Number(planStep?.timeoutMs ?? NaN);
@@ -58420,6 +59946,15 @@ Check all worker statuses and continue managing the mission from here. Read work
             runtimeState: signal.runtimeState
           }
         });
+        maybeEmitWorkerProgressChatUpdate({
+          missionId: graph.run.missionId,
+          runId: attempt.runId,
+          step,
+          attemptId: attempt.attemptId,
+          sessionId,
+          laneId: signal.laneId || step.laneId || null,
+          preview: signal.lastOutputPreview
+        });
       }
       persistAttemptRuntimeState2({
         attemptId: attempt.attemptId,
@@ -58501,12 +60036,12 @@ Check all worker statuses and continue managing the mission from here. Read work
     const readyMilestoneSignatureKeys = /* @__PURE__ */ new Set();
     const readyMilestones = graph.steps.filter((step) => {
       if (step.status !== "ready") return false;
-      const stepMeta = isRecord3(step.metadata) ? step.metadata : {};
+      const stepMeta = isRecord2(step.metadata) ? step.metadata : {};
       return asBool2(stepMeta.isMilestone, false);
     });
     for (const step of readyMilestones) {
-      const stepMeta = isRecord3(step.metadata) ? step.metadata : {};
-      const contract = isRecord3(stepMeta.validationContract) ? stepMeta.validationContract : null;
+      const stepMeta = isRecord2(step.metadata) ? step.metadata : {};
+      const contract = isRecord2(stepMeta.validationContract) ? stepMeta.validationContract : null;
       const validationCriteriaRaw = typeof contract?.criteria === "string" ? contract.criteria : typeof stepMeta.validationCriteria === "string" ? stepMeta.validationCriteria : typeof stepMeta.acceptanceCriteria === "string" ? stepMeta.acceptanceCriteria : "";
       const validationCriteria = validationCriteriaRaw.trim().length > 0 ? validationCriteriaRaw.trim() : "No validation criteria documented in step metadata.";
       const dependencySteps = step.dependencyStepIds.map((dependencyStepId) => graph?.steps.find((candidate) => candidate.id === dependencyStepId)).filter((candidate) => Boolean(candidate));
@@ -58858,8 +60393,8 @@ Check all worker statuses and continue managing the mission from here. Read work
             });
           }
         }
-        const runMeta = isRecord3(graph.run.metadata) ? graph.run.metadata : {};
-        const autopilot = isRecord3(runMeta.autopilot) ? runMeta.autopilot : null;
+        const runMeta = isRecord2(graph.run.metadata) ? graph.run.metadata : {};
+        const autopilot = isRecord2(runMeta.autopilot) ? runMeta.autopilot : null;
         const autopilotEnabled = autopilot?.enabled === true;
         if (autopilotEnabled) {
           await startReadyAutopilotAttemptsWithMilestoneReadiness({
@@ -58907,7 +60442,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const graph = orchestratorService.getRunGraph({ runId: activeRun.id, timelineLimit: 0 });
         const runningAttempt = graph.attempts.filter((attempt) => attempt.status === "running").sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
         if (runningAttempt) {
-          const rawMeta = isRecord3(runningAttempt.metadata) ? runningAttempt.metadata : null;
+          const rawMeta = isRecord2(runningAttempt.metadata) ? runningAttempt.metadata : null;
           const attemptModel = typeof rawMeta?.model === "string" ? rawMeta.model : typeof rawMeta?.modelId === "string" ? rawMeta.modelId : null;
           if (attemptModel) {
             const desc = getModelById(attemptModel);
@@ -59055,8 +60590,8 @@ Check all worker statuses and continue managing the mission from here. Read work
       const validations = graph.runtimeEvents?.filter((event) => event.eventType === "validation_report").slice(-25).map((event) => ({
         stepId: event.stepId,
         attemptId: event.attemptId,
-        verdict: isRecord3(event.payload) && typeof event.payload.verdict === "string" ? event.payload.verdict : "unknown",
-        summary: isRecord3(event.payload) && typeof event.payload.summary === "string" ? event.payload.summary : null,
+        verdict: isRecord2(event.payload) && typeof event.payload.verdict === "string" ? event.payload.verdict : "unknown",
+        summary: isRecord2(event.payload) && typeof event.payload.summary === "string" ? event.payload.summary : null,
         occurredAt: event.occurredAt
       })) ?? [];
       return {
@@ -59353,19 +60888,21 @@ Check all worker statuses and continue managing the mission from here. Read work
           const now = Date.now();
           const runStartedAt = Date.parse(graph.run.createdAt);
           const missionDurationSec = Math.round((now - runStartedAt) / 1e3);
-          const runningSteps = graph.steps.filter((s) => s.status === "running");
-          const readySteps = graph.steps.filter((s) => s.status === "ready");
-          const completedSteps = graph.steps.filter(
+          const relevantSteps = filterExecutionSteps(graph.steps);
+          const runningSteps = relevantSteps.filter((s) => s.status === "running");
+          const readySteps = relevantSteps.filter((s) => s.status === "ready");
+          const completedSteps = relevantSteps.filter(
             (s) => s.status === "succeeded" || s.status === "failed" || s.status === "skipped" || s.status === "canceled"
           );
-          const blockedSteps = graph.steps.filter((s) => s.status === "blocked");
-          const pendingSteps = graph.steps.filter((s) => s.status === "pending");
+          const blockedSteps = relevantSteps.filter((s) => s.status === "blocked");
+          const pendingSteps = relevantSteps.filter((s) => s.status === "pending");
           const stepGraph = graph.steps.map((s) => {
             const deps = s.dependencyStepIds.map((depId) => graph.steps.find((d) => d.id === depId)?.stepKey).filter(Boolean);
             const latestAttempt = graph.attempts.filter((a) => a.stepId === s.id).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
             const resultPreview = latestAttempt?.resultEnvelope?.summary?.slice(0, 200) ?? "";
             const errorMsg = latestAttempt?.errorMessage?.slice(0, 150) ?? "";
             let line = `  ${s.stepKey} [${s.status}] "${s.title}"`;
+            if (isDisplayOnlyTaskStep(s)) line += " plan_only";
             if (deps.length) line += ` deps:[${deps.join(",")}]`;
             if (resultPreview) line += ` result:"${resultPreview}"`;
             if (errorMsg && s.status === "failed") line += ` error:"${errorMsg}"`;
@@ -59377,7 +60914,12 @@ Check all worker statuses and continue managing the mission from here. Read work
           });
           const statusMessage = [
             `[EVENT: ${reason}] Duration: ${missionDurationSec}s`,
-            `Progress: ${completedSteps.length}/${graph.steps.length} done, ${runningSteps.length} running, ${readySteps.length} ready, ${blockedSteps.length} blocked, ${pendingSteps.length} pending`,
+            `Progress: ${completedSteps.length}/${relevantSteps.length} executable steps done, ${runningSteps.length} running, ${readySteps.length} ready, ${blockedSteps.length} blocked, ${pendingSteps.length} pending`,
+            ...(() => {
+              const actionHints = buildCoordinatorEvaluationActionHints(graph);
+              if (actionHints.length === 0) return [];
+              return ["", "Required next actions:", ...actionHints.map((hint) => `- ${hint}`)];
+            })(),
             "",
             "Step graph:",
             ...stepGraph
@@ -59455,7 +60997,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         oneShot: true,
         timeoutMs: 3e4
       });
-      const parsed = isRecord3(result.structuredOutput) ? result.structuredOutput : null;
+      const parsed = isRecord2(result.structuredOutput) ? result.structuredOutput : null;
       if (parsed) {
         return {
           approved: parsed.approved === true,
@@ -59580,11 +61122,11 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
       oneShot: true,
       timeoutMs: 3e4
     });
-    const parsed = isRecord3(result.structuredOutput) ? result.structuredOutput : null;
+    const parsed = isRecord2(result.structuredOutput) ? result.structuredOutput : null;
     if (!parsed || !Array.isArray(parsed.adjustments)) return;
     let adjustmentsApplied = 0;
     for (const adj of parsed.adjustments) {
-      if (!isRecord3(adj)) continue;
+      if (!isRecord2(adj)) continue;
       const action = String(adj.action ?? "");
       const reason = String(adj.reason ?? "AI-suggested adjustment");
       if (action === "skip_step" && typeof adj.targetStepKey === "string") {
@@ -59603,7 +61145,7 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
             });
           }
         }
-      } else if (action === "add_step" && isRecord3(adj.newStep)) {
+      } else if (action === "add_step" && isRecord2(adj.newStep)) {
         const newStep = adj.newStep;
         const stepKey = typeof newStep.stepKey === "string" ? newStep.stepKey : `ai-corrective-${Date.now()}`;
         const title = typeof newStep.title === "string" ? newStep.title : "AI-suggested corrective step";
@@ -59701,7 +61243,7 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
         const target = graph.steps.find((s) => s.stepKey === adj.targetStepKey);
         if (target && (target.status === "blocked" || target.status === "pending" || target.status === "ready")) {
           try {
-            const oldExecutorKind = isRecord3(target.metadata) ? String(target.metadata.executorKind ?? "unknown") : "unknown";
+            const oldExecutorKind = isRecord2(target.metadata) ? String(target.metadata.executorKind ?? "unknown") : "unknown";
             orchestratorService.updateStepMetadata({
               runId: adjustArgs.runId,
               stepId: target.id,
@@ -59808,7 +61350,7 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
       if (downstreamSteps.length === 0) return;
       const now = nowIso2();
       for (const downstream of downstreamSteps) {
-        const meta3 = isRecord3(downstream.metadata) ? { ...downstream.metadata } : {};
+        const meta3 = isRecord2(downstream.metadata) ? { ...downstream.metadata } : {};
         const existing = Array.isArray(meta3.handoffSummaries) ? [...meta3.handoffSummaries] : [];
         existing.push(handoffText);
         meta3.handoffSummaries = existing.slice(-10);
@@ -59989,7 +61531,7 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
         oneShot: true,
         ...timeoutMs != null ? { timeoutMs } : {}
       });
-      const parsed = isRecord3(result.structuredOutput) ? result.structuredOutput : null;
+      const parsed = isRecord2(result.structuredOutput) ? result.structuredOutput : null;
       if (!parsed) {
         return { autoResolved: false, suggestion: result.text || null };
       }
@@ -60056,13 +61598,13 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
   const pauseRunWithIntervention = (args2) => {
     const dedupeKey = `${args2.source}:${args2.reasonCode}:${args2.runId}:${args2.stepId ?? "run"}`;
     const runMetadata = getRunMetadata2(args2.runId);
-    const existingAiDecisionMeta = isRecord3(runMetadata.aiDecisions) ? runMetadata.aiDecisions : {};
+    const existingAiDecisionMeta = isRecord2(runMetadata.aiDecisions) ? runMetadata.aiDecisions : {};
     const mission = missionService.get(args2.missionId);
     let existingInterventionId = null;
     if (mission) {
       for (const entry of mission.interventions) {
         if (entry.status !== "open" || entry.interventionType !== "failed_step") continue;
-        const metadata = isRecord3(entry.metadata) ? entry.metadata : null;
+        const metadata = isRecord2(entry.metadata) ? entry.metadata : null;
         if (metadata?.aiDecisionFailureKey === dedupeKey) {
           existingInterventionId = entry.id;
           break;
@@ -60191,36 +61733,23 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
   };
   const syncMissionPhaseFromRun = (graph, reason) => {
     if (!graph.run.missionId) return;
-    const sortedSteps = [...graph.steps].sort((a, b) => {
-      const aMeta = isRecord3(a.metadata) ? a.metadata : {};
-      const bMeta = isRecord3(b.metadata) ? b.metadata : {};
-      const aPhasePos = Number(aMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
-      const bPhasePos = Number(bMeta.phasePosition ?? Number.MAX_SAFE_INTEGER);
-      if (Number.isFinite(aPhasePos) && Number.isFinite(bPhasePos) && aPhasePos !== bPhasePos) {
-        return aPhasePos - bPhasePos;
-      }
-      if (a.stepIndex !== b.stepIndex) return a.stepIndex - b.stepIndex;
-      return a.title.localeCompare(b.title);
-    });
-    if (sortedSteps.length === 0) return;
-    const activeStep = sortedSteps.find((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status)) ?? sortedSteps[sortedSteps.length - 1] ?? null;
-    if (!activeStep) return;
-    const stepMeta = isRecord3(activeStep.metadata) ? activeStep.metadata : {};
-    const nextPhaseKey = typeof stepMeta.phaseKey === "string" && stepMeta.phaseKey.trim().length > 0 ? stepMeta.phaseKey.trim() : "development";
-    const nextPhaseName = typeof stepMeta.phaseName === "string" && stepMeta.phaseName.trim().length > 0 ? stepMeta.phaseName.trim() : "Development";
-    const nextPhaseModel = isRecord3(stepMeta.phaseModel) ? stepMeta.phaseModel : null;
-    const nextPhaseInstructions = typeof stepMeta.phaseInstructions === "string" && stepMeta.phaseInstructions.trim().length > 0 ? stepMeta.phaseInstructions.trim() : null;
-    const nextPhaseValidation = isRecord3(stepMeta.phaseValidation) ? stepMeta.phaseValidation : null;
-    const nextPhaseBudget = isRecord3(stepMeta.phaseBudget) ? stepMeta.phaseBudget : null;
-    const runMeta = isRecord3(graph.run.metadata) ? graph.run.metadata : {};
-    const phaseRuntime = isRecord3(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
+    const target = deriveMissionPhaseSyncTarget(graph);
+    if (!target) return;
+    const nextPhaseKey = target.phaseKey;
+    const nextPhaseName = target.phaseName;
+    const nextPhaseModel = target.phaseModel;
+    const nextPhaseInstructions = target.phaseInstructions;
+    const nextPhaseValidation = target.phaseValidation;
+    const nextPhaseBudget = target.phaseBudget;
+    const runMeta = isRecord2(graph.run.metadata) ? graph.run.metadata : {};
+    const phaseRuntime = isRecord2(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
     const prevPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey : null;
     const prevPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName : null;
     if (prevPhaseKey === nextPhaseKey) return;
     const transitionedAt = nowIso2();
     const transitionReason = `${prevPhaseName ?? "Start"} -> ${nextPhaseName}`;
     updateRunMetadata2(graph.run.id, (metadata) => {
-      const nextRuntime = isRecord3(metadata.phaseRuntime) ? { ...metadata.phaseRuntime } : {};
+      const nextRuntime = isRecord2(metadata.phaseRuntime) ? { ...metadata.phaseRuntime } : {};
       const transitions = Array.isArray(nextRuntime.transitions) ? [...nextRuntime.transitions] : [];
       transitions.unshift({
         fromPhaseKey: prevPhaseKey,
@@ -60238,8 +61767,8 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
       nextRuntime.currentPhaseValidation = nextPhaseValidation;
       nextRuntime.currentPhaseBudget = nextPhaseBudget;
       nextRuntime.transitionedAt = transitionedAt;
-      const phaseBudgets = isRecord3(nextRuntime.phaseBudgets) ? { ...nextRuntime.phaseBudgets } : {};
-      if (!isRecord3(phaseBudgets[nextPhaseKey])) {
+      const phaseBudgets = isRecord2(nextRuntime.phaseBudgets) ? { ...nextRuntime.phaseBudgets } : {};
+      if (!isRecord2(phaseBudgets[nextPhaseKey])) {
         phaseBudgets[nextPhaseKey] = {
           enteredAt: transitionedAt,
           usedTokens: 0,
@@ -60251,7 +61780,7 @@ ${blockedWithSingleDep.map((s) => `  - ${s.stepKey}: "${s.title}"`).join("\n")}`
     });
     orchestratorService.appendTimelineEvent({
       runId: graph.run.id,
-      stepId: activeStep.id,
+      stepId: target.sourceStepId ?? void 0,
       eventType: "phase_transition",
       reason: transitionReason,
       detail: {
@@ -60884,17 +62413,19 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
     if (!initialMission) throw new Error(`Mission not found: ${missionId}`);
     const missionGoal = initialMission.prompt || initialMission.title;
     const missionMetadata = getMissionMetadata2(missionId);
-    const launchMetadata = isRecord3(missionMetadata.launch) ? missionMetadata.launch : null;
-    const launchTeamRuntime = isRecord3(launchMetadata?.teamRuntime) ? launchMetadata.teamRuntime : null;
-    const launchAgentRuntime = isRecord3(launchMetadata?.agentRuntime) ? launchMetadata.agentRuntime : {
+    const launchMetadata = isRecord2(missionMetadata.launch) ? missionMetadata.launch : null;
+    const launchTeamRuntime = isRecord2(launchMetadata?.teamRuntime) ? launchMetadata.teamRuntime : null;
+    const launchAgentRuntime = isRecord2(launchMetadata?.agentRuntime) ? launchMetadata.agentRuntime : {
       allowParallelAgents: true,
       allowSubAgents: true,
       allowClaudeAgentTeams: true
     };
     const missionAfterPlanning = missionService.get(missionId);
     const missionMetadataAfterPlanning = getMissionMetadata2(missionId);
-    const plannerPlanMeta = isRecord3(missionMetadataAfterPlanning.plannerPlan) ? missionMetadataAfterPlanning.plannerPlan : null;
-    const plannerSummary = plannerPlanMeta && isRecord3(plannerPlanMeta.missionSummary) ? plannerPlanMeta.missionSummary : null;
+    const missionPhaseConfiguration = isRecord2(missionMetadataAfterPlanning.phaseConfiguration) ? missionMetadataAfterPlanning.phaseConfiguration : null;
+    const missionLevelSettings = isRecord2(missionMetadataAfterPlanning.missionLevelSettings) ? missionMetadataAfterPlanning.missionLevelSettings : null;
+    const plannerPlanMeta = isRecord2(missionMetadataAfterPlanning.plannerPlan) ? missionMetadataAfterPlanning.plannerPlan : null;
+    const plannerSummary = plannerPlanMeta && isRecord2(plannerPlanMeta.missionSummary) ? plannerPlanMeta.missionSummary : null;
     const plannerParallelismRaw = Number(plannerSummary?.parallelismCap ?? Number.NaN);
     const plannerParallelismCap = Number.isFinite(plannerParallelismRaw) && plannerParallelismRaw > 0 ? Math.floor(plannerParallelismRaw) : null;
     const launchMaxParallelRaw = Number(launchMetadata?.maxParallelWorkers ?? Number.NaN);
@@ -60967,6 +62498,10 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
         } : void 0,
         agentRuntime: normalizeAgentRuntimeFlags(launchAgentRuntime),
         aiFirst: true,
+        ...missionLevelSettings ? { missionLevelSettings } : {},
+        ...missionPhaseConfiguration ? { phaseConfiguration: missionPhaseConfiguration } : {},
+        phaseOverride: phases,
+        phaseProfileId: typeof missionPhaseConfiguration?.profileId === "string" ? missionPhaseConfiguration.profileId : null,
         ...phaseRuntime ? { phaseRuntime } : {}
       }
     });
@@ -61005,15 +62540,11 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
         mission: missionService.get(missionId)
       };
     }
-    const runStartTs = nowIso2();
-    db.run(
-      `update orchestrator_runs set status = 'active', started_at = coalesce(started_at, ?), updated_at = ? where id = ?`,
-      [runStartTs, runStartTs, started.run.id]
-    );
+    const activatedRun = orchestratorService.activateRun(started.run.id);
     transitionMissionStatus2(missionId, "in_progress");
     emitOrchestratorMessage2(
       missionId,
-      "Mission started. The AI orchestrator is now in control."
+      initialPhase?.phaseKey.trim().toLowerCase() === "planning" ? "Mission started. Planning is active, and I\u2019m sending the first planning task out now." : "Mission started. I\u2019m following the enabled phases and will advance workers as each phase opens."
     );
     const initialGraph = getRunGraphSafe2(started.run.id);
     updateMissionStateDoc(
@@ -61026,18 +62557,21 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
     );
     void syncMissionFromRun(started.run.id, "mission_run_started");
     return {
-      started,
+      started: {
+        run: activatedRun,
+        steps: orchestratorService.listSteps(started.run.id)
+      },
       mission: missionService.get(missionId)
     };
   };
   const gatherCoordinatorContext = (missionId, args2) => {
     const missionMeta = getMissionMetadata2(missionId);
-    const launch = isRecord3(missionMeta?.launch) ? missionMeta.launch : {};
+    const launch = isRecord2(missionMeta?.launch) ? missionMeta.launch : {};
     const userRules = {};
     if (typeof launch.providerPreference === "string") userRules.providerPreference = launch.providerPreference;
     if (typeof launch.costMode === "string") userRules.costMode = launch.costMode;
     if (typeof launch.maxParallelWorkers === "number") userRules.maxParallelWorkers = launch.maxParallelWorkers;
-    const agentRuntime = isRecord3(launch.agentRuntime) ? launch.agentRuntime : null;
+    const agentRuntime = isRecord2(launch.agentRuntime) ? launch.agentRuntime : null;
     if (agentRuntime) {
       const flags = normalizeAgentRuntimeFlags(agentRuntime);
       userRules.allowParallelAgents = flags.allowParallelAgents;
@@ -61058,14 +62592,14 @@ Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : Strin
       userRules.recoveryMaxIterations = phaseSettings.recoveryLoop.maxIterations;
     }
     if (phaseSettings.prStrategy?.kind) userRules.prStrategy = phaseSettings.prStrategy.kind;
-    const budgetConfig = isRecord3(launch.budgetConfig) ? launch.budgetConfig : null;
+    const budgetConfig = isRecord2(launch.budgetConfig) ? launch.budgetConfig : null;
     if (budgetConfig) {
       if (typeof budgetConfig.maxCostUsd === "number") userRules.budgetLimitUsd = budgetConfig.maxCostUsd;
       if (typeof budgetConfig.maxTokens === "number") userRules.budgetLimitTokens = budgetConfig.maxTokens;
     }
-    const plannerPlanMeta = isRecord3(missionMeta?.plannerPlan) ? missionMeta.plannerPlan : null;
+    const plannerPlanMeta = isRecord2(missionMeta?.plannerPlan) ? missionMeta.plannerPlan : null;
     const plannerSummaryHints = (() => {
-      if (!plannerPlanMeta || !isRecord3(plannerPlanMeta.missionSummary)) return [];
+      if (!plannerPlanMeta || !isRecord2(plannerPlanMeta.missionSummary)) return [];
       const summary = plannerPlanMeta.missionSummary;
       const objective = typeof summary.objective === "string" ? summary.objective.trim() : "";
       const strategy = typeof summary.strategy === "string" ? summary.strategy.trim() : "";
@@ -61342,6 +62876,7 @@ Stop work and wrap up any in-flight operations.`;
   const steerMission = (steerArgs) => {
     const missionId = steerArgs.missionId?.trim();
     if (!missionId) throw new Error("missionId is required.");
+    const targetedInterventionId = typeof steerArgs.interventionId === "string" && steerArgs.interventionId.trim().length > 0 ? steerArgs.interventionId.trim() : null;
     const mission = missionService.get(missionId);
     if (!mission) throw new Error(`Mission not found: ${missionId}`);
     const directive = {
@@ -61430,7 +62965,10 @@ Stop work and wrap up any in-flight operations.`;
     const resolvedInterventions = [];
     const resumedRunIds = /* @__PURE__ */ new Set();
     const refreshedMission = missionService.get(missionId);
-    const openManualInput = refreshedMission?.interventions.filter((entry) => entry.status === "open" && entry.interventionType === "manual_input") ?? [];
+    const openManualInput = refreshedMission?.interventions.filter((entry) => {
+      if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
+      return !targetedInterventionId || entry.id === targetedInterventionId;
+    }) ?? [];
     for (const intervention of openManualInput) {
       try {
         missionService.resolveIntervention({
@@ -61440,7 +62978,7 @@ Stop work and wrap up any in-flight operations.`;
           note: `Resolved by steering directive (${directive.priority}).`
         });
         resolvedInterventions.push(intervention.id);
-        const meta3 = isRecord3(intervention.metadata) ? intervention.metadata : null;
+        const meta3 = isRecord2(intervention.metadata) ? intervention.metadata : null;
         const runId = typeof meta3?.runId === "string" ? meta3.runId : "";
         if (runId.length > 0) {
           const threadId = typeof meta3?.threadId === "string" ? meta3.threadId.trim() : "";
@@ -61657,7 +63195,7 @@ Stop work and wrap up any in-flight operations.`;
     if (!attempt) return;
     if (attempt.status !== "succeeded" && attempt.status !== "failed") return;
     const childStep = graph.steps.find((step) => step.id === attempt.stepId);
-    const childMeta = isRecord3(childStep?.metadata) ? childStep.metadata : null;
+    const childMeta = isRecord2(childStep?.metadata) ? childStep.metadata : null;
     if (!childStep || childMeta?.isSubAgent !== true) return;
     const parentWorkerId = typeof childMeta.parentWorkerId === "string" ? childMeta.parentWorkerId.trim() : "";
     if (!parentWorkerId.length) return;
@@ -61821,7 +63359,7 @@ Stop work and wrap up any in-flight operations.`;
       const integrationPrPlan = previewPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
       const phaseMap = /* @__PURE__ */ new Map();
       for (const step of graph.steps) {
-        const stepMeta = isRecord3(step.metadata) ? step.metadata : {};
+        const stepMeta = isRecord2(step.metadata) ? step.metadata : {};
         const phase = typeof stepMeta.stepType === "string" && stepMeta.stepType.trim().length > 0 ? stepMeta.stepType.trim() : step.stepKey.replace(/_\d+$/, "");
         const bucket = phaseMap.get(phase) ?? [];
         bucket.push(step);
@@ -61830,7 +63368,7 @@ Stop work and wrap up any in-flight operations.`;
       const phases = [];
       for (const [phaseName, phaseSteps] of phaseMap.entries()) {
         const stepPreviews = phaseSteps.map((step) => {
-          const stepMeta = isRecord3(step.metadata) ? step.metadata : {};
+          const stepMeta = isRecord2(step.metadata) ? step.metadata : {};
           const workerAssignment = teamManifest?.workers.find((w) => w.assignedStepKeys.includes(step.stepKey));
           const role = workerAssignment?.role ?? inferRoleFromStepMetadata(stepMeta, step.stepKey);
           const stepExecutorKind = typeof stepMeta.executorKind === "string" ? stepMeta.executorKind : workerAssignment?.executorKind ?? "unified";
@@ -61847,7 +63385,7 @@ Stop work and wrap up any in-flight operations.`;
           };
         });
         const firstStep = phaseSteps[0];
-        const firstStepMeta = firstStep ? isRecord3(firstStep.metadata) ? firstStep.metadata : {} : {};
+        const firstStepMeta = firstStep ? isRecord2(firstStep.metadata) ? firstStep.metadata : {} : {};
         const firstStepExecutorKind = typeof firstStepMeta.executorKind === "string" ? firstStepMeta.executorKind : "unified";
         phases.push({
           phase: phaseName,
@@ -62015,7 +63553,7 @@ Stop work and wrap up any in-flight operations.`;
     if (runId && channelSet.has("runtime")) {
       const runtimeEvents = orchestratorService.listRuntimeEvents({ runId, limit: 4e3 });
       for (const event of runtimeEvents) {
-        const payload = isRecord3(event.payload) ? event.payload : null;
+        const payload = isRecord2(event.payload) ? event.payload : null;
         const summary = payload && typeof payload.summary === "string" && payload.summary.trim().length > 0 ? payload.summary.trim() : event.eventType;
         pushEntry({
           id: `runtime:${event.id}`,
@@ -62051,7 +63589,7 @@ Stop work and wrap up any in-flight operations.`;
           message: text.length > 0 ? text : "(empty message)",
           stepKey: message.stepKey ?? null,
           threadId: message.threadId ?? null,
-          payload: isRecord3(message.metadata) ? message.metadata : null
+          payload: isRecord2(message.metadata) ? message.metadata : null
         });
       };
       const globalMessages = getGlobalChat({ missionId, limit: 2e3 });
@@ -62220,12 +63758,12 @@ Stop work and wrap up any in-flight operations.`;
     }
     const root = projectRoot ?? process.cwd();
     const runPart = runId ?? "latest";
-    const bundlePath = import_node_path26.default.join(root, ".ade", "log-bundles", missionId, runPart);
-    import_node_fs24.default.mkdirSync(bundlePath, { recursive: true });
+    const bundlePath = import_node_path27.default.join(root, ".ade", "log-bundles", missionId, runPart);
+    import_node_fs25.default.mkdirSync(bundlePath, { recursive: true });
     const files = [];
     const writeBundleFile = (name, content, entriesCount = 0) => {
-      const filePath = import_node_path26.default.join(bundlePath, name);
-      import_node_fs24.default.writeFileSync(filePath, content, "utf8");
+      const filePath = import_node_path27.default.join(bundlePath, name);
+      import_node_fs25.default.writeFileSync(filePath, content, "utf8");
       files.push({
         name,
         path: filePath,
@@ -62320,6 +63858,42 @@ Stop work and wrap up any in-flight operations.`;
           });
         }
       }
+      if (event.type === "orchestrator-attempt-updated" && event.attemptId && event.stepId) {
+        try {
+          const graph = getEventGraph();
+          const step = graph.steps.find((entry) => entry.id === event.stepId) ?? null;
+          const attempt = graph.attempts.find((entry) => entry.id === event.attemptId) ?? null;
+          const missionId = graph.run.missionId ?? getMissionIdForRun2(runId);
+          if (missionId) {
+            const threadStatus = attempt && (attempt.status === "succeeded" || attempt.status === "failed" || attempt.status === "blocked" || attempt.status === "canceled") ? "closed" : "active";
+            const fallbackStepLabel = step?.stepKey?.trim() || step?.title?.trim() || "starting";
+            upsertThread2({
+              missionId,
+              threadId: `worker:${missionId}:${event.attemptId}`,
+              threadType: "worker",
+              title: `Worker: ${fallbackStepLabel}`,
+              target: {
+                kind: "worker",
+                runId,
+                stepId: step?.id ?? event.stepId,
+                stepKey: step?.stepKey ?? null,
+                attemptId: event.attemptId,
+                sessionId: attempt?.executorSessionId ?? null,
+                laneId: step?.laneId ?? null
+              },
+              status: threadStatus
+            });
+          }
+        } catch (threadError) {
+          logger.debug("ai_orchestrator.worker_thread_upsert_failed", {
+            runId,
+            stepId: event.stepId,
+            attemptId: event.attemptId,
+            reason: event.reason,
+            error: threadError instanceof Error ? threadError.message : String(threadError)
+          });
+        }
+      }
       const existingCoordinator = coordinatorAgents.get(runId) ?? null;
       let coordinator = existingCoordinator?.isAlive ? existingCoordinator : null;
       if (!coordinator && existingCoordinator && !existingCoordinator.isAlive) {
@@ -62327,6 +63901,11 @@ Stop work and wrap up any in-flight operations.`;
         if (recovered?.isAlive) coordinator = recovered;
       }
       if (!coordinator) {
+        const runStatus = getEventGraph().run.status;
+        const waitingForCoordinatorStartup = !existingCoordinator && event.type === "orchestrator-run-updated" && (runStatus === "bootstrapping" || runStatus === "queued");
+        if (waitingForCoordinatorStartup) {
+          return;
+        }
         if (event.reason !== "finalized") {
           const missionId = getMissionIdForRun2(runId);
           if (missionId) {
@@ -62538,7 +64117,7 @@ var import_ai13 = require("ai");
 
 // ../desktop/src/main/services/ai/tools/editFile.ts
 var import_ai5 = require("ai");
-var import_node_fs25 = __toESM(require("fs"), 1);
+var import_node_fs26 = __toESM(require("fs"), 1);
 var editFileTool = (0, import_ai5.tool)({
   description: "Make a targeted edit to a file by replacing an exact string match with new content. The old_string must appear exactly once in the file unless replace_all is true.",
   inputSchema: external_exports.object({
@@ -62549,10 +64128,10 @@ var editFileTool = (0, import_ai5.tool)({
   }),
   execute: async ({ file_path, old_string, new_string, replace_all }) => {
     try {
-      if (!import_node_fs25.default.existsSync(file_path)) {
+      if (!import_node_fs26.default.existsSync(file_path)) {
         return { success: false, message: `File not found: ${file_path}` };
       }
-      const content = import_node_fs25.default.readFileSync(file_path, "utf-8");
+      const content = import_node_fs26.default.readFileSync(file_path, "utf-8");
       if (!content.includes(old_string)) {
         return {
           success: false,
@@ -62570,7 +64149,7 @@ var editFileTool = (0, import_ai5.tool)({
         }
       }
       const updated = replace_all ? content.split(old_string).join(new_string) : content.replace(old_string, new_string);
-      import_node_fs25.default.writeFileSync(file_path, updated, "utf-8");
+      import_node_fs26.default.writeFileSync(file_path, updated, "utf-8");
       return { success: true, message: `Successfully edited ${file_path}` };
     } catch (err) {
       return {
@@ -62583,7 +64162,7 @@ var editFileTool = (0, import_ai5.tool)({
 
 // ../desktop/src/main/services/ai/tools/readFileRange.ts
 var import_ai6 = require("ai");
-var import_node_fs26 = __toESM(require("fs"), 1);
+var import_node_fs27 = __toESM(require("fs"), 1);
 var readFileRangeTool = (0, import_ai6.tool)({
   description: "Read a file's contents with line numbers. Can read specific ranges for large files.",
   inputSchema: external_exports.object({
@@ -62593,10 +64172,10 @@ var readFileRangeTool = (0, import_ai6.tool)({
   }),
   execute: async ({ file_path, offset, limit }) => {
     try {
-      if (!import_node_fs26.default.existsSync(file_path)) {
+      if (!import_node_fs27.default.existsSync(file_path)) {
         return { content: "", totalLines: 0, error: `File not found: ${file_path}` };
       }
-      const raw = import_node_fs26.default.readFileSync(file_path, "utf-8");
+      const raw = import_node_fs27.default.readFileSync(file_path, "utf-8");
       const allLines = raw.split("\n");
       const totalLines = allLines.length;
       const start = Math.max(1, offset ?? 1);
@@ -62621,11 +64200,11 @@ var readFileRangeTool = (0, import_ai6.tool)({
 
 // ../desktop/src/main/services/ai/tools/grepSearch.ts
 var import_ai7 = require("ai");
-var import_node_child_process7 = require("child_process");
+var import_node_child_process8 = require("child_process");
 var import_node_util = require("util");
-var import_node_fs27 = __toESM(require("fs"), 1);
-var import_node_path27 = __toESM(require("path"), 1);
-var execFileAsync = (0, import_node_util.promisify)(import_node_child_process7.execFile);
+var import_node_fs28 = __toESM(require("fs"), 1);
+var import_node_path28 = __toESM(require("path"), 1);
+var execFileAsync = (0, import_node_util.promisify)(import_node_child_process8.execFile);
 var grepSearchTool = (0, import_ai7.tool)({
   description: "Search file contents using regex patterns. Returns matching lines with file paths and line numbers.",
   inputSchema: external_exports.object({
@@ -62686,7 +64265,7 @@ async function jsFallbackGrep(pattern, target, fileGlob) {
   for (const filePath of files) {
     if (results.length >= 500) break;
     try {
-      const content = import_node_fs27.default.readFileSync(filePath, "utf-8");
+      const content = import_node_fs28.default.readFileSync(filePath, "utf-8");
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
         if (regex.test(lines[i])) {
@@ -62701,7 +64280,7 @@ async function jsFallbackGrep(pattern, target, fileGlob) {
 }
 var SKIP_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 async function collectFiles(dir, fileGlob, maxFiles = 5e3) {
-  const stat = import_node_fs27.default.statSync(dir);
+  const stat = import_node_fs28.default.statSync(dir);
   if (stat.isFile()) return [dir];
   const files = [];
   const globRegex = fileGlob ? globToRegex(fileGlob) : null;
@@ -62709,7 +64288,7 @@ async function collectFiles(dir, fileGlob, maxFiles = 5e3) {
     if (files.length >= maxFiles) return;
     let entries;
     try {
-      entries = import_node_fs27.default.readdirSync(current, { withFileTypes: true });
+      entries = import_node_fs28.default.readdirSync(current, { withFileTypes: true });
     } catch {
       return;
     }
@@ -62717,10 +64296,10 @@ async function collectFiles(dir, fileGlob, maxFiles = 5e3) {
       if (files.length >= maxFiles) return;
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
-          await walk(import_node_path27.default.join(current, entry.name));
+          await walk(import_node_path28.default.join(current, entry.name));
         }
       } else if (entry.isFile()) {
-        const fullPath = import_node_path27.default.join(current, entry.name);
+        const fullPath = import_node_path28.default.join(current, entry.name);
         if (!globRegex || globRegex.test(entry.name)) {
           files.push(fullPath);
         }
@@ -62742,8 +64321,8 @@ function globToRegex(glob) {
 
 // ../desktop/src/main/services/ai/tools/globSearch.ts
 var import_ai8 = require("ai");
-var import_node_fs28 = __toESM(require("fs"), 1);
-var import_node_path28 = __toESM(require("path"), 1);
+var import_node_fs29 = __toESM(require("fs"), 1);
+var import_node_path29 = __toESM(require("path"), 1);
 var SKIP_DIRS2 = /* @__PURE__ */ new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 var globSearchTool = (0, import_ai8.tool)({
   description: "Find files matching a glob pattern. Returns sorted file paths.",
@@ -62773,14 +64352,14 @@ function walkAndMatch(root, globPattern, maxFiles = 5e3) {
     if (results.length >= maxFiles) return;
     let entries;
     try {
-      entries = import_node_fs28.default.readdirSync(dir, { withFileTypes: true });
+      entries = import_node_fs29.default.readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
       if (results.length >= maxFiles) return;
-      const fullPath = import_node_path28.default.join(dir, entry.name);
-      const relativePath = import_node_path28.default.relative(root, fullPath);
+      const fullPath = import_node_path29.default.join(dir, entry.name);
+      const relativePath = import_node_path29.default.relative(root, fullPath);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS2.has(entry.name) && !entry.name.startsWith(".")) {
           walk(fullPath);
@@ -62899,12 +64478,6 @@ function mapCategoryToFactType(category) {
     case "convention":
     case "preference":
       return "config";
-    case "decision":
-    case "fact":
-    case "episode":
-    case "procedure":
-    case "digest":
-    case "handoff":
     default:
       return "architectural";
   }
@@ -63023,12 +64596,12 @@ function createMemoryTools(memoryService, projectId, opts) {
 
 // ../desktop/src/main/services/ai/tools/universalTools.ts
 var import_ai12 = require("ai");
-var import_node_fs29 = __toESM(require("fs"), 1);
+var import_node_fs30 = __toESM(require("fs"), 1);
 var import_node_os = __toESM(require("os"), 1);
-var import_node_path29 = __toESM(require("path"), 1);
-var import_node_child_process8 = require("child_process");
+var import_node_path30 = __toESM(require("path"), 1);
+var import_node_child_process9 = require("child_process");
 var import_node_util2 = require("util");
-var execFileAsync2 = (0, import_node_util2.promisify)(import_node_child_process8.execFile);
+var execFileAsync2 = (0, import_node_util2.promisify)(import_node_child_process9.execFile);
 function requiresApproval(mode, category) {
   switch (mode) {
     case "plan":
@@ -63058,11 +64631,11 @@ function compileSandbox(config2) {
 }
 var WRITE_COMMAND_RE = /(?:>|>>|tee|cp\s|mv\s|rm\s|write|edit)/;
 function resolveAllowedWriteRoots(cwd, sandboxConfig) {
-  const roots = /* @__PURE__ */ new Set([import_node_path29.default.resolve(cwd)]);
+  const roots = /* @__PURE__ */ new Set([import_node_path30.default.resolve(cwd)]);
   if (sandboxConfig?.allowedPaths) {
     for (const allowedPath of sandboxConfig.allowedPaths) {
       if (typeof allowedPath !== "string" || allowedPath.trim().length === 0) continue;
-      roots.add(import_node_path29.default.resolve(cwd, allowedPath));
+      roots.add(import_node_path30.default.resolve(cwd, allowedPath));
     }
   }
   return [...roots];
@@ -63118,8 +64691,8 @@ function collectPathReferences(command, cwd) {
     if (!normalizedRaw.length) return;
     if (normalizedRaw === "/dev/null") return;
     if (normalizedRaw.includes("://")) return;
-    const expandedPath = normalizedRaw === "~" ? import_node_os.default.homedir() : normalizedRaw.startsWith("~/") ? import_node_path29.default.join(import_node_os.default.homedir(), normalizedRaw.slice(2)) : normalizedRaw;
-    const resolved = import_node_path29.default.resolve(cwd, expandedPath);
+    const expandedPath = normalizedRaw === "~" ? import_node_os.default.homedir() : normalizedRaw.startsWith("~/") ? import_node_path30.default.join(import_node_os.default.homedir(), normalizedRaw.slice(2)) : normalizedRaw;
+    const resolved = import_node_path30.default.resolve(cwd, expandedPath);
     const key = `${normalizedRaw}::${resolved}`;
     if (!refs.has(key)) refs.set(key, { raw: normalizedRaw, resolved });
   };
@@ -63148,14 +64721,14 @@ function checkWorkerSandbox(command, config2, projectRoot) {
     }
   }
   const safeMatch = compiled.safe.some((re) => re.test(command));
-  const rootResolved = import_node_path29.default.resolve(projectRoot);
+  const rootResolved = import_node_path30.default.resolve(projectRoot);
   const pathRefs = collectPathReferences(command, projectRoot);
   for (const entry of pathRefs) {
     const p = entry.raw;
     const resolved = entry.resolved;
     if (resolved.startsWith("/usr/bin/") || resolved.startsWith("/usr/local/bin/") || resolved === "/dev/null") continue;
     const withinAllowed = config2.allowedPaths.some((allowed) => {
-      const allowedAbs = import_node_path29.default.resolve(projectRoot, allowed);
+      const allowedAbs = import_node_path30.default.resolve(projectRoot, allowed);
       return isWithinDir(allowedAbs, resolved);
     });
     if (!withinAllowed && !isWithinDir(rootResolved, resolved)) {
@@ -63207,7 +64780,7 @@ function createBashTool(cwd, mode, sandboxConfig) {
       try {
         const result = await new Promise(
           (resolve, reject) => {
-            const proc = (0, import_node_child_process8.spawn)("bash", ["-c", command], {
+            const proc = (0, import_node_child_process9.spawn)("bash", ["-c", command], {
               cwd,
               timeout: clampedTimeout,
               stdio: ["ignore", "pipe", "pipe"],
@@ -63261,7 +64834,7 @@ function createWriteFileTool(cwd, mode, sandboxConfig) {
     })(),
     execute: async ({ file_path, content }) => {
       try {
-        const targetPath = import_node_path29.default.resolve(cwd, file_path);
+        const targetPath = import_node_path30.default.resolve(cwd, file_path);
         const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig);
         const withinAllowedRoots = allowedRoots.some((allowedRoot) => isWithinDir(allowedRoot, targetPath));
         if (!withinAllowedRoots) {
@@ -63270,8 +64843,8 @@ function createWriteFileTool(cwd, mode, sandboxConfig) {
             message: `Write path is outside allowed roots: ${file_path}`
           };
         }
-        import_node_fs29.default.mkdirSync(import_node_path29.default.dirname(targetPath), { recursive: true });
-        import_node_fs29.default.writeFileSync(targetPath, content, "utf-8");
+        import_node_fs30.default.mkdirSync(import_node_path30.default.dirname(targetPath), { recursive: true });
+        import_node_fs30.default.writeFileSync(targetPath, content, "utf-8");
         return { success: true, message: `Wrote ${content.length} characters to ${targetPath}` };
       } catch (err) {
         return {
@@ -63295,7 +64868,7 @@ function createListDirTool() {
           if (entries.length >= maxEntries) return;
           let items;
           try {
-            items = import_node_fs29.default.readdirSync(dir, { withFileTypes: true });
+            items = import_node_fs30.default.readdirSync(dir, { withFileTypes: true });
           } catch {
             return;
           }
@@ -63310,12 +64883,12 @@ function createListDirTool() {
             if (item.isDirectory()) {
               entries.push({ name: relName, type: "directory" });
               if (recursive && !item.name.startsWith(".") && item.name !== "node_modules") {
-                walk2(import_node_path29.default.join(dir, item.name), relName);
+                walk2(import_node_path30.default.join(dir, item.name), relName);
               }
             } else {
               let size;
               try {
-                size = import_node_fs29.default.statSync(import_node_path29.default.join(dir, item.name)).size;
+                size = import_node_fs30.default.statSync(import_node_path30.default.join(dir, item.name)).size;
               } catch {
               }
               entries.push({ name: relName, type: "file", size });
@@ -63323,10 +64896,10 @@ function createListDirTool() {
           }
         };
         var walk = walk2;
-        if (!import_node_fs29.default.existsSync(dirPath)) {
+        if (!import_node_fs30.default.existsSync(dirPath)) {
           return { entries: [], error: `Directory not found: ${dirPath}` };
         }
-        const stat = import_node_fs29.default.statSync(dirPath);
+        const stat = import_node_fs30.default.statSync(dirPath);
         if (!stat.isDirectory()) {
           return { entries: [], error: `Not a directory: ${dirPath}` };
         }
@@ -63802,13 +65375,13 @@ ${opts.prompt}`,
 
 // ../desktop/src/main/services/ai/modelsDevService.ts
 var import_promises2 = require("fs/promises");
-var import_node_path30 = require("path");
+var import_node_path31 = require("path");
 var import_node_os2 = require("os");
 var API_URL = "https://models.dev/api.json";
 var FETCH_TIMEOUT_MS = 1e4;
 var REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1e3;
-var CACHE_DIR = (0, import_node_path30.join)((0, import_node_os2.homedir)(), ".ade");
-var CACHE_FILE = (0, import_node_path30.join)(CACHE_DIR, "models-dev-cache.json");
+var CACHE_DIR = (0, import_node_path31.join)((0, import_node_os2.homedir)(), ".ade");
+var CACHE_FILE = (0, import_node_path31.join)(CACHE_DIR, "models-dev-cache.json");
 var modelDataMap = /* @__PURE__ */ new Map();
 var refreshTimer = null;
 var initialized = false;
@@ -64136,14 +65709,8 @@ function createAiIntegrationService(args) {
         verifiedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
     }
-    if (apiEntry.type === "openrouter") {
-      const verification2 = await verifyProviderApiKey("openrouter", apiEntry.key);
-      return {
-        ...verification2,
-        source: apiEntry.source
-      };
-    }
-    const verification = await verifyProviderApiKey(apiEntry.provider, apiEntry.key);
+    const providerName = apiEntry.type === "openrouter" ? "openrouter" : apiEntry.provider;
+    const verification = await verifyProviderApiKey(providerName, apiEntry.key);
     return {
       ...verification,
       source: apiEntry.source
@@ -64269,9 +65836,7 @@ function createAiIntegrationService(args) {
     }
     return available[0].id;
   };
-  const executeViaUnifiedPath = async (args2) => {
-    const modelId = args2.model;
-    if (!modelId) throw new Error("model is required for unified execution path");
+  const consumeEventStream = async (stream, feature, modelId) => {
     const start = Date.now();
     let text = "";
     let structuredOutput = null;
@@ -64279,25 +65844,7 @@ function createAiIntegrationService(args) {
     let inputTokens = null;
     let outputTokens = null;
     let model = null;
-    for await (const event of executeUnified({
-      modelId,
-      prompt: args2.prompt,
-      system: args2.systemPrompt,
-      cwd: args2.cwd,
-      tools: args2.taskType === "mission_planning" ? "planning" : args2.permissionMode === "read-only" ? "none" : "coding",
-      timeout: args2.timeoutMs,
-      jsonSchema: args2.jsonSchema,
-      reasoningEffort: args2.reasoningEffort,
-      ...args2.projectId ? { projectId: args2.projectId } : {},
-      ...args2.runId ? { runId: args2.runId } : {},
-      ...args2.stepId ? { stepId: args2.stepId } : {},
-      ...args2.attemptId ? { attemptId: args2.attemptId } : {},
-      ...args2.projectId && args2.runId && args2.stepId && args2.attemptId ? { db, enableCompaction: true } : {},
-      ...args2.memoryService ? { memoryService: args2.memoryService } : {},
-      ...args2.memoryService && args2.runId ? {
-        addSharedFact: args2.memoryService.addSharedFact.bind(args2.memoryService)
-      } : {}
-    })) {
+    for await (const event of stream) {
       if (event.type === "text") text += event.content;
       if (event.type === "structured_output") structuredOutput = event.data;
       if (event.type === "done") {
@@ -64311,7 +65858,7 @@ function createAiIntegrationService(args) {
     const durationMs = Date.now() - start;
     const descriptor = getModelById(modelId);
     logUsage({
-      feature: args2.feature,
+      feature,
       provider: descriptor?.family ?? "unknown",
       model,
       inputTokens,
@@ -64330,6 +65877,33 @@ function createAiIntegrationService(args) {
       outputTokens,
       durationMs
     };
+  };
+  const executeViaUnifiedPath = async (args2) => {
+    const modelId = args2.model;
+    if (!modelId) throw new Error("model is required for unified execution path");
+    return consumeEventStream(
+      executeUnified({
+        modelId,
+        prompt: args2.prompt,
+        system: args2.systemPrompt,
+        cwd: args2.cwd,
+        tools: args2.taskType === "mission_planning" ? "planning" : args2.permissionMode === "read-only" ? "none" : "coding",
+        timeout: args2.timeoutMs,
+        jsonSchema: args2.jsonSchema,
+        reasoningEffort: args2.reasoningEffort,
+        ...args2.projectId ? { projectId: args2.projectId } : {},
+        ...args2.runId ? { runId: args2.runId } : {},
+        ...args2.stepId ? { stepId: args2.stepId } : {},
+        ...args2.attemptId ? { attemptId: args2.attemptId } : {},
+        ...args2.projectId && args2.runId && args2.stepId && args2.attemptId ? { db, enableCompaction: true } : {},
+        ...args2.memoryService ? { memoryService: args2.memoryService } : {},
+        ...args2.memoryService && args2.runId ? {
+          addSharedFact: args2.memoryService.addSharedFact.bind(args2.memoryService)
+        } : {}
+      }),
+      args2.feature,
+      modelId
+    );
   };
   const executeTask = async (args2) => {
     const requestId = (0, import_node_crypto22.randomUUID)();
@@ -64533,60 +66107,25 @@ function createAiIntegrationService(args) {
       });
     },
     async resumeTask(args2) {
-      const modelId = args2.model ? await resolveModelForTask(args2.taskType, args2.model) : await resolveModelForTask(args2.taskType);
-      const start = Date.now();
-      let text = "";
-      let structuredOutput = null;
-      let sessionId = null;
-      let inputTokens = null;
-      let outputTokens = null;
-      let resultModel = null;
-      for await (const event of resumeUnified({
-        modelId,
-        prompt: args2.prompt,
-        cwd: args2.cwd,
-        timeout: args2.timeoutMs,
-        tools: "coding",
-        previousAttemptId: args2.previousAttemptId,
-        db,
-        projectId: args2.projectId,
-        attemptId: args2.attemptId,
-        runId: args2.runId,
-        stepId: args2.stepId,
-        enableCompaction: true
-      })) {
-        if (event.type === "text") text += event.content;
-        if (event.type === "structured_output") structuredOutput = event.data;
-        if (event.type === "done") {
-          sessionId = event.sessionId;
-          inputTokens = event.usage?.inputTokens ?? null;
-          outputTokens = event.usage?.outputTokens ?? null;
-          resultModel = event.model ?? null;
-        }
-        if (event.type === "error") throw new Error(event.message);
-      }
-      const durationMs = Date.now() - start;
-      const descriptor = getModelById(modelId);
-      logUsage({
-        feature: args2.feature,
-        provider: descriptor?.family ?? "unknown",
-        model: resultModel,
-        inputTokens,
-        outputTokens,
-        durationMs,
-        success: true,
-        sessionId
-      });
-      return {
-        text,
-        structuredOutput,
-        provider: descriptor?.family ?? "unknown",
-        model: resultModel,
-        sessionId,
-        inputTokens,
-        outputTokens,
-        durationMs
-      };
+      const modelId = await resolveModelForTask(args2.taskType, args2.model);
+      return consumeEventStream(
+        resumeUnified({
+          modelId,
+          prompt: args2.prompt,
+          cwd: args2.cwd,
+          timeout: args2.timeoutMs,
+          tools: "coding",
+          previousAttemptId: args2.previousAttemptId,
+          db,
+          projectId: args2.projectId,
+          attemptId: args2.attemptId,
+          runId: args2.runId,
+          stepId: args2.stepId,
+          enableCompaction: true
+        }),
+        args2.feature,
+        modelId
+      );
     }
   };
 }
@@ -64623,19 +66162,19 @@ function createEventBuffer(capacity = 1e4) {
   };
 }
 function ensureAdePaths(projectRoot) {
-  const adeDir = import_node_path31.default.join(projectRoot, ".ade");
-  const logsDir = import_node_path31.default.join(adeDir, "logs");
-  const processLogsDir = import_node_path31.default.join(logsDir, "processes");
-  const testLogsDir = import_node_path31.default.join(logsDir, "tests");
-  const transcriptsDir = import_node_path31.default.join(adeDir, "transcripts");
-  const worktreesDir = import_node_path31.default.join(adeDir, "worktrees");
-  const packsDir = import_node_path31.default.join(adeDir, "packs");
-  const dbPath = import_node_path31.default.join(adeDir, "ade.db");
-  import_node_fs30.default.mkdirSync(processLogsDir, { recursive: true });
-  import_node_fs30.default.mkdirSync(testLogsDir, { recursive: true });
-  import_node_fs30.default.mkdirSync(transcriptsDir, { recursive: true });
-  import_node_fs30.default.mkdirSync(worktreesDir, { recursive: true });
-  import_node_fs30.default.mkdirSync(packsDir, { recursive: true });
+  const adeDir = import_node_path32.default.join(projectRoot, ".ade");
+  const logsDir = import_node_path32.default.join(adeDir, "logs");
+  const processLogsDir = import_node_path32.default.join(logsDir, "processes");
+  const testLogsDir = import_node_path32.default.join(logsDir, "tests");
+  const transcriptsDir = import_node_path32.default.join(adeDir, "transcripts");
+  const worktreesDir = import_node_path32.default.join(adeDir, "worktrees");
+  const packsDir = import_node_path32.default.join(adeDir, "packs");
+  const dbPath = import_node_path32.default.join(adeDir, "ade.db");
+  import_node_fs31.default.mkdirSync(processLogsDir, { recursive: true });
+  import_node_fs31.default.mkdirSync(testLogsDir, { recursive: true });
+  import_node_fs31.default.mkdirSync(transcriptsDir, { recursive: true });
+  import_node_fs31.default.mkdirSync(worktreesDir, { recursive: true });
+  import_node_fs31.default.mkdirSync(packsDir, { recursive: true });
   return {
     adeDir,
     logsDir,
@@ -64648,13 +66187,13 @@ function ensureAdePaths(projectRoot) {
   };
 }
 async function createAdeMcpRuntime(projectRootInput) {
-  const projectRoot = import_node_path31.default.resolve(projectRootInput);
-  if (!import_node_fs30.default.existsSync(projectRoot) || !import_node_fs30.default.statSync(projectRoot).isDirectory()) {
+  const projectRoot = import_node_path32.default.resolve(projectRootInput);
+  if (!import_node_fs31.default.existsSync(projectRoot) || !import_node_fs31.default.statSync(projectRoot).isDirectory()) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
   }
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
-  const logger = createFileLogger(import_node_path31.default.join(paths.logsDir, "mcp-server.jsonl"));
+  const logger = createFileLogger(import_node_path32.default.join(paths.logsDir, "mcp-server.jsonl"));
   const db = await openKvDb(paths.dbPath, logger);
   const project = toProjectInfo(projectRoot, baseRef);
   const { projectId } = upsertProjectRow({
@@ -64704,7 +66243,7 @@ async function createAdeMcpRuntime(projectRootInput) {
     laneService,
     projectConfigService,
     operationService,
-    conflictPacksDir: import_node_path31.default.join(paths.packsDir, "conflicts"),
+    conflictPacksDir: import_node_path32.default.join(paths.packsDir, "conflicts"),
     onEvent: () => {
     }
   });
@@ -65181,8 +66720,8 @@ function startJsonRpcServer(handler, transport) {
 
 // src/mcpServer.ts
 var import_node_crypto23 = require("crypto");
-var import_node_fs31 = __toESM(require("fs"), 1);
-var import_node_path32 = __toESM(require("path"), 1);
+var import_node_fs32 = __toESM(require("fs"), 1);
+var import_node_path33 = __toESM(require("path"), 1);
 var DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 var DEFAULT_PTY_COLS = 120;
 var DEFAULT_PTY_ROWS = 36;
@@ -66167,17 +67706,17 @@ function resolveSpawnContextFile(args) {
     return { contextFilePath: null, contextDigest: null, contextBytes: null, approxTokens };
   }
   if (contextFilePathRaw.length) {
-    if (import_node_path32.default.isAbsolute(contextFilePathRaw)) {
+    if (import_node_path33.default.isAbsolute(contextFilePathRaw)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be a relative path within the project directory");
     }
-    const abs = import_node_path32.default.resolve(args.runtime.projectRoot, contextFilePathRaw);
-    if (!abs.startsWith(args.runtime.projectRoot + import_node_path32.default.sep) && abs !== args.runtime.projectRoot) {
+    const abs = import_node_path33.default.resolve(args.runtime.projectRoot, contextFilePathRaw);
+    if (!abs.startsWith(args.runtime.projectRoot + import_node_path33.default.sep) && abs !== args.runtime.projectRoot) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be within the project directory");
     }
-    if (!import_node_fs31.default.existsSync(abs)) {
+    if (!import_node_fs32.default.existsSync(abs)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `contextFilePath does not exist: ${contextFilePathRaw}`);
     }
-    const text = import_node_fs31.default.readFileSync(abs, "utf8");
+    const text = import_node_fs32.default.readFileSync(abs, "utf8");
     return {
       contextFilePath: abs,
       contextDigest: sha256Text(text),
@@ -66185,12 +67724,12 @@ function resolveSpawnContextFile(args) {
       approxTokens
     };
   }
-  const baseDir = import_node_path32.default.join(args.runtime.projectRoot, ".ade", "orchestrator", "mcp-context");
+  const baseDir = import_node_path33.default.join(args.runtime.projectRoot, ".ade", "orchestrator", "mcp-context");
   const runSegment = args.runId ?? "standalone";
-  const dir = import_node_path32.default.join(baseDir, runSegment);
-  import_node_fs31.default.mkdirSync(dir, { recursive: true });
+  const dir = import_node_path33.default.join(baseDir, runSegment);
+  import_node_fs32.default.mkdirSync(dir, { recursive: true });
   const filename = `${Date.now()}-${(0, import_node_crypto23.randomUUID)()}.json`;
-  const contextFilePath = import_node_path32.default.join(dir, filename);
+  const contextFilePath = import_node_path33.default.join(dir, filename);
   const payload = {
     schema: "ade.mcp.spawnAgentContext.v1",
     generatedAt: nowIso5(),
@@ -66230,7 +67769,7 @@ function resolveSpawnContextFile(args) {
   };
   const serialized = `${JSON.stringify(payload, null, 2)}
 `;
-  import_node_fs31.default.writeFileSync(contextFilePath, serialized, "utf8");
+  import_node_fs32.default.writeFileSync(contextFilePath, serialized, "utf8");
   return {
     contextFilePath,
     contextDigest: sha256Text(serialized),
@@ -66635,6 +68174,100 @@ function resolveStepFromGraph(graph, stepId, stepKey) {
   }
   return null;
 }
+function inferWorkerIdFromCaller(graph, callerCtx) {
+  const directStep = resolveStepFromGraph(graph, callerCtx.stepId, null);
+  const directKey = asOptionalTrimmedString(directStep?.stepKey);
+  if (directKey) return directKey;
+  const attempts = Array.isArray(graph.attempts) ? graph.attempts : [];
+  const attemptId = asOptionalTrimmedString(callerCtx.attemptId) ?? asOptionalTrimmedString(callerCtx.callerId);
+  if (!attemptId) return null;
+  const attempt = attempts.find((entry) => asOptionalTrimmedString(entry.id) === attemptId);
+  const stepId = asOptionalTrimmedString(attempt?.stepId);
+  if (!stepId) return null;
+  const step = resolveStepFromGraph(graph, stepId, null);
+  return asOptionalTrimmedString(step?.stepKey);
+}
+function normalizeWorkerOutcome(raw) {
+  const normalized = asOptionalTrimmedString(raw)?.toLowerCase() ?? "";
+  if (normalized === "succeeded" || normalized === "success" || normalized === "pass" || normalized === "passed" || normalized === "done" || normalized === "completed") {
+    return "succeeded";
+  }
+  if (normalized === "failed" || normalized === "fail" || normalized === "error") {
+    return "failed";
+  }
+  return "partial";
+}
+function summarizeLegacyTestsRun(entries) {
+  if (!Array.isArray(entries)) return null;
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const entry of entries) {
+    const result = asOptionalTrimmedString(safeObject(entry).result)?.toLowerCase() ?? "";
+    if (result === "pass" || result === "passed" || result === "success" || result === "succeeded") {
+      passed += 1;
+    } else if (result === "fail" || result === "failed" || result === "error") {
+      failed += 1;
+    } else {
+      skipped += 1;
+    }
+  }
+  return { passed, failed, skipped };
+}
+function normalizeCoordinatorWorkerToolArgs(args) {
+  const normalized = { ...args.toolArgs };
+  const inferredWorkerId = args.graph ? inferWorkerIdFromCaller(args.graph, args.callerCtx) : null;
+  const stepKeyAlias = asOptionalTrimmedString(normalized.stepKey);
+  const explicitWorkerId = asOptionalTrimmedString(normalized.workerId);
+  if (!explicitWorkerId && stepKeyAlias) {
+    normalized.workerId = stepKeyAlias;
+  } else if (!explicitWorkerId && inferredWorkerId) {
+    normalized.workerId = inferredWorkerId;
+  }
+  if (args.name === "report_status") {
+    const summary = asOptionalTrimmedString(normalized.summary);
+    if (!asOptionalTrimmedString(normalized.nextAction) && summary) {
+      normalized.nextAction = summary;
+    }
+    if (!asOptionalTrimmedString(normalized.details) && summary) {
+      normalized.details = summary;
+    }
+    if (!Array.isArray(normalized.blockers) && typeof normalized.blockers === "string") {
+      normalized.blockers = [normalized.blockers];
+    }
+    const rawProgress = Number(normalized.progressPct ?? Number.NaN);
+    if (!Number.isFinite(rawProgress)) {
+      const status = asOptionalTrimmedString(normalized.status)?.toLowerCase() ?? "";
+      if (status === "succeeded" || status === "success" || status === "completed" || status === "done") {
+        normalized.progressPct = 100;
+      } else if (status === "running" || status === "working" || status === "in_progress" || status === "in-progress") {
+        normalized.progressPct = 50;
+      } else if (status === "blocked" || status === "waiting") {
+        normalized.progressPct = 25;
+      } else {
+        normalized.progressPct = 0;
+      }
+    }
+  } else if (args.name === "report_result") {
+    normalized.outcome = normalizeWorkerOutcome(normalized.outcome);
+    const summarizedTests = summarizeLegacyTestsRun(normalized.testsRun);
+    if (summarizedTests) {
+      normalized.testsRun = summarizedTests;
+    }
+  } else if (args.name === "report_validation") {
+    if (!asOptionalTrimmedString(normalized.validatorWorkerId) && inferredWorkerId) {
+      normalized.validatorWorkerId = inferredWorkerId;
+    }
+    if (!Array.isArray(normalized.findings)) {
+      normalized.findings = [];
+    }
+    if (!Array.isArray(normalized.remediationInstructions)) {
+      const notes = Array.isArray(normalized.notes) ? normalized.notes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0) : [];
+      normalized.remediationInstructions = notes;
+    }
+  }
+  return normalized;
+}
 function resolveParentAttemptIdFromGraph(graph, parentWorkerId) {
   const steps = Array.isArray(graph.steps) ? graph.steps : [];
   const attempts = Array.isArray(graph.attempts) ? graph.attempts : [];
@@ -66869,7 +68502,13 @@ async function runCoordinatorTool(args) {
   if (!toolEntry?.execute) {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
   }
-  const effectiveToolArgs = { ...args.toolArgs };
+  const graph = getRunGraphSafe(args.runtime, runId);
+  const effectiveToolArgs = args.name === "report_status" || args.name === "report_result" || args.name === "report_validation" ? normalizeCoordinatorWorkerToolArgs({
+    name: args.name,
+    toolArgs: args.toolArgs,
+    callerCtx: args.callerCtx,
+    graph
+  }) : { ...args.toolArgs };
   const nativeRegistration = ensureNativeTeammateRegistration({
     runtime: args.runtime,
     runId,
@@ -67482,13 +69121,13 @@ async function runTool(args) {
       const claudePermission = permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : "acceptEdits";
       commandParts.push("--permission-mode", claudePermission);
       if (runId && attemptId) {
-        const mcpConfigDir = import_node_path32.default.join(runtime.projectRoot, ".ade", "orchestrator", "mcp-configs");
-        import_node_fs31.default.mkdirSync(mcpConfigDir, { recursive: true });
-        const mcpConfigPath = import_node_path32.default.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
-        const builtEntry = import_node_path32.default.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
-        const srcEntry = import_node_path32.default.join(runtime.projectRoot, "apps", "mcp-server", "src", "index.ts");
-        const mcpCmd = import_node_fs31.default.existsSync(builtEntry) ? "node" : "npx";
-        const mcpArgs = import_node_fs31.default.existsSync(builtEntry) ? [builtEntry, "--project-root", runtime.projectRoot] : ["tsx", srcEntry, "--project-root", runtime.projectRoot];
+        const mcpConfigDir = import_node_path33.default.join(runtime.projectRoot, ".ade", "orchestrator", "mcp-configs");
+        import_node_fs32.default.mkdirSync(mcpConfigDir, { recursive: true });
+        const mcpConfigPath = import_node_path33.default.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
+        const builtEntry = import_node_path33.default.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
+        const srcEntry = import_node_path33.default.join(runtime.projectRoot, "apps", "mcp-server", "src", "index.ts");
+        const mcpCmd = import_node_fs32.default.existsSync(builtEntry) ? "node" : "npx";
+        const mcpArgs = import_node_fs32.default.existsSync(builtEntry) ? [builtEntry, "--project-root", runtime.projectRoot] : ["tsx", srcEntry, "--project-root", runtime.projectRoot];
         const mcpConfig = {
           mcpServers: {
             ade: {
@@ -67505,7 +69144,7 @@ async function runTool(args) {
             }
           }
         };
-        import_node_fs31.default.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
+        import_node_fs32.default.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
         commandParts.push("--mcp-config", shellEscapeArg2(mcpConfigPath));
       }
     }
@@ -68276,15 +69915,16 @@ function createStdioTransport() {
 }
 
 // src/index.ts
+process.env.ADE_STDIO_TRANSPORT ??= "1";
 function resolveProjectRoot() {
   const fromEnv = process.env.ADE_PROJECT_ROOT?.trim();
-  if (fromEnv) return import_node_path33.default.resolve(fromEnv);
+  if (fromEnv) return import_node_path34.default.resolve(fromEnv);
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 1) {
     const value = args[i];
     if (value === "--project-root") {
       const next = args[i + 1];
-      if (next?.trim()) return import_node_path33.default.resolve(next.trim());
+      if (next?.trim()) return import_node_path34.default.resolve(next.trim());
     }
   }
   return process.cwd();
@@ -68470,8 +70110,8 @@ async function startHeadless(projectRoot) {
 }
 async function main() {
   const projectRoot = resolveProjectRoot();
-  const socketPath = import_node_path33.default.join(projectRoot, ".ade", "mcp.sock");
-  if (import_node_fs32.default.existsSync(socketPath)) {
+  const socketPath = import_node_path34.default.join(projectRoot, ".ade", "mcp.sock");
+  if (import_node_fs33.default.existsSync(socketPath)) {
     const socket = import_node_net2.default.createConnection(socketPath);
     socket.on("error", (err) => {
       process.stderr.write(`[ade-mcp] Socket connect failed, falling back to headless: ${err.message}

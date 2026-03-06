@@ -42,6 +42,8 @@ import { createAgentToolsService } from "./services/agentTools/agentToolsService
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
+import { createUsageTrackingService } from "./services/usage/usageTrackingService";
+import { createBudgetCapService } from "./services/usage/budgetCapService";
 import { createCiService } from "./services/ci/ciService";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
@@ -976,6 +978,22 @@ app.whenReady().then(async () => {
       automationService
     });
 
+    const usageTrackingService = createUsageTrackingService({
+      logger,
+      pollIntervalMs: 120_000,
+      onUpdate: (snapshot) => {
+        emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
+      }
+    });
+    usageTrackingService.start();
+
+    const budgetCapService = createBudgetCapService({
+      db,
+      logger,
+      projectConfigService,
+      usageTrackingService
+    });
+
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
     // then routes them through the same onHeadChanged pipeline (packs, automations, rebase suggestions).
     let headWatcherTimer: NodeJS.Timeout | null = null;
@@ -1182,6 +1200,8 @@ app.whenReady().then(async () => {
       jobEngine,
       automationService,
       automationPlannerService,
+      usageTrackingService,
+      budgetCapService,
       missionService,
       missionPreflightService,
       orchestratorService,
@@ -1253,6 +1273,8 @@ app.whenReady().then(async () => {
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,
+      usageTrackingService: null,
+      budgetCapService: null,
       missionService: null,
       missionPreflightService: null,
       orchestratorService: null,
@@ -1292,6 +1314,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.automationService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.usageTrackingService?.dispose();
     } catch {
       // ignore
     }

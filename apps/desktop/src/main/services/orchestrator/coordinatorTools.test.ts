@@ -311,6 +311,101 @@ describe("coordinatorTools mission lane fallback", () => {
   });
 });
 
+describe("coordinatorTools stop_worker safety", () => {
+  it("rejects stop_worker calls without a cancellation reason", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [
+        {
+          id: "step-1",
+          stepKey: "worker-1",
+          stepIndex: 0,
+          title: "Worker 1",
+          status: "running",
+          laneId: "lane-1",
+          metadata: {},
+        },
+      ],
+      attempts: [
+        {
+          id: "attempt-1",
+          stepId: "step-1",
+          status: "running",
+        },
+      ],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.stop_worker as any).execute({
+      workerId: "worker-1",
+      reason: "   ",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Cancellation reason is required."),
+    });
+    expect(orchestratorService.completeAttempt).not.toHaveBeenCalled();
+  });
+});
+
+describe("coordinatorTools get_worker_output running workers", () => {
+  it("warns against canceling quiet planning workers solely for lack of terminal output", async () => {
+    const graph = {
+      run: { metadata: {} },
+      steps: [
+        {
+          id: "step-1",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "worker_plan-test-tab_1",
+          stepIndex: 0,
+          title: "plan-test-tab",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 0,
+          retryCount: 0,
+          lastAttemptId: "attempt-1",
+          createdAt: "2026-03-02T00:00:00.000Z",
+          updatedAt: "2026-03-02T00:00:00.000Z",
+          startedAt: "2026-03-02T00:00:00.000Z",
+          completedAt: null,
+          metadata: {
+            phaseKey: "planning",
+            stepType: "planning",
+            readOnlyExecution: true,
+          },
+        },
+      ],
+      attempts: [
+        {
+          id: "attempt-1",
+          stepId: "step-1",
+          status: "running",
+          createdAt: "2026-03-02T00:00:00.000Z",
+        },
+      ],
+    };
+    const { tools } = createCoordinatorHarness({ graph });
+
+    const result = await (tools.get_worker_output as any).execute({
+      workerId: "worker_plan-test-tab_1",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: "running",
+      blockers: [],
+      progressPct: null,
+    });
+    expect(String(result.summary)).toContain("Planning/research workers can stay quiet");
+    expect(String(result.summary)).toContain("Do not cancel solely");
+  });
+});
+
 describe("coordinatorTools display-only planning tasks", () => {
   it("spawn_worker tolerates omitted dependsOn arrays from provider tool calls", async () => {
     const graph = {
@@ -334,6 +429,111 @@ describe("coordinatorTools display-only planning tasks", () => {
       steps: [
         expect.objectContaining({
           dependencyStepKeys: [],
+        }),
+      ],
+    }));
+  });
+
+  it("spawn_worker infers the completed planning worker as an upstream dependency when development omits dependsOn", async () => {
+    const graph = {
+      run: {
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "development",
+            currentPhaseName: "Development",
+            currentPhaseModel: {
+              modelId: "openai/gpt-5.3-codex",
+              provider: "openai",
+            },
+          },
+          phaseConfiguration: {
+            selectedPhases: [
+              {
+                id: "phase-planning",
+                phaseKey: "planning",
+                name: "Planning",
+                description: "Research",
+                instructions: "",
+                model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
+                budget: {},
+                orderingConstraints: { mustBeFirst: true },
+                askQuestions: { enabled: false, mode: "never" },
+                validationGate: { tier: "self", required: true },
+                isBuiltIn: true,
+                isCustom: false,
+                position: 1,
+                createdAt: "2026-03-02T00:00:00.000Z",
+                updatedAt: "2026-03-02T00:00:00.000Z",
+              },
+              {
+                id: "phase-development",
+                phaseKey: "development",
+                name: "Development",
+                description: "Build",
+                instructions: "",
+                model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+                budget: {},
+                orderingConstraints: { mustFollow: ["planning"] },
+                askQuestions: { enabled: false, mode: "never" },
+                validationGate: { tier: "dedicated", required: false },
+                isBuiltIn: true,
+                isCustom: false,
+                position: 2,
+                createdAt: "2026-03-02T00:00:00.000Z",
+                updatedAt: "2026-03-02T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      },
+      steps: [
+        {
+          id: "step-plan",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "worker_plan-sidebar_1",
+          stepIndex: 0,
+          title: "Plan sidebar work",
+          laneId: "lane-mission",
+          status: "succeeded",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 0,
+          retryCount: 0,
+          lastAttemptId: null,
+          createdAt: "2026-03-02T00:00:00.000Z",
+          updatedAt: "2026-03-02T00:05:00.000Z",
+          startedAt: "2026-03-02T00:00:00.000Z",
+          completedAt: "2026-03-02T00:05:00.000Z",
+          metadata: {
+            phaseKey: "planning",
+            phaseName: "Planning",
+          },
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({ graph, missionLaneId: "lane-mission" });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "Implement sidebar tab",
+      modelId: "openai/gpt-5.3-codex",
+      prompt: "Add the sidebar tab.",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      workerId: expect.stringContaining("worker_Implement_sidebar_tab_"),
+    });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(expect.objectContaining({
+      steps: [
+        expect.objectContaining({
+          dependencyStepKeys: ["worker_plan-sidebar_1"],
+          metadata: expect.objectContaining({
+            requestedDependencyStepKeys: [],
+            inferredDependencyStepKeys: ["worker_plan-sidebar_1"],
+          }),
         }),
       ],
     }));
@@ -372,6 +572,110 @@ describe("coordinatorTools display-only planning tasks", () => {
     expect(harnessGraph.steps[0]?.metadata).toEqual(expect.objectContaining({
       isTask: true,
       displayOnlyTask: true,
+      requestedDependencyStepKeys: [],
+    }));
+  });
+
+  it("create_task infers the completed planning worker as an upstream dependency when development omits dependsOn", async () => {
+    const graph = {
+      run: {
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "development",
+            currentPhaseName: "Development",
+          },
+          phaseConfiguration: {
+            selectedPhases: [
+              {
+                id: "phase-planning",
+                phaseKey: "planning",
+                name: "Planning",
+                description: "Research",
+                instructions: "",
+                model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
+                budget: {},
+                orderingConstraints: { mustBeFirst: true },
+                askQuestions: { enabled: false, mode: "never" },
+                validationGate: { tier: "self", required: true },
+                isBuiltIn: true,
+                isCustom: false,
+                position: 1,
+                createdAt: "2026-03-02T00:00:00.000Z",
+                updatedAt: "2026-03-02T00:00:00.000Z",
+              },
+              {
+                id: "phase-development",
+                phaseKey: "development",
+                name: "Development",
+                description: "Build",
+                instructions: "",
+                model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+                budget: {},
+                orderingConstraints: { mustFollow: ["planning"] },
+                askQuestions: { enabled: false, mode: "never" },
+                validationGate: { tier: "dedicated", required: false },
+                isBuiltIn: true,
+                isCustom: false,
+                position: 2,
+                createdAt: "2026-03-02T00:00:00.000Z",
+                updatedAt: "2026-03-02T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      },
+      steps: [
+        {
+          id: "step-plan",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "worker_plan-sidebar_1",
+          stepIndex: 0,
+          title: "Plan sidebar work",
+          laneId: "lane-mission",
+          status: "succeeded",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 0,
+          retryCount: 0,
+          lastAttemptId: null,
+          createdAt: "2026-03-02T00:00:00.000Z",
+          updatedAt: "2026-03-02T00:05:00.000Z",
+          startedAt: "2026-03-02T00:00:00.000Z",
+          completedAt: "2026-03-02T00:05:00.000Z",
+          metadata: {
+            phaseKey: "planning",
+            phaseName: "Planning",
+          },
+        },
+      ],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({ graph, missionLaneId: "lane-mission" });
+
+    const result = await (tools.create_task as any).execute({
+      key: "implement-sidebar",
+      title: "Implement sidebar tab",
+      description: "Add the new sidebar tab.",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      taskKey: "implement-sidebar",
+    });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(expect.objectContaining({
+      steps: [
+        expect.objectContaining({
+          stepKey: "implement-sidebar",
+          dependencyStepKeys: ["worker_plan-sidebar_1"],
+          metadata: expect.objectContaining({
+            requestedDependencyStepKeys: [],
+            inferredDependencyStepKeys: ["worker_plan-sidebar_1"],
+          }),
+        }),
+      ],
     }));
   });
 
@@ -391,6 +695,59 @@ describe("coordinatorTools display-only planning tasks", () => {
     expect(result).toMatchObject({
       ok: false,
       error: "Task title is required.",
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("create_task is blocked while the mission is still in planning", async () => {
+    const graph = {
+      run: {
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+          },
+        },
+      },
+      steps: [],
+      attempts: [],
+    };
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph,
+      missionMetadata: {
+        phaseConfiguration: {
+          phases: [
+            {
+              phaseKey: "planning",
+              name: "Planning",
+              position: 0,
+              instructions: "Plan first",
+              validationGate: { tier: "self", required: false },
+              budget: {},
+            },
+            {
+              phaseKey: "development",
+              name: "Development",
+              position: 1,
+              instructions: "Build second",
+              validationGate: { tier: "self", required: false },
+              budget: {},
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await (tools.create_task as any).execute({
+      key: "plan-sidebar",
+      title: "Plan sidebar work",
+      description: "Understand the sidebar touchpoints before implementation.",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Planning should be represented by the planning worker itself."),
     });
     expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
@@ -998,6 +1355,79 @@ describe("coordinatorTools planning manual-input blocking", () => {
     expect(result).toMatchObject({
       ok: false,
       error: expect.stringContaining('Current phase is "planning". Planning workers must stay read-only'),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("blocks validation-like workers before the validation phase opens", async () => {
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: {
+                modelId: "openai/gpt-5.3-codex",
+                thinkingLevel: "medium",
+              },
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: [
+            {
+              id: "phase-development",
+              phaseKey: "development",
+              name: "Development",
+              description: "Build",
+              instructions: "Implement the work.",
+              model: { modelId: "openai/gpt-5.3-codex", provider: "codex", thinkingLevel: "medium" },
+              budget: {},
+              orderingConstraints: {},
+              askQuestions: { enabled: false, mode: "never" },
+              validationGate: { tier: "self", required: false },
+              isBuiltIn: true,
+              isCustom: false,
+              position: 1,
+              createdAt: "2026-03-02T00:00:00.000Z",
+              updatedAt: "2026-03-02T00:00:00.000Z",
+            },
+            {
+              id: "phase-validation",
+              phaseKey: "validation",
+              name: "Validation",
+              description: "Validate",
+              instructions: "Validate the completed work.",
+              model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
+              budget: {},
+              orderingConstraints: {},
+              askQuestions: { enabled: false, mode: "never" },
+              validationGate: { tier: "dedicated", required: true },
+              isBuiltIn: true,
+              isCustom: false,
+              position: 2,
+              createdAt: "2026-03-02T00:00:00.000Z",
+              updatedAt: "2026-03-02T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "validate-test-tab",
+      prompt: "You are a validation worker. Use report_validation with verdict \"pass\" or \"fail\".",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Validation workers can only be spawned during the "validation" phase.'),
     });
     expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
@@ -2044,6 +2474,95 @@ describe("coordinatorTools validation enforcement", () => {
         reason: "validation_gate_blocked",
       })
     );
+  });
+
+  it("spawn_worker reads phase cards from run metadata when blocking validation workers outside the validation phase", async () => {
+    const phaseCards = [
+      {
+        id: "phase-planning",
+        phaseKey: "planning",
+        name: "Planning",
+        description: "Research",
+        instructions: "",
+        model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
+        budget: {},
+        orderingConstraints: { mustBeFirst: true },
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "self", required: true },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+      {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustFollow: ["planning"] },
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 2,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+      {
+        id: "phase-validation",
+        phaseKey: "validation",
+        name: "Validation",
+        description: "Verify",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustFollow: ["development"] },
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "self", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 3,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+    ];
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: {
+                modelId: "openai/gpt-5.3-codex",
+                provider: "openai",
+              },
+            },
+            phaseConfiguration: {
+              selectedPhases: phaseCards,
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "validate-test-tab",
+      prompt: "You are a validation worker. Use report_validation with verdict \"pass\" or \"fail\".",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Validation workers can only be spawned during the "validation" phase.'),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
 });
 

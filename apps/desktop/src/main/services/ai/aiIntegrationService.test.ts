@@ -167,6 +167,22 @@ describe("aiIntegrationService", () => {
     expect(usageInsertCalls(runCalls)).toHaveLength(1);
   });
 
+  it("uses planning tools for mission planning tasks", async () => {
+    const { service } = makeService();
+
+    await service.executeTask({
+      feature: "mission_planning",
+      taskType: "mission_planning",
+      prompt: "Plan this mission",
+      cwd: "/tmp",
+      model: "anthropic/claude-sonnet-4-6",
+    });
+
+    expect(mockState.executeUnified).toHaveBeenCalledTimes(1);
+    const firstCall = mockState.executeUnified.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(firstCall.tools).toBe("planning");
+  });
+
   it("resolves a default task model when model is omitted", async () => {
     const { service } = makeService();
 
@@ -181,6 +197,34 @@ describe("aiIntegrationService", () => {
     const firstCall = mockState.executeUnified.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(typeof firstCall.modelId).toBe("string");
     expect(String(firstCall.modelId).length).toBeGreaterThan(0);
+  });
+
+  it("uses planning tools for read-only orchestrator tasks and none for other read-only tasks", async () => {
+    const { service } = makeService();
+
+    await service.executeTask({
+      feature: "orchestrator",
+      taskType: "planning",
+      prompt: "Check worker status",
+      cwd: "/tmp",
+      model: "openai/gpt-4.1",
+      permissionMode: "read-only",
+    });
+
+    await service.executeTask({
+      feature: "terminal_summaries",
+      taskType: "terminal_summary",
+      prompt: "Summarize this terminal output",
+      cwd: "/tmp",
+      model: "openai/gpt-4.1",
+      permissionMode: "read-only",
+    });
+
+    expect(mockState.executeUnified).toHaveBeenCalledTimes(2);
+    const orchestratorCall = mockState.executeUnified.mock.calls[0]?.[0] as Record<string, unknown>;
+    const summaryCall = mockState.executeUnified.mock.calls[1]?.[0] as Record<string, unknown>;
+    expect(orchestratorCall.tools).toBe("planning");
+    expect(summaryCall.tools).toBe("none");
   });
 
   it("forwards memory context and compaction identifiers to the unified executor when provided", async () => {

@@ -140,6 +140,46 @@ function workerPromptFilePath(projectRoot: string, attemptId: string): string {
   return path.join(projectRoot, ".ade", "orchestrator", "worker-prompts", `worker-${attemptId}.txt`);
 }
 
+const CLAUDE_READ_ONLY_NATIVE_TOOLS = [
+  "Read",
+  "Glob",
+  "Grep",
+] as const;
+
+const CLAUDE_READ_ONLY_WORKER_MCP_TOOLS = [
+  "mcp__ade__get_mission",
+  "mcp__ade__get_run_graph",
+  "mcp__ade__stream_events",
+  "mcp__ade__get_timeline",
+  "mcp__ade__get_pending_messages",
+  "mcp__ade__report_status",
+  "mcp__ade__report_result",
+] as const;
+
+function dedupeAllowedTools(entries: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (!trimmed.length || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+export function buildClaudeReadOnlyWorkerAllowedTools(serverName = "ade"): string[] {
+  const trimmedServerName = serverName.trim();
+  const resolvedServerName = trimmedServerName.length > 0 ? trimmedServerName : "ade";
+  const mcpTools = CLAUDE_READ_ONLY_WORKER_MCP_TOOLS.map((tool) =>
+    tool.replace("mcp__ade__", `mcp__${resolvedServerName}__`),
+  );
+  return dedupeAllowedTools([
+    ...CLAUDE_READ_ONLY_NATIVE_TOOLS,
+    ...mcpTools,
+  ]);
+}
+
 function writeWorkerPromptFile(args: {
   projectRoot: string;
   attemptId: string;
@@ -370,7 +410,11 @@ export function createUnifiedOrchestratorAdapter(options?: {
           : mappedClaude === "bypassPermissions"
             ? "acceptEdits"
             : mappedClaude;
-        const allowedTools = effectivePermissionConfig?._providers?.allowedTools ?? effectivePermissionConfig?.cli?.allowedTools ?? [];
+        const configuredAllowedTools =
+          effectivePermissionConfig?._providers?.allowedTools ?? effectivePermissionConfig?.cli?.allowedTools ?? [];
+        const allowedTools = readOnlyExecution
+          ? buildClaudeReadOnlyWorkerAllowedTools("ade")
+          : dedupeAllowedTools(configuredAllowedTools);
 
         const parts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
 
@@ -380,8 +424,8 @@ export function createUnifiedOrchestratorAdapter(options?: {
           parts.push("--permission-mode", shellEscapeArg(permissionMode));
         }
 
-        for (const tool of allowedTools) {
-          if (tool.trim().length) parts.push("--allowedTools", shellEscapeArg(tool.trim()));
+        if (allowedTools.length > 0) {
+          parts.push("--allowedTools", shellEscapeArg(allowedTools.join(",")));
         }
 
         // Bind ADE MCP server to worker via --mcp-config. Mirror config into worker CWD

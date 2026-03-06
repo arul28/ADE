@@ -175,6 +175,23 @@ function toJsonPreview(value: unknown, maxChars = 800): string | null {
   }
 }
 
+function resolveUnifiedToolMode(args: {
+  feature: AiFeatureKey;
+  taskType: AiTaskType;
+  permissionMode?: ExecutorOpts["permissions"]["mode"];
+}): "planning" | "coding" | "none" {
+  if (args.taskType === "mission_planning") {
+    return "planning";
+  }
+  if (args.feature === "orchestrator" && args.permissionMode === "read-only") {
+    return "planning";
+  }
+  if (args.permissionMode === "read-only") {
+    return "none";
+  }
+  return "coding";
+}
+
 function startOfDayIso(now = new Date()): string {
   const utc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0);
   return new Date(utc).toISOString();
@@ -562,7 +579,11 @@ export function createAiIntegrationService(args: {
         prompt: args.prompt,
         system: args.systemPrompt,
         cwd: args.cwd,
-        tools: args.taskType === "mission_planning" ? "planning" : args.permissionMode === "read-only" ? "none" : "coding",
+        tools: resolveUnifiedToolMode({
+          feature: args.feature,
+          taskType: args.taskType,
+          permissionMode: args.permissionMode,
+        }),
         timeout: args.timeoutMs,
         jsonSchema: args.jsonSchema,
         reasoningEffort: args.reasoningEffort,

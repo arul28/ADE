@@ -1,0 +1,139 @@
+import {
+  Play,
+  PencilSimple,
+  ClockCounterClockwise,
+} from "@phosphor-icons/react";
+import type { AutomationRuleSummary } from "../../../../shared/types";
+import { Chip } from "../../ui/Chip";
+import { cn } from "../../ui/cn";
+import { statusToneAutomation as statusTone } from "../../../lib/format";
+
+function formatWhen(ts: string | null): string {
+  if (!ts) return "Never";
+  const parsed = Date.parse(ts);
+  if (Number.isNaN(parsed)) return ts;
+  return new Date(parsed).toLocaleString();
+}
+
+function summarizeActions(rule: { actions: Array<{ type: string }> }): string {
+  if (!rule.actions.length) return "(no actions)";
+  return rule.actions.map((a) => a.type).join(", ");
+}
+
+export function RuleCard({
+  rule,
+  selected,
+  onSelect,
+  onToggle,
+  onRunNow,
+  onEdit,
+  onHistory,
+}: {
+  rule: AutomationRuleSummary;
+  selected: boolean;
+  onSelect: () => void;
+  onToggle: (enabled: boolean) => void;
+  onRunNow: () => void;
+  onEdit: () => void;
+  onHistory: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "w-full p-3 text-left transition-all duration-150 group",
+        selected
+          ? "shadow-[0_0_16px_-4px_rgba(167,139,250,0.12)]"
+          : "hover:-translate-y-[0.5px]",
+      )}
+      style={{
+        background: selected ? "#1E1A2C" : "#181423",
+        border: `1px solid ${selected ? "rgba(167,139,250,0.25)" : "#2D2840"}`,
+      }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <div className="truncate text-xs font-semibold text-[#FAFAFA]">{rule.name}</div>
+            <Chip className={cn("text-[9px]", statusTone(rule.running ? "running" : rule.lastRunStatus))}>
+              {rule.running ? "running" : rule.lastRunStatus ?? "never"}
+            </Chip>
+          </div>
+
+          <div className="mt-2 flex items-center gap-0 text-[11px]">
+            <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(249,115,22,0.10)", color: "#F97316" }}>
+              {rule.trigger.type}{rule.trigger.type === "schedule" && rule.trigger.cron ? ` ${rule.trigger.cron}` : ""}
+            </div>
+            {rule.trigger.branch && (
+              <>
+                <Arrow />
+                <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(245,158,11,0.10)", color: "#F59E0B" }}>
+                  {rule.trigger.branch}
+                </div>
+              </>
+            )}
+            <Arrow />
+            <div className="truncate px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(34,197,94,0.10)", color: "#22C55E" }}>
+              {summarizeActions(rule)}
+            </div>
+          </div>
+
+          <div className="mt-1.5 text-xs text-[#71717A] truncate font-mono">
+            last run: {formatWhen(rule.lastRunAt)}
+          </div>
+        </div>
+
+        <div className="shrink-0 flex flex-col items-end gap-1.5">
+          <label
+            className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-[1px] text-[#71717A] cursor-pointer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={rule.enabled}
+              onChange={(e) => onToggle(e.target.checked)}
+              className="accent-[#A78BFA]"
+            />
+            {rule.enabled ? "on" : "off"}
+          </label>
+
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRunNow(); }}
+              className="p-1 text-[#71717A] hover:text-[#A78BFA] transition-colors"
+              title="Run now"
+            >
+              <Play size={12} weight="regular" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onEdit(); }}
+              className="p-1 text-[#71717A] hover:text-[#A78BFA] transition-colors"
+              title="Edit"
+            >
+              <PencilSimple size={12} weight="regular" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onHistory(); }}
+              className="p-1 text-[#71717A] hover:text-[#A78BFA] transition-colors"
+              title="History"
+            >
+              <ClockCounterClockwise size={12} weight="regular" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function Arrow() {
+  return (
+    <svg width="16" height="8" viewBox="0 0 16 8" className="shrink-0" style={{ color: "#2D284080" }}>
+      <path d="M0 4 L12 4 L9 1 M12 4 L9 7" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}

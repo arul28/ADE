@@ -76,6 +76,11 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  UsageSnapshot,
+  BudgetCheckResult,
+  BudgetCapScope,
+  BudgetCapProvider,
+  BudgetCapConfig,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -435,6 +440,14 @@ declare global {
         saveDraft: (req: AutomationSaveDraftRequest) => Promise<AutomationSaveDraftResult>;
         simulate: (req: AutomationSimulateRequest) => Promise<AutomationSimulateResult>;
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
+      };
+      usage: {
+        getSnapshot: () => Promise<UsageSnapshot | null>;
+        refresh: () => Promise<UsageSnapshot | null>;
+        checkBudget: (args: { scope: BudgetCapScope; scopeId?: string; provider: BudgetCapProvider }) => Promise<BudgetCheckResult>;
+        getCumulativeUsage: (args: { scope: BudgetCapScope; scopeId?: string; provider?: BudgetCapProvider }) => Promise<{ totalTokens: number; totalCostUsd: number; weekKey: string }>;
+        getBudgetConfig: () => Promise<BudgetCapConfig>;
+        onUpdate: (cb: (snapshot: UsageSnapshot) => void) => () => void;
       };
       missions: {
         list: (args?: ListMissionsArgs) => Promise<MissionSummary[]>;

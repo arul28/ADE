@@ -1937,6 +1937,23 @@ function migrate(db: Database) {
     )
   `);
   db.run("create index if not exists idx_cto_flow_policy_revisions_project_created on cto_flow_policy_revisions(project_id, created_at)");
+
+  // W5 automation budget cap: cumulative usage tracking per scope per week.
+  db.run(`
+    create table if not exists budget_usage_records (
+      id text primary key,
+      scope text not null,
+      scope_id text not null,
+      provider text not null,
+      tokens_used integer not null default 0,
+      cost_usd real not null default 0,
+      week_key text not null,
+      recorded_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_budget_usage_records_scope_week on budget_usage_records(scope, scope_id, week_key)");
+  db.run("create index if not exists idx_budget_usage_records_week on budget_usage_records(week_key)");
+  db.run("create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key)");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

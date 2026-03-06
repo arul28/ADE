@@ -24,6 +24,7 @@ import type {
   UserSteeringDirective,
   OrchestratorChatMessage,
   OrchestratorChatThread,
+  OrchestratorChatTarget,
   SendOrchestratorChatArgs,
   GetOrchestratorChatArgs,
   ListOrchestratorChatThreadsArgs,
@@ -40,6 +41,7 @@ import type {
   SetMissionMetricsConfigArgs,
   OrchestratorThreadEvent,
   DagMutationEvent,
+  AgentChatEvent,
   AgentChatEventEnvelope,
   TeamManifest,
   ExecutionPlanPreview,
@@ -80,6 +82,7 @@ import {
 } from "./orchestratorConstants";
 import { modelConfigToServiceModel } from "../../../shared/modelProfiles";
 import { getModelById } from "../../../shared/modelRegistry";
+import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
@@ -254,14 +257,27 @@ export function buildCoordinatorEvaluationActionHints(graph: OrchestratorRunGrap
   const currentPhaseTerminal = stepsInCurrentPhase.filter((step) => TERMINAL_PHASE_STEP_STATUSES.has(step.status));
   const currentPhaseNonTerminal = stepsInCurrentPhase.filter((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status));
   const remainingExecution = executionSteps.filter((step) => !TERMINAL_PHASE_STEP_STATUSES.has(step.status));
+  const currentPhasePlanningSucceeded =
+    currentPhaseKey === "planning" || currentPhaseName === "planning"
+      ? stepsInCurrentPhase.some((step) => step.status === "succeeded")
+      : false;
 
-  if ((currentPhaseKey === "planning" || currentPhaseName === "planning") && currentPhaseTerminal.length > 0 && currentPhaseNonTerminal.length === 0) {
+  if (
+    (currentPhaseKey === "planning" || currentPhaseName === "planning")
+    && currentPhasePlanningSucceeded
+    && currentPhaseTerminal.length > 0
+    && currentPhaseNonTerminal.length === 0
+  ) {
     hints.push("REQUIRED NEXT ACTION: Planning work is complete. Call set_current_phase with phaseKey \"development\" before spawning any implementation workers.");
   }
 
   if (remainingExecution.length === 0) {
     if (currentPhaseKey === "planning" || currentPhaseName === "planning") {
-      hints.push("REQUIRED NEXT ACTION: The run has no executable work left but is still in planning. Advance to the next phase and spawn the implementation work, or call fail_mission if the mission cannot proceed.");
+      if (currentPhasePlanningSucceeded) {
+        hints.push("REQUIRED NEXT ACTION: The run has no executable work left but is still in planning. Advance to the next phase and spawn the implementation work, or call fail_mission if the mission cannot proceed.");
+      } else {
+        hints.push("REQUIRED NEXT ACTION: Planning has no active executable work and no successful planner result yet. Spawn a replacement planning worker or fail the mission if planning cannot proceed.");
+      }
     } else {
       hints.push("REQUIRED NEXT ACTION: All executable steps are terminal. If the mission goal is satisfied, call complete_mission with a concise summary. Otherwise create or spawn the missing follow-up work now.");
     }
@@ -338,6 +354,15 @@ function stepMatchesPhaseForSync(step: OrchestratorStep, phase: PhaseSyncCard): 
   return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
 }
 
+function phaseStepCountsAsCompleteForSync(step: OrchestratorStep, phase: PhaseSyncCard): boolean {
+  const phaseKey = phase.phaseKey.trim().toLowerCase();
+  const phaseName = phase.name.trim().toLowerCase();
+  if (phaseKey === "planning" || phaseName === "planning") {
+    return step.status === "succeeded";
+  }
+  return TERMINAL_PHASE_STEP_STATUSES.has(step.status);
+}
+
 function buildPhaseSyncTargetFromCard(card: PhaseSyncCard, sourceStepId: string | null): PhaseSyncTarget {
   return {
     phaseKey: card.phaseKey,
@@ -365,14 +390,26 @@ export function deriveMissionPhaseSyncTarget(graph: OrchestratorRunGraph): Phase
     if (currentPhaseIndex >= 0) {
       const currentPhase = configuredPhases[currentPhaseIndex]!;
       const currentPhaseExecutionSteps = executionSteps.filter((step) => stepMatchesPhaseForSync(step, currentPhase));
+      if (currentPhaseExecutionSteps.length === 0) {
+        // Hold on the currently entered configured phase until it produces work,
+        // instead of regressing back to the last completed phase.
+        return buildPhaseSyncTargetFromCard(currentPhase, null);
+      }
       if (
         currentPhaseExecutionSteps.length > 0
         && currentPhaseExecutionSteps.every((step) => TERMINAL_PHASE_STEP_STATUSES.has(step.status))
       ) {
-        const nextPhase = configuredPhases[currentPhaseIndex + 1];
-        if (nextPhase) {
-          const sourceStepId = currentPhaseExecutionSteps[currentPhaseExecutionSteps.length - 1]?.id ?? null;
-          return buildPhaseSyncTargetFromCard(nextPhase, sourceStepId);
+        const planningPhase = currentPhase.phaseKey.trim().toLowerCase() === "planning"
+          || currentPhase.name.trim().toLowerCase() === "planning";
+        const currentPhaseCompleted = currentPhaseExecutionSteps.some((step) =>
+          phaseStepCountsAsCompleteForSync(step, currentPhase)
+        );
+        if (!planningPhase || currentPhaseCompleted) {
+          const nextPhase = configuredPhases[currentPhaseIndex + 1];
+          if (nextPhase) {
+            const sourceStepId = currentPhaseExecutionSteps[currentPhaseExecutionSteps.length - 1]?.id ?? null;
+            return buildPhaseSyncTargetFromCard(nextPhase, sourceStepId);
+          }
         }
       }
     }
@@ -423,6 +460,12 @@ export function normalizeCoordinatorUpdateForChat(message: string): string | nul
   }
 
   const lowerCompact = compact.toLowerCase();
+  if (lowerCompact.includes("reviewing the mission, building the plan")) {
+    return "Planning is active. I’m briefing the planning worker now.";
+  }
+  if (lowerCompact.includes("moving through planning, implementation, and validation")) {
+    return "Mission started. I’m following the enabled phases and will hand work to workers as each phase opens.";
+  }
   if (lowerCompact.includes("read the key files") || lowerCompact.includes("review the key files")) {
     return "I’m reviewing the relevant files and mapping out the next step.";
   }
@@ -495,6 +538,7 @@ import {
   upsertThread as upsertThreadCtx,
   summarizeRunForChat as summarizeRunForChatCtx,
   appendChatMessageCtx,
+  updateChatMessage as updateChatMessageCtx,
   listChatThreadsCtx,
   getThreadMessagesCtx,
   sendThreadMessageCtx,
@@ -826,11 +870,17 @@ export function createAiOrchestratorService(args: {
 
   const appendChatMessage = (message: OrchestratorChatMessage): OrchestratorChatMessage =>
     appendChatMessageCtx(ctx, message);
+  const updateChatMessage = (
+    messageId: string,
+    updater: Parameters<typeof updateChatMessageCtx>[2],
+  ): OrchestratorChatMessage | null => updateChatMessageCtx(ctx, messageId, updater);
 
   const WORKER_PROGRESS_CHAT_MIN_INTERVAL_MS = 12_000;
   const WORKER_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 45_000;
   const COORDINATOR_PROGRESS_CHAT_MIN_INTERVAL_MS = 10_000;
   const COORDINATOR_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 30_000;
+  const structuredThreadMessageIds = new Map<string, string>();
+  const structuredChatSessions = new Set<string>();
 
   const emitWorkerThreadMessage = (args: {
     missionId: string;
@@ -891,6 +941,360 @@ export function createAiOrchestratorService(args: {
     });
   };
 
+  const clipStructuredText = (value: string, maxChars = 8_000): string =>
+    value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 16))}\n[truncated]`;
+
+  const stringifyStructuredDetail = (value: unknown): string => {
+    if (typeof value === "string") return clipStructuredText(value, 12_000);
+    try {
+      return clipStructuredText(JSON.stringify(value, null, 2), 12_000);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const structuredThreadKeyForEvent = (scopeKey: string, event: AgentChatEvent): string | null => {
+    switch (event.type) {
+      case "text":
+      case "reasoning":
+        return `${scopeKey}:${event.type}:${event.turnId ?? "turn"}:${event.itemId ?? "default"}`;
+      case "tool_call":
+      case "tool_result":
+        return `${scopeKey}:tool:${event.turnId ?? "turn"}:${event.itemId}`;
+      default:
+        return null;
+    }
+  };
+
+  const buildStructuredEventSummary = (event: AgentChatEvent): string => {
+    switch (event.type) {
+      case "text":
+        return event.text;
+      case "reasoning":
+        return event.text;
+      case "tool_call":
+        return `Tool call: ${event.tool}`;
+      case "tool_result":
+        return `Tool result: ${event.tool}`;
+      case "approval_request":
+        return event.description;
+      case "status":
+        return `Turn ${event.turnStatus}.`;
+      case "done":
+        return `Turn ${event.status}.`;
+      case "error":
+        return event.message;
+      case "activity":
+        return event.detail?.trim().length ? event.detail.trim() : `Activity: ${event.activity}`;
+      case "plan":
+        return event.explanation?.trim().length
+          ? event.explanation.trim()
+          : event.steps.map((step) => `${step.status === "completed" ? "[x]" : step.status === "in_progress" ? "[>]" : "[ ]"} ${step.text}`).join("\n");
+      case "command":
+        return `Command: ${event.command}`;
+      case "file_change":
+        return `${event.kind === "create" ? "Created" : event.kind === "delete" ? "Deleted" : "Updated"} ${nodePath.basename(event.path)}`;
+      case "step_boundary":
+        return `Step ${event.stepNumber}`;
+      case "user_message":
+        return event.text;
+      default:
+        return "Agent event";
+    }
+  };
+
+  const buildStructuredEventMetadata = (sessionId: string, event: AgentChatEvent): Record<string, unknown> => {
+    if (event.type === "tool_call") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "tool",
+          sessionId,
+          turnId: event.turnId ?? null,
+          itemId: event.itemId,
+          tool: event.tool,
+          args: event.args,
+          status: "running",
+        },
+      };
+    }
+    if (event.type === "tool_result") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "tool",
+          sessionId,
+          turnId: event.turnId ?? null,
+          itemId: event.itemId,
+          tool: event.tool,
+          result: event.result,
+          status: event.status ?? "completed",
+        },
+      };
+    }
+    if (event.type === "error") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "error",
+          sessionId,
+          turnId: event.turnId ?? null,
+          itemId: event.itemId ?? null,
+          message: event.message,
+          errorInfo: event.errorInfo ?? null,
+        },
+      };
+    }
+    if (event.type === "status") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "status",
+          sessionId,
+          turnId: event.turnId ?? null,
+          status: event.turnStatus,
+          message: event.message ?? null,
+        },
+      };
+    }
+    if (event.type === "done") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "done",
+          sessionId,
+          turnId: event.turnId,
+          status: event.status,
+          model: event.model ?? null,
+          modelId: event.modelId ?? null,
+          usage: event.usage ?? null,
+        },
+      };
+    }
+    if (event.type === "reasoning") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "reasoning",
+          sessionId,
+          turnId: event.turnId ?? null,
+          itemId: event.itemId ?? null,
+          summaryIndex: event.summaryIndex ?? null,
+        },
+      };
+    }
+    if (event.type === "text") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "text",
+          sessionId,
+          turnId: event.turnId ?? null,
+          itemId: event.itemId ?? null,
+        },
+      };
+    }
+    return {
+      source: "agent_chat_event",
+      missionChatMode: "thread_only",
+      structuredStream: {
+        kind: event.type,
+        sessionId,
+      },
+    };
+  };
+
+  const mergeStructuredEventMetadata = (
+    current: Record<string, unknown> | null | undefined,
+    sessionId: string,
+    event: AgentChatEvent,
+  ): Record<string, unknown> => {
+    const base = isRecord(current) ? { ...current } : {};
+    const next = buildStructuredEventMetadata(sessionId, event);
+    const currentStructured = isRecord(base.structuredStream) ? base.structuredStream : null;
+    const nextStructured = isRecord(next.structuredStream) ? next.structuredStream : null;
+    if (event.type === "tool_result" && currentStructured) {
+      base.source = "agent_chat_event";
+      base.missionChatMode = "thread_only";
+      base.structuredStream = {
+        ...currentStructured,
+        ...(nextStructured ?? {}),
+        tool: typeof currentStructured.tool === "string" ? currentStructured.tool : event.tool,
+        result: event.result,
+        status: event.status ?? "completed",
+      };
+      return base;
+    }
+    return {
+      ...base,
+      ...next,
+    };
+  };
+
+  const appendOrUpdateStructuredThreadMessage = (args: {
+    missionId: string;
+    threadId: string;
+    role: "worker" | "orchestrator";
+    senderStepKey?: string | null;
+    target: OrchestratorChatTarget;
+    timestamp: string;
+    sessionId: string;
+    runId: string | null;
+    attemptId: string | null;
+    laneId: string | null;
+    event: AgentChatEvent;
+  }): void => {
+    const key = structuredThreadKeyForEvent(args.threadId, args.event);
+    const summary = buildStructuredEventSummary(args.event);
+    const metadata = buildStructuredEventMetadata(args.sessionId, args.event);
+    const canAppendText =
+      args.event.type === "text"
+      || args.event.type === "reasoning";
+    if (key) {
+      const existingMessageId = structuredThreadMessageIds.get(key);
+      if (existingMessageId) {
+        updateChatMessage(existingMessageId, (current) => {
+          const nextContent = canAppendText
+            ? clipStructuredText(`${current.content}${summary}`)
+            : current.content;
+          return {
+            ...current,
+            content: nextContent,
+            timestamp: args.timestamp,
+            metadata: mergeStructuredEventMetadata(current.metadata, args.sessionId, args.event),
+          };
+        });
+        return;
+      }
+    }
+
+    const created = appendChatMessage({
+      id: randomUUID(),
+      missionId: args.missionId,
+      threadId: args.threadId,
+      role: args.role,
+      content: clipStructuredText(summary),
+      timestamp: args.timestamp,
+      stepKey: args.senderStepKey ?? null,
+      target: args.target,
+      visibility: "full",
+      deliveryState: "delivered",
+      sourceSessionId: args.sessionId,
+      attemptId: args.attemptId,
+      laneId: args.laneId,
+      runId: args.runId,
+      metadata,
+    });
+    if (key) {
+      structuredThreadMessageIds.set(key, created.id);
+    }
+  };
+
+  const persistStructuredWorkerChatEvent = (envelope: AgentChatEventEnvelope): void => {
+    if (
+      envelope.event.type === "user_message"
+      || envelope.event.type === "activity"
+      || envelope.event.type === "step_boundary"
+    ) {
+      return;
+    }
+    const workerState = [...workerStates.values()].find((candidate) => candidate.sessionId === envelope.sessionId);
+    if (!workerState) return;
+    let graph: OrchestratorRunGraph;
+    try {
+      graph = orchestratorService.getRunGraph({ runId: workerState.runId, timelineLimit: 0 });
+    } catch {
+      return;
+    }
+    const step = graph.steps.find((candidate) => candidate.id === workerState.stepId);
+    if (!step) return;
+    const missionId = graph.run.missionId ?? getMissionIdForRun(workerState.runId);
+    if (!missionId) return;
+    const threadId = `worker:${missionId}:${workerState.attemptId}`;
+    upsertThread({
+      missionId,
+      threadId,
+      threadType: "worker",
+      title: `Worker: ${step.stepKey}`,
+      target: {
+        kind: "worker",
+        runId: workerState.runId,
+        stepId: step.id,
+        stepKey: step.stepKey,
+        attemptId: workerState.attemptId,
+        sessionId: workerState.sessionId,
+        laneId: step.laneId ?? null,
+      },
+      status: step.status === "running" ? "active" : "closed",
+    });
+    structuredChatSessions.add(envelope.sessionId);
+    appendOrUpdateStructuredThreadMessage({
+      missionId,
+      threadId,
+      role: "worker",
+      senderStepKey: step.stepKey,
+      target: {
+        kind: "worker",
+        runId: workerState.runId,
+        stepId: step.id,
+        stepKey: step.stepKey,
+        attemptId: workerState.attemptId,
+        sessionId: workerState.sessionId,
+        laneId: step.laneId ?? null,
+      },
+      timestamp: envelope.timestamp,
+      sessionId: envelope.sessionId,
+      runId: workerState.runId,
+      attemptId: workerState.attemptId,
+      laneId: step.laneId ?? null,
+      event: envelope.event,
+    });
+  };
+
+  const persistStructuredCoordinatorChatEvent = (args: {
+    missionId: string;
+    runId: string;
+    event: AgentChatEvent;
+    timestamp?: string;
+  }): void => {
+    if (args.event.type === "activity" || args.event.type === "step_boundary") return;
+    const threadId = `mission:${args.missionId}`;
+    upsertThread({
+      missionId: args.missionId,
+      threadId,
+      threadType: "coordinator",
+      title: "Orchestrator",
+      target: {
+        kind: "coordinator",
+        runId: args.runId,
+      },
+      status: "active",
+    });
+    appendOrUpdateStructuredThreadMessage({
+      missionId: args.missionId,
+      threadId,
+      role: "orchestrator",
+      senderStepKey: null,
+      target: {
+        kind: "coordinator",
+        runId: args.runId,
+      },
+      timestamp: args.timestamp ?? nowIso(),
+      sessionId: `coordinator:${args.runId}`,
+      runId: args.runId,
+      attemptId: null,
+      laneId: null,
+      event: args.event,
+    });
+  };
+
   const normalizeWorkerProgressPreviewForChat = (preview: string): string | null => {
     const compact = preview
       .replace(/\u001b\[[0-9;]*m/g, "")
@@ -898,6 +1302,7 @@ export function createAiOrchestratorService(args: {
       .replace(/\s+/g, " ")
       .trim();
     if (!compact.length) return null;
+    if (isWorkerBootstrapNoiseLine(compact)) return null;
 
     if (
       /^You are an ADE /i.test(compact)
@@ -907,15 +1312,23 @@ export function createAiOrchestratorService(args: {
       || /^Phase-level guidance:/i.test(compact)
       || /^Referenced docs:/i.test(compact)
       || /^tool ade\./i.test(compact)
-      || /^"(?:workerId|text|content|summary|outcome|stepId|stepKey|laneId|reportedAt)"\s*:/i.test(compact)
+      || /^"(?:workerId|text|content|summary|outcome|stepId|stepKey|laneId|reportedAt|type)"\s*:/i.test(compact)
       || /^\{\s*"ok"\s*:/i.test(compact)
       || /^quote>\s*/i.test(compact)
       || /^-p\s+"\$\(cat\s+/i.test(compact)
       || /^cp\s+'.+worker-[a-f0-9-]+\.json'\s+'.+\.json'(\s+&&\s+exec\b.*)?$/i.test(compact)
       || /^ade_[a-z0-9_]+=.+/i.test(compact)
-      || /worker-prompts\/worker-[a-f0-9-]+\.txt/i.test(compact)
+      || /(?:^|[\\/])(?:orchestrator[\\/])?worker-prompts[\\/]worker-[a-f0-9-]+(?:\.[A-Za-z0-9._-]+)?/i.test(compact)
       || /\.ade-worker-mcp-[a-f0-9-]+\.json/i.test(compact)
+      || /(?:^|[-*]\s+)?`?\.ade\/(?:step-output|checkpoints)-worker_[^`\s]+\.md`?/i.test(compact)
       || /[A-Za-z0-9._-]+\.(?:txt|json)['")]+$/i.test(compact)
+      || /^"(?:missionId|runId|stepId|stepKey|laneId|attemptId)\b/i.test(compact)
+      || /^"(?:[A-Za-z0-9_]+)"\s*:\s*/i.test(compact)
+      || /^[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|json|md|txt):\d+(?::\d+)?:/i.test(compact)
+      || /^(?:[-*]\s+)?(?:\.{0,2}[\\/]|\/)[^\s]+$/.test(compact)
+      || /^(?:[-*]\s+)?(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\/?$/.test(compact)
+      || /^\]\s+as\s+[A-Za-z]/i.test(compact)
+      || /^EOF"\s+in\s+\/Users\//i.test(compact)
       || /^\/users\/.+\.zshrc:\d+:/i.test(compact)
       || /command not found:\s*compdef/i.test(compact)
       || /exec claude --model/i.test(compact)
@@ -936,7 +1349,8 @@ export function createAiOrchestratorService(args: {
       /^(?:\/bin\/(?:zsh|bash)|zsh|bash|git|pnpm|npm|npx|node|sed|rg|cat|ls|cp|mv|rm|apply_patch)\b/i.test(compact)
       || /^(?:diff --git|index [0-9a-f]{7,}\.\.[0-9a-f]{7,}|@@|--- |\+\+\+ )/i.test(compact)
       || /^[+\-@{}[\]()<>|]+$/.test(compact)
-      || /^(?:<Route\b|import\b|export\b|const\b|function\b|return\b)/.test(compact)
+      || /^[+-]\s*(?:<[/A-Za-z]|import\b|export\b|const\b|function\b|return\b)/.test(compact)
+      || /^(?:<[/A-Za-z]|import\b|export\b|const\b|function\b|return\b)/.test(compact)
     ) {
       return null;
     }
@@ -987,6 +1401,7 @@ export function createAiOrchestratorService(args: {
     laneId: string | null;
     preview: string;
   }): void => {
+    if (structuredChatSessions.has(args.sessionId)) return;
     const content = normalizeWorkerProgressPreviewForChat(args.preview);
     if (!content) return;
 
@@ -1081,6 +1496,9 @@ export function createAiOrchestratorService(args: {
         onCoordinatorMessage: (message) => {
           maybeEmitCoordinatorProgressChatUpdate({ missionId, runId, message });
         },
+        onCoordinatorEvent: (event) => {
+          persistStructuredCoordinatorChatEvent({ missionId, runId, event });
+        },
         onRunFinalize: (args) => {
           // Forward coordinator's verdict to the chat before finalizing
           if (args.succeeded) {
@@ -1127,14 +1545,20 @@ export function createAiOrchestratorService(args: {
       });
 
       coordinatorAgents.set(runId, agent);
+      const initialCoordinatorPhase = Array.isArray(opts?.phases)
+        ? [...opts.phases].sort((a, b) => a.position - b.position)[0] ?? null
+        : null;
 
       // Inject the mission prompt — the coordinator takes it from here
       if (!opts?.skipInitialActivationMessage) {
         const laneContext = opts?.missionLaneId
           ? `\n\nA primary mission lane has been created for you (lane ID: ${opts.missionLaneId}). All workers should be assigned to this lane or to additional lanes you create with provision_lane. NEVER assign workers to the base lane directly.`
           : "";
+        const planningIsFirstPhase = initialCoordinatorPhase?.phaseKey.trim().toLowerCase() === "planning";
         agent.injectMessage(
-          `You have been activated. Your mission:\n\n${missionGoal}\n\nYou have full authority. Read the mission, think about the approach, create tasks, spawn workers, and complete the mission. Start now.${laneContext}`,
+          planningIsFirstPhase
+            ? `You have been activated. Your mission:\n\n${missionGoal}\n\nPlanning is the active first phase. If clarification is not required, immediately call get_project_context, spawn the planning worker in read-only mode, and then wait for its output instead of continuing to reason on your own.${laneContext}`
+            : `You have been activated. Your mission:\n\n${missionGoal}\n\nYou have full authority. Read the mission, create tasks, spawn workers, and complete the mission. Delegate quickly, then stay idle until a worker produces meaningful new information.${laneContext}`,
         );
       }
 
@@ -1143,10 +1567,11 @@ export function createAiOrchestratorService(args: {
         runId,
         modelId,
       });
-
       emitOrchestratorMessage(
         missionId,
-        "Orchestrator online. I’m reviewing the mission, building the plan, and will start the first workers when the DAG is ready.",
+        initialCoordinatorPhase?.phaseKey.trim().toLowerCase() === "planning"
+          ? "Orchestrator online. Planning is active, and I’m briefing the planning worker now."
+          : "Orchestrator online. I’m aligning the active phase and will start the first worker shortly.",
         null,
         {
           role: "coordinator_v2",
@@ -5415,6 +5840,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     const missionPhaseConfiguration = isRecord(missionMetadataAfterPlanning.phaseConfiguration)
       ? missionMetadataAfterPlanning.phaseConfiguration
       : null;
+    const missionLevelSettings = isRecord(missionMetadataAfterPlanning.missionLevelSettings)
+      ? missionMetadataAfterPlanning.missionLevelSettings
+      : null;
     const plannerPlanMeta = isRecord(missionMetadataAfterPlanning.plannerPlan)
       ? missionMetadataAfterPlanning.plannerPlan
       : null;
@@ -5513,6 +5941,8 @@ Check all worker statuses and continue managing the mission from here. Read work
           : undefined,
         agentRuntime: normalizeAgentRuntimeFlags(launchAgentRuntime),
         aiFirst: true,
+        ...(missionLevelSettings ? { missionLevelSettings } : {}),
+        ...(missionPhaseConfiguration ? { phaseConfiguration: missionPhaseConfiguration } : {}),
         phaseOverride: phases,
         phaseProfileId: typeof missionPhaseConfiguration?.profileId === "string"
           ? missionPhaseConfiguration.profileId
@@ -5565,7 +5995,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     transitionMissionStatus(missionId, "in_progress");
     emitOrchestratorMessage(
       missionId,
-      "Mission started. I’m moving through planning, implementation, and validation based on your selected phases."
+      initialPhase?.phaseKey.trim().toLowerCase() === "planning"
+        ? "Mission started. Planning is active, and I’m sending the first planning task out now."
+        : "Mission started. I’m following the enabled phases and will advance workers as each phase opens."
     );
 
     const initialGraph = getRunGraphSafe(started.run.id);
@@ -6535,6 +6967,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     const sessionId = String(envelope.sessionId ?? "").trim();
     if (!sessionId.length) return;
     const event = envelope.event;
+    persistStructuredWorkerChatEvent(envelope);
     const shouldReplay =
       (event.type === "status" && (event.turnStatus === "completed" || event.turnStatus === "interrupted" || event.turnStatus === "failed"))
       || event.type === "done"

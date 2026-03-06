@@ -7,6 +7,8 @@ import { startJsonRpcServer } from "./jsonrpc";
 import { createMcpRequestHandler } from "./mcpServer";
 import { createStdioTransport } from "./transport";
 
+process.env.ADE_STDIO_TRANSPORT ??= "1";
+
 function resolveProjectRoot(): string {
   const fromEnv = process.env.ADE_PROJECT_ROOT?.trim();
   if (fromEnv) return path.resolve(fromEnv);

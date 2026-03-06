@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-05
+> Last updated: 2026-03-06
 
 ---
 
@@ -30,6 +30,24 @@ An automation can target any of these executor modes:
 - `night-shift`: queue the work for unattended overnight execution
 
 This keeps one automation engine while supporting both quick disposable jobs and long-lived employees with memory.
+
+### Core Principle: Full ADE Tool Access (W5b)
+
+Automations are not a limited "run shell command" system. When W5b ships, an automation rule can spawn an AI agent with **the same capabilities as any CTO worker or mission worker** — every single tool that ADE has to offer:
+
+- **Repo/code tools**: read files, search code, analyze dependencies
+- **Git operations**: branch, commit, merge, rebase, cherry-pick
+- **Terminal/PTY**: run arbitrary commands in sandboxed environments
+- **Test runners**: execute test suites, report results
+- **GitHub PR workflows**: open PRs, request reviews, post comments, merge
+- **Linear actions**: create/update issues, transition state, post comments
+- **Browser automation**: navigate, interact, screenshot
+- **External MCP tools** (W8): any user-configured MCP server
+- **Memory tools**: read/write project memory, search knowledge base
+- **Conflict resolution**: detect and resolve merge conflicts
+- **Mission launch**: spawn sub-missions, validate outcomes, generate artifacts
+
+The user configures per rule: which model to use, what permission level, which tools are available, what the agent should do, and how to handle output (open PR, post to Linear, run tests, verify before publishing). The automation executor dispatches through the orchestrator's mission system — the same infrastructure that powers interactive missions.
 
 ## Product Model
 
@@ -69,6 +87,18 @@ interface AutomationRule {
 }
 ```
 
+## Linear Dispatch Boundary
+
+> Decided 2026-03-06
+
+**CTO owns Linear dispatch; Automations does NOT duplicate it.**
+
+The CTO heartbeat (W4, shipped) is the intelligent intake and routing path for Linear issues. It polls Linear, classifies issues, selects mission templates, and dispatches work to the appropriate worker. This is where logic like "P0 bug -> bug-fix template -> backend-dev worker" belongs.
+
+Automations handles local triggers (commit, schedule, session-end, manual), webhooks, and programmable workflows. Linear appears in Automations only as an **action** — for example, "on commit -> update Linear issue status" or "on session-end -> post summary to Linear issue". Automations does NOT re-implement Linear issue intake or routing as a trigger.
+
+If a user wants "P0 bug -> specific template", that is a CTO dispatch policy configured via `linearSync.autoDispatch.rules` in W4, not an automation rule. This boundary prevents UX confusion ("which system handles my Linear issue?") and avoids duplicating the already-shipped W4 dispatch infrastructure.
+
 ## Supported Trigger Families
 
 W5 supports both local repo triggers and external event triggers.
@@ -80,13 +110,12 @@ W5 supports both local repo triggers and external event triggers.
 - `commit`
 - `session-end`
 
-### External triggers
+### External triggers (W5b)
 
-- `GitHub`
-- `Linear`
-- `webhook`
+- `GitHub` (webhooks)
+- `webhook` (generic)
 
-Deferred for later phases: Slack, PagerDuty, and other external sources can plug into the same trigger contract once the first connector set is stable.
+Note: Linear is intentionally excluded as a trigger — see Linear Dispatch Boundary above. Slack, PagerDuty, and other external sources are deferred for later phases and can plug into the same trigger contract once the first connector set is stable.
 
 ## Tool Palettes
 
@@ -142,6 +171,41 @@ Settings stores global defaults and infrastructure, including:
 - team template defaults and shared presets
 
 Rule creation, simulation, activation, and run review happen in `/automations`, not in Settings.
+
+## Usage Tracking and Budget Caps
+
+> Added 2026-03-06. Inspired by [CodexBar](https://github.com/steipete/CodexBar).
+
+Automations includes a usage tracking and budget cap layer to give users visibility into AI spend and prevent runaway costs from unattended execution.
+
+### Usage Tracking
+
+- **OAuth API polling**: Real-time usage data from Claude (`api.anthropic.com/api/oauth/usage` with five_hour and seven_day windows) and Codex (`chatgpt.com/backend-api/wham/usage` or CLI RPC).
+- **Local cost scanning**: Parse JSONL session logs from `~/.claude/projects/` and `~/.codex/sessions/` for granular per-session cost attribution.
+- **Pacing calculation**: Determine whether usage is on-track, ahead, or behind based on `usage% vs time_elapsed%` within the billing window.
+
+### Budget Caps
+
+- **Per-rule caps**: Each automation rule can specify a USD or token budget per run.
+- **Per-night-shift-run caps**: Limit how much a single Night Shift session can spend.
+- **Global caps**: Expressed as percentage of weekly budget or absolute USD.
+- **Night Shift reserve**: Protect X% of weekly budget for overnight runs, preventing daytime usage from starving Night Shift.
+
+### Implementation
+
+- `usageTrackingService`: Provider-agnostic usage snapshots, polling intervals, pacing math.
+- `budgetCapService`: Budget enforcement at rule, night-shift, and global levels. Emits budget-breach events for notification/auto-pause.
+- Usage data surfaced in the Automations tab via a dedicated "Usage" sub-tab.
+
+## Competitive References
+
+> Added 2026-03-06
+
+Design decisions informed by competitive analysis:
+
+- **Cursor Automations (Mar 2026)**: Triggers from GitHub/Linear/Slack/PagerDuty/webhooks/schedules, cloud sandbox agents with MCP access, memory tool, template categories (security review, PR review, incident triage, routine maintenance). ADE adopts the template gallery pattern, trigger taxonomy, and memory-aware execution. ADE skips cloud sandbox execution (local-first) and does not use Linear as an automation trigger (CTO dispatch boundary).
+- **Codex Agents SDK**: "Works unprompted" concept, skills system, multi-agent orchestration with PM agent, trace dashboard. ADE adopts the "works unprompted" framing for Night Shift, trace/history visibility, and multi-agent orchestration (CTO as PM agent equivalent).
+- **CodexBar**: macOS menu bar usage tracker for Claude and Codex. ADE adopts the OAuth API polling pattern and pacing calculation, integrated into the Usage tab rather than a separate menu bar app.
 
 ## Canonical References
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import type { OrchestratorAttempt, OrchestratorStep } from "../../../shared/types";
+import { sanitizeWorkerTranscriptForDisplay } from "../../../shared/workerRuntimeNoise";
 import { cn } from "../ui/cn";
 
 type Props = {
@@ -40,7 +41,10 @@ function TranscriptTail({ sessionId }: { sessionId: string }) {
           sessionId,
           maxBytes: MAX_BYTES,
         });
-        if (!cancelled) setText(tail);
+        if (!cancelled) {
+          const sanitized = sanitizeWorkerTranscriptForDisplay(tail);
+          setText(sanitized || (tail.trim().length > 0 ? "Worker is online, but only bootstrap output has been captured so far." : ""));
+        }
       } catch {
         if (!cancelled) setText("(unable to read transcript)");
       }

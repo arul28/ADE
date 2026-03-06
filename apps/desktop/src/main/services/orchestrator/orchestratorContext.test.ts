@@ -123,6 +123,24 @@ describe("deriveMissionStatusFromRun", () => {
 
     expect(status).toBe("in_progress");
   });
+
+  it("maps canceled runs to canceled missions", () => {
+    const status = deriveMissionStatusFromRun(
+      {
+        run: { status: "canceled" },
+        steps: [],
+        attempts: [],
+        timeline: [],
+        claims: [],
+      } as any,
+      {
+        status: "in_progress",
+        interventions: [],
+      } as any
+    );
+
+    expect(status).toBe("canceled");
+  });
 });
 
 describe("display-only task helpers", () => {

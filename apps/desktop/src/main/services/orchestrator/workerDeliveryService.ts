@@ -75,6 +75,91 @@ export type WorkerSessionDeliveryStatus =
   | { ok: true; delivered: false; method: "steer"; reason: "worker_busy_steered" }
   | { ok: false; delivered: false; reason: "no_active_session" | "delivery_failed"; error?: string };
 
+function isCoordinatorStatusQuery(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized.length) return false;
+
+  if (/^(status|progress|heartbeat|what'?s happening|what is happening)$/i.test(normalized)) {
+    return true;
+  }
+
+  const statusTerms = /\b(status|progress|stuck|heartbeat|doing|working on|worker|agent|lane|phase|running)\b/i;
+  if (!statusTerms.test(normalized)) return false;
+
+  const questionLead =
+    /^(what|what's|what is|how|how's|how is|where|where's|where is|which|who|when|why|are|is|do|does|did|can|could|would|will)\b/i;
+  const looksLikeQuestion = normalized.includes("?") || questionLead.test(normalized);
+  if (!looksLikeQuestion) return false;
+
+  const directiveLead =
+    /^(please\s+)?(tell|ask|send|pause|stop|cancel|retry|resume|spawn|create|change|fix|update|switch|use|move|delegate|start|finish|mark|set)\b/i;
+  const explicitWorkerCommand = /\b(tell|ask|send)\s+(the\s+)?(worker|agent|coordinator)\b/i;
+  return !directiveLead.test(normalized) && !explicitWorkerCommand.test(normalized);
+}
+
+function buildCoordinatorStatusReply(
+  ctx: OrchestratorContext,
+  missionId: string,
+  content: string,
+): string {
+  const runs = ctx.orchestratorService.listRuns({ missionId });
+  if (!runs.length) return "No run has started yet.";
+  const byCreatedDesc = [...runs].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+  const targetRun = byCreatedDesc.find((entry) =>
+    entry.status === "active" || entry.status === "bootstrapping" || entry.status === "queued" || entry.status === "paused"
+  ) ?? byCreatedDesc[0] ?? null;
+  if (!targetRun) return "No run has started yet.";
+
+  try {
+    const graph = ctx.orchestratorService.getRunGraph({ runId: targetRun.id, timelineLimit: 0 });
+    const normalizedContent = content.trim().toLowerCase();
+    const runningSteps = graph.steps.filter((step) => step.status === "running");
+    const targetStep =
+      graph.steps.find((step) => {
+        const title = (step.title ?? "").trim().toLowerCase();
+        const stepKey = (step.stepKey ?? "").trim().toLowerCase();
+        return (title.length > 0 && normalizedContent.includes(title)) || (stepKey.length > 0 && normalizedContent.includes(stepKey));
+      })
+      ?? (runningSteps.length === 1 ? runningSteps[0] : null);
+
+    if (!targetStep) {
+      return summarizeRunForChat(ctx, missionId);
+    }
+
+    const latestAttempt = graph.attempts
+      .filter((attempt) => attempt.stepId === targetStep.id)
+      .sort((left, right) => {
+        const leftTs = Date.parse(left.startedAt ?? left.createdAt);
+        const rightTs = Date.parse(right.startedAt ?? right.createdAt);
+        return rightTs - leftTs;
+      })[0] ?? null;
+    const sessionSignal =
+      latestAttempt?.executorSessionId ? ctx.sessionRuntimeSignals.get(latestAttempt.executorSessionId) ?? null : null;
+    const workerLabel = targetStep.title?.trim().length ? targetStep.title.trim() : targetStep.stepKey;
+    const startedAtMs = Date.parse(latestAttempt?.startedAt ?? latestAttempt?.createdAt ?? "");
+    const elapsedSeconds = Number.isFinite(startedAtMs)
+      ? Math.max(0, Math.round((Date.now() - startedAtMs) / 1000))
+      : null;
+    const latestSignal = sessionSignal?.lastOutputPreview?.trim().length
+      ? sessionSignal.lastOutputPreview.trim()
+      : latestAttempt?.resultEnvelope?.summary?.trim().length
+        ? latestAttempt.resultEnvelope.summary.trim()
+        : null;
+    const signalState = sessionSignal?.runtimeState ?? (latestAttempt?.status === "running" ? "running" : null);
+
+    return [
+      `${workerLabel} (${targetStep.stepKey}) is ${targetStep.status}.`,
+      signalState ? `Runtime state: ${signalState}.` : null,
+      elapsedSeconds != null ? `Elapsed: ${elapsedSeconds}s.` : null,
+      latestSignal ? `Latest signal: ${clipTextForContext(latestSignal, 220)}.` : null,
+    ]
+      .filter((entry): entry is string => Boolean(entry))
+      .join(" ");
+  } catch {
+    return summarizeRunForChat(ctx, missionId);
+  }
+}
+
 // ── readWorkerDeliveryMetadata ──────────────────────────────────
 
 export function readWorkerDeliveryMetadataCtx(
@@ -1193,14 +1278,14 @@ export function routeMessageToCoordinatorCtx(
     metadata: message.metadata ?? null
   };
   const recentChatContext = formatRecentChatContext(ctx.chatMessages.get(message.missionId) ?? [message]);
-  const statusIntent = /\b(status|progress|stuck|heartbeat|worker|lane)\b/i.test(message.content);
+  const statusIntent = isCoordinatorStatusQuery(message.content);
   if (statusIntent) {
     void (async () => {
       if (ctx.disposed.current) return;
       try {
         const sweep = await deps.runHealthSweep("chat_status");
         if (ctx.disposed.current) return;
-        const summary = summarizeRunForChat(ctx, message.missionId);
+        const summary = buildCoordinatorStatusReply(ctx, message.missionId, message.content);
         const recoveryNote =
           sweep.staleRecovered > 0
             ? ` Recovered ${sweep.staleRecovered} stale attempt${sweep.staleRecovered === 1 ? "" : "s"} during health sweep.`
@@ -1208,9 +1293,17 @@ export function routeMessageToCoordinatorCtx(
         emitOrchestratorMessage(ctx, message.missionId, `${summary}${recoveryNote}`.trim(), undefined, undefined, { appendChatMessage: deps.appendChatMessage });
       } catch {
         if (ctx.disposed.current) return;
-        emitOrchestratorMessage(ctx, message.missionId, summarizeRunForChat(ctx, message.missionId), undefined, undefined, { appendChatMessage: deps.appendChatMessage });
+        emitOrchestratorMessage(
+          ctx,
+          message.missionId,
+          buildCoordinatorStatusReply(ctx, message.missionId, message.content),
+          undefined,
+          undefined,
+          { appendChatMessage: deps.appendChatMessage }
+        );
       }
     })();
+    return;
   }
 
   try {

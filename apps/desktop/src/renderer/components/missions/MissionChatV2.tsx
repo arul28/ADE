@@ -24,6 +24,7 @@ import type {
 import { MentionInput, type MentionParticipant } from "../shared/MentionInput";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { useMissionPolling } from "./useMissionPolling";
+import { MissionThreadMessageList } from "./MissionThreadMessageList";
 
 // ── Design tokens (aliases for backward compat) ──
 const MONO = MONO_FONT;
@@ -69,6 +70,21 @@ const STATUS_DOT: Record<string, string> = {
   closed: STATUS_GRAY,
   failed: STATUS_RED,
 };
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function formatStructuredValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
 
 const LABEL_STYLE: React.CSSProperties = {
   fontSize: 10,
@@ -229,7 +245,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
   // ── Build participants for MentionInput ──
   const participants = useMemo<MentionParticipant[]>(() => {
     const result: MentionParticipant[] = [
-      { id: "orchestrator", label: "orchestrator", status: "active", role: "planner" },
+      { id: "orchestrator", label: "orchestrator", status: "active", role: "orchestrator" },
       { id: "all", label: "all", status: "active", role: "broadcast" },
     ];
 
@@ -469,6 +485,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
       msgs = [...globalMessages].sort(
         (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
       );
+      msgs = msgs.filter((msg) => {
+        const metadata = readRecord(msg.metadata);
+        return metadata?.missionChatMode !== "thread_only";
+      });
     } else {
       msgs = threadMessages;
     }
@@ -519,6 +539,12 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     }
     return null;
   }, [missionStatus, runId, runStatus]);
+
+  const selectedThreadShowStreamingIndicator = useMemo(() => {
+    if (selectedChannel?.kind !== "worker" || !selectedChannel.attemptId) return false;
+    const state = workerStateByAttempt.get(selectedChannel.attemptId)?.state;
+    return state === "initializing" || state === "working";
+  }, [selectedChannel, workerStateByAttempt]);
 
   // ── Send message ──
   const handleSend = useCallback(
@@ -630,7 +656,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
                 isSelected={selectedChannelId === orchestratorChannel.id}
                 onClick={() => setSelectedChannelId(orchestratorChannel.id)}
                 unreadCount={orchestratorChannel.unreadCount}
-                badge="planner"
+                badge="orchestrator"
                 badgeColor="#3B82F6"
               />
             </>
@@ -813,50 +839,56 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
         )}
 
         {/* Message list */}
-        <div
-          ref={scrollRef}
-          onScroll={handleScroll}
-          className="relative flex-1 overflow-y-auto px-4 py-3 space-y-2"
-        >
-          {displayMessages.length === 0 && (
-            <div
-              className="flex h-32 items-center justify-center text-xs"
-              style={{ color: TEXT_MUTED }}
-            >
-              {selectedChannel?.kind === "global"
-                ? "No messages yet. Messages from all channels appear here."
-                : "No messages yet in this channel."}
-            </div>
-          )}
+        {selectedChannel?.kind === "global" ? (
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="relative flex-1 overflow-y-auto px-4 py-3 space-y-2"
+          >
+            {displayMessages.length === 0 && (
+              <div
+                className="flex h-32 items-center justify-center text-xs"
+                style={{ color: TEXT_MUTED }}
+              >
+                No messages yet. Messages from all channels appear here.
+              </div>
+            )}
 
-          {displayMessages.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              msg={msg}
-              attemptNameMap={attemptNameMap}
-              isGlobalView={selectedChannel?.kind === "global"}
-            />
-          ))}
+            {displayMessages.map((msg) => (
+              <MessageBubble
+                key={msg.id}
+                msg={msg}
+                attemptNameMap={attemptNameMap}
+                isGlobalView
+              />
+            ))}
 
-          {/* Jump to latest */}
-          {showJumpToLatest && (
-            <button
-              onClick={jumpToLatest}
-              className="sticky bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 px-3 py-1 font-bold shadow-lg transition-opacity hover:opacity-90"
-              style={{
-                background: ACCENT,
-                color: BG_PAGE,
-                fontFamily: MONO,
-                fontSize: "10px",
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-              }}
-            >
-              <CaretDown size={12} weight="regular" />
-              JUMP TO LATEST
-            </button>
-          )}
-        </div>
+            {/* Jump to latest */}
+            {showJumpToLatest && (
+              <button
+                onClick={jumpToLatest}
+                className="sticky bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 px-3 py-1 font-bold shadow-lg transition-opacity hover:opacity-90"
+                style={{
+                  background: ACCENT,
+                  color: BG_PAGE,
+                  fontFamily: MONO,
+                  fontSize: "10px",
+                  textTransform: "uppercase",
+                  letterSpacing: "1px",
+                }}
+              >
+                <CaretDown size={12} weight="regular" />
+                JUMP TO LATEST
+              </button>
+            )}
+          </div>
+        ) : (
+          <MissionThreadMessageList
+            messages={displayMessages}
+            showStreamingIndicator={selectedThreadShowStreamingIndicator}
+            className="flex-1"
+          />
+        )}
 
         {/* Input bar */}
         <div style={{ borderTop: `1px solid ${BORDER}` }}>
@@ -1013,6 +1045,8 @@ const MessageBubble = React.memo(function MessageBubble({
       ? (msg.metadata as Record<string, unknown>)
       : {}
   ), [msg.metadata]);
+  const structuredStream = useMemo(() => readRecord(metadata.structuredStream), [metadata]);
+  const structuredKind = typeof structuredStream?.kind === "string" ? structuredStream.kind.trim() : "";
   const systemSignal = typeof metadata.systemSignal === "string" ? metadata.systemSignal.trim() : "";
   const isValidationSystemSignal = systemSignal.startsWith("validation_");
   const [expanded, setExpanded] = useState(false);
@@ -1091,6 +1125,102 @@ const MessageBubble = React.memo(function MessageBubble({
           </div>
           <div className="mt-1" style={timestampStyle}>
             {new Date(msg.timestamp).toLocaleTimeString()}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (structuredStream && !isGlobalView) {
+    const headerColor =
+      structuredKind === "reasoning"
+        ? "#38BDF8"
+        : structuredKind === "tool"
+          ? "#F59E0B"
+          : structuredKind === "error"
+            ? STATUS_RED
+            : structuredKind === "done"
+              ? STATUS_GREEN
+              : TEXT_MUTED;
+    const toolName = typeof structuredStream.tool === "string" ? structuredStream.tool : "tool";
+    const detail =
+      structuredKind === "tool"
+        ? [structuredStream.args !== undefined ? `Args\n${formatStructuredValue(structuredStream.args)}` : null,
+          structuredStream.result !== undefined ? `Result\n${formatStructuredValue(structuredStream.result)}` : null]
+          .filter(Boolean)
+          .join("\n\n")
+        : structuredKind === "done"
+          ? structuredStream.usage != null ? formatStructuredValue(structuredStream.usage) : ""
+          : structuredKind === "error"
+            ? typeof structuredStream.message === "string" ? structuredStream.message : msg.content
+            : msg.content;
+    const showExpandable =
+      structuredKind === "reasoning"
+      || structuredKind === "tool"
+      || structuredKind === "error";
+    const title =
+      structuredKind === "reasoning"
+        ? "Thinking"
+        : structuredKind === "tool"
+          ? `Tool · ${toolName}`
+          : structuredKind === "status"
+            ? `Turn ${typeof structuredStream.status === "string" ? structuredStream.status : "update"}`
+            : structuredKind === "done"
+              ? `Turn ${typeof structuredStream.status === "string" ? structuredStream.status : "done"}`
+              : structuredKind === "text"
+                ? senderLabel
+                : "Worker event";
+
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-[85%]">
+          <div className="mb-1 flex items-center gap-1 text-[10px]" style={{ color: TEXT_MUTED }}>
+            {isWorker ? <TerminalWindow size={12} weight="regular" /> : <Robot size={12} weight="regular" />}
+            <span>{senderLabel}</span>
+            <span style={timestampStyle}>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+          </div>
+          <div
+            className="px-3 py-2 text-xs"
+            style={{ background: BG_MAIN, border: `1px solid ${headerColor}33`, color: TEXT_PRIMARY }}
+          >
+            <div className="mb-1 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider" style={{ color: headerColor }}>
+              {showExpandable ? (
+                <button
+                  onClick={() => setExpanded((value) => !value)}
+                  className="inline-flex items-center gap-1"
+                  style={{ color: headerColor }}
+                >
+                  <CaretRight
+                    size={10}
+                    weight="bold"
+                    style={{ transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 100ms" }}
+                  />
+                  {title}
+                </button>
+              ) : (
+                <span>{title}</span>
+              )}
+            </div>
+            {structuredKind === "text" ? (
+              <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+            ) : showExpandable ? (
+              expanded ? (
+                <pre className="overflow-x-auto whitespace-pre-wrap text-[11px]" style={{ color: TEXT_SECONDARY, fontFamily: MONO }}>
+                  {detail}
+                </pre>
+              ) : (
+                <div className="text-[11px]" style={{ color: TEXT_SECONDARY }}>
+                  {structuredKind === "tool" ? `Status: ${typeof structuredStream.status === "string" ? structuredStream.status : "running"}` : "Expand to inspect details."}
+                </div>
+              )
+            ) : (
+              <div className="whitespace-pre-wrap leading-relaxed" style={{ color: TEXT_SECONDARY }}>
+                {detail}
+              </div>
+            )}
+            <div className="mt-1" style={timestampStyle}>
+              {new Date(msg.timestamp).toLocaleTimeString()}
+            </div>
           </div>
         </div>
       </div>

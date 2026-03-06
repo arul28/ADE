@@ -166,6 +166,32 @@ const COORDINATOR_ROUTING_CRITICAL_REASONS = new Set([
   "intervention_opened",
   "intervention_resolved",
 ]);
+const COORDINATOR_IMPORTANT_RUNTIME_REASONS = new Set([
+  "attempt_completed",
+  "completed",
+  "failed",
+  "skipped",
+  "finalized",
+  "delivery_failed",
+  "manual_intervention_required",
+  "manual_pause",
+  "manual_pause_for_review",
+  "manual_step_requires_operator",
+  "milestone_ready_validation_required",
+  "no_output_after_startup",
+  "question_answered_resume",
+  "required_validation_gate_blocked",
+  "required_validation_missing",
+  "resume_recovered",
+  "retry_exhausted",
+  "run_reopened",
+  "startup_verification_warning",
+  "validation_auto_spawned",
+  "validation_contract_unfulfilled",
+  "validation_gate_blocked",
+  "validation_retry_exhausted",
+  "validation_self_check_reminder",
+]);
 
 type CoordinatorRouteGuardState = {
   lastFingerprint: string | null;
@@ -207,6 +233,13 @@ export function routeEventToCoordinator(
   event: OrchestratorRuntimeEvent,
   context?: { graph?: OrchestratorRunGraph },
 ): void {
+  const normalizedReason = String(event.reason ?? "").trim().toLowerCase();
+  if (event.type === "orchestrator-claim-updated") {
+    return;
+  }
+  if (normalizedReason.length > 0 && !COORDINATOR_IMPORTANT_RUNTIME_REASONS.has(normalizedReason)) {
+    return;
+  }
   const resolvedStep =
     context?.graph && event.stepId
       ? context.graph.steps.find((candidate) => candidate.id === event.stepId)

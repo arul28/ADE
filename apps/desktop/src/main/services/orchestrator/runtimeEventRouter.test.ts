@@ -38,7 +38,7 @@ describe("runtimeEventRouter", () => {
         stepId: "step-1",
         attemptId: "attempt-1",
         at: "2026-03-03T00:00:00.000Z",
-        reason: "status_changed",
+        reason: "validation_self_check_reminder",
       } as any;
 
       routeEventToCoordinator(coordinator, event);
@@ -77,6 +77,77 @@ describe("runtimeEventRouter", () => {
     }
   });
 
+  it("ignores idle runtime churn so the coordinator stays quiet while workers are just running", () => {
+    const coordinator = {
+      injectEvent: vi.fn(),
+    } as any;
+
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-attempt-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+      at: "2026-03-03T00:00:00.000Z",
+      reason: "started",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-attempt-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+      at: "2026-03-03T00:00:00.100Z",
+      reason: "session_attached",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-claim-updated",
+      runId: "run-1",
+      claimId: "claim-1",
+      at: "2026-03-03T00:00:00.200Z",
+      reason: "heartbeat",
+    } as any);
+
+    expect(coordinator.injectEvent).not.toHaveBeenCalled();
+  });
+
+  it("ignores coordinator-owned DAG churn and only wakes for actionable runtime events", () => {
+    const coordinator = {
+      injectEvent: vi.fn(),
+    } as any;
+
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      at: "2026-03-03T00:00:00.000Z",
+      reason: "steps_added",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      at: "2026-03-03T00:00:00.050Z",
+      reason: "dependencies_updated",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-run-updated",
+      runId: "run-1",
+      at: "2026-03-03T00:00:00.100Z",
+      reason: "status_updated",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+      at: "2026-03-03T00:00:00.200Z",
+      reason: "attempt_completed",
+    } as any);
+
+    expect(coordinator.injectEvent).toHaveBeenCalledTimes(1);
+    const message = coordinator.injectEvent.mock.calls[0]?.[1] as string;
+    expect(message).toContain("attempt_completed");
+  });
+
   it("clips oversized routed messages and emits suppression summaries after rate limiting", () => {
     vi.useFakeTimers();
     try {
@@ -87,10 +158,34 @@ describe("runtimeEventRouter", () => {
       const largeEvent = {
         type: "orchestrator-run-updated",
         runId: "run-1",
+        stepId: "step-1",
+        attemptId: "attempt-1",
         at: "2026-03-03T00:00:00.000Z",
-        reason: "x".repeat(10_000),
+        reason: "validation_contract_unfulfilled",
       } as any;
-      routeEventToCoordinator(coordinator, largeEvent);
+      routeEventToCoordinator(coordinator, largeEvent, {
+        graph: {
+          run: { id: "run-1", status: "active", metadata: {} },
+          steps: [
+            {
+              id: "step-1",
+              stepKey: "step-1",
+              status: "failed",
+            },
+          ],
+          attempts: [
+            {
+              id: "attempt-1",
+              stepId: "step-1",
+              status: "failed",
+              resultEnvelope: {
+                summary: "x".repeat(10_000),
+              },
+            },
+          ],
+          claims: [],
+        } as any,
+      });
       const firstMessage = coordinator.injectEvent.mock.calls[0]?.[1] as string;
       expect(firstMessage.length).toBeLessThanOrEqual(6_000);
       expect(firstMessage).toContain("[router-truncated]");
@@ -101,7 +196,7 @@ describe("runtimeEventRouter", () => {
           runId: "run-1",
           stepId: `step-${index}`,
           at: "2026-03-03T00:00:00.000Z",
-          reason: `tick_${index}`,
+          reason: "validation_self_check_reminder",
         } as any);
       }
       expect(coordinator.injectEvent).toHaveBeenCalledTimes(24);
@@ -112,7 +207,7 @@ describe("runtimeEventRouter", () => {
         runId: "run-1",
         stepId: "step-next",
         at: "2026-03-03T00:00:01.100Z",
-        reason: "tick_next",
+        reason: "validation_self_check_reminder",
       } as any);
 
       expect(coordinator.injectEvent).toHaveBeenCalledTimes(25);
@@ -136,7 +231,7 @@ describe("runtimeEventRouter", () => {
           runId: "run-1",
           stepId: `step-${index}`,
           at: "2026-03-03T00:00:00.000Z",
-          reason: `tick_${index}`,
+          reason: "validation_self_check_reminder",
         } as any);
       }
       expect(coordinator.injectEvent).toHaveBeenCalledTimes(24);
@@ -146,7 +241,7 @@ describe("runtimeEventRouter", () => {
         runId: "run-1",
         stepId: "step-over-limit",
         at: "2026-03-03T00:00:00.100Z",
-        reason: "tick_over_limit",
+        reason: "validation_self_check_reminder",
       } as any);
       expect(coordinator.injectEvent).toHaveBeenCalledTimes(24);
 

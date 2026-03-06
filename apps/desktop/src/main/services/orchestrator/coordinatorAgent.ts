@@ -7,7 +7,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { streamText, stepCountIs, type ModelMessage } from "ai";
-import { createCoordinatorToolSet, type CoordinatorSendWorkerMessageFn } from "./coordinatorTools";
+import {
+  buildCoordinatorMcpAllowedTools,
+  createCoordinatorToolSet,
+  type CoordinatorSendWorkerMessageFn,
+} from "./coordinatorTools";
 import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "./unifiedOrchestratorAdapter";
 import {
   formatRuntimeEvent,
@@ -24,6 +28,7 @@ import { detectAllAuth } from "../ai/authDetector";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
+  AgentChatEvent,
   DagMutationEvent,
   MissionBudgetSnapshot,
   OrchestratorRuntimeEvent,
@@ -86,6 +91,7 @@ export type CoordinatorAgentDeps = {
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   onDagMutation: (event: DagMutationEvent) => void;
   onCoordinatorMessage?: (message: string) => void;
+  onCoordinatorEvent?: (event: AgentChatEvent) => void;
   onRunFinalize?: (args: { runId: string; succeeded: boolean; summary?: string; reason?: string }) => void;
   enableCompaction?: boolean;
   userRules?: CoordinatorUserRules;
@@ -158,12 +164,15 @@ export function buildCoordinatorCliOptions(args: {
   if (descriptor.family === "anthropic") {
     const logDir = path.join(args.projectRoot, ".ade", "logs");
     fs.mkdirSync(logDir, { recursive: true });
+    const mcpServerNames = Object.keys(args.mcpServers ?? {});
+    const coordinatorMcpServerName = mcpServerNames.includes("ade")
+      ? "ade"
+      : (mcpServerNames[0] ?? "ade");
     cli.claude = {
-      permissionMode: "bypassPermissions",
-      allowedTools: ["mcp__ade"],
+      permissionMode: "plan",
+      allowedTools: buildCoordinatorMcpAllowedTools(coordinatorMcpServerName),
       settingSources: [],
       debugFile: path.join(logDir, `coordinator-${args.runId}.claude.log`),
-      sessionId: args.runId,
     };
   }
 
@@ -480,6 +489,12 @@ export class CoordinatorAgent {
       historyLength: this.conversationHistory.length,
       timeoutMs: COORDINATOR_TURN_TIMEOUT_MS,
     });
+    const turnId = `coord-turn-${this.turnCount + 1}`;
+    this.deps.onCoordinatorEvent?.({
+      type: "status",
+      turnStatus: "started",
+      turnId,
+    });
 
     try {
       const result = streamText({
@@ -496,7 +511,58 @@ export class CoordinatorAgent {
       for await (const part of result.fullStream) {
         sawStreamPart = true;
         if (part.type === "text-delta") {
-          assistantText += part.text;
+          const delta = String(part.text ?? "");
+          assistantText += delta;
+          if (delta.length > 0) {
+            this.deps.onCoordinatorEvent?.({
+              type: "text",
+              text: delta,
+              turnId,
+              itemId: typeof part.id === "string" ? part.id : undefined,
+            });
+          }
+          continue;
+        }
+        if (part.type === "reasoning-delta") {
+          const delta = String(part.text ?? "");
+          if (delta.length > 0) {
+            this.deps.onCoordinatorEvent?.({
+              type: "reasoning",
+              text: delta,
+              turnId,
+              itemId: typeof part.id === "string" ? part.id : undefined,
+            });
+          }
+          continue;
+        }
+        if (part.type === "tool-call") {
+          this.deps.onCoordinatorEvent?.({
+            type: "tool_call",
+            tool: String(part.toolName ?? "tool"),
+            args: part.input,
+            itemId: String(part.toolCallId ?? `${turnId}-tool`),
+            turnId,
+          });
+          continue;
+        }
+        if (part.type === "tool-result") {
+          this.deps.onCoordinatorEvent?.({
+            type: "tool_result",
+            tool: String(part.toolName ?? "tool"),
+            result: part.output,
+            itemId: String(part.toolCallId ?? `${turnId}-tool`),
+            turnId,
+            status: part.preliminary ? "running" : "completed",
+          });
+          continue;
+        }
+        if (part.type === "tool-error") {
+          this.deps.onCoordinatorEvent?.({
+            type: "error",
+            message: `Tool '${String(part.toolName ?? "tool")}' failed: ${String(part.error ?? "unknown error")}`,
+            itemId: String(part.toolCallId ?? `${turnId}-tool`),
+            turnId,
+          });
         }
       }
 
@@ -536,6 +602,12 @@ export class CoordinatorAgent {
       if (assistantText.trim() && this.deps.onCoordinatorMessage) {
         this.deps.onCoordinatorMessage(assistantText.trim());
       }
+      this.deps.onCoordinatorEvent?.({
+        type: "done",
+        turnId,
+        status: "completed",
+        modelId: this.deps.modelId as any,
+      });
 
       this.deps.logger.info("coordinator_agent.turn_completed", {
         runId: this.deps.runId,
@@ -546,6 +618,16 @@ export class CoordinatorAgent {
       });
     } catch (error) {
       const aborted = abortController.signal.aborted;
+      this.deps.onCoordinatorEvent?.({
+        type: "status",
+        turnStatus: aborted ? "interrupted" : "failed",
+        turnId,
+      });
+      this.deps.onCoordinatorEvent?.({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+        turnId,
+      });
       this.deps.logger.warn("coordinator_agent.turn_failed", {
         runId: this.deps.runId,
         modelId: this.deps.modelId,
@@ -712,19 +794,26 @@ When you enter the Planning phase (your first phase), follow this protocol:
    - You MUST use ask_user FIRST to gather clarifying questions from the user BEFORE spawning the planning worker or building the task DAG.
    - Bundle all questions into one ask_user call. Wait for the user to respond before proceeding.
    - Once the user has answered, incorporate their responses into your planning.
-2. Spawn ONE planning worker with a rich research prompt that includes the full mission goal and the planning phase instructions
-3. The planning worker should have READ-ONLY focus \u2014 its job is to research the codebase, not write code
-4. Wait for the planning worker to complete, then read its output via get_worker_output
-5. Use the research findings to build your task DAG via create_task:
+2. Start the Planning phase immediately:
+   - If clarification is not required, your first turn should usually be: get_project_context, then spawn ONE planning worker.
+   - Do NOT spend the first turn doing coordinator-side repo exploration, shell work, or file-by-file analysis.
+   - Before the planner starts, avoid read_file/search_files unless the mission explicitly names a specific file or integration point that materially changes the planner brief.
+3. Spawn ONE planning worker with a rich research prompt that includes the full mission goal and the planning phase instructions
+   - The planning prompt must ask the worker to DISCOVER the plan.
+   - Do NOT hand the planning worker a pre-written implementation plan, exact edit list, commit message, or "confirm this plan" instructions.
+4. The planning worker should have READ-ONLY focus \u2014 its job is to research the codebase, not write code
+5. Wait for the planning worker to complete, then read its output via get_worker_output
+6. Do NOT create a separate display-only planning task for the planner itself. The planning worker IS the planning phase execution record.
+7. After the planning worker finishes, call set_current_phase with phaseKey "development" before creating implementation tasks or spawning code-changing workers.
+8. Once you are in Development, use the research findings to build the implementation DAG via create_task:
    - Create tasks with proper dependsOn relationships reflecting real code dependencies
    - Set parallelism based on the planner\u2019s analysis of independent workstreams
    - Each task should be scoped for ONE worker in ONE session
    - The DAG is visible to the user in real-time \u2014 structure it clearly
-   - create_task is for DISPLAY-ONLY planning structure. These task nodes help the user understand the breakdown; they are not the runnable worker graph.
-   - When you later spawn_worker, dependsOn should reference EXECUTABLE prerequisite workers, not just the display-only planning tasks
-6. After planning output is captured, call set_current_phase with phaseKey "development" before starting implementation workers.
-7. Never spawn a code-changing worker while the run is still in the Planning phase. Planning workers must stay read-only; transition phases first.
-8. Then begin development execution (spawn workers, delegate tasks, and continue phase-by-phase).
+   - create_task is for user-visible implementation work breakdown, not for the planning worker itself.
+   - When you later spawn_worker, dependsOn should reference EXECUTABLE prerequisite workers, not just display-only task cards
+9. Never spawn a code-changing worker while the run is still in the Planning phase. Planning workers must stay read-only; transition phases first.
+10. Then begin development execution (spawn workers, delegate tasks, and continue phase-by-phase).
 
 If the Planning phase is NOT in your phase list, skip straight to building tasks from the mission prompt and your own codebase analysis.`;
     }
@@ -877,10 +966,14 @@ After workers complete, use \`get_worker_output\` to check which files were modi
 
 ### 1. Understand Before Planning
 Before creating a single task, build your own understanding:
-- Call get_project_context and read_file on key files relevant to the mission
-- Understand the architecture, patterns, conventions, and test infrastructure
-- Identify risks, unknowns, and dependencies
-- You need this context to write good worker prompts — workers start cold, so YOU must give them the context they need
+- If Planning is enabled, do only the minimum coordinator-side prep needed to brief the planning worker.
+- Default startup behavior in Planning is: call get_project_context, then spawn the planner immediately.
+- Do NOT use the coordinator for a mini research pass before the planner starts.
+- Only use read_file/search_files before planner spawn when the mission explicitly points at a specific file, path, or integration hotspot that would materially improve the planning brief.
+- Identify the key unknowns, constraints, and hotspots the planner should investigate.
+- Do NOT do deep repo research, exact implementation scoping, or file-by-file edit planning while still in Planning. That belongs to the planning worker.
+- Once the planner returns, use its findings to build the implementation DAG and write precise worker prompts.
+- If Planning is disabled, then you must do the codebase analysis yourself before spawning implementation workers.
 
 ### 2. Decompose Into Tasks With Dependencies
 Break the mission into tasks that represent real work units:
@@ -906,12 +999,17 @@ This is where you earn your keep. When a worker completes:
 - If the work is solid: mark_step_complete and move to the next task
 - If the work is poor: mark_step_failed, then DECIDE — retry with better instructions? Spawn a different approach? Skip if non-critical?
 - For critical milestones, spawn a dedicated validator worker to review accumulated changes
+- Never use stop_worker as a cleanup step after reading output. stop_worker is destructive and cancels the attempt.
 
 When a worker is running:
+- If get_worker_output says the worker is still running, that is NOT a completion signal. Wait, steer it with send_message, or let it finish on its own.
+- Do NOT busy-poll running workers. After spawning a worker, give it breathing room; avoid repeated get_worker_output calls more than roughly every 15-20 seconds unless a fresh runtime event suggests something changed.
+- Planning/research workers may stay quiet for a while before they report back. Do not cancel a planning worker solely because its terminal output is quiet.
 - If events suggest it's drifting, use send_message to course-correct in real time
 - Always check send_message/message_worker/broadcast response fields (delivered, method, reason) before assuming a worker saw your guidance
 - method: "steer" with delivered: false means the message is queued and will only be seen after the worker's current turn completes
-- If it's stuck or going in circles, stop_worker and spawn a replacement with better context
+- Only use stop_worker when you are intentionally ABANDONING the current attempt because it is stuck, looping, or irrecoverably off-track. Do not use stop_worker for normal completion.
+- If it's stuck or going in circles, stop_worker with an explicit cancellation reason and then spawn a replacement with better context
 - Use read_mission_status to get the full DAG picture before making decisions
 
 ### 5. Handle Failures Like a Senior Engineer

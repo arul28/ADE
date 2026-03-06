@@ -108,6 +108,8 @@ const STEP_OUTCOME_PARTIAL_SCHEMA = z.object({
   completedAt: z.string().nullable().optional(),
 });
 
+const RUNNING_WORKER_OUTPUT_RECHECK_COOLDOWN_MS = 15_000;
+
 const DECISION_SCHEMA = z.object({
   timestamp: z.string(),
   decision: z.string(),
@@ -131,6 +133,55 @@ const PROGRESS_PARTIAL_SCHEMA = z.object({
   blockedSteps: z.array(z.string()).optional(),
   failedSteps: z.array(z.string()).optional(),
 });
+
+export const COORDINATOR_TOOL_NAMES = [
+  "spawn_worker",
+  "insert_milestone",
+  "request_specialist",
+  "delegate_to_subagent",
+  "delegate_parallel",
+  "stop_worker",
+  "send_message",
+  "message_worker",
+  "broadcast",
+  "get_worker_output",
+  "list_workers",
+  "report_status",
+  "reflection_add",
+  "report_result",
+  "report_validation",
+  "read_mission_status",
+  "read_mission_state",
+  "update_mission_state",
+  "revise_plan",
+  "update_tool_profiles",
+  "transfer_lane",
+  "provision_lane",
+  "set_current_phase",
+  "create_task",
+  "update_task",
+  "assign_task",
+  "list_tasks",
+  "skip_step",
+  "mark_step_complete",
+  "mark_step_failed",
+  "retry_step",
+  "complete_mission",
+  "fail_mission",
+  "get_budget_status",
+  "ask_user",
+  "request_user_input",
+  "read_file",
+  "read_step_output",
+  "search_files",
+  "get_project_context",
+] as const;
+
+export function buildCoordinatorMcpAllowedTools(serverName = "ade"): string[] {
+  const trimmed = serverName.trim();
+  const resolvedServerName = trimmed.length > 0 ? trimmed : "ade";
+  return COORDINATOR_TOOL_NAMES.map((toolName) => `mcp__${resolvedServerName}__${toolName}`);
+}
 
 export type CoordinatorWorkerDeliveryStatus =
   | { ok: true; delivered: true; method: "send" | "steer" }
@@ -458,6 +509,7 @@ export function createCoordinatorToolSet(deps: {
 
   /** Track last emitted budget pressure to avoid spamming soft warnings. */
   let lastEmittedBudgetPressure: "normal" | "warning" | "critical" = "normal";
+  const runningWorkerOutputChecks = new Map<string, { checkedAtMs: number; signalFingerprint: string }>();
 
   /** Shorthand to get a fresh graph snapshot. */
   function graph(): OrchestratorRunGraph {
@@ -641,6 +693,8 @@ export function createCoordinatorToolSet(deps: {
     modelId: string;
     prompt: string;
     dependsOn?: string[] | null;
+    requestedDependsOn?: string[] | null;
+    inferredDependsOn?: string[] | null;
     roleName?: string | null;
     laneId?: string | null;
     validationContract?: ValidationContract | null;
@@ -653,10 +707,13 @@ export function createCoordinatorToolSet(deps: {
     roleName: string | null;
     modelId: string;
     toolProfile: Record<string, unknown> | null;
+    reusedExistingStep: boolean;
   } => {
     const g = graph();
-    const requestedDependencyStepKeys = dedupeKeys(args.dependsOn);
-    const executableDependencyStepKeys = resolveExecutableDependencyKeys(g, requestedDependencyStepKeys);
+    const requestedDependencyStepKeys = dedupeKeys(args.requestedDependsOn ?? args.dependsOn);
+    const inferredDependencyStepKeys = dedupeKeys(args.inferredDependsOn);
+    const resolvedDependencyStepKeys = dedupeKeys(args.dependsOn);
+    const executableDependencyStepKeys = resolveExecutableDependencyKeys(g, resolvedDependencyStepKeys);
     const displayDependencyTaskKeys = requestedDependencyStepKeys.filter((dependencyKey) => {
       const dependencyStep = resolveStep(g, dependencyKey);
       return Boolean(dependencyStep && isDisplayOnlyTaskStep(dependencyStep));
@@ -699,6 +756,65 @@ export function createCoordinatorToolSet(deps: {
         : `worker_${args.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`;
     const missionPhases = resolveMissionPhases();
     const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
+    const reusableDisplayTask =
+      !replacementSourceStep
+        ? (() => {
+            const candidate = resolveStep(g, stepKey);
+            if (!candidate) return null;
+            if (!isDisplayOnlyTaskStep(candidate)) return null;
+            if (TERMINAL_STEP_STATUSES.has(candidate.status)) return null;
+            return candidate;
+          })()
+        : null;
+    if (reusableDisplayTask) {
+      let preparedStep = orchestratorService.updateStepMetadata({
+        runId,
+        stepId: reusableDisplayTask.id,
+        metadata: {
+          ...phaseMetadata,
+          executorKind: "unified",
+          instructions: args.prompt,
+          workerName: args.name,
+          requestedDependencyStepKeys,
+          ...(inferredDependencyStepKeys.length > 0 ? { inferredDependencyStepKeys } : {}),
+          planningTaskDependencies: displayDependencyTaskKeys,
+          spawnedByCoordinator: true,
+          modelId: resolvedModelId,
+          modelProviderHint: resolvedProvider,
+          modelExecutionPath: resolvedDescriptor ? classifyWorkerExecutionPath(resolvedDescriptor) : "api",
+          role: roleName,
+          roleCapabilities: roleDef?.capabilities ?? [],
+          toolProfile: toolProfile ?? null,
+          mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
+          displayOnlyTask: false,
+          isTask: false,
+          convertedFromDisplayTask: true,
+          ...(args.validationContract ? { validationContract: args.validationContract } : {}),
+        }
+      });
+      if ((preparedStep.laneId ?? null) !== (effectiveLaneId ?? null)) {
+        preparedStep = orchestratorService.transferStepLane({
+          runId,
+          stepId: preparedStep.id,
+          laneId: effectiveLaneId,
+          reason: "Converted display-only task into an executable worker step.",
+          transferredBy: "coordinator",
+        });
+      }
+      preparedStep = orchestratorService.updateStepDependencies({
+        runId,
+        stepId: preparedStep.id,
+        dependencyStepKeys: executableDependencyStepKeys,
+      });
+      return {
+        workerId: preparedStep.stepKey,
+        step: preparedStep,
+        roleName,
+        modelId: resolvedModelId,
+        toolProfile,
+        reusedExistingStep: true,
+      };
+    }
     const created = orchestratorService.addSteps({
       runId,
       steps: [
@@ -714,6 +830,7 @@ export function createCoordinatorToolSet(deps: {
             instructions: args.prompt,
             workerName: args.name,
             requestedDependencyStepKeys,
+            ...(inferredDependencyStepKeys.length > 0 ? { inferredDependencyStepKeys } : {}),
             planningTaskDependencies: displayDependencyTaskKeys,
             spawnedByCoordinator: true,
             modelId: resolvedModelId,
@@ -818,7 +935,8 @@ export function createCoordinatorToolSet(deps: {
       step: created[0] ?? null,
       roleName,
       modelId: resolvedModelId,
-      toolProfile
+      toolProfile,
+      reusedExistingStep: false,
     };
   };
 
@@ -828,8 +946,21 @@ export function createCoordinatorToolSet(deps: {
    * Resolve mission phase cards from the mission's metadata in the DB.
    * Returns an empty array when no phases are configured.
    */
-  function resolveMissionPhases(): PhaseCard[] {
+  function resolveMissionPhases(g?: OrchestratorRunGraph | null): PhaseCard[] {
     try {
+      const runMeta = g ? asRecord(g.run.metadata) : null;
+      const runPhaseConfig = asRecord(runMeta?.phaseConfiguration);
+      if (runPhaseConfig) {
+        if (Array.isArray(runPhaseConfig.selectedPhases)) return runPhaseConfig.selectedPhases as PhaseCard[];
+        if (Array.isArray(runPhaseConfig.phases)) return runPhaseConfig.phases as PhaseCard[];
+      }
+      const runPhaseOverride = asRecord(runMeta?.phaseOverride);
+      if (runPhaseOverride) {
+        if (Array.isArray(runPhaseOverride.selectedPhases)) return runPhaseOverride.selectedPhases as PhaseCard[];
+        if (Array.isArray(runPhaseOverride.phases)) return runPhaseOverride.phases as PhaseCard[];
+      }
+      if (Array.isArray(runMeta?.phases)) return runMeta.phases as PhaseCard[];
+
       const missionRow = db.get<{ metadata_json: string | null }>(
         `select metadata_json from missions where id = ? limit 1`,
         [missionId],
@@ -904,8 +1035,55 @@ export function createCoordinatorToolSet(deps: {
     };
   }
 
+  function stepBelongsToPhase(step: OrchestratorStep, phase: PhaseCard): boolean {
+    const stepMeta = asRecord(step.metadata);
+    const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+    const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
+    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    const phaseName = phase.name.trim().toLowerCase();
+    return stepPhaseKey === phaseKey || stepPhaseName === phaseName;
+  }
+
+  function isImplicitDependencyCandidate(step: OrchestratorStep): boolean {
+    if (isDisplayOnlyTaskStep(step)) return false;
+    return step.status === "succeeded" || step.status === "running" || step.status === "blocked";
+  }
+
+  function resolveImplicitDependencyStepKeys(
+    g: OrchestratorRunGraph,
+    phases: PhaseCard[],
+  ): string[] {
+    const currentPhase = resolveCurrentPhaseCard(g, phases);
+    const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+    const currentPhaseName = currentPhase?.name.trim().toLowerCase() ?? "";
+    if (!currentPhase || currentPhaseKey === "planning" || currentPhaseName === "planning") {
+      return [];
+    }
+
+    const sorted = [...phases].sort((a, b) => a.position - b.position);
+    const currentIndex = sorted.findIndex((phase) => phase.id === currentPhase.id);
+    if (currentIndex > 0) {
+      for (let index = currentIndex - 1; index >= 0; index -= 1) {
+        const priorPhase = sorted[index];
+        if (!priorPhase) continue;
+        const priorPhaseStepKeys = filterExecutionSteps(g.steps)
+          .filter((step) => stepBelongsToPhase(step, priorPhase))
+          .filter(isImplicitDependencyCandidate)
+          .map((step) => step.stepKey);
+        if (priorPhaseStepKeys.length > 0) {
+          return dedupeKeys(priorPhaseStepKeys);
+        }
+      }
+    }
+
+    return filterExecutionSteps(g.steps)
+      .filter(isPlanningExecutionStep)
+      .filter(isImplicitDependencyCandidate)
+      .map((step) => step.stepKey);
+  }
+
   function getPlanningInputBlockReason(g: OrchestratorRunGraph): string | null {
-    const phases = resolveMissionPhases();
+    const phases = resolveMissionPhases(g);
     const current = resolveCurrentPhaseCard(g, phases);
     const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
     const currentName = current?.name.trim().toLowerCase() ?? "";
@@ -929,16 +1107,94 @@ export function createCoordinatorToolSet(deps: {
     const normalized = compact.toLowerCase();
     return (
       normalized.includes("all file edits must")
+      || normalized.includes("files to change")
+      || normalized.includes("files to modify")
       || normalized.includes("files to edit")
+      || normalized.includes("exact changes required")
+      || normalized.includes("i have already researched the codebase")
+      || normalized.includes("here is the complete plan")
+      || normalized.includes("please output a brief confirmation of this plan")
       || normalized.includes("create new file")
+      || normalized.includes("new file:")
       || normalized.includes("run `git add")
       || normalized.includes("run `git commit")
       || normalized.includes("done criteria")
       || normalized.includes("apply in the worktree")
       || /(?:^|\n)###\s*\d+\.\s*(?:create|edit)\b/i.test(compact)
+      || /(?:^|\n)\d+\.\s+new file:/i.test(compact)
       || /(?:^|\n)-\s*add\b.+\bimport\b/i.test(compact)
       || /(?:^|\n)-\s*add\b.+\broute\b/i.test(compact)
       || /(?:^|\n)-\s*edit\s+`[^`]+`/i.test(compact)
+    );
+  }
+
+  function looksLikeValidationWorkerRequest(args: {
+    name: string;
+    roleName: string | null;
+    prompt: string;
+    validationContract: ValidationContract | null;
+  }): boolean {
+    if (args.validationContract?.level === "step" || args.validationContract?.level === "milestone" || args.validationContract?.level === "mission") {
+      return true;
+    }
+    const name = args.name.trim().toLowerCase();
+    const roleName = args.roleName?.trim().toLowerCase() ?? "";
+    const prompt = args.prompt.trim().toLowerCase();
+    return (
+      /\b(validat(?:e|ion|or))\b/.test(name)
+      || /\b(validat(?:e|ion|or))\b/.test(roleName)
+      || prompt.includes("report_validation")
+      || prompt.includes("validation checklist")
+      || prompt.includes("verdict: \"pass\"")
+      || prompt.includes("verdict \"pass\"")
+    );
+  }
+
+  function isPlanningExecutionStep(step: OrchestratorStep): boolean {
+    const stepMeta = asRecord(step.metadata);
+    const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+    const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
+    const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
+    return !isDisplayOnly && (stepPhaseKey === "planning" || stepPhaseName === "planning");
+  }
+
+  function phaseHasCompletionEligibleStep(
+    phase: PhaseCard,
+    stepsForPhase: (phase: PhaseCard) => OrchestratorStep[],
+  ): boolean {
+    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    const phaseName = phase.name.trim().toLowerCase();
+    const phaseSteps = stepsForPhase(phase);
+    if (phaseKey === "planning" || phaseName === "planning") {
+      return phaseSteps.some((step) => isPlanningExecutionStep(step) && step.status === "succeeded");
+    }
+    return phaseSteps.some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+  }
+
+  function stopReasonLooksLikeNormalCompletion(reason: string): boolean {
+    const normalized = reason.trim().toLowerCase();
+    if (!normalized.length) return false;
+    return (
+      normalized.includes("work is committed and complete")
+      || normalized.includes("proceed to validation")
+      || normalized.includes("normal completion")
+      || normalized.includes("finished successfully")
+      || normalized.includes("already complete")
+    );
+  }
+
+  function stopReasonIndicatesHardFailure(reason: string): boolean {
+    const normalized = reason.trim().toLowerCase();
+    if (!normalized.length) return false;
+    return (
+      normalized.includes("fatal")
+      || normalized.includes("panic")
+      || normalized.includes("crash")
+      || normalized.includes("exception")
+      || normalized.includes("process exited unexpectedly")
+      || normalized.includes("session exited unexpectedly")
+      || normalized.includes("hard failure")
+      || normalized.includes("unrecoverable error")
     );
   }
 
@@ -989,7 +1245,7 @@ export function createCoordinatorToolSet(deps: {
       });
 
     const phaseHasTerminalStep = (phase: PhaseCard): boolean =>
-      stepsForPhase(phase).some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+      phaseHasCompletionEligibleStep(phase, stepsForPhase);
 
     const phaseHasNonTerminalStep = (phase: PhaseCard): boolean =>
       stepsForPhase(phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
@@ -1004,7 +1260,7 @@ export function createCoordinatorToolSet(deps: {
           reason: "Planning already has an active worker. Wait for it to finish before spawning another planning worker.",
         };
       }
-      if (planningExecutionSteps.some((step) => TERMINAL_STEP_STATUSES.has(step.status))) {
+      if (planningExecutionSteps.some((step) => step.status === "succeeded")) {
         return {
           valid: false,
           reason: 'Planning phase already produced a completed worker result. Call set_current_phase with phaseKey "development" before spawning more workers.',
@@ -1153,7 +1409,7 @@ export function createCoordinatorToolSet(deps: {
         if (!normalizedPrompt.length) {
           return { ok: false, error: "Worker prompt is required." };
         }
-        const missionPhases = resolveMissionPhases();
+        const missionPhases = resolveMissionPhases(g);
         const currentPhaseForPromptGuard = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
         const currentPhaseKeyForPromptGuard = currentPhaseForPromptGuard?.phaseKey.trim().toLowerCase() ?? "";
         if (currentPhaseKeyForPromptGuard === "planning" && promptContainsImplementationDirectives(normalizedPrompt)) {
@@ -1164,7 +1420,7 @@ export function createCoordinatorToolSet(deps: {
               'This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
           };
         }
-        const normalizedDependsOn = dedupeKeys(dependsOn);
+        const requestedDependsOn = dedupeKeys(dependsOn);
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const normalizedRole = typeof role === "string" ? role.trim() : "";
         if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
@@ -1177,6 +1433,30 @@ export function createCoordinatorToolSet(deps: {
         const parsedContract = parseValidationContract(validationContract ?? null);
         if (validationContract && !parsedContract) {
           return { ok: false, error: "Invalid validationContract payload." };
+        }
+        const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        const inferredDependsOn =
+          requestedDependsOn.length === 0 && missionPhases.length > 0
+            ? resolveImplicitDependencyStepKeys(g, missionPhases)
+            : [];
+        const normalizedDependsOn =
+          requestedDependsOn.length > 0 ? requestedDependsOn : inferredDependsOn;
+        if (
+          currentPhaseKey !== "validation"
+          && looksLikeValidationWorkerRequest({
+            name: normalizedName,
+            roleName: normalizedRole.length > 0 ? normalizedRole : null,
+            prompt: normalizedPrompt,
+            validationContract: parsedContract,
+          })
+        ) {
+          return {
+            ok: false,
+            error:
+              'Validation workers can only be spawned during the "validation" phase. ' +
+              'Finish the active work, call set_current_phase with phaseKey "validation", and depend on the worker you are validating.'
+          };
         }
 
         // Resolve worker model from explicit input -> active phase model.
@@ -1199,7 +1479,6 @@ export function createCoordinatorToolSet(deps: {
             : resolvedDescriptor.family === "openai"
             ? "codex"
             : resolvedDescriptor.family;
-        const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
         const currentPhaseModelId =
           typeof currentPhase?.model?.modelId === "string" ? currentPhase.model.modelId.trim() : "";
         if (explicitModelId.length > 0 && currentPhase && currentPhaseModelId.length > 0) {
@@ -1325,7 +1604,7 @@ export function createCoordinatorToolSet(deps: {
               const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
               return !isDisplayOnly
                 && (stepPhaseKey === "planning" || stepPhaseName === "planning")
-                && TERMINAL_STEP_STATUSES.has(step.status);
+                && step.status === "succeeded";
             });
             if (completedPlanningWorker) {
               return {
@@ -1336,18 +1615,20 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
-        const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
+        const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile, reusedExistingStep } = spawnWorkerStep({
           name: normalizedName,
           modelId: resolvedModelId,
           prompt: normalizedPrompt,
           dependsOn: normalizedDependsOn,
+          requestedDependsOn,
+          inferredDependsOn,
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
           laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
           replacementForWorkerId: replacementSourceWorkerId || null,
           replacementReason: replacementReason?.trim() || null,
           validationContract: parsedContract
         });
-        if (newStep) {
+        if (newStep && !reusedExistingStep) {
           onDagMutation({
             runId,
             mutation: { type: "step_added", step: newStep },
@@ -1747,26 +2028,53 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ workerId, reason }) => {
       try {
+        const normalizedReason = typeof reason === "string" ? reason.trim() : "";
+        if (!normalizedReason.length) {
+          return {
+            ok: false,
+            error:
+              "Cancellation reason is required. stop_worker is a destructive cancel tool; " +
+              "use it only when abandoning a stuck or off-track worker, not for normal completion."
+          };
+        }
         const g = graph();
         const step = resolveStep(g, workerId);
         if (!step)
           return { ok: false, error: `Worker not found: ${workerId}` };
+        if (stopReasonLooksLikeNormalCompletion(normalizedReason)) {
+          return {
+            ok: false,
+            error:
+              "stop_worker is cancel-only. Do not use it to end successful work or advance phases after completion. " +
+              "Let the worker finish and read its output instead."
+          };
+        }
         const attempt = findRunningAttempt(g, step.id);
         if (!attempt)
           return {
             ok: false,
             error: `No running attempt found for worker '${workerId}'`,
           };
+        const currentPhase = resolveCurrentPhaseCard(g, resolveMissionPhases(g));
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        if (currentPhaseKey === "planning" && isPlanningExecutionStep(step) && !stopReasonIndicatesHardFailure(normalizedReason)) {
+          return {
+            ok: false,
+            error:
+              "Do not cancel the active planning worker just because the coordinator believes planning is complete. " +
+              "Wait for the planner to finish, or let runtime surface a concrete failure before retrying."
+          };
+        }
         orchestratorService.completeAttempt({
           attemptId: attempt.id,
           status: "canceled",
           errorClass: "canceled",
-          errorMessage: reason,
+          errorMessage: normalizedReason,
         });
         logger.info("coordinator.stop_worker", {
           workerId,
           attemptId: attempt.id,
-          reason,
+          reason: normalizedReason,
         });
         return { ok: true, workerId, attemptId: attempt.id };
       } catch (err) {
@@ -2038,6 +2346,13 @@ export function createCoordinatorToolSet(deps: {
         const step = resolveStep(g, workerId);
         if (!step)
           return { ok: false, error: `Worker not found: ${workerId}` };
+        const stepMeta = asRecord(step.metadata) ?? {};
+        const stepPhaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+        const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+        const isReadOnlyPlanningStep =
+          stepMeta.readOnlyExecution === true
+          || stepPhaseKey === "planning"
+          || stepType === "planning";
         // Find the latest completed attempt (succeeded or failed)
         const completedAttempts = g.attempts
           .filter(
@@ -2053,12 +2368,14 @@ export function createCoordinatorToolSet(deps: {
         const latest = completedAttempts[0];
         // Also check for running attempt
         const running = findRunningAttempt(g, step.id);
+        const runningCheckKey = step.id;
         if (!latest && !running)
           return {
             ok: false,
             error: `No completed or running attempt found for worker '${workerId}'`,
           };
         if (latest) {
+          runningWorkerOutputChecks.delete(runningCheckKey);
           // Extract filesChanged from the result envelope outputs
           const outputs = latest.resultEnvelope?.outputs as Record<string, unknown> | null | undefined;
           let filesChanged: string[] = [];
@@ -2097,11 +2414,73 @@ export function createCoordinatorToolSet(deps: {
             filesChanged,
           };
         }
+        const lastStatusReport = asRecord(stepMeta.lastStatusReport);
+        const lastStatusReportedAt =
+          typeof lastStatusReport?.reportedAt === "string" ? lastStatusReport.reportedAt.trim() : "";
+        const signalFingerprint = [
+          step.updatedAt ?? "",
+          step.startedAt ?? "",
+          lastStatusReportedAt,
+          running?.id ?? "",
+          running?.createdAt ?? "",
+        ].join("::");
+        const nowMs = Date.now();
+        const previousRunningCheck = runningWorkerOutputChecks.get(runningCheckKey) ?? null;
+        if (
+          previousRunningCheck
+          && previousRunningCheck.signalFingerprint === signalFingerprint
+          && nowMs - previousRunningCheck.checkedAtMs < RUNNING_WORKER_OUTPUT_RECHECK_COOLDOWN_MS
+        ) {
+          const remainingSeconds = Math.max(
+            1,
+            Math.ceil((RUNNING_WORKER_OUTPUT_RECHECK_COOLDOWN_MS - (nowMs - previousRunningCheck.checkedAtMs)) / 1000),
+          );
+          return {
+            ok: false,
+            error: isReadOnlyPlanningStep
+              ? `Planning worker '${workerId}' is still running and has not produced any new reported output since your last check. Wait for a fresh worker event or at least ${remainingSeconds}s before calling get_worker_output again.`
+              : `Worker '${workerId}' is still running and has not produced any new reported output since your last check. Wait for a fresh worker event or at least ${remainingSeconds}s before calling get_worker_output again.`,
+            status: "running",
+            recheckAfterSeconds: remainingSeconds,
+          };
+        }
+        runningWorkerOutputChecks.set(runningCheckKey, {
+          checkedAtMs: nowMs,
+          signalFingerprint,
+        });
         return {
           ok: true,
           workerId,
           status: "running",
-          summary: "Worker is still running.",
+          summary: (() => {
+            const nextAction =
+              typeof lastStatusReport?.nextAction === "string"
+                ? lastStatusReport.nextAction.trim()
+                : "";
+            const details =
+              typeof lastStatusReport?.details === "string"
+                ? lastStatusReport.details.trim()
+                : "";
+            if (details.length > 0) {
+              return details;
+            }
+            if (nextAction.length > 0) {
+              return `Worker is still running. Latest next action: ${nextAction}`;
+            }
+            if (isReadOnlyPlanningStep) {
+              return "Planning worker is still running. Planning/research workers can stay quiet for a while before they report back. Do not cancel solely for lack of terminal output unless the session exits or reports an explicit error.";
+            }
+            return "Worker is still running.";
+          })(),
+          progressPct:
+            Number.isFinite(Number(asRecord(stepMeta.lastStatusReport)?.progressPct))
+              ? Number(asRecord(stepMeta.lastStatusReport)?.progressPct)
+              : null,
+          blockers: Array.isArray(asRecord(stepMeta.lastStatusReport)?.blockers)
+            ? (asRecord(stepMeta.lastStatusReport)?.blockers as unknown[])
+                .map((entry) => String(entry ?? "").trim())
+                .filter((entry) => entry.length > 0)
+            : [],
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2189,7 +2568,8 @@ export function createCoordinatorToolSet(deps: {
         orchestratorService.updateStepMetadata({
           runId,
           stepId: step.id,
-          metadata
+          metadata,
+          allowTerminal: true,
         });
         orchestratorService.appendRuntimeEvent({
           runId,
@@ -2335,7 +2715,8 @@ export function createCoordinatorToolSet(deps: {
         orchestratorService.updateStepMetadata({
           runId,
           stepId: step.id,
-          metadata
+          metadata,
+          allowTerminal: true,
         });
         orchestratorService.appendRuntimeEvent({
           runId,
@@ -2440,10 +2821,12 @@ export function createCoordinatorToolSet(deps: {
           : verdict === "fail"
             ? priorFailureCount + 1
             : priorFailureCount;
-        const normalizedFindings = findings
+        const findingsInput = Array.isArray(findings) ? findings : [];
+        const remediationInput = Array.isArray(remediationInstructions) ? remediationInstructions : [];
+        const normalizedFindings = findingsInput
           .map((entry) => parseValidationFinding(entry))
           .filter((entry): entry is ValidationResultReport["findings"][number] => Boolean(entry));
-        const normalizedRemediation = remediationInstructions
+        const normalizedRemediation = remediationInput
           .map((entry) => String(entry ?? "").trim())
           .filter((entry) => entry.length > 0);
         const report: ValidationResultReport = {
@@ -2486,7 +2869,8 @@ export function createCoordinatorToolSet(deps: {
           orchestratorService.updateStepMetadata({
             runId,
             stepId: targetStep.id,
-            metadata: nextMetadata
+            metadata: nextMetadata,
+            allowTerminal: true,
           });
         }
         let milestoneMarkedComplete = false;
@@ -3352,7 +3736,7 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ phaseKey, reason }) => {
       try {
         const g = graph();
-        const missionPhases = [...resolveMissionPhases()].sort((a, b) => a.position - b.position);
+        const missionPhases = [...resolveMissionPhases(g)].sort((a, b) => a.position - b.position);
         if (missionPhases.length === 0) {
           return { ok: false, error: "Mission phase configuration is unavailable." };
         }
@@ -3386,7 +3770,7 @@ export function createCoordinatorToolSet(deps: {
             return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
           });
         const hasTerminalStep = (phase: PhaseCard): boolean =>
-          stepsForPhase(phase).some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+          phaseHasCompletionEligibleStep(phase, stepsForPhase);
 
         const targetIndex = missionPhases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
         if (targetIndex < 0) {
@@ -3396,7 +3780,7 @@ export function createCoordinatorToolSet(deps: {
         if (currentPhase?.phaseKey === "planning" && targetPhase.phaseKey !== "planning" && !hasTerminalStep(currentPhase)) {
           return {
             ok: false,
-            error: "Planning phase has not completed yet. Complete at least one planning step before transitioning."
+            error: "Planning phase has not completed yet. Wait for a planning worker to succeed before transitioning."
           };
         }
 
@@ -3524,10 +3908,21 @@ export function createCoordinatorToolSet(deps: {
         if (planningInputBlockReason) {
           return { ok: false, error: planningInputBlockReason };
         }
+        const missionPhases = resolveMissionPhases(g);
+        const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        if (currentPhaseKey === "planning") {
+          return {
+            ok: false,
+            error:
+              "Planning should be represented by the planning worker itself. " +
+              "Spawn the read-only planning worker, review its output, then call set_current_phase with phaseKey \"development\" before creating execution tasks."
+          };
+        }
         const normalizedKey = String(key ?? "").trim();
         const normalizedTitle = String(title ?? "").trim();
         const normalizedDescription = String(description ?? "").trim();
-        const normalizedDependsOn = dedupeKeys(dependsOn);
+        const requestedDependsOn = dedupeKeys(dependsOn);
         if (!normalizedKey.length) {
           return { ok: false, error: "Task key is required." };
         }
@@ -3537,7 +3932,12 @@ export function createCoordinatorToolSet(deps: {
         if (!normalizedDescription.length) {
           return { ok: false, error: "Task description is required." };
         }
-        const missionPhases = resolveMissionPhases();
+        const inferredDependsOn =
+          requestedDependsOn.length === 0 && missionPhases.length > 0
+            ? resolveImplicitDependencyStepKeys(g, missionPhases)
+            : [];
+        const normalizedDependsOn =
+          requestedDependsOn.length > 0 ? requestedDependsOn : inferredDependsOn;
         const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
         const maxIndex = g.steps.reduce(
           (max, s) => Math.max(max, s.stepIndex),
@@ -3557,6 +3957,8 @@ export function createCoordinatorToolSet(deps: {
                 instructions: normalizedDescription,
                 isTask: true,
                 displayOnlyTask: true,
+                requestedDependencyStepKeys: requestedDependsOn,
+                ...(inferredDependsOn.length > 0 ? { inferredDependencyStepKeys: inferredDependsOn } : {}),
               },
             },
           ],
@@ -3966,6 +4368,20 @@ export function createCoordinatorToolSet(deps: {
       try {
         const g = graph();
         const relevantSteps = filterExecutionSteps(g.steps);
+        const activeWorkers = relevantSteps
+          .filter((step) => step.status === "running")
+          .map((step) => ({
+            stepKey: step.stepKey,
+            title: step.title,
+          }));
+        if (activeWorkers.length > 0) {
+          return {
+            ok: false,
+            error: `Mission cannot be completed while ${activeWorkers.length} worker(s) are still running.`,
+            hint: "Wait for running workers to finish, or cancel them explicitly if the work should be abandoned.",
+            activeWorkers,
+          };
+        }
         const blockers = relevantSteps
           .filter((step) => step.status === "succeeded")
           .flatMap((step) => {
@@ -4094,7 +4510,8 @@ export function createCoordinatorToolSet(deps: {
     if (!mission) {
       return { ok: false as const, error: `Mission not found: ${missionId}` };
     }
-    const currentPhase = resolveCurrentPhaseCard(graph(), resolveMissionPhases());
+    const currentGraph = graph();
+    const currentPhase = resolveCurrentPhaseCard(currentGraph, resolveMissionPhases(currentGraph));
 
     const existing = mission.interventions.find((entry) => {
       if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;

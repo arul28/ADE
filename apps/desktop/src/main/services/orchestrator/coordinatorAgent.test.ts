@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCoordinatorCliOptions, shouldUseSdkTools } from "./coordinatorAgent";
+import { buildCoordinatorMcpAllowedTools } from "./coordinatorTools";
 
 describe("shouldUseSdkTools", () => {
   it("keeps SDK tools enabled for Codex CLI models", () => {
@@ -37,11 +38,10 @@ describe("buildCoordinatorCliOptions", () => {
         },
       },
       claude: {
-        permissionMode: "bypassPermissions",
-        allowedTools: ["mcp__ade"],
+        permissionMode: "plan",
+        allowedTools: buildCoordinatorMcpAllowedTools("ade"),
         settingSources: [],
         debugFile: "/tmp/ade-project/.ade/logs/coordinator-run-123.claude.log",
-        sessionId: "run-123",
       },
     });
   });

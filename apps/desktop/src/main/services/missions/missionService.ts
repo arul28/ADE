@@ -2419,49 +2419,36 @@ export function createMissionService({
           phaseCount: selectedPhases.length,
           phases: selectedPhases
         },
-        planner: plannerRun
+        ...(plannerRun
           ? {
-              id: plannerRun.id,
-              requestedEngine: plannerRun.requestedEngine,
-              resolvedEngine: plannerRun.resolvedEngine,
-              status: plannerRun.status,
-              degraded: plannerRun.degraded,
-              reasonCode: plannerRun.reasonCode,
-              reasonDetail: plannerRun.reasonDetail,
-              planHash: plannerRun.planHash,
-              normalizedPlanHash: plannerRun.normalizedPlanHash,
-              commandPreview: plannerRun.commandPreview,
-              rawResponse: truncateForMetadata(plannerRun.rawResponse, 200_000),
-              durationMs: plannerRun.durationMs,
-              validationErrors: plannerRun.validationErrors,
-              attempts: plannerRun.attempts.map((attempt) => ({
-                id: attempt.id,
-                engine: attempt.engine,
-                status: attempt.status,
-                reasonCode: attempt.reasonCode,
-                detail: attempt.detail,
-                commandPreview: attempt.commandPreview,
-                rawResponse: truncateForMetadata(attempt.rawResponse, 50_000),
-                validationErrors: attempt.validationErrors,
-                createdAt: attempt.createdAt
-              }))
+              planner: {
+                id: plannerRun.id,
+                requestedEngine: plannerRun.requestedEngine,
+                resolvedEngine: plannerRun.resolvedEngine,
+                status: plannerRun.status,
+                degraded: plannerRun.degraded,
+                reasonCode: plannerRun.reasonCode,
+                reasonDetail: plannerRun.reasonDetail,
+                planHash: plannerRun.planHash,
+                normalizedPlanHash: plannerRun.normalizedPlanHash,
+                commandPreview: plannerRun.commandPreview,
+                rawResponse: truncateForMetadata(plannerRun.rawResponse, 200_000),
+                durationMs: plannerRun.durationMs,
+                validationErrors: plannerRun.validationErrors,
+                attempts: plannerRun.attempts.map((attempt) => ({
+                  id: attempt.id,
+                  engine: attempt.engine,
+                  status: attempt.status,
+                  reasonCode: attempt.reasonCode,
+                  detail: attempt.detail,
+                  commandPreview: attempt.commandPreview,
+                  rawResponse: truncateForMetadata(attempt.rawResponse, 50_000),
+                  validationErrors: attempt.validationErrors,
+                  createdAt: attempt.createdAt
+                }))
+              }
             }
-          : {
-              id: null,
-              requestedEngine: args.plannerEngine ?? "auto",
-              resolvedEngine: null,
-              status: "skipped",
-              degraded: false,
-              reasonCode: "planner_unavailable",
-              reasonDetail: "Planner run was not provided.",
-              planHash: null,
-              normalizedPlanHash: null,
-              commandPreview: null,
-              rawResponse: null,
-              durationMs: null,
-              validationErrors: [],
-              attempts: []
-            },
+          : {}),
         plannerPlan: plannerPlan
           ? {
               schemaVersion: plannerPlan.schemaVersion,

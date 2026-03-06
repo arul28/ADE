@@ -86,6 +86,7 @@ import { getMissionStateDocumentPath } from "./missionStateDoc";
 import { buildFullPrompt, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
 import { deriveSessionSummaryFromText } from "../packs/transcriptInsights";
 import {
   type RunRow, type StepRow, type AttemptRow, type ClaimRow,
@@ -471,19 +472,7 @@ function deriveTranscriptSummaryFromPath(filePath: string | null | undefined): s
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-      .filter((line) => {
-        const lower = line.toLowerCase();
-        if (lower.startsWith("ade_mission_id=")) return false;
-        if (lower.startsWith("-p \"$(cat ")) return false;
-        if (lower.includes("worker-prompts/worker-")) return false;
-        if (lower.includes(".ade-worker-mcp-")) return false;
-        if (lower.includes("exec claude --model")) return false;
-        if (lower.includes("exec codex ")) return false;
-        if (lower.startsWith("/users/") && lower.includes(".zshrc:")) return false;
-        if (lower.includes("command not found: compdef")) return false;
-        if (/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\s+.+\s[%#$]$/.test(line)) return false;
-        return true;
-      })
+      .filter((line) => !isWorkerBootstrapNoiseLine(line))
       .join("\n");
     const summary = deriveSessionSummaryFromText(sanitizedTail).trim();
     if (!summary.length) return null;
@@ -501,6 +490,47 @@ function deriveTranscriptSummaryFromPath(filePath: string | null | undefined): s
   } catch {
     return null;
   }
+}
+
+function resolveRunPhaseCardsFromMetadata(runMetadata: Record<string, unknown> | null | undefined): PhaseCard[] | null {
+  if (!runMetadata) return null;
+  const phaseConfig = typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration
+    ? (runMetadata.phaseConfiguration as Record<string, unknown>)
+    : null;
+  const phaseCards =
+    phaseConfig && Array.isArray(phaseConfig.phases)
+      ? phaseConfig.phases as PhaseCard[]
+      : phaseConfig && Array.isArray(phaseConfig.selectedPhases)
+        ? phaseConfig.selectedPhases as PhaseCard[]
+        : Array.isArray(runMetadata.phaseOverride)
+          ? runMetadata.phaseOverride as PhaseCard[]
+          : null;
+  return phaseCards && phaseCards.length > 0 ? phaseCards : null;
+}
+
+function resolveRunMissionLevelSettingsFromMetadata(
+  runMetadata: Record<string, unknown> | null | undefined,
+): MissionLevelSettings | null {
+  if (!runMetadata) return null;
+  if (typeof runMetadata.missionLevelSettings === "object" && runMetadata.missionLevelSettings) {
+    return runMetadata.missionLevelSettings as MissionLevelSettings;
+  }
+  const executionPolicy = isExecutionPolicyRecord(runMetadata.executionPolicy)
+    ? (runMetadata.executionPolicy as MissionExecutionPolicy)
+    : null;
+  if (!executionPolicy && !Array.isArray(runMetadata.phaseOverride)) return null;
+  return {
+    prStrategy: executionPolicy?.prStrategy ?? { kind: "manual" },
+    ...(executionPolicy?.integrationPr ? { integrationPr: executionPolicy.integrationPr } : {}),
+    ...(executionPolicy?.teamRuntime ? { teamRuntime: executionPolicy.teamRuntime } : {}),
+  };
+}
+
+function isPlanningLikeStepMetadata(stepMetadata: Record<string, unknown> | null | undefined): boolean {
+  if (!stepMetadata) return false;
+  const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim().toLowerCase() : "";
+  const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim().toLowerCase() : "";
+  return stepMetadata.readOnlyExecution === true || stepType === "planning" || phaseKey === "planning";
 }
 
 export function createOrchestratorService({
@@ -1745,16 +1775,8 @@ export function createOrchestratorService({
     const steps = listStepRows(runId).map(toStep);
     const runRow = getRunRow(runId);
     const runMetadata = runRow ? parseJsonRecord(runRow.metadata_json) : null;
-
-    const phaseConfig = runMetadata && typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration
-      ? (runMetadata.phaseConfiguration as Record<string, unknown>)
-      : null;
-    const rawPhases = phaseConfig && Array.isArray(phaseConfig.phases) ? phaseConfig.phases as PhaseCard[]
-      : phaseConfig && Array.isArray(phaseConfig.selectedPhases) ? phaseConfig.selectedPhases as PhaseCard[]
-      : null;
-    const missionLevelSettings = runMetadata && typeof runMetadata.missionLevelSettings === "object" && runMetadata.missionLevelSettings
-      ? (runMetadata.missionLevelSettings as MissionLevelSettings)
-      : null;
+    const rawPhases = resolveRunPhaseCardsFromMetadata(runMetadata);
+    const missionLevelSettings = resolveRunMissionLevelSettingsFromMetadata(runMetadata);
 
     const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
       ? (runMetadata.executionPolicy as MissionExecutionPolicy)
@@ -4101,13 +4123,8 @@ export function createOrchestratorService({
       const run = toRun(runRow);
       const steps = listStepRows(args.runId).map(toStep);
       const runMetadata = run.metadata ?? {};
-      // Prefer phase-based evaluation
-      const phaseConfig = typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration
-        ? (runMetadata.phaseConfiguration as Record<string, unknown>) : null;
-      const graphPhases = phaseConfig && Array.isArray(phaseConfig.phases) ? phaseConfig.phases as PhaseCard[]
-        : phaseConfig && Array.isArray(phaseConfig.selectedPhases) ? phaseConfig.selectedPhases as PhaseCard[] : null;
-      const graphSettings = typeof runMetadata.missionLevelSettings === "object" && runMetadata.missionLevelSettings
-        ? (runMetadata.missionLevelSettings as MissionLevelSettings) : null;
+      const graphPhases = resolveRunPhaseCardsFromMetadata(runMetadata);
+      const graphSettings = resolveRunMissionLevelSettingsFromMetadata(runMetadata);
 
       let completion: RunCompletionEvaluation;
       if (graphPhases && graphPhases.length > 0 && graphSettings) {
@@ -4740,6 +4757,23 @@ export function createOrchestratorService({
       const touchedRunIds = new Set<string>();
       for (const attempt of runningAttempts) {
         touchedRunIds.add(attempt.run_id);
+        const stepRow = getStepRow(attempt.step_id);
+        const step = stepRow ? toStep(stepRow) : null;
+        const stepMetadata = asRecord(step?.metadata) ?? {};
+        const attemptMetadata = parseJsonRecord(attempt.metadata_json);
+        const transcriptPath =
+          typeof attemptMetadata?.transcriptPath === "string"
+            ? attemptMetadata.transcriptPath.trim()
+            : "";
+        const transcriptSummary = deriveTranscriptSummaryFromPath(transcriptPath);
+        const completionForAttempt =
+          completion.status === "succeeded" && isPlanningLikeStepMetadata(stepMetadata) && !transcriptSummary
+            ? {
+                status: "failed" as const,
+                errorClass: "executor_failure" as const,
+                errorMessage: "Planning worker exited without reporting a usable plan."
+              }
+            : completion;
         persistRuntimeEvent({
           runId: attempt.run_id,
           stepId: attempt.step_id,
@@ -4754,11 +4788,11 @@ export function createOrchestratorService({
         });
         this.completeAttempt({
           attemptId: attempt.id,
-          status: completion.status,
-          ...(completion.errorClass
+          status: completionForAttempt.status,
+          ...(completionForAttempt.errorClass
             ? {
-                errorClass: completion.errorClass,
-                errorMessage: completion.errorMessage
+                errorClass: completionForAttempt.errorClass,
+                errorMessage: completionForAttempt.errorMessage
               }
             : {}),
           metadata: {
@@ -6427,13 +6461,20 @@ export function createOrchestratorService({
           }, 200);
 
           // ── Startup verification watchdog ──
-          // After 15 seconds, verify the accepted session has produced output.
+          // After a short grace period, verify the accepted session has produced output.
           // If not, emit a warning event so the coordinator/health sweep can act.
-          // Trade-off: 15s (up from 10s) avoids false positives on slow machines
-          // or heavy shell environments (nvm, conda, etc.) where shell init alone
-          // can take 8-12s. The downside is a genuinely stalled worker won't be
-          // flagged until 15s, but the periodic health sweep (30s) catches it soon after.
-          if (acceptedSessionId) {
+          // Quiet read-only planning workers are excluded here because some providers
+          // produce little or no PTY output until they finish, and that silence was
+          // creating false "stalled" signals even while the worker was legitimately
+          // thinking. Long-running health sweeps still cover genuinely wedged sessions.
+          const stepMeta = asRecord(step.metadata) ?? {};
+          const stepPhaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+          const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+          const skipStartupVerification =
+            stepMeta.readOnlyExecution === true
+            || stepPhaseKey === "planning"
+            || stepType === "planning";
+          if (acceptedSessionId && !skipStartupVerification) {
             setTimeout(() => {
               try {
                 const verifyRow = db.get<{ last_output_at: string | null; status: string | null }>(
@@ -6770,17 +6811,16 @@ export function createOrchestratorService({
         const isAutoSpawnedValidationStep = latestStepMeta.autoSpawnedValidation === true;
         if (!isAutoSpawnedValidationStep) {
           const runMetadata = asRecord(run.metadata);
-          const phaseConfig = asRecord(runMetadata?.phaseConfiguration);
-          const phaseCards = Array.isArray(phaseConfig?.selectedPhases)
-            ? (phaseConfig.selectedPhases as PhaseCard[])
-            : Array.isArray(phaseConfig?.phases)
-              ? (phaseConfig.phases as PhaseCard[])
-              : [];
+          const phaseCards = resolveRunPhaseCardsFromMetadata(runMetadata) ?? [];
           const stepPhaseKey = typeof latestStepMeta.phaseKey === "string" ? latestStepMeta.phaseKey.trim() : "";
           const stepPhaseName = typeof latestStepMeta.phaseName === "string" ? latestStepMeta.phaseName.trim() : "";
           const phaseCard =
             phaseCards.find((phase) => phase.phaseKey === stepPhaseKey)
             ?? phaseCards.find((phase) => phase.name === stepPhaseName)
+            ?? null;
+          const validationPhaseCard =
+            phaseCards.find((phase) => phase.phaseKey.trim().toLowerCase() === "validation")
+            ?? phaseCards.find((phase) => phase.name.trim().toLowerCase() === "validation")
             ?? null;
           const phaseTier = normalizeValidationTier(phaseCard?.validationGate?.tier);
           const phaseRequiresValidation = phaseCard?.validationGate?.required === true && phaseTier !== "none";
@@ -6892,8 +6932,13 @@ export function createOrchestratorService({
                       ? validatorRole.name.trim()
                       : "validator";
 
+                  const validatorPhaseModel = asRecord(validationPhaseCard?.model);
                   const phaseModel = asRecord(latestStepMeta.phaseModel);
-                  const phaseModelId = typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";
+                  const phaseModelId = typeof validatorPhaseModel?.modelId === "string"
+                    ? validatorPhaseModel.modelId.trim()
+                    : typeof phaseModel?.modelId === "string"
+                      ? phaseModel.modelId.trim()
+                      : "";
                   const runtimePhaseModel = asRecord(asRecord(runMetadata?.phaseRuntime)?.currentPhaseModel);
                   const runtimePhaseModelId = typeof runtimePhaseModel?.modelId === "string" ? runtimePhaseModel.modelId.trim() : "";
                   const candidateModelIds = [
@@ -6986,11 +7031,18 @@ export function createOrchestratorService({
                             targetStepKey: latestStep.stepKey,
                             targetAttemptId: args.attemptId,
                             targetStepSummary: envelope.summary,
-                            phaseKey: stepPhaseKey || phaseCard?.phaseKey || null,
-                            phaseName: stepPhaseName || phaseCard?.name || null,
-                            phasePosition: typeof latestStepMeta.phasePosition === "number"
-                              ? latestStepMeta.phasePosition
-                              : phaseCard?.position ?? null,
+                            phaseKey: validationPhaseCard?.phaseKey ?? (stepPhaseKey || phaseCard?.phaseKey || null),
+                            phaseName: validationPhaseCard?.name ?? (stepPhaseName || phaseCard?.name || null),
+                            phasePosition: validationPhaseCard?.position
+                              ?? (typeof latestStepMeta.phasePosition === "number"
+                                ? latestStepMeta.phasePosition
+                                : phaseCard?.position ?? null),
+                            ...(validationPhaseCard?.model ? { phaseModel: validationPhaseCard.model } : {}),
+                            ...(typeof validationPhaseCard?.instructions === "string" && validationPhaseCard.instructions.trim().length > 0
+                              ? { phaseInstructions: validationPhaseCard.instructions.trim() }
+                              : {}),
+                            ...(validationPhaseCard?.validationGate ? { phaseValidation: validationPhaseCard.validationGate } : {}),
+                            ...(validationPhaseCard?.budget ? { phaseBudget: validationPhaseCard.budget } : {}),
                             validationContract: normalizedContract
                           }
                         }
@@ -8658,6 +8710,7 @@ export function createOrchestratorService({
       runId: string;
       stepId: string;
       metadata: Record<string, unknown>;
+      allowTerminal?: boolean;
     }): OrchestratorStep {
       const runId = String(args.runId ?? "").trim();
       const stepId = String(args.stepId ?? "").trim();
@@ -8674,7 +8727,7 @@ export function createOrchestratorService({
       const stepRow = getStepRow(stepId);
       if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
       const step = toStep(stepRow);
-      if (TERMINAL_STEP_STATUSES.has(step.status)) {
+      if (!args.allowTerminal && TERMINAL_STEP_STATUSES.has(step.status)) {
         throw new Error(`Step is already terminal (status: ${step.status}).`);
       }
 
@@ -9509,12 +9562,8 @@ export function createOrchestratorService({
 
       // Validation passed (or forced) — evaluate the final status from step outcomes
       const finalRunMeta = parseJsonRecord(runRow.metadata_json);
-      const finalPhaseConfig = finalRunMeta && typeof finalRunMeta.phaseConfiguration === "object" && finalRunMeta.phaseConfiguration
-        ? (finalRunMeta.phaseConfiguration as Record<string, unknown>) : null;
-      const finalPhases = finalPhaseConfig && Array.isArray(finalPhaseConfig.phases) ? finalPhaseConfig.phases as PhaseCard[]
-        : finalPhaseConfig && Array.isArray(finalPhaseConfig.selectedPhases) ? finalPhaseConfig.selectedPhases as PhaseCard[] : null;
-      const finalSettings = finalRunMeta && typeof finalRunMeta.missionLevelSettings === "object" && finalRunMeta.missionLevelSettings
-        ? (finalRunMeta.missionLevelSettings as MissionLevelSettings) : null;
+      const finalPhases = resolveRunPhaseCardsFromMetadata(finalRunMeta);
+      const finalSettings = resolveRunMissionLevelSettingsFromMetadata(finalRunMeta);
 
       let evaluation: RunCompletionEvaluation;
       if (finalPhases && finalPhases.length > 0 && finalSettings) {

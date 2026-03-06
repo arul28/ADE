@@ -31,7 +31,7 @@ This phase draws heavily from three open-source projects. Each workstream credit
 
 ### Execution Order
 
-Workstreams are numbered by topic but executed in dependency order. W1-W4 and W6 are complete. Remaining workstreams execute W7→W5.
+Workstreams are numbered by topic but executed in dependency order. W1-W4 and W6 are complete. W5 is split into W5a (in progress) and W5b (remaining). Remaining workstreams execute W7→W5b.
 
 Recent W6 closeout progress (2026-03-05):
 - Removed dead renderer compatibility wrappers under `components/packs/`.
@@ -41,6 +41,13 @@ Recent W6 closeout progress (2026-03-05):
 - Migrated orchestrator context snapshots to live exports rather than persisted pack bootstrap/head/delta reads.
 - Migrated external conflict resolver prompts to generated per-run context files instead of `.ade/packs/...` references.
 - Migrated agent chat project/lane/conflict/plan context fetches to live exports, leaving only mission selection as an explicit picker limitation.
+
+W5a kickoff (2026-03-06):
+- W5 split into W5a and W5b sub-phases to manage scope and deliver incremental value.
+- W5a covers: `usageTrackingService`, `budgetCapService`, IPC wiring, and Automations tab UI overhaul with five-tab layout (Rules / Templates / History / Usage / Night Shift).
+- Key architectural decision: **CTO owns Linear dispatch; Automations does NOT duplicate it** (see W5 section for details).
+- Usage tracking service design inspired by [CodexBar](https://github.com/steipete/CodexBar) — OAuth API polling + local cost scanning + pacing calculation.
+- Competitive analysis incorporated from Cursor Automations (Mar 2026) and Codex Agents SDK (see W5 section).
 
 ```
 Wave 1 (complete):
@@ -58,7 +65,8 @@ Wave 3 (after W6):
   W8: External MCP Consumption        ← independent infra, can parallel with W7
 
 Wave 4 (after W6, can parallel with W7/W8):
-  W5: Automations Platform + Night Shift ← needs W1 + benefits from W6 memory
+  W5a: Automations — Usage + Budget + UI  🔧 in progress (2026-03-06)
+  W5b: Automations — Executors + Night Shift + External Triggers  ← needs W5a + stable orchestrator
   W9: OpenClaw Bridge                 ← needs W1, W8
   W10: .ade/ Portable State           ← needs W1, W6
 ```
@@ -71,7 +79,8 @@ W1 (CTO Core) ──→ W2 (Workers) ──┐
      │
      ├──→ W6 (Unified Memory) ──→ W7 (Skills + Learning)
      │         │
-     │         ├──→ W5 (Automations + Night Shift)
+     │         ├──→ W5a (Usage + Budget + UI)  🔧 in progress
+     │         │         └──→ W5b (Executors + Night Shift + External Triggers)
      │         └──→ W10 (.ade/ State)
      │
      └──→ W9 (OpenClaw) ←── W8 (External MCP)
@@ -493,6 +502,65 @@ The CTO agent watches one or more Linear project boards and autonomously dispatc
 
 W5 turns Automations into a first-class product surface rather than a narrow trigger-action settings form. The Automations tab becomes the canonical place to create, simulate, run, and review background agent workflows. Settings holds defaults, connector auth, and policy presets, but not the main builder UI.
 
+##### Linear Dispatch Boundary (decided 2026-03-06)
+
+**CTO owns Linear dispatch; Automations does NOT duplicate it.**
+
+- The CTO heartbeat (W4, already shipped) is the intelligent intake and routing path for Linear issues. It polls Linear, classifies issues, selects templates, and dispatches missions to workers. This is where "P0 bug arrives -> specific template -> specific worker" logic lives.
+- The Automations tab handles local triggers (commit, schedule, session-end, manual), webhooks, and programmable workflows. It does NOT re-implement Linear issue intake or routing.
+- Linear appears in Automations only as an **action** (e.g., "on commit -> update Linear issue status", "on session-end -> post summary to Linear"), NOT as a competing trigger for issue intake.
+- If a user wants "P0 bug -> specific template", that is a CTO dispatch policy (W4 `linearSync.autoDispatch.rules`), not an automation rule.
+- Rationale: prevents UX confusion of "which system handles my Linear issue?" and avoids duplicating the already-shipped W4 dispatch infrastructure.
+
+##### W5a / W5b Sub-Phasing (decided 2026-03-06)
+
+W5 is split into two sub-phases to deliver incremental value and manage scope:
+
+**W5a (in progress):** Foundation services and UI overhaul
+- `usageTrackingService`: OAuth API polling for Claude and Codex usage, local cost scanning from JSONL logs, pacing calculation
+- `budgetCapService`: per-rule, per-night-shift-run, and global budget caps (% of weekly or USD)
+- IPC wiring and preload bridge for usage/budget data
+- Automations tab UI overhaul: five-tab layout (Rules / Templates / History / Usage / Night Shift) matching the app's industrial shell theme
+
+**W5b (after W5a + stable orchestrator):** Full ADE tool access, executor modes, and external triggers
+
+The core principle of W5b: **automations get access to everything ADE can do.** An automation rule can spawn an AI agent with the same capabilities as a CTO worker or mission worker — every MCP tool, every git operation, every terminal command, every PR workflow, every test runner, every external integration. The automation executor is not a limited "run shell command" system; it is a full mission dispatch through the orchestrator.
+
+- **Executor mode expansion**: `automation-bot`, `employee`, `cto-route`, `night-shift` — all dispatch through the orchestrator's mission system
+  - `automation-bot`: disposable worker with full ADE tool access, model/permission selection, optional automation-scoped memory
+  - `employee`: target a persistent CTO worker who retains identity, memory, and domain knowledge across runs
+  - `cto-route`: let the CTO decide which worker handles it (or handle directly)
+  - `night-shift`: queue for unattended overnight execution with conservative permissions
+- **Per-rule configuration**: model selection (any configured provider/model), permission level (sandbox mode, approval policy), tool palette (which MCP tools/actions are available), prompt/instructions, output handling (open PR, post comment, create Linear issue, run tests, verify before publish)
+- **Full ADE tool surface available to automation agents**: repo/code tools, git operations, terminal/PTY, test runners, GitHub PR workflows (open/review/merge), Linear actions, browser automation, external MCP tools (W8), memory tools, conflict resolution — anything a mission worker can do
+- **`automationExecutionService`**: translates automation rule + trigger context into an orchestrator mission launch with the correct model, permissions, tools, and prompt
+- **`automationMemoryService`**: automation-scoped memories that persist across runs and compose with employee memory when targeting persistent workers
+- **`nightShiftService`**: overnight queue orchestration, utilization management (conservative/maximize/fixed modes), rate-limit-aware multi-batch scheduling, morning briefing digest
+- **External trigger adapters**: GitHub webhooks (push, PR opened/merged, review requested), generic webhooks (user-defined payloads), schedule enhancements (cron + active-hours windows). Linear trigger excluded per CTO dispatch boundary decision above.
+- **Builder UX**: model/permission selector in rule editor, tool palette picker, prompt editor with template variables, output configuration (PR settings, Linear issue template, notification channel), simulation / dry-run with full preview
+- **Full Night Shift tab**: queue controls (add/remove/reorder/pause), morning briefing modal (swipeable card interface per run), overnight schedule configuration, reserve budget management
+- **Verification gates**: `verifyBeforePublish` flag on rules — the agent pauses before external actions (opening PRs, posting comments, creating issues) and either waits for user approval or runs in dry-run mode
+
+##### Competitive Reference Notes (2026-03-06)
+
+Design decisions informed by competitive analysis of recent releases:
+
+| Source | What ADE Adopts | What ADE Skips |
+|--------|----------------|----------------|
+| **[Cursor Automations](https://cursor.com)** (Mar 2026) — triggers from GitHub/Linear/Slack/PagerDuty/webhooks/schedules, cloud sandbox agents with MCP access, memory tool, template categories | Template gallery pattern for common recipes (security review, PR review, incident triage, routine maintenance). Trigger category taxonomy. Memory-aware execution so automations improve over time. | Cloud sandbox execution (ADE is local-first). Cursor's "Linear trigger" approach (ADE uses CTO dispatch instead). Slack/PagerDuty triggers deferred. |
+| **[Codex Agents SDK](https://openai.com)** — "works unprompted", skills system, multi-agent orchestration with PM agent, trace dashboard | "Works unprompted" framing for Night Shift and scheduled automations. Trace/history visibility for every automation run. Multi-agent orchestration patterns (CTO as PM agent equivalent). | Codex cloud execution model. Codex-specific app-server protocol. |
+| **[CodexBar](https://github.com/steipete/CodexBar)** — macOS menu bar usage tracker for Claude and Codex | OAuth API polling pattern for Claude (`api.anthropic.com/api/oauth/usage`: five_hour + seven_day windows) and Codex (`chatgpt.com/backend-api/wham/usage` or CLI RPC). Pacing calculation (on-track / ahead / behind based on usage % vs time elapsed). | macOS menu bar UI (ADE integrates into Usage tab instead). |
+
+##### Usage Tracking Service Design (W5a)
+
+Inspired by [CodexBar](https://github.com/steipete/CodexBar), the usage tracking service provides real-time visibility into AI spend across providers:
+
+- **OAuth API polling**: Claude usage from `api.anthropic.com/api/oauth/usage` (five_hour + seven_day windows), Codex usage from `chatgpt.com/backend-api/wham/usage` or CLI RPC
+- **Local cost scanning**: Parse JSONL session logs from `~/.claude/projects/` and `~/.codex/sessions/` for granular per-session cost data
+- **Pacing calculation**: Determine whether usage is on-track, ahead, or behind based on `usage% vs time_elapsed%` within the billing window
+- **Budget cap model**: Per-rule caps, per-night-shift-run caps, and global caps expressed as percentage of weekly budget or absolute USD
+- **Night Shift reserve**: Protect X% of weekly budget for overnight runs, preventing daytime usage from starving Night Shift
+
 - **Surface model**:
   - `/automations` is the primary authoring and operations surface.
   - Settings stores default model/provider policy, connector credentials, shared templates, Night Shift defaults, and org-wide guardrails.
@@ -601,13 +669,30 @@ W5 turns Automations into a first-class product surface rather than a narrow tri
   - Run detail/history inspector
   - Morning Briefing modal overlay and Night Shift queue controls
 
-**Tests:**
-- Trigger adapters for local events plus GitHub, Linear, and webhook flows
-- Executor dispatch to automation bots, persistent employees, CTO-routed execution, and Night Shift queue
-- Template application, tool palette enforcement, and verification gates
-- Automation-scoped memory persistence and employee-memory composition
-- Simulation previews and run history accuracy
-- Night Shift stop conditions, utilization modes, multi-batch scheduling, and morning briefing generation
+**Implementation status (2026-03-06):**
+- W5a in progress:
+  - `usageTrackingService.ts`: In progress — OAuth API polling for Claude and Codex, local JSONL log scanning, pacing calculation, provider-agnostic usage snapshot interface.
+  - `budgetCapService.ts`: In progress — per-rule, per-night-shift-run, and global budget cap enforcement, Night Shift reserve protection.
+  - IPC wiring and preload bridge: Pending (blocked on service completion).
+  - Automations tab UI overhaul: Pending (blocked on IPC wiring). Target layout: five tabs (Rules / Templates / History / Usage / Night Shift) matching the industrial shell theme from CtoPage redesign.
+- W5b not started (depends on W5a + stable orchestrator).
+
+**Tests (W5a):**
+- Usage tracking: OAuth polling mock, JSONL log parsing, pacing calculation (on-track/ahead/behind), provider normalization
+- Budget caps: per-rule enforcement, global cap, Night Shift reserve protection, budget breach notification
+- IPC: usage snapshot retrieval, budget status queries, budget update handlers
+
+**Tests (W5b — planned):**
+- Executor dispatch: automation-bot spawns mission with correct model/permissions/tools, employee targets persistent worker, cto-route delegates to CTO, night-shift queues for overnight
+- Full tool surface: automation agent can use repo tools, git, terminal, test runner, PR workflows, Linear actions, external MCP tools, memory tools — same as any mission worker
+- Model/permission configuration: rule specifies model ID then mission uses that model; rule specifies sandbox mode then worker respects it
+- Tool palette enforcement: rule declares available tools then worker only sees those tools
+- Verification gates: verifyBeforePublish pauses before external actions (PR open, comment post, issue create)
+- External trigger adapters: GitHub webhook (push/PR/review), generic webhook, schedule with active-hours
+- Automation-scoped memory: persists across runs, composes with employee memory when targeting persistent workers
+- Night Shift: queue orchestration, conservative permission enforcement, utilization modes, rate-limit-aware scheduling, morning briefing generation
+- Output handling: automation agent opens PR with configured settings, creates Linear issue, posts results to configured channel
+- Budget integration: automation dispatch checks budget caps before launching, records usage after completion
 
 #### W6: Unified Memory System
 

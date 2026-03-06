@@ -374,6 +374,11 @@ import type {
   ExportMissionLogsResult,
   GetAggregatedUsageArgs,
   AggregatedUsageStats,
+  UsageSnapshot,
+  BudgetCheckResult,
+  BudgetCapScope,
+  BudgetCapProvider,
+  BudgetCapConfig,
   GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
   MissionBudgetTelemetrySnapshot,
@@ -472,6 +477,23 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: AutomationsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.automationsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
+    }
+  },
+  usage: {
+    getSnapshot: async (): Promise<UsageSnapshot | null> =>
+      ipcRenderer.invoke(IPC.usageGetSnapshot),
+    refresh: async (): Promise<UsageSnapshot | null> =>
+      ipcRenderer.invoke(IPC.usageRefresh),
+    checkBudget: async (args: { scope: BudgetCapScope; scopeId?: string; provider: BudgetCapProvider }): Promise<BudgetCheckResult> =>
+      ipcRenderer.invoke(IPC.usageCheckBudget, args),
+    getCumulativeUsage: async (args: { scope: BudgetCapScope; scopeId?: string; provider?: BudgetCapProvider }): Promise<{ totalTokens: number; totalCostUsd: number; weekKey: string }> =>
+      ipcRenderer.invoke(IPC.usageGetCumulativeUsage, args),
+    getBudgetConfig: async (): Promise<BudgetCapConfig> =>
+      ipcRenderer.invoke(IPC.usageGetBudgetConfig),
+    onUpdate: (cb: (snapshot: UsageSnapshot) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, snapshot: UsageSnapshot) => cb(snapshot);
+      ipcRenderer.on(IPC.usageEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.usageEvent, listener);
     }
   },
   missions: {

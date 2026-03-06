@@ -79,6 +79,35 @@ async function waitForFile(filePath, timeoutMs) {
   }
 }
 
+async function waitForStableFile(filePath, timeoutMs, stableWindowMs = 300) {
+  const startedAt = Date.now();
+  let lastSignature = "";
+  let stableSince = 0;
+
+  while (true) {
+    try {
+      const stat = fs.statSync(filePath);
+      const signature = `${stat.size}:${stat.mtimeMs}`;
+      if (signature !== lastSignature) {
+        lastSignature = signature;
+        stableSince = Date.now();
+      } else if (Date.now() - stableSince >= stableWindowMs) {
+        return stat;
+      }
+    } catch {
+      lastSignature = "";
+      stableSince = 0;
+    }
+
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out waiting for stable file: ${filePath}`);
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(150);
+  }
+}
+
 function spawnProcess(name, cmd, args, extraEnv = {}) {
   const child = cp.spawn(cmd, args, {
     cwd: projectRoot,
@@ -140,7 +169,10 @@ async function main() {
   vite.on("exit", onUnexpectedExit(vite));
   main.on("exit", onUnexpectedExit(main));
 
-  await Promise.all([waitForPort(devPort, 30_000), waitForFile(distMainFile, 30_000)]);
+  const [, initialMainBundleStat] = await Promise.all([
+    waitForPort(devPort, 30_000),
+    waitForStableFile(distMainFile, 30_000),
+  ]);
 
   const electronEnv = { VITE_DEV_SERVER_URL: devServerUrl };
   const launchElectron = () => {
@@ -154,8 +186,19 @@ async function main() {
       electron = null;
       if (electronRestartPending) {
         electronRestartPending = false;
-        process.stdout.write("[ade] electron restarted with updated main bundle\n");
-        launchElectron();
+        waitForStableFile(distMainFile, 30_000)
+          .then((stat) => {
+            lastMainBundleMtimeMs = stat.mtimeMs;
+            process.stdout.write("[ade] electron restarted with updated main bundle\n");
+            launchElectron();
+          })
+          .catch((error) => {
+            process.stderr.write(
+              `[ade] failed to restart electron after main bundle update: ${error instanceof Error ? error.message : String(error)}\n`
+            );
+            teardown("SIGTERM");
+            process.exit(1);
+          });
         return;
       }
       process.stdout.write(
@@ -180,9 +223,10 @@ async function main() {
 
   launchElectron();
 
-  let lastMainBundleMtimeMs = fs.statSync(distMainFile).mtimeMs;
+  let lastMainBundleMtimeMs = initialMainBundleStat.mtimeMs;
   fs.watchFile(distMainFile, { interval: 250 }, (curr) => {
     if (shuttingDown) return;
+    if (!curr || curr.nlink === 0) return;
     if (!curr || curr.mtimeMs <= lastMainBundleMtimeMs) return;
     lastMainBundleMtimeMs = curr.mtimeMs;
     requestElectronRestart("main bundle updated");

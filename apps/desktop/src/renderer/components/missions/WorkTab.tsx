@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { OrchestratorRunGraph, OrchestratorTeamMember, OrchestratorStepStatus } from "../../../shared/types";
+import { sanitizeWorkerTranscriptForDisplay } from "../../../shared/workerRuntimeNoise";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import {
   compactText,
@@ -188,6 +189,16 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
   const recentTimeline = useMemo(() => {
     return relatedEvents.slice(-8).reverse();
   }, [relatedEvents]);
+
+  const visibleTranscriptTail = useMemo(() => {
+    const sanitized = sanitizeWorkerTranscriptForDisplay(transcriptTail);
+    if (sanitized.length > 0) return sanitized;
+    if (transcriptTail.startsWith("(unable to read")) return transcriptTail;
+    if (transcriptTail.trim().length > 0) {
+      return "Worker is online, but only bootstrap output has been captured so far.";
+    }
+    return "";
+  }, [transcriptTail]);
 
   const flattenedTeamMembers = useMemo(() => {
     const byCreated = [...teamMembers].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
@@ -479,7 +490,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
                   className="max-h-[320px] overflow-auto p-3 text-[10px] whitespace-pre-wrap"
                   style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}
                 >
-                  {sessionId ? (transcriptTail || "Waiting for transcript output...") : "No worker session selected."}
+                  {sessionId ? (visibleTranscriptTail || "Waiting for transcript output...") : "No worker session selected."}
                 </pre>
               </div>
             )}

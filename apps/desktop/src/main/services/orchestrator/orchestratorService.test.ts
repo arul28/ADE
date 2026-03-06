@@ -2086,6 +2086,85 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("uses phaseOverride metadata to avoid inventing a disabled testing phase in completion evaluation", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseOverride: [
+            {
+              id: "phase-development",
+              phaseKey: "development",
+              name: "Development",
+              description: "Build",
+              instructions: "",
+              model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+              budget: {},
+              orderingConstraints: {},
+              askQuestions: { enabled: false, mode: "never" },
+              validationGate: { tier: "none", required: false },
+              isBuiltIn: true,
+              isCustom: false,
+              position: 1,
+              createdAt: "2026-03-04T00:00:00.000Z",
+              updatedAt: "2026-03-04T00:00:00.000Z",
+            },
+            {
+              id: "phase-validation",
+              phaseKey: "validation",
+              name: "Validation",
+              description: "Validate",
+              instructions: "",
+              model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
+              budget: {},
+              orderingConstraints: {},
+              askQuestions: { enabled: false, mode: "never" },
+              validationGate: { tier: "dedicated", required: false },
+              isBuiltIn: true,
+              isCustom: false,
+              position: 2,
+              createdAt: "2026-03-04T00:00:00.000Z",
+              updatedAt: "2026-03-04T00:00:00.000Z",
+            },
+          ],
+        },
+        steps: [
+          {
+            stepKey: "implement",
+            title: "Implement",
+            stepIndex: 0,
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            },
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded"
+      });
+
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      expect(graph.completionEvaluation?.riskFactors).not.toContain("testing_required_but_missing");
+      expect(
+        graph.completionEvaluation?.diagnostics.some((entry) => entry.message.includes('Required phase "testing"'))
+      ).toBe(false);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("marks step failed after retry exhaustion", async () => {
     const fixture = await createFixture();
     try {
@@ -2373,7 +2452,7 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("ignores shell startup noise when deriving tracked-session fallback summaries", async () => {
+  it("fails a planning worker that exits cleanly with only shell bootstrap noise", async () => {
     const fixture = await createFixture();
     try {
       const now = "2026-02-19T00:00:00.000Z";
@@ -2437,8 +2516,8 @@ describe("orchestratorService", () => {
       expect(reconciled).toBe(1);
 
       const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
-      expect(after?.status).toBe("succeeded");
-      expect(after?.resultEnvelope?.summary).toBe("Planning session completed.");
+      expect(after?.status).toBe("failed");
+      expect(after?.errorMessage).toBe("Planning worker exited without reporting a usable plan.");
     } finally {
       fixture.dispose();
     }

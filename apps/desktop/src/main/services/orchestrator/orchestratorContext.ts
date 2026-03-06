@@ -947,6 +947,7 @@ export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission:
     return "completed";
   }
   if (graph.run.status === "failed") return "failed";
+  if (graph.run.status === "canceled") return "canceled";
   return mission.status;
 }
 

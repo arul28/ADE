@@ -1687,6 +1687,115 @@ function resolveStepFromGraph(graph: Record<string, unknown>, stepId: string | n
   return null;
 }
 
+function inferWorkerIdFromCaller(graph: Record<string, unknown>, callerCtx: CallerContext): string | null {
+  const directStep = resolveStepFromGraph(graph, callerCtx.stepId, null);
+  const directKey = asOptionalTrimmedString(directStep?.stepKey);
+  if (directKey) return directKey;
+
+  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
+  const attemptId = asOptionalTrimmedString(callerCtx.attemptId) ?? asOptionalTrimmedString(callerCtx.callerId);
+  if (!attemptId) return null;
+  const attempt = attempts.find((entry) => asOptionalTrimmedString(entry.id) === attemptId);
+  const stepId = asOptionalTrimmedString(attempt?.stepId);
+  if (!stepId) return null;
+  const step = resolveStepFromGraph(graph, stepId, null);
+  return asOptionalTrimmedString(step?.stepKey);
+}
+
+function normalizeWorkerOutcome(raw: unknown): "succeeded" | "failed" | "partial" {
+  const normalized = asOptionalTrimmedString(raw)?.toLowerCase() ?? "";
+  if (normalized === "succeeded" || normalized === "success" || normalized === "pass" || normalized === "passed" || normalized === "done" || normalized === "completed") {
+    return "succeeded";
+  }
+  if (normalized === "failed" || normalized === "fail" || normalized === "error") {
+    return "failed";
+  }
+  return "partial";
+}
+
+function summarizeLegacyTestsRun(entries: unknown): Record<string, number> | null {
+  if (!Array.isArray(entries)) return null;
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const entry of entries) {
+    const result = asOptionalTrimmedString(safeObject(entry).result)?.toLowerCase() ?? "";
+    if (result === "pass" || result === "passed" || result === "success" || result === "succeeded") {
+      passed += 1;
+    } else if (result === "fail" || result === "failed" || result === "error") {
+      failed += 1;
+    } else {
+      skipped += 1;
+    }
+  }
+  return { passed, failed, skipped };
+}
+
+function normalizeCoordinatorWorkerToolArgs(args: {
+  name: string;
+  toolArgs: Record<string, unknown>;
+  callerCtx: CallerContext;
+  graph: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  const normalized = { ...args.toolArgs };
+  const inferredWorkerId = args.graph ? inferWorkerIdFromCaller(args.graph, args.callerCtx) : null;
+  const stepKeyAlias = asOptionalTrimmedString(normalized.stepKey);
+  const explicitWorkerId = asOptionalTrimmedString(normalized.workerId);
+
+  if (!explicitWorkerId && stepKeyAlias) {
+    normalized.workerId = stepKeyAlias;
+  } else if (!explicitWorkerId && inferredWorkerId) {
+    normalized.workerId = inferredWorkerId;
+  }
+
+  if (args.name === "report_status") {
+    const summary = asOptionalTrimmedString(normalized.summary);
+    if (!asOptionalTrimmedString(normalized.nextAction) && summary) {
+      normalized.nextAction = summary;
+    }
+    if (!asOptionalTrimmedString(normalized.details) && summary) {
+      normalized.details = summary;
+    }
+    if (!Array.isArray(normalized.blockers) && typeof normalized.blockers === "string") {
+      normalized.blockers = [normalized.blockers];
+    }
+    const rawProgress = Number(normalized.progressPct ?? Number.NaN);
+    if (!Number.isFinite(rawProgress)) {
+      const status = asOptionalTrimmedString(normalized.status)?.toLowerCase() ?? "";
+      if (status === "succeeded" || status === "success" || status === "completed" || status === "done") {
+        normalized.progressPct = 100;
+      } else if (status === "running" || status === "working" || status === "in_progress" || status === "in-progress") {
+        normalized.progressPct = 50;
+      } else if (status === "blocked" || status === "waiting") {
+        normalized.progressPct = 25;
+      } else {
+        normalized.progressPct = 0;
+      }
+    }
+  } else if (args.name === "report_result") {
+    normalized.outcome = normalizeWorkerOutcome(normalized.outcome);
+    const summarizedTests = summarizeLegacyTestsRun(normalized.testsRun);
+    if (summarizedTests) {
+      normalized.testsRun = summarizedTests;
+    }
+  } else if (args.name === "report_validation") {
+    if (!asOptionalTrimmedString(normalized.validatorWorkerId) && inferredWorkerId) {
+      normalized.validatorWorkerId = inferredWorkerId;
+    }
+    if (!Array.isArray(normalized.findings)) {
+      normalized.findings = [];
+    }
+    if (!Array.isArray(normalized.remediationInstructions)) {
+      const notes = Array.isArray(normalized.notes)
+        ? normalized.notes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+        : [];
+      normalized.remediationInstructions = notes;
+    }
+  }
+
+  return normalized;
+}
+
 function resolveParentAttemptIdFromGraph(graph: Record<string, unknown>, parentWorkerId: string): string | null {
   const steps = Array.isArray(graph.steps) ? (graph.steps as Array<Record<string, unknown>>) : [];
   const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
@@ -1994,15 +2103,16 @@ async function runCoordinatorTool(args: {
   if (!toolEntry?.execute) {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
   }
-  const effectiveToolArgs = { ...args.toolArgs };
-  if ((args.name === "report_status" || args.name === "report_result") && !asOptionalTrimmedString(effectiveToolArgs.workerId)) {
-    const graph = getRunGraphSafe(args.runtime, runId);
-    const step = graph ? resolveStepFromGraph(graph, args.callerCtx.stepId, null) : null;
-    const inferredWorkerId = asOptionalTrimmedString(step?.stepKey);
-    if (inferredWorkerId) {
-      effectiveToolArgs.workerId = inferredWorkerId;
-    }
-  }
+  const graph = getRunGraphSafe(args.runtime, runId);
+  const effectiveToolArgs =
+    args.name === "report_status" || args.name === "report_result" || args.name === "report_validation"
+      ? normalizeCoordinatorWorkerToolArgs({
+          name: args.name,
+          toolArgs: args.toolArgs,
+          callerCtx: args.callerCtx,
+          graph,
+        })
+      : { ...args.toolArgs };
   const nativeRegistration = ensureNativeTeammateRegistration({
     runtime: args.runtime,
     runId,

@@ -378,6 +378,70 @@ describe("deriveMissionPhaseSyncTarget", () => {
       sourceStepId: "worker-1",
     });
   });
+
+  it("holds the newly entered configured phase when no execution step exists for it yet", () => {
+    const target = deriveMissionPhaseSyncTarget({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "development",
+            currentPhaseName: "Development",
+          },
+          phaseOverride: [
+            {
+              phaseKey: "planning",
+              name: "Planning",
+              position: 0,
+              model: { modelId: "anthropic/claude-sonnet-4-6" },
+              instructions: "Plan first",
+              validationGate: { tier: "self", required: false },
+              budget: {},
+            },
+            {
+              phaseKey: "development",
+              name: "Development",
+              position: 1,
+              model: { modelId: "openai/gpt-5.3-codex" },
+              instructions: "Implement the work",
+              validationGate: { tier: "self", required: false },
+              budget: {},
+            },
+          ],
+        },
+      },
+      steps: [
+        {
+          id: "worker-1",
+          stepIndex: 1,
+          stepKey: "plan-test-tab",
+          title: "Plan Test tab",
+          status: "succeeded",
+          metadata: {
+            phaseKey: "planning",
+            phaseName: "Planning",
+            phasePosition: 0,
+            stepType: "planning",
+            phaseModel: { modelId: "anthropic/claude-sonnet-4-6" },
+            phaseInstructions: "Plan first",
+            phaseValidation: { tier: "self", required: false },
+            phaseBudget: {},
+          },
+        },
+      ],
+      attempts: [],
+      runtimeEvents: [],
+      timeline: [],
+    } as any);
+
+    expect(target).toMatchObject({
+      phaseKey: "development",
+      phaseName: "Development",
+      phaseInstructions: "Implement the work",
+      sourceStepId: null,
+    });
+  });
 });
 
 describe("normalizeCoordinatorUpdateForChat", () => {
@@ -2594,8 +2658,17 @@ describe("aiOrchestratorService", () => {
         "cp '/tmp/worker-123.json' '.ade-worker-mcp-123.json' && exec codex --model gpt-5.3-codex",
         "12f2b.txt')\"",
         "ADE_MISSION_ID='mission-1' exec claude --model 'sonnet' --permission-mode 'plan'",
+        "orchestrator/worker-prompts/worker-ce33e94c-b964-42c9-9127-dfdeb6853d36",
         "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh",
         "/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef",
+        "apps/desktop/src/main/services/orchestrator/coordinatorTools.test.ts:428: const result =",
+        "- `.ade/step-output-worker_validate-test-tab_1772818763484.md` — structured step output for orchestration",
+        "\"type\": \"text\",",
+        "+ <div className=\"flex h-full w-full items-center justify-center\">",
+        "- apps/desktop/src/renderer/components",
+        "\"missionId",
+        "] as cons",
+        "EOF\" in /Users/admin/Projects/ADE/.ade/worktrees/test-11-157a722d",
       ];
 
       for (const preview of noisyPreviews) {
@@ -4865,6 +4938,149 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("persists structured worker chat events into the worker thread", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Show worker tool calls and reasoning in the worker chat thread.",
+        laneId: fixture.laneId,
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual",
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "implement-structured-chat", title: "Implement structured chat", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }],
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual",
+      });
+
+      const sessionId = "worker-session-structured-chat";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'unified',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id],
+      );
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: readyStep.id,
+        attemptId: attempt.id,
+        reason: "session_attached",
+        at: new Date().toISOString(),
+      });
+
+      await waitFor(() => {
+        const thread = fixture.aiOrchestratorService
+          .listChatThreads({ missionId: mission.id, includeClosed: true })
+          .find((entry) => entry.attemptId === attempt.id);
+        return Boolean(thread);
+      });
+
+      fixture.aiOrchestratorService.onAgentChatEvent({
+        sessionId,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "reasoning",
+          text: "Reviewing the sidebar registration flow.",
+          turnId: "turn-1",
+          itemId: "reasoning-1",
+        },
+      });
+      fixture.aiOrchestratorService.onAgentChatEvent({
+        sessionId,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "tool_call",
+          tool: "read_file",
+          args: { path: "apps/desktop/src/App.tsx" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      });
+      fixture.aiOrchestratorService.onAgentChatEvent({
+        sessionId,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "tool_result",
+          tool: "read_file",
+          result: { ok: true, bytes: 1234 },
+          itemId: "tool-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      });
+      fixture.aiOrchestratorService.onAgentChatEvent({
+        sessionId,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "text",
+          text: "I found the sidebar entry point.",
+          turnId: "turn-1",
+          itemId: "assistant-1",
+        },
+      });
+
+      await waitFor(() => {
+        const thread = fixture.aiOrchestratorService
+          .listChatThreads({ missionId: mission.id, includeClosed: true })
+          .find((entry) => entry.attemptId === attempt.id);
+        if (!thread) return false;
+        const messages = fixture.aiOrchestratorService.getThreadMessages({
+          missionId: mission.id,
+          threadId: thread.id,
+        });
+        return messages.some((entry) => String(entry.metadata?.source ?? "") === "agent_chat_event");
+      });
+
+      const thread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((entry) => entry.attemptId === attempt.id);
+      if (!thread) throw new Error("Expected worker thread");
+      const messages = fixture.aiOrchestratorService.getThreadMessages({
+        missionId: mission.id,
+        threadId: thread.id,
+      });
+      const structuredMessages = messages.filter((entry) => String(entry.metadata?.source ?? "") === "agent_chat_event");
+
+      expect(structuredMessages.some((entry) => entry.content.includes("Reviewing the sidebar registration flow."))).toBe(true);
+      expect(
+        structuredMessages.some((entry) => {
+          const stream = entry.metadata && typeof entry.metadata === "object" && !Array.isArray(entry.metadata)
+            ? (entry.metadata as Record<string, unknown>).structuredStream as Record<string, unknown> | undefined
+            : undefined;
+          return stream?.kind === "tool"
+            && stream.tool === "read_file"
+            && (stream.status === "completed")
+            && typeof JSON.stringify(stream.result ?? null) === "string";
+        }),
+      ).toBe(true);
+      expect(structuredMessages.some((entry) => entry.content.includes("I found the sidebar entry point."))).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("preserves delivery idempotence by holding in-flight messages then failing stale in-flight attempts", async () => {
     const sendMessage = vi.fn().mockRejectedValue(new Error("Transport unavailable."));
     const agentChatService = createMockAgentChatService({
@@ -5704,6 +5920,102 @@ describe("aiOrchestratorService", () => {
       expect(refreshedAttempt?.errorMessage ?? "").toContain("stagnating");
     } finally {
       fixture.dispose();
+    }
+  });
+
+  it("skips startup verification warnings for quiet read-only planning workers", async () => {
+    vi.useFakeTimers();
+    const fixture = await createFixture({
+      aiIntegrationService: createStagnationRecoveryAiIntegrationService()
+    });
+    try {
+      const sessionId = "session-planning-quiet-1";
+      const transcriptPath = path.join(fixture.projectRoot, ".ade", "transcripts", `${sessionId}.log`);
+      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+      fs.writeFileSync(transcriptPath, "", "utf8");
+
+      fixture.db.run(
+        `
+          insert into terminal_sessions(
+            id, lane_id, pty_id, tracked, title, started_at, ended_at,
+            exit_code, transcript_path, head_sha_start, head_sha_end,
+            status, last_output_preview, summary, tool_type,
+            resume_command, last_output_at
+          ) values (?, ?, null, 1, 'Quiet Planning Worker', ?, null, null, ?,
+            null, null, 'running', null, null, 'claude-orchestrated', null, null)
+        `,
+        [sessionId, fixture.laneId, new Date().toISOString(), transcriptPath]
+      );
+
+      fixture.orchestratorService.registerExecutorAdapter({
+        kind: "unified",
+        start: async () => ({
+          status: "accepted" as const,
+          sessionId,
+          metadata: { adapterKind: "unified" }
+        })
+      });
+
+      const mission = fixture.missionService.create({
+        prompt: "Allow a planning worker to think quietly without premature startup warnings.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "unified"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            laneId: fixture.laneId,
+            executorKind: "manual",
+            metadata: {
+              instructions: "Research the codebase and report back with a plan.",
+              modelId: "anthropic/claude-sonnet-4-6",
+              phaseKey: "planning",
+              stepType: "planning",
+              readOnlyExecution: true,
+            },
+          }
+        ]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.stepKey === "planning-worker" && s.status === "ready");
+      if (!readyStep) throw new Error("Expected planning-worker step to be ready");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "unified"
+      });
+
+      expect(attempt.status).toBe("running");
+      expect(attempt.executorSessionId).toBe(sessionId);
+
+      await vi.advanceTimersByTimeAsync(15_100);
+
+      const runtimeEvents = fixture.orchestratorService
+        .listRuntimeEvents({
+          attemptId: attempt.id,
+          limit: 10
+        })
+        .filter((entry) => String(entry.eventType) === "startup_verification_warning");
+      expect(runtimeEvents).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+      vi.useRealTimers();
     }
   });
 });

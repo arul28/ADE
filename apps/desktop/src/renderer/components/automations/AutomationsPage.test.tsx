@@ -84,6 +84,14 @@ function buildBridge() {
     agentTools: {
       detect: vi.fn(async () => []),
     },
+    usage: {
+      getSnapshot: vi.fn(async () => null),
+      refresh: vi.fn(async () => null),
+      checkBudget: vi.fn(async () => ({ allowed: true, warnings: [] })),
+      getCumulativeUsage: vi.fn(async () => ({ totalTokens: 0, totalCostUsd: 0, weekKey: "2026-W10" })),
+      getBudgetConfig: vi.fn(async () => ({ budgetCaps: [], nightShiftReservePercent: 0 })),
+      onUpdate: vi.fn(() => () => {}),
+    },
   };
 }
 
@@ -96,6 +104,15 @@ describe("AutomationsPage", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it("renders tab bar with all tabs", async () => {
+    mountPage();
+    await waitFor(() => expect(screen.getAllByText("Rules").length).toBeGreaterThan(0));
+    expect(screen.getByText("Templates")).toBeTruthy();
+    expect(screen.getByText("History")).toBeTruthy();
+    expect(screen.getByText("Usage")).toBeTruthy();
+    expect(screen.getByText("Night Shift")).toBeTruthy();
   });
 
   it("renders linear intake policy card with connection and queue status", async () => {
@@ -118,5 +135,26 @@ describe("AutomationsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /open in cto/i }));
     await waitFor(() => expect(screen.getByTestId("cto-page")).toBeTruthy());
+  });
+
+  it("switches to Usage tab", async () => {
+    mountPage();
+    await waitFor(() => expect(screen.getAllByText("Rules").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByText("Usage"));
+    await waitFor(() => expect(screen.getByText("Usage Dashboard")).toBeTruthy());
+  });
+
+  it("switches to Templates tab", async () => {
+    mountPage();
+    await waitFor(() => expect(screen.getByText("Templates")).toBeTruthy());
+    fireEvent.click(screen.getByText("Templates"));
+    await waitFor(() => expect(screen.getByText("Security Audit")).toBeTruthy());
+  });
+
+  it("switches to Night Shift tab", async () => {
+    mountPage();
+    await waitFor(() => expect(screen.getByText("Night Shift")).toBeTruthy());
+    fireEvent.click(screen.getByText("Night Shift"));
+    await waitFor(() => expect(screen.getByText("Night Shift Queue")).toBeTruthy());
   });
 });
