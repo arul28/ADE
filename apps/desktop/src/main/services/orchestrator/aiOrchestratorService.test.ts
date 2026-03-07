@@ -4359,7 +4359,7 @@ describe("aiOrchestratorService", () => {
 
       fixture.aiOrchestratorService.sendChat({
         missionId: mission.id,
-        content: "what's the run status?"
+        content: "continue working on this"
       });
 
       await waitFor(() =>

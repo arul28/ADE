@@ -86,6 +86,11 @@ function isCoordinatorStatusQuery(content: string): boolean {
   const statusTerms = /\b(status|progress|stuck|heartbeat|doing|working on|worker|agent|lane|phase|running)\b/i;
   if (!statusTerms.test(normalized)) return false;
 
+  // Imperative status requests like "status update please", "give me a status update"
+  const imperativeStatusRequest =
+    /\b(status\s+update|progress\s+update|status\s+report|progress\s+report|give\s+.*(status|progress|update))\b/i;
+  if (imperativeStatusRequest.test(normalized)) return true;
+
   const questionLead =
     /^(what|what's|what is|how|how's|how is|where|where's|where is|which|who|when|why|are|is|do|does|did|can|could|would|will)\b/i;
   const looksLikeQuestion = normalized.includes("?") || questionLead.test(normalized);
