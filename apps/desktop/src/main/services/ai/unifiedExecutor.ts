@@ -9,6 +9,7 @@ import {
 import { detectAllAuth } from "./authDetector";
 import { resolveModel } from "./providerResolver";
 import { createCodingToolSet, createUniversalToolSet } from "./tools";
+import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "./tools/systemPrompt";
 import type { AgentEvent } from "./agentExecutor";
 import {
   createCompactionMonitor,
@@ -104,6 +105,17 @@ export async function* executeUnified(
 
   // Planning mode caps tool-use rounds so the planner doesn't explore forever
   const stopCondition = opts.tools === "planning" ? stepCountIs(10) : undefined;
+  const harnessMode = opts.tools === "planning" ? "planning" : "coding";
+  const system = composeSystemPrompt(
+    opts.system,
+    buildCodingAgentSystemPrompt({
+      cwd: opts.cwd ?? process.cwd(),
+      mode: harnessMode,
+      permissionMode: opts.tools === "planning" ? "plan" : "edit",
+      toolNames: Object.keys(tools ?? {}),
+      interactive: false,
+    }),
+  );
 
   const abortController = new AbortController();
   if (opts.abortSignal) {
@@ -124,7 +136,7 @@ export async function* executeUnified(
   try {
     const result = streamText({
       model: sdkModel,
-      system: opts.system,
+      system,
       prompt: opts.prompt,
       tools: tools as any,
       ...(stopCondition ? { stopWhen: stopCondition } : {}),
@@ -132,6 +144,7 @@ export async function* executeUnified(
     });
 
     let finalText = "";
+    let streamedStepCount = 0;
 
     // Record the user prompt in the transcript
     if (compactionEnabled && opts.db) {
@@ -149,10 +162,39 @@ export async function* executeUnified(
     }
 
     for await (const part of result.fullStream) {
-      if (part.type === "text-delta") {
+      if (part.type === "start-step") {
+        streamedStepCount += 1;
+        yield {
+          type: "step_boundary",
+          stepNumber: streamedStepCount,
+        };
+      } else if (part.type === "source") {
+        const sourceDetail =
+          typeof part.title === "string" && part.title.trim().length
+            ? part.title
+            : part.sourceType === "url" && typeof part.url === "string" && part.url.trim().length
+              ? part.url
+              : "Gathering sources";
+        yield {
+          type: "activity",
+          activity: "searching",
+          detail: sourceDetail,
+        };
+      } else if (part.type === "reasoning-start" || part.type === "reasoning-delta") {
+        yield {
+          type: "activity",
+          activity: "thinking",
+          detail: "Reasoning through the next step",
+        };
+      } else if (part.type === "text-delta") {
         finalText += part.text;
         yield { type: "text", content: part.text };
       } else if (part.type === "tool-call") {
+        yield {
+          type: "activity",
+          activity: "tool_calling",
+          detail: part.toolName,
+        };
         if (compactionEnabled && opts.db) {
           appendTranscriptEntry(opts.db, {
             projectId: opts.projectId!,

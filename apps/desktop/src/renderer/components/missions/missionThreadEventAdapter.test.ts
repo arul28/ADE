@@ -155,6 +155,177 @@ describe("adaptMissionThreadMessagesToAgentEvents", () => {
     });
   });
 
+  it("preserves approval, command, file, plan, activity, step, and structured user events", () => {
+    const events = adaptMissionThreadMessagesToAgentEvents([
+      message({
+        id: "approval-msg",
+        content: "Need approval",
+        metadata: {
+          structuredStream: {
+            kind: "approval_request",
+            sessionId: "worker-session",
+            turnId: "turn-5",
+            itemId: "approval-1",
+            requestKind: "command",
+            description: "Run npm test",
+            detail: { command: "npm test" },
+          },
+        },
+      }),
+      message({
+        id: "command-msg",
+        content: "npm test",
+        timestamp: "2026-03-06T12:00:01.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "command",
+            sessionId: "worker-session",
+            turnId: "turn-5",
+            itemId: "cmd-1",
+            command: "npm test",
+            cwd: "/repo",
+            output: "all green",
+            status: "completed",
+            exitCode: 0,
+            durationMs: 1200,
+          },
+        },
+      }),
+      message({
+        id: "file-msg",
+        content: "Updated src/index.ts",
+        timestamp: "2026-03-06T12:00:02.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "file_change",
+            sessionId: "worker-session",
+            turnId: "turn-5",
+            itemId: "file-1",
+            path: "src/index.ts",
+            diff: "+hello",
+            changeKind: "create",
+            status: "completed",
+          },
+        },
+      }),
+      message({
+        id: "plan-msg",
+        content: "Plan ready",
+        timestamp: "2026-03-06T12:00:03.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "plan",
+            sessionId: "worker-session",
+            turnId: "turn-5",
+            explanation: "Two steps",
+            steps: [
+              { text: "Inspect files", status: "completed" },
+              { text: "Apply patch", status: "in_progress" },
+            ],
+          },
+        },
+      }),
+      message({
+        id: "activity-msg",
+        content: "Searching",
+        timestamp: "2026-03-06T12:00:04.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "activity",
+            sessionId: "worker-session",
+            turnId: "turn-5",
+            activity: "searching",
+            detail: "grep",
+          },
+        },
+      }),
+      message({
+        id: "step-msg",
+        content: "Step 2",
+        timestamp: "2026-03-06T12:00:05.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "step_boundary",
+            sessionId: "worker-session",
+            turnId: "turn-5",
+            stepNumber: 2,
+          },
+        },
+      }),
+      message({
+        id: "user-structured-msg",
+        content: "Use the API model",
+        timestamp: "2026-03-06T12:00:06.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "user_message",
+            sessionId: "worker-session",
+            turnId: "turn-5",
+            text: "Use the API model",
+            attachments: [{ path: "/tmp/spec.md", type: "file" }],
+          },
+        },
+      }),
+    ]);
+
+    expect(events.map((entry) => entry.event.type)).toEqual([
+      "approval_request",
+      "command",
+      "file_change",
+      "plan",
+      "activity",
+      "step_boundary",
+      "user_message",
+    ]);
+    expect(events[0]?.event).toMatchObject({
+      type: "approval_request",
+      itemId: "approval-1",
+      kind: "command",
+      description: "Run npm test",
+      detail: { command: "npm test" },
+    });
+    expect(events[1]?.event).toMatchObject({
+      type: "command",
+      itemId: "cmd-1",
+      command: "npm test",
+      cwd: "/repo",
+      output: "all green",
+      status: "completed",
+      exitCode: 0,
+      durationMs: 1200,
+    });
+    expect(events[2]?.event).toMatchObject({
+      type: "file_change",
+      itemId: "file-1",
+      path: "src/index.ts",
+      diff: "+hello",
+      kind: "create",
+      status: "completed",
+    });
+    expect(events[3]?.event).toMatchObject({
+      type: "plan",
+      explanation: "Two steps",
+      steps: [
+        { text: "Inspect files", status: "completed" },
+        { text: "Apply patch", status: "in_progress" },
+      ],
+    });
+    expect(events[4]?.event).toMatchObject({
+      type: "activity",
+      activity: "searching",
+      detail: "grep",
+    });
+    expect(events[5]?.event).toMatchObject({
+      type: "step_boundary",
+      stepNumber: 2,
+    });
+    expect(events[6]?.event).toMatchObject({
+      type: "user_message",
+      text: "Use the API model",
+      attachments: [{ path: "/tmp/spec.md", type: "file" }],
+    });
+  });
+
   it("falls back to user and text events for legacy thread messages", () => {
     const events = adaptMissionThreadMessagesToAgentEvents([
       message({
@@ -182,6 +353,146 @@ describe("adaptMissionThreadMessagesToAgentEvents", () => {
       type: "text",
       text: "I am reviewing the routing files.",
       itemId: "worker-msg:text",
+    });
+  });
+
+  it("reconstructs approvals, commands, file changes, plans, activity, and user messages", () => {
+    const events = adaptMissionThreadMessagesToAgentEvents([
+      message({
+        id: "approval-msg",
+        content: "Which branch should I use?",
+        metadata: {
+          structuredStream: {
+            kind: "approval_request",
+            sessionId: "worker-session",
+            turnId: "turn-2",
+            itemId: "approval-1",
+            requestKind: "tool_call",
+            description: "Which branch should I use?",
+            detail: { tool: "askUser", question: "Which branch should I use?" },
+          },
+        },
+      }),
+      message({
+        id: "command-msg",
+        content: "pnpm test",
+        timestamp: "2026-03-06T12:00:01.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "command",
+            sessionId: "worker-session",
+            turnId: "turn-2",
+            itemId: "command-1",
+            command: "pnpm test",
+            cwd: "/tmp/ade",
+            output: "ok",
+            status: "completed",
+            exitCode: 0,
+          },
+        },
+      }),
+      message({
+        id: "file-msg",
+        content: "updated file",
+        timestamp: "2026-03-06T12:00:02.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "file_change",
+            sessionId: "worker-session",
+            turnId: "turn-2",
+            itemId: "file-1",
+            path: "src/app.ts",
+            diff: "+hello",
+            changeKind: "modify",
+            status: "completed",
+          },
+        },
+      }),
+      message({
+        id: "plan-msg",
+        content: "plan",
+        timestamp: "2026-03-06T12:00:03.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "plan",
+            sessionId: "worker-session",
+            turnId: "turn-2",
+            explanation: "Work through the stack.",
+            steps: [{ text: "Inspect", status: "completed" }, { text: "Patch", status: "in_progress" }],
+          },
+        },
+      }),
+      message({
+        id: "activity-msg",
+        content: "Reading files",
+        timestamp: "2026-03-06T12:00:04.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "activity",
+            sessionId: "worker-session",
+            turnId: "turn-2",
+            activity: "reading",
+            detail: "Reading src/app.ts",
+          },
+        },
+      }),
+      message({
+        id: "user-structured-msg",
+        role: "worker",
+        content: "Use release/main",
+        timestamp: "2026-03-06T12:00:05.000Z",
+        metadata: {
+          structuredStream: {
+            kind: "user_message",
+            sessionId: "worker-session",
+            turnId: "turn-2",
+            text: "Use release/main",
+            attachments: [{ path: "docs/plan.md", type: "file" }],
+          },
+        },
+      }),
+    ]);
+
+    expect(events.map((entry) => entry.event.type)).toEqual([
+      "approval_request",
+      "command",
+      "file_change",
+      "plan",
+      "activity",
+      "user_message",
+    ]);
+    expect(events[0]?.event).toMatchObject({
+      type: "approval_request",
+      itemId: "approval-1",
+      detail: { tool: "askUser", question: "Which branch should I use?" },
+    });
+    expect(events[1]?.event).toMatchObject({
+      type: "command",
+      itemId: "command-1",
+      command: "pnpm test",
+      status: "completed",
+      exitCode: 0,
+    });
+    expect(events[2]?.event).toMatchObject({
+      type: "file_change",
+      itemId: "file-1",
+      path: "src/app.ts",
+      diff: "+hello",
+    });
+    expect(events[3]?.event).toMatchObject({
+      type: "plan",
+      explanation: "Work through the stack.",
+      steps: [{ text: "Inspect", status: "completed" }, { text: "Patch", status: "in_progress" }],
+    });
+    expect(events[4]?.event).toMatchObject({
+      type: "activity",
+      activity: "reading",
+      detail: "Reading src/app.ts",
+    });
+    expect(events[5]?.event).toMatchObject({
+      type: "user_message",
+      text: "Use release/main",
+      attachments: [{ path: "docs/plan.md", type: "file" }],
     });
   });
 });

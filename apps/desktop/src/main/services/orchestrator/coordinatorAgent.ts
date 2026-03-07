@@ -22,6 +22,7 @@ import {
   type CompactionMonitor,
   type TranscriptEntry,
 } from "../ai/compactionEngine";
+import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
 import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
 import { resolveModel } from "../ai/providerResolver";
 import { detectAllAuth } from "../ai/authDetector";
@@ -497,9 +498,19 @@ export class CoordinatorAgent {
     });
 
     try {
+      const harnessedSystemPrompt = composeSystemPrompt(
+        this.systemPrompt,
+        buildCodingAgentSystemPrompt({
+          cwd: this.deps.projectRoot,
+          mode: "planning",
+          permissionMode: "plan",
+          toolNames: Object.keys(this.tools),
+          interactive: false,
+        }),
+      );
       const result = streamText({
         model: sdkModel,
-        system: this.systemPrompt,
+        system: harnessedSystemPrompt,
         messages: this.conversationHistory,
         ...(useSdkTools ? { tools: this.tools as any } : {}),
         stopWhen: stepCountIs(MAX_TOOL_STEPS_PER_TURN),
@@ -508,8 +519,33 @@ export class CoordinatorAgent {
 
       let assistantText = "";
       let sawStreamPart = false;
+      let streamedStepCount = 0;
       for await (const part of result.fullStream) {
         sawStreamPart = true;
+        if (part.type === "start-step") {
+          streamedStepCount += 1;
+          this.deps.onCoordinatorEvent?.({
+            type: "step_boundary",
+            stepNumber: streamedStepCount,
+            turnId,
+          });
+          continue;
+        }
+        if (part.type === "source") {
+          const sourceDetail =
+            typeof part.title === "string" && part.title.trim().length
+              ? part.title
+              : part.sourceType === "url" && typeof part.url === "string" && part.url.trim().length
+                ? part.url
+                : "Gathering sources";
+          this.deps.onCoordinatorEvent?.({
+            type: "activity",
+            activity: "searching",
+            detail: sourceDetail,
+            turnId,
+          });
+          continue;
+        }
         if (part.type === "text-delta") {
           const delta = String(part.text ?? "");
           assistantText += delta;
@@ -527,6 +563,12 @@ export class CoordinatorAgent {
           const delta = String(part.text ?? "");
           if (delta.length > 0) {
             this.deps.onCoordinatorEvent?.({
+              type: "activity",
+              activity: "thinking",
+              detail: "Reasoning through the next step",
+              turnId,
+            });
+            this.deps.onCoordinatorEvent?.({
               type: "reasoning",
               text: delta,
               turnId,
@@ -536,9 +578,26 @@ export class CoordinatorAgent {
           continue;
         }
         if (part.type === "tool-call") {
+          const toolName = String(part.toolName ?? "tool");
+          const nextActivity =
+            toolName.toLowerCase().includes("search")
+              ? { activity: "searching" as const, detail: toolName }
+              : toolName.toLowerCase().includes("read")
+                ? { activity: "reading" as const, detail: toolName }
+                : toolName.toLowerCase().includes("write") || toolName.toLowerCase().includes("edit")
+                  ? { activity: "editing_file" as const, detail: toolName }
+                  : toolName.toLowerCase().includes("bash") || toolName.toLowerCase().includes("exec")
+                    ? { activity: "running_command" as const, detail: toolName }
+                    : { activity: "tool_calling" as const, detail: toolName };
+          this.deps.onCoordinatorEvent?.({
+            type: "activity",
+            activity: nextActivity.activity,
+            detail: nextActivity.detail,
+            turnId,
+          });
           this.deps.onCoordinatorEvent?.({
             type: "tool_call",
-            tool: String(part.toolName ?? "tool"),
+            tool: toolName,
             args: part.input,
             itemId: String(part.toolCallId ?? `${turnId}-tool`),
             turnId,

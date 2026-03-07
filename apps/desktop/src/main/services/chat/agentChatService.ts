@@ -42,6 +42,7 @@ import {
 import { detectAllAuth } from "../ai/authDetector";
 import { resolveModel, buildProviderOptions, isModelCliWrapped, normalizeCliMcpServers } from "../ai/providerResolver";
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
+import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
@@ -131,7 +132,7 @@ type ClaudeRuntime = {
 };
 
 type PendingUnifiedApproval = {
-  resolve: (decision: AgentChatApprovalDecision) => void;
+  resolve: (response: { decision: AgentChatApprovalDecision; responseText?: string | null }) => void;
 };
 
 type UnifiedRuntime = {
@@ -489,6 +490,33 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "codex") return DEFAULT_CODEX_MODEL;
   if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
   return DEFAULT_UNIFIED_MODEL_ID;
+}
+
+function activityForToolName(
+  toolName: string,
+): { activity: Extract<AgentChatEvent, { type: "activity" }>["activity"]; detail: string } {
+  const normalized = toolName.trim();
+  const lower = normalized.toLowerCase();
+  if (!normalized.length) return { activity: "tool_calling", detail: "Running tool" };
+  if (lower === "bash" || lower === "exec_command" || lower === "bashoutput") {
+    return { activity: "running_command", detail: normalized };
+  }
+  if (lower.includes("edit") || lower.includes("write") || lower === "apply_patch") {
+    return { activity: "editing_file", detail: normalized };
+  }
+  if (lower.includes("search") || lower === "grep" || lower === "glob") {
+    return { activity: "searching", detail: normalized };
+  }
+  if (
+    lower.includes("read")
+    || lower === "listdir"
+    || lower === "gitstatus"
+    || lower === "gitdiff"
+    || lower === "gitlog"
+  ) {
+    return { activity: "reading", detail: normalized };
+  }
+  return { activity: "tool_calling", detail: normalized };
 }
 
 // Permission mapping functions are shared with the orchestrator/mission system.
@@ -1047,7 +1075,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "unified") {
       managed.runtime.abortController?.abort();
       for (const pending of managed.runtime.pendingApprovals.values()) {
-        pending.resolve("cancel");
+        pending.resolve({ decision: "cancel" });
       }
       managed.runtime.pendingApprovals.clear();
       managed.runtime = null;
@@ -1347,6 +1375,7 @@ export function createAgentChatService(args: {
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
+    let streamedStepCount = 0;
 
     try {
       // Provider-specific stream creation
@@ -1377,23 +1406,37 @@ export function createAgentChatService(args: {
               itemId: askItemId,
               kind: "tool_call",
               description: question,
-              detail: { tool: "askUser", question },
+              detail: { tool: "askUser", question, inputType: "text" },
               turnId,
             });
 
-            const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
+            const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
               unifiedRt.pendingApprovals.set(askItemId, { resolve });
             });
             unifiedRt.pendingApprovals.delete(askItemId);
-            return decision === "accept" ? "yes" : decision === "decline" ? "no" : String(decision);
+            const trimmedResponse = typeof response.responseText === "string" ? response.responseText.trim() : "";
+            if (trimmedResponse.length) return trimmedResponse;
+            if (response.decision === "accept") return "yes";
+            if (response.decision === "decline") return "no";
+            return String(response.decision);
           },
         });
 
         const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
         const providerOptions = buildProviderOptions(unifiedRt.modelDescriptor, thinkingLevel);
+        const system = composeSystemPrompt(
+          undefined,
+          buildCodingAgentSystemPrompt({
+            cwd: managed.laneWorktreePath,
+            mode: "chat",
+            permissionMode: unifiedRt.permissionMode,
+            toolNames: Object.keys(tools),
+          }),
+        );
 
         stream = streamText({
           model: unifiedRt.resolvedModel,
+          system,
           messages: runtime.messages.map((m) => ({
             role: m.role as "user" | "assistant",
             content: m.content,
@@ -1475,6 +1518,31 @@ export function createAgentChatService(args: {
       for await (const part of stream.fullStream as AsyncIterable<any>) {
         if (!part || typeof part !== "object") continue;
 
+        if (part.type === "start-step") {
+          streamedStepCount += 1;
+          emitChatEvent(managed, {
+            type: "step_boundary",
+            stepNumber: typeof part.stepNumber === "number" ? part.stepNumber + 1 : streamedStepCount,
+            turnId,
+          });
+          continue;
+        }
+
+        if (part.type === "source") {
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: "searching",
+            detail:
+              typeof part.title === "string" && part.title.trim().length
+                ? part.title
+                : typeof part.url === "string" && part.url.trim().length
+                  ? part.url
+                  : "Gathering sources",
+            turnId,
+          });
+          continue;
+        }
+
         if (part.type === "text-delta") {
           const delta = String(part.text ?? part.textDelta ?? "");
           if (!delta.length) continue;
@@ -1492,6 +1560,12 @@ export function createAgentChatService(args: {
           const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
           if (!delta.length) continue;
           emitChatEvent(managed, {
+            type: "activity",
+            activity: "thinking",
+            detail: "Reasoning through the next step",
+            turnId,
+          });
+          emitChatEvent(managed, {
             type: "reasoning",
             text: delta,
             turnId,
@@ -1501,6 +1575,13 @@ export function createAgentChatService(args: {
         }
 
         if (part.type === "tool-call") {
+          const nextActivity = activityForToolName(String(part.toolName ?? "tool"));
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: nextActivity.activity,
+            detail: nextActivity.detail,
+            turnId,
+          });
           emitChatEvent(managed, {
             type: "tool_call",
             tool: String(part.toolName ?? "tool"),
@@ -1716,6 +1797,12 @@ export function createAgentChatService(args: {
     const turnId = runtime.activeTurnId ?? undefined;
 
     if (itemType === "commandExecution") {
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "running_command",
+        detail: String(item.command ?? "command"),
+        turnId,
+      });
       const status = mapCommandStatus(
         String(item.status ?? (eventKind === "completed" ? "completed" : "inProgress"))
       );
@@ -1753,6 +1840,12 @@ export function createAgentChatService(args: {
         : [];
 
       runtime.fileChangesByItemId.set(itemId, changes.map((change) => ({ path: change.path, kind: change.kind })));
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "editing_file",
+        detail: changes[0]?.path ?? "Applying file change",
+        turnId,
+      });
 
       const status = mapCommandStatus(
         String(item.status ?? (eventKind === "completed" ? "completed" : "inProgress"))
@@ -1772,6 +1865,13 @@ export function createAgentChatService(args: {
     }
 
     if (itemType === "mcpToolCall") {
+      const nextActivity = activityForToolName(String(item.tool ?? "tool"));
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: nextActivity.activity,
+        detail: nextActivity.detail,
+        turnId,
+      });
       if (eventKind === "started") {
         emitChatEvent(managed, {
           type: "tool_call",
@@ -1871,6 +1971,12 @@ export function createAgentChatService(args: {
       const delta = String((params.delta as string | undefined) ?? "");
       if (!delta.length) return;
       emitChatEvent(managed, {
+        type: "activity",
+        activity: "thinking",
+        detail: "Reasoning through the next step",
+        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+      });
+      emitChatEvent(managed, {
         type: "reasoning",
         text: delta,
         turnId: typeof params.turnId === "string" ? params.turnId : undefined,
@@ -1885,6 +1991,12 @@ export function createAgentChatService(args: {
       const delta = String((params.delta as string | undefined) ?? "");
       const next = `${runtime.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
       runtime.commandOutputByItemId.set(itemId, next);
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "running_command",
+        detail: "Shell command running",
+        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+      });
       emitChatEvent(managed, {
         type: "command",
         command: "command",
@@ -1902,6 +2014,12 @@ export function createAgentChatService(args: {
       const delta = String((params.delta as string | undefined) ?? "");
       const next = `${runtime.fileDeltaByItemId.get(itemId) ?? ""}${delta}`;
       runtime.fileDeltaByItemId.set(itemId, next);
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "editing_file",
+        detail: "Applying file change",
+        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+      });
 
       const knownChanges = runtime.fileChangesByItemId.get(itemId) ?? [];
       if (knownChanges.length) {
@@ -2849,7 +2967,17 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  const approveToolUse = async ({ sessionId, itemId, decision }: { sessionId: string; itemId: string; decision: AgentChatApprovalDecision }): Promise<void> => {
+  const approveToolUse = async ({
+    sessionId,
+    itemId,
+    decision,
+    responseText,
+  }: {
+    sessionId: string;
+    itemId: string;
+    decision: AgentChatApprovalDecision;
+    responseText?: string | null;
+  }): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
 
     if (managed.runtime?.kind === "codex") {
@@ -2880,7 +3008,7 @@ export function createAgentChatService(args: {
         throw new Error(`No pending approval found for item '${itemId}'.`);
       }
       managed.runtime.pendingApprovals.delete(itemId);
-      pending.resolve(decision);
+      pending.resolve({ decision, responseText });
       return;
     }
 

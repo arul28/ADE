@@ -14,6 +14,7 @@ import {
   SpinnerGap,
   Circle,
   Checks,
+  ChatCircle,
   ListChecks,
   User,
   Robot,
@@ -76,6 +77,22 @@ const TOOL_META: Record<string, ToolMeta> = {
   exec_command: { label: "Shell",      icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300",  category: "codex", getTarget: a => String(a.command ?? a.cmd ?? "") || null },
   apply_patch:  { label: "Patch",      icon: Scissors,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "codex" },
   update_plan:  { label: "Plan",       icon: ListChecks,       color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "codex" },
+  // ── Unified/API/local tools ────────────────────────────────────
+  readFile:     { label: "Read",       icon: FileCode,         color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.path ?? a.file_path ?? "") || null },
+  grep:         { label: "Grep",       icon: MagnifyingGlass,  color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.pattern ?? "") || null },
+  glob:         { label: "Glob",       icon: FolderOpen,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.pattern ?? "") || null },
+  listDir:      { label: "List",       icon: FolderOpen,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.path ?? "") || null },
+  gitStatus:    { label: "Git Status", icon: ClipboardText,    color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read" },
+  gitDiff:      { label: "Git Diff",   icon: Scissors,         color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.path ?? a.ref ?? "") || null },
+  gitLog:       { label: "Git Log",    icon: ClipboardText,    color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.ref ?? "") || null },
+  editFile:     { label: "Edit",       icon: PencilSimpleLine, color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? a.path ?? "") || null },
+  writeFile:    { label: "Write",      icon: Note,             color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? a.path ?? "") || null },
+  bash:         { label: "Shell",      icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300", category: "exec", getTarget: a => String(a.command ?? "") || null },
+  askUser:      { label: "Ask User",   icon: ChatCircle,       color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta", getTarget: a => String(a.question ?? "") || null },
+  memorySearch: { label: "Memory",     icon: Brain,            color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta", getTarget: a => String(a.query ?? "") || null },
+  memoryAdd:    { label: "Memory Add", icon: Brain,            color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
+  memoryPin:    { label: "Memory Pin", icon: Brain,            color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
+  memoryUpdateCore: { label: "Core Memory", icon: Brain,       color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
   // ── ADE orchestrator coordinator tools ────────────────────────
   spawn_worker:         { label: "Spawn",           icon: Robot,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.name ?? a.workerId ?? "") || null },
   request_specialist:   { label: "Specialist",      icon: User,        color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.role ?? a.name ?? "") || null },
@@ -106,10 +123,45 @@ function getToolMeta(toolName: string): ToolMeta {
   };
 }
 
+function formatStructuredValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function summarizeStructuredValue(value: unknown, maxChars = 160): string {
+  const text = formatStructuredValue(value).replace(/\s+/g, " ").trim();
+  return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
+}
+
+function formatTokenCount(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(Math.round(value));
+}
+
 type RenderEnvelope = {
   key: string;
   timestamp: string;
-  event: AgentChatEvent;
+  event: AgentChatEvent | {
+    type: "tool_invocation";
+    tool: string;
+    args: unknown;
+    itemId: string;
+    turnId?: string;
+    result?: unknown;
+    status: "running" | "completed" | "failed";
+  };
 };
 
 function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnvelope, sequence: number): void {
@@ -178,6 +230,49 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
         }
       };
       return;
+    }
+  }
+
+  if (event.type === "tool_call") {
+    out.push({
+      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
+      timestamp: envelope.timestamp,
+      event: {
+        type: "tool_invocation",
+        tool: event.tool,
+        args: event.args,
+        itemId: event.itemId,
+        turnId: event.turnId,
+        status: "running",
+      },
+    });
+    return;
+  }
+
+  if (event.type === "tool_result") {
+    const matchIndex = [...out]
+      .reverse()
+      .findIndex((candidate) =>
+        candidate.event.type === "tool_invocation"
+        && candidate.event.itemId === event.itemId
+        && candidate.event.tool === event.tool
+        && (candidate.event.turnId ?? null) === (event.turnId ?? null),
+      );
+    if (matchIndex >= 0) {
+      const actualIndex = out.length - 1 - matchIndex;
+      const existing = out[actualIndex]!;
+      if (existing.event.type === "tool_invocation") {
+        out[actualIndex] = {
+          ...existing,
+          timestamp: envelope.timestamp,
+          event: {
+            ...existing.event,
+            result: event.result,
+            status: event.status ?? "completed",
+          },
+        };
+        return;
+      }
     }
   }
 
@@ -362,9 +457,12 @@ const TOOL_RESULT_TRUNCATE_LIMIT = 500;
 
 function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "tool_result" }> }) {
   const [expanded, setExpanded] = useState(false);
-  const resultStr = typeof event.result === "string" ? event.result : JSON.stringify(event.result, null, 2);
+  const meta = getToolMeta(event.tool);
+  const ToolIcon = meta.icon;
+  const resultStr = formatStructuredValue(event.result);
   const isTruncated = resultStr.length > TOOL_RESULT_TRUNCATE_LIMIT;
   const displayStr = !expanded && isTruncated ? `${resultStr.slice(0, TOOL_RESULT_TRUNCATE_LIMIT)}...` : resultStr;
+  const preview = summarizeStructuredValue(event.result, 180);
 
   return (
     <CollapsibleCard
@@ -372,7 +470,12 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
       summary={
         <div className="flex items-center gap-2 font-mono text-[11px]">
           <StatusIcon status={event.status ?? "completed"} />
+          <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", meta.badgeCls)}>
+            <ToolIcon size={11} weight="bold" />
+            {meta.label}
+          </span>
           <span className="font-bold text-fg/75">{event.tool}</span>
+          {preview.length ? <span className="max-w-[360px] truncate text-[10px] text-fg/40">{preview}</span> : null}
           {event.status ? (
             <span className={cn(
               "text-[10px] uppercase tracking-wider",
@@ -421,7 +524,7 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
-    onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void;
+    onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
     turnModelLabel?: string | null;
   }
 ) {
@@ -633,6 +736,59 @@ function renderEvent(
   }
 
   /* ── Tool call ── */
+  if (event.type === "tool_invocation") {
+    const meta = getToolMeta(event.tool);
+    const ToolIcon = meta.icon;
+    const args = readRecord(event.args) ?? {};
+    const resultText = event.result === undefined ? null : formatStructuredValue(event.result);
+    const targetLine = meta.getTarget ? meta.getTarget(args) : null;
+    const argCount = Object.keys(args).length;
+
+    return (
+      <CollapsibleCard
+        defaultOpen={event.status !== "completed"}
+        summary={
+          <div className="flex items-center gap-2 font-mono text-[11px]">
+            <StatusIcon status={event.status} />
+            <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", meta.badgeCls)}>
+              <ToolIcon size={11} weight="bold" />
+              {meta.label}
+            </span>
+            {targetLine ? <span className="flex-1 truncate text-[10px] text-fg/45">{targetLine}</span> : null}
+            <span className="text-[9px] uppercase tracking-[0.16em] text-muted-fg/30">
+              {event.status}
+              {argCount ? ` · ${argCount} arg${argCount === 1 ? "" : "s"}` : ""}
+            </span>
+          </div>
+        }
+        className="border-accent/8 bg-gradient-to-r from-accent/[0.03] to-transparent"
+      >
+        <div className="space-y-3">
+          <div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
+            {argCount ? (
+              <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/65">
+                {formatStructuredValue(args)}
+              </pre>
+            ) : (
+              <div className="border border-border/10 bg-surface-recessed/90 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
+                No arguments
+              </div>
+            )}
+          </div>
+          {resultText ? (
+            <div>
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Result</div>
+              <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/65">
+                {resultText}
+              </pre>
+            </div>
+          ) : null}
+        </div>
+      </CollapsibleCard>
+    );
+  }
+
   if (event.type === "tool_call") {
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
@@ -640,6 +796,7 @@ function renderEvent(
     const safeArgs = args && typeof args === "object" ? args : {};
 
     const targetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
+    const argCount = Object.keys(safeArgs).length;
 
     // Build expandable args display
     const kvPairs = Object.entries(safeArgs);
@@ -688,6 +845,9 @@ function renderEvent(
             {targetLine ? (
               <span className="flex-1 truncate text-[10px] text-fg/45">{targetLine}</span>
             ) : null}
+            <span className="text-[9px] uppercase tracking-[0.16em] text-muted-fg/30">
+              {argCount} arg{argCount === 1 ? "" : "s"}
+            </span>
           </div>
         }
         className={cn("bg-gradient-to-r to-transparent", cardBorderCls)}
@@ -705,15 +865,40 @@ function renderEvent(
   /* ── Approval request ── */
   if (event.type === "approval_request") {
     const handleApproval = options?.onApproval ? (d: AgentChatApprovalDecision) => options.onApproval?.(event.itemId, d) : undefined;
+    const detail = readRecord(event.detail);
+    const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
+    const question = typeof detail?.question === "string" ? detail.question.trim() : "";
+    const isAskUser = detailTool === "askUser" && question.length > 0;
+    const detailText = event.detail == null || isAskUser ? "" : formatStructuredValue(event.detail);
     return (
       <div className="border border-amber-500/15 bg-gradient-to-r from-amber-500/[0.06] to-transparent p-4 shadow-[0_0_24px_-8px_rgba(245,158,11,0.1)]">
         <div className="mb-2 flex items-center gap-2">
           <Warning size={13} weight="bold" className="text-amber-500" />
-          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">Approval Required</span>
+          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">
+            {isAskUser ? "Needs Input" : "Approval Required"}
+          </span>
           <span className="font-mono text-[10px] text-muted-fg/40">{event.kind}</span>
         </div>
-        <div className="text-[12px] leading-relaxed text-fg/75">{event.description}</div>
-        {handleApproval ? (
+        <div className="text-[12px] leading-relaxed text-fg/75">{isAskUser ? question : event.description}</div>
+        {detailText.length ? (
+          <div className="mt-3">
+            <CollapsibleCard
+              defaultOpen={false}
+              summary={<span className="font-mono text-[10px] uppercase tracking-wider text-amber-300/70">Request Details</span>}
+              className="border-amber-500/10 bg-black/10"
+            >
+              <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/65">
+                {detailText}
+              </pre>
+            </CollapsibleCard>
+          </div>
+        ) : null}
+        {isAskUser ? (
+          <div className="mt-3 border border-accent/15 bg-accent/[0.05] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-accent/65">
+            Answer this from the question modal to keep the agent moving.
+          </div>
+        ) : null}
+        {handleApproval && !isAskUser ? (
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <button
               type="button"
@@ -786,11 +971,32 @@ function renderEvent(
     );
   }
 
-  /* ── Done / fallback ── */
+  /* ── Done ── */
+  if (event.type === "done") {
+    const modelLabel = resolveModelLabel(event.modelId, event.model);
+    const inputTokens = formatTokenCount(event.usage?.inputTokens);
+    const outputTokens = formatTokenCount(event.usage?.outputTokens);
+    const statusTone = event.status === "completed"
+      ? "text-emerald-300 border-emerald-500/15 bg-emerald-500/[0.05]"
+      : event.status === "failed"
+        ? "text-red-300 border-red-500/15 bg-red-500/[0.05]"
+        : "text-amber-300 border-amber-500/15 bg-amber-500/[0.05]";
+
+    return (
+      <div className={cn("flex flex-wrap items-center gap-2 border px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em]", statusTone)}>
+        <span>{event.status}</span>
+        {modelLabel ? <span className="text-[9px] text-fg/55">{modelLabel}</span> : null}
+        {inputTokens ? <span className="text-[9px] text-fg/45">IN {inputTokens}</span> : null}
+        {outputTokens ? <span className="text-[9px] text-fg/45">OUT {outputTokens}</span> : null}
+      </div>
+    );
+  }
+
+  /* ── Fallback ── */
   return (
     <div className="flex items-center gap-3 py-0.5">
       <div className="h-px flex-1 bg-border/10" />
-      <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">{event.status}</span>
+      <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">event</span>
       <div className="h-px flex-1 bg-border/10" />
     </div>
   );
@@ -812,7 +1018,7 @@ type EventRowProps = {
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
   turnModelLabel: string | null;
-  onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -884,7 +1090,7 @@ export function AgentChatMessageList({
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   className?: string;
-  onApproval?: (itemId: string, decision: AgentChatApprovalDecision) => void;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: RenderEnvelope[] }>({
@@ -916,6 +1122,7 @@ export function AgentChatMessageList({
     return nextRows;
   }, [events]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
+  const latestRowIsActivity = rows[rows.length - 1]?.event.type === "activity";
 
   // Map turnId → sequential turn number for display
   const turnNumberMap = useMemo(() => {
@@ -1100,7 +1307,7 @@ export function AgentChatMessageList({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, rows.length, rowHeight]);
 
-  const streamingIndicator = showStreamingIndicator ? (
+  const streamingIndicator = showStreamingIndicator && !latestRowIsActivity ? (
     latestActivity ? (
       <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
     ) : (

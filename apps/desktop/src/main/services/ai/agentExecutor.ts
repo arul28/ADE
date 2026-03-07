@@ -49,6 +49,8 @@ export type ExecutorOpts = {
 
 export type AgentEvent =
   | { type: "text"; content: string }
+  | { type: "activity"; activity: "thinking" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling"; detail?: string }
+  | { type: "step_boundary"; stepNumber: number }
   | { type: "tool_call"; name: string; args: unknown }
   | { type: "tool_result"; name: string; result: unknown }
   | { type: "structured_output"; data: unknown }

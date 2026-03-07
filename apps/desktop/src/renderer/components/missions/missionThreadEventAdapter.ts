@@ -45,6 +45,64 @@ function normalizeToolStatus(value: string | null): Extract<AgentChatEvent, { ty
   }
 }
 
+function normalizeApprovalKind(value: string | null): "command" | "file_change" | "tool_call" {
+  switch (value) {
+    case "command":
+    case "file_change":
+    case "tool_call":
+      return value;
+    default:
+      return "tool_call";
+  }
+}
+
+function normalizeCommandStatus(value: string | null): "running" | "completed" | "failed" {
+  switch (value) {
+    case "completed":
+    case "failed":
+      return value;
+    default:
+      return "running";
+  }
+}
+
+function normalizeFileChangeKind(value: string | null): "create" | "modify" | "delete" {
+  switch (value) {
+    case "create":
+    case "delete":
+      return value;
+    default:
+      return "modify";
+  }
+}
+
+function normalizePlanStepStatus(value: unknown): "pending" | "in_progress" | "completed" | "failed" {
+  const status = typeof value === "string" ? value : "";
+  switch (status) {
+    case "completed":
+    case "in_progress":
+    case "failed":
+      return status;
+    default:
+      return "pending";
+  }
+}
+
+function normalizeActivity(value: string | null): "thinking" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling" {
+  switch (value) {
+    case "editing_file":
+    case "running_command":
+    case "searching":
+    case "reading":
+    case "tool_calling":
+      return value;
+    default:
+      return "thinking";
+  }
+}
+
+type UserAttachment = NonNullable<Extract<AgentChatEvent, { type: "user_message" }>["attachments"]>[number];
+
 function resolveSessionId(message: OrchestratorChatMessage, structuredStream: Record<string, unknown> | null): string {
   return (
     readString(structuredStream?.sessionId)
@@ -166,6 +224,119 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       }];
     case "tool":
       return toToolEvents(message, structuredStream, sessionId, turnId);
+    case "command":
+      return [{
+        sessionId,
+        timestamp: message.timestamp,
+        event: {
+          type: "command",
+          command: readString(structuredStream.command) ?? "command",
+          cwd: readString(structuredStream.cwd) ?? "",
+          output: typeof structuredStream.output === "string" ? structuredStream.output : "",
+          itemId: resolveItemId(message, structuredStream, "command"),
+          turnId,
+          exitCode: typeof structuredStream.exitCode === "number" ? structuredStream.exitCode : null,
+          durationMs: typeof structuredStream.durationMs === "number" ? structuredStream.durationMs : null,
+          status: normalizeCommandStatus(readString(structuredStream.status)),
+        },
+      }];
+    case "file_change":
+      return [{
+        sessionId,
+        timestamp: message.timestamp,
+        event: {
+          type: "file_change",
+          path: readString(structuredStream.path) ?? "(pending file)",
+          diff: typeof structuredStream.diff === "string" ? structuredStream.diff : "",
+          kind:
+            readString(structuredStream.changeKind) === "create" || readString(structuredStream.changeKind) === "delete"
+              ? (readString(structuredStream.changeKind) as "create" | "delete")
+              : "modify",
+          itemId: resolveItemId(message, structuredStream, "file_change"),
+          turnId,
+          status: normalizeCommandStatus(readString(structuredStream.status)),
+        },
+      }];
+    case "plan": {
+      const rawSteps = Array.isArray(structuredStream.steps) ? structuredStream.steps : [];
+      return [{
+        sessionId,
+        timestamp: message.timestamp,
+        event: {
+          type: "plan",
+          turnId,
+          explanation: readString(structuredStream.explanation),
+          steps: rawSteps
+            .map((step) => {
+              const record = readRecord(step);
+              const text = readString(record?.text);
+              if (!text) return null;
+              return {
+                text,
+                status: normalizePlanStepStatus(record?.status),
+              };
+            })
+            .filter((step): step is { text: string; status: "pending" | "in_progress" | "completed" | "failed" } => step != null),
+        },
+      }];
+    }
+    case "approval_request":
+      return [{
+        sessionId,
+        timestamp: message.timestamp,
+        event: {
+          type: "approval_request",
+          itemId: resolveItemId(message, structuredStream, "approval"),
+          kind: readString(structuredStream.requestKind) === "command" || readString(structuredStream.requestKind) === "file_change"
+            ? (readString(structuredStream.requestKind) as "command" | "file_change")
+            : "tool_call",
+          description: readString(structuredStream.description) ?? message.content,
+          turnId,
+          detail: structuredStream.detail,
+        },
+      }];
+    case "activity":
+      return [{
+        sessionId,
+        timestamp: message.timestamp,
+        event: {
+          type: "activity",
+          activity: normalizeActivity(readString(structuredStream.activity)),
+          detail: readString(structuredStream.detail) ?? undefined,
+          turnId,
+        },
+      }];
+    case "step_boundary":
+      return [{
+        sessionId,
+        timestamp: message.timestamp,
+        event: {
+          type: "step_boundary",
+          stepNumber: typeof structuredStream.stepNumber === "number" ? structuredStream.stepNumber : 1,
+          turnId,
+        },
+      }];
+    case "user_message":
+      return [{
+        sessionId,
+        timestamp: message.timestamp,
+        event: {
+          type: "user_message",
+          text: readString(structuredStream.text) ?? message.content,
+          turnId,
+          attachments: Array.isArray(structuredStream.attachments)
+            ? structuredStream.attachments
+                .map((entry) => {
+                  const record = readRecord(entry);
+                  const path = readString(record?.path);
+                  const type = readString(record?.type);
+                  if (!path || (type !== "file" && type !== "image")) return null;
+                  return { path, type };
+                })
+                .filter((entry): entry is { path: string; type: "file" | "image" } => entry != null)
+            : undefined,
+        },
+      }];
     case "status":
       return [{
         sessionId,

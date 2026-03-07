@@ -188,6 +188,53 @@ describe("AgentChatPane", () => {
     });
   });
 
+  it("opens a question modal for askUser approvals and sends the typed answer", async () => {
+    const session = mockSession({ provider: "unified", modelId: "anthropic/claude-sonnet-4-6-api", model: "anthropic/claude-sonnet-4-6-api" });
+    setupWindowAde({ sessions: [session], codexAvailable: false, claudeAvailable: true });
+    render(<AgentChatPane laneId="lane-1" lockSessionId="session-1" />);
+
+    await waitFor(() => {
+      expect(eventCallback).toBeTruthy();
+    });
+
+    await act(async () => {
+      eventCallback?.({
+        sessionId: "session-1",
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "approval_request",
+          itemId: "ask-user-1",
+          kind: "tool_call",
+          description: "What env should I use?",
+          detail: {
+            tool: "askUser",
+            question: "What env should I use?",
+            inputType: "text",
+          },
+        },
+      });
+    });
+
+    expect(await screen.findByText("Agent Question")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Type the answer you want the agent to follow..."), {
+        target: { value: "Use staging." },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Send Answer/i }));
+    });
+
+    await waitFor(() => {
+      const ade = (window as any).ade;
+      expect(ade.agentChat.approve).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        itemId: "ask-user-1",
+        decision: "accept",
+        responseText: "Use staging."
+      });
+    });
+  });
+
   it("retargets a locked empty session when the model changes before the first send", async () => {
     const session = mockSession();
     setupWindowAde({ sessions: [session] });

@@ -961,6 +961,16 @@ export function createAiOrchestratorService(args: {
       case "tool_call":
       case "tool_result":
         return `${scopeKey}:tool:${event.turnId ?? "turn"}:${event.itemId}`;
+      case "command":
+        return `${scopeKey}:command:${event.turnId ?? "turn"}:${event.itemId}`;
+      case "file_change":
+        return `${scopeKey}:file:${event.turnId ?? "turn"}:${event.itemId}:${event.path}`;
+      case "plan":
+        return `${scopeKey}:plan:${event.turnId ?? "turn"}`;
+      case "approval_request":
+        return `${scopeKey}:approval:${event.turnId ?? "turn"}:${event.itemId}`;
+      case "activity":
+        return `${scopeKey}:activity:${event.turnId ?? "turn"}:${event.activity}`;
       default:
         return null;
     }
@@ -1101,11 +1111,111 @@ export function createAiOrchestratorService(args: {
         },
       };
     }
+    if (event.type === "approval_request") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "approval_request",
+          sessionId,
+          turnId: event.turnId ?? null,
+          itemId: event.itemId,
+          requestKind: event.kind,
+          description: event.description,
+          detail: event.detail ?? null,
+        },
+      };
+    }
+    if (event.type === "command") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "command",
+          sessionId,
+          turnId: event.turnId ?? null,
+          itemId: event.itemId,
+          command: event.command,
+          cwd: event.cwd,
+          output: event.output,
+          exitCode: event.exitCode ?? null,
+          durationMs: event.durationMs ?? null,
+          status: event.status,
+        },
+      };
+    }
+    if (event.type === "file_change") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "file_change",
+          sessionId,
+          turnId: event.turnId ?? null,
+          itemId: event.itemId,
+          path: event.path,
+          diff: event.diff,
+          changeKind: event.kind,
+          status: event.status ?? null,
+        },
+      };
+    }
+    if (event.type === "plan") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "plan",
+          sessionId,
+          turnId: event.turnId ?? null,
+          explanation: event.explanation ?? null,
+          steps: event.steps,
+        },
+      };
+    }
+    if (event.type === "activity") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "activity",
+          sessionId,
+          turnId: event.turnId ?? null,
+          activity: event.activity,
+          detail: event.detail ?? null,
+        },
+      };
+    }
+    if (event.type === "step_boundary") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "step_boundary",
+          sessionId,
+          turnId: event.turnId ?? null,
+          stepNumber: event.stepNumber,
+        },
+      };
+    }
+    if (event.type === "user_message") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "user_message",
+          sessionId,
+          turnId: event.turnId ?? null,
+          text: event.text,
+          attachments: event.attachments ?? [],
+        },
+      };
+    }
     return {
       source: "agent_chat_event",
       missionChatMode: "thread_only",
       structuredStream: {
-        kind: event.type,
+        kind: "unknown",
         sessionId,
       },
     };
@@ -1129,6 +1239,15 @@ export function createAiOrchestratorService(args: {
         tool: typeof currentStructured.tool === "string" ? currentStructured.tool : event.tool,
         result: event.result,
         status: event.status ?? "completed",
+      };
+      return base;
+    }
+    if ((event.type === "command" || event.type === "file_change" || event.type === "plan" || event.type === "activity") && currentStructured) {
+      base.source = "agent_chat_event";
+      base.missionChatMode = "thread_only";
+      base.structuredStream = {
+        ...currentStructured,
+        ...(nextStructured ?? {}),
       };
       return base;
     }
@@ -1198,11 +1317,7 @@ export function createAiOrchestratorService(args: {
   };
 
   const persistStructuredWorkerChatEvent = (envelope: AgentChatEventEnvelope): void => {
-    if (
-      envelope.event.type === "user_message"
-      || envelope.event.type === "activity"
-      || envelope.event.type === "step_boundary"
-    ) {
+    if (envelope.event.type === "user_message") {
       return;
     }
     const workerState = [...workerStates.values()].find((candidate) => candidate.sessionId === envelope.sessionId);
@@ -1264,7 +1379,6 @@ export function createAiOrchestratorService(args: {
     event: AgentChatEvent;
     timestamp?: string;
   }): void => {
-    if (args.event.type === "activity" || args.event.type === "step_boundary") return;
     const threadId = `mission:${args.missionId}`;
     upsertThread({
       missionId: args.missionId,

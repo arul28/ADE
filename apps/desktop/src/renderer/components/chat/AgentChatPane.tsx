@@ -14,6 +14,7 @@ import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../sha
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
+import { AgentQuestionModal } from "./AgentQuestionModal";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 
@@ -21,6 +22,7 @@ type PendingApproval = {
   itemId: string;
   description: string;
   kind: "command" | "file_change" | "tool_call";
+  detail?: unknown;
 };
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
@@ -52,6 +54,21 @@ function parseChatTranscript(raw: string): AgentChatEventEnvelope[] {
   return out;
 }
 
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function extractAskUserQuestion(approval: PendingApproval | null): string | null {
+  if (!approval || approval.kind !== "tool_call") return null;
+  const detail = readRecord(approval.detail);
+  const tool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
+  const question = typeof detail?.question === "string" ? detail.question.trim() : "";
+  if (tool !== "askUser" || !question.length) return null;
+  return question;
+}
+
 function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   turnActive: boolean;
   pendingApprovals: PendingApproval[];
@@ -80,7 +97,8 @@ function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
       pending.set(event.itemId, {
         itemId: event.itemId,
         description: event.description,
-        kind: event.kind
+        kind: event.kind,
+        detail: event.detail,
       });
       continue;
     }
@@ -381,6 +399,7 @@ export function AgentChatPane({
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const pendingApproval = selectedSessionId ? (approvalsBySession[selectedSessionId]?.[0] ?? null) : null;
+  const pendingQuestion = useMemo(() => extractAskUserQuestion(pendingApproval), [pendingApproval]);
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
 
@@ -848,7 +867,7 @@ export function AgentChatPane({
     }
   }, [selectedSessionId]);
 
-  const approve = useCallback(async (decision: AgentChatApprovalDecision) => {
+  const approve = useCallback(async (decision: AgentChatApprovalDecision, responseText?: string | null) => {
     if (!selectedSessionId) return;
     const approval = approvalsBySession[selectedSessionId]?.[0];
     if (!approval) return;
@@ -856,7 +875,8 @@ export function AgentChatPane({
       await window.ade.agentChat.approve({
         sessionId: selectedSessionId,
         itemId: approval.itemId,
-        decision
+        decision,
+        responseText,
       });
       setApprovalsBySession((prev) => ({
         ...prev,
@@ -1043,9 +1063,9 @@ export function AgentChatPane({
             events={selectedEvents}
             showStreamingIndicator={turnActive}
             className="border-0"
-            onApproval={(itemId, decision) => {
+            onApproval={(itemId, decision, responseText) => {
               if (!selectedSessionId) return;
-              window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision }).then(() => {
+              window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
                 setApprovalsBySession((prev) => ({
                   ...prev,
                   [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
@@ -1151,6 +1171,20 @@ export function AgentChatPane({
           }
         }}
       />
+      {pendingQuestion && selectedSessionId ? (
+        <AgentQuestionModal
+          question={pendingQuestion}
+          onClose={() => {
+            void approve("cancel");
+          }}
+          onSubmit={(answer) => {
+            void approve("accept", answer);
+          }}
+          onDecline={() => {
+            void approve("decline");
+          }}
+        />
+      ) : null}
     </div>
   );
 }

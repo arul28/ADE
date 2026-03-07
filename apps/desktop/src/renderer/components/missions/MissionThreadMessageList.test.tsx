@@ -62,7 +62,7 @@ describe("MissionThreadMessageList", () => {
 
     expect(screen.getByText("You")).toBeTruthy();
     expect(screen.getByText("Check on the worker.")).toBeTruthy();
-    expect(screen.getAllByText("Read")).toHaveLength(2);
-    expect(screen.getByText("completed")).toBeTruthy();
+    expect(screen.getAllByText("Read")).toHaveLength(1);
+    expect(screen.getByText(/completed/i)).toBeTruthy();
   });
 });

@@ -129,7 +129,8 @@ describe("AgentChatMessageList", () => {
             type: "approval_request",
             itemId: "approval-1",
             kind: "command",
-            description: "Run destructive command"
+            description: "Run destructive command",
+            detail: { command: "rm -rf .cache" }
           })
         ]}
         onApproval={onApproval}
@@ -141,6 +142,53 @@ describe("AgentChatMessageList", () => {
     expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Accept All" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Decline" })).toBeTruthy();
+  });
+
+  it("renders askUser requests as input-needed cards instead of approval buttons", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({
+            type: "approval_request",
+            itemId: "approval-ask-user",
+            kind: "tool_call",
+            description: "What branch should I target?",
+            detail: {
+              tool: "askUser",
+              question: "What branch should I target?",
+              inputType: "text",
+            },
+          })
+        ]}
+        onApproval={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Needs Input")).toBeTruthy();
+    expect(screen.getByText("What branch should I target?")).toBeTruthy();
+    expect(screen.getByText(/question modal/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Accept" })).toBeNull();
+  });
+
+  it("renders done events with model and usage metadata", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({
+            type: "done",
+            turnId: "turn-1",
+            status: "completed",
+            modelId: "anthropic/claude-sonnet-4-6",
+            usage: { inputTokens: 42, outputTokens: 13 },
+          })
+        ]}
+      />
+    );
+
+    expect(screen.getByText("completed")).toBeTruthy();
+    expect(screen.getByText(/Claude Sonnet 4\.6/i)).toBeTruthy();
+    expect(screen.getByText("IN 42")).toBeTruthy();
+    expect(screen.getByText("OUT 13")).toBeTruthy();
   });
 
   it("renders error with red styling", () => {
@@ -216,5 +264,19 @@ describe("AgentChatMessageList", () => {
 
     expect(screen.getByText("Hello world")).toBeTruthy();
     expect(screen.getAllByText("Agent")).toHaveLength(1);
+  });
+
+  it("merges tool calls and tool results into a single invocation card", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({ type: "tool_call", tool: "Read", args: { path: "src/index.ts" }, itemId: "tool-1", turnId: "turn-1" }),
+          envelope({ type: "tool_result", tool: "Read", result: { ok: true }, itemId: "tool-1", turnId: "turn-1", status: "completed" }, 1),
+        ]}
+      />
+    );
+
+    expect(screen.getAllByText("Read")).toHaveLength(1);
+    expect(screen.getByText(/completed/i)).toBeTruthy();
   });
 });

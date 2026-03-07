@@ -229,6 +229,7 @@ export type AgentChatApproveArgs = {
   sessionId: string;
   itemId: string;
   decision: AgentChatApprovalDecision;
+  responseText?: string | null;
 };
 
 export type AgentChatModelsArgs = {

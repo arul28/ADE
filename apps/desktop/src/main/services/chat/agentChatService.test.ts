@@ -1514,6 +1514,53 @@ describe("agentChatService", () => {
       expect(updateResult.updated).toBe(true);
       resolveModelSpy.mockRestore();
     });
+
+    it("routes askUser responses through the unified approval queue", async () => {
+      const fixture = createFixture("unified");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+
+      streamTextMock.mockImplementationOnce((input: any) => ({
+        fullStream: {
+          async *[Symbol.asyncIterator]() {
+            const result = await input.tools.askUser.execute({ question: "Which environment should I use?" });
+            yield { type: "text-delta", text: `answer:${result.answer}` };
+            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+          }
+        }
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "anthropic/claude-sonnet-4-6-api",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      const sendPromise = fixture.service.sendMessage({ sessionId: session.id, text: "Boot unified" });
+
+      const approval = await waitForEvent(
+        fixture.emitted,
+        (entry) => entry.event.type === "approval_request" && entry.event.description.includes("Which environment should I use?")
+      );
+      expect(approval?.event.type).toBe("approval_request");
+
+      if (approval?.event.type === "approval_request") {
+        await fixture.service.approveToolUse({
+          sessionId: session.id,
+          itemId: approval.event.itemId,
+          decision: "accept",
+          responseText: "Use staging.",
+        });
+      }
+
+      await sendPromise;
+
+      const textEvent = fixture.emitted.find(
+        (entry) => entry.event.type === "text" && entry.event.text.includes("answer:Use staging.")
+      );
+      expect(textEvent).toBeTruthy();
+      resolveModelSpy.mockRestore();
+    });
   });
 
   describe("Auto titles", () => {
