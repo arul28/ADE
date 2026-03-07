@@ -12,7 +12,7 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
-import { safeJsonParse } from "../shared/utils";
+import { safeJsonParse, nowIso, looksSensitiveKey } from "../shared/utils";
 import type { WorkerAdapterRuntimeService } from "./workerAdapterRuntimeService";
 import type { WorkerAgentService } from "./workerAgentService";
 import type { WorkerBudgetService } from "./workerBudgetService";
@@ -84,17 +84,12 @@ type TimerEntry = {
   intervalSec: number;
 };
 
-const SENSITIVE_KEY_PATTERN = /(token|secret|password|api[_-]?key|authorization)/i;
 const SENSITIVE_VALUE_PATTERNS = [
   /\bbearer\s+[a-z0-9._~+/=-]{12,}/i,
   /\bsk-[a-z0-9]{12,}/i,
   /\bgh[pousr]_[a-z0-9]{16,}/i,
   /\bxox[baprs]-[a-z0-9-]{10,}/i,
 ];
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
 
 function clampLimit(limit: number | undefined, fallback = 80): number {
   const candidate = Number(limit ?? fallback);
@@ -186,7 +181,7 @@ function sanitizeContext(input: unknown): Record<string, unknown> {
     if (value && typeof value === "object") {
       const next: Record<string, unknown> = {};
       for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-        if (SENSITIVE_KEY_PATTERN.test(key)) {
+        if (looksSensitiveKey(key)) {
           next[key] = "[REDACTED]";
           continue;
         }

@@ -11,6 +11,50 @@ import type {
 import { stripAnsi } from "../../utils/ansiStrip";
 import { defaultResumeCommandForTool } from "../../utils/terminalSessionSignals";
 
+type SessionRow = {
+  id: string;
+  laneId: string;
+  laneName: string;
+  ptyId: string | null;
+  tracked: number;
+  pinned: number;
+  goal: string | null;
+  toolType: string | null;
+  title: string;
+  status: TerminalSessionStatus;
+  startedAt: string;
+  endedAt: string | null;
+  exitCode: number | null;
+  transcriptPath: string;
+  headShaStart: string | null;
+  headShaEnd: string | null;
+  lastOutputPreview: string | null;
+  summary: string | null;
+  resumeCommand: string | null;
+};
+
+const SESSION_COLUMNS = `
+  s.id as id,
+  s.lane_id as laneId,
+  l.name as laneName,
+  s.pty_id as ptyId,
+  s.tracked as tracked,
+  s.pinned as pinned,
+  s.goal as goal,
+  s.tool_type as toolType,
+  s.title as title,
+  s.status as status,
+  s.started_at as startedAt,
+  s.ended_at as endedAt,
+  s.exit_code as exitCode,
+  s.transcript_path as transcriptPath,
+  s.head_sha_start as headShaStart,
+  s.head_sha_end as headShaEnd,
+  s.last_output_preview as lastOutputPreview,
+  s.summary as summary,
+  s.resume_command as resumeCommand
+`;
+
 export function createSessionService({ db }: { db: AdeDb }) {
   const runtimeStateFromStatus = (status: TerminalSessionStatus): TerminalRuntimeState => {
     if (status === "running") return "running";
@@ -38,7 +82,18 @@ export function createSessionService({ db }: { db: AdeDb }) {
     return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
   };
 
-  const list = ({ laneId, status, limit }: { laneId?: string; status?: TerminalSessionStatus; limit?: number } = {}) => {
+  const mapRow = (row: SessionRow) => ({
+    ...row,
+    tracked: row.tracked === 1,
+    pinned: row.pinned === 1,
+    goal: row.goal ?? null,
+    toolType: normalizeToolType(row.toolType),
+    summary: row.summary ?? null,
+    runtimeState: runtimeStateFromStatus(row.status),
+    resumeCommand: row.resumeCommand ?? null,
+  });
+
+  const list =({ laneId, status, limit }: { laneId?: string; status?: TerminalSessionStatus; limit?: number } = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
 
@@ -55,48 +110,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
     const limitSql = typeof limit === "number" ? "limit ?" : "limit 200";
     if (typeof limit === "number") params.push(limit);
 
-    const rows = db.all<{
-      id: string;
-      laneId: string;
-      laneName: string;
-      ptyId: string | null;
-      tracked: number;
-      pinned: number;
-      goal: string | null;
-      toolType: string | null;
-      title: string;
-      status: TerminalSessionStatus;
-      startedAt: string;
-      endedAt: string | null;
-      exitCode: number | null;
-      transcriptPath: string;
-      headShaStart: string | null;
-      headShaEnd: string | null;
-      lastOutputPreview: string | null;
-      summary: string | null;
-      resumeCommand: string | null;
-    }>(
+    const rows = db.all<SessionRow>(
       `
-        select
-          s.id as id,
-          s.lane_id as laneId,
-          l.name as laneName,
-          s.pty_id as ptyId,
-          s.tracked as tracked,
-          s.pinned as pinned,
-          s.goal as goal,
-          s.tool_type as toolType,
-          s.title as title,
-          s.status as status,
-          s.started_at as startedAt,
-          s.ended_at as endedAt,
-          s.exit_code as exitCode,
-          s.transcript_path as transcriptPath,
-          s.head_sha_start as headShaStart,
-          s.head_sha_end as headShaEnd,
-          s.last_output_preview as lastOutputPreview,
-          s.summary as summary,
-          s.resume_command as resumeCommand
+        select ${SESSION_COLUMNS}
         from terminal_sessions s
         join lanes l on l.id = s.lane_id
         ${whereSql}
@@ -106,16 +122,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       params
     );
 
-    return rows.map((row) => ({
-      ...row,
-      tracked: row.tracked === 1,
-      pinned: row.pinned === 1,
-      goal: row.goal ?? null,
-      toolType: normalizeToolType(row.toolType),
-      summary: row.summary ?? null,
-      runtimeState: runtimeStateFromStatus(row.status),
-      resumeCommand: row.resumeCommand ?? null
-    })) as TerminalSessionSummary[];
+    return rows.map(mapRow) as TerminalSessionSummary[];
   };
 
   return {
@@ -143,48 +150,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     get(sessionId: string): TerminalSessionDetail | null {
-      const row = db.get<{
-        id: string;
-        laneId: string;
-        laneName: string;
-        ptyId: string | null;
-        tracked: number;
-        pinned: number;
-        goal: string | null;
-        toolType: string | null;
-        title: string;
-        status: TerminalSessionStatus;
-        startedAt: string;
-        endedAt: string | null;
-        exitCode: number | null;
-        transcriptPath: string;
-        headShaStart: string | null;
-        headShaEnd: string | null;
-        lastOutputPreview: string | null;
-        summary: string | null;
-        resumeCommand: string | null;
-      }>(
+      const row = db.get<SessionRow>(
         `
-          select
-            s.id as id,
-            s.lane_id as laneId,
-            l.name as laneName,
-            s.pty_id as ptyId,
-            s.tracked as tracked,
-            s.pinned as pinned,
-            s.goal as goal,
-            s.tool_type as toolType,
-            s.title as title,
-            s.status as status,
-            s.started_at as startedAt,
-            s.ended_at as endedAt,
-            s.exit_code as exitCode,
-            s.transcript_path as transcriptPath,
-            s.head_sha_start as headShaStart,
-            s.head_sha_end as headShaEnd,
-            s.last_output_preview as lastOutputPreview,
-            s.summary as summary,
-            s.resume_command as resumeCommand
+          select ${SESSION_COLUMNS}
           from terminal_sessions s
           join lanes l on l.id = s.lane_id
           where s.id = ?
@@ -193,15 +161,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         [sessionId]
       );
       if (!row) return null;
-      return {
-        ...row,
-        tracked: row.tracked === 1,
-        pinned: row.pinned === 1,
-        goal: row.goal ?? null,
-        toolType: normalizeToolType(row.toolType),
-        runtimeState: runtimeStateFromStatus(row.status),
-        resumeCommand: row.resumeCommand ?? null
-      } as TerminalSessionDetail;
+      return mapRow(row) as TerminalSessionDetail;
     },
 
     updateMeta(args: UpdateSessionMetaArgs): TerminalSessionSummary | null {
@@ -364,37 +324,34 @@ export function createSessionService({ db }: { db: AdeDb }) {
       ]);
     },
 
-    readTranscriptTail(
+    async readTranscriptTail(
       transcriptPath: string,
       maxBytes: number,
       options?: { raw?: boolean; alignToLineBoundary?: boolean }
-    ): string {
+    ): Promise<string> {
       if (!transcriptPath) return "";
+      let fh: fs.promises.FileHandle | null = null;
       try {
-        const stat = fs.statSync(transcriptPath);
+        fh = await fs.promises.open(transcriptPath, "r");
+        const stat = await fh.stat();
         const size = stat.size;
         const start = Math.max(0, size - maxBytes);
-        const fd = fs.openSync(transcriptPath, "r");
-        try {
-          const out = Buffer.alloc(size - start);
-          fs.readSync(fd, out, 0, out.length, start);
-          const alignToLineBoundary = options?.alignToLineBoundary === true;
-          let slice = out;
-          if (alignToLineBoundary && start > 0 && out.length > 0) {
-            // When reading a byte tail, we can start in the middle of a control sequence
-            // or UTF-8 character. Aligning to the next newline avoids replay corruption.
-            const nextNewline = out.indexOf(0x0a);
-            if (nextNewline >= 0 && nextNewline + 1 < out.length) {
-              slice = out.subarray(nextNewline + 1);
-            }
+        const out = Buffer.alloc(size - start);
+        await fh.read(out, 0, out.length, start);
+        const alignToLineBoundary = options?.alignToLineBoundary === true;
+        let slice = out;
+        if (alignToLineBoundary && start > 0 && out.length > 0) {
+          const nextNewline = out.indexOf(0x0a);
+          if (nextNewline >= 0 && nextNewline + 1 < out.length) {
+            slice = out.subarray(nextNewline + 1);
           }
-          const text = slice.toString("utf8");
-          return options?.raw ? text : stripAnsi(text);
-        } finally {
-          fs.closeSync(fd);
         }
+        const text = slice.toString("utf8");
+        return options?.raw ? text : stripAnsi(text);
       } catch {
         return "";
+      } finally {
+        await fh?.close().catch(() => {});
       }
     }
   };

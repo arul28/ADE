@@ -8,6 +8,7 @@ import { AgentPresencePanel } from "./AgentPresencePanel";
 import { ActivityFeed } from "./ActivityFeed";
 import { MissionComposer } from "./MissionComposer";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { formatElapsedSince } from "../../lib/format";
 import { useThreadEventRefresh } from "../../hooks/useThreadEventRefresh";
 
 type MissionControlPageProps = {
@@ -28,15 +29,6 @@ function hashToHue(str: string): number {
   return Math.abs(hash) % 360;
 }
 
-function formatElapsed(startIso: string): string {
-  const ms = Math.max(0, Date.now() - Date.parse(startIso));
-  const secs = Math.floor(ms / 1000);
-  const mins = Math.floor(secs / 60);
-  const hrs = Math.floor(mins / 60);
-  if (hrs > 0) return `${hrs}h ${mins % 60}m`;
-  if (mins > 0) return `${mins}m ${secs % 60}s`;
-  return `${secs}s`;
-}
 
 export function MissionControlPage({
   missionId,
@@ -81,8 +73,8 @@ export function MissionControlPage({
   // Elapsed time timer
   useEffect(() => {
     const startTime = graph.run.createdAt;
-    setElapsed(formatElapsed(startTime));
-    const interval = window.setInterval(() => setElapsed(formatElapsed(startTime)), 1000);
+    setElapsed(formatElapsedSince(startTime));
+    const interval = window.setInterval(() => setElapsed(formatElapsedSince(startTime)), 1000);
     return () => window.clearInterval(interval);
   }, [graph.run.createdAt]);
 

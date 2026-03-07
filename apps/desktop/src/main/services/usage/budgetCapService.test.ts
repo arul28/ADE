@@ -100,7 +100,7 @@ function createMockConfigService(usageConfig: BudgetCapConfig = {}) {
 }
 
 function createMockUsageTrackingService(snapshot: UsageSnapshot | null = null) {
-  return { getSnapshot: () => snapshot };
+  return { getUsageSnapshot: () => snapshot };
 }
 
 function makeUsageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {

@@ -1,4 +1,3 @@
-import { useCallback } from "react";
 import {
   FloppyDisk as Save,
   X,
@@ -12,6 +11,7 @@ import type {
 } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
+import { INPUT_CLS, INPUT_STYLE } from "../shared";
 
 function IssueList({ issues }: { issues: AutomationDraftIssue[] }) {
   if (!issues.length) return null;
@@ -79,9 +79,6 @@ function ConfirmationsChecklist({
     </div>
   );
 }
-
-const INPUT_CLS = "h-8 w-full px-3 text-xs text-[#FAFAFA] placeholder:text-[#71717A50] font-mono";
-const INPUT_STYLE = { background: "#0B0A0F", border: "1px solid #2D284080" };
 
 export function RuleEditorPanel({
   draft,

@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import type { OrchestratorAttempt, OrchestratorStep } from "../../../shared/types";
 import { sanitizeWorkerTranscriptForDisplay } from "../../../shared/workerRuntimeNoise";
 import { cn } from "../ui/cn";
+import { useMissionPolling } from "./useMissionPolling";
 
 type Props = {
   attempts: OrchestratorAttempt[];
@@ -28,35 +29,37 @@ const DEFAULT_BADGE = { label: "WORKER", style: { background: "#71717A18", color
 const POLL_INTERVAL_MS = 2000;
 const MAX_BYTES = 4096;
 
+const TRANSCRIPT_STYLE: React.CSSProperties = {
+  background: "#0C0A10",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "10px",
+  color: "#A1A1AA",
+};
+
 function TranscriptTail({ sessionId }: { sessionId: string }) {
   const [text, setText] = useState("");
   const scrollRef = useRef<HTMLPreElement>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const fetchTail = async () => {
-      try {
-        const tail = await window.ade.sessions.readTranscriptTail({
-          sessionId,
-          maxBytes: MAX_BYTES,
-        });
-        if (!cancelled) {
-          const sanitized = sanitizeWorkerTranscriptForDisplay(tail);
-          setText(sanitized || (tail.trim().length > 0 ? "Worker is online, but only bootstrap output has been captured so far." : ""));
-        }
-      } catch {
-        if (!cancelled) setText("(unable to read transcript)");
-      }
-    };
-
-    void fetchTail();
-    const timer = window.setInterval(() => void fetchTail(), POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+  const fetchTail = useCallback(() => {
+    window.ade.sessions.readTranscriptTail({
+      sessionId,
+      maxBytes: MAX_BYTES,
+    }).then(
+      (tail) => {
+        const sanitized = sanitizeWorkerTranscriptForDisplay(tail);
+        setText(sanitized || (tail.trim().length > 0 ? "Worker is online, but only bootstrap output has been captured so far." : ""));
+      },
+      () => setText("(unable to read transcript)")
+    );
   }, [sessionId]);
+
+  // Initial fetch
+  useEffect(() => {
+    fetchTail();
+  }, [fetchTail]);
+
+  // Poll via shared coordinator instead of per-component setInterval
+  useMissionPolling(fetchTail, POLL_INTERVAL_MS, true);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -68,14 +71,14 @@ function TranscriptTail({ sessionId }: { sessionId: string }) {
     <pre
       ref={scrollRef}
       className="flex-1 overflow-auto p-2 leading-relaxed whitespace-pre-wrap break-all"
-      style={{ background: "#0C0A10", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: "#A1A1AA" }}
+      style={TRANSCRIPT_STYLE}
     >
       {text || <span className="italic" style={{ color: "#52525B" }}>Waiting for output...</span>}
     </pre>
   );
 }
 
-export function WorkerTranscriptPane({ attempts, steps }: Props) {
+export const WorkerTranscriptPane = React.memo(function WorkerTranscriptPane({ attempts, steps }: Props) {
   const stepMap = useMemo(() => {
     const map = new Map<string, OrchestratorStep>();
     for (const step of steps ?? []) {
@@ -107,12 +110,7 @@ export function WorkerTranscriptPane({ attempts, steps }: Props) {
     );
   }
 
-  const gridClass =
-    runningWorkers.length === 1
-      ? "grid-cols-1"
-      : runningWorkers.length <= 2
-        ? "grid-cols-1 md:grid-cols-2"
-        : "grid-cols-1 md:grid-cols-2";
+  const gridClass = runningWorkers.length === 1 ? "grid-cols-1" : "grid-cols-1 md:grid-cols-2";
 
   return (
     <div className={cn("grid gap-2", gridClass)}>
@@ -155,4 +153,4 @@ export function WorkerTranscriptPane({ attempts, steps }: Props) {
       })}
     </div>
   );
-}
+});

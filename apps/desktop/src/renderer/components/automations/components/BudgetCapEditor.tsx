@@ -3,6 +3,7 @@ import type { BudgetCapConfig, BudgetCapScope, BudgetCapType, BudgetCapProvider,
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
+import { CARD_SHADOW_STYLE } from "../shared";
 
 export function BudgetCapEditor({
   config,
@@ -29,7 +30,7 @@ export function BudgetCapEditor({
   return (
     <div
       className={cn("p-3 space-y-2", className)}
-      style={{ background: "#181423", border: "1px solid #2D2840", boxShadow: "0 1px 6px -1px rgba(0,0,0,0.6), 0 0 0 1px rgba(45,40,64,0.3)" }}
+      style={CARD_SHADOW_STYLE}
     >
       <div className="flex items-center justify-between">
         <span

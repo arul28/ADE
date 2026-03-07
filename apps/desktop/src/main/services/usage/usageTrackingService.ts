@@ -53,6 +53,22 @@ type CodexCredentials = {
   lastRefresh?: number;
 };
 
+function extractStringField(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (typeof obj[key] === "string") return obj[key] as string;
+  }
+  return undefined;
+}
+
+function parseClaudeCredentials(parsed: Record<string, unknown>): ClaudeCredentials | null {
+  const token = extractStringField(parsed, "accessToken", "access_token");
+  if (!token) return null;
+  return {
+    accessToken: token,
+    plan: extractStringField(parsed, "plan", "rate_limit_tier"),
+  };
+}
+
 async function readClaudeCredentials(): Promise<ClaudeCredentials | null> {
   // Try Keychain first (macOS)
   if (process.platform === "darwin") {
@@ -62,16 +78,10 @@ async function readClaudeCredentials(): Promise<ClaudeCredentials | null> {
         5_000
       );
       if (result.exitCode === 0 && result.stdout.trim()) {
-        const parsed = safeJsonParse<Record<string, unknown>>(result.stdout.trim(), {});
-        const token = typeof parsed.accessToken === "string" ? parsed.accessToken :
-                      typeof parsed.access_token === "string" ? parsed.access_token : null;
-        if (token) {
-          return {
-            accessToken: token,
-            plan: typeof parsed.plan === "string" ? parsed.plan :
-                  typeof parsed.rate_limit_tier === "string" ? parsed.rate_limit_tier : undefined,
-          };
-        }
+        const creds = parseClaudeCredentials(
+          safeJsonParse<Record<string, unknown>>(result.stdout.trim(), {})
+        );
+        if (creds) return creds;
       }
     } catch {
       // fall through to file
@@ -82,18 +92,17 @@ async function readClaudeCredentials(): Promise<ClaudeCredentials | null> {
   const credPath = path.join(os.homedir(), ".claude", ".credentials.json");
   try {
     const raw = await fs.promises.readFile(credPath, "utf8");
-    const parsed = safeJsonParse<Record<string, unknown>>(raw, {});
-    const token = typeof parsed.accessToken === "string" ? parsed.accessToken :
-                  typeof parsed.access_token === "string" ? parsed.access_token : null;
-    if (!token) return null;
-    return {
-      accessToken: token,
-      plan: typeof parsed.plan === "string" ? parsed.plan :
-            typeof parsed.rate_limit_tier === "string" ? parsed.rate_limit_tier : undefined,
-    };
+    return parseClaudeCredentials(safeJsonParse<Record<string, unknown>>(raw, {}));
   } catch {
     return null;
   }
+}
+
+function extractNumberField(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    if (typeof obj[key] === "number") return obj[key] as number;
+  }
+  return undefined;
 }
 
 async function readCodexCredentials(): Promise<CodexCredentials | null> {
@@ -102,13 +111,11 @@ async function readCodexCredentials(): Promise<CodexCredentials | null> {
   try {
     const raw = await fs.promises.readFile(authPath, "utf8");
     const parsed = safeJsonParse<Record<string, unknown>>(raw, {});
-    const token = typeof parsed.access_token === "string" ? parsed.access_token :
-                  typeof parsed.accessToken === "string" ? parsed.accessToken : null;
+    const token = extractStringField(parsed, "access_token", "accessToken");
     if (!token) return null;
     return {
       accessToken: token,
-      lastRefresh: typeof parsed.last_refresh === "number" ? parsed.last_refresh :
-                   typeof parsed.lastRefresh === "number" ? parsed.lastRefresh : undefined,
+      lastRefresh: extractNumberField(parsed, "last_refresh", "lastRefresh"),
     };
   } catch {
     return null;
@@ -180,6 +187,13 @@ async function fetchJson(
   }
 }
 
+// ── Window Helpers ───────────────────────────────────────────────
+
+function computeResetsInMs(resetsAt: string): number {
+  if (!resetsAt) return 0;
+  return Math.max(0, new Date(resetsAt).getTime() - Date.now());
+}
+
 // ── Claude Usage Polling ─────────────────────────────────────────
 
 interface ClaudeUsageResponse {
@@ -220,7 +234,7 @@ async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]
         windowType: "five_hour",
         percentUsed: data.five_hour.percent_used ?? 0,
         resetsAt,
-        resetsInMs: resetsAt ? Math.max(0, new Date(resetsAt).getTime() - Date.now()) : 0,
+        resetsInMs: computeResetsInMs(resetsAt),
       });
     }
 
@@ -238,7 +252,7 @@ async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]
         windowType: "weekly",
         percentUsed: data.seven_day.percent_used ?? 0,
         resetsAt,
-        resetsInMs: resetsAt ? Math.max(0, new Date(resetsAt).getTime() - Date.now()) : 0,
+        resetsInMs: computeResetsInMs(resetsAt),
         modelBreakdown: Object.keys(modelBreakdown).length > 0 ? modelBreakdown : undefined,
       });
     }
@@ -276,30 +290,19 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
       const data = result.data as Record<string, unknown>;
       const usage = (data.usage ?? data) as Record<string, unknown>;
 
-      // Parse primary window
-      const primary = usage.primary as Record<string, unknown> | undefined;
-      if (primary) {
-        const resetsAt = typeof primary.resets_at === "string" ? primary.resets_at : "";
-        windows.push({
-          provider: "codex",
-          windowType: "weekly",
-          percentUsed: typeof primary.percent_used === "number" ? primary.percent_used : 0,
-          resetsAt,
-          resetsInMs: resetsAt ? Math.max(0, new Date(resetsAt).getTime() - Date.now()) : 0,
-        });
-      }
-
-      // Parse secondary/session window
-      const secondary = usage.secondary as Record<string, unknown> | undefined;
-      if (secondary) {
-        const resetsAt = typeof secondary.resets_at === "string" ? secondary.resets_at : "";
-        windows.push({
-          provider: "codex",
-          windowType: "five_hour",
-          percentUsed: typeof secondary.percent_used === "number" ? secondary.percent_used : 0,
-          resetsAt,
-          resetsInMs: resetsAt ? Math.max(0, new Date(resetsAt).getTime() - Date.now()) : 0,
-        });
+      // Parse primary and secondary windows
+      for (const [key, windowType] of [["primary", "weekly"], ["secondary", "five_hour"]] as const) {
+        const bucket = usage[key] as Record<string, unknown> | undefined;
+        if (bucket) {
+          const resetsAt = typeof bucket.resets_at === "string" ? bucket.resets_at : "";
+          windows.push({
+            provider: "codex",
+            windowType,
+            percentUsed: typeof bucket.percent_used === "number" ? bucket.percent_used : 0,
+            resetsAt,
+            resetsInMs: computeResetsInMs(resetsAt),
+          });
+        }
       }
 
       if (windows.length > 0) return { windows, errors };
@@ -372,7 +375,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
             windowType,
             percentUsed: typeof limit.percent_used === "number" ? limit.percent_used : 0,
             resetsAt,
-            resetsInMs: resetsAt ? Math.max(0, new Date(resetsAt).getTime() - Date.now()) : 0,
+            resetsInMs: computeResetsInMs(resetsAt),
           });
         }
       }
@@ -536,21 +539,25 @@ async function findJsonlFiles(dir: string, maxAgeDays: number): Promise<string[]
     if (depth > 6) return; // Prevent deep traversal
     try {
       const entries = await fs.promises.readdir(current, { withFileTypes: true });
+      const dirPromises: Promise<void>[] = [];
+      const fileStatPromises: Promise<void>[] = [];
       for (const entry of entries) {
         const fullPath = path.join(current, entry.name);
         if (entry.isDirectory()) {
-          await walk(fullPath, depth + 1);
+          dirPromises.push(walk(fullPath, depth + 1));
         } else if (entry.name.endsWith(".jsonl")) {
-          try {
-            const stat = await fs.promises.stat(fullPath);
-            if (stat.mtimeMs >= cutoff) {
-              files.push(fullPath);
-            }
-          } catch {
-            // Skip files we can't stat
-          }
+          fileStatPromises.push(
+            fs.promises.stat(fullPath).then((stat) => {
+              if (stat.mtimeMs >= cutoff) {
+                files.push(fullPath);
+              }
+            }).catch(() => {
+              // Skip files we can't stat
+            })
+          );
         }
       }
+      await Promise.all([...dirPromises, ...fileStatPromises]);
     } catch {
       // Skip directories we can't read
     }

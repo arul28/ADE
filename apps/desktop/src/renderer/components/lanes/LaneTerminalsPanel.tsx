@@ -6,7 +6,6 @@ import type {
   TerminalLaunchProfile,
   TerminalProfilesSnapshot,
   TerminalSessionSummary,
-  TerminalToolType
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -17,15 +16,13 @@ import { TerminalSettingsDialog, readLaunchTracked, persistLaunchTracked } from 
 import { TilingLayout } from "./TilingLayout";
 import { useNavigate } from "react-router-dom";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
-import { isChatToolType, primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
+import { DEFAULT_PROFILE_IDS, isChatToolType, primarySessionLabel, secondarySessionLabel, toolTypeFromProfileId } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 
 const tabTrigger =
   "flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:bg-accent/10 data-[state=active]:ring-1 data-[state=active]:ring-accent/50";
 
-const DEFAULT_PROFILE_IDS = ["claude", "codex", "shell"] as const;
-
-function statusDot(indicator: ReturnType<typeof sessionIndicatorState>) {
+function statusDotCls(indicator: ReturnType<typeof sessionIndicatorState>): string {
   if (indicator === "running-active") return "border-2 border-emerald-500 border-t-transparent bg-transparent";
   if (indicator === "running-needs-attention") return "border-2 border-amber-400 border-t-transparent bg-transparent";
   return "bg-red-500";
@@ -36,17 +33,6 @@ function sessionTabLabel(session: TerminalSessionSummary): string {
   const secondary = secondarySessionLabel(session);
   if (!secondary) return base.slice(0, 180);
   return `${base} · ${secondary}`.slice(0, 180);
-}
-
-function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
-  const id = profileId.trim().toLowerCase();
-  if (id === "claude") return "claude";
-  if (id === "codex") return "codex";
-  if (id === "shell") return "shell";
-  if (id === "aider") return "aider";
-  if (id === "cursor") return "cursor";
-  if (id === "continue") return "continue";
-  return "other";
 }
 
 function profileButtonLabel(profile: TerminalLaunchProfile): string {
@@ -355,7 +341,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                 lastOutputPreview: s.lastOutputPreview,
                 runtimeState: s.runtimeState
               });
-              const dotClass = statusDot(indicator);
+              const dotClass = statusDotCls(indicator);
               const dotSpin = !profileColor && indicator !== "ended";
               return (
               <Tabs.Trigger key={s.id} className={cn(tabTrigger)} value={s.id}>

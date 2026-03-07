@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentConfigRevision, AgentIdentity, AgentUpsertInput } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { WorkerAgentService } from "./workerAgentService";
-import { safeJsonParse } from "../shared/utils";
+import { safeJsonParse, nowIso, isEnvRef, hasEnvRefToken, looksSensitiveKey, looksSensitiveValue } from "../shared/utils";
 
 type WorkerRevisionServiceArgs = {
   db: AdeDb;
@@ -15,34 +15,6 @@ type RedactionResult<T> = {
   hadRedactions: boolean;
 };
 
-const ENV_REF_PATTERN = /^\$\{env:[A-Z0-9_]+\}$/;
-const ENV_REF_TOKEN_PATTERN = /\$\{env:[A-Z0-9_]+\}/;
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function isEnvRef(value: string): boolean {
-  return ENV_REF_PATTERN.test(value.trim());
-}
-
-function hasEnvRefToken(value: string): boolean {
-  return ENV_REF_TOKEN_PATTERN.test(value);
-}
-
-function looksSensitiveKey(key: string): boolean {
-  return /(token|secret|password|api[_-]?key|authorization)/i.test(key);
-}
-
-function looksSensitiveValue(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed.length) return false;
-  if (/^bearer\s+/i.test(trimmed)) return true;
-  if (/^sk-[a-z0-9]{12,}/i.test(trimmed)) return true;
-  if (/^gh[pousr]_[a-z0-9]{20,}/i.test(trimmed)) return true;
-  if (/api[_-]?key|secret|token|password/i.test(trimmed)) return true;
-  return false;
-}
 
 function redactSecrets<T>(input: T): RedactionResult<T> {
   let hadRedactions = false;

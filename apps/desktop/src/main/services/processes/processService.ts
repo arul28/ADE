@@ -23,7 +23,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
-import { isWithinDir } from "../shared/utils";
+import { isWithinDir, fileSizeOrZero } from "../shared/utils";
 
 type ManagedTerminationReason = "stopped" | "killed" | "crashed" | "restart";
 
@@ -188,14 +188,6 @@ export function createProcessService({
 
   const processLogPath = (laneId: string, processId: string) =>
     resolveSafeProcessLogPath(processLogsDir, laneId, processId);
-
-  const fileSizeOrZero = (filePath: string): number => {
-    try {
-      return fs.statSync(filePath).size;
-    } catch {
-      return 0;
-    }
-  };
 
   const rotateProcessLogIfNeeded = (filePath: string) => {
     const currentSize = fileSizeOrZero(filePath);
@@ -863,6 +855,7 @@ export function createProcessService({
     disposeAll() {
       for (const entry of entries.values()) {
         clearReadinessTimers(entry);
+        clearHealthTimers(entry);
         clearKillTimer(entry);
         entry.stopIntent = "killed";
         if (entry.child) {

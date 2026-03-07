@@ -187,16 +187,14 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
           status: normalizeDoneStatus(readString(structuredStream.status)),
           model: readString(structuredStream.model) ?? undefined,
           modelId: (readString(structuredStream.modelId) ?? undefined) as ModelId | undefined,
-          usage: readRecord(structuredStream.usage)
-            ? {
-                inputTokens: typeof structuredStream.usage === "object" && structuredStream.usage && "inputTokens" in structuredStream.usage
-                  ? (structuredStream.usage as { inputTokens?: number | null }).inputTokens ?? null
-                  : null,
-                outputTokens: typeof structuredStream.usage === "object" && structuredStream.usage && "outputTokens" in structuredStream.usage
-                  ? (structuredStream.usage as { outputTokens?: number | null }).outputTokens ?? null
-                  : null,
-              }
-            : undefined,
+          usage: (() => {
+            const usageRecord = readRecord(structuredStream.usage);
+            if (!usageRecord) return undefined;
+            return {
+              inputTokens: typeof usageRecord.inputTokens === "number" ? usageRecord.inputTokens : null,
+              outputTokens: typeof usageRecord.outputTokens === "number" ? usageRecord.outputTokens : null,
+            };
+          })(),
         },
       }];
     case "error":

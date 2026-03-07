@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Warning, Archive, ArrowSquareOut, ArrowDown, GitBranch, GitMerge, Stack, PencilSimple, Terminal, Trash } from "@phosphor-icons/react";
 import type { ConflictChip, ConflictStatus, LaneSummary } from "../../../shared/types";
@@ -79,7 +79,7 @@ function RemotePullBanner({ laneId, behindCount }: { laneId: string; behindCount
   );
 }
 
-export function LaneRow({
+export const LaneRow = React.memo(function LaneRow({
   lane,
   selected,
   primary,
@@ -529,4 +529,4 @@ export function LaneRow({
       </div>
     </div>
   );
-}
+});

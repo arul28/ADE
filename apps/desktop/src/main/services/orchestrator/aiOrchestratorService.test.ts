@@ -1215,7 +1215,7 @@ describe("aiOrchestratorService", () => {
       expect(workingStates[0].executorKind).toBe("manual");
 
       // Complete attempt → fire event → worker should be "completed"
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded"
       });
@@ -1298,7 +1298,7 @@ describe("aiOrchestratorService", () => {
         ownerId: "child-owner",
         executorKind: "manual"
       });
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: childAttempt.id,
         status: "succeeded",
         result: {
@@ -1404,7 +1404,7 @@ describe("aiOrchestratorService", () => {
         ownerId: "child-owner",
         executorKind: "manual"
       });
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: childAttempt.id,
         status: "succeeded",
         result: {
@@ -1494,7 +1494,7 @@ describe("aiOrchestratorService", () => {
         ownerId: "test-owner",
         executorKind: "manual"
       });
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
         errorClass: "deterministic",
@@ -1826,7 +1826,7 @@ describe("aiOrchestratorService", () => {
         ownerId: "test-owner",
         executorKind: "manual"
       });
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded"
       });
@@ -2305,7 +2305,7 @@ describe("aiOrchestratorService", () => {
         ownerId: "test-owner",
         executorKind: "manual"
       });
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
         errorClass: "transient",
@@ -3198,7 +3198,7 @@ describe("aiOrchestratorService", () => {
         return String(row?.attempt_id ?? "") === attempt.id;
       });
 
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
         errorClass: "deterministic",
@@ -3928,7 +3928,7 @@ describe("aiOrchestratorService", () => {
         ownerId: "test-owner",
         executorKind: "manual"
       });
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded"
       });
@@ -4009,7 +4009,7 @@ describe("aiOrchestratorService", () => {
             ownerId: "test-owner",
             executorKind: "manual"
           });
-          fixture.orchestratorService.completeAttempt({
+          await fixture.orchestratorService.completeAttempt({
             attemptId: attempt.id,
             status: "succeeded"
           });
@@ -5383,7 +5383,7 @@ describe("aiOrchestratorService", () => {
             ownerId: "test-owner",
             executorKind: "manual"
           });
-          fixture.orchestratorService.completeAttempt({
+          await fixture.orchestratorService.completeAttempt({
             attemptId: attempt.id,
             status: "succeeded",
             result: {
@@ -5526,7 +5526,7 @@ describe("aiOrchestratorService", () => {
             const attempt = await fixture.orchestratorService.startAttempt({
               runId, stepId: step.id, ownerId: "test-owner", executorKind: "manual"
             });
-            fixture.orchestratorService.completeAttempt({
+            await fixture.orchestratorService.completeAttempt({
               attemptId: attempt.id, status: "succeeded",
               result: { schema: "ade.orchestratorAttempt.v1", success: true, summary: "Done", outputs: null, warnings: [], sessionId: null, trackedSession: false }
             });
@@ -5664,7 +5664,7 @@ describe("aiOrchestratorService", () => {
         ownerId: "test-owner",
         executorKind: "manual"
       });
-      fixture.orchestratorService.completeAttempt({
+      await fixture.orchestratorService.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
         result: {
@@ -5771,7 +5771,7 @@ describe("aiOrchestratorService", () => {
             const attempt = await fixture.orchestratorService.startAttempt({
               runId, stepId: step.id, ownerId: "test-owner", executorKind: "manual"
             });
-            fixture.orchestratorService.completeAttempt({
+            await fixture.orchestratorService.completeAttempt({
               attemptId: attempt.id, status: "succeeded",
               result: { schema: "ade.orchestratorAttempt.v1", success: true, summary: "Done", outputs: null, warnings: [], sessionId: null, trackedSession: false }
             });

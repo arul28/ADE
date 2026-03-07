@@ -36,13 +36,18 @@ function getRotatedLogFilePath(logFilePath: string): string {
   return path.join(parsed.dir, `${parsed.name}.1${parsed.ext}`);
 }
 
+const CONSOLE_FN_BY_LEVEL: Record<LogLevel, typeof console.log> = {
+  error: console.error,
+  warn: console.warn,
+  debug: console.debug,
+  info: console.log,
+};
+
 function createConsoleMirror(level: LogLevel, event: string, meta?: Record<string, unknown>) {
   if (!process.env.VITE_DEV_SERVER_URL) return;
   if (process.env.ADE_STDIO_TRANSPORT === "1") return;
   if (!process.stdout.isTTY) return;
-  const fn =
-    level === "error" ? console.error : level === "warn" ? console.warn : level === "debug" ? console.debug : console.log;
-  fn(`[${level}] ${event}`, meta ?? "");
+  CONSOLE_FN_BY_LEVEL[level](`[${level}] ${event}`, meta ?? "");
 }
 
 export function createFileLogger(logFilePath: string): Logger {

@@ -27,6 +27,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
+import { isWithinDir } from "../shared/utils";
 
 function slugify(input: string): string {
   const s = input
@@ -44,12 +45,6 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function safeTrim(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function isWithinDir(root: string, candidate: string): boolean {
-  const rootNorm = path.resolve(root) + path.sep;
-  const candNorm = path.resolve(candidate) + path.sep;
-  return candNorm.startsWith(rootNorm);
 }
 
 function extractFirstJsonObject(text: string): string | null {
@@ -835,9 +830,7 @@ export function createAutomationPlannerService({
 
     validateDraft(req: AutomationValidateDraftRequest): AutomationValidateDraftResult {
       const suites = readSuites();
-      const { normalized, issues, ambiguities, resolutions } = normalizeDraft({ draft: req.draft, suites, projectRoot });
-      void ambiguities;
-      void resolutions;
+      const { normalized, issues } = normalizeDraft({ draft: req.draft, suites, projectRoot });
       const required = normalized ? requiredConfirmationsForDraft(normalized) : [];
       const missing = normalized ? missingConfirmations(required, req.confirmations) : [];
 
@@ -891,8 +884,7 @@ export function createAutomationPlannerService({
       else rules.push(nextRule);
       local.automations = rules;
 
-      const updated = projectConfigService.save({ shared: snapshot.shared, local });
-      void updated;
+      projectConfigService.save({ shared: snapshot.shared, local });
       automationService.syncFromConfig();
 
       const effectiveRule = projectConfigService.get().effective.automations.find((r) => r.id === id) ?? null;
@@ -917,6 +909,14 @@ export function createAutomationPlannerService({
         const warnings: string[] = [];
         if (action.type === "run-command") {
           warnings.push("Shell command execution is potentially dangerous. Review command and cwd.");
+          return {
+            index,
+            type: action.type,
+            summary: "Run shell command",
+            commandPreview: action.command ?? "",
+            cwdPreview: action.cwd ?? "(lane worktree / project root)",
+            warnings
+          };
         }
         if (action.type === "run-tests") {
           const suite = suites.find((s) => s.id === action.suiteId);
@@ -933,16 +933,6 @@ export function createAutomationPlannerService({
         }
         if (action.type === "predict-conflicts") {
           return { index, type: action.type, summary: "Run conflict prediction", warnings };
-        }
-        if (action.type === "run-command") {
-          return {
-            index,
-            type: action.type,
-            summary: "Run shell command",
-            commandPreview: action.command ?? "",
-            cwdPreview: action.cwd ?? "(lane worktree / project root)",
-            warnings
-          };
         }
         return { index, type: action.type, summary: action.type, warnings };
       });

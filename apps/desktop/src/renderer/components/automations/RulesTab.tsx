@@ -4,11 +4,8 @@ import { useNavigate } from "react-router-dom";
 import {
   ArrowClockwise as RefreshCw,
   Plus,
-  Play,
-  ClockCounterClockwise as HistoryIcon,
   ShieldCheck,
   Sparkle as Sparkles,
-  Flask as FlaskConical,
   FloppyDisk as Save,
   Robot,
   Wrench,
@@ -32,18 +29,12 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
-import { statusToneAutomation as statusTone } from "../../lib/format";
+import { formatDate, statusToneAutomation as statusTone } from "../../lib/format";
+import { extractError, INPUT_CLS, INPUT_STYLE } from "./shared";
 import { RuleCard } from "./components/RuleCard";
 import { RuleEditorPanel } from "./components/RuleEditorPanel";
 
 /* ── Helpers ── */
-
-function formatWhen(ts: string | null): string {
-  if (!ts) return "Never";
-  const parsed = Date.parse(ts);
-  if (Number.isNaN(parsed)) return ts;
-  return new Date(parsed).toLocaleString();
-}
 
 function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
   return {
@@ -52,34 +43,19 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
     enabled: rule.enabled,
     trigger: rule.trigger,
     actions: rule.actions.map((a) => {
-      if (a.type === "run-tests") {
-        return {
-          type: a.type,
-          suite: a.suiteId ?? "",
-          ...(a.condition ? { condition: a.condition } : {}),
-          ...(a.continueOnFailure != null ? { continueOnFailure: a.continueOnFailure } : {}),
-          ...(a.timeoutMs != null ? { timeoutMs: a.timeoutMs } : {}),
-          ...(a.retry != null ? { retry: a.retry } : {}),
-        };
-      }
-      if (a.type === "run-command") {
-        return {
-          type: a.type,
-          command: a.command ?? "",
-          ...(a.cwd ? { cwd: a.cwd } : {}),
-          ...(a.condition ? { condition: a.condition } : {}),
-          ...(a.continueOnFailure != null ? { continueOnFailure: a.continueOnFailure } : {}),
-          ...(a.timeoutMs != null ? { timeoutMs: a.timeoutMs } : {}),
-          ...(a.retry != null ? { retry: a.retry } : {}),
-        };
-      }
-      return {
-        type: a.type,
+      const shared = {
         ...(a.condition ? { condition: a.condition } : {}),
         ...(a.continueOnFailure != null ? { continueOnFailure: a.continueOnFailure } : {}),
         ...(a.timeoutMs != null ? { timeoutMs: a.timeoutMs } : {}),
         ...(a.retry != null ? { retry: a.retry } : {}),
       };
+      if (a.type === "run-tests") {
+        return { type: a.type, suite: a.suiteId ?? "", ...shared };
+      }
+      if (a.type === "run-command") {
+        return { type: a.type, command: a.command ?? "", ...(a.cwd ? { cwd: a.cwd } : {}), ...shared };
+      }
+      return { type: a.type, ...shared };
     }) as any,
   };
 }
@@ -151,7 +127,7 @@ function CreateWithNaturalLanguageDialog({
       const res = await window.ade.automations.parseNaturalLanguage({ intent: trimmed, planner });
       setParseResult(res); setIssues(res.issues); setDraft(res.draft);
     } catch (err) {
-      setIssues([{ level: "error", path: "planner", message: err instanceof Error ? err.message : String(err) }]);
+      setIssues([{ level: "error", path: "planner", message: extractError(err) }]);
     } finally { setBusy(false); }
   };
 
@@ -165,12 +141,9 @@ function CreateWithNaturalLanguageDialog({
       const saved = await window.ade.automations.saveDraft({ draft, confirmations: [...acceptedConfirmations] });
       onOpenChange(false); onCreated(saved.rule.id);
     } catch (err) {
-      setIssues([{ level: "error", path: "save", message: err instanceof Error ? err.message : String(err) }]);
+      setIssues([{ level: "error", path: "save", message: extractError(err) }]);
     } finally { setSaveBusy(false); }
   };
-
-  const INPUT_CLS = "h-8 w-full px-3 text-xs text-[#FAFAFA] placeholder:text-[#71717A50] font-mono";
-  const INPUT_STYLE: React.CSSProperties = { background: "#0B0A0F", border: "1px solid #2D284080" };
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -393,7 +366,7 @@ function HistoryDialog({
     window.ade.automations
       .getHistory({ id: rule.id, limit: 160 })
       .then((next) => setRuns(next))
-      .catch((err) => onError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => onError(extractError(err)))
       .finally(() => setBusy(false));
   }, [open, rule]);
 
@@ -402,7 +375,7 @@ function HistoryDialog({
     window.ade.automations
       .getRunDetail(runId)
       .then((next) => setDetail(next))
-      .catch((err) => onError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => onError(extractError(err)))
       .finally(() => setDetailBusy(false));
   };
 
@@ -441,7 +414,7 @@ function HistoryDialog({
                           <div className="truncate text-xs font-semibold text-[#FAFAFA]">{run.triggerType}</div>
                           <Chip className={cn("text-[9px]", statusTone(run.status))}>{run.status}</Chip>
                         </div>
-                        <div className="mt-1 text-xs text-[#71717A]">{formatWhen(run.startedAt)}</div>
+                        <div className="mt-1 text-xs text-[#71717A]">{formatDate(run.startedAt)}</div>
                         <div className="mt-1 text-xs text-[#71717A]">
                           {run.actionsCompleted}/{run.actionsTotal} actions
                           {run.errorMessage ? ` -- ${run.errorMessage}` : ""}
@@ -548,7 +521,7 @@ export function RulesTab({
       ]);
       setLinearConnection(connection); setLinearDashboard(dashboard); setLinearPolicyEnabled(policy.enabled === true);
     } catch (err) {
-      setLinearCardError(err instanceof Error ? err.message : String(err));
+      setLinearCardError(extractError(err));
     } finally { setLinearBusy(false); }
   }, []);
 
@@ -567,13 +540,16 @@ export function RulesTab({
       if (selectedRuleId && !nextRules.some((r) => r.id === selectedRuleId)) setSelectedRuleId(nextRules[0]?.id ?? null);
       await refreshLinearIntakeCard();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(extractError(err));
     } finally { setLoading(false); }
   }, [selectedRuleId, refreshLinearIntakeCard]);
 
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
   useEffect(() => {
-    refresh().catch(() => {});
-    const unsub = window.ade.automations.onEvent(() => { refresh().catch(() => {}); });
+    refreshRef.current().catch(() => {});
+    const unsub = window.ade.automations.onEvent(() => { refreshRef.current().catch(() => {}); });
     return () => { try { unsub(); } catch { /* ignore */ } };
   }, []);
 
@@ -626,11 +602,12 @@ export function RulesTab({
     setCreateMenuOpen(false);
   };
 
-  const runNow = async () => {
-    if (!selectedRule) return;
+  const runNow = async (ruleId?: string) => {
+    const id = ruleId ?? selectedRule?.id;
+    if (!id) return;
     setError(null);
-    try { await window.ade.automations.triggerManually({ id: selectedRule.id }); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    try { await window.ade.automations.triggerManually({ id }); }
+    catch (err) { setError(extractError(err)); }
   };
 
   const save = async () => {
@@ -643,7 +620,7 @@ export function RulesTab({
       await window.ade.automations.saveDraft({ draft, confirmations: [...acceptedConfirmations] });
       setEditorOpen(false);
       await refresh();
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    } catch (err) { setError(extractError(err)); }
     finally { setSaving(false); }
   };
 
@@ -665,13 +642,13 @@ export function RulesTab({
       }
       if (res.issues.length) { lines.push(""); lines.push("Issues:"); for (const i of res.issues) lines.push(`- ${i.level} ${i.path}: ${i.message}`); }
       setSimulateText(lines.join("\n")); setSimulateOpen(true);
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    } catch (err) { setError(extractError(err)); }
   };
 
   const trustShared = async () => {
     setError(null);
     try { await window.ade.projectConfig.confirmTrust({ sharedHash: configSharedHash ?? undefined }); await refresh(); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    catch (err) { setError(extractError(err)); }
   };
 
   const runLinearSyncNow = async () => {
@@ -683,7 +660,7 @@ export function RulesTab({
       const connection = await window.ade.cto.getLinearConnectionStatus();
       setLinearConnection(connection);
     } catch (err) {
-      setLinearCardError(err instanceof Error ? err.message : String(err));
+      setLinearCardError(extractError(err));
     } finally { setLinearBusy(false); }
   };
 
@@ -764,9 +741,9 @@ export function RulesTab({
                   onToggle={(enabled) => {
                     window.ade.automations.toggle({ id: rule.id, enabled })
                       .then((next) => setRules(next))
-                      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                      .catch((err) => setError(extractError(err)));
                   }}
-                  onRunNow={() => { setSelectedRuleId(rule.id); void runNow(); }}
+                  onRunNow={() => { setSelectedRuleId(rule.id); void runNow(rule.id); }}
                   onEdit={() => { setSelectedRuleId(rule.id); setEditorOpen(true); }}
                   onHistory={() => { setSelectedRuleId(rule.id); setHistoryOpen(true); }}
                 />
@@ -803,7 +780,7 @@ export function RulesTab({
           </div>
           {linearDashboard && (
             <div className="mt-1 font-mono text-[9px] text-[#71717A]">
-              Last success: {formatWhen(linearDashboard.lastSuccessAt)} | Polling: {linearDashboard.pollingIntervalSec}s
+              Last success: {formatDate(linearDashboard.lastSuccessAt)} | Polling: {linearDashboard.pollingIntervalSec}s
             </div>
           )}
           {linearCardError && <div className="mt-1 text-xs text-red-300">{linearCardError}</div>}

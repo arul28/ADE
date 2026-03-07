@@ -19,7 +19,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createTestService } from "../tests/testService";
 import cron from "node-cron";
-import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
+import { isRecord, isWithinDir, nowIso, safeJsonParse } from "../shared/utils";
 
 type CronTask = {
   stop: () => void;
@@ -77,12 +77,6 @@ function normalizeStatus(value: string, fallback: AutomationRunStatus): Automati
 function normalizeActionStatus(value: string, fallback: AutomationActionStatus): AutomationActionStatus {
   if (value === "running" || value === "succeeded" || value === "failed" || value === "skipped" || value === "cancelled") return value;
   return fallback;
-}
-
-function isWithinDir(root: string, candidate: string): boolean {
-  const rootNorm = path.resolve(root) + path.sep;
-  const candNorm = path.resolve(candidate) + path.sep;
-  return candNorm.startsWith(rootNorm);
 }
 
 function toRun(row: AutomationRunRow): AutomationRun {

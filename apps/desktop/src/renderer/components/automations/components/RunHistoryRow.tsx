@@ -1,14 +1,7 @@
 import type { AutomationRun } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
-import { statusToneAutomation as statusTone, formatDurationMs } from "../../../lib/format";
-
-function formatWhen(ts: string | null): string {
-  if (!ts) return "--";
-  const parsed = Date.parse(ts);
-  if (Number.isNaN(parsed)) return ts;
-  return new Date(parsed).toLocaleString();
-}
+import { formatDate, formatDurationMs, statusToneAutomation as statusTone } from "../../../lib/format";
 
 export function RunHistoryRow({
   run,
@@ -45,7 +38,7 @@ export function RunHistoryRow({
             <span className="font-mono text-[9px] text-[#71717A]">{run.triggerType}</span>
           </div>
           <div className="mt-0.5 flex items-center gap-3 font-mono text-[9px] text-[#71717A]">
-            <span>{formatWhen(run.startedAt)}</span>
+            <span>{formatDate(run.startedAt)}</span>
             <span>{formatDurationMs(durationMs)}</span>
             <span>{run.actionsCompleted}/{run.actionsTotal} actions</span>
           </div>

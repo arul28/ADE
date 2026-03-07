@@ -5,7 +5,9 @@
  * Import from here instead of re-declaring locally.
  */
 
+import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -91,4 +93,128 @@ export function isWithinDir(root: string, candidate: string): boolean {
 export function toOptionalString(value: unknown): string | null {
   const raw = typeof value === "string" ? value.trim() : "";
   return raw.length > 0 ? raw : null;
+}
+
+// ── File helpers ────────────────────────────────────────────────────
+
+/** Write text to a file atomically (write to tmp, rename). */
+export function writeTextAtomic(filePath: string, text: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${randomUUID()}`;
+  fs.writeFileSync(tmp, text, "utf8");
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (error) {
+    try {
+      fs.copyFileSync(tmp, filePath);
+      fs.unlinkSync(tmp);
+    } catch {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // ignore cleanup errors
+      }
+      throw error;
+    }
+  }
+}
+
+/** Return file size or 0 if the file doesn't exist. */
+export function fileSizeOrZero(filePath: string): number {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+}
+
+// ── Filesystem existence checks ─────────────────────────────────────
+
+export function fileExists(absPath: string): boolean {
+  try {
+    return fs.statSync(absPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function dirExists(absPath: string): boolean {
+  try {
+    return fs.statSync(absPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read at most `maxBytes` from a file. Returns empty string on any error.
+ */
+export function safeReadText(absPath: string, maxBytes: number): string {
+  try {
+    const fd = fs.openSync(absPath, "r");
+    try {
+      const buf = Buffer.alloc(maxBytes);
+      const read = fs.readSync(fd, buf, 0, maxBytes, 0);
+      return buf.slice(0, Math.max(0, read)).toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
+// ── Path normalization ─────────────────────────────────────────────
+
+/** Normalize a relative path to forward slashes, strip leading "./" or "/". */
+export function normalizeRelative(relPath: string): string {
+  return relPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
+}
+
+// ── Binary detection ───────────────────────────────────────────────
+
+/** Returns true if the buffer contains a null byte in the first 8192 bytes. */
+export function hasNullByte(buf: Buffer): boolean {
+  const max = Math.min(buf.length, 8192);
+  for (let i = 0; i < max; i++) {
+    if (buf[i] === 0) return true;
+  }
+  return false;
+}
+
+// ── Date/time helpers ───────────────────────────────────────────────
+
+/** Parse ISO string to epoch ms, or NaN if invalid/missing. */
+export function parseIsoToEpoch(value: string | null | undefined): number {
+  if (!value) return Number.NaN;
+  const epoch = Date.parse(value);
+  return Number.isFinite(epoch) ? epoch : Number.NaN;
+}
+
+// ── Secret detection helpers ────────────────────────────────────────
+
+const ENV_REF_PATTERN = /^\$\{env:[A-Z0-9_]+\}$/;
+const ENV_REF_TOKEN_PATTERN = /\$\{env:[A-Z0-9_]+\}/;
+
+export function isEnvRef(value: string): boolean {
+  return ENV_REF_PATTERN.test(value.trim());
+}
+
+export function hasEnvRefToken(value: string): boolean {
+  return ENV_REF_TOKEN_PATTERN.test(value);
+}
+
+export function looksSensitiveKey(key: string): boolean {
+  return /(token|secret|password|api[_-]?key|authorization)/i.test(key);
+}
+
+export function looksSensitiveValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed.length) return false;
+  if (/^bearer\s+/i.test(trimmed)) return true;
+  if (/^sk-[a-z0-9]{12,}/i.test(trimmed)) return true;
+  if (/^gh[pousr]_[a-z0-9]{20,}/i.test(trimmed)) return true;
+  if (/^xox[baprs]-[a-z0-9-]{10,}/i.test(trimmed)) return true;
+  if (/api[_-]?key|secret|token|password/i.test(trimmed)) return true;
+  return false;
 }

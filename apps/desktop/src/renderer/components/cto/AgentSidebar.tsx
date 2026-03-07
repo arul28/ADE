@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo, useCallback } from "react";
 import { Brain, Robot, Plus, CaretRight } from "@phosphor-icons/react";
 import type { AgentIdentity, AgentBudgetSnapshot } from "../../../shared/types";
 import { Button } from "../ui/Button";
@@ -20,7 +20,7 @@ function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-function AgentRow({
+const AgentRow = React.memo(function AgentRow({
   agent,
   isSelected,
   depth,
@@ -89,7 +89,7 @@ function AgentRow({
       </div>
     </button>
   );
-}
+});
 
 export function AgentSidebar({
   agents,
@@ -110,10 +110,13 @@ export function AgentSidebar({
   onHireWorker: () => void;
   ctoModelInfo?: { provider: string; model: string } | null;
 }) {
-  const budgetByWorkerId = new Map<string, AgentBudgetSnapshot["workers"][number]>();
-  for (const w of budgetSnapshot?.workers ?? []) budgetByWorkerId.set(w.agentId, w);
+  const budgetByWorkerId = useMemo(() => {
+    const map = new Map<string, AgentBudgetSnapshot["workers"][number]>();
+    for (const w of budgetSnapshot?.workers ?? []) map.set(w.agentId, w);
+    return map;
+  }, [budgetSnapshot?.workers]);
 
-  const renderTree = (parentId: string | null, depth = 0): React.ReactNode => {
+  const renderTree = useCallback((parentId: string | null, depth = 0): React.ReactNode => {
     const children = agents
       .filter((a) => (a.reportsTo ?? null) === parentId)
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -129,7 +132,7 @@ export function AgentSidebar({
         {renderTree(agent.id, depth + 1)}
       </React.Fragment>
     ));
-  };
+  }, [agents, selectedAgentId, budgetByWorkerId, onSelectAgent]);
 
   return (
     <aside

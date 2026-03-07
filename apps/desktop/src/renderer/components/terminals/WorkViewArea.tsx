@@ -8,7 +8,7 @@ import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
-import { sessionIndicatorState } from "../../lib/terminalAttention";
+import { sessionStatusDot } from "../../lib/terminalAttention";
 
 /* Inject global keyframe once */
 const BLINK_KEYFRAME_ID = "ade-industrial-blink";
@@ -27,36 +27,6 @@ const THEME_RECESSED = "var(--color-surface-recessed)";
 const THEME_CARD_OVERLAY = "color-mix(in srgb, var(--color-card) 86%, transparent)";
 const THEME_RECESSED_OVERLAY = "color-mix(in srgb, var(--color-surface-recessed) 78%, transparent)";
 
-function statusDotStyle(session: TerminalSessionSummary): {
-  cls: string;
-  spinning: boolean;
-  label: string;
-} {
-  const indicator = sessionIndicatorState({
-    status: session.status,
-    lastOutputPreview: session.lastOutputPreview,
-    runtimeState: session.runtimeState,
-  });
-  if (indicator === "running-active") {
-    return {
-      cls: "border-2 border-emerald-400 border-t-transparent bg-transparent",
-      spinning: true,
-      label: "Running",
-    };
-  }
-  if (indicator === "running-needs-attention") {
-    return {
-      cls: "border-2 border-amber-300 border-t-transparent bg-transparent",
-      spinning: true,
-      label: "Awaiting input",
-    };
-  }
-  return {
-    cls: "bg-red-400",
-    spinning: false,
-    label: "Ended",
-  };
-}
 
 function zeroPad(n: number): string {
   return n < 10 ? `0${n}` : `${n}`;
@@ -191,7 +161,7 @@ export function WorkViewArea({
             <div className="grid grid-cols-1 gap-2 xl:grid-cols-2 2xl:grid-cols-3">
               {displaySessions.map((session) => {
                 const isActive = activeSession?.id === session.id;
-                const dot = statusDotStyle(session);
+                const dot = sessionStatusDot(session);
                 const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
                 const laneColor = laneColorById.get(session.laneId) ?? COLORS.accent;
                 const primary = primarySessionLabel(session);
@@ -303,7 +273,7 @@ export function WorkViewArea({
         <div className="flex-1 flex items-center gap-0.5 overflow-x-auto scrollbar-none min-w-0">
           {displaySessions.map((session, idx) => {
             const isActive = activeSession?.id === session.id;
-            const dot = statusDotStyle(session);
+            const dot = sessionStatusDot(session);
             const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
             const laneColor = laneColorById.get(session.laneId) ?? COLORS.accent;
             const primary = primarySessionLabel(session);

@@ -408,7 +408,7 @@ describe("orchestrator smoke", () => {
             ownerId: "smoke-runner",
             executorKind: "manual"
           });
-          fixture.orchestratorService.completeAttempt({
+          await fixture.orchestratorService.completeAttempt({
             attemptId: attempt.id,
             status: "succeeded",
             result: {

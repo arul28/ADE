@@ -3103,15 +3103,15 @@ async function runTool(args: {
     const category = asOptionalTrimmedString(toolArgs.category);
     if (category) {
       // When filtering by category, drain a larger batch and filter client-side.
-      // Use the last matching event's ID as nextCursor so no events are skipped.
+      // Use the last *drained* event's ID (not last *filtered*) as nextCursor
+      // to advance past non-matching events and avoid infinite polling loops.
       const batchSize = Math.min(1000, limit * 10);
       const result = runtime.eventBuffer.drain(cursor, batchSize);
       const filtered = result.events.filter((e) => e.category === category);
       const sliced = filtered.slice(0, limit);
-      const lastId = sliced.length > 0 ? sliced[sliced.length - 1]!.id : cursor;
       return {
         events: sliced,
-        nextCursor: lastId,
+        nextCursor: result.nextCursor,
         hasMore: filtered.length > limit || result.hasMore
       };
     }

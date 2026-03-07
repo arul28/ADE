@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CaretUp, CaretDown } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
+import { formatElapsedSince } from "../../../lib/format";
 import type { PtyDataEvent } from "../../../../shared/types";
 
 type InlineTerminalProps = {
@@ -13,14 +14,6 @@ type InlineTerminalProps = {
   onToggleMinimize: () => void;
 };
 
-function formatElapsed(startedAt: string): string {
-  const ms = Date.now() - Date.parse(startedAt);
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  return `${mins}m ${secs % 60}s`;
-}
-
 export function InlineTerminal({
   ptyId,
   provider,
@@ -30,7 +23,7 @@ export function InlineTerminal({
   onToggleMinimize,
 }: InlineTerminalProps) {
   const [output, setOutput] = useState("");
-  const [elapsed, setElapsed] = useState(() => formatElapsed(startedAt));
+  const [elapsed, setElapsed] = useState(() => formatElapsedSince(startedAt));
   const preRef = useRef<HTMLPreElement>(null);
 
   // Subscribe to pty data
@@ -55,19 +48,32 @@ export function InlineTerminal({
   // Elapsed timer
   useEffect(() => {
     if (exitCode !== null) {
-      setElapsed(formatElapsed(startedAt));
+      setElapsed(formatElapsedSince(startedAt));
       return;
     }
-    const timer = setInterval(() => setElapsed(formatElapsed(startedAt)), 1000);
+    const timer = setInterval(() => setElapsed(formatElapsedSince(startedAt)), 1000);
     return () => clearInterval(timer);
   }, [startedAt, exitCode]);
 
   const isRunning = exitCode === null;
-  const statusColor = isRunning
-    ? "text-blue-400"
-    : exitCode === 0
-      ? "text-emerald-400"
-      : "text-red-400";
+
+  let statusColor: string;
+  if (isRunning) {
+    statusColor = "text-blue-400";
+  } else if (exitCode === 0) {
+    statusColor = "text-emerald-400";
+  } else {
+    statusColor = "text-red-400";
+  }
+
+  let statusLabel: string;
+  if (isRunning) {
+    statusLabel = "Running";
+  } else if (exitCode === 0) {
+    statusLabel = "Completed";
+  } else {
+    statusLabel = `Failed (${exitCode})`;
+  }
 
   return (
     <div className="rounded-xl border border-border/20 bg-card/45 backdrop-blur-sm shadow-card overflow-hidden">
@@ -79,7 +85,7 @@ export function InlineTerminal({
       >
         <div className="flex items-center gap-2">
           <span className={cn("font-medium", statusColor)}>
-            {isRunning ? "Running" : exitCode === 0 ? "Completed" : `Failed (${exitCode})`}
+            {statusLabel}
           </span>
           <span className="text-muted-fg/60">{provider}</span>
           <span className="text-muted-fg/40">{elapsed}</span>

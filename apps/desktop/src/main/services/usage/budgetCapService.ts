@@ -56,7 +56,7 @@ type ProjectConfigService = {
 };
 
 type UsageTrackingService = {
-  getSnapshot(): UsageSnapshot | null;
+  getUsageSnapshot(): UsageSnapshot | null;
 };
 
 export type BudgetCapService = ReturnType<typeof createBudgetCapService>;
@@ -95,42 +95,55 @@ export function createBudgetCapService({
 
   type CumulativeRow = { total_tokens: number; total_cost: number };
 
+  const EMPTY_CUMULATIVE: CumulativeRow = { total_tokens: 0, total_cost: 0 };
+
+  function queryCumulative(
+    whereClause: string,
+    baseParams: (string | number)[],
+    provider: BudgetCapProvider
+  ): CumulativeRow {
+    const providerClause = provider === "any" ? "" : " and provider = ?";
+    const params = provider === "any" ? baseParams : [...baseParams, provider];
+
+    const row = db.get<CumulativeRow>(
+      `select coalesce(sum(tokens_used), 0) as total_tokens,
+              coalesce(sum(cost_usd), 0) as total_cost
+       from budget_usage_records
+       where ${whereClause}${providerClause}`,
+      params
+    );
+    return row ?? EMPTY_CUMULATIVE;
+  }
+
   function getCumulativeUsage(
     scope: BudgetCapScope,
     scopeId: string,
     provider: BudgetCapProvider,
     weekKey: string
   ): CumulativeRow {
-    const providerClause =
-      provider === "any"
-        ? ""
-        : " and provider = ?";
-    const params: (string | number)[] = [scope, scopeId, weekKey];
-    if (provider !== "any") params.push(provider);
-
-    const row = db.get<{ total_tokens: number; total_cost: number }>(
-      `select coalesce(sum(tokens_used), 0) as total_tokens,
-              coalesce(sum(cost_usd), 0) as total_cost
-       from budget_usage_records
-       where scope = ? and scope_id = ? and week_key = ?${providerClause}`,
-      params
-    );
-    return row ?? { total_tokens: 0, total_cost: 0 };
+    return queryCumulative("scope = ? and scope_id = ? and week_key = ?", [scope, scopeId, weekKey], provider);
   }
 
   function getGlobalCumulativeUsage(weekKey: string, provider: BudgetCapProvider): CumulativeRow {
-    const providerClause = provider === "any" ? "" : " and provider = ?";
-    const params: (string | number)[] = [weekKey];
-    if (provider !== "any") params.push(provider);
+    return queryCumulative("week_key = ?", [weekKey], provider);
+  }
 
-    const row = db.get<{ total_tokens: number; total_cost: number }>(
-      `select coalesce(sum(tokens_used), 0) as total_tokens,
-              coalesce(sum(cost_usd), 0) as total_cost
-       from budget_usage_records
-       where week_key = ?${providerClause}`,
-      params
-    );
-    return row ?? { total_tokens: 0, total_cost: 0 };
+  // ------------------------------------------------------------------
+  // Snapshot window helpers
+  // ------------------------------------------------------------------
+
+  function getMaxWindowPercent(
+    windowType: "weekly" | "five_hour",
+    provider: BudgetCapProvider = "any"
+  ): number | null {
+    const snapshot = usageTrackingService?.getUsageSnapshot();
+    if (!snapshot) return null;
+
+    const windows = snapshot.windows.filter((w) => w.windowType === windowType);
+    const relevant = provider === "any" ? windows : windows.filter((w) => w.provider === provider);
+    if (relevant.length === 0) return null;
+
+    return Math.max(...relevant.map((w) => w.percentUsed));
   }
 
   // ------------------------------------------------------------------
@@ -139,7 +152,6 @@ export function createBudgetCapService({
 
   function isNightShiftReserveBlocked(
     scope: BudgetCapScope,
-    weekKey: string,
     config: BudgetCapConfig
   ): { blocked: boolean; reason?: string } {
     const reservePct = config.nightShiftReservePercent;
@@ -150,15 +162,9 @@ export function createBudgetCapService({
       return { blocked: false };
     }
 
-    // Get current weekly percent from live usage tracking
-    const snapshot = usageTrackingService?.getSnapshot();
-    if (!snapshot) return { blocked: false };
+    const maxWeeklyPct = getMaxWindowPercent("weekly");
+    if (maxWeeklyPct == null) return { blocked: false };
 
-    const weeklyWindows = snapshot.windows.filter((w) => w.windowType === "weekly");
-    if (weeklyWindows.length === 0) return { blocked: false };
-
-    // Use the highest percent-used across providers
-    const maxWeeklyPct = Math.max(...weeklyWindows.map((w) => w.percentUsed));
     const maxAllowed = 100 - reservePct;
 
     if (maxWeeklyPct >= maxAllowed) {
@@ -183,55 +189,23 @@ export function createBudgetCapService({
   ): { exceeded: boolean; message: string; remainingPercent?: number; remainingUsd?: number } {
     const { capType, limit, provider } = cap;
 
-    if (capType === "weekly-percent") {
-      // Get live usage percent from tracking service
-      const snapshot = usageTrackingService?.getSnapshot();
-      if (!snapshot) return { exceeded: false, message: "No usage data available" };
+    if (capType === "weekly-percent" || capType === "five-hour-percent") {
+      const windowType = capType === "weekly-percent" ? "weekly" as const : "five_hour" as const;
+      const label = capType === "weekly-percent" ? "Weekly" : "5-hour";
 
-      const weeklyWindows = snapshot.windows.filter((w) => w.windowType === "weekly");
-      const relevantWindows =
-        provider === "any"
-          ? weeklyWindows
-          : weeklyWindows.filter((w) => w.provider === provider);
+      const maxPct = getMaxWindowPercent(windowType, provider);
+      if (maxPct == null) return { exceeded: false, message: "No usage data available" };
 
-      if (relevantWindows.length === 0) return { exceeded: false, message: "No matching windows" };
-
-      const maxPct = Math.max(...relevantWindows.map((w) => w.percentUsed));
       const remaining = Math.max(0, limit - maxPct);
 
       if (maxPct >= limit) {
         return {
           exceeded: true,
-          message: `Weekly usage at ${maxPct.toFixed(1)}% exceeds cap of ${limit}%`,
+          message: `${label} usage at ${maxPct.toFixed(1)}% exceeds cap of ${limit}%`,
           remainingPercent: 0
         };
       }
-      return { exceeded: false, message: `Weekly usage at ${maxPct.toFixed(1)}%`, remainingPercent: remaining };
-    }
-
-    if (capType === "five-hour-percent") {
-      const snapshot = usageTrackingService?.getSnapshot();
-      if (!snapshot) return { exceeded: false, message: "No usage data available" };
-
-      const fiveHourWindows = snapshot.windows.filter((w) => w.windowType === "five_hour");
-      const relevantWindows =
-        provider === "any"
-          ? fiveHourWindows
-          : fiveHourWindows.filter((w) => w.provider === provider);
-
-      if (relevantWindows.length === 0) return { exceeded: false, message: "No matching windows" };
-
-      const maxPct = Math.max(...relevantWindows.map((w) => w.percentUsed));
-      const remaining = Math.max(0, limit - maxPct);
-
-      if (maxPct >= limit) {
-        return {
-          exceeded: true,
-          message: `5-hour usage at ${maxPct.toFixed(1)}% exceeds cap of ${limit}%`,
-          remainingPercent: 0
-        };
-      }
-      return { exceeded: false, message: `5-hour usage at ${maxPct.toFixed(1)}%`, remainingPercent: remaining };
+      return { exceeded: false, message: `${label} usage at ${maxPct.toFixed(1)}%`, remainingPercent: remaining };
     }
 
     if (capType === "usd-per-run") {
@@ -290,7 +264,7 @@ export function createBudgetCapService({
       const warnings: string[] = [];
 
       // 1. Night Shift reserve check
-      const nsReserve = isNightShiftReserveBlocked(scope, weekKey, config);
+      const nsReserve = isNightShiftReserveBlocked(scope, config);
       if (nsReserve.blocked) {
         logger.warn("budgetCap.nightShiftReserveBlocked", { scope, scopeId, reason: nsReserve.reason });
         return {
@@ -303,30 +277,22 @@ export function createBudgetCapService({
       // 2. Alert threshold check (soft warning)
       const alertAt = config.alertAtWeeklyPercent;
       if (alertAt != null && alertAt > 0) {
-        const snapshot = usageTrackingService?.getSnapshot();
-        if (snapshot) {
-          const weeklyWindows = snapshot.windows.filter((w) => w.windowType === "weekly");
-          const maxPct = weeklyWindows.length > 0 ? Math.max(...weeklyWindows.map((w) => w.percentUsed)) : 0;
-          if (maxPct >= alertAt) {
-            const msg = `Weekly usage at ${maxPct.toFixed(1)}% has reached alert threshold of ${alertAt}%`;
-            warnings.push(msg);
-            logger.warn("budgetCap.alertThreshold", { scope, scopeId, maxPct, alertAt });
-          }
+        const maxPct = getMaxWindowPercent("weekly") ?? 0;
+        if (maxPct >= alertAt) {
+          const msg = `Weekly usage at ${maxPct.toFixed(1)}% has reached alert threshold of ${alertAt}%`;
+          warnings.push(msg);
+          logger.warn("budgetCap.alertThreshold", { scope, scopeId, maxPct, alertAt });
         }
       }
 
       // 3. Preset-based global cap check
       if (config.preset) {
         const presetLimit = presetToWeeklyPercent(config.preset);
-        const snapshot = usageTrackingService?.getSnapshot();
-        if (snapshot) {
-          const weeklyWindows = snapshot.windows.filter((w) => w.windowType === "weekly");
-          const maxPct = weeklyWindows.length > 0 ? Math.max(...weeklyWindows.map((w) => w.percentUsed)) : 0;
-          if (maxPct >= presetLimit) {
-            const reason = `Budget preset "${config.preset}" cap of ${presetLimit}% exceeded (current: ${maxPct.toFixed(1)}%)`;
-            logger.warn("budgetCap.presetExceeded", { scope, scopeId, preset: config.preset, presetLimit, maxPct });
-            return { allowed: false, reason, remainingPercent: 0, warnings };
-          }
+        const maxPct = getMaxWindowPercent("weekly") ?? 0;
+        if (maxPct >= presetLimit) {
+          const reason = `Budget preset "${config.preset}" cap of ${presetLimit}% exceeded (current: ${maxPct.toFixed(1)}%)`;
+          logger.warn("budgetCap.presetExceeded", { scope, scopeId, preset: config.preset, presetLimit, maxPct });
+          return { allowed: false, reason, remainingPercent: 0, warnings };
         }
       }
 

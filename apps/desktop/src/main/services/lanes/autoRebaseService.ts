@@ -1,4 +1,4 @@
-import { runGit } from "../git/git";
+import { getHeadSha } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createConflictService } from "../conflicts/conflictService";
@@ -48,13 +48,6 @@ function byCreatedAtAsc(a: LaneSummary, b: LaneSummary): number {
   const bTs = Date.parse(b.createdAt);
   if (Number.isFinite(aTs) && Number.isFinite(bTs) && aTs !== bTs) return aTs - bTs;
   return a.name.localeCompare(b.name);
-}
-
-async function readHeadSha(worktreePath: string): Promise<string | null> {
-  const res = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
-  if (res.exitCode !== 0) return null;
-  const sha = res.stdout.trim();
-  return sha.length ? sha : null;
 }
 
 export function createAutoRebaseService(args: {
@@ -258,7 +251,7 @@ export function createAutoRebaseService(args: {
           setStatus({
             laneId: lane.id,
             parentLaneId: lane.parentLaneId,
-            parentHeadSha: await readHeadSha(parent.worktreePath),
+            parentHeadSha: await getHeadSha(parent.worktreePath),
             state: "rebaseConflict",
             conflictCount: Math.max(1, simulation.conflictingFiles.length),
             message: `Auto-rebase blocked: ${Math.max(1, simulation.conflictingFiles.length)} conflict(s) expected.`
@@ -267,7 +260,7 @@ export function createAutoRebaseService(args: {
           setStatus({
             laneId: lane.id,
             parentLaneId: lane.parentLaneId,
-            parentHeadSha: await readHeadSha(parent.worktreePath),
+            parentHeadSha: await getHeadSha(parent.worktreePath),
             state: "rebasePending",
             conflictCount: 0,
             message: simulation.error?.trim() || "Auto-rebase could not run merge simulation."
@@ -290,7 +283,7 @@ export function createAutoRebaseService(args: {
         setStatus({
           laneId: lane.id,
           parentLaneId: lane.parentLaneId,
-          parentHeadSha: await readHeadSha(parent.worktreePath),
+          parentHeadSha: await getHeadSha(parent.worktreePath),
           state: conflictHint ? "rebaseConflict" : "rebasePending",
           conflictCount: conflictHint ? 1 : 0,
           message: conflictHint
@@ -303,7 +296,7 @@ export function createAutoRebaseService(args: {
       setStatus({
         laneId: lane.id,
         parentLaneId: lane.parentLaneId,
-        parentHeadSha: await readHeadSha(parent.worktreePath),
+        parentHeadSha: await getHeadSha(parent.worktreePath),
         state: "autoRebased",
         conflictCount: 0,
         message: `Rebased automatically after '${parent.name}' advanced.`

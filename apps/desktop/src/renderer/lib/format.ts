@@ -13,11 +13,11 @@ export function relativeWhen(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** Format an ISO timestamp to a locale string, returning "-" for invalid/null. */
-export function formatDate(ts: string | null): string {
-  if (!ts) return "-";
+/** Format an ISO timestamp to a locale string, returning a fallback for invalid/null. */
+export function formatDate(ts: string | null, fallback = "-"): string {
+  if (!ts) return fallback;
   const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "-";
+  if (Number.isNaN(d.getTime())) return fallback;
   return d.toLocaleString();
 }
 
@@ -41,6 +41,17 @@ export function formatDurationMs(ms: number | null): string {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
+/** Format elapsed time since a given ISO timestamp. */
+export function formatElapsedSince(startIso: string): string {
+  const ms = Math.max(0, Date.now() - Date.parse(startIso));
+  const secs = Math.floor(ms / 1000);
+  const mins = Math.floor(secs / 60);
+  const hrs = Math.floor(mins / 60);
+  if (hrs > 0) return `${hrs}h ${mins % 60}m`;
+  if (mins > 0) return `${mins}m ${secs % 60}s`;
+  return `${secs}s`;
 }
 
 /** Format a token count with K/M suffixes. */

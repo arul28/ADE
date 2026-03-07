@@ -900,12 +900,12 @@ export function createPackService({
     );
 
     const transcriptTailCache = new Map<string, string>();
-    const getTranscriptTail = (transcriptPath: string | null): string => {
+    const getTranscriptTail = async (transcriptPath: string | null): Promise<string> => {
       const key = String(transcriptPath ?? "").trim();
       if (!key) return "";
       const cached = transcriptTailCache.get(key);
       if (cached != null) return cached;
-      const tail = sessionService.readTranscriptTail(key, 140_000);
+      const tail = await sessionService.readTranscriptTail(key, 140_000);
       transcriptTailCache.set(key, tail);
       return tail;
     };
@@ -954,7 +954,7 @@ export function createPackService({
       }
     } else {
       const latestEnded = recentSessions.find((s) => Boolean(s.endedAt));
-      const transcriptTail = latestEnded ? getTranscriptTail(latestEnded.transcriptPath) : "";
+      const transcriptTail = latestEnded ? await getTranscriptTail(latestEnded.transcriptPath) : "";
       const inferred = inferTestOutcomeFromText(transcriptTail);
       if (inferred) {
         validationLines.push(`Tests: ${inferred.status === "pass" ? "PASS" : "FAIL"} (inferred from terminal output)`);

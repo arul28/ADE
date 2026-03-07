@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type {
@@ -73,6 +72,7 @@ import {
   cleanupMcpConfigFile,
 } from "./unifiedOrchestratorAdapter";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import { runGit } from "../git/git";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
@@ -1477,11 +1477,11 @@ export function createOrchestratorService({
     };
   };
 
-  const collectTouchedRepoPaths = (args: {
+  const collectTouchedRepoPaths = async (args: {
     laneId?: string | null;
     result?: Partial<OrchestratorAttemptResultEnvelope> | null;
     metadata?: Record<string, unknown> | null;
-  }): { touchedPaths: string[]; rawPaths: string[] } => {
+  }): Promise<{ touchedPaths: string[]; rawPaths: string[] }> => {
     const rawPaths: string[] = [];
     const touched = new Set<string>();
     const pushPath = (value: unknown) => {
@@ -1544,10 +1544,11 @@ export function createOrchestratorService({
         ? laneRow.worktree_path.trim()
         : projectRoot;
       try {
-        const status = spawnSync("git", ["-C", laneRoot, "status", "--porcelain=v1", "--untracked-files=all"], {
-          encoding: "utf8"
+        const status = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], {
+          cwd: laneRoot,
+          timeoutMs: 15_000,
         });
-        if (status.status === 0 && typeof status.stdout === "string" && status.stdout.trim().length > 0) {
+        if (status.exitCode === 0 && status.stdout.trim().length > 0) {
           const normalizePorcelainPath = (value: string): string => {
             const trimmed = value.trim();
             if (!trimmed.startsWith("\"") || !trimmed.endsWith("\"")) return trimmed;
@@ -1587,16 +1588,16 @@ export function createOrchestratorService({
     };
   };
 
-  const evaluateFileReservationViolations = (args: {
+  const evaluateFileReservationViolations = async (args: {
     step: OrchestratorStep;
     result?: Partial<OrchestratorAttemptResultEnvelope> | null;
     metadata?: Record<string, unknown> | null;
-  }): {
+  }): Promise<{
     normalizedScopes: string[];
     touchedPaths: string[];
     violations: string[];
     rawPaths: string[];
-  } => {
+  }> => {
     const stepPolicy = resolveStepPolicy(args.step);
     const fileScopes = (stepPolicy.claimScopes ?? [])
       .filter((scope) => scope.scopeKind === "file")
@@ -1610,7 +1611,7 @@ export function createOrchestratorService({
         rawPaths: []
       };
     }
-    const touched = collectTouchedRepoPaths({
+    const touched = await collectTouchedRepoPaths({
       laneId: args.step.laneId,
       result: args.result,
       metadata: args.metadata
@@ -4786,7 +4787,7 @@ export function createOrchestratorService({
             exitCode: resolvedExitCode
           }
         });
-        this.completeAttempt({
+        await this.completeAttempt({
           attemptId: attempt.id,
           status: completionForAttempt.status,
           ...(completionForAttempt.errorClass
@@ -5898,7 +5899,7 @@ export function createOrchestratorService({
         errorMessage?: string;
         metadata?: Record<string, unknown> | null;
       }): Promise<OrchestratorAttempt> => {
-        const completedAttempt = this.completeAttempt(completeArgs);
+        const completedAttempt = await this.completeAttempt(completeArgs);
         await this.startReadyAutopilotAttempts({
           runId: run.id,
           reason: "attempt_completed_inline"
@@ -6549,7 +6550,7 @@ export function createOrchestratorService({
       return attempt;
     },
 
-    completeAttempt(args: {
+    async completeAttempt(args: {
       attemptId: string;
       status: Extract<OrchestratorAttemptStatus, "succeeded" | "failed" | "blocked" | "canceled">;
       result?: OrchestratorAttemptResultEnvelope;
@@ -6557,7 +6558,7 @@ export function createOrchestratorService({
       errorMessage?: string | null;
       retryBackoffMs?: number;
       metadata?: Record<string, unknown> | null;
-    }): OrchestratorAttempt {
+    }): Promise<OrchestratorAttempt> {
       const attemptRow = getAttemptRow(args.attemptId);
       if (!attemptRow) throw new Error(`Attempt not found: ${args.attemptId}`);
       const stepRow = getStepRow(attemptRow.step_id);
@@ -6573,7 +6574,7 @@ export function createOrchestratorService({
 	      let status = args.status;
 	      const fileReservationCheck =
 	        status === "succeeded"
-	          ? evaluateFileReservationViolations({
+	          ? await evaluateFileReservationViolations({
 	              step,
 	              result: args.result ?? null,
 	              metadata: args.metadata ?? null
@@ -8213,13 +8214,13 @@ export function createOrchestratorService({
       return toStep(updatedRow);
     },
 
-    supersedeStep(args: {
+    async supersedeStep(args: {
       runId: string;
       stepId: string;
       replacementStepId?: string | null;
       replacementStepKey?: string | null;
       reason?: string;
-    }): OrchestratorStep {
+    }): Promise<OrchestratorStep> {
       const runId = String(args.runId ?? "").trim();
       const stepId = String(args.stepId ?? "").trim();
       if (!runId) throw new Error("runId is required.");
@@ -8244,7 +8245,7 @@ export function createOrchestratorService({
         .filter((attempt) => attempt.step_id === stepId && attempt.status === "running")
         .map(toAttempt);
       for (const runningAttempt of runningAttempts) {
-        this.completeAttempt({
+        await this.completeAttempt({
           attemptId: runningAttempt.id,
           status: "canceled",
           errorClass: "canceled",

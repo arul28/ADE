@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { PaperPlaneTilt } from "@phosphor-icons/react";
+import { MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 
 export type MentionParticipant = {
   id: string;
@@ -23,9 +24,6 @@ const STATUS_DOT_COLOR: Record<string, string> = {
   completed: "#6b7280",
   failed: "#ef4444",
 };
-
-const MONO = "JetBrains Mono, monospace";
-const SANS = "'Space Grotesk', sans-serif";
 
 function parseMentions(text: string): string[] {
   const regex = /@([\w-]+)/g;
@@ -205,7 +203,7 @@ export function MentionInput({
             style={{
               fontSize: 10,
               fontWeight: 700,
-              fontFamily: SANS,
+              fontFamily: SANS_FONT,
               textTransform: "uppercase",
               letterSpacing: "1px",
               color: "#71717A",
@@ -234,14 +232,14 @@ export function MentionInput({
               />
               <span
                 className="truncate text-xs font-medium"
-                style={{ fontFamily: MONO }}
+                style={{ fontFamily: MONO_FONT }}
               >
                 @{p.label}
               </span>
               {p.role && (
                 <span
                   className="ml-auto shrink-0 text-[9px] uppercase tracking-wider"
-                  style={{ color: "#52525B", fontFamily: SANS }}
+                  style={{ color: "#52525B", fontFamily: SANS_FONT }}
                 >
                   {p.role}
                 </span>
@@ -259,7 +257,7 @@ export function MentionInput({
             aria-hidden
             className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-3 py-1.5 text-xs"
             style={{
-              fontFamily: MONO,
+              fontFamily: MONO_FONT,
               color: "transparent",
               lineHeight: "1.5",
             }}
@@ -285,7 +283,7 @@ export function MentionInput({
             style={{
               background: "#0C0A10",
               border: focused ? "1px solid #A78BFA" : "1px solid #27272A",
-              fontFamily: MONO,
+              fontFamily: MONO_FONT,
               color: "#FAFAFA",
               borderRadius: 0,
               lineHeight: "1.5",
@@ -305,7 +303,7 @@ export function MentionInput({
           style={{
             background: "#A78BFA",
             color: "#0F0D14",
-            fontFamily: MONO,
+            fontFamily: MONO_FONT,
             height: 32,
             letterSpacing: "1px",
           }}

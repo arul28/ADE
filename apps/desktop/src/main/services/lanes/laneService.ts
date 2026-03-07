@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
-import { runGit, runGitOrThrow } from "../git/git";
+import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
+import { isWithinDir } from "../shared/utils";
 import { detectConflictKind } from "../git/gitConflictState";
 import type { createOperationService } from "../history/operationService";
 import type {
@@ -88,11 +89,6 @@ function normAbs(p: string): string {
   return path.resolve(p);
 }
 
-function isWithinDir(dir: string, candidate: string): boolean {
-  const rel = path.relative(dir, candidate);
-  return rel.length === 0 || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
 function parseLaneIcon(value: string | null): LaneIcon {
   if (!value) return null;
   if (value === "star" || value === "flag" || value === "bolt" || value === "shield" || value === "tag") {
@@ -155,13 +151,6 @@ async function detectBranchRef(worktreePath: string, fallback: string): Promise<
     if (value && value !== "HEAD") return value;
   }
   return fallback;
-}
-
-async function getHeadSha(worktreePath: string): Promise<string | null> {
-  const head = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
-  if (head.exitCode !== 0) return null;
-  const sha = head.stdout.trim();
-  return sha.length ? sha : null;
 }
 
 async function computeLaneStatus(worktreePath: string, baseRef: string, branchRef: string): Promise<LaneStatus> {
@@ -1174,7 +1163,6 @@ export function createLaneService({
         laneItem.conflictingFiles = conflictRes.exitCode === 0 ? parseConflictingFiles(conflictRes.stdout) : [];
         laneItem.status = "conflict";
         laneItem.error = rebaseRes.stderr.trim() || "Rebase failed with conflicts";
-        laneItem.postHeadSha = await getHeadSha(lane.worktree_path);
 
         const abortRes = await runGit(["rebase", "--abort"], { cwd: lane.worktree_path, timeoutMs: 15_000 });
         if (abortRes.exitCode !== 0) {
@@ -1184,6 +1172,10 @@ export function createLaneService({
             message: `Failed to auto-abort rebase: ${abortRes.stderr.trim() || "unknown error"}`
           });
         }
+
+        // Capture postHeadSha AFTER abort so it reflects the actual HEAD
+        // (reverted to pre-rebase state), not the mid-conflict partial rebase.
+        laneItem.postHeadSha = await getHeadSha(lane.worktree_path);
 
         if (operation?.operationId) {
           operationService?.finish({

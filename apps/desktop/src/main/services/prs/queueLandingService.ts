@@ -63,22 +63,19 @@ export function createQueueLandingService({
   };
   emitEvent: (event: PrEventPayload) => void;
 }) {
+  const Q_COLS = "id, group_id, project_id, state, entries_json, current_position, started_at, completed_at";
+
   const getRow = (queueId: string): QueueLandingRow | null =>
     db.get<QueueLandingRow>(
-      `select id, group_id, project_id, state, entries_json, current_position, started_at, completed_at
-       from queue_landing_state
-       where id = ? and project_id = ?
-       limit 1`,
+      `select ${Q_COLS} from queue_landing_state where id = ? and project_id = ? limit 1`,
       [queueId, projectId]
     );
 
   const getRowByGroup = (groupId: string): QueueLandingRow | null =>
     db.get<QueueLandingRow>(
-      `select id, group_id, project_id, state, entries_json, current_position, started_at, completed_at
-       from queue_landing_state
+      `select ${Q_COLS} from queue_landing_state
        where group_id = ? and project_id = ? and state in ('landing', 'paused')
-       order by started_at desc
-       limit 1`,
+       order by started_at desc limit 1`,
       [groupId, projectId]
     );
 
@@ -386,9 +383,7 @@ export function createQueueLandingService({
 
   const init = (): void => {
     const interrupted = db.all<QueueLandingRow>(
-      `select id, group_id, project_id, state, entries_json, current_position, started_at, completed_at
-       from queue_landing_state
-       where project_id = ? and state = 'landing'`,
+      `select ${Q_COLS} from queue_landing_state where project_id = ? and state = 'landing'`,
       [projectId]
     );
 

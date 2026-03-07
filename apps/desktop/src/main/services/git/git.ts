@@ -160,7 +160,18 @@ export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promis
   return res.stdout;
 }
 
-function normalizeConflictType(raw: string): ConflictFileType {
+/**
+ * Read the HEAD SHA (or null if unavailable) for a given worktree path.
+ * Shared across gitOperationsService, laneService, autoRebaseService, and rebaseSuggestionService.
+ */
+export async function getHeadSha(worktreePath: string): Promise<string | null> {
+  const res = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
+  if (res.exitCode !== 0) return null;
+  const sha = res.stdout.trim();
+  return sha.length ? sha : null;
+}
+
+export function normalizeConflictType(raw: string): ConflictFileType {
   const value = raw.trim().toLowerCase();
   if (value.includes("rename")) return "rename";
   if (value.includes("delete")) return "delete";

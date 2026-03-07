@@ -9,6 +9,7 @@ import type {
   CtoSnapshot,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
+import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
 
 type CtoStateServiceArgs = {
   db: AdeDb;
@@ -33,37 +34,6 @@ type PersistedDoc<T> = {
   updatedAt: string;
 };
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function parseIsoToEpoch(value: string | null | undefined): number {
-  if (!value) return Number.NaN;
-  const epoch = Date.parse(value);
-  return Number.isFinite(epoch) ? epoch : Number.NaN;
-}
-
-function writeTextAtomic(filePath: string, text: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${randomUUID()}`;
-  fs.writeFileSync(tmp, text, "utf8");
-  try {
-    fs.renameSync(tmp, filePath);
-  } catch (error) {
-    try {
-      fs.copyFileSync(tmp, filePath);
-      fs.unlinkSync(tmp);
-    } catch {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        // ignore cleanup errors
-      }
-      throw error;
-    }
-  }
-}
-
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
@@ -73,18 +43,6 @@ function asStringArray(value: unknown): string[] {
     out.push(normalized);
   }
   return out;
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
-}
-
-function safeJsonParse<T>(raw: string): T | null {
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
 }
 
 function safeYamlParse<T>(raw: string): T | null {
@@ -254,7 +212,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       [args.projectId]
     );
     if (!row?.payload_json) return null;
-    const payload = normalizeIdentity(safeJsonParse(row.payload_json));
+    const payload = normalizeIdentity(safeJsonParse(row.payload_json, null));
     if (!payload) return null;
     const updatedAt = row.updated_at?.trim() || payload.updatedAt;
     return { payload: { ...payload, updatedAt }, updatedAt };
@@ -280,7 +238,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
 
   const readCoreMemoryFromFile = (): PersistedDoc<CtoCoreMemory> | null => {
     if (!fs.existsSync(coreMemoryPath)) return null;
-    const parsed = safeJsonParse<unknown>(fs.readFileSync(coreMemoryPath, "utf8"));
+    const parsed = safeJsonParse<unknown>(fs.readFileSync(coreMemoryPath, "utf8"), null);
     const payload = normalizeCoreMemory(parsed);
     if (!payload) return null;
     return { payload, updatedAt: payload.updatedAt };
@@ -292,7 +250,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       [args.projectId]
     );
     if (!row?.payload_json) return null;
-    const payload = normalizeCoreMemory(safeJsonParse(row.payload_json));
+    const payload = normalizeCoreMemory(safeJsonParse(row.payload_json, null));
     if (!payload) return null;
     const updatedAt = row.updated_at?.trim() || payload.updatedAt;
     return { payload: { ...payload, updatedAt }, updatedAt };
@@ -378,7 +336,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     for (const line of raw.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed.length) continue;
-      const parsed = safeJsonParse<unknown>(trimmed);
+      const parsed = safeJsonParse<unknown>(trimmed, null);
       const normalized = normalizeSessionLogEntry(parsed);
       if (normalized) entries.push(normalized);
     }

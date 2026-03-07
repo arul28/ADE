@@ -3332,7 +3332,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
           const errorMessage = `Attempt stagnating after timeout (${elapsedMinutes}m > ${timeoutMinutes}m) with ${stagnantMinutes}m no progress.`;
           try {
-            orchestratorService.completeAttempt({
+            await orchestratorService.completeAttempt({
               attemptId: attempt.id,
               status: "failed",
               errorClass: "transient",

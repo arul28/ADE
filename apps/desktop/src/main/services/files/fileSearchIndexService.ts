@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FilesQuickOpenItem, FilesSearchTextMatch } from "../../../shared/types";
+import { hasNullByte, normalizeRelative } from "../shared/utils";
 
 const MAX_INDEXED_FILES = 25_000;
 const MAX_TEXT_FILE_BYTES = 1_000_000;
@@ -25,20 +26,8 @@ type WorkspaceIndex = {
   builtAt: string | null;
 };
 
-function normalizeRelative(relPath: string): string {
-  return relPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
-}
-
 function shouldSkipPathPrefix(relPath: string): boolean {
   return relPath === ".ade" || relPath.startsWith(".ade/");
-}
-
-function hasNullByte(buf: Buffer): boolean {
-  const max = Math.min(buf.length, 8192);
-  for (let i = 0; i < max; i++) {
-    if (buf[i] === 0) return true;
-  }
-  return false;
 }
 
 function scorePath(pathValue: string, query: string): number {

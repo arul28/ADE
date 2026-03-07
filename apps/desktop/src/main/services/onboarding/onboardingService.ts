@@ -13,39 +13,9 @@ import type {
   ProjectConfigFile
 } from "../../../shared/types";
 import { runGit, runGitOrThrow } from "../git/git";
+import { dirExists, fileExists, safeReadText } from "../shared/utils";
 
 const STATUS_KEY = "onboarding:status";
-
-function fileExists(absPath: string): boolean {
-  try {
-    return fs.statSync(absPath).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function dirExists(absPath: string): boolean {
-  try {
-    return fs.statSync(absPath).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function safeReadText(absPath: string, maxBytes: number): string {
-  try {
-    const fd = fs.openSync(absPath, "r");
-    try {
-      const buf = Buffer.alloc(maxBytes);
-      const read = fs.readSync(fd, buf, 0, maxBytes, 0);
-      return buf.slice(0, Math.max(0, read)).toString("utf8");
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return "";
-  }
-}
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
   const out: T[] = [];

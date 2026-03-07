@@ -71,6 +71,11 @@ const STATUS_DOT: Record<string, string> = {
   failed: STATUS_RED,
 };
 
+const DELIVERY_STATE_COLOR: Record<string, string> = {
+  delivered: STATUS_GREEN,
+  failed: STATUS_RED,
+};
+
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -615,13 +620,14 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
   );
 
   // ── Channel name for header ──
-  const channelHeaderName = selectedChannel
-    ? selectedChannel.kind === "global"
-      ? "Global"
-      : selectedChannel.kind === "orchestrator"
-        ? "Orchestrator"
-        : selectedChannel.label
-    : "...";
+  const channelHeaderName = (() => {
+    if (!selectedChannel) return "...";
+    switch (selectedChannel.kind) {
+      case "global": return "Global";
+      case "orchestrator": return "Orchestrator";
+      default: return selectedChannel.label;
+    }
+  })();
 
   return (
     <div className="flex h-full min-h-0">
@@ -897,15 +903,14 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
             onChange={setInput}
             onSend={handleSend}
             participants={participants}
-            placeholder={
-              selectedChannel?.kind === "global"
-                ? "Message global (use @mention to target)..."
-                : selectedChannel?.kind === "orchestrator"
-                  ? "Message the orchestrator..."
-                  : selectedChannel?.kind === "teammate"
-                    ? `Message teammate ${selectedChannel?.label ?? ""}...`
-                    : `Message ${selectedChannel?.label ?? "worker"}...`
-            }
+            placeholder={(() => {
+              switch (selectedChannel?.kind) {
+                case "global": return "Message global (use @mention to target)...";
+                case "orchestrator": return "Message the orchestrator...";
+                case "teammate": return `Message teammate ${selectedChannel?.label ?? ""}...`;
+                default: return `Message ${selectedChannel?.label ?? "worker"}...`;
+              }
+            })()}
             disabled={sending || Boolean(chatBlocked)}
             autoFocus
           />
@@ -1132,44 +1137,43 @@ const MessageBubble = React.memo(function MessageBubble({
   }
 
   if (structuredStream && !isGlobalView) {
-    const headerColor =
-      structuredKind === "reasoning"
-        ? "#38BDF8"
-        : structuredKind === "tool"
-          ? "#F59E0B"
-          : structuredKind === "error"
-            ? STATUS_RED
-            : structuredKind === "done"
-              ? STATUS_GREEN
-              : TEXT_MUTED;
+    const headerColorMap: Record<string, string> = {
+      reasoning: "#38BDF8",
+      tool: "#F59E0B",
+      error: STATUS_RED,
+      done: STATUS_GREEN,
+    };
+    const headerColor = headerColorMap[structuredKind] ?? TEXT_MUTED;
     const toolName = typeof structuredStream.tool === "string" ? structuredStream.tool : "tool";
-    const detail =
-      structuredKind === "tool"
-        ? [structuredStream.args !== undefined ? `Args\n${formatStructuredValue(structuredStream.args)}` : null,
-          structuredStream.result !== undefined ? `Result\n${formatStructuredValue(structuredStream.result)}` : null]
-          .filter(Boolean)
-          .join("\n\n")
-        : structuredKind === "done"
-          ? structuredStream.usage != null ? formatStructuredValue(structuredStream.usage) : ""
-          : structuredKind === "error"
-            ? typeof structuredStream.message === "string" ? structuredStream.message : msg.content
-            : msg.content;
+    const detail = (() => {
+      switch (structuredKind) {
+        case "tool":
+          return [
+            structuredStream.args !== undefined ? `Args\n${formatStructuredValue(structuredStream.args)}` : null,
+            structuredStream.result !== undefined ? `Result\n${formatStructuredValue(structuredStream.result)}` : null,
+          ].filter(Boolean).join("\n\n");
+        case "done":
+          return structuredStream.usage != null ? formatStructuredValue(structuredStream.usage) : "";
+        case "error":
+          return typeof structuredStream.message === "string" ? structuredStream.message : msg.content;
+        default:
+          return msg.content;
+      }
+    })();
     const showExpandable =
       structuredKind === "reasoning"
       || structuredKind === "tool"
       || structuredKind === "error";
-    const title =
-      structuredKind === "reasoning"
-        ? "Thinking"
-        : structuredKind === "tool"
-          ? `Tool · ${toolName}`
-          : structuredKind === "status"
-            ? `Turn ${typeof structuredStream.status === "string" ? structuredStream.status : "update"}`
-            : structuredKind === "done"
-              ? `Turn ${typeof structuredStream.status === "string" ? structuredStream.status : "done"}`
-              : structuredKind === "text"
-                ? senderLabel
-                : "Worker event";
+    const title = (() => {
+      switch (structuredKind) {
+        case "reasoning": return "Thinking";
+        case "tool": return `Tool \u00B7 ${toolName}`;
+        case "status": return `Turn ${typeof structuredStream.status === "string" ? structuredStream.status : "update"}`;
+        case "done": return `Turn ${typeof structuredStream.status === "string" ? structuredStream.status : "done"}`;
+        case "text": return senderLabel;
+        default: return "Worker event";
+      }
+    })();
 
     return (
       <div className="flex justify-start">
@@ -1332,23 +1336,9 @@ const MessageBubble = React.memo(function MessageBubble({
 
   // Standard message bubble
   const roleIcon = isWorker ? TerminalWindow : Robot;
-  const bubbleBorder = isBudgetWarning
-    ? `1px solid ${WARNING}30`
-    : isOrchestrator
-      ? `1px solid ${BORDER}`
-      : isWorker
-        ? "1px solid #A78BFA30"
-        : `1px solid ${BORDER}`;
-  const bubbleBg = isBudgetWarning
-    ? `${WARNING}08`
-    : isOrchestrator
-      ? BG_MAIN
-      : isWorker
-        ? "#A78BFA10"
-        : BG_MAIN;
   const bubbleStyle: React.CSSProperties = isBudgetWarning
     ? {
-        background: bubbleBg,
+        background: `${WARNING}08`,
         borderTop: `1px solid ${WARNING}30`,
         borderRight: `1px solid ${WARNING}30`,
         borderBottom: `1px solid ${WARNING}30`,
@@ -1356,8 +1346,8 @@ const MessageBubble = React.memo(function MessageBubble({
         color: TEXT_PRIMARY,
       }
     : {
-        background: bubbleBg,
-        border: bubbleBorder,
+        background: isWorker ? "#A78BFA10" : BG_MAIN,
+        border: isWorker ? "1px solid #A78BFA30" : `1px solid ${BORDER}`,
         color: TEXT_PRIMARY,
       };
 
@@ -1378,34 +1368,21 @@ const MessageBubble = React.memo(function MessageBubble({
         <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
         <div className="mt-1 flex items-center justify-between gap-2" style={timestampStyle}>
           <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
-          {msg.deliveryState && (
-            <span
-              className="px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider"
-              style={{
-                color:
-                  msg.deliveryState === "delivered"
-                    ? STATUS_GREEN
-                    : msg.deliveryState === "failed"
-                      ? STATUS_RED
-                      : "#F59E0B",
-                background:
-                  msg.deliveryState === "delivered"
-                    ? `${STATUS_GREEN}18`
-                    : msg.deliveryState === "failed"
-                      ? `${STATUS_RED}18`
-                      : "#F59E0B18",
-                border: `1px solid ${
-                  msg.deliveryState === "delivered"
-                    ? `${STATUS_GREEN}30`
-                    : msg.deliveryState === "failed"
-                      ? `${STATUS_RED}30`
-                      : "#F59E0B30"
-                }`,
-              }}
-            >
-              {msg.deliveryState}
-            </span>
-          )}
+          {msg.deliveryState && (() => {
+            const stateColor = DELIVERY_STATE_COLOR[msg.deliveryState] ?? "#F59E0B";
+            return (
+              <span
+                className="px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider"
+                style={{
+                  color: stateColor,
+                  background: `${stateColor}18`,
+                  border: `1px solid ${stateColor}30`,
+                }}
+              >
+                {msg.deliveryState}
+              </span>
+            );
+          })()}
         </div>
       </div>
     </div>

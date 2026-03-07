@@ -573,6 +573,8 @@ export function createAiIntegrationService(args: {
     const modelId = args.model;
     if (!modelId) throw new Error("model is required for unified execution path");
 
+    const hasFullRunContext = args.projectId && args.runId && args.stepId && args.attemptId;
+
     return consumeEventStream(
       executeUnified({
         modelId,
@@ -587,16 +589,14 @@ export function createAiIntegrationService(args: {
         timeout: args.timeoutMs,
         jsonSchema: args.jsonSchema,
         reasoningEffort: args.reasoningEffort,
-        ...(args.projectId ? { projectId: args.projectId } : {}),
-        ...(args.runId ? { runId: args.runId } : {}),
-        ...(args.stepId ? { stepId: args.stepId } : {}),
-        ...(args.attemptId ? { attemptId: args.attemptId } : {}),
-        ...(args.projectId && args.runId && args.stepId && args.attemptId ? { db, enableCompaction: true } : {}),
+        projectId: args.projectId,
+        runId: args.runId,
+        stepId: args.stepId,
+        attemptId: args.attemptId,
+        ...(hasFullRunContext ? { db, enableCompaction: true } : {}),
         ...(args.memoryService ? { memoryService: args.memoryService } : {}),
         ...(args.memoryService && args.runId
-          ? {
-              addSharedFact: args.memoryService.addSharedFact.bind(args.memoryService),
-            }
+          ? { addSharedFact: args.memoryService.addSharedFact.bind(args.memoryService) }
           : {}),
       }),
       args.feature,

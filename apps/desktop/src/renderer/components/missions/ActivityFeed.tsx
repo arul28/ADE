@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
 import { CaretDown } from "@phosphor-icons/react";
 import type { OrchestratorChatMessage } from "../../../shared/types";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
@@ -73,7 +73,7 @@ export function ActivityFeed({ messages, agentColors, selectedAgent: _selectedAg
   );
 }
 
-function FeedEntry({ msg, agentColors }: { msg: OrchestratorChatMessage; agentColors: Map<string, string> }) {
+const FeedEntry = React.memo(function FeedEntry({ msg, agentColors }: { msg: OrchestratorChatMessage; agentColors: Map<string, string> }) {
   const isUser = msg.role === "user";
   const isCoordinator = msg.role === "orchestrator";
 
@@ -172,4 +172,4 @@ function FeedEntry({ msg, agentColors }: { msg: OrchestratorChatMessage; agentCo
       </span>
     </div>
   );
-}
+});

@@ -1,5 +1,6 @@
 import { cn } from "../../ui/cn";
-import { formatCost } from "../../../lib/format";
+import { formatCost, formatTokens } from "../../../lib/format";
+import { CARD_SHADOW_STYLE } from "../shared";
 
 export function CostSummaryCard({
   provider,
@@ -17,7 +18,7 @@ export function CostSummaryCard({
   return (
     <div
       className={cn("p-3 space-y-2", className)}
-      style={{ background: "#181423", border: "1px solid #2D2840", boxShadow: "0 1px 6px -1px rgba(0,0,0,0.6), 0 0 0 1px rgba(45,40,64,0.3)" }}
+      style={CARD_SHADOW_STYLE}
     >
       <div className="flex items-center justify-between">
         <span
@@ -46,8 +47,8 @@ export function CostSummaryCard({
             <div key={model} className="flex items-center justify-between font-mono text-[9px] text-[#8B8B9A]">
               <span>{model}</span>
               <span>
-                {formatK(tokens.input)}in / {formatK(tokens.output)}out
-                {tokens.cached > 0 && ` / ${formatK(tokens.cached)}cache`}
+                {formatTokens(tokens.input)} in / {formatTokens(tokens.output)} out
+                {tokens.cached > 0 && ` / ${formatTokens(tokens.cached)} cache`}
               </span>
             </div>
           ))}
@@ -55,10 +56,4 @@ export function CostSummaryCard({
       )}
     </div>
   );
-}
-
-function formatK(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M `;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K `;
-  return `${n} `;
 }

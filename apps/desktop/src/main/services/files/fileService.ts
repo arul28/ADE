@@ -24,16 +24,12 @@ import type {
 } from "../../../shared/types";
 import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
+import { hasNullByte, isWithinDir, normalizeRelative } from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 
 const MAX_EDITOR_READ_BYTES = 5 * 1024 * 1024;
 const GIT_STATUS_CACHE_TTL_MS = 1_000;
-
-function isWithinDir(dir: string, candidate: string): boolean {
-  const rel = path.relative(dir, candidate);
-  return !rel.startsWith("..") && !path.isAbsolute(rel);
-}
 
 function containsDotGit(absPath: string): boolean {
   const parts = absPath.split(path.sep);
@@ -56,18 +52,6 @@ function languageIdFromPath(relPath: string): string {
   if (ext === ".css") return "css";
   if (ext === ".html") return "html";
   return "plaintext";
-}
-
-function hasNullByte(buf: Buffer): boolean {
-  const max = Math.min(buf.length, 8192);
-  for (let i = 0; i < max; i++) {
-    if (buf[i] === 0) return true;
-  }
-  return false;
-}
-
-function normalizeRelative(relPath: string): string {
-  return relPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
 function isAlwaysIgnoredPath(normalized: string): boolean {

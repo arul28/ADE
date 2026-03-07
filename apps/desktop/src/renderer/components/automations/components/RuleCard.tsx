@@ -6,14 +6,7 @@ import {
 import type { AutomationRuleSummary } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
-import { statusToneAutomation as statusTone } from "../../../lib/format";
-
-function formatWhen(ts: string | null): string {
-  if (!ts) return "Never";
-  const parsed = Date.parse(ts);
-  if (Number.isNaN(parsed)) return ts;
-  return new Date(parsed).toLocaleString();
-}
+import { formatDate, statusToneAutomation as statusTone } from "../../../lib/format";
 
 function summarizeActions(rule: { actions: Array<{ type: string }> }): string {
   if (!rule.actions.length) return "(no actions)";
@@ -80,7 +73,7 @@ export function RuleCard({
           </div>
 
           <div className="mt-1.5 text-xs text-[#71717A] truncate font-mono">
-            last run: {formatWhen(rule.lastRunAt)}
+            last run: {formatDate(rule.lastRunAt, "Never")}
           </div>
         </div>
 

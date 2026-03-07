@@ -4,6 +4,7 @@ import { motion } from "motion/react";
 import type { BudgetCapConfig } from "../../../shared/types";
 import { EmptyState } from "../ui/EmptyState";
 import { Chip } from "../ui/Chip";
+import { CARD_SHADOW_STYLE } from "./shared";
 
 export function NightShiftTab() {
   const [budgetConfig, setBudgetConfig] = useState<BudgetCapConfig | null>(null);
@@ -44,7 +45,7 @@ export function NightShiftTab() {
         {reservePercent > 0 && (
           <div
             className="p-4 space-y-2"
-            style={{ background: "#181423", border: "1px solid #2D2840", boxShadow: "0 1px 6px -1px rgba(0,0,0,0.6), 0 0 0 1px rgba(45,40,64,0.3)" }}
+            style={CARD_SHADOW_STYLE}
           >
             <div className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-[#A1A1AA]">
               Reserved Budget
@@ -61,7 +62,7 @@ export function NightShiftTab() {
         {/* Schedule config placeholder */}
         <div
           className="p-4 space-y-3"
-          style={{ background: "#181423", border: "1px solid #2D2840", boxShadow: "0 1px 6px -1px rgba(0,0,0,0.6), 0 0 0 1px rgba(45,40,64,0.3)" }}
+          style={CARD_SHADOW_STYLE}
         >
           <div className="flex items-center gap-2">
             <Clock size={14} weight="regular" className="text-[#A78BFA]" />
@@ -85,7 +86,7 @@ export function NightShiftTab() {
         {/* Queue placeholder */}
         <div
           className="p-4"
-          style={{ background: "#181423", border: "1px solid #2D2840", boxShadow: "0 1px 6px -1px rgba(0,0,0,0.6), 0 0 0 1px rgba(45,40,64,0.3)" }}
+          style={CARD_SHADOW_STYLE}
         >
           <div className="flex items-center gap-2 mb-3">
             <CalendarBlank size={14} weight="regular" className="text-[#A78BFA]" />

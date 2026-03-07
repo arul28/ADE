@@ -59,7 +59,7 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import { runGit, runGitOrThrow } from "../git/git";
 import { extractFirstJsonObject } from "../ai/utils";
-import { asNumber, asString, nowIso } from "../shared/utils";
+import { asNumber, asString, nowIso, parseDiffNameOnly } from "../shared/utils";
 
 type PullRequestRow = {
   id: string;
@@ -418,18 +418,6 @@ function parseMergeTreeTreeOid(stdout: string): string | null {
   return /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(first) ? first : null;
 }
 
-function parseNameOnlyPaths(stdout: string): string[] {
-  const seen = new Set<string>();
-  const paths: string[] = [];
-  for (const rawLine of stdout.split("\n")) {
-    const path = rawLine.trim();
-    if (!path.length || seen.has(path)) continue;
-    seen.add(path);
-    paths.push(path);
-  }
-  return paths;
-}
-
 function parseJsonArrayOrEmpty<T>(raw: unknown): T[] {
   if (Array.isArray(raw)) return raw as T[];
   if (typeof raw !== "string") return [];
@@ -466,95 +454,26 @@ export function createPrService({
   conflictService?: ReturnType<typeof createConflictService>;
   openExternal: (url: string) => Promise<void>;
 }) {
+  const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
+    github_url, github_node_id, title, state, base_branch, head_branch,
+    checks_status, review_status, additions, deletions, last_synced_at,
+    created_at, updated_at`;
+
   const getRow = (prId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
-      `
-        select
-          id,
-          lane_id,
-          project_id,
-          repo_owner,
-          repo_name,
-          github_pr_number,
-          github_url,
-          github_node_id,
-          title,
-          state,
-          base_branch,
-          head_branch,
-          checks_status,
-          review_status,
-          additions,
-          deletions,
-          last_synced_at,
-          created_at,
-          updated_at
-        from pull_requests
-        where id = ?
-          and project_id = ?
-        limit 1
-      `,
+      `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
       [prId, projectId]
     );
 
   const getRowForLane = (laneId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
-      `
-        select
-          id,
-          lane_id,
-          project_id,
-          repo_owner,
-          repo_name,
-          github_pr_number,
-          github_url,
-          github_node_id,
-          title,
-          state,
-          base_branch,
-          head_branch,
-          checks_status,
-          review_status,
-          additions,
-          deletions,
-          last_synced_at,
-          created_at,
-          updated_at
-        from pull_requests
-        where lane_id = ?
-          and project_id = ?
-        limit 1
-      `,
+      `select ${PR_COLUMNS} from pull_requests where lane_id = ? and project_id = ? limit 1`,
       [laneId, projectId]
     );
 
   const listRows = (): PullRequestRow[] =>
     db.all<PullRequestRow>(
-      `
-        select
-          id,
-          lane_id,
-          project_id,
-          repo_owner,
-          repo_name,
-          github_pr_number,
-          github_url,
-          github_node_id,
-          title,
-          state,
-          base_branch,
-          head_branch,
-          checks_status,
-          review_status,
-          additions,
-          deletions,
-          last_synced_at,
-          created_at,
-          updated_at
-        from pull_requests
-        where project_id = ?
-        order by updated_at desc
-      `,
+      `select ${PR_COLUMNS} from pull_requests where project_id = ? order by updated_at desc`,
       [projectId]
     );
 
@@ -1568,13 +1487,17 @@ export function createPrService({
     if (!rootRow) throw new Error("Root lane has no PR linked.");
     const baseTarget = rootRow.base_branch;
 
-    const results: LandResult[] = [];
-    const landPromises: Promise<LandResult>[] = [];
+    // Use an indexed array so results stay in chain order regardless of
+    // whether individual items resolve synchronously (missing PR) or
+    // asynchronously (actual land call).
+    const results: LandResult[] = new Array(chain.length);
+    const landEntries: Array<{ index: number; promise: Promise<LandResult> }> = [];
 
-    for (const item of chain) {
+    for (let i = 0; i < chain.length; i++) {
+      const item = chain[i]!;
       const row = getRowForLane(item.laneId);
       if (!row) {
-        results.push({
+        results[i] = {
           prId: "",
           prNumber: 0,
           success: false,
@@ -1582,7 +1505,7 @@ export function createPrService({
           branchDeleted: false,
           laneArchived: false,
           error: `Lane '${item.laneName}' has no PR linked.`
-        });
+        };
         continue;
       }
 
@@ -1592,15 +1515,17 @@ export function createPrService({
         });
       }
 
-      landPromises.push(land({ prId: row.id, method: args.method }));
+      landEntries.push({ index: i, promise: land({ prId: row.id, method: args.method }) });
     }
 
-    const settled = await Promise.allSettled(landPromises);
-    for (const result of settled) {
+    const settled = await Promise.allSettled(landEntries.map((entry) => entry.promise));
+    for (let j = 0; j < settled.length; j++) {
+      const result = settled[j]!;
+      const idx = landEntries[j]!.index;
       if (result.status === "fulfilled") {
-        results.push(result.value);
+        results[idx] = result.value;
       } else {
-        results.push({
+        results[idx] = {
           prId: "",
           prNumber: 0,
           success: false,
@@ -1608,7 +1533,7 @@ export function createPrService({
           branchDeleted: false,
           laneArchived: false,
           error: result.reason instanceof Error ? result.reason.message : String(result.reason)
-        });
+        };
       }
     }
 
@@ -1947,8 +1872,8 @@ export function createPrService({
               runGit(["diff", "--name-only", `${baseSha}..${laneA.headSha}`], { cwd: projectRoot, timeoutMs: 15_000 }),
               runGit(["diff", "--name-only", `${baseSha}..${laneB.headSha}`], { cwd: projectRoot, timeoutMs: 15_000 })
             ]);
-            const changedA = changedAResult.exitCode === 0 ? parseNameOnlyPaths(changedAResult.stdout) : [];
-            const changedB = changedBResult.exitCode === 0 ? parseNameOnlyPaths(changedBResult.stdout) : [];
+            const changedA = changedAResult.exitCode === 0 ? parseDiffNameOnly(changedAResult.stdout) : [];
+            const changedB = changedBResult.exitCode === 0 ? parseDiffNameOnly(changedBResult.stdout) : [];
             const changedASet = new Set(changedA);
             conflictPaths = changedB.filter((path) => changedASet.has(path));
             logger.info("prs.merge_tree_conflict_fallback_heuristic", {

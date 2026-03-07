@@ -11,6 +11,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPackService } from "../packs/packService";
 import { runGit } from "../git/git";
+import { nowIso, fileSizeOrZero } from "../shared/utils";
 import type {
   AgentChatApprovalDecision,
   AgentChatCreateArgs,
@@ -526,12 +527,15 @@ function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
   return provider === "codex" || provider === "claude" ? "full_mcp" : "fallback";
 }
 
+let _mcpRuntimeRootCache: string | null = null;
 function resolveMcpRuntimeRoot(): string {
+  if (_mcpRuntimeRootCache !== null) return _mcpRuntimeRootCache;
   const startPoints = [process.cwd(), __dirname];
   for (const start of startPoints) {
     let dir = path.resolve(start);
     for (let i = 0; i < 12; i += 1) {
       if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
+        _mcpRuntimeRootCache = dir;
         return dir;
       }
       const parent = path.dirname(dir);
@@ -539,20 +543,10 @@ function resolveMcpRuntimeRoot(): string {
       dir = parent;
     }
   }
-  return process.cwd();
+  _mcpRuntimeRootCache = process.cwd();
+  return _mcpRuntimeRootCache;
 }
 
-function toIso(): string {
-  return new Date().toISOString();
-}
-
-function fileSizeOrZero(filePath: string): number {
-  try {
-    return fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
-  } catch {
-    return 0;
-  }
-}
 
 export function createAgentChatService(args: {
   projectRoot: string;
@@ -890,7 +884,7 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "unified"
         ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
         : {}),
-      updatedAt: toIso()
+      updatedAt: nowIso()
     };
 
     try {
@@ -948,7 +942,7 @@ export function createAgentChatService(args: {
           ? { threadId: record.threadId.trim() }
           : {}),
         ...(messages?.length ? { messages } : {}),
-        updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : toIso()
+        updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
     } catch {
       return null;
@@ -1006,7 +1000,7 @@ export function createAgentChatService(args: {
   };
 
   const emitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
-    managed.session.lastActivityAt = toIso();
+    managed.session.lastActivityAt = nowIso();
 
     if (event.type === "text") {
       setSessionPreview(managed, event.text);
@@ -1025,7 +1019,7 @@ export function createAgentChatService(args: {
 
     const envelope: AgentChatEventEnvelope = {
       sessionId: managed.session.id,
-      timestamp: toIso(),
+      timestamp: nowIso(),
       event
     };
 
@@ -1077,7 +1071,7 @@ export function createAgentChatService(args: {
       summary: options?.summary ?? managed.preview,
     });
 
-    const endedAt = toIso();
+    const endedAt = nowIso();
     sessionService.end({
       sessionId: managed.session.id,
       endedAt,
@@ -2214,8 +2208,8 @@ export function createAgentChatService(args: {
         model: DEFAULT_CODEX_MODEL,
         capabilityMode: "full_mcp",
         status: "idle",
-        createdAt: toIso(),
-        lastActivityAt: toIso()
+        createdAt: nowIso(),
+        lastActivityAt: nowIso()
       },
       transcriptPath: path.join(transcriptsDir, `${randomUUID()}.chat.jsonl`),
       transcriptBytesWritten: 0,
@@ -2351,7 +2345,7 @@ export function createAgentChatService(args: {
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const lane = laneService.getLaneBaseAndBranch(laneId);
     const sessionId = randomUUID();
-    const startedAt = toIso();
+    const startedAt = nowIso();
     const transcriptPath = path.join(transcriptsDir, `${sessionId}.chat.jsonl`);
     const metadataPath = metadataPathFor(sessionId);
 
@@ -2492,7 +2486,7 @@ export function createAgentChatService(args: {
       managed.session.status = "idle";
       managed.closed = false;
       managed.endedNotified = false;
-      managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? toIso() : null;
+      managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? nowIso() : null;
       refreshReconstructionContext(managed);
     }
 
@@ -2732,7 +2726,7 @@ export function createAgentChatService(args: {
     managed.session.status = "idle";
     managed.closed = false;
     managed.endedNotified = false;
-    managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? toIso() : null;
+    managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? nowIso() : null;
 
     persistChatState(managed);
     return managed.session;

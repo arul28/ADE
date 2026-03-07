@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   SpinnerGap,
   Warning,
@@ -26,7 +26,7 @@ import {
   STALE_HEARTBEAT_THRESHOLD_MINUTES,
 } from "./missionHelpers";
 
-export function StepDetailPanel({
+export const StepDetailPanel = React.memo(function StepDetailPanel({
   step,
   attempts,
   allSteps,
@@ -62,10 +62,13 @@ export function StepDetailPanel({
         .filter(Boolean)
     : [];
   const doneCriteria = typeof meta.doneCriteria === "string" ? meta.doneCriteria.trim() : "";
-  const dependencyLabels = step.dependencyStepIds
-    .map((depId) => allSteps.find((candidate) => candidate.id === depId))
-    .filter((dep): dep is OrchestratorStep => Boolean(dep))
-    .map((dep) => dep.title.trim() || dep.stepKey);
+  const dependencyLabels = useMemo(
+    () => step.dependencyStepIds
+      .map((depId) => allSteps.find((candidate) => candidate.id === depId))
+      .filter((dep): dep is OrchestratorStep => Boolean(dep))
+      .map((dep) => dep.title.trim() || dep.stepKey),
+    [step.dependencyStepIds, allSteps]
+  );
   const latestHeartbeatAt = resolveStepHeartbeatAt({ step, attempts, claims });
   const resultEnvelope = latestAttempt && isRecord(latestAttempt.metadata)
     ? latestAttempt.metadata.resultEnvelope
@@ -332,4 +335,4 @@ export function StepDetailPanel({
       </div>
     </aside>
   );
-}
+});

@@ -121,7 +121,7 @@ export function createSessionDeltaService(args: {
     }
 
     const isChatTranscript = session.transcript_path.endsWith(".chat.jsonl");
-    const transcript = sessionService.readTranscriptTail(
+    const transcript = await sessionService.readTranscriptTail(
       session.transcript_path,
       220_000,
       isChatTranscript ? { raw: true, alignToLineBoundary: true } : undefined

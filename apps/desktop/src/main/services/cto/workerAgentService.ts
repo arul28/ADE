@@ -12,7 +12,17 @@ import type {
   AdapterType,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
-import { safeJsonParse } from "../shared/utils";
+import {
+  safeJsonParse,
+  nowIso,
+  parseIsoToEpoch,
+  writeTextAtomic,
+  uniqueStrings,
+  isEnvRef,
+  hasEnvRefToken,
+  looksSensitiveKey,
+  looksSensitiveValue,
+} from "../shared/utils";
 
 type WorkerAgentServiceArgs = {
   db: AdeDb;
@@ -58,18 +68,6 @@ const ALLOWED_ADAPTER_TYPES = new Set<AdapterType>([
   "process",
 ]);
 
-const ENV_REF_PATTERN = /^\$\{env:[A-Z0-9_]+\}$/;
-const ENV_REF_TOKEN_PATTERN = /\$\{env:[A-Z0-9_]+\}/;
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function parseIsoToEpoch(value: string | null | undefined): number {
-  if (!value) return Number.NaN;
-  const epoch = Date.parse(value);
-  return Number.isFinite(epoch) ? epoch : Number.NaN;
-}
 
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -79,30 +77,6 @@ function asStringArray(value: unknown): string[] {
     .filter((item) => item.length > 0);
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
-}
-
-function writeTextAtomic(filePath: string, text: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${randomUUID()}`;
-  fs.writeFileSync(tmp, text, "utf8");
-  try {
-    fs.renameSync(tmp, filePath);
-  } catch (error) {
-    try {
-      fs.copyFileSync(tmp, filePath);
-      fs.unlinkSync(tmp);
-    } catch {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        // ignore cleanup errors
-      }
-      throw error;
-    }
-  }
-}
 
 function slugify(input: string): string {
   const slug = input
@@ -112,28 +86,6 @@ function slugify(input: string): string {
   return slug || "worker";
 }
 
-function isEnvRef(value: string): boolean {
-  return ENV_REF_PATTERN.test(value.trim());
-}
-
-function hasEnvRefToken(value: string): boolean {
-  return ENV_REF_TOKEN_PATTERN.test(value);
-}
-
-function looksSensitiveKey(key: string): boolean {
-  return /(token|secret|password|api[_-]?key|authorization)/i.test(key);
-}
-
-function looksSensitiveValue(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed.length) return false;
-  if (/^bearer\s+/i.test(trimmed)) return true;
-  if (/^sk-[a-z0-9]{12,}/i.test(trimmed)) return true;
-  if (/^gh[pousr]_[a-z0-9]{20,}/i.test(trimmed)) return true;
-  if (/^xox[baprs]-[a-z0-9-]{10,}/i.test(trimmed)) return true;
-  if (/api[_-]?key|secret|token|password/i.test(trimmed)) return true;
-  return false;
-}
 
 function assertEnvRefSecretPolicy(value: unknown, pathLabel: string): void {
   if (!value || typeof value !== "object") return;

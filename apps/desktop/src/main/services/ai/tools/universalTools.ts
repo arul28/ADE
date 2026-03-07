@@ -353,8 +353,8 @@ function createWriteFileTool(cwd: string, mode: PermissionMode, sandboxConfig?: 
             message: `Write path is outside allowed roots: ${file_path}`,
           };
         }
-        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-        fs.writeFileSync(targetPath, content, "utf-8");
+        await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+        await fs.promises.writeFile(targetPath, content, "utf-8");
         return { success: true, message: `Wrote ${content.length} characters to ${targetPath}` };
       } catch (err) {
         return {

@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Plus, Trash, X } from "@phosphor-icons/react";
 import type { TerminalLaunchProfile, TerminalProfilesSnapshot } from "../../../shared/types";
+import { DEFAULT_PROFILE_IDS } from "../../lib/sessions";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 
 const LAUNCH_TRACKED_KEY = "ade.terminals.launchTracked";
-const DEFAULT_PROFILE_IDS = ["claude", "codex", "shell"] as const;
 
 const PROFILE_COLORS = [
   null,

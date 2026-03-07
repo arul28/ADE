@@ -1,6 +1,7 @@
 import path from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import type { FileChangeEvent } from "../../../shared/types";
+import { normalizeRelative } from "../shared/utils";
 
 type WatchCallback = (event: FileChangeEvent) => void;
 
@@ -13,10 +14,6 @@ type WatchSubscription = {
 };
 
 const EVENT_DEBOUNCE_MS = 140;
-
-function normalizeRelative(relPath: string): string {
-  return relPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
-}
 
 function mapEventType(kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir"): FileChangeEvent["type"] {
   if (kind === "add" || kind === "addDir") return "created";

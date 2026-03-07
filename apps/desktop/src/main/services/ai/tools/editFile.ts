@@ -18,11 +18,12 @@ export const editFileTool = tool({
   }),
   execute: async ({ file_path, old_string, new_string, replace_all }) => {
     try {
-      if (!fs.existsSync(file_path)) {
+      let content: string;
+      try {
+        content = await fs.promises.readFile(file_path, "utf-8");
+      } catch {
         return { success: false, message: `File not found: ${file_path}` };
       }
-
-      const content = fs.readFileSync(file_path, "utf-8");
 
       if (!content.includes(old_string)) {
         return {
@@ -48,7 +49,7 @@ export const editFileTool = tool({
         ? content.split(old_string).join(new_string)
         : content.replace(old_string, new_string);
 
-      fs.writeFileSync(file_path, updated, "utf-8");
+      await fs.promises.writeFile(file_path, updated, "utf-8");
 
       return { success: true, message: `Successfully edited ${file_path}` };
     } catch (err) {

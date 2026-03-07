@@ -1,9 +1,10 @@
+import React from "react";
 import { Plus } from "@phosphor-icons/react";
 import type { MissionDashboardSnapshot } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../lib/format";
 
-export function MissionsHomeDashboard({
+export const MissionsHomeDashboard = React.memo(function MissionsHomeDashboard({
   snapshot,
   onNewMission,
   onViewMission
@@ -97,4 +98,4 @@ export function MissionsHomeDashboard({
       </div>
     </div>
   );
-}
+});

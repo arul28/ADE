@@ -8,6 +8,7 @@ import { motion } from "motion/react";
 import type { UsageSnapshot, BudgetCapConfig, UsageWindow } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { CARD_SHADOW_STYLE, extractError } from "./shared";
 import { UsageMeter } from "./components/UsageMeter";
 import { UsagePacingBadge } from "./components/UsagePacingBadge";
 import { CostSummaryCard } from "./components/CostSummaryCard";
@@ -44,7 +45,7 @@ export function UsageTab() {
       ]);
       setSnapshot(snap); setBudgetConfig(cfg);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(extractError(err));
     } finally { setLoading(false); }
   }, []);
 
@@ -55,7 +56,7 @@ export function UsageTab() {
       const snap = await window.ade.usage.refresh();
       setSnapshot(snap);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(extractError(err));
     } finally { setLoading(false); }
   }, []);
 
@@ -205,7 +206,7 @@ function ProviderUsageCard({
     return (
       <div
         className="p-4"
-        style={{ background: "#181423", border: "1px solid #2D2840", boxShadow: "0 1px 6px -1px rgba(0,0,0,0.6), 0 0 0 1px rgba(45,40,64,0.3)" }}
+        style={CARD_SHADOW_STYLE}
       >
         <div className="flex items-center gap-2 mb-3">
           <Icon size={14} weight="regular" className="text-[#A78BFA]" />
@@ -227,7 +228,7 @@ function ProviderUsageCard({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
       className="p-4 space-y-4"
-      style={{ background: "#181423", border: "1px solid #2D2840", boxShadow: "0 1px 6px -1px rgba(0,0,0,0.6), 0 0 0 1px rgba(45,40,64,0.3)" }}
+      style={CARD_SHADOW_STYLE}
     >
       <div className="flex items-center gap-2">
         <Icon size={14} weight="regular" className="text-[#A78BFA]" />

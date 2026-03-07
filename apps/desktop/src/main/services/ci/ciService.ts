@@ -20,41 +20,10 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import { isRecord, nowIso } from "../shared/utils";
+import { dirExists, fileExists, isRecord, nowIso, safeReadText } from "../shared/utils";
 
 const CI_STATE_KEY = "ci:import_state";
 const MAX_BYTES = 280_000;
-
-function fileExists(absPath: string): boolean {
-  try {
-    return fs.statSync(absPath).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function dirExists(absPath: string): boolean {
-  try {
-    return fs.statSync(absPath).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function safeReadText(absPath: string, maxBytes = MAX_BYTES): string {
-  try {
-    const fd = fs.openSync(absPath, "r");
-    try {
-      const buf = Buffer.alloc(maxBytes);
-      const read = fs.readSync(fd, buf, 0, maxBytes, 0);
-      return buf.slice(0, Math.max(0, read)).toString("utf8");
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return "";
-  }
-}
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -186,7 +155,7 @@ function mergeImportState(prev: CiImportState | null, next: CiImportState): CiIm
 }
 
 function parseGithubActionsJobs(absPath: string, relPath: string): CiJobCandidate[] {
-  const raw = safeReadText(absPath);
+  const raw = safeReadText(absPath, MAX_BYTES);
   if (!raw.trim()) return [];
   let parsed: any;
   try {
@@ -238,7 +207,7 @@ function parseGithubActionsJobs(absPath: string, relPath: string): CiJobCandidat
 }
 
 function parseGitlabCiJobs(absPath: string, relPath: string): CiJobCandidate[] {
-  const raw = safeReadText(absPath);
+  const raw = safeReadText(absPath, MAX_BYTES);
   if (!raw.trim()) return [];
   let parsed: any;
   try {
@@ -306,7 +275,7 @@ function parseGitlabCiJobs(absPath: string, relPath: string): CiJobCandidate[] {
 }
 
 function parseCircleCiJobs(absPath: string, relPath: string): CiJobCandidate[] {
-  const raw = safeReadText(absPath);
+  const raw = safeReadText(absPath, MAX_BYTES);
   if (!raw.trim()) return [];
   let parsed: any;
   try {
@@ -365,7 +334,7 @@ function parseCircleCiJobs(absPath: string, relPath: string): CiJobCandidate[] {
 }
 
 function parseJenkinsfile(absPath: string, relPath: string): CiJobCandidate[] {
-  const raw = safeReadText(absPath);
+  const raw = safeReadText(absPath, MAX_BYTES);
   if (!raw.trim()) return [];
 
   const warnings: string[] = ["Best-effort parse of Jenkinsfile (Groovy)."];

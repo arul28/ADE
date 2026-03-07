@@ -507,7 +507,7 @@ describe("orchestratorService", () => {
       });
       expect(attempt.status).toBe("running");
 
-      const completed = fixture.service.completeAttempt({
+      const completed = await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
         metadata: {
@@ -516,7 +516,7 @@ describe("orchestratorService", () => {
       });
       expect(completed.status).toBe("succeeded");
       expect(
-        (completed.resultEnvelope?.warnings ?? []).some((entry) => entry.includes("File reservation violation"))
+        (completed.resultEnvelope?.warnings ?? []).some((entry: string) => entry.includes("File reservation violation"))
       ).toBe(true);
       expect(Array.isArray(completed.metadata?.fileReservationViolations)).toBe(true);
       expect((completed.metadata?.fileReservationViolations as string[])).toContain("README.md");
@@ -565,7 +565,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner-block"
       });
-      const completed = fixture.service.completeAttempt({
+      const completed = await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
         metadata: {
@@ -624,7 +624,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner-rename"
       });
-      const completed = fixture.service.completeAttempt({
+      const completed = await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
         metadata: {
@@ -693,7 +693,7 @@ describe("orchestratorService", () => {
       fs.writeFileSync(path.join(fixture.projectRoot, "docs", "out-of-scope.md"), "changed\n", "utf8");
       runGit(fixture.projectRoot, ["add", "src/in-scope.ts"]);
 
-      const completed = fixture.service.completeAttempt({
+      const completed = await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
         metadata: {}
@@ -987,14 +987,14 @@ describe("orchestratorService", () => {
       const [aAny, bAny, joinAny] = fixture.service.listSteps(anyRun.run.id);
       if (!aAny || !bAny || !joinAny) throw new Error("Missing steps for any_success run");
       const aAnyAttempt = await fixture.service.startAttempt({ runId: anyRun.run.id, stepId: aAny.id, ownerId: "owner" });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: aAnyAttempt.id,
         status: "failed",
         errorClass: "deterministic",
         errorMessage: "deterministic failure"
       });
       const bAnyAttempt = await fixture.service.startAttempt({ runId: anyRun.run.id, stepId: bAny.id, ownerId: "owner" });
-      fixture.service.completeAttempt({ attemptId: bAnyAttempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: bAnyAttempt.id, status: "succeeded" });
       const joinAnyStep = fixture.service.listSteps(anyRun.run.id).find((step) => step.id === joinAny.id);
       expect(joinAnyStep?.status).toBe("ready");
 
@@ -1015,14 +1015,14 @@ describe("orchestratorService", () => {
       const [aAll, bAll, joinAll] = fixture.service.listSteps(allRun.run.id);
       if (!aAll || !bAll || !joinAll) throw new Error("Missing steps for all_success run");
       const aAllAttempt = await fixture.service.startAttempt({ runId: allRun.run.id, stepId: aAll.id, ownerId: "owner" });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: aAllAttempt.id,
         status: "failed",
         errorClass: "deterministic",
         errorMessage: "deterministic failure"
       });
       const bAllAttempt = await fixture.service.startAttempt({ runId: allRun.run.id, stepId: bAll.id, ownerId: "owner" });
-      fixture.service.completeAttempt({ attemptId: bAllAttempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: bAllAttempt.id, status: "succeeded" });
       const joinAllStep = fixture.service.listSteps(allRun.run.id).find((step) => step.id === joinAll.id);
       expect(joinAllStep?.status).toBe("blocked");
 
@@ -1045,11 +1045,11 @@ describe("orchestratorService", () => {
       const [aQ, bQ, cQ, joinQ] = fixture.service.listSteps(quorumRun.run.id);
       if (!aQ || !bQ || !cQ || !joinQ) throw new Error("Missing steps for quorum run");
       const aQAttempt = await fixture.service.startAttempt({ runId: quorumRun.run.id, stepId: aQ.id, ownerId: "owner" });
-      fixture.service.completeAttempt({ attemptId: aQAttempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: aQAttempt.id, status: "succeeded" });
       const bQAttempt = await fixture.service.startAttempt({ runId: quorumRun.run.id, stepId: bQ.id, ownerId: "owner" });
-      fixture.service.completeAttempt({ attemptId: bQAttempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: bQAttempt.id, status: "succeeded" });
       const cQAttempt = await fixture.service.startAttempt({ runId: quorumRun.run.id, stepId: cQ.id, ownerId: "owner" });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: cQAttempt.id,
         status: "failed",
         errorClass: "deterministic",
@@ -1111,7 +1111,7 @@ describe("orchestratorService", () => {
         ownerId: "owner-api",
         executorKind: "manual"
       });
-      fixture.service.completeAttempt({ attemptId: apiAttempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: apiAttempt.id, status: "succeeded" });
 
       [apiStep, uiStep, integrateStep, finalReviewStep] = fixture.service.listSteps(started.run.id);
       expect(apiStep.status).toBe("succeeded");
@@ -1125,7 +1125,7 @@ describe("orchestratorService", () => {
         ownerId: "owner-ui",
         executorKind: "manual"
       });
-      fixture.service.completeAttempt({ attemptId: uiAttempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: uiAttempt.id, status: "succeeded" });
 
       [apiStep, uiStep, integrateStep, finalReviewStep] = fixture.service.listSteps(started.run.id);
       expect(integrateStep.status).toBe("ready");
@@ -1137,7 +1137,7 @@ describe("orchestratorService", () => {
         ownerId: "owner-integrate",
         executorKind: "manual"
       });
-      fixture.service.completeAttempt({ attemptId: integrateAttempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: integrateAttempt.id, status: "succeeded" });
 
       [apiStep, uiStep, integrateStep, finalReviewStep] = fixture.service.listSteps(started.run.id);
       expect(integrateStep.status).toBe("succeeded");
@@ -1149,7 +1149,7 @@ describe("orchestratorService", () => {
         ownerId: "owner-review",
         executorKind: "manual"
       });
-      fixture.service.completeAttempt({ attemptId: reviewAttempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: reviewAttempt.id, status: "succeeded" });
 
       fixture.service.finalizeRun({ runId: started.run.id, force: true });
       const run = fixture.service.listRuns({ missionId: fixture.missionId }).find((entry) => entry.id === started.run.id);
@@ -1863,7 +1863,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "blocked",
         errorClass: "policy",
@@ -1906,7 +1906,7 @@ describe("orchestratorService", () => {
         stepId: integrationStep.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "blocked",
         errorClass: "policy",
@@ -1940,7 +1940,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
         errorClass: "transient",
@@ -1974,7 +1974,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
         errorClass: "transient",
@@ -2018,7 +2018,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
         errorClass: "transient",
@@ -2053,7 +2053,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: first.id,
         status: "failed",
         errorClass: "transient",
@@ -2071,7 +2071,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: second.id,
         status: "succeeded"
       });
@@ -2150,7 +2150,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded"
       });
@@ -2180,7 +2180,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: first.id,
         status: "failed",
         errorClass: "transient",
@@ -2194,7 +2194,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: second.id,
         status: "failed",
         errorClass: "transient",
@@ -2227,7 +2227,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded"
       });
@@ -3083,7 +3083,7 @@ describe("orchestratorService", () => {
         stepId: stepA.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attemptA.id,
         status: "succeeded",
         metadata: { tokensConsumed: 70_000 }
@@ -3100,7 +3100,7 @@ describe("orchestratorService", () => {
         stepId: stepB.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attemptB.id,
         status: "succeeded",
         metadata: { tokensConsumed: 50_000 }
@@ -3330,7 +3330,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({ attemptId: attempt.id, status: "succeeded" });
+      await fixture.service.completeAttempt({ attemptId: attempt.id, status: "succeeded" });
 
       expect(() =>
         fixture.service.skipStep({
@@ -3357,7 +3357,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "blocked",
         errorClass: "policy",
@@ -3576,7 +3576,7 @@ describe("orchestratorService", () => {
         ownerId: "owner"
       });
 
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
         result: {
@@ -3704,7 +3704,7 @@ describe("orchestratorService", () => {
         stepId: implStep.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
         result: {
@@ -3785,7 +3785,7 @@ describe("orchestratorService", () => {
         stepId: testStep.id,
         ownerId: "owner"
       });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
         result: {
@@ -3966,7 +3966,7 @@ describe("orchestratorService", () => {
       const firstStep = fixture.service.listSteps(first.run.id)[0];
       if (!firstStep) throw new Error("Expected first step");
       const firstAttempt = await fixture.service.startAttempt({ runId: first.run.id, stepId: firstStep.id, ownerId: "owner" });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: firstAttempt.id,
         status: "succeeded",
         result: {
@@ -4029,7 +4029,7 @@ describe("orchestratorService", () => {
       const secondStep = fixture.service.listSteps(second.run.id)[0];
       if (!secondStep) throw new Error("Expected second step");
       const secondAttempt = await fixture.service.startAttempt({ runId: second.run.id, stepId: secondStep.id, ownerId: "owner" });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: secondAttempt.id,
         status: "succeeded",
         result: {
@@ -4132,7 +4132,7 @@ describe("orchestratorService", () => {
       const stepOne = fixture.service.listSteps(runOne.run.id)[0];
       if (!stepOne) throw new Error("Expected step one");
       const attemptOne = await fixture.service.startAttempt({ runId: runOne.run.id, stepId: stepOne.id, ownerId: "owner" });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attemptOne.id,
         status: "succeeded",
         result: {
@@ -4169,7 +4169,7 @@ describe("orchestratorService", () => {
       const stepTwo = fixture.service.listSteps(runTwo.run.id)[0];
       if (!stepTwo) throw new Error("Expected step two");
       const attemptTwo = await fixture.service.startAttempt({ runId: runTwo.run.id, stepId: stepTwo.id, ownerId: "owner" });
-      fixture.service.completeAttempt({
+      await fixture.service.completeAttempt({
         attemptId: attemptTwo.id,
         status: "succeeded",
         result: {

@@ -267,7 +267,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
             selectedThread.threadType === "coordinator" ? (
               <span
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-                style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630", borderRadius: 0 }}
+                style={COORDINATOR_BADGE_STYLE}
               >
                 <Crown size={10} weight="fill" />
                 Coordinator
@@ -275,7 +275,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
             ) : selectedThread.threadType === "teammate" ? (
               <span
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-                style={{ background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430", borderRadius: 0 }}
+                style={TEAMMATE_BADGE_STYLE}
               >
                 <UsersThree size={10} weight="fill" />
                 Teammate
@@ -283,7 +283,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
             ) : (
               <span
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-                style={{ background: "#8B5CF618", color: "#8B5CF6", border: "1px solid #8B5CF630", borderRadius: 0 }}
+                style={WORKER_BADGE_STYLE}
               >
                 <Wrench size={10} weight="fill" />
                 Worker{selectedThread.stepKey ? `: ${selectedThread.stepKey}` : ""}
@@ -374,7 +374,40 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
   );
 });
 
-function ChannelButton({
+const CHANNEL_SELECTED_STYLE: React.CSSProperties = {
+  background: "#A78BFA12",
+  borderLeft: "3px solid #A78BFA",
+  color: "#FAFAFA",
+  borderRadius: 0,
+};
+
+const CHANNEL_UNSELECTED_STYLE: React.CSSProperties = {
+  color: "#71717A",
+  borderRadius: 0,
+};
+
+const COORDINATOR_BADGE_STYLE: React.CSSProperties = {
+  background: "#3B82F618",
+  color: "#3B82F6",
+  border: "1px solid #3B82F630",
+  borderRadius: 0,
+};
+
+const TEAMMATE_BADGE_STYLE: React.CSSProperties = {
+  background: "#06B6D418",
+  color: "#06B6D4",
+  border: "1px solid #06B6D430",
+  borderRadius: 0,
+};
+
+const WORKER_BADGE_STYLE: React.CSSProperties = {
+  background: "#8B5CF618",
+  color: "#8B5CF6",
+  border: "1px solid #8B5CF630",
+  borderRadius: 0,
+};
+
+const ChannelButton = React.memo(function ChannelButton({
   thread,
   label,
   isSelected,
@@ -395,11 +428,7 @@ function ChannelButton({
     <button
       onClick={onClick}
       className="w-full px-2 py-1.5 text-left transition-colors flex flex-col gap-0.5"
-      style={
-        isSelected
-          ? { background: "#A78BFA12", borderLeft: "3px solid #A78BFA", color: "#FAFAFA", borderRadius: 0 }
-          : { color: "#71717A", borderRadius: 0 }
-      }
+      style={isSelected ? CHANNEL_SELECTED_STYLE : CHANNEL_UNSELECTED_STYLE}
       onMouseEnter={(e) => {
         if (!isSelected) {
           (e.currentTarget as HTMLButtonElement).style.background = "#1A1720";
@@ -432,7 +461,7 @@ function ChannelButton({
         {isPlanner ? (
           <span
             className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
-            style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630", borderRadius: 0 }}
+            style={COORDINATOR_BADGE_STYLE}
           >
             <Crown size={8} weight="fill" />
             Coordinator
@@ -440,7 +469,7 @@ function ChannelButton({
         ) : isTeammate ? (
           <span
             className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
-            style={{ background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430", borderRadius: 0 }}
+            style={TEAMMATE_BADGE_STYLE}
           >
             <UsersThree size={8} weight="fill" />
             Teammate
@@ -448,7 +477,7 @@ function ChannelButton({
         ) : (
           <span
             className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
-            style={{ background: "#8B5CF618", color: "#8B5CF6", border: "1px solid #8B5CF630", borderRadius: 0 }}
+            style={WORKER_BADGE_STYLE}
           >
             <Wrench size={8} weight="fill" />
             Worker{threadStepKey ? `: ${threadStepKey}` : ""}
@@ -457,7 +486,7 @@ function ChannelButton({
       </div>
     </button>
   );
-}
+});
 
 const MessageBubble = React.memo(function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; attemptNameMap: Map<string, string> }) {
   const isUser = msg.role === "user";

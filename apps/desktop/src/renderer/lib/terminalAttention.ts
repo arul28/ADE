@@ -100,6 +100,28 @@ export function sessionMatchesStatusFilter(
   return sessionStatusBucket(args) === filter;
 }
 
+export type SessionStatusDot = {
+  cls: string;
+  spinning: boolean;
+  label: string;
+};
+
+/** Map a session's indicator state to CSS classes for rendering a status dot. */
+export function sessionStatusDot(session: {
+  status: TerminalSessionStatus;
+  lastOutputPreview: string | null;
+  runtimeState?: TerminalRuntimeState;
+}): SessionStatusDot {
+  const indicator = sessionIndicatorState(session);
+  if (indicator === "running-active") {
+    return { cls: "border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
+  }
+  if (indicator === "running-needs-attention") {
+    return { cls: "border-2 border-amber-300 border-t-transparent bg-transparent", spinning: true, label: "Awaiting input" };
+  }
+  return { cls: "bg-red-400", spinning: false, label: "Ended" };
+}
+
 export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): TerminalAttentionSummary {
   let runningCount = 0;
   let activeCount = 0;

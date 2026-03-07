@@ -123,9 +123,16 @@ const headerLineBase: React.CSSProperties = {
   marginLeft: 8,
 };
 
+const STATUS_OPTIONS = [
+  { value: "all" as const, label: "ALL", variant: "all" as const },
+  { value: "running" as const, label: "RUNNING", variant: "running" as const },
+  { value: "awaiting-input" as const, label: "AWAITING INPUT", variant: "awaiting-input" as const },
+  { value: "ended" as const, label: "ENDED", variant: "ended" as const },
+] as const;
+
 /* ── component ────────────────────────────────────────────────────── */
 
-export function SessionListPane({
+export const SessionListPane = React.memo(function SessionListPane({
   lanes,
   filtered,
   runningFiltered,
@@ -168,13 +175,6 @@ export function SessionListPane({
   onInfoClick: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
 }) {
-  const statusOptions = [
-    { value: "all" as const, label: "ALL", variant: "all" as const },
-    { value: "running" as const, label: "RUNNING", variant: "running" as const },
-    { value: "awaiting-input" as const, label: "AWAITING INPUT", variant: "awaiting-input" as const },
-    { value: "ended" as const, label: "ENDED", variant: "ended" as const },
-  ];
-
   return (
     <div className="flex h-full flex-col">
       {/* Launch panel */}
@@ -215,7 +215,7 @@ export function SessionListPane({
 
         {/* Status toggle pills */}
         <div className="flex items-center gap-1">
-          {statusOptions.map((opt) => (
+          {STATUS_OPTIONS.map((opt) => (
             <button
               key={opt.value}
               type="button"
@@ -421,4 +421,4 @@ export function SessionListPane({
       </div>
     </div>
   );
-}
+});

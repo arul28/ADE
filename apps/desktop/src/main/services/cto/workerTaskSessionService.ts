@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentTaskSession, AdapterType } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
-import { safeJsonParse } from "../shared/utils";
+import { safeJsonParse, nowIso } from "../shared/utils";
 
 type WorkerTaskSessionServiceArgs = {
   db: AdeDb;
@@ -23,10 +23,6 @@ type DeriveTaskKeyArgs = {
   chatSessionId?: string | null;
   summary?: string | null;
 };
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
 
 function normalizeTaskKey(taskKey: string): string {
   const normalized = taskKey.trim().toLowerCase().replace(/[^a-z0-9:_-]+/g, "-");

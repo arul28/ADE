@@ -538,6 +538,61 @@ function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
   return "unified";
 }
 
+function toRecentProjectSummary(entry: { rootPath: string; displayName: string; lastOpenedAt: string }): RecentProjectSummary {
+  return {
+    rootPath: entry.rootPath,
+    displayName: entry.displayName,
+    lastOpenedAt: entry.lastOpenedAt,
+    exists: fs.existsSync(entry.rootPath)
+  };
+}
+
+type MemoryScope = "user" | "project" | "lane" | "mission";
+
+function normalizeMemoryScope(rawScope: string): MemoryScope | undefined {
+  const trimmed = rawScope.trim();
+  if (trimmed === "agent") return "user";
+  if (trimmed === "user" || trimmed === "project" || trimmed === "lane" || trimmed === "mission") return trimmed;
+  return undefined;
+}
+
+async function resolveFirstAvailableLaneId(
+  ctx: AppContext,
+  requestedLaneId: string | undefined | null
+): Promise<string> {
+  const laneId = typeof requestedLaneId === "string" ? requestedLaneId.trim() : "";
+  if (laneId) return laneId;
+  const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
+  return lanes[0]?.id ?? "";
+}
+
+async function buildLinearConnectionStatus(
+  ctx: AppContext,
+  tokenStored: boolean,
+  message?: string
+): Promise<LinearConnectionStatus> {
+  if (!ctx.linearIssueTracker || !tokenStored) {
+    return {
+      tokenStored,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: nowIso(),
+      message: message ?? (tokenStored ? "Linear tracker service unavailable." : "Linear token not configured."),
+    };
+  }
+
+  const status = await ctx.linearIssueTracker.getConnectionStatus();
+  return {
+    tokenStored,
+    connected: status.connected,
+    viewerId: status.viewerId,
+    viewerName: status.viewerName,
+    checkedAt: nowIso(),
+    message: status.message,
+  };
+}
+
 
 function isChatToolType(toolType: string | null | undefined): boolean {
   return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
@@ -915,12 +970,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> => {
     const state = readGlobalState(globalStatePath);
-    return (state.recentProjects ?? []).map((entry) => ({
-      rootPath: entry.rootPath,
-      displayName: entry.displayName,
-      lastOpenedAt: entry.lastOpenedAt,
-      exists: fs.existsSync(entry.rootPath)
-    }));
+    return (state.recentProjects ?? []).map(toRecentProjectSummary);
   });
 
   ipcMain.handle(IPC.projectCloseCurrent, async (): Promise<void> => {
@@ -929,16 +979,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath: string }): Promise<RecentProjectSummary[]> => {
     const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
-    if (!rootPath) {
-      const state = readGlobalState(globalStatePath);
-      return (state.recentProjects ?? []).map((entry) => ({
-        rootPath: entry.rootPath,
-        displayName: entry.displayName,
-        lastOpenedAt: entry.lastOpenedAt,
-        exists: fs.existsSync(entry.rootPath)
-      }));
-    }
     const state = readGlobalState(globalStatePath);
+    if (!rootPath) {
+      return (state.recentProjects ?? []).map(toRecentProjectSummary);
+    }
     const filtered = (state.recentProjects ?? []).filter((entry) => entry.rootPath !== rootPath);
     const next = { ...state, recentProjects: filtered };
     if (next.lastProjectRoot === rootPath) {
@@ -950,12 +994,7 @@ export function registerIpc({
     } catch {
       // Best effort; forgetting a project should still update recents even if teardown fails.
     }
-    return filtered.map((entry) => ({
-      rootPath: entry.rootPath,
-      displayName: entry.displayName,
-      lastOpenedAt: entry.lastOpenedAt,
-      exists: fs.existsSync(entry.rootPath)
-    }));
+    return filtered.map(toRecentProjectSummary);
   });
 
   ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
@@ -3140,12 +3179,7 @@ export function registerIpc({
       const ctx = getCtx();
       if (!ctx.memoryService) return null;
       const pid = arg?.projectId ?? ctx.projectId;
-      const rawScope = typeof arg?.scope === "string" ? arg.scope.trim() : "";
-      const scope = rawScope === "agent"
-        ? "user"
-        : (rawScope === "user" || rawScope === "project" || rawScope === "lane" || rawScope === "mission")
-          ? rawScope
-          : "project";
+      const scope = normalizeMemoryScope(typeof arg?.scope === "string" ? arg.scope : "") ?? "project";
       const content = typeof arg?.content === "string" ? arg.content.trim() : "";
       if (!content) {
         throw new Error("memory.add requires non-empty content.");
@@ -3195,12 +3229,7 @@ export function registerIpc({
     if (!ctx.memoryService) return [];
     const pid = arg?.projectId ?? ctx.projectId;
     const level = (arg?.level === "lite" || arg?.level === "standard" || arg?.level === "deep") ? arg.level : "standard";
-    const rawScope = typeof arg?.scope === "string" ? arg.scope.trim() : "";
-    const scope = rawScope === "agent"
-      ? "user"
-      : (rawScope === "user" || rawScope === "project" || rawScope === "lane" || rawScope === "mission")
-        ? rawScope
-        : undefined;
+    const scope = normalizeMemoryScope(typeof arg?.scope === "string" ? arg.scope : "");
     const scopeOwnerId = typeof arg?.scopeOwnerId === "string" && arg.scopeOwnerId.trim().length > 0
       ? arg.scopeOwnerId.trim()
       : undefined;
@@ -3245,12 +3274,7 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.memoryService) return [];
     const pid = arg?.projectId ?? ctx.projectId;
-    const rawScope = typeof arg?.scope === "string" ? arg.scope.trim() : "";
-    const scope = rawScope === "agent"
-      ? "user"
-      : (rawScope === "user" || rawScope === "project" || rawScope === "lane" || rawScope === "mission")
-        ? rawScope
-        : undefined;
+    const scope = normalizeMemoryScope(typeof arg?.scope === "string" ? arg.scope : "");
     const scopeOwnerId = typeof arg?.scopeOwnerId === "string" && arg.scopeOwnerId.trim().length > 0
       ? arg.scopeOwnerId.trim()
       : undefined;
@@ -3275,12 +3299,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {
     const ctx = getCtx();
-    const requestedLaneId = typeof arg.laneId === "string" ? arg.laneId.trim() : "";
-    let laneId = requestedLaneId;
-    if (!laneId) {
-      const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
-      laneId = lanes[0]?.id ?? "";
-    }
+    const laneId = await resolveFirstAvailableLaneId(ctx, arg.laneId);
     if (!laneId) {
       throw new Error("No active lane is available to host the CTO chat session.");
     }
@@ -3345,12 +3364,7 @@ export function registerIpc({
   ipcMain.handle(IPC.ctoEnsureAgentSession, async (_event, arg: CtoEnsureAgentSessionArgs): Promise<AgentChatSession> => {
     const ctx = getCtx();
     if (!ctx.agentChatService) throw new Error("Agent chat service is not available.");
-    const requestedLaneId = typeof arg.laneId === "string" ? arg.laneId.trim() : "";
-    let laneId = requestedLaneId;
-    if (!laneId) {
-      const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
-      laneId = lanes[0]?.id ?? "";
-    }
+    const laneId = await resolveFirstAvailableLaneId(ctx, arg.laneId);
     if (!laneId) throw new Error("No lane available for agent session.");
     return ctx.agentChatService.ensureIdentitySession({
       identityKey: "cto",
@@ -3423,54 +3437,15 @@ export function registerIpc({
   ipcMain.handle(IPC.ctoGetLinearConnectionStatus, async (): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
     const tokenStored = Boolean(ctx.linearCredentialService?.getStatus().tokenStored);
-    if (!ctx.linearIssueTracker || !tokenStored) {
-      return {
-        tokenStored,
-        connected: false,
-        viewerId: null,
-        viewerName: null,
-        checkedAt: nowIso(),
-        message: tokenStored ? "Linear tracker service unavailable." : "Linear token not configured.",
-      };
-    }
-
-    const status = await ctx.linearIssueTracker.getConnectionStatus();
-    return {
-      tokenStored,
-      connected: status.connected,
-      viewerId: status.viewerId,
-      viewerName: status.viewerName,
-      checkedAt: nowIso(),
-      message: status.message,
-    };
+    return buildLinearConnectionStatus(ctx, tokenStored);
   });
 
   ipcMain.handle(IPC.ctoSetLinearToken, async (_event, arg: CtoSetLinearTokenArgs): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
     if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
     ctx.linearCredentialService.setToken(arg.token);
-
     const tokenStored = Boolean(ctx.linearCredentialService.getStatus().tokenStored);
-    if (!ctx.linearIssueTracker || !tokenStored) {
-      return {
-        tokenStored,
-        connected: false,
-        viewerId: null,
-        viewerName: null,
-        checkedAt: nowIso(),
-        message: tokenStored ? "Linear tracker service unavailable." : "Linear token not configured.",
-      };
-    }
-
-    const status = await ctx.linearIssueTracker.getConnectionStatus();
-    return {
-      tokenStored,
-      connected: status.connected,
-      viewerId: status.viewerId,
-      viewerName: status.viewerName,
-      checkedAt: nowIso(),
-      message: status.message,
-    };
+    return buildLinearConnectionStatus(ctx, tokenStored);
   });
 
   ipcMain.handle(IPC.ctoClearLinearToken, async (): Promise<LinearConnectionStatus> => {

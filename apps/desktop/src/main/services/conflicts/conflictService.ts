@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type {
@@ -60,7 +60,7 @@ import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { readDocPaths } from "../orchestrator/stepPolicyResolver";
-import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { normalizeConflictType, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
 import { safeSegment } from "../packs/packUtils";
@@ -170,14 +170,6 @@ function pairKey(a: string, b: string): string {
 
 function matrixEntryKey(entry: RiskMatrixEntry): string {
   return pairKey(entry.laneAId, entry.laneBId);
-}
-
-function normalizeConflictType(value: string): ConflictFileType {
-  const normalized = value.trim().toLowerCase();
-  if (normalized.includes("rename")) return "rename";
-  if (normalized.includes("delete")) return "delete";
-  if (normalized.includes("add")) return "add";
-  return "content";
 }
 
 function riskFromPrediction(status: PredictionStatus, overlapCount: number, conflictCount: number): ConflictRiskLevel {
@@ -3064,17 +3056,28 @@ export function createConflictService({
       throw new Error("Invalid external resolver command template");
     }
 
-    const proc = spawnSync(bin, renderedCommand.slice(1), {
-      cwd: cwdLane.worktreePath,
-      encoding: "utf8",
-      timeout: 8 * 60_000,
-      maxBuffer: 8 * 1024 * 1024
+    const proc = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      const child = spawn(bin, renderedCommand.slice(1), {
+        cwd: cwdLane.worktreePath,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 8 * 60_000,
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (stdout.length < 8 * 1024 * 1024) stdout += chunk.toString("utf8");
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        if (stderr.length < 8 * 1024 * 1024) stderr += chunk.toString("utf8");
+      });
+      child.on("error", () => resolve({ stdout, stderr, status: 1, signal: null }));
+      child.on("close", (code, signal) => resolve({ stdout, stderr, status: code, signal }));
     });
 
     const stdout = proc.stdout ?? "";
     const stderr = proc.stderr ?? "";
     const outputLogPath = path.join(runDir, "output.log");
-    fs.writeFileSync(outputLogPath, `${stdout}\n\n--- STDERR ---\n${stderr}\n`, "utf8");
+    await fs.promises.writeFile(outputLogPath, `${stdout}\n\n--- STDERR ---\n${stderr}\n`, "utf8");
 
     const diffResult = await runGit(["diff", "--binary"], {
       cwd: cwdLane.worktreePath,
@@ -3084,7 +3087,7 @@ export function createConflictService({
     const patchPath = path.join(runDir, "changes.patch");
     let finalPatchPath: string | null = null;
     if (diffResult.exitCode === 0 && diffResult.stdout.trim().length > 0) {
-      fs.writeFileSync(patchPath, diffResult.stdout, "utf8");
+      await fs.promises.writeFile(patchPath, diffResult.stdout, "utf8");
       finalPatchPath = patchPath;
     }
 

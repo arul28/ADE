@@ -20,6 +20,49 @@ type TreeNodeLayout = {
 type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";
 type LaneRuntimeMap = Map<string, { bucket: LaneRuntimeBucket }>;
 
+function LaneRuntimeDot({ bucket }: { bucket: LaneRuntimeBucket }): React.ReactElement {
+  if (bucket === "running") {
+    return (
+      <span
+        className="shrink-0 animate-spin"
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          border: `1.5px solid ${COLORS.success}`,
+          borderTopColor: "transparent",
+        }}
+        title="Running"
+      />
+    );
+  }
+  if (bucket === "awaiting-input") {
+    return (
+      <span
+        className="shrink-0 animate-spin"
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          border: `1.5px solid ${COLORS.warning}`,
+          borderTopColor: "transparent",
+        }}
+        title="Awaiting input"
+      />
+    );
+  }
+  if (bucket === "ended") {
+    return (
+      <span
+        className="shrink-0"
+        style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
+        title="Ended"
+      />
+    );
+  }
+  return <span className="shrink-0" style={{ width: 8, height: 8 }} />;
+}
+
 function StackGraph({
   lanes,
   selectedLaneId,
@@ -203,39 +246,7 @@ function StackGraph({
                 }
               }}
             >
-              {runtimeByLaneId.get(lane.id)?.bucket === "running" ? (
-                <span
-                  className="shrink-0 animate-spin"
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    border: `1.5px solid ${COLORS.success}`,
-                    borderTopColor: "transparent",
-                  }}
-                  title="Running"
-                />
-              ) : runtimeByLaneId.get(lane.id)?.bucket === "awaiting-input" ? (
-                <span
-                  className="shrink-0 animate-spin"
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    border: `1.5px solid ${COLORS.warning}`,
-                    borderTopColor: "transparent",
-                  }}
-                  title="Awaiting input"
-                />
-              ) : runtimeByLaneId.get(lane.id)?.bucket === "ended" ? (
-                <span
-                  className="shrink-0"
-                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
-                  title="Ended"
-                />
-              ) : (
-                <span className="shrink-0" style={{ width: 8, height: 8 }} />
-              )}
+              <LaneRuntimeDot bucket={runtimeByLaneId.get(lane.id)?.bucket ?? "none"} />
               <span className="truncate" style={{
                 maxWidth: 160,
                 fontFamily: MONO_FONT,

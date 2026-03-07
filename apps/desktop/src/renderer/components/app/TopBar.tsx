@@ -2,50 +2,17 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Folder, FolderOpen, Plus, Minus, MagnifyingGlass, Trash, X } from "@phosphor-icons/react";
 
 import { useAppStore } from "../../state/appStore";
+import {
+  ZOOM_LEVEL_KEY,
+  MIN_ZOOM_LEVEL,
+  MAX_ZOOM_LEVEL,
+  displayZoomToLevel,
+  getStoredZoomLevel,
+} from "../../lib/zoom";
 import { cn } from "../ui/cn";
 import type { ProcessRuntime, RecentProjectSummary } from "../../../shared/types";
 
-const ZOOM_KEY = "ade:zoom-level";
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
-const MIN_ZOOM_LEVEL = 70;
-const MAX_ZOOM_LEVEL = 150;
-const ZOOM_OFFSET = 10;
-const DEFAULT_ZOOM = 100;
-const LEGACY_DEFAULT_ZOOM = 110;
-
-/** Convert between display percentage (70–150) and Electron zoom level.
- *  Electron zoom level is log-based: level 0 = 100%, each ±1 ≈ ±20%.
- *  Formula: factor = 1.2^level, so level = log(factor) / log(1.2).
- *  We add a +10% offset so the displayed "100%" actually renders at 110%. */
-function normalizeZoomLevel(value: number): number {
-  if (!Number.isFinite(value)) return DEFAULT_ZOOM;
-  if (value === LEGACY_DEFAULT_ZOOM) return DEFAULT_ZOOM;
-  return Math.min(MAX_ZOOM_LEVEL, Math.max(MIN_ZOOM_LEVEL, Math.round(value)));
-}
-
-function pctToZoomLevel(pct: number): number {
-  return Math.log((pct + ZOOM_OFFSET) / 100) / Math.log(1.2);
-}
-
-function getStoredZoom(): number {
-  const migrateFromLegacyDefault = (value: number): number => {
-    if (value === LEGACY_DEFAULT_ZOOM) {
-      try {
-        localStorage.setItem(ZOOM_KEY, "100");
-      } catch {
-        // ignore
-      }
-      return DEFAULT_ZOOM;
-    }
-    return normalizeZoomLevel(value);
-  };
-  try {
-    const stored = parseInt(localStorage.getItem(ZOOM_KEY) || `${DEFAULT_ZOOM}`, 10);
-    return migrateFromLegacyDefault(Number.isFinite(stored) ? stored : DEFAULT_ZOOM);
-  } catch {
-    return DEFAULT_ZOOM;
-  }
-}
 
 export function TopBar({
   onOpenCommandPalette,
@@ -63,12 +30,12 @@ export function TopBar({
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(getStoredZoom);
+  const [zoom, setZoom] = useState(getStoredZoomLevel);
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
-    window.ade.zoom.setLevel(pctToZoomLevel(clamped));
-    localStorage.setItem(ZOOM_KEY, String(clamped));
+    window.ade.zoom.setLevel(displayZoomToLevel(clamped));
+    localStorage.setItem(ZOOM_LEVEL_KEY, String(clamped));
     setZoom(clamped);
   }, []);
 

@@ -227,14 +227,22 @@ async function main(): Promise<void> {
   if (fs.existsSync(socketPath)) {
     // Desktop is running — proxy mode: relay stdio <-> socket
     const socket = net.createConnection(socketPath);
+    let connected = false;
 
     socket.on("error", (err) => {
+      if (connected) {
+        // Error after successful connect — exit rather than double-consuming stdin
+        process.stderr.write(`[ade-mcp] Socket error after connect: ${err.message}\n`);
+        process.exit(1);
+        return;
+      }
       // Socket file exists but desktop isn't listening — fall back to headless
       process.stderr.write(`[ade-mcp] Socket connect failed, falling back to headless: ${err.message}\n`);
       void startHeadless(projectRoot);
     });
 
     socket.on("connect", () => {
+      connected = true;
       process.stderr.write("[ade-mcp] Connected to desktop app (proxy mode)\n");
       relayProxyInputWithIdentity(socket);
       socket.pipe(process.stdout);

@@ -46,14 +46,19 @@ function GroupStatusBadge({ members }: { members: QueueGroup["members"] }) {
   );
 }
 
+function checksConfig(status: PrSummary["checksStatus"]): { color: string; bg: string; border: string; icon: React.ReactNode } {
+  if (status === "passing") {
+    return { color: "#22C55E", bg: "rgba(34,197,94,0.08)", border: "rgba(34,197,94,0.25)", icon: <CheckCircle size={11} weight="fill" style={{ color: "#22C55E" }} /> };
+  }
+  if (status === "failing") {
+    return { color: "#EF4444", bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.25)", icon: <XCircle size={11} weight="fill" style={{ color: "#EF4444" }} /> };
+  }
+  return { color: "#F59E0B", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.25)", icon: <Circle size={11} weight="fill" style={{ color: "#F59E0B" }} /> };
+}
+
 function ChecksBadge({ status }: { status: PrSummary["checksStatus"] | undefined }) {
   if (!status || status === "none") return null;
-  const config =
-    status === "passing"
-      ? { color: "#22C55E", bg: "rgba(34,197,94,0.08)", border: "rgba(34,197,94,0.25)", icon: <CheckCircle size={11} weight="fill" style={{ color: "#22C55E" }} /> }
-      : status === "failing"
-        ? { color: "#EF4444", bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.25)", icon: <XCircle size={11} weight="fill" style={{ color: "#EF4444" }} /> }
-        : { color: "#F59E0B", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.25)", icon: <Circle size={11} weight="fill" style={{ color: "#F59E0B" }} /> };
+  const config = checksConfig(status);
   return (
     <span
       className="font-mono font-bold uppercase tracking-[1px]"

@@ -11,6 +11,7 @@ import { Button } from "../ui/Button";
 import type { ContextStatus, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
+import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
 import { cn } from "../ui/cn";
 
 type PrToast = {
@@ -35,36 +36,6 @@ const EMPTY_TERMINAL_ATTENTION = {
 };
 
 const ONBOARDING_DISMISSED_KEY = "ade:onboarding:dismissed:v1";
-const ZOOM_LEVEL_KEY = "ade:zoom-level";
-const MIN_ZOOM_LEVEL = 70;
-const MAX_ZOOM_LEVEL = 150;
-const ZOOM_OFFSET = 10;
-const LEGACY_DEFAULT_ZOOM = 110;
-const DEFAULT_ZOOM = 100;
-
-function normalizeZoomLevel(raw: number): number {
-  if (!Number.isFinite(raw)) return DEFAULT_ZOOM;
-  if (raw === LEGACY_DEFAULT_ZOOM) return DEFAULT_ZOOM;
-  return Math.min(MAX_ZOOM_LEVEL, Math.max(MIN_ZOOM_LEVEL, Math.trunc(raw)));
-}
-
-function getStoredZoomLevel(): number {
-  try {
-    const raw = parseInt(localStorage.getItem(ZOOM_LEVEL_KEY) || `${DEFAULT_ZOOM}`, 10);
-    const normalized = normalizeZoomLevel(raw);
-    const rawValue = Number.isFinite(raw) ? raw : DEFAULT_ZOOM;
-    if (rawValue !== normalized) {
-      localStorage.setItem(ZOOM_LEVEL_KEY, String(normalized));
-    }
-    return normalized;
-  } catch {
-    return DEFAULT_ZOOM;
-  }
-}
-
-function mapDisplayZoomToLevel(displayZoom: number): number {
-  return Math.log((Math.trunc(displayZoom) + ZOOM_OFFSET) / 100) / Math.log(1.2);
-}
 
 function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
@@ -294,7 +265,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     try {
       const clamped = getStoredZoomLevel();
-      const zoomLevel = mapDisplayZoomToLevel(clamped);
+      const zoomLevel = displayZoomToLevel(clamped);
       window.ade.zoom.setLevel(zoomLevel);
     } catch {
       // ignore

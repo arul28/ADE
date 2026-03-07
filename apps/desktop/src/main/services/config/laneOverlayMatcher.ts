@@ -43,14 +43,8 @@ function matchesPolicy(lane: LaneSummary, policy: LaneOverlayPolicy): boolean {
   if (match.tags && match.tags.length > 0) {
     const laneTags = normalizeSet(lane.tags);
     const required = normalizeSet(match.tags);
-    let matched = false;
-    for (const tag of required) {
-      if (laneTags.has(tag)) {
-        matched = true;
-        break;
-      }
-    }
-    if (!matched) return false;
+    const hasOverlap = [...required].some((tag) => laneTags.has(tag));
+    if (!hasOverlap) return false;
   }
 
   return true;

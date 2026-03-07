@@ -1,3 +1,4 @@
+import React, { useMemo } from "react";
 import { SquaresFour } from "@phosphor-icons/react";
 import type {
   MissionDetail,
@@ -55,7 +56,7 @@ function phaseSectionsFromSteps(steps: OrchestratorStep[]): PhaseSection[] {
   return [...sections.values()].sort((a, b) => a.position - b.position || a.steps[0]!.stepIndex - b.steps[0]!.stepIndex);
 }
 
-export function PlanTab({
+export const PlanTab = React.memo(function PlanTab({
   mission,
   runGraph,
   attemptsByStep,
@@ -69,8 +70,8 @@ export function PlanTab({
   onStepSelect: (stepId: string) => void;
 }) {
   const steps = runGraph?.steps ?? [];
-  const phaseSections = phaseSectionsFromSteps(steps);
-  const executableSteps = filterExecutionSteps(steps);
+  const phaseSections = useMemo(() => phaseSectionsFromSteps(steps), [steps]);
+  const executableSteps = useMemo(() => filterExecutionSteps(steps), [steps]);
 
   if (!runGraph || steps.length === 0) {
     return (
@@ -160,4 +161,4 @@ export function PlanTab({
       ))}
     </div>
   );
-}
+});

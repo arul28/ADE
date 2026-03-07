@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import React, { useMemo } from "react";
 import type { OrchestratorStep, OrchestratorAttempt } from "../../../shared/types";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 
@@ -35,7 +35,7 @@ function formatStepElapsed(step: OrchestratorStep, attempts: OrchestratorAttempt
   return `${secs}s`;
 }
 
-export function AgentPresencePanel({
+export const AgentPresencePanel = React.memo(function AgentPresencePanel({
   steps,
   attempts,
   selectedAgent,
@@ -116,4 +116,4 @@ export function AgentPresencePanel({
       </div>
     </aside>
   );
-}
+});

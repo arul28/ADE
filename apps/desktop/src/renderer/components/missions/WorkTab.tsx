@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { OrchestratorRunGraph, OrchestratorTeamMember, OrchestratorStepStatus } from "../../../shared/types";
 import { sanitizeWorkerTranscriptForDisplay } from "../../../shared/workerRuntimeNoise";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
@@ -37,6 +37,41 @@ const TEAM_SOURCE_LABEL: Record<OrchestratorTeamMember["source"], string> = {
 
 const TERMINATED_AUTO_COLLAPSE_MS = 2 * 60 * 1000;
 
+const SECTION_HEADING_STYLE: React.CSSProperties = {
+  color: COLORS.textMuted,
+  fontFamily: MONO_FONT,
+};
+
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="text-[10px] font-bold uppercase tracking-[1px]" style={SECTION_HEADING_STYLE}>
+      {children}
+    </div>
+  );
+}
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+      {children}
+    </div>
+  );
+}
+
+function CountList({ items, emptyText }: { items: [string, number][]; emptyText: string }) {
+  if (items.length === 0) return <EmptyState>{emptyText}</EmptyState>;
+  return (
+    <>
+      {items.map(([name, count]) => (
+        <div key={name} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
+          <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{name}</span>
+          <span style={{ color: COLORS.textMuted }}>{count}</span>
+        </div>
+      ))}
+    </>
+  );
+}
+
 type ValidatorLineageEntry = {
   stepId: string;
   stepKey: string;
@@ -50,7 +85,7 @@ type ValidatorLineageEntry = {
   targetStepStatus: OrchestratorStepStatus | null;
 };
 
-export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null }) {
+export const WorkTab = React.memo(function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null }) {
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
   const [transcriptTail, setTranscriptTail] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
@@ -173,13 +208,9 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
     for (const event of relatedEvents) {
       const payload = isRecord(event.payload) ? event.payload : {};
       const toolName =
-        typeof payload.toolName === "string"
-          ? payload.toolName
-          : typeof payload.tool === "string"
-            ? payload.tool
-            : event.eventType.startsWith("tool_")
-              ? event.eventType
-              : null;
+        (typeof payload.toolName === "string" && payload.toolName)
+        || (typeof payload.tool === "string" && payload.tool)
+        || (event.eventType.startsWith("tool_") ? event.eventType : null);
       if (!toolName) continue;
       tools.set(toolName, (tools.get(toolName) ?? 0) + 1);
     }
@@ -302,9 +333,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       <div className="flex items-center gap-2 px-3 py-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-        <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-          Worker view
-        </span>
+        <SectionHeading>Worker view</SectionHeading>
         <select
           value={selectedAttemptId ?? ""}
           onChange={(event) => setSelectedAttemptId(event.target.value)}
@@ -334,9 +363,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
               <>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                      Current worker
-                    </div>
+                    <SectionHeading>Current worker</SectionHeading>
                     <div className="mt-1 text-sm font-semibold" style={{ color: COLORS.textPrimary }}>
                       {selectedStep.title}
                     </div>
@@ -365,7 +392,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
                     { label: "Latest activity", value: recentTimeline[0] ? compactText(recentTimeline[0].eventType.replace(/_/g, " "), 42) : "Waiting" },
                   ].map((entry) => (
                     <div key={entry.label} className="px-2 py-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-                      <div className="text-[9px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      <div className="text-[9px] font-bold uppercase tracking-[1px]" style={SECTION_HEADING_STYLE}>
                         {entry.label}
                       </div>
                       <div className="mt-1 text-[11px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
@@ -390,61 +417,35 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
 
           <div className="grid gap-3 xl:grid-cols-2">
             <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-              <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                Files changed
-              </div>
+              <SectionHeading>Files changed</SectionHeading>
               <div className="mt-2 space-y-1">
-                {filesTouched.length === 0 ? (
-                  <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                    No file activity recorded yet.
-                  </div>
-                ) : filesTouched.map(([file, count]) => (
-                  <div key={file} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
-                    <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{file}</span>
-                    <span style={{ color: COLORS.textMuted }}>{count}</span>
-                  </div>
-                ))}
+                <CountList items={filesTouched} emptyText="No file activity recorded yet." />
               </div>
             </div>
 
             <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-              <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                Tools used
-              </div>
+              <SectionHeading>Tools used</SectionHeading>
               <div className="mt-2 space-y-1">
-                {toolsCalled.length === 0 ? (
-                  <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                    No tool activity recorded yet.
-                  </div>
-                ) : toolsCalled.map(([tool, count]) => (
-                  <div key={tool} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
-                    <span className="truncate pr-2" style={{ color: COLORS.textSecondary }}>{tool}</span>
-                    <span style={{ color: COLORS.textMuted }}>{count}</span>
-                  </div>
-                ))}
+                <CountList items={toolsCalled} emptyText="No tool activity recorded yet." />
               </div>
             </div>
           </div>
 
           <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
             <div className="flex items-center justify-between">
-              <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                Recent worker signals
-              </div>
+              <SectionHeading>Recent worker signals</SectionHeading>
               <button
                 type="button"
                 onClick={() => setShowAdvancedOutput((prev) => !prev)}
                 className="text-[10px] font-bold uppercase tracking-[1px]"
-                style={{ color: showAdvancedOutput ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+                style={{ ...SECTION_HEADING_STYLE, color: showAdvancedOutput ? COLORS.accent : COLORS.textMuted }}
               >
                 {showAdvancedOutput ? "Hide raw output" : "Show raw output"}
               </button>
             </div>
             <div className="mt-2 space-y-1">
               {recentTimeline.length === 0 ? (
-                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                  No worker events yet.
-                </div>
+                <EmptyState>No worker events yet.</EmptyState>
               ) : recentTimeline.map((event) => (
                 <div key={event.id ?? `${event.eventType}:${event.occurredAt}`} className="px-2 py-1.5 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
                   <div className="flex items-center justify-between gap-2" style={{ fontFamily: MONO_FONT }}>
@@ -454,13 +455,8 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
                   {(() => {
                     const payload = isRecord(event.payload) ? event.payload : {};
                     const summaryCandidate =
-                      typeof payload.summary === "string"
-                        ? payload.summary
-                        : typeof payload.message === "string"
-                          ? payload.message
-                          : typeof payload.reason === "string"
-                            ? payload.reason
-                            : "";
+                      [payload.summary, payload.message, payload.reason]
+                        .find((v): v is string => typeof v === "string") ?? "";
                     return summaryCandidate ? (
                       <div className="mt-1" style={{ color: COLORS.textSecondary }}>
                         {compactText(summaryCandidate, 180)}
@@ -474,12 +470,10 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
             {showAdvancedOutput && (
               <div className="mt-3" style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
                 <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-                  <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    Raw worker transcript
-                  </span>
+                  <SectionHeading>Raw worker transcript</SectionHeading>
                   <button
                     className="text-[10px] font-bold uppercase tracking-[1px]"
-                    style={{ color: autoScroll ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+                    style={{ ...SECTION_HEADING_STYLE, color: autoScroll ? COLORS.accent : COLORS.textMuted }}
                     onClick={() => setAutoScroll((prev) => !prev)}
                   >
                     {autoScroll ? "Auto-scroll" : "Scroll lock"}
@@ -499,9 +493,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
 
         <div className="w-full space-y-3 lg:w-[320px] lg:shrink-0">
           <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-              Collaborators
-            </div>
+            <SectionHeading>Collaborators</SectionHeading>
             {collapsedTerminatedCount > 0 ? (
               <div className="mt-1 flex items-center justify-between gap-2">
                 <span className="text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
@@ -519,9 +511,7 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
             ) : null}
             <div className="mt-2 max-h-[220px] space-y-1 overflow-auto pr-1">
               {visibleTeamMembers.length === 0 ? (
-                <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                  No collaborators registered yet.
-                </div>
+                <EmptyState>No collaborators registered yet.</EmptyState>
               ) : visibleTeamMembers.map(({ member, depth }) => {
                 const metadata = isRecord(member.metadata) ? member.metadata : {};
                 const roleName =
@@ -575,14 +565,12 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
 
           <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
             <div className="flex items-center justify-between">
-              <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                Advanced panels
-              </div>
+              <SectionHeading>Advanced panels</SectionHeading>
               <button
                 type="button"
                 onClick={() => setShowAdvancedPanels((prev) => !prev)}
                 className="text-[10px] font-bold uppercase tracking-[1px]"
-                style={{ color: showAdvancedPanels ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
+                style={{ ...SECTION_HEADING_STYLE, color: showAdvancedPanels ? COLORS.accent : COLORS.textMuted }}
               >
                 {showAdvancedPanels ? "Hide" : "Show"}
               </button>
@@ -590,14 +578,10 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
             {showAdvancedPanels ? (
               <div className="mt-2 space-y-2">
                 <div className="p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-                  <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    Quality checks
-                  </div>
+                  <SectionHeading>Quality checks</SectionHeading>
                   <div className="mt-2 space-y-1">
                     {validatorLineage.length === 0 ? (
-                      <div className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                        No validator steps detected.
-                      </div>
+                      <EmptyState>No validator steps detected.</EmptyState>
                     ) : validatorLineage.map((entry) => (
                       <div key={entry.stepId} className="border px-2 py-1.5" style={{ borderColor: `${COLORS.warning}50`, background: `${COLORS.warning}10` }}>
                         <div className="flex items-center gap-1">
@@ -629,4 +613,4 @@ export function WorkTab({ runGraph }: { runGraph: OrchestratorRunGraph | null })
       </div>
     </div>
   );
-}
+});

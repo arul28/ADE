@@ -1,5 +1,5 @@
 import path from "node:path";
-import { runGit, runGitOrThrow } from "./git";
+import { getHeadSha, runGit, runGitOrThrow } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
@@ -51,13 +51,6 @@ function ensureRelativeRepoPath(relPath: string): string {
   }
   if (normalized === ".") throw new Error("Path must point to a file");
   return normalized;
-}
-
-async function getHeadSha(worktreePath: string): Promise<string | null> {
-  const res = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
-  if (res.exitCode !== 0) return null;
-  const sha = res.stdout.trim();
-  return sha.length ? sha : null;
 }
 
 function parseDelimited(line: string): string[] {

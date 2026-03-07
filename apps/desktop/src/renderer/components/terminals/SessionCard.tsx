@@ -1,7 +1,7 @@
 import React from "react";
 import { Info, Play } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
-import { sessionIndicatorState } from "../../lib/terminalAttention";
+import { sessionStatusDot } from "../../lib/terminalAttention";
 import { primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
@@ -19,18 +19,6 @@ function toolAccentGradient(toolType: string | null | undefined): string {
   return "from-violet-500/50 to-violet-500/10";
 }
 
-function statusDot(session: TerminalSessionSummary): { cls: string; spinning: boolean; label: string } {
-  const ind = sessionIndicatorState({
-    status: session.status,
-    lastOutputPreview: session.lastOutputPreview,
-    runtimeState: session.runtimeState,
-  });
-  if (ind === "running-active")
-    return { cls: "border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
-  if (ind === "running-needs-attention")
-    return { cls: "border-2 border-amber-300 border-t-transparent bg-transparent", spinning: true, label: "Awaiting input" };
-  return { cls: "bg-red-400", spinning: false, label: "Ended" };
-}
 
 function truncateSummary(text: string | null, maxWords = 8): string {
   if (!text) return "";
@@ -39,7 +27,45 @@ function truncateSummary(text: string | null, maxWords = 8): string {
   return words.slice(0, maxWords).join(" ") + "...";
 }
 
-export function SessionCard({
+const DELTA_CHIP_STYLE: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 700,
+  fontFamily: MONO_FONT,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  borderRadius: 0,
+};
+
+const SELECTED_CARD_BASE: React.CSSProperties = {
+  background: "#A78BFA12",
+  border: "1px solid #A78BFA30",
+  borderLeftWidth: 3,
+  borderLeftColor: COLORS.accent,
+};
+
+const UNSELECTED_CARD_BASE: React.CSSProperties = {
+  background: COLORS.cardBg,
+  border: `1px solid ${COLORS.border}`,
+};
+
+const INFO_BUTTON_STYLE: React.CSSProperties = {
+  borderRadius: 0,
+  border: `1px solid ${COLORS.outlineBorder}`,
+  background: COLORS.cardBg,
+};
+
+const RESUME_BUTTON_STYLE: React.CSSProperties = {
+  borderRadius: 0,
+  border: `1px solid ${COLORS.outlineBorder}`,
+  background: COLORS.cardBg,
+  fontSize: 11,
+  fontWeight: 700,
+  fontFamily: MONO_FONT,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+};
+
+export const SessionCard = React.memo(function SessionCard({
   session,
   isSelected,
   onSelect,
@@ -56,7 +82,7 @@ export function SessionCard({
   onContextMenu: (e: React.MouseEvent) => void;
   resumingSessionId: string | null;
 }) {
-  const dot = statusDot(session);
+  const dot = sessionStatusDot(session);
   const canResume = session.status !== "running" && Boolean(session.resumeCommand);
   const isEnded = session.status !== "running";
   const delta = useSessionDelta(session.id, isEnded);
@@ -74,17 +100,7 @@ export function SessionCard({
         style={{
           fontFamily: MONO_FONT,
           borderRadius: 0,
-          ...(isSelected
-            ? {
-                background: "#A78BFA12",
-                border: "1px solid #A78BFA30",
-                borderLeftWidth: 3,
-                borderLeftColor: COLORS.accent,
-              }
-            : {
-                background: COLORS.cardBg,
-                border: `1px solid ${COLORS.border}`,
-              }),
+          ...(isSelected ? SELECTED_CARD_BASE : UNSELECTED_CARD_BASE),
         }}
         onClick={() => onSelect(session.id)}
       >
@@ -132,27 +148,13 @@ export function SessionCard({
               <>
                 <span
                   className="border border-emerald-500/30 bg-emerald-500/15 px-1 py-0.5 text-emerald-300 leading-none shrink-0"
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    fontFamily: MONO_FONT,
-                    textTransform: "uppercase",
-                    letterSpacing: "1px",
-                    borderRadius: 0,
-                  }}
+                  style={DELTA_CHIP_STYLE}
                 >
                   +{delta.insertions}
                 </span>
                 <span
                   className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    fontFamily: MONO_FONT,
-                    textTransform: "uppercase",
-                    letterSpacing: "1px",
-                    borderRadius: 0,
-                  }}
+                  style={DELTA_CHIP_STYLE}
                 >
                   -{delta.deletions}
                 </span>
@@ -162,14 +164,7 @@ export function SessionCard({
             {session.exitCode != null && session.exitCode !== 0 ? (
               <span
                 className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
-                style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  fontFamily: MONO_FONT,
-                  textTransform: "uppercase",
-                  letterSpacing: "1px",
-                  borderRadius: 0,
-                }}
+                style={DELTA_CHIP_STYLE}
               >
                 EXIT {session.exitCode}
               </span>
@@ -184,11 +179,7 @@ export function SessionCard({
         <button
           type="button"
           className="inline-flex items-center justify-center h-5 w-5 text-muted-fg hover:text-fg transition-colors"
-          style={{
-            borderRadius: 0,
-            border: `1px solid ${COLORS.outlineBorder}`,
-            background: COLORS.cardBg,
-          }}
+          style={INFO_BUTTON_STYLE}
           onClick={(e) => { e.stopPropagation(); onInfoClick(e); }}
           title="Session details"
         >
@@ -200,16 +191,7 @@ export function SessionCard({
           <button
             type="button"
             className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-muted-fg hover:text-fg transition-colors"
-            style={{
-              borderRadius: 0,
-              border: `1px solid ${COLORS.outlineBorder}`,
-              background: COLORS.cardBg,
-              fontSize: 11,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-            }}
+            style={RESUME_BUTTON_STYLE}
             disabled={resumingSessionId != null}
             onClick={(e) => { e.stopPropagation(); onResume(); }}
             title="Resume"
@@ -221,4 +203,4 @@ export function SessionCard({
       </div>
     </div>
   );
-}
+});

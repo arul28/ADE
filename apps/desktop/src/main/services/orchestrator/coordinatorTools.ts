@@ -2065,7 +2065,7 @@ export function createCoordinatorToolSet(deps: {
               "Wait for the planner to finish, or let runtime surface a concrete failure before retrying."
           };
         }
-        orchestratorService.completeAttempt({
+        await orchestratorService.completeAttempt({
           attemptId: attempt.id,
           status: "canceled",
           errorClass: "canceled",
@@ -3479,7 +3479,7 @@ export function createCoordinatorToolSet(deps: {
           if (!targetStep) continue;
           if (TERMINAL_STEP_STATUSES.has(targetStep.status)) continue;
           const replacement = replacementByOldStepKey.get(targetKey) ?? null;
-          const next = orchestratorService.supersedeStep({
+          const next = await orchestratorService.supersedeStep({
             runId,
             stepId: targetStep.id,
             replacementStepId: replacement?.id ?? null,
@@ -4129,7 +4129,7 @@ export function createCoordinatorToolSet(deps: {
         // Cancel running attempt if any
         const running = findRunningAttempt(g, step.id);
         if (running) {
-          orchestratorService.completeAttempt({
+          await orchestratorService.completeAttempt({
             attemptId: running.id,
             status: "canceled",
             errorClass: "canceled",
@@ -4191,7 +4191,7 @@ export function createCoordinatorToolSet(deps: {
         // Cancel running attempt if any
         const running = findRunningAttempt(g, step.id);
         if (running) {
-          orchestratorService.completeAttempt({
+          await orchestratorService.completeAttempt({
             attemptId: running.id,
             status: "succeeded",
             result: {
@@ -4257,7 +4257,7 @@ export function createCoordinatorToolSet(deps: {
         // Cancel running attempt if any
         const running = findRunningAttempt(g, step.id);
         if (running) {
-          orchestratorService.completeAttempt({
+          await orchestratorService.completeAttempt({
             attemptId: running.id,
             status: "failed",
             errorClass: "deterministic",

@@ -224,7 +224,7 @@ export function createPtyService({
         if (!session) return;
 
         const transcript = session.tracked
-          ? sessionService.readTranscriptTail(session.transcriptPath, 220_000)
+          ? await sessionService.readTranscriptTail(session.transcriptPath, 220_000)
           : "";
 
         const summary = summarizeTerminalSession({

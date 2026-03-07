@@ -5,23 +5,11 @@ import {
   GearSix,
   Terminal,
 } from "@phosphor-icons/react";
-import type { TerminalLaunchProfile, TerminalProfilesSnapshot, TerminalToolType } from "../../../shared/types";
+import type { TerminalLaunchProfile, TerminalProfilesSnapshot } from "../../../shared/types";
+import { DEFAULT_PROFILE_IDS, toolTypeFromProfileId } from "../../lib/sessions";
 import { ToolLogo } from "./ToolLogos";
 import { TerminalSettingsDialog, readLaunchTracked, persistLaunchTracked } from "./TerminalSettingsDialog";
 import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge } from "../lanes/laneDesignTokens";
-
-const DEFAULT_PROFILE_IDS = ["claude", "codex", "shell"] as const;
-
-function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
-  const id = profileId.trim().toLowerCase();
-  if (id === "claude") return "claude";
-  if (id === "codex") return "codex";
-  if (id === "shell") return "shell";
-  if (id === "aider") return "aider";
-  if (id === "cursor") return "cursor";
-  if (id === "continue") return "continue";
-  return "other";
-}
 
 export function LaunchPanel({
   lanes,

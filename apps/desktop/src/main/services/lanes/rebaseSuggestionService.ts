@@ -1,4 +1,4 @@
-import { runGit } from "../git/git";
+import { getHeadSha } from "../git/git";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
@@ -53,13 +53,6 @@ function isSuppressed(args: { nowMs: number; state: StoredSuggestionState; curre
   return false;
 }
 
-async function readHeadSha(worktreePath: string): Promise<string | null> {
-  const res = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 10_000 });
-  if (res.exitCode !== 0) return null;
-  const sha = res.stdout.trim();
-  return sha.length ? sha : null;
-}
-
 export function createRebaseSuggestionService(args: {
   db: AdeDb;
   logger: Logger;
@@ -106,7 +99,7 @@ export function createRebaseSuggestionService(args: {
 
       let parentHeadSha = parentHeadShaById.get(parentLaneId);
       if (parentHeadSha === undefined) {
-        parentHeadSha = await readHeadSha(parent.worktreePath);
+        parentHeadSha = await getHeadSha(parent.worktreePath);
         parentHeadShaById.set(parentLaneId, parentHeadSha);
       }
       if (!parentHeadSha) continue;
@@ -190,7 +183,7 @@ export function createRebaseSuggestionService(args: {
 
     const parent = lanes.find((l) => l.id === lane.parentLaneId);
     if (!parent) throw new Error("Parent lane not found.");
-    const parentHeadSha = await readHeadSha(parent.worktreePath);
+    const parentHeadSha = await getHeadSha(parent.worktreePath);
     if (!parentHeadSha) throw new Error("Unable to resolve parent HEAD.");
 
     const existing = loadState(laneId);
@@ -221,7 +214,7 @@ export function createRebaseSuggestionService(args: {
 
     const parent = lanes.find((l) => l.id === lane.parentLaneId);
     if (!parent) throw new Error("Parent lane not found.");
-    const parentHeadSha = await readHeadSha(parent.worktreePath);
+    const parentHeadSha = await getHeadSha(parent.worktreePath);
     if (!parentHeadSha) throw new Error("Unable to resolve parent HEAD.");
 
     const existing = loadState(laneId);
