@@ -41,6 +41,26 @@ function makeUnhealthy(laneId = "lane-1"): LaneHealthCheck {
   };
 }
 
+function makeProxyIssue(laneId = "lane-1"): LaneHealthCheck {
+  return {
+    laneId,
+    status: "degraded",
+    processAlive: true,
+    portResponding: true,
+    proxyRouteActive: false,
+    fallbackMode: false,
+    lastCheckedAt: new Date().toISOString(),
+    issues: [
+      {
+        type: "proxy-route-missing",
+        message: "No proxy route registered for this lane. Enable fallback to keep working on the direct port.",
+        actionLabel: "Enable fallback",
+        actionType: "enable-fallback",
+      },
+    ],
+  };
+}
+
 function makeFallback(laneId = "lane-1"): LaneHealthCheck {
   return {
     laneId,
@@ -66,6 +86,7 @@ function setupWindowAde(overrides: Record<string, any> = {}) {
       diagnosticsRunHealthCheck: vi.fn(async () => makeHealthy()),
       diagnosticsActivateFallback: vi.fn(async () => undefined),
       diagnosticsDeactivateFallback: vi.fn(async () => undefined),
+      proxyStart: vi.fn(async () => makeHealthy()),
       onDiagnosticsEvent: vi.fn(
         (_cb: (event: RuntimeDiagnosticsEvent) => void) => () => undefined,
       ),
@@ -148,7 +169,7 @@ describe("RuntimeDiagnosticsPanel", () => {
   it("run health check button triggers check", async () => {
     const runCheck = vi.fn(async () => makeHealthy());
     setupWindowAde({
-      diagnosticsGetLaneHealth: vi.fn(async () => null),
+      diagnosticsGetLaneHealth: vi.fn(async () => makeHealthy()),
       diagnosticsRunHealthCheck: runCheck,
     });
 
@@ -163,6 +184,21 @@ describe("RuntimeDiagnosticsPanel", () => {
     await waitFor(() => {
       expect(runCheck).toHaveBeenCalledWith({ laneId: "lane-1" });
     });
+  });
+
+  it("runs an initial health check when the cache is empty", async () => {
+    const runCheck = vi.fn(async () => makeHealthy());
+    setupWindowAde({
+      diagnosticsGetLaneHealth: vi.fn(async () => null),
+      diagnosticsRunHealthCheck: runCheck,
+    });
+
+    render(<RuntimeDiagnosticsPanel laneId="lane-1" />);
+
+    await waitFor(() => {
+      expect(runCheck).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
+    expect(screen.getByText("Healthy")).toBeTruthy();
   });
 
   it("shows collapsible issues section", async () => {
@@ -225,5 +261,66 @@ describe("RuntimeDiagnosticsPanel", () => {
     unmount();
 
     expect(unsubFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates fallback UI from diagnostics events", async () => {
+    const diagnosticsListenerRef: {
+      current?: (event: RuntimeDiagnosticsEvent) => void;
+    } = {};
+    setupWindowAde({
+      diagnosticsGetLaneHealth: vi.fn(async () => makeFallback()),
+      onDiagnosticsEvent: vi.fn((cb: (event: RuntimeDiagnosticsEvent) => void) => {
+        diagnosticsListenerRef.current = cb;
+        return () => undefined;
+      }),
+    });
+
+    render(<RuntimeDiagnosticsPanel laneId="lane-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Fallback mode active/)).toBeTruthy();
+    });
+
+    if (!diagnosticsListenerRef.current) {
+      throw new Error("expected diagnostics listener to be registered");
+    }
+    diagnosticsListenerRef.current({
+      type: "fallback-deactivated",
+      laneId: "lane-1",
+      health: makeHealthy(),
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Fallback mode active/)).toBeNull();
+    });
+  });
+
+  it("renders and executes supported issue actions", async () => {
+    const activateFallback = vi.fn(async () => undefined);
+    const runCheck = vi.fn(async () => makeFallback());
+    setupWindowAde({
+      diagnosticsGetLaneHealth: vi.fn(async () => makeProxyIssue()),
+      diagnosticsActivateFallback: activateFallback,
+      diagnosticsRunHealthCheck: runCheck,
+    });
+
+    render(<RuntimeDiagnosticsPanel laneId="lane-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Issues (1)")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText("Issues (1)"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Enable fallback")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText("Enable fallback"));
+
+    await waitFor(() => {
+      expect(activateFallback).toHaveBeenCalledWith({ laneId: "lane-1" });
+      expect(runCheck).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
   });
 });

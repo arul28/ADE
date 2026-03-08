@@ -69,13 +69,18 @@ function makeLease(laneId: string, rangeStart = 3000): PortLease {
   };
 }
 
-function makeRoute(laneId: string, targetPort = 3000): ProxyRoute {
+function makeRoute(
+  laneId: string,
+  targetPort = 3000,
+  overrides?: Partial<ProxyRoute>,
+): ProxyRoute {
   return {
     laneId,
     hostname: `${laneId}.localhost`,
     targetPort,
     status: "active",
     createdAt: new Date().toISOString(),
+    ...overrides,
   };
 }
 
@@ -239,6 +244,40 @@ describe("createRuntimeDiagnosticsService", () => {
       expect(processDead).toHaveLength(0);
       expect(portUnresponsive).toHaveLength(1);
     });
+
+    it("refreshes conflicts during a single-lane check", async () => {
+      const detectFn = vi.fn(() => conflicts);
+      svc.dispose();
+      svc = createRuntimeDiagnosticsService({
+        logger: createLogger(),
+        broadcastEvent: (ev) => events.push(ev),
+        getPortLease: (laneId) => leases.get(laneId) ?? null,
+        getPortConflicts: () => conflicts,
+        detectPortConflicts: detectFn,
+        getProxyStatus: () => proxyStatus,
+        getProxyRoute: (laneId) => routes.get(laneId) ?? null,
+      });
+
+      leases.set("lane-1", makeLease("lane-1"));
+      routes.set("lane-1", makeRoute("lane-1"));
+      simulatePortResponding();
+
+      await svc.checkLaneHealth("lane-1");
+
+      expect(detectFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns degraded when the proxy route exists but is inactive", async () => {
+      leases.set("lane-1", makeLease("lane-1"));
+      routes.set("lane-1", makeRoute("lane-1", 3000, { status: "inactive" }));
+      simulatePortResponding();
+
+      const health = await svc.checkLaneHealth("lane-1");
+
+      expect(health.status).toBe("degraded");
+      expect(health.proxyRouteActive).toBe(false);
+      expect(health.issues.some((i) => i.type === "proxy-route-missing")).toBe(true);
+    });
   });
 
   // =========================================================================
@@ -330,34 +369,56 @@ describe("createRuntimeDiagnosticsService", () => {
       expect(lanes).toContain("lane-3");
     });
 
-    it("fallback mode changes status from unhealthy to degraded", async () => {
+    it("fallback mode keeps process failures unhealthy", async () => {
       leases.set("lane-1", makeLease("lane-1"));
       routes.set("lane-1", makeRoute("lane-1"));
       simulatePortUnresponsive();
 
-      // Without fallback, should be unhealthy
       const before = await svc.checkLaneHealth("lane-1");
       expect(before.status).toBe("unhealthy");
 
-      // Activate fallback, re-check
       svc.activateFallback("lane-1");
-      // Reset mock for second check
       simulatePortUnresponsive();
       const after = await svc.checkLaneHealth("lane-1");
-      expect(after.status).toBe("degraded");
+      expect(after.status).toBe("unhealthy");
       expect(after.fallbackMode).toBe(true);
     });
 
-    it("broadcasts fallback-activated event", () => {
+    it("marks fallback-only isolation issues as degraded", async () => {
+      leases.set("lane-1", makeLease("lane-1"));
+      proxyStatus = makeProxyStatus({ running: false });
+      simulatePortResponding();
+
+      svc.activateFallback("lane-1");
+      const health = await svc.checkLaneHealth("lane-1");
+
+      expect(health.status).toBe("degraded");
+      expect(health.fallbackMode).toBe(true);
+      expect(health.issues.some((i) => i.type === "proxy-route-missing")).toBe(true);
+    });
+
+    it("broadcasts fallback-activated event with updated health and status", async () => {
+      leases.set("lane-1", makeLease("lane-1"));
+      routes.set("lane-1", makeRoute("lane-1"));
+      simulatePortResponding();
+      await svc.checkLaneHealth("lane-1");
+
       events.length = 0;
       svc.activateFallback("lane-1");
 
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe("fallback-activated");
       expect(events[0].laneId).toBe("lane-1");
+      expect(events[0].health?.fallbackMode).toBe(true);
+      expect(events[0].status?.fallbackLanes).toContain("lane-1");
     });
 
-    it("broadcasts fallback-deactivated event", () => {
+    it("broadcasts fallback-deactivated event with updated health and status", async () => {
+      leases.set("lane-1", makeLease("lane-1"));
+      routes.set("lane-1", makeRoute("lane-1"));
+      simulatePortResponding();
+      await svc.checkLaneHealth("lane-1");
+
       svc.activateFallback("lane-1");
       events.length = 0;
 
@@ -366,6 +427,8 @@ describe("createRuntimeDiagnosticsService", () => {
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe("fallback-deactivated");
       expect(events[0].laneId).toBe("lane-1");
+      expect(events[0].health?.fallbackMode).toBe(false);
+      expect(events[0].status?.fallbackLanes).not.toContain("lane-1");
     });
   });
 

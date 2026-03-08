@@ -137,56 +137,89 @@ export function DiagnosticsDashboardSection() {
 
     setLoading(true);
 
-    window.ade.lanes
-      .diagnosticsGetStatus()
-      .then((result) => {
-        if (!cancelled) {
-          setStatus(result);
-          setLoading(false);
-          // Derive last-checked from lanes
-          const timestamps = result.lanes
-            .map((l) => l.lastCheckedAt)
-            .filter(Boolean);
-          if (timestamps.length > 0) {
-            timestamps.sort();
-            setLastChecked(timestamps[timestamps.length - 1]);
-          }
+    const syncLastChecked = (lanes: LaneHealthCheck[]) => {
+      const timestamps = lanes.map((lane) => lane.lastCheckedAt).filter(Boolean);
+      if (timestamps.length === 0) {
+        setLastChecked(null);
+        return;
+      }
+      timestamps.sort();
+      setLastChecked(timestamps[timestamps.length - 1]);
+    };
+
+    const loadStatus = async () => {
+      try {
+        const initial = await window.ade.lanes.diagnosticsGetStatus();
+        if (cancelled) {
+          return;
         }
-      })
-      .catch(() => {
+        setStatus(initial);
+        syncLastChecked(initial.lanes);
+
+        if (initial.lanes.length === 0) {
+          await window.ade.lanes.diagnosticsRunFullCheck();
+          if (cancelled) {
+            return;
+          }
+          const refreshed = await window.ade.lanes.diagnosticsGetStatus();
+          if (cancelled) {
+            return;
+          }
+          setStatus(refreshed);
+          syncLastChecked(refreshed.lanes);
+        }
+      } catch {
         if (!cancelled) {
           setStatus(null);
+          setLastChecked(null);
+        }
+      } finally {
+        if (!cancelled) {
           setLoading(false);
         }
-      });
+      }
+    };
+
+    void loadStatus();
 
     const unsub = window.ade.lanes.onDiagnosticsEvent((ev) => {
       if (cancelled) return;
 
       if (ev.status) {
         setStatus(ev.status);
-        const timestamps = ev.status.lanes
-          .map((l) => l.lastCheckedAt)
-          .filter(Boolean);
-        if (timestamps.length > 0) {
-          timestamps.sort();
-          setLastChecked(timestamps[timestamps.length - 1]);
-        }
+        syncLastChecked(ev.status.lanes);
       }
 
       if (ev.health) {
+        const nextHealth = ev.health;
         setStatus((prev) => {
-          if (!prev) return prev;
-          const idx = prev.lanes.findIndex((l) => l.laneId === ev.health!.laneId);
+          if (!prev) {
+            return {
+              lanes: [nextHealth],
+              proxyRunning: false,
+              proxyPort: 0,
+              totalRoutes: 0,
+              activeConflicts: 0,
+              fallbackLanes: nextHealth.fallbackMode ? [nextHealth.laneId] : [],
+            };
+          }
+          const idx = prev.lanes.findIndex((lane) => lane.laneId === nextHealth.laneId);
+          const nextFallback = nextHealth.fallbackMode
+            ? Array.from(new Set([...prev.fallbackLanes, nextHealth.laneId]))
+            : prev.fallbackLanes.filter((id) => id !== nextHealth.laneId);
           if (idx === -1) {
-            return { ...prev, lanes: [...prev.lanes, ev.health!] };
+            return {
+              ...prev,
+              lanes: [...prev.lanes, nextHealth],
+              fallbackLanes: nextFallback,
+            };
           }
           const nextLanes = [...prev.lanes];
-          nextLanes[idx] = ev.health!;
-          return { ...prev, lanes: nextLanes };
+          nextLanes[idx] = nextHealth;
+          return { ...prev, lanes: nextLanes, fallbackLanes: nextFallback };
         });
-        if (ev.health.lastCheckedAt) {
-          setLastChecked(ev.health.lastCheckedAt);
+        if (nextHealth.lastCheckedAt) {
+          setLastChecked(nextHealth.lastCheckedAt);
         }
       }
     });
@@ -204,14 +237,13 @@ export function DiagnosticsDashboardSection() {
   const handleRunFullCheck = async () => {
     setCheckBusy(true);
     try {
-      const results = await window.ade.lanes.diagnosticsRunFullCheck();
-      setStatus((prev) => {
-        if (!prev) return prev;
-        // Replace lanes with fresh results
-        return { ...prev, lanes: results };
-      });
-      const timestamps = results.map((l) => l.lastCheckedAt).filter(Boolean);
-      if (timestamps.length > 0) {
+      await window.ade.lanes.diagnosticsRunFullCheck();
+      const refreshed = await window.ade.lanes.diagnosticsGetStatus();
+      setStatus(refreshed);
+      const timestamps = refreshed.lanes.map((lane) => lane.lastCheckedAt).filter(Boolean);
+      if (timestamps.length === 0) {
+        setLastChecked(null);
+      } else {
         timestamps.sort();
         setLastChecked(timestamps[timestamps.length - 1]);
       }

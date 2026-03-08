@@ -21,17 +21,29 @@ export function LaneHealthDot({ laneId }: { laneId: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    setStatus("unknown");
 
-    window.ade.lanes
-      .diagnosticsGetLaneHealth({ laneId })
-      .then((health: LaneHealthCheck | null) => {
-        if (!cancelled && health) {
-          setStatus(health.status);
+    const loadHealth = async () => {
+      try {
+        const cached = await window.ade.lanes.diagnosticsGetLaneHealth({ laneId });
+        if (cancelled) {
+          return;
         }
-      })
-      .catch(() => {
+        if (cached) {
+          setStatus(cached.status);
+          return;
+        }
+
+        const fresh = await window.ade.lanes.diagnosticsRunHealthCheck({ laneId });
+        if (!cancelled) {
+          setStatus(fresh.status);
+        }
+      } catch {
         /* silent — dot stays unknown */
-      });
+      }
+    };
+
+    void loadHealth();
 
     const unsub = window.ade.lanes.onDiagnosticsEvent((ev) => {
       if (cancelled) return;

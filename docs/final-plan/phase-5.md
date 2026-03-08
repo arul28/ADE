@@ -178,21 +178,21 @@ Codex audit findings (d7058c9): auth redirect hardening — HMAC validation, ses
 - Lane health checks (process alive, port responding, proxy route active).
 - Port conflict detection across lanes.
 - Proxy status dashboard.
-- Fallback mode when isolation fails.
+- Fallback mode can be activated from diagnostics when isolation fails.
 - **Renderer**: Runtime diagnostics panel accessible from lane detail. Proxy status dashboard in Settings. Health check indicators in lane list.
 
 **Tests:**
 - Health check detection (process alive, port responding).
 - Proxy status reporting.
-- Fallback mode activation on isolation failure.
+- Actionable fallback activation from the diagnostics surfaces.
 
-**Status: COMPLETED** (current commit)
+**Status: COMPLETED** (commit d55b4e2, audited and hardened in follow-up fixes on this branch)
 
 Files created:
 - `apps/desktop/src/main/services/lanes/runtimeDiagnosticsService.ts` — Health checks, fallback mode, diagnostics aggregation
-- `apps/desktop/src/main/services/lanes/runtimeDiagnosticsService.test.ts` — 22 tests
+- `apps/desktop/src/main/services/lanes/runtimeDiagnosticsService.test.ts` — 25 tests
 - `apps/desktop/src/renderer/components/lanes/RuntimeDiagnosticsPanel.tsx` — Lane health diagnostics panel
-- `apps/desktop/src/renderer/components/lanes/RuntimeDiagnosticsPanel.test.tsx` — 8 tests
+- `apps/desktop/src/renderer/components/lanes/RuntimeDiagnosticsPanel.test.tsx` — 11 tests
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx` — Proxy status dashboard
 - `apps/desktop/src/renderer/components/lanes/LaneHealthDot.tsx` — Lane list health indicators
 
@@ -216,9 +216,9 @@ Files created:
 | W3: Port Allocation & Lease | **COMPLETED** | 14 | 5e95b4e, dab585e |
 | W4: Hostname Isolation | **COMPLETED** | 24 | d9193d4, 6677edf |
 | W5: Auth Redirect | **COMPLETED** | 28 | c3ab33a, d7058c9 |
-| W6: Runtime Diagnostics | **COMPLETED** | 30 | (current) |
+| W6: Runtime Diagnostics | **COMPLETED** | 36 | d55b4e2 + audit hardening |
 
-Total new tests from Phase 5: **141 tests**
+Total new tests from Phase 5: **147 tests**
 
 ### Parallel Work Completed
 

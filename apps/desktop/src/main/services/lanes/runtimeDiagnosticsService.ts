@@ -55,8 +55,7 @@ export function createRuntimeDiagnosticsService({
   }
 
   function deriveStatus(issues: LaneHealthIssue[], fallback: boolean): LaneHealthStatus {
-    if (issues.length === 0) return "healthy";
-    if (fallback) return "degraded";
+    if (issues.length === 0) return fallback ? "degraded" : "healthy";
     const hasCritical = issues.some((i) =>
       i.type === "process-dead" || i.type === "port-unresponsive"
     );
@@ -64,8 +63,14 @@ export function createRuntimeDiagnosticsService({
   }
 
   /** Build a health check for a single lane (async for port probe). */
-  async function runCheck(laneId: string): Promise<LaneHealthCheck> {
+  async function runCheck(
+    laneId: string,
+    options?: { refreshConflicts?: boolean },
+  ): Promise<LaneHealthCheck> {
     const issues: LaneHealthIssue[] = [];
+    if (options?.refreshConflicts) {
+      detectPortConflicts();
+    }
     const lease = getPortLease(laneId);
     const route = getProxyRoute(laneId);
     const proxyStatus = getProxyStatus();
@@ -103,7 +108,14 @@ export function createRuntimeDiagnosticsService({
     // 3. Proxy route active
     const proxyRouteActive = !!(route && route.status === "active" && proxyStatus.running);
     if (!proxyRouteActive) {
-      if (!proxyStatus.running) {
+      if (isFallback) {
+        issues.push({
+          type: "proxy-route-missing",
+          message: proxyStatus.running
+            ? "Fallback mode is active. This lane is bypassing proxy isolation and using direct port access."
+            : "Fallback mode is active because the proxy server is unavailable. Direct port access is being used.",
+        });
+      } else if (!proxyStatus.running) {
         issues.push({
           type: "proxy-route-missing",
           message: "Proxy server is not running. Lane isolation is inactive.",
@@ -113,9 +125,16 @@ export function createRuntimeDiagnosticsService({
       } else if (!route) {
         issues.push({
           type: "proxy-route-missing",
-          message: "No proxy route registered for this lane.",
-          actionLabel: "Add route",
-          actionType: "restart-proxy",
+          message: "No proxy route registered for this lane. Enable fallback to keep working on the direct port.",
+          actionLabel: "Enable fallback",
+          actionType: "enable-fallback",
+        });
+      } else {
+        issues.push({
+          type: "proxy-route-missing",
+          message: `Proxy route is ${route.status}. Enable fallback to keep working on the direct port.`,
+          actionLabel: "Enable fallback",
+          actionType: "enable-fallback",
         });
       }
     }
@@ -166,7 +185,7 @@ export function createRuntimeDiagnosticsService({
      * Run a health check for a single lane.
      */
     async checkLaneHealth(laneId: string): Promise<LaneHealthCheck> {
-      return runCheck(laneId);
+      return runCheck(laneId, { refreshConflicts: true });
     },
 
     /**
@@ -213,7 +232,12 @@ export function createRuntimeDiagnosticsService({
         cached.fallbackMode = true;
         cached.status = deriveStatus(cached.issues, true);
       }
-      broadcastEvent({ type: "fallback-activated", laneId });
+      broadcastEvent({
+        type: "fallback-activated",
+        laneId,
+        health: cached ?? undefined,
+        status: buildStatus(Array.from(healthCache.values())),
+      });
       logger.info("runtime_diagnostics.fallback_activated", { laneId });
     },
 
@@ -228,7 +252,12 @@ export function createRuntimeDiagnosticsService({
         cached.fallbackMode = false;
         cached.status = deriveStatus(cached.issues, false);
       }
-      broadcastEvent({ type: "fallback-deactivated", laneId });
+      broadcastEvent({
+        type: "fallback-deactivated",
+        laneId,
+        health: cached ?? undefined,
+        status: buildStatus(Array.from(healthCache.values())),
+      });
       logger.info("runtime_diagnostics.fallback_deactivated", { laneId });
     },
 

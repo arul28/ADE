@@ -14,6 +14,7 @@ import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneDiffPane } from "./LaneDiffPane";
 import { LaneWorkPane } from "./LaneWorkPane";
 import { LaneInspectorPane } from "./LaneInspectorPane";
+import { LaneHealthDot } from "./LaneHealthDot";
 import { CreateLaneDialog } from "./CreateLaneDialog";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
@@ -1456,6 +1457,7 @@ export function LanesPage() {
               ) : (
                 <span className="shrink-0" style={{ width: 10, height: 10, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
               )}
+              <LaneHealthDot laneId={lane.id} />
               {/* Terminal attention spinner */}
               {laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input" ? (
                 <span

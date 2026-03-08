@@ -4,10 +4,11 @@ import { LaneConflictsPanel } from "./LaneConflictsPanel";
 import { LaneOverlayConfigPanel } from "./LaneOverlayConfigPanel";
 import { PortAllocationPanel } from "./PortAllocationPanel";
 import { LanePreviewPanel } from "./LanePreviewPanel";
+import { RuntimeDiagnosticsPanel } from "./RuntimeDiagnosticsPanel";
 import { MemoryInspectorPanel } from "../settings/MemoryInspector";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 
-type InspectorTab = "context" | "pr" | "conflicts" | "ports" | "preview";
+type InspectorTab = "context" | "pr" | "conflicts" | "ports" | "preview" | "diagnostics";
 
 const TAB_DEFS: Array<{ id: InspectorTab; num: string; label: string }> = [
   { id: "context", num: "01", label: "MEMORY" },
@@ -15,6 +16,7 @@ const TAB_DEFS: Array<{ id: InspectorTab; num: string; label: string }> = [
   { id: "conflicts", num: "03", label: "CONFLICTS" },
   { id: "ports", num: "04", label: "PORTS" },
   { id: "preview", num: "05", label: "PREVIEW" },
+  { id: "diagnostics", num: "06", label: "DIAGNOSTICS" },
 ];
 
 export function LaneInspectorPane({
@@ -112,6 +114,17 @@ export function LaneInspectorPane({
             ) : (
               <div style={{ color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 11 }}>
                 Select a lane to view preview
+              </div>
+            )}
+          </div>
+        )}
+        {tab === "diagnostics" && (
+          <div className="h-full overflow-auto">
+            {laneId ? (
+              <RuntimeDiagnosticsPanel laneId={laneId} />
+            ) : (
+              <div style={{ color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 11 }}>
+                Select a lane to view runtime diagnostics
               </div>
             )}
           </div>

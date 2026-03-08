@@ -116,7 +116,7 @@ function IssueRow({
   onAction,
 }: {
   issue: LaneHealthIssue;
-  onAction?: (actionType: string) => void;
+  onAction?: (actionType: NonNullable<LaneHealthIssue["actionType"]>) => void;
 }) {
   return (
     <div
@@ -231,20 +231,32 @@ export function RuntimeDiagnosticsPanel({ laneId }: { laneId: string }) {
     setHealth(null);
     setIssuesOpen(false);
 
-    window.ade.lanes
-      .diagnosticsGetLaneHealth({ laneId })
-      .then((result) => {
+    const loadHealth = async () => {
+      try {
+        const cached = await window.ade.lanes.diagnosticsGetLaneHealth({ laneId });
+        if (cancelled) {
+          return;
+        }
+        if (cached) {
+          setHealth(cached);
+          setLoading(false);
+          return;
+        }
+
+        const fresh = await window.ade.lanes.diagnosticsRunHealthCheck({ laneId });
         if (!cancelled) {
-          setHealth(result);
+          setHealth(fresh);
           setLoading(false);
         }
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) {
           setHealth(null);
           setLoading(false);
         }
-      });
+      }
+    };
+
+    void loadHealth();
 
     const unsub = window.ade.lanes.onDiagnosticsEvent((ev) => {
       if (cancelled) return;
@@ -279,10 +291,33 @@ export function RuntimeDiagnosticsPanel({ laneId }: { laneId: string }) {
     setFallbackBusy(true);
     try {
       await window.ade.lanes.diagnosticsDeactivateFallback({ laneId });
+      const result = await window.ade.lanes.diagnosticsGetLaneHealth({ laneId });
+      setHealth(result);
     } catch {
       /* silent */
     } finally {
       setFallbackBusy(false);
+    }
+  };
+
+  const handleIssueAction = async (
+    actionType: NonNullable<LaneHealthIssue["actionType"]>,
+  ) => {
+    setCheckBusy(true);
+    try {
+      if (actionType === "restart-proxy") {
+        await window.ade.lanes.proxyStart();
+      } else if (actionType === "enable-fallback") {
+        await window.ade.lanes.diagnosticsActivateFallback({ laneId });
+      } else {
+        return;
+      }
+      const result = await window.ade.lanes.diagnosticsRunHealthCheck({ laneId });
+      setHealth(result);
+    } catch {
+      /* silent */
+    } finally {
+      setCheckBusy(false);
     }
   };
 
@@ -444,7 +479,16 @@ export function RuntimeDiagnosticsPanel({ laneId }: { laneId: string }) {
               }}
             >
               {issues.map((issue, i) => (
-                <IssueRow key={`${issue.type}-${i}`} issue={issue} />
+                <IssueRow
+                  key={`${issue.type}-${i}`}
+                  issue={issue}
+                  onAction={
+                    issue.actionType === "restart-proxy" ||
+                    issue.actionType === "enable-fallback"
+                      ? handleIssueAction
+                      : undefined
+                  }
+                />
               ))}
             </div>
           )}

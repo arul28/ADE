@@ -2385,6 +2385,16 @@ export function registerIpc({
     return { encodedState: record.encodedState };
   };
 
+  const parseDiagnosticsLaneIdArgs = (
+    value: unknown,
+  ): { laneId: string } => {
+    const record = requireRecord(value, "Runtime diagnostics request");
+    if (typeof record.laneId !== "string" || !record.laneId.trim()) {
+      throw new Error("Runtime diagnostics laneId must be a non-empty string");
+    }
+    return { laneId: record.laneId };
+  };
+
   ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.getStatus() ?? {
@@ -2435,21 +2445,31 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDiagnosticsGetStatus, async () => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) {
-      return { lanes: [], proxyRunning: false, proxyPort: 8080, totalRoutes: 0, activeConflicts: 0, fallbackLanes: [] };
+      const proxyStatus = ctx.laneProxyService?.getStatus();
+      return {
+        lanes: [],
+        proxyRunning: proxyStatus?.running ?? false,
+        proxyPort: proxyStatus?.proxyPort ?? 0,
+        totalRoutes: proxyStatus?.routes.length ?? 0,
+        activeConflicts: 0,
+        fallbackLanes: [],
+      };
     }
     const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
     return ctx.runtimeDiagnosticsService.getStatus(lanes.map((l) => l.id));
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsGetLaneHealth, async (_event, args: { laneId: string }) => {
+  ipcMain.handle(IPC.lanesDiagnosticsGetLaneHealth, async (_event, args: unknown) => {
     const ctx = getCtx();
-    return ctx.runtimeDiagnosticsService?.getLaneHealth(args.laneId) ?? null;
+    const request = parseDiagnosticsLaneIdArgs(args);
+    return ctx.runtimeDiagnosticsService?.getLaneHealth(request.laneId) ?? null;
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsRunHealthCheck, async (_event, args: { laneId: string }) => {
+  ipcMain.handle(IPC.lanesDiagnosticsRunHealthCheck, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
-    return ctx.runtimeDiagnosticsService.checkLaneHealth(args.laneId);
+    const request = parseDiagnosticsLaneIdArgs(args);
+    return ctx.runtimeDiagnosticsService.checkLaneHealth(request.laneId);
   });
 
   ipcMain.handle(IPC.lanesDiagnosticsRunFullCheck, async () => {
@@ -2459,16 +2479,18 @@ export function registerIpc({
     return ctx.runtimeDiagnosticsService.checkAllLanes(lanes.map((l) => l.id));
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsActivateFallback, async (_event, args: { laneId: string }) => {
+  ipcMain.handle(IPC.lanesDiagnosticsActivateFallback, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
-    ctx.runtimeDiagnosticsService.activateFallback(args.laneId);
+    const request = parseDiagnosticsLaneIdArgs(args);
+    ctx.runtimeDiagnosticsService.activateFallback(request.laneId);
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsDeactivateFallback, async (_event, args: { laneId: string }) => {
+  ipcMain.handle(IPC.lanesDiagnosticsDeactivateFallback, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
-    ctx.runtimeDiagnosticsService.deactivateFallback(args.laneId);
+    const request = parseDiagnosticsLaneIdArgs(args);
+    ctx.runtimeDiagnosticsService.deactivateFallback(request.laneId);
   });
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {

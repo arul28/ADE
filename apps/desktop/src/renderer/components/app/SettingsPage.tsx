@@ -11,6 +11,7 @@ import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
 import { KeybindingsSection } from "../settings/KeybindingsSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { ProxyAndPreviewSection } from "../settings/ProxyAndPreviewSection";
+import { DiagnosticsDashboardSection } from "../settings/DiagnosticsDashboardSection";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
@@ -523,7 +524,12 @@ export function SettingsPage() {
         {section === "automations" && <AutomationsSection />}
         {section === "terminals" && <TerminalProfilesSection />}
         {section === "lane-templates" && <LaneTemplatesSection />}
-        {section === "proxy-preview" && <ProxyAndPreviewSection />}
+        {section === "proxy-preview" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+            <ProxyAndPreviewSection />
+            <DiagnosticsDashboardSection />
+          </div>
+        )}
         {section === "keybindings" && <KeybindingsSection />}
         {section === "phase-profiles" && <PhaseProfilesSection />}
         {section === "usage" && <UsageDashboard missionId={null} />}
