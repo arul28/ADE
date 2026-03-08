@@ -437,6 +437,66 @@ function parseMergeTreeTreeOid(stdout: string): string | null {
   return /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(first) ? first : null;
 }
 
+function toJobStatus(raw: unknown): "queued" | "in_progress" | "completed" {
+  const s = asString(raw).toLowerCase();
+  if (s === "queued") return "queued";
+  if (s === "in_progress") return "in_progress";
+  return "completed";
+}
+
+function toRunStatus(raw: unknown): "queued" | "in_progress" | "waiting" | "completed" {
+  const s = asString(raw).toLowerCase();
+  if (s === "queued") return "queued";
+  if (s === "in_progress") return "in_progress";
+  if (s === "waiting") return "waiting";
+  return "completed";
+}
+
+function toJobConclusion(raw: unknown): "success" | "failure" | "neutral" | "cancelled" | "skipped" | null {
+  const c = asString(raw).toLowerCase();
+  if (c === "success") return "success";
+  if (c === "failure") return "failure";
+  if (c === "neutral") return "neutral";
+  if (c === "cancelled") return "cancelled";
+  if (c === "skipped") return "skipped";
+  return null;
+}
+
+function toRunConclusion(
+  raw: unknown
+): "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out" | "action_required" | null {
+  const base = toJobConclusion(raw);
+  if (base) return base;
+  const c = asString(raw).toLowerCase();
+  if (c === "timed_out") return "timed_out";
+  if (c === "action_required") return "action_required";
+  return null;
+}
+
+function toFileStatus(raw: unknown): PrFile["status"] {
+  const s = asString(raw).toLowerCase();
+  if (s === "added") return "added";
+  if (s === "removed") return "removed";
+  if (s === "renamed") return "renamed";
+  if (s === "copied") return "copied";
+  return "modified";
+}
+
+function toUser(raw: any): PrUser {
+  return {
+    login: asString(raw?.login) || "",
+    avatarUrl: asString(raw?.avatar_url) || null
+  };
+}
+
+function toLabel(raw: any): PrLabel {
+  return {
+    name: asString(raw?.name) || "",
+    color: asString(raw?.color) || "",
+    description: asString(raw?.description) || null
+  };
+}
+
 function parseJsonArrayOrEmpty<T>(raw: unknown): T[] {
   if (Array.isArray(raw)) return raw as T[];
   if (typeof raw !== "string") return [];
@@ -483,6 +543,17 @@ export function createPrService({
       `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
       [prId, projectId]
     );
+
+  const requireRow = (prId: string): PullRequestRow => {
+    const row = getRow(prId);
+    if (!row) throw new Error(`PR not found: ${prId}`);
+    return row;
+  };
+
+  const repoFromRow = (row: PullRequestRow): GitHubRepoRef => ({
+    owner: row.repo_owner,
+    name: row.repo_name
+  });
 
   const getRowForLane = (laneId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
@@ -1495,7 +1566,7 @@ export function createPrService({
       // could fail if the worktree has uncommitted state, so archive is safer).
       if (integrationLane) {
         try {
-          laneService.archive({ laneId: integrationLane.id });
+          await laneService.archive({ laneId: integrationLane.id });
         } catch (cleanupError) {
           logger.warn("prs.integration_cleanup_lane_failed", {
             laneId: integrationLane.id,
@@ -2698,9 +2769,8 @@ export function createPrService({
     // ------------------------------------------------------------------
 
     async getDetail(prId: string): Promise<PrDetail> {
-      const row = getRow(prId);
-      if (!row) throw new Error(`PR not found: ${prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(prId);
+      const repo = repoFromRow(row);
       const { data } = await githubService.apiRequest<any>({
         method: "GET",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`
@@ -2708,29 +2778,10 @@ export function createPrService({
       return {
         prId,
         body: asString(data?.body) || null,
-        labels: Array.isArray(data?.labels)
-          ? data.labels.map((l: any) => ({
-              name: asString(l?.name) || "",
-              color: asString(l?.color) || "",
-              description: asString(l?.description) || null
-            }))
-          : [],
-        assignees: Array.isArray(data?.assignees)
-          ? data.assignees.map((u: any) => ({
-              login: asString(u?.login) || "",
-              avatarUrl: asString(u?.avatar_url) || null
-            }))
-          : [],
-        requestedReviewers: Array.isArray(data?.requested_reviewers)
-          ? data.requested_reviewers.map((u: any) => ({
-              login: asString(u?.login) || "",
-              avatarUrl: asString(u?.avatar_url) || null
-            }))
-          : [],
-        author: {
-          login: asString(data?.user?.login) || "",
-          avatarUrl: asString(data?.user?.avatar_url) || null
-        },
+        labels: Array.isArray(data?.labels) ? data.labels.map(toLabel) : [],
+        assignees: Array.isArray(data?.assignees) ? data.assignees.map(toUser) : [],
+        requestedReviewers: Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.map(toUser) : [],
+        author: toUser(data?.user),
         isDraft: Boolean(data?.draft),
         milestone: asString(data?.milestone?.title) || null,
         linkedIssues: []
@@ -2738,35 +2789,24 @@ export function createPrService({
     },
 
     async getFiles(prId: string): Promise<PrFile[]> {
-      const row = getRow(prId);
-      if (!row) throw new Error(`PR not found: ${prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(prId);
+      const repo = repoFromRow(row);
       const data = await fetchAllPages<any>({
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`
       });
-      return data.map((f: any) => {
-        const statusRaw = asString(f?.status).toLowerCase();
-        let status: PrFile["status"] = "modified";
-        if (statusRaw === "added") status = "added";
-        else if (statusRaw === "removed") status = "removed";
-        else if (statusRaw === "renamed") status = "renamed";
-        else if (statusRaw === "copied") status = "copied";
-        return {
-          filename: asString(f?.filename) || "",
-          status,
-          additions: Number(f?.additions) || 0,
-          deletions: Number(f?.deletions) || 0,
-          patch: asString(f?.patch) || null,
-          previousFilename: asString(f?.previous_filename) || null
-        };
-      });
+      return data.map((f: any) => ({
+        filename: asString(f?.filename) || "",
+        status: toFileStatus(f?.status),
+        additions: Number(f?.additions) || 0,
+        deletions: Number(f?.deletions) || 0,
+        patch: asString(f?.patch) || null,
+        previousFilename: asString(f?.previous_filename) || null
+      }));
     },
 
     async getActionRuns(prId: string): Promise<PrActionRun[]> {
-      const row = getRow(prId);
-      if (!row) throw new Error(`PR not found: ${prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
-      // Fetch the PR to get the head SHA
+      const row = requireRow(prId);
+      const repo = repoFromRow(row);
       const pr = await fetchPr(repo, Number(row.github_pr_number));
       const headSha = asString(pr?.head?.sha);
       if (!headSha) return [];
@@ -2791,41 +2831,15 @@ export function createPrService({
             jobs = rawJobs.map((j: any): PrActionJob => ({
               id: Number(j?.id) || 0,
               name: asString(j?.name) || "",
-              status: (() => {
-                const s = asString(j?.status).toLowerCase();
-                if (s === "queued") return "queued" as const;
-                if (s === "in_progress") return "in_progress" as const;
-                return "completed" as const;
-              })(),
-              conclusion: (() => {
-                const c = asString(j?.conclusion).toLowerCase();
-                if (c === "success") return "success" as const;
-                if (c === "failure") return "failure" as const;
-                if (c === "neutral") return "neutral" as const;
-                if (c === "cancelled") return "cancelled" as const;
-                if (c === "skipped") return "skipped" as const;
-                return null;
-              })(),
+              status: toJobStatus(j?.status),
+              conclusion: toJobConclusion(j?.conclusion),
               startedAt: asString(j?.started_at) || null,
               completedAt: asString(j?.completed_at) || null,
               steps: Array.isArray(j?.steps)
                 ? j.steps.map((st: any): PrActionStep => ({
                     name: asString(st?.name) || "",
-                    status: (() => {
-                      const s = asString(st?.status).toLowerCase();
-                      if (s === "queued") return "queued" as const;
-                      if (s === "in_progress") return "in_progress" as const;
-                      return "completed" as const;
-                    })(),
-                    conclusion: (() => {
-                      const c = asString(st?.conclusion).toLowerCase();
-                      if (c === "success") return "success" as const;
-                      if (c === "failure") return "failure" as const;
-                      if (c === "neutral") return "neutral" as const;
-                      if (c === "cancelled") return "cancelled" as const;
-                      if (c === "skipped") return "skipped" as const;
-                      return null;
-                    })(),
+                    status: toJobStatus(st?.status),
+                    conclusion: toJobConclusion(st?.conclusion),
                     number: Number(st?.number) || 0,
                     startedAt: asString(st?.started_at) || null,
                     completedAt: asString(st?.completed_at) || null
@@ -2838,24 +2852,8 @@ export function createPrService({
           return {
             id: runId,
             name: asString(run?.name) || "",
-            status: (() => {
-              const s = asString(run?.status).toLowerCase();
-              if (s === "queued") return "queued" as const;
-              if (s === "in_progress") return "in_progress" as const;
-              if (s === "waiting") return "waiting" as const;
-              return "completed" as const;
-            })(),
-            conclusion: (() => {
-              const c = asString(run?.conclusion).toLowerCase();
-              if (c === "success") return "success" as const;
-              if (c === "failure") return "failure" as const;
-              if (c === "neutral") return "neutral" as const;
-              if (c === "cancelled") return "cancelled" as const;
-              if (c === "skipped") return "skipped" as const;
-              if (c === "timed_out") return "timed_out" as const;
-              if (c === "action_required") return "action_required" as const;
-              return null;
-            })(),
+            status: toRunStatus(run?.status),
+            conclusion: toRunConclusion(run?.conclusion),
             headSha,
             htmlUrl: asString(run?.html_url) || "",
             createdAt: asString(run?.created_at) || "",
@@ -2927,31 +2925,30 @@ export function createPrService({
     },
 
     async addComment(args: AddPrCommentArgs): Promise<PrComment> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       const { data } = await githubService.apiRequest<any>({
         method: "POST",
         path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/comments`,
         body: { body: args.body }
       });
-      return {
+      const comment: PrComment = {
         id: String(data?.id ?? ""),
         author: asString(data?.user?.login) || "",
         body: asString(data?.body) || null,
-        source: "issue" as const,
+        source: "issue",
         url: asString(data?.html_url) || null,
         path: null,
         line: null,
         createdAt: asString(data?.created_at) || null,
         updatedAt: asString(data?.updated_at) || null
       };
+      return comment;
     },
 
     async updateTitle(args: UpdatePrTitleArgs): Promise<void> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       await githubService.apiRequest({
         method: "PATCH",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
@@ -2961,9 +2958,8 @@ export function createPrService({
     },
 
     async updateBody(args: UpdatePrBodyArgs): Promise<void> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       await githubService.apiRequest({
         method: "PATCH",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
@@ -2973,9 +2969,8 @@ export function createPrService({
     },
 
     async setLabels(args: SetPrLabelsArgs): Promise<void> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       await githubService.apiRequest({
         method: "PUT",
         path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/labels`,
@@ -2985,9 +2980,8 @@ export function createPrService({
     },
 
     async requestReviewers(args: RequestPrReviewersArgs): Promise<void> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       await githubService.apiRequest({
         method: "POST",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/requested_reviewers`,
@@ -2997,9 +2991,8 @@ export function createPrService({
     },
 
     async submitReview(args: SubmitPrReviewArgs): Promise<void> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       await githubService.apiRequest({
         method: "POST",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
@@ -3009,9 +3002,8 @@ export function createPrService({
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       await githubService.apiRequest({
         method: "PATCH",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
@@ -3025,9 +3017,8 @@ export function createPrService({
     },
 
     async reopenPr(args: ReopenPrArgs): Promise<void> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       await githubService.apiRequest({
         method: "PATCH",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
@@ -3041,11 +3032,10 @@ export function createPrService({
     },
 
     async rerunChecks(args: RerunPrChecksArgs): Promise<void> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
 
-      if (args.checkRunIds && args.checkRunIds.length > 0) {
+      if (args.checkRunIds?.length) {
         // Rerun specific check runs
         for (const crId of args.checkRunIds) {
           await githubService.apiRequest({
@@ -3084,11 +3074,8 @@ export function createPrService({
     },
 
     async aiReviewSummary(args: AiReviewSummaryArgs): Promise<AiReviewSummary> {
-      const row = getRow(args.prId);
-      if (!row) throw new Error(`PR not found: ${args.prId}`);
-
-      // Try to get files for context
-      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
       let files: PrFile[] = [];
       try {
         const data = await fetchAllPages<any>({
@@ -3096,7 +3083,7 @@ export function createPrService({
         });
         files = data.map((f: any) => ({
           filename: asString(f?.filename) || "",
-          status: (asString(f?.status).toLowerCase() || "modified") as PrFile["status"],
+          status: toFileStatus(f?.status),
           additions: Number(f?.additions) || 0,
           deletions: Number(f?.deletions) || 0,
           patch: asString(f?.patch) || null,
@@ -3133,9 +3120,9 @@ export function createPrService({
             prompt,
             ...(args.model ? { model: args.model } : {})
           });
-          const parsed = extractFirstJsonObject(draft.text);
-          if (parsed && typeof parsed === "object") {
-            const obj = parsed as Record<string, unknown>;
+          const rawJson = extractFirstJsonObject(draft.text);
+          if (rawJson) {
+            const obj = JSON.parse(rawJson) as Record<string, unknown>;
             return {
               summary: typeof obj.summary === "string" ? obj.summary : "AI review completed.",
               potentialIssues: Array.isArray(obj.potentialIssues)

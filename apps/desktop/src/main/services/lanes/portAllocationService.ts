@@ -1,6 +1,5 @@
 import type {
   PortLease,
-  PortLeaseStatus,
   PortConflict,
   PortAllocationConfig,
   PortAllocationEvent,
@@ -58,7 +57,7 @@ export function createPortAllocationService({
     return Math.floor((cfg.maxPort - cfg.basePort + 1) / cfg.portsPerLane);
   }
 
-  function activeLeases(): PortLease[] {
+  function getActiveLeases(): PortLease[] {
     return Array.from(leases.values()).filter((lease) => lease.status === "active");
   }
 
@@ -71,7 +70,7 @@ export function createPortAllocationService({
 
   /** Find the first free slot and return its range start, or null if exhausted. */
   function findFreeSlot(): { start: number; end: number } | null {
-    const active = activeLeases();
+    const active = getActiveLeases();
     const slots = maxSlots();
     for (let i = 0; i < slots; i++) {
       const start = cfg.basePort + i * cfg.portsPerLane;
@@ -93,19 +92,16 @@ export function createPortAllocationService({
   function detectConflictsBetween(a: PortLease, b: PortLease): PortConflict | null {
     if (a.status !== "active" || b.status !== "active") return null;
     if (a.laneId === b.laneId) return null;
-
-    // Check overlap: ranges overlap when a.start <= b.end AND b.start <= a.end
-    if (a.rangeStart <= b.rangeEnd && b.rangeStart <= a.rangeEnd) {
-      const overlapStart = Math.max(a.rangeStart, b.rangeStart);
-      return {
-        port: overlapStart,
-        laneIdA: a.laneId,
-        laneIdB: b.laneId,
-        detectedAt: new Date().toISOString(),
-        resolved: false,
-      };
+    if (!rangesOverlap({ start: a.rangeStart, end: a.rangeEnd }, { start: b.rangeStart, end: b.rangeEnd })) {
+      return null;
     }
-    return null;
+    return {
+      port: Math.max(a.rangeStart, b.rangeStart),
+      laneIdA: a.laneId,
+      laneIdB: b.laneId,
+      detectedAt: new Date().toISOString(),
+      resolved: false,
+    };
   }
 
   // --- public API ------------------------------------------------------------
@@ -209,7 +205,7 @@ export function createPortAllocationService({
      * List active leases only.
      */
     listActiveLeases(): PortLease[] {
-      return Array.from(leases.values()).filter((l) => l.status === "active");
+      return getActiveLeases();
     },
 
     /**
@@ -217,7 +213,7 @@ export function createPortAllocationService({
      * Returns newly detected conflicts.
      */
     detectConflicts(): PortConflict[] {
-      const active = Array.from(leases.values()).filter((l) => l.status === "active");
+      const active = getActiveLeases();
       const newConflicts: PortConflict[] = [];
 
       for (let i = 0; i < active.length; i++) {

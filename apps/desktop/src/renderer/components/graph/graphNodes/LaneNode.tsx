@@ -24,17 +24,21 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
   const remoteDiverged = Boolean(remoteSync?.diverged);
   const remoteNeedsPublish = Boolean(remoteSync && ((remoteSync.hasUpstream === false) || remoteSync.ahead > 0));
   const remoteNeedsPull = Boolean(remoteSync?.hasUpstream && remoteSync.recommendedAction === "pull");
-  const statusColor =
-    data.status === "conflict-active" || data.status === "conflict-predicted"
-      ? "text-red-300"
-      : data.status === "behind-base"
-        ? "text-amber-300"
-        : data.status === "merge-ready"
-          ? "text-emerald-300"
-          : "text-muted-fg";
+  let statusColor: string;
+  if (data.status === "conflict-active" || data.status === "conflict-predicted") {
+    statusColor = "text-red-300";
+  } else if (data.status === "behind-base") {
+    statusColor = "text-amber-300";
+  } else if (data.status === "merge-ready") {
+    statusColor = "text-emerald-300";
+  } else {
+    statusColor = "text-muted-fg";
+  }
   const prStateBadge = pr ? getPrStateBadge(pr.state) : null;
   const prChecksBadge = pr ? getPrChecksBadge(pr.checksStatus) : null;
   const prReviewsBadge = pr ? getPrReviewsBadge(pr.reviewStatus) : null;
+  const ciDotColor = pr ? getPrCiDotColor(pr) : null;
+  const reviewDotColor = pr ? getPrReviewDotColor(pr) : null;
 
   return (
     <div
@@ -85,15 +89,15 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
               pr.activityState === "active" && "ade-pr-badge-pulse"
             )}
             style={{
-              color: getPrCiDotColor(pr),
-              borderColor: `${getPrCiDotColor(pr)}40`,
-              background: `${getPrCiDotColor(pr)}14`
+              color: ciDotColor!,
+              borderColor: `${ciDotColor}40`,
+              background: `${ciDotColor}14`
             }}
             title={`CI status: ${pr.checksStatus}`}
           >
             <span
               className={cn("h-1.5 w-1.5 rounded-full", pr.pendingCheckCount > 0 && "ade-pr-ci-pending")}
-              style={{ background: getPrCiDotColor(pr) }}
+              style={{ background: ciDotColor! }}
             />
             {pr.pendingCheckCount > 0 ? `${pr.pendingCheckCount} RUNNING` : pr.checksStatus}
           </span>
@@ -103,9 +107,9 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
               pr.activityState === "active" && "ade-pr-badge-pulse"
             )}
             style={{
-              color: getPrReviewDotColor(pr),
-              borderColor: `${getPrReviewDotColor(pr)}40`,
-              background: `${getPrReviewDotColor(pr)}14`
+              color: reviewDotColor!,
+              borderColor: `${reviewDotColor}40`,
+              background: `${reviewDotColor}14`
             }}
             title={`${pr.reviewCount} total reviews`}
           >

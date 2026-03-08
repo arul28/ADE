@@ -1,11 +1,10 @@
 import React from "react";
 import {
-  MagnifyingGlass, Funnel, CheckCircle, XCircle, Circle, GitMerge,
-  GithubLogo, CircleNotch, Plus, Minus, CaretDown,
+  MagnifyingGlass, Funnel, XCircle,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
-  MergeMethod, PrMergeContext, PrSummary, PrWithConflicts, LaneSummary,
+  MergeMethod, PrMergeContext, PrWithConflicts, LaneSummary,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
 import { PrConflictBadge } from "../PrConflictBadge";
@@ -13,6 +12,13 @@ import { PrDetailPane } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
 import { COLORS, MONO_FONT, LABEL_STYLE, outlineButton } from "../../lanes/laneDesignTokens";
 import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
+
+function statusDotColor(state: string): string {
+  if (state === "open") return COLORS.success;
+  if (state === "merged") return COLORS.accent;
+  if (state === "draft") return COLORS.warning;
+  return COLORS.textMuted;
+}
 
 function formatRelative(iso: string): string {
   const d = new Date(iso);
@@ -227,14 +233,12 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, s
                     borderBottom: `1px solid ${COLORS.border}`, transition: "background 100ms",
                   }}
                   onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = COLORS.hoverBg; }}
-                  onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = isSelected ? `${COLORS.accent}12` : "transparent"; }}
+                  onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
                 >
                   {/* Status dot */}
                   <div style={{
                     width: 8, height: 8, borderRadius: "50%", marginTop: 5, flexShrink: 0,
-                    background: pr.state === "open" ? COLORS.success :
-                      pr.state === "merged" ? COLORS.accent :
-                      pr.state === "draft" ? COLORS.warning : COLORS.textMuted,
+                    background: statusDotColor(pr.state),
                   }} />
 
                   <div style={{ flex: 1, minWidth: 0 }}>

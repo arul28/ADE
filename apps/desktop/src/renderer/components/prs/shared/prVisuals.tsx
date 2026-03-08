@@ -29,16 +29,15 @@ export function getPrChecksBadge(status: PrChecksStatus): PrBadgeSpec {
   return { label: "CI", ...colorBadge(COLORS.textMuted) };
 }
 
-export function getPrReviewBadge(status: PrReviewStatus): PrBadgeSpec {
+export function getPrReviewsBadge(status: PrReviewStatus): PrBadgeSpec {
   if (status === "approved") return { label: "APPROVED", ...colorBadge(COLORS.success) };
   if (status === "changes_requested") return { label: "CHANGES", ...colorBadge(COLORS.danger) };
   if (status === "requested") return { label: "REVIEW", ...colorBadge(COLORS.warning) };
   return { label: "NONE", ...colorBadge(COLORS.textMuted) };
 }
 
-export function getPrReviewsBadge(status: PrReviewStatus): PrBadgeSpec {
-  return getPrReviewBadge(status);
-}
+/** @deprecated Use getPrReviewsBadge instead */
+export const getPrReviewBadge = getPrReviewsBadge;
 
 export function getPrEdgeColor(args: {
   state: PrState;
@@ -91,11 +90,10 @@ export function derivePrActivityState(args: {
   return "idle";
 }
 
-export function PrInlineBadge(props: { label: string; color: string; bg: string; border: string }) {
+export function InlinePrBadge(props: { label: string; color: string; bg: string; border: string }) {
   const { label, color, bg, border } = props;
   return <span style={inlineBadge(color, { background: bg, border: `1px solid ${border}` })}>{label}</span>;
 }
 
-export function InlinePrBadge(props: { label: string; color: string; bg: string; border: string }) {
-  return <PrInlineBadge {...props} />;
-}
+/** @deprecated Use InlinePrBadge instead */
+export const PrInlineBadge = InlinePrBadge;

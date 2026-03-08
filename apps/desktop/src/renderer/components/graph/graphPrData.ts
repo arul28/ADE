@@ -27,30 +27,26 @@ export function buildGraphPrOverlay(args: {
   const comments = detail?.comments ?? [];
   const liveStatus = detail?.status;
 
-  const ciSummary = {
-    total: checks.length,
-    pending: checks.filter((check) => check.status === "queued" || check.status === "in_progress").length
-  };
-  const reviewCounts = {
-    total: reviews.length,
-    approved: reviews.filter((review) => review.state === "approved").length,
-    changesRequested: reviews.filter((review) => review.state === "changes_requested").length,
-  };
-  const commentCounts = {
-    total: comments.length,
-    issue: comments.filter((comment) => comment.source === "issue").length,
-    review: comments.filter((comment) => comment.source === "review").length
-  };
+  const pendingCheckCount = checks.filter((check) => check.status === "queued" || check.status === "in_progress").length;
+  const approvedCount = reviews.filter((review) => review.state === "approved").length;
+  const changeRequestCount = reviews.filter((review) => review.state === "changes_requested").length;
 
-  const lastActivityAt = [
+  const timestamps = [
     pr.updatedAt,
     pr.lastSyncedAt,
     ...checks.flatMap((check) => [check.startedAt, check.completedAt]),
     ...reviews.map((review) => review.submittedAt),
-    ...comments.flatMap((comment) => [comment.createdAt, comment.updatedAt])
-  ]
-    .map((value) => ({ value, ts: toTs(value) }))
-    .sort((a, b) => b.ts - a.ts)[0]?.value ?? null;
+    ...comments.flatMap((comment) => [comment.createdAt, comment.updatedAt]),
+  ];
+  let lastActivityAt: string | null = null;
+  let maxTs = 0;
+  for (const value of timestamps) {
+    const ts = toTs(value);
+    if (ts > maxTs) {
+      maxTs = ts;
+      lastActivityAt = value ?? null;
+    }
+  }
 
   return {
     prId: pr.id,
@@ -68,16 +64,16 @@ export function buildGraphPrOverlay(args: {
     isMergeable: liveStatus?.isMergeable ?? null,
     mergeConflicts: liveStatus?.mergeConflicts ?? null,
     behindBaseBy: liveStatus?.behindBaseBy ?? null,
-    reviewCount: reviewCounts.total,
-    approvedCount: reviewCounts.approved,
-    changeRequestCount: reviewCounts.changesRequested,
-    commentCount: commentCounts.total,
-    pendingCheckCount: ciSummary.pending,
+    reviewCount: reviews.length,
+    approvedCount,
+    changeRequestCount,
+    commentCount: comments.length,
+    pendingCheckCount,
     activityState: derivePrActivityState({
       state: liveStatus?.state ?? pr.state,
       lastActivityAt,
       reviewStatus: liveStatus?.reviewStatus ?? pr.reviewStatus,
-      pendingCheckCount: ciSummary.pending
+      pendingCheckCount,
     }),
   };
 }

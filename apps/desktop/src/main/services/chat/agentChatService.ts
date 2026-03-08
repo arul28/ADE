@@ -280,9 +280,9 @@ const CLAUDE_FALLBACK_MODELS: AgentChatModelInfo[] = [
 ];
 
 function normalizeReasoningEffort(value: unknown): string | null {
-  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (!normalized.length) return null;
-  return normalized;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
 }
 
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
@@ -299,11 +299,10 @@ function validateReasoningEffort(provider: "codex" | "claude", effort: string | 
 }
 
 function describeClaudeModel(value: string): string | null {
-  const normalized = value.trim().toLowerCase();
-  if (!normalized.length) return null;
-  if (normalized.includes("opus")) return "Highest capability for complex strategy and review.";
-  if (normalized.includes("sonnet")) return "Balanced quality and speed for everyday work.";
-  if (normalized.includes("haiku")) return "Fastest Claude variant for lightweight tasks.";
+  const lower = value.trim().toLowerCase();
+  if (lower.includes("opus")) return "Highest capability for complex strategy and review.";
+  if (lower.includes("sonnet")) return "Balanced quality and speed for everyday work.";
+  if (lower.includes("haiku")) return "Fastest Claude variant for lightweight tasks.";
   return null;
 }
 
@@ -377,6 +376,16 @@ function normalizePreview(text: string, maxChars = 220): string | null {
   return preview.length > maxChars ? preview.slice(0, maxChars) : preview;
 }
 
+const REJECTED_TITLES = new Set([
+  "completed", "complete", "done", "finished", "resolved",
+  "success", "session closed", "chat completed"
+]);
+
+const GENERIC_REMAINDER_TOKENS = new Set([
+  "ok", "okay", "yes", "no", "true", "false",
+  "ready", "response", "reply", "result", "output", "pass", "passed"
+]);
+
 function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string | null {
   const normalized = raw
     .replace(/\p{Extended_Pictographic}/gu, "")
@@ -385,35 +394,21 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
     .replace(/[^\p{L}\p{N})\]]+$/gu, "")
     .trim();
   if (!normalized.length) return null;
-  const lowercase = normalized.toLowerCase();
-  const collapsed = lowercase.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  if (
-    collapsed === "completed"
-    || collapsed === "complete"
-    || collapsed === "done"
-    || collapsed === "finished"
-    || collapsed === "resolved"
-    || collapsed === "success"
-    || collapsed === "session closed"
-    || collapsed === "chat completed"
-  ) {
-    return null;
-  }
+
+  const collapsed = normalized.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  if (REJECTED_TITLES.has(collapsed)) return null;
 
   if (/^(completed?|done|finished|resolved|success)\b/u.test(collapsed)) {
     const remainder = collapsed.replace(/^(completed?|done|finished|resolved|success)\b/u, "").trim();
     const remainderTokens = remainder.length ? remainder.split(/\s+/).filter(Boolean) : [];
-    const genericRemainder = remainderTokens.every((token) =>
-      /^(ok|okay|yes|no|true|false|ready|response|reply|result|output|pass|passed)$/u.test(token)
-    );
-    if (!remainderTokens.length || remainderTokens.length <= 2 || genericRemainder) {
+    const allGeneric = remainderTokens.every((token) => GENERIC_REMAINDER_TOKENS.has(token));
+    if (!remainderTokens.length || remainderTokens.length <= 2 || allGeneric) {
       return null;
     }
   }
 
-  if (/^(session closed|chat completed)\b/u.test(collapsed)) {
-    return null;
-  }
+  if (/^(session closed|chat completed)\b/u.test(collapsed)) return null;
+
   return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
 }
 
@@ -469,21 +464,16 @@ function resolveModelIdFromStoredValue(
   );
   if (!matches.length) return undefined;
 
-  const prefer = (() => {
-    if (providerHint === "codex") {
-      return matches.find((entry) => entry.isCliWrapped && entry.family === "openai");
-    }
-    if (providerHint === "claude") {
-      return matches.find((entry) => entry.isCliWrapped && entry.family === "anthropic");
-    }
-    if (providerHint === "unified") {
-      return matches.find((entry) => !entry.isCliWrapped);
-    }
-    return undefined;
-  })();
-  if (prefer) return prefer.id;
+  let preferred: ModelDescriptor | undefined;
+  if (providerHint === "codex") {
+    preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "openai");
+  } else if (providerHint === "claude") {
+    preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "anthropic");
+  } else if (providerHint === "unified") {
+    preferred = matches.find((entry) => !entry.isCliWrapped);
+  }
 
-  return matches[0]?.id;
+  return preferred?.id ?? matches[0]?.id;
 }
 
 function fallbackModelForProvider(provider: AgentChatProvider): string {
@@ -531,13 +521,12 @@ function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Recor
   return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
 }
 
+const VALID_PERMISSION_MODES = new Set(["default", "plan", "edit", "full-auto", "config-toml"]);
+
 function normalizePersistedPermissionMode(value: unknown): AgentChatSession["permissionMode"] | undefined {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw.length) return undefined;
-  if (raw === "default" || raw === "plan" || raw === "edit" || raw === "full-auto" || raw === "config-toml") {
-    return raw;
-  }
-  return undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return VALID_PERMISSION_MODES.has(trimmed) ? trimmed as AgentChatSession["permissionMode"] : undefined;
 }
 
 function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {

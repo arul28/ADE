@@ -74,11 +74,7 @@ export function laneSummaryConflictsWith(laneSummary: IntegrationProposal["laneS
 export function sameIdSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const setA = new Set(a);
-  if (setA.size !== b.length) return false;
-  for (const id of b) {
-    if (!setA.has(id)) return false;
-  }
-  return true;
+  return b.every((id) => setA.has(id));
 }
 
 export function toRelativeTime(iso: string | null): string {
@@ -124,12 +120,8 @@ export function prCiDotColor(pr: GraphPrOverlay): string {
 }
 
 export function iconGlyph(icon: LaneIcon): React.ReactNode {
-  if (icon === "star") return React.createElement(Star, { size: 14, weight: "regular" });
-  if (icon === "flag") return React.createElement(Flag, { size: 14, weight: "regular" });
-  if (icon === "bolt") return React.createElement(Lightning, { size: 14, weight: "regular" });
-  if (icon === "shield") return React.createElement(Shield, { size: 14, weight: "regular" });
-  if (icon === "tag") return React.createElement(Tag, { size: 14, weight: "regular" });
-  return null;
+  const match = ICON_OPTIONS.find((opt) => opt.key === icon);
+  return match?.icon ?? null;
 }
 
 export function nodeDimensions(lane: LaneSummary, bucket: GraphNodeData["activityBucket"], mode: GraphViewMode): { width: number; height: number } {
@@ -144,7 +136,7 @@ export function nodeDimensions(lane: LaneSummary, bucket: GraphNodeData["activit
 }
 
 export function branchNameFromRef(ref: string): string {
-  const trimmed = (ref ?? "").trim();
+  const trimmed = ref.trim();
   if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
   return trimmed;
 }

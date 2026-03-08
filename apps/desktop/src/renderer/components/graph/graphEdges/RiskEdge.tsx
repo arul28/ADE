@@ -13,22 +13,34 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
     targetPosition: targetPosition ?? Position.Top
   });
   const pr = data?.pr;
-  const color =
-    data?.edgeType === "proposal"
-      ? data.proposalConflict
-        ? "#F59E0B"
-        : "#22C55E"
-      : data?.edgeType === "integration"
-      ? "#A78BFA"
-      : data?.edgeType === "risk"
-        ? riskStrokeColor(data.riskLevel)
-        : pr
-          ? prOverlayColor(pr)
-          : data?.edgeType === "stack"
-            ? "#38bdf8"
-            : "#6b7280";
-  const width = data?.edgeType === "proposal" ? 2.2 : data?.edgeType === "integration" ? 2.4 : pr && data?.edgeType !== "risk" ? 2.6 : data?.edgeType === "stack" ? 3 : 1.8;
-  const dash = data?.edgeType === "proposal" ? "6 4" : data?.edgeType === "risk" ? "5 3" : data?.edgeType === "integration" ? "8 4" : undefined;
+  const edgeType = data?.edgeType;
+
+  let color: string;
+  if (edgeType === "proposal") {
+    color = data?.proposalConflict ? "#F59E0B" : "#22C55E";
+  } else if (edgeType === "integration") {
+    color = "#A78BFA";
+  } else if (edgeType === "risk") {
+    color = riskStrokeColor(data?.riskLevel);
+  } else if (pr) {
+    color = prOverlayColor(pr);
+  } else if (edgeType === "stack") {
+    color = "#38bdf8";
+  } else {
+    color = "#6b7280";
+  }
+
+  let width: number;
+  if (edgeType === "proposal") width = 2.2;
+  else if (edgeType === "integration") width = 2.4;
+  else if (pr && edgeType !== "risk") width = 2.6;
+  else if (edgeType === "stack") width = 3;
+  else width = 1.8;
+
+  let dash: string | undefined;
+  if (edgeType === "proposal") dash = "6 4";
+  else if (edgeType === "risk") dash = "5 3";
+  else if (edgeType === "integration") dash = "8 4";
   const effectiveWidth = (selected ? width + 1 : width) + (data?.highlight ? 0.5 : 0);
   const effectiveOpacity = data?.dimmed ? 0.16 : data?.highlight ? 1 : pr?.activityState === "stale" || data?.stale ? 0.38 : 0.92;
   const badgeColor = pr ? prOverlayColor(pr) : "#6b7280";

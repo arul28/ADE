@@ -14,7 +14,6 @@ import type {
   PrReviewStatus,
   PrState,
   PrStatus,
-  PrSummary,
   PrWithConflicts
 } from "../../../shared/types";
 import type { PrActivityState } from "../prs/shared/prVisuals";

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-08
 
 ---
 
@@ -466,39 +466,167 @@ lanes (
 
 **Phase 8 completed**: LANES-039 through LANES-048. PaneTilingLayout, terminal tiling, rebase suggestions, lane appearance customization, reparent, create child, import branch, quick-launch profiles, and lane filter/search are all operational.
 
+**Phase 5 partial**: LANES-049 (env init, W1), LANES-053 (templates, W2), LANES-050 (port allocation, W3), and LANES-055 (overlay extensions, W1) are complete. Remaining Phase 5 items (LANES-051, 052, 054, 056, 057, 058) are still TODO.
+
 **Remaining tasks** are scheduled as follows:
+- **Phase 5 (Lane Runtime Isolation)**: LANES-051, LANES-052, LANES-054, LANES-056, LANES-057, LANES-058
 - **Phase 9 (Advanced Features)**: LANES-032, LANES-036, LANES-037, LANES-038
 
 ### Phase 5 — Lane Runtime Isolation
 
 | ID | Task | Status |
 |----|------|--------|
-| LANES-049 | Lane environment initialization service | TODO |
-| LANES-050 | Port allocation and lease manager | TODO |
+| LANES-049 | Lane environment initialization service | DONE — Phase 5 W1 (`laneEnvironmentService.ts`, steps: env-files, docker, dependencies, mount-points) |
+| LANES-050 | Port allocation and lease manager | DONE — Phase 5 W3 (`portAllocationService.ts`, lease-based port range allocation with conflict detection) |
 | LANES-051 | Per-lane hostname proxy (*.localhost) | TODO |
 | LANES-052 | Preview launch service | TODO |
-| LANES-053 | Lane template CRUD and storage | TODO |
+| LANES-053 | Lane template CRUD and storage | DONE — Phase 5 W2 (`laneTemplateService.ts`, reusable initialization recipes, template selector in CreateLaneDialog) |
 | LANES-054 | Auth redirect handling per-lane: state-parameter routing (single OAuth callback URL, route by state param to correct lane), hostname-based routing (for providers supporting wildcards), setup assistant in Settings | TODO |
-| LANES-055 | LaneOverlayPolicy extension for env/port/proxy | TODO |
+| LANES-055 | LaneOverlayPolicy extension for env/port/proxy | DONE — Phase 5 W1 (extended `LaneOverlayOverrides` with `portRange`, `proxyHostname`, `computeBackend`, `envInit`) |
 | LANES-056 | Runtime diagnostics (health checks, port conflicts) | TODO |
 | LANES-057 | Renderer UI updates for lane env/proxy/preview | TODO |
 | LANES-058 | E2E validation for lane isolation | TODO |
 
 ---
 
-## Lane Environment Initialization
+## Lane Environment Initialization (Phase 5 W1 — DONE)
 
-When a lane is created, ADE can automatically initialize its working environment:
+When a lane is created, ADE can automatically initialize its working environment via the `laneEnvironmentService`. The service executes initialization steps in a deterministic order:
 
-1. **Environment Files**: Copy/template `.env` files with lane-specific values (ports, hostnames, API keys)
-2. **Port Allocation**: Assign a unique port range (e.g., 3000-3099 for lane 1, 3100-3199 for lane 2)
-3. **Docker Services**: Start lane-specific Docker Compose services (databases, caches, queues)
-4. **Dependency Installation**: Run install commands (`npm install`, `pip install`, etc.)
+1. **Environment Files** (`env-files`): Copy/template `.env` files with lane-specific values (ports, hostnames, API keys)
+2. **Docker Services** (`docker`): Start lane-specific Docker Compose services (databases, caches, queues)
+3. **Dependency Installation** (`dependencies`): Run install commands (`npm install`, `pip install`, etc.)
+4. **Mount Points** (`mount-points`): Configure runtime mount points for agent profiles/context
 
-**Lane Templates** (stored in `local.yaml`) define reusable initialization recipes:
-- Template selection available in the Create Lane dialog
-- Templates specify env files, port ranges, Docker compose paths, and install commands
-- Project-level defaults can be set in Settings → Lane Templates
+### LaneEnvInitProgress Component
+
+The `LaneEnvInitProgress` component shows real-time initialization progress directly inside the `CreateLaneDialog`. Each step displays its status (pending, running, done, failed) with duration tracking.
+
+### LaneOverlayConfigPanel
+
+The `LaneOverlayConfigPanel` component (in `src/renderer/components/lanes/LaneOverlayConfigPanel.tsx`) provides a UI for configuring overlay policies in lane settings, including the new env/port/proxy override fields.
+
+### Types
+
+Defined in `src/shared/types/config.ts`:
+
+- `LaneEnvInitConfig` — top-level config with `envFiles`, `docker`, `dependencies`, `mountPoints` arrays
+- `LaneEnvInitProgress` — per-lane progress state with step statuses and timestamps
+- `LaneEnvInitStep` — individual step status: `"pending" | "running" | "done" | "failed"`
+- `LaneEnvFileConfig` — source/destination template pair for env files
+- `LaneDockerConfig` — Docker Compose path and service names
+- `LaneDependencyInstallConfig` — command, working directory, and package manager
+- `LaneMountPointConfig` — mount source, target, and read-only flag
+
+### IPC Channels
+
+| Channel | Description |
+|---------|-------------|
+| `ade.lanes.initEnv` | Trigger environment initialization for a lane |
+| `ade.lanes.getEnvStatus` | Get current environment initialization status |
+| `ade.lanes.getOverlay` | Get resolved overlay policy for a lane |
+| `ade.lanes.env.event` | Event stream for environment initialization progress |
+
+---
+
+## Lane Overlay Policy Extensions (Phase 5 W1 — DONE)
+
+The `LaneOverlayOverrides` type has been extended with four new fields to support runtime isolation configuration:
+
+```typescript
+type LaneOverlayOverrides = {
+  env?: Record<string, string>;
+  cwd?: string;
+  processIds?: string[];
+  testSuiteIds?: string[];
+  // New in Phase 5 W1:
+  portRange?: { start: number; end: number };
+  proxyHostname?: string;
+  computeBackend?: "local" | "vps" | "daytona";
+  envInit?: LaneEnvInitConfig;
+};
+```
+
+The `laneOverlayMatcher` evaluates overlay policies at lane creation time:
+
+- `portRange`: last-wins merge (most specific policy takes precedence)
+- `proxyHostname`: last-wins merge
+- `computeBackend`: last-wins merge
+- `envInit`: deep-merged (env files, docker configs, dependencies, and mount points concatenate across policies)
+
+---
+
+## Lane Templates (Phase 5 W2 — DONE)
+
+The `laneTemplateService` provides CRUD operations for reusable lane initialization recipes. Templates encapsulate a complete environment setup that can be applied when creating new lanes.
+
+### Template Contents
+
+Each `LaneTemplate` specifies:
+
+- `envFiles` — environment file copy/template pairs
+- `docker` — Docker Compose paths and service names
+- `dependencies` — install commands per package manager
+- `mountPoints` — runtime mount configurations
+- `portRange` — default port range for lanes using this template
+- `envVars` — extra environment variables
+
+### UI Components
+
+- **Template selector in CreateLaneDialog**: Users choose a template when creating a lane; the template's config is auto-applied to the new lane's environment initialization.
+- **LaneTemplatesSection in Settings**: Management UI (`src/renderer/components/settings/LaneTemplatesSection.tsx`) for creating, editing, and deleting templates. Supports setting a project-level default template.
+
+### NO_DEFAULT_LANE_TEMPLATE Sentinel
+
+The `NO_DEFAULT_LANE_TEMPLATE` sentinel value is used when a project explicitly opts out of having a default template. This distinguishes "no default set" from "default cleared intentionally."
+
+### IPC Channels
+
+| Channel | Description |
+|---------|-------------|
+| `ade.lanes.templates.list` | List all templates |
+| `ade.lanes.templates.get` | Get a template by ID |
+| `ade.lanes.templates.getDefault` | Get the project's default template |
+| `ade.lanes.templates.setDefault` | Set the project's default template |
+| `ade.lanes.templates.apply` | Apply a template to an existing lane |
+
+---
+
+## Port Allocation (Phase 5 W3 — DONE)
+
+The `portAllocationService` provides lease-based port range allocation for lanes. Each lane that needs network ports is assigned a non-overlapping range from a configurable pool.
+
+### How It Works
+
+- **Base port** (default: 3000) and **ports per lane** (default: 100) are configurable via `PortAllocationConfig`.
+- When a lane acquires a lease, the service finds the next available range and assigns it.
+- Port leases have a lifecycle: `active` → `released` (on lane archive/delete) or `orphaned` (on abnormal termination).
+- Port conflict detection identifies when two lanes have overlapping ranges and surfaces them in the UI.
+
+### PortAllocationPanel
+
+The `PortAllocationPanel` component (`src/renderer/components/lanes/PortAllocationPanel.tsx`) displays the current port lease for a lane in the lane detail/inspector, including the allocated range, lease status, and any detected conflicts.
+
+### Types
+
+Defined in `src/shared/types/config.ts`:
+
+- `PortLease` — lane ID, range start/end, status (`"active" | "released" | "orphaned"`), timestamps
+- `PortConflict` — conflicting port number, the two lane IDs, and detection timestamp
+- `PortAllocationConfig` — base port, ports per lane, max port ceiling
+- `PortAllocationEvent` — event payload for lease acquired/released and conflict detected/resolved
+
+### IPC Channels
+
+| Channel | Description |
+|---------|-------------|
+| `ade.lanes.port.getLease` | Get port lease for a lane |
+| `ade.lanes.port.listLeases` | List all active port leases |
+| `ade.lanes.port.listConflicts` | List detected port conflicts |
+| `ade.lanes.port.acquire` | Acquire a port lease for a lane |
+| `ade.lanes.port.release` | Release a port lease |
+| `ade.lanes.port.recoverOrphans` | Recover orphaned port leases |
+| `ade.lanes.port.event` | Event stream for port allocation changes |
 
 ---
 

@@ -64,6 +64,19 @@ Each workstream includes its own renderer/UI changes and validation tests (no st
 - Overlay policy application tests.
 - Lane creation end-to-end with env setup.
 
+**Status: COMPLETED** (commit 88ad573, hardened in f3e71d9)
+
+Files created:
+- `apps/desktop/src/main/services/lanes/laneEnvironmentService.ts` — Lane env init pipeline
+- `apps/desktop/src/main/services/lanes/laneEnvironmentService.test.ts` — 15 tests
+- `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` — Extended overlay matcher
+- `apps/desktop/src/main/services/config/laneOverlayMatcher.test.ts` — 12 tests
+- `apps/desktop/src/main/services/config/projectConfigService.laneEnvInit.test.ts` — 8 tests
+- `apps/desktop/src/renderer/components/lanes/LaneEnvInitProgress.tsx` — Progress UI
+- `apps/desktop/src/renderer/components/lanes/LaneOverlayConfigPanel.tsx` — Overlay config UI
+
+Codex audit findings (f3e71d9): hardened error handling in env init pipeline, fixed overlay policy precedence, added guard clauses for missing worktree paths.
+
 #### W2: Lane Template System
 - Templates stored in `local.yaml` defining reusable initialization recipes.
 - Template selection available in the Create Lane dialog.
@@ -76,6 +89,16 @@ Each workstream includes its own renderer/UI changes and validation tests (no st
 - Default template selection.
 - Template with all fields populated.
 
+**Status: COMPLETED** (commit 3e3bec8, hardened in dab585e)
+
+Files created:
+- `apps/desktop/src/main/services/lanes/laneTemplateService.ts` — Template CRUD
+- `apps/desktop/src/main/services/lanes/laneTemplateService.test.ts` — 10 tests
+- `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx` — Template management UI
+- `apps/desktop/src/renderer/components/lanes/CreateLaneDialog.tsx` — Template selector added
+
+Codex audit findings (dab585e): removed unused React import, verified template-envInit integration.
+
 #### W3: Port Allocation & Lease
 - Dynamic port range per lane (e.g., 3000-3099 for lane 1, 3100-3199 for lane 2).
 - Lease/release lifecycle with crash recovery.
@@ -86,6 +109,15 @@ Each workstream includes its own renderer/UI changes and validation tests (no st
 - Lease recovery tests on crash/restart.
 - Port exhaustion tests.
 - Port conflict detection tests.
+
+**Status: COMPLETED** (commit 5e95b4e, hardened in dab585e)
+
+Files created:
+- `apps/desktop/src/main/services/lanes/portAllocationService.ts` — Lease-based port allocation
+- `apps/desktop/src/main/services/lanes/portAllocationService.test.ts` — 14 tests
+- `apps/desktop/src/renderer/components/lanes/PortAllocationPanel.tsx` — Port allocation UI
+
+Codex audit findings (dab585e): removed unused PortLeaseStatus import.
 
 #### W4: Per-Lane Hostname Isolation & Preview
 - `*.localhost` reverse proxy with a single proxy port routing by Host header.
@@ -142,3 +174,28 @@ Each workstream includes its own renderer/UI changes and validation tests (no st
 - Preview URLs are generated and shareable.
 - Isolation state is visible and manageable from Play.
 - Failures provide actionable fallback paths.
+
+---
+
+### Implementation Summary
+
+| Workstream | Status | Tests | Key Commit |
+|------------|--------|-------|------------|
+| W1: Lane Env Init & Overlay | **COMPLETED** | 35 | 88ad573, f3e71d9 |
+| W2: Lane Template System | **COMPLETED** | 10 | 3e3bec8, dab585e |
+| W3: Port Allocation & Lease | **COMPLETED** | 14 | 5e95b4e, dab585e |
+| W4: Hostname Isolation | PLANNED | — | — |
+| W5: Auth Redirect | PLANNED | — | — |
+| W6: Runtime Diagnostics | PLANNED | — | — |
+
+Total new tests from Phase 5 W1-W3: **59 tests**
+
+### Parallel Work Completed
+
+In addition to the core Phase 5 workstreams, significant PR and Graph work was completed:
+- PRs tab overhaul with 14 new service methods and PrDetailPane (commit c7d6792)
+- Graph↔PR deep integration with PR edge visualization (commit 06fc0ba)
+- 3D graph view removal (commit f6068eb)
+- Chat pane tool UI enhancement (commit 2bb2df9)
+
+These changes are documented in `docs/features/PULL_REQUESTS.md`, `docs/features/WORKSPACE_GRAPH.md`, and `docs/features/LANES.md`.

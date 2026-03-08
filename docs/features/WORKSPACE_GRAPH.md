@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-08
 
 ---
 
@@ -51,7 +51,7 @@ The graph also serves as an **environment mindmap**. The main branch (typically 
 
 Think of it as an infinite canvas where you can see your entire development topology at a glance — which branch maps to which environment, where the conflicts are, and which PRs are open.
 
-**Current status**: Implemented (Phase 7). The `/graph` route renders the React Flow canvas and supports:
+**Current status**: Implemented (Phase 7). The graph is **2D-only** using React Flow; the earlier `Graph3DScene` prototype was removed. The `/graph` route renders the React Flow canvas and supports:
 
 - Stack / Risk / Activity / All view modes
 - Parent/child stack edges and primary topology edges
@@ -140,6 +140,80 @@ When pull requests exist between lanes (from the PR integration, also in Phase 7
 - **Merged PR**: The edge style changes to indicate the merge is complete (solid green, then fades)
 
 PR edges are distinct from risk edges — a lane pair can have both an open PR edge and a conflict risk edge simultaneously. The PR badge is always rendered on top for visibility.
+
+#### PR Activity State Coloring
+
+Edges and LaneNode PR badges are colored by a derived **activity state** computed via the shared `prVisuals.tsx` module (`derivePrActivityState` and `getPrEdgeColor`). The activity state combines PR state, review status, checks status, and recency to determine the visual treatment:
+
+| Activity State | Color | Condition |
+|----------------|-------|-----------|
+| **Active** (green pulse) | `COLORS.success` | Open PR, checks passing, recently updated |
+| **Review requested** (amber) | `COLORS.warning` | Review requested, awaiting feedback |
+| **Changes requested** (red) | `COLORS.danger` | Reviewer requested changes |
+| **Approved** (emerald) | `COLORS.success` | Approved, ready to merge |
+| **CI failing** (red) | `COLORS.danger` | CI checks failing |
+| **Draft** (purple/accent) | `COLORS.accent` | Draft PR |
+| **Stale** (dim gray) | `COLORS.textMuted` | No activity for > 5 days |
+| **Merged** (blue fade-out) | `COLORS.success` | Recently merged |
+| **Closed** (gray) | `COLORS.textSecondary` | Closed without merge |
+
+PR badges on `LaneNode` show the PR number and a state icon. Active PRs display a pulsing animation on edges (CSS `@keyframes` in `index.css`).
+
+#### Merge from Graph
+
+The `PrDialog` supports merge operations directly from the graph canvas. Users can create a PR, view its details, and land (merge) it without navigating to the PR tab.
+
+#### Bidirectional Navigation
+
+- **Graph to PR detail**: Clicking a node with a PR opens the PR detail pane.
+- **PR tab to graph**: The `onShowInGraph` callback in `PrDetailPane` highlights the corresponding graph node.
+
+#### PR Actions from Graph
+
+The node context menu and `PrDialog` support:
+
+- Create PR (targeting the drop-target lane as base)
+- View PR details (opens detail pane)
+- Merge PR (with method selection)
+
+### GraphPrOverlay Type
+
+The `GraphPrOverlay` type (defined in `graphTypes.ts`) carries all PR metadata needed for rendering on the graph canvas:
+
+```typescript
+type GraphPrOverlay = {
+  prId: string;
+  laneId: string;
+  baseLaneId: string;
+  number: number;
+  title: string;
+  url: string;
+  state: PrState;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
+  lastSyncedAt: string | null;
+  lastActivityAt: string | null;
+  mergeInProgress: boolean;
+  isMergeable: boolean | null;
+  mergeConflicts: boolean | null;
+  behindBaseBy: number | null;
+  reviewCount: number;
+  approvedCount: number;
+  changeRequestCount: number;
+  commentCount: number;
+  pendingCheckCount: number;
+  activityState: PrActivityState; // "active" | "idle" | "stale"
+};
+```
+
+### graphPrData Utility Module
+
+`src/renderer/components/graph/graphPrData.ts` provides the `buildGraphPrOverlay` function that transforms raw PR data (summary, status, checks, reviews, comments) into a `GraphPrOverlay` suitable for graph rendering. It:
+
+- Aggregates check/review/comment counts from detail bundles
+- Computes `lastActivityAt` from the most recent timestamp across all PR events
+- Derives `activityState` via `derivePrActivityState` from the shared `prVisuals` module
+- Maps mergeable/conflict/behind-by status from live `PrStatus` when available
 
 ---
 
@@ -300,6 +374,8 @@ React Flow provides the core canvas infrastructure including viewport management
 node dragging, edge routing, minimap, and controls panel. Custom node and edge
 components handle ADE-specific rendering and interaction.
 
+**Note**: The earlier `Graph3DScene` (Three.js-based 3D prototype) was removed. The graph is now exclusively 2D via React Flow.
+
 ### Services
 
 | Service | Status | Role |
@@ -337,6 +413,7 @@ The graph feature has been decomposed from a single monolithic page component in
 | `ConflictPanel.tsx` | `graph/graphDialogs/ConflictPanel.tsx` | ~314 | Inline conflict detail panel (shown on risk edge click) |
 | `IntegrationDialog.tsx` | `graph/graphDialogs/IntegrationDialog.tsx` | ~114 | Integration lane creation dialog |
 | `TextPromptModal.tsx` | `graph/graphDialogs/TextPromptModal.tsx` | ~61 | Generic text-input modal (used for rename, reparent confirmation, etc.) |
+| `graphPrData.ts` | `graph/graphPrData.ts` | ~84 | Transforms raw PR data into `GraphPrOverlay` objects for graph rendering (aggregates counts, derives activity state) |
 
 Design tokens for lane styling (colors, borders, status indicators) are consolidated in `src/renderer/components/lanes/laneDesignTokens.ts` and shared between the graph nodes and the Lanes tab.
 
@@ -484,6 +561,15 @@ Workspace Graph is **implemented** (Phase 7). The checklist below is retained fo
 | GRAPH-036 | Filter panel (text search, status, environment) | DONE |
 | GRAPH-037 | Rebase failure indication (node border pulse on rebase failure) | DONE |
 | GRAPH-038 | Activity bucket sizing (hot/warm/cold node dimensions) | DONE |
+| GRAPH-039 | 3D scene removal (Graph3DScene deleted, 2D-only via React Flow) | DONE |
+| GRAPH-040 | PR activity state edge coloring (derived via shared prVisuals) | DONE |
+| GRAPH-041 | PR badges on LaneNode (PR number + state icon) | DONE |
+| GRAPH-042 | Pulsing animation on edges for active PRs (CSS @keyframes) | DONE |
+| GRAPH-043 | Merge from graph via PrDialog | DONE |
+| GRAPH-044 | Bidirectional navigation (graph node <-> PR detail pane) | DONE |
+| GRAPH-045 | PR context menu actions (create PR, view details, merge) | DONE |
+| GRAPH-046 | graphPrData utility (buildGraphPrOverlay, PR-to-edge mapping) | DONE |
+| GRAPH-047 | GraphPrOverlay enhanced type (activityState, counts, mergeable, conflicts) | DONE |
 
 ### Dependency Notes
 

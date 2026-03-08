@@ -52,11 +52,17 @@ function matchesPolicy(lane: LaneSummary, policy: LaneOverlayPolicy): boolean {
 
 function normalizeEnvInit(config: LaneEnvInitConfig): LaneEnvInitConfig {
   return {
-    ...(config.envFiles && config.envFiles.length > 0 ? { envFiles: config.envFiles } : {}),
+    ...(config.envFiles?.length ? { envFiles: config.envFiles } : {}),
     ...(config.docker ? { docker: config.docker } : {}),
-    ...(config.dependencies && config.dependencies.length > 0 ? { dependencies: config.dependencies } : {}),
-    ...(config.mountPoints && config.mountPoints.length > 0 ? { mountPoints: config.mountPoints } : {})
+    ...(config.dependencies?.length ? { dependencies: config.dependencies } : {}),
+    ...(config.mountPoints?.length ? { mountPoints: config.mountPoints } : {})
   };
+}
+
+function cloneDockerConfig(config: NonNullable<LaneEnvInitConfig["docker"]>): LaneEnvInitConfig["docker"] {
+  return config.services
+    ? { ...config, services: [...config.services] }
+    : { ...config };
 }
 
 function mergeDockerConfig(
@@ -64,24 +70,22 @@ function mergeDockerConfig(
   next: LaneEnvInitConfig["docker"] | undefined
 ): LaneEnvInitConfig["docker"] | undefined {
   if (!current && !next) return undefined;
-  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
-  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
+  if (!current) return next ? cloneDockerConfig(next) : undefined;
+  if (!next) return cloneDockerConfig(current);
+  const services = next.services ?? current.services;
   return {
     ...current,
     ...next,
-    ...(next.services != null
-      ? { services: [...next.services] }
-      : current.services != null
-        ? { services: [...current.services] }
-        : {})
+    ...(services ? { services: [...services] } : {})
   };
 }
 
 function mergeEnvInit(current: LaneEnvInitConfig | undefined, next: LaneEnvInitConfig): LaneEnvInitConfig {
   if (!current) return normalizeEnvInit(next);
+  const docker = mergeDockerConfig(current.docker, next.docker);
   return normalizeEnvInit({
     envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
-    ...(mergeDockerConfig(current.docker, next.docker) ? { docker: mergeDockerConfig(current.docker, next.docker) } : {}),
+    ...(docker ? { docker } : {}),
     dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
     mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
   });
@@ -99,20 +103,14 @@ export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverla
         ...overrides.env
       };
     }
-    if (typeof overrides.cwd === "string" && overrides.cwd.trim().length > 0) {
-      merged.cwd = overrides.cwd.trim();
-    }
+    const cwdTrimmed = typeof overrides.cwd === "string" ? overrides.cwd.trim() : "";
+    if (cwdTrimmed) merged.cwd = cwdTrimmed;
     merged.processIds = intersectOrAdopt(merged.processIds, overrides.processIds);
     merged.testSuiteIds = intersectOrAdopt(merged.testSuiteIds, overrides.testSuiteIds);
-    if (overrides.portRange) {
-      merged.portRange = { ...overrides.portRange };
-    }
-    if (typeof overrides.proxyHostname === "string" && overrides.proxyHostname.trim().length > 0) {
-      merged.proxyHostname = overrides.proxyHostname.trim();
-    }
-    if (overrides.computeBackend) {
-      merged.computeBackend = overrides.computeBackend;
-    }
+    if (overrides.portRange) merged.portRange = { ...overrides.portRange };
+    const hostnameTrimmed = typeof overrides.proxyHostname === "string" ? overrides.proxyHostname.trim() : "";
+    if (hostnameTrimmed) merged.proxyHostname = hostnameTrimmed;
+    if (overrides.computeBackend) merged.computeBackend = overrides.computeBackend;
     if (overrides.envInit) {
       merged.envInit = mergeEnvInit(merged.envInit, overrides.envInit);
     }

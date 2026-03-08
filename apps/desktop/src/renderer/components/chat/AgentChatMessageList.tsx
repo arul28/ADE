@@ -1111,8 +1111,8 @@ export function AgentChatMessageList({
     onApprovalRef.current = onApproval;
   }, [onApproval]);
 
-  const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision) => {
-    onApprovalRef.current?.(itemId, decision);
+  const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => {
+    onApprovalRef.current?.(itemId, decision, responseText);
   }, []);
 
   const rows = useMemo(() => {

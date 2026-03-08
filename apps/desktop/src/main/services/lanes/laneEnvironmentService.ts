@@ -17,21 +17,34 @@ import type {
 
 import type { Logger } from "../logging/logger";
 
+function cloneDockerConfig(config: LaneDockerConfig): LaneDockerConfig {
+  return config.services
+    ? { ...config, services: [...config.services] }
+    : { ...config };
+}
+
 function mergeDockerConfig(
   current: LaneDockerConfig | undefined,
   next: LaneDockerConfig | undefined
 ): LaneDockerConfig | undefined {
   if (!current && !next) return undefined;
-  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
-  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
+  if (!current) return next ? cloneDockerConfig(next) : undefined;
+  if (!next) return cloneDockerConfig(current);
+  const services = next.services ?? current.services;
   return {
     ...current,
     ...next,
-    ...(next.services != null
-      ? { services: [...next.services] }
-      : current.services != null
-        ? { services: [...current.services] }
-        : {})
+    ...(services ? { services: [...services] } : {})
+  };
+}
+
+function cloneEnvInitConfig(config: LaneEnvInitConfig): LaneEnvInitConfig {
+  const docker = mergeDockerConfig(undefined, config.docker);
+  return {
+    ...(config.envFiles ? { envFiles: [...config.envFiles] } : {}),
+    ...(docker ? { docker } : {}),
+    ...(config.dependencies ? { dependencies: [...config.dependencies] } : {}),
+    ...(config.mountPoints ? { mountPoints: [...config.mountPoints] } : {})
   };
 }
 
@@ -40,30 +53,19 @@ function mergeLaneEnvInitConfig(
   next: LaneEnvInitConfig | undefined
 ): LaneEnvInitConfig | undefined {
   if (!current && !next) return undefined;
-  if (!current) {
-    return next
-      ? {
-          ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
-          ...(mergeDockerConfig(undefined, next.docker) ? { docker: mergeDockerConfig(undefined, next.docker) } : {}),
-          ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
-          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {})
-        }
-      : undefined;
-  }
-  if (!next) {
-    return {
-      ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
-      ...(mergeDockerConfig(undefined, current.docker) ? { docker: mergeDockerConfig(undefined, current.docker) } : {}),
-      ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
-      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {})
-    };
-  }
+  if (!current) return next ? cloneEnvInitConfig(next) : undefined;
+  if (!next) return cloneEnvInitConfig(current);
+  const docker = mergeDockerConfig(current.docker, next.docker);
   return {
     envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
-    ...(mergeDockerConfig(current.docker, next.docker) ? { docker: mergeDockerConfig(current.docker, next.docker) } : {}),
+    ...(docker ? { docker } : {}),
     dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
     mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&");
 }
 
 function sanitizeLaneToken(value: string): string {
@@ -100,6 +102,45 @@ export function createLaneEnvironmentService({
     const step = progress.steps.find((s) => s.kind === kind);
     if (step) Object.assign(step, update);
     broadcastEvent({ type: "lane-env-init", progress: { ...progress, steps: [...progress.steps] } });
+  }
+
+  function markFailed(progress: LaneEnvInitProgress, laneId: string): void {
+    progress.overallStatus = "failed";
+    progress.completedAt = new Date().toISOString();
+    progressMap.set(laneId, progress);
+    broadcastEvent({ type: "lane-env-init", progress });
+  }
+
+  /**
+   * Run a single init step with timing, status updates, and error handling.
+   * Returns true on success, false on failure (progress already marked failed).
+   */
+  async function runStep(
+    progress: LaneEnvInitProgress,
+    laneId: string,
+    kind: LaneEnvInitStepKind,
+    action: () => Promise<string | null>
+  ): Promise<boolean> {
+    const startTime = Date.now();
+    updateStep(progress, kind, { status: "running" });
+    try {
+      const errorMessage = await action();
+      if (errorMessage) {
+        updateStep(progress, kind, { status: "failed", error: errorMessage, durationMs: Date.now() - startTime });
+        markFailed(progress, laneId);
+        return false;
+      }
+      updateStep(progress, kind, { status: "completed", durationMs: Date.now() - startTime });
+      return true;
+    } catch (err: any) {
+      updateStep(progress, kind, {
+        status: "failed",
+        error: err?.message ?? String(err),
+        durationMs: Date.now() - startTime
+      });
+      markFailed(progress, laneId);
+      return false;
+    }
   }
 
   function execCommand(
@@ -148,7 +189,7 @@ export function createLaneEnvironmentService({
       const vars: Record<string, string> = { ...laneVars, ...(file.vars ?? {}) };
       for (const [key, value] of Object.entries(vars)) {
         // Replace {{key}} patterns
-        content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+        content = content.replace(new RegExp(`\\{\\{${escapeRegExp(key)}\\}\\}`, "g"), value);
       }
 
       fs.writeFileSync(destPath, content, "utf-8");
@@ -179,11 +220,11 @@ export function createLaneEnvironmentService({
       "up", "-d"
     ];
 
-    if (docker.services && docker.services.length > 0) {
+    if (docker.services?.length) {
       args.push(...docker.services);
     }
 
-    return await execCommand(["docker", ...args], worktreePath, 300_000);
+    return execCommand(["docker", ...args], worktreePath, 300_000);
   }
 
   async function installDependencies(
@@ -253,10 +294,10 @@ export function createLaneEnvironmentService({
 
   function normalizeEnvInitConfig(config: LaneEnvInitConfig): LaneEnvInitConfig | undefined {
     const normalized: LaneEnvInitConfig = {
-      ...(config.envFiles && config.envFiles.length > 0 ? { envFiles: config.envFiles } : {}),
+      ...(config.envFiles?.length ? { envFiles: config.envFiles } : {}),
       ...(config.docker ? { docker: config.docker } : {}),
-      ...(config.dependencies && config.dependencies.length > 0 ? { dependencies: config.dependencies } : {}),
-      ...(config.mountPoints && config.mountPoints.length > 0 ? { mountPoints: config.mountPoints } : {})
+      ...(config.dependencies?.length ? { dependencies: config.dependencies } : {}),
+      ...(config.mountPoints?.length ? { mountPoints: config.mountPoints } : {})
     };
 
     return Object.keys(normalized).length > 0 ? normalized : undefined;
@@ -311,110 +352,41 @@ export function createLaneEnvironmentService({
 
       // Step 1: Env files
       if (config.envFiles && config.envFiles.length > 0) {
-        const startTime = Date.now();
-        updateStep(progress, "env-files", { status: "running" });
-        try {
-          await copyEnvFiles(lane.worktreePath, config.envFiles, laneVars);
-          updateStep(progress, "env-files", { status: "completed", durationMs: Date.now() - startTime });
-        } catch (err: any) {
-          updateStep(progress, "env-files", {
-            status: "failed",
-            error: err?.message ?? String(err),
-            durationMs: Date.now() - startTime
-          });
-          progress.overallStatus = "failed";
-          progress.completedAt = new Date().toISOString();
-          progressMap.set(lane.id, progress);
-          broadcastEvent({ type: "lane-env-init", progress });
-          return progress;
-        }
+        const ok = await runStep(progress, lane.id, "env-files", async () => {
+          await copyEnvFiles(lane.worktreePath, config.envFiles!, laneVars);
+          return null;
+        });
+        if (!ok) return progress;
       }
 
       // Step 2: Docker
       if (config.docker) {
-        const startTime = Date.now();
-        updateStep(progress, "docker", { status: "running" });
-        try {
-          const result = await startDocker(lane.worktreePath, config.docker, lane.id);
-          if (result.exitCode !== 0) {
-            updateStep(progress, "docker", {
-              status: "failed",
-              error: result.stderr.slice(0, 500),
-              durationMs: Date.now() - startTime
-            });
-            progress.overallStatus = "failed";
-            progress.completedAt = new Date().toISOString();
-            progressMap.set(lane.id, progress);
-            broadcastEvent({ type: "lane-env-init", progress });
-            return progress;
-          }
-          updateStep(progress, "docker", { status: "completed", durationMs: Date.now() - startTime });
-        } catch (err: any) {
-          updateStep(progress, "docker", {
-            status: "failed",
-            error: err?.message ?? String(err),
-            durationMs: Date.now() - startTime
-          });
-          progress.overallStatus = "failed";
-          progress.completedAt = new Date().toISOString();
-          progressMap.set(lane.id, progress);
-          broadcastEvent({ type: "lane-env-init", progress });
-          return progress;
-        }
+        const docker = config.docker;
+        const ok = await runStep(progress, lane.id, "docker", async () => {
+          const result = await startDocker(lane.worktreePath, docker, lane.id);
+          return result.exitCode !== 0 ? result.stderr.slice(0, 500) : null;
+        });
+        if (!ok) return progress;
       }
 
       // Step 3: Dependencies
       if (config.dependencies && config.dependencies.length > 0) {
-        const startTime = Date.now();
-        updateStep(progress, "dependencies", { status: "running" });
-        try {
-          const { failures } = await installDependencies(lane.worktreePath, config.dependencies);
-          if (failures.length > 0) {
-            updateStep(progress, "dependencies", {
-              status: "failed",
-              error: failures.join("; "),
-              durationMs: Date.now() - startTime
-            });
-            progress.overallStatus = "failed";
-            progress.completedAt = new Date().toISOString();
-            progressMap.set(lane.id, progress);
-            broadcastEvent({ type: "lane-env-init", progress });
-            return progress;
-          }
-          updateStep(progress, "dependencies", { status: "completed", durationMs: Date.now() - startTime });
-        } catch (err: any) {
-          updateStep(progress, "dependencies", {
-            status: "failed",
-            error: err?.message ?? String(err),
-            durationMs: Date.now() - startTime
-          });
-          progress.overallStatus = "failed";
-          progress.completedAt = new Date().toISOString();
-          progressMap.set(lane.id, progress);
-          broadcastEvent({ type: "lane-env-init", progress });
-          return progress;
-        }
+        const deps = config.dependencies;
+        const ok = await runStep(progress, lane.id, "dependencies", async () => {
+          const { failures } = await installDependencies(lane.worktreePath, deps);
+          return failures.length > 0 ? failures.join("; ") : null;
+        });
+        if (!ok) return progress;
       }
 
       // Step 4: Mount points
       if (config.mountPoints && config.mountPoints.length > 0) {
-        const startTime = Date.now();
-        updateStep(progress, "mount-points", { status: "running" });
-        try {
-          setupMountPoints(lane.worktreePath, config.mountPoints);
-          updateStep(progress, "mount-points", { status: "completed", durationMs: Date.now() - startTime });
-        } catch (err: any) {
-          updateStep(progress, "mount-points", {
-            status: "failed",
-            error: err?.message ?? String(err),
-            durationMs: Date.now() - startTime
-          });
-          progress.overallStatus = "failed";
-          progress.completedAt = new Date().toISOString();
-          progressMap.set(lane.id, progress);
-          broadcastEvent({ type: "lane-env-init", progress });
-          return progress;
-        }
+        const mounts = config.mountPoints;
+        const ok = await runStep(progress, lane.id, "mount-points", async () => {
+          setupMountPoints(lane.worktreePath, mounts);
+          return null;
+        });
+        if (!ok) return progress;
       }
 
       progress.overallStatus = "completed";

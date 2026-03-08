@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import type { LaneEnvInitProgress as EnvInitProgress, LaneEnvInitStep } from "../../../shared/types";
 
 function stepIcon(status: LaneEnvInitStep["status"]): string {

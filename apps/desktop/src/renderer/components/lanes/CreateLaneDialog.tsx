@@ -4,6 +4,12 @@ import type { LaneSummary, LaneEnvInitProgress, LaneTemplate } from "../../../sh
 import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 
+function buttonLabel(busy: boolean | undefined, createAsChild: boolean, parentLaneId: string, baseBranch: string): string {
+  if (busy) return "Setting up lane...";
+  if (createAsChild && parentLaneId) return "Create child lane";
+  return `Create from ${baseBranch || "primary"}`;
+}
+
 export function CreateLaneDialog({
   open,
   onOpenChange,
@@ -150,11 +156,7 @@ export function CreateLaneDialog({
               disabled={busy || !createLaneName.trim().length || (createAsChild && !createParentLaneId)}
               onClick={onSubmit}
             >
-              {busy
-                ? "Setting up lane..."
-                : createAsChild && createParentLaneId
-                  ? "Create child lane"
-                  : `Create from ${createBaseBranch || "primary"}`}
+              {buttonLabel(busy, createAsChild, createParentLaneId, createBaseBranch)}
             </Button>
           </div>
           {envInitProgress && <LaneEnvInitProgressPanel progress={envInitProgress} />}

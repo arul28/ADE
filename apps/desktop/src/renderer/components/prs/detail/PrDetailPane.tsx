@@ -1,9 +1,9 @@
 import React from "react";
 import {
-  GitBranch, GitMerge, GithubLogo, Plus, Minus, CheckCircle, XCircle, Circle,
-  CircleNotch, Sparkle, Trash, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
-  Tag, Users, PencilSimple, X, Check, ArrowsClockwise, Warning, Play,
-  CaretDown, CaretRight, Copy, UserCircle,
+  GitBranch, GitMerge, GithubLogo, CheckCircle, XCircle, Circle,
+  CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
+  PencilSimple, X, Check, ArrowsClockwise, Warning, Play,
+  CaretDown, CaretRight, UserCircle,
 } from "@phosphor-icons/react";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
@@ -56,22 +56,27 @@ function CheckIcon({ check }: { check: PrCheck }) {
   return <Circle size={14} weight="regular" style={{ color: COLORS.textMuted }} />;
 }
 
-// ---- File status color ----
+const FILE_STATUS_COLORS: Record<string, string> = {
+  added: COLORS.success,
+  removed: COLORS.danger,
+  modified: COLORS.warning,
+  renamed: COLORS.info,
+};
+
 function fileStatusColor(status: string): string {
-  if (status === "added") return COLORS.success;
-  if (status === "removed") return COLORS.danger;
-  if (status === "modified") return COLORS.warning;
-  if (status === "renamed") return COLORS.info;
-  return COLORS.textSecondary;
+  return FILE_STATUS_COLORS[status] ?? COLORS.textSecondary;
 }
 
+const FILE_STATUS_LABELS: Record<string, string> = {
+  added: "A",
+  removed: "D",
+  modified: "M",
+  renamed: "R",
+  copied: "C",
+};
+
 function fileStatusLabel(status: string): string {
-  if (status === "added") return "A";
-  if (status === "removed") return "D";
-  if (status === "modified") return "M";
-  if (status === "renamed") return "R";
-  if (status === "copied") return "C";
-  return "?";
+  return FILE_STATUS_LABELS[status] ?? "?";
 }
 
 // ---- Props ----
@@ -159,120 +164,90 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
     };
   }, [loadDetail, pr.id]);
 
-  // ---- Actions ----
-  const handleMerge = async () => {
-    setActionBusy(true); setActionError(null); setActionResult(null);
+  // ---- Action helper to reduce repetitive try/catch/finally ----
+  const runAction = async (fn: () => Promise<void>) => {
+    setActionBusy(true);
+    setActionError(null);
     try {
+      await fn();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  // ---- Actions ----
+  const handleMerge = () => {
+    setActionResult(null);
+    return runAction(async () => {
       const res = await window.ade.prs.land({ prId: pr.id, method: mergeMethod });
       setActionResult(res);
       await onRefresh();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
+    });
   };
 
   const handleAddComment = async () => {
     if (!commentDraft.trim()) return;
-    setActionBusy(true); setActionError(null);
-    try {
+    return runAction(async () => {
       await window.ade.prs.addComment({ prId: pr.id, body: commentDraft });
       setCommentDraft("");
       await onRefresh();
       await loadDetail();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
+    });
   };
 
   const handleUpdateTitle = async () => {
     if (!titleDraft.trim()) return;
-    setActionBusy(true); setActionError(null);
-    try {
+    return runAction(async () => {
       await window.ade.prs.updateTitle({ prId: pr.id, title: titleDraft });
       setEditingTitle(false);
       await onRefresh();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
+    });
   };
 
-  const handleUpdateBody = async () => {
-    setActionBusy(true); setActionError(null);
-    try {
-      await window.ade.prs.updateBody({ prId: pr.id, body: bodyDraft });
-      setEditingBody(false);
-      await onRefresh();
-      await loadDetail();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
-  };
+  const handleUpdateBody = () => runAction(async () => {
+    await window.ade.prs.updateBody({ prId: pr.id, body: bodyDraft });
+    setEditingBody(false);
+    await onRefresh();
+    await loadDetail();
+  });
 
-  const handleSetLabels = async (labels: string[]) => {
-    setActionBusy(true); setActionError(null);
-    try {
-      await window.ade.prs.setLabels({ prId: pr.id, labels });
-      setShowLabelEditor(false);
-      await loadDetail();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
-  };
+  const handleSetLabels = (labels: string[]) => runAction(async () => {
+    await window.ade.prs.setLabels({ prId: pr.id, labels });
+    setShowLabelEditor(false);
+    await loadDetail();
+  });
 
-  const handleRequestReviewers = async (reviewers: string[]) => {
-    setActionBusy(true); setActionError(null);
-    try {
-      await window.ade.prs.requestReviewers({ prId: pr.id, reviewers });
-      setShowReviewerEditor(false);
-      await onRefresh();
-      await loadDetail();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
-  };
+  const handleRequestReviewers = (reviewers: string[]) => runAction(async () => {
+    await window.ade.prs.requestReviewers({ prId: pr.id, reviewers });
+    setShowReviewerEditor(false);
+    await onRefresh();
+    await loadDetail();
+  });
 
-  const handleSubmitReview = async () => {
-    setActionBusy(true); setActionError(null);
-    try {
-      await window.ade.prs.submitReview({ prId: pr.id, event: reviewEvent, body: reviewBody || undefined });
-      setShowReviewModal(false);
-      setReviewBody("");
-      await onRefresh();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
-  };
+  const handleSubmitReview = () => runAction(async () => {
+    await window.ade.prs.submitReview({ prId: pr.id, event: reviewEvent, body: reviewBody || undefined });
+    setShowReviewModal(false);
+    setReviewBody("");
+    await onRefresh();
+  });
 
-  const handleClosePr = async () => {
-    setActionBusy(true); setActionError(null);
-    try {
-      await window.ade.prs.close({ prId: pr.id });
-      await onRefresh();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
-  };
+  const handleClosePr = () => runAction(async () => {
+    await window.ade.prs.close({ prId: pr.id });
+    await onRefresh();
+  });
 
-  const handleReopenPr = async () => {
-    setActionBusy(true); setActionError(null);
-    try {
-      await window.ade.prs.reopen({ prId: pr.id });
-      await onRefresh();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
-  };
+  const handleReopenPr = () => runAction(async () => {
+    await window.ade.prs.reopen({ prId: pr.id });
+    await onRefresh();
+  });
 
-  const handleRerunChecks = async () => {
-    setActionBusy(true); setActionError(null);
-    try {
-      await window.ade.prs.rerunChecks({ prId: pr.id });
-      await onRefresh();
-      await loadDetail();
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setActionBusy(false); }
-  };
+  const handleRerunChecks = () => runAction(async () => {
+    await window.ade.prs.rerunChecks({ prId: pr.id });
+    await onRefresh();
+    await loadDetail();
+  });
 
   const handleAiSummary = async () => {
     setAiSummaryBusy(true);

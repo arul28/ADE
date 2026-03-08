@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChatCircleText, HandPalm, PaperPlaneTilt, X } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 
@@ -28,7 +28,7 @@ export function AgentQuestionModal({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [onClose]);
 
-  const canSubmit = useMemo(() => answer.trim().length > 0, [answer]);
+  const canSubmit = answer.trim().length > 0;
 
   return (
     <div

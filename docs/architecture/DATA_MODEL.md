@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-05
+> Last updated: 2026-03-08
 
 ---
 
@@ -1353,3 +1353,107 @@ The `orchestrator_runs` table's `metadata_json` column now includes a `runNarrat
 ### Updated Table Count
 
 The schema now contains **40 tables** (up from 35) with the addition of: `memories`, `agent_identities`, `orchestrator_shared_facts`, `attempt_transcripts`, and `orchestrator_timeline_events`/`orchestrator_gate_reports` (from Phase 2 addendum).
+
+---
+
+## Phase 5 & PR Overhaul Types
+
+The following types were added or expanded during Phase 5 (Lane Runtime Isolation) and the PRs tab overhaul. They are defined in the shared types layer and consumed by both main-process services and renderer components.
+
+### PR Detail Types (`shared/types/prs.ts`)
+
+```typescript
+type PrDetail = {
+  prId: string; body: string | null;
+  labels: PrLabel[]; assignees: PrUser[];
+  requestedReviewers: PrUser[]; author: PrUser;
+  isDraft: boolean; milestone: string | null;
+  linkedIssues: Array<{ number: number; title: string; state: string }>;
+};
+
+type PrLabel = { name: string; color: string; description: string | null };
+type PrUser = { login: string; avatarUrl: string | null };
+
+type PrFile = {
+  filename: string;
+  status: "added" | "removed" | "modified" | "renamed" | "copied";
+  additions: number; deletions: number;
+  patch: string | null; previousFilename: string | null;
+};
+
+type PrActionRun = {
+  id: number; name: string;
+  status: "queued" | "in_progress" | "completed" | "waiting";
+  conclusion: "success" | "failure" | ... | null;
+  headSha: string; htmlUrl: string;
+  createdAt: string; updatedAt: string;
+  jobs: PrActionJob[];
+};
+
+type PrActivityEvent = {
+  id: string;
+  type: "comment" | "review" | "commit" | "label" | "ci_run" | "state_change" | "review_request";
+  author: string; avatarUrl: string | null;
+  body: string | null; timestamp: string;
+  metadata: Record<string, unknown>;
+};
+
+type AiReviewSummary = {
+  summary: string; potentialIssues: string[];
+  recommendations: string[];
+  mergeReadiness: "ready" | "needs_work" | "blocked";
+};
+```
+
+### Port Allocation Types (`shared/types/config.ts`)
+
+```typescript
+type PortLease = {
+  laneId: string; rangeStart: number; rangeEnd: number;
+  status: "active" | "released" | "orphaned";
+  leasedAt: string; releasedAt?: string;
+};
+
+type PortConflict = {
+  port: number; laneIdA: string; laneIdB: string;
+  detectedAt: string; resolved: boolean; resolvedAt?: string;
+};
+
+type PortAllocationConfig = {
+  basePort: number; portsPerLane: number; maxPort: number;
+};
+```
+
+### Lane Template Types (`shared/types/config.ts`)
+
+```typescript
+type LaneTemplate = {
+  id: string; name: string; description?: string;
+  envFiles?: LaneEnvFileConfig[]; docker?: LaneDockerConfig;
+  dependencies?: LaneDependencyInstallConfig[];
+  mountPoints?: LaneMountPointConfig[];
+  portRange?: { start: number; end: number };
+  envVars?: Record<string, string>;
+};
+
+const NO_DEFAULT_LANE_TEMPLATE = "__ade_none__";
+```
+
+### Graph PR Overlay (`renderer/components/graph/graphTypes.ts`)
+
+```typescript
+type GraphPrOverlay = {
+  prId: string; laneId: string; baseLaneId: string;
+  number: number; title: string; url: string;
+  state: PrState; checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
+  lastSyncedAt: string | null; lastActivityAt: string | null;
+  mergeInProgress: boolean;
+  isMergeable: boolean | null; mergeConflicts: boolean | null;
+  behindBaseBy: number | null;
+  reviewCount: number; approvedCount: number;
+  changeRequestCount: number; commentCount: number;
+  pendingCheckCount: number;
+  activityState: PrActivityState;
+};
+```
