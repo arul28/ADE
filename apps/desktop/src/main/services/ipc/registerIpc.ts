@@ -383,6 +383,7 @@ import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createPortAllocationService } from "../lanes/portAllocationService";
 import type { createLaneProxyService } from "../lanes/laneProxyService";
 import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
+import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { ContextDocService } from "../context/contextDocService";
@@ -455,6 +456,7 @@ export type AppContext = {
   portAllocationService: ReturnType<typeof createPortAllocationService> | null;
   laneProxyService: ReturnType<typeof createLaneProxyService> | null;
   oauthRedirectService: ReturnType<typeof createOAuthRedirectService> | null;
+  runtimeDiagnosticsService: ReturnType<typeof createRuntimeDiagnosticsService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
@@ -2426,6 +2428,47 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesOAuthListSessions, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.listSessions() ?? [];
+  });
+
+  // --- Runtime Diagnostics (Phase 5 W6) ---
+
+  ipcMain.handle(IPC.lanesDiagnosticsGetStatus, async () => {
+    const ctx = getCtx();
+    if (!ctx.runtimeDiagnosticsService) {
+      return { lanes: [], proxyRunning: false, proxyPort: 8080, totalRoutes: 0, activeConflicts: 0, fallbackLanes: [] };
+    }
+    const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
+    return ctx.runtimeDiagnosticsService.getStatus(lanes.map((l) => l.id));
+  });
+
+  ipcMain.handle(IPC.lanesDiagnosticsGetLaneHealth, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    return ctx.runtimeDiagnosticsService?.getLaneHealth(args.laneId) ?? null;
+  });
+
+  ipcMain.handle(IPC.lanesDiagnosticsRunHealthCheck, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
+    return ctx.runtimeDiagnosticsService.checkLaneHealth(args.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesDiagnosticsRunFullCheck, async () => {
+    const ctx = getCtx();
+    if (!ctx.runtimeDiagnosticsService) return [];
+    const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
+    return ctx.runtimeDiagnosticsService.checkAllLanes(lanes.map((l) => l.id));
+  });
+
+  ipcMain.handle(IPC.lanesDiagnosticsActivateFallback, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
+    ctx.runtimeDiagnosticsService.activateFallback(args.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesDiagnosticsDeactivateFallback, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
+    ctx.runtimeDiagnosticsService.deactivateFallback(args.laneId);
   });
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {

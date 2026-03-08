@@ -12,6 +12,7 @@ import { createLaneTemplateService } from "./services/lanes/laneTemplateService"
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
+import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
 import { createContextDocService } from "./services/context/contextDocService";
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
@@ -622,6 +623,16 @@ app.whenReady().then(async () => {
     laneProxyService.registerInterceptor((req, res) =>
       oauthRedirectService.handleRequest(req, res),
     );
+
+    const runtimeDiagnosticsService = createRuntimeDiagnosticsService({
+      logger,
+      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesDiagnosticsEvent, ev),
+      getPortLease: (laneId) => portAllocationService.getLease(laneId),
+      getPortConflicts: () => portAllocationService.listConflicts(),
+      detectPortConflicts: () => portAllocationService.detectConflicts(),
+      getProxyStatus: () => laneProxyService.getStatus(),
+      getProxyRoute: (laneId) => laneProxyService.getRoute(laneId),
+    });
 
     const aiIntegrationService = createAiIntegrationService({
       db,
@@ -1256,6 +1267,7 @@ app.whenReady().then(async () => {
       portAllocationService,
       laneProxyService,
       oauthRedirectService,
+      runtimeDiagnosticsService,
       rebaseSuggestionService,
       autoRebaseService,
       sessionService,

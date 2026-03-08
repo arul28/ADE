@@ -417,6 +417,49 @@ export type EncodeOAuthStateArgs = { laneId: string; originalState: string };
 export type DecodeOAuthStateArgs = { encodedState: string };
 export type DecodeOAuthStateResult = { laneId: string; originalState: string } | null;
 
+// --- Runtime Diagnostics types (Phase 5 W6) ---
+
+export type LaneHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
+
+export type LaneHealthIssue = {
+  type: "process-dead" | "port-unresponsive" | "proxy-route-missing" | "port-conflict" | "env-init-failed";
+  message: string;
+  actionLabel?: string;
+  actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback";
+};
+
+export type LaneHealthCheck = {
+  laneId: string;
+  status: LaneHealthStatus;
+  processAlive: boolean;
+  portResponding: boolean;
+  proxyRouteActive: boolean;
+  fallbackMode: boolean;
+  lastCheckedAt: string;
+  issues: LaneHealthIssue[];
+};
+
+export type RuntimeDiagnosticsStatus = {
+  lanes: LaneHealthCheck[];
+  proxyRunning: boolean;
+  proxyPort: number;
+  totalRoutes: number;
+  activeConflicts: number;
+  fallbackLanes: string[];
+};
+
+export type RuntimeDiagnosticsEvent = {
+  type: "health-updated" | "fallback-activated" | "fallback-deactivated" | "diagnostics-refresh";
+  laneId?: string;
+  health?: LaneHealthCheck;
+  status?: RuntimeDiagnosticsStatus;
+};
+
+export type GetLaneHealthArgs = { laneId: string };
+export type RunHealthCheckArgs = { laneId: string };
+export type ActivateFallbackArgs = { laneId: string };
+export type DeactivateFallbackArgs = { laneId: string };
+
 export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";
 export type AutomationActionType =
   | "update-packs"

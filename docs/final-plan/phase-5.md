@@ -132,6 +132,16 @@ Codex audit findings (dab585e): removed unused PortLeaseStatus import.
 - Preview URL generation.
 - E2E proxy routing tests.
 
+**Status: COMPLETED** (commit d9193d4, hardened in 6677edf)
+
+Files created:
+- `apps/desktop/src/main/services/lanes/laneProxyService.ts` — Per-lane hostname reverse proxy
+- `apps/desktop/src/main/services/lanes/laneProxyService.test.ts` — 16 tests
+- `apps/desktop/src/renderer/components/lanes/LanePreviewPanel.tsx` — Preview URL panel
+- `apps/desktop/src/renderer/components/lanes/LanePreviewPanel.test.tsx` — 8 tests
+
+Codex audit findings (6677edf): proxy hardening — IPv6 normalization, hostname collision detection, error propagation.
+
 #### W5: Auth Redirect Handling
 - Redirect URI rewriting per-lane hostname.
 - OAuth callback routing to correct lane dev server.
@@ -154,6 +164,16 @@ Codex audit findings (dab585e): removed unused PortLeaseStatus import.
 - State parameter encoding/decoding.
 - Multi-lane concurrent OAuth flow tests.
 
+**Status: COMPLETED** (commit c3ab33a, hardened in d7058c9)
+
+Files created:
+- `apps/desktop/src/main/services/lanes/oauthRedirectService.ts` — OAuth callback routing
+- `apps/desktop/src/main/services/lanes/oauthRedirectService.test.ts` — 18 tests
+- `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx` — Settings UI with OAuth config
+- `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.test.tsx` — 10 tests
+
+Codex audit findings (d7058c9): auth redirect hardening — HMAC validation, session cleanup, error pages.
+
 #### W6: Runtime Diagnostics
 - Lane health checks (process alive, port responding, proxy route active).
 - Port conflict detection across lanes.
@@ -165,6 +185,16 @@ Codex audit findings (dab585e): removed unused PortLeaseStatus import.
 - Health check detection (process alive, port responding).
 - Proxy status reporting.
 - Fallback mode activation on isolation failure.
+
+**Status: COMPLETED** (current commit)
+
+Files created:
+- `apps/desktop/src/main/services/lanes/runtimeDiagnosticsService.ts` — Health checks, fallback mode, diagnostics aggregation
+- `apps/desktop/src/main/services/lanes/runtimeDiagnosticsService.test.ts` — 22 tests
+- `apps/desktop/src/renderer/components/lanes/RuntimeDiagnosticsPanel.tsx` — Lane health diagnostics panel
+- `apps/desktop/src/renderer/components/lanes/RuntimeDiagnosticsPanel.test.tsx` — 8 tests
+- `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx` — Proxy status dashboard
+- `apps/desktop/src/renderer/components/lanes/LaneHealthDot.tsx` — Lane list health indicators
 
 ### Exit criteria
 
@@ -184,11 +214,11 @@ Codex audit findings (dab585e): removed unused PortLeaseStatus import.
 | W1: Lane Env Init & Overlay | **COMPLETED** | 35 | 88ad573, f3e71d9 |
 | W2: Lane Template System | **COMPLETED** | 10 | 3e3bec8, dab585e |
 | W3: Port Allocation & Lease | **COMPLETED** | 14 | 5e95b4e, dab585e |
-| W4: Hostname Isolation | PLANNED | — | — |
-| W5: Auth Redirect | PLANNED | — | — |
-| W6: Runtime Diagnostics | PLANNED | — | — |
+| W4: Hostname Isolation | **COMPLETED** | 24 | d9193d4, 6677edf |
+| W5: Auth Redirect | **COMPLETED** | 28 | c3ab33a, d7058c9 |
+| W6: Runtime Diagnostics | **COMPLETED** | 30 | (current) |
 
-Total new tests from Phase 5 W1-W3: **59 tests**
+Total new tests from Phase 5: **141 tests**
 
 ### Parallel Work Completed
 
@@ -199,3 +229,14 @@ In addition to the core Phase 5 workstreams, significant PR and Graph work was c
 - Chat pane tool UI enhancement (commit 2bb2df9)
 
 These changes are documented in `docs/features/PULL_REQUESTS.md`, `docs/features/WORKSPACE_GRAPH.md`, and `docs/features/LANES.md`.
+
+### Phase 5 Completion
+
+All six workstreams are complete. Phase 5 exit criteria satisfied:
+
+1. ✅ Multiple lanes run simultaneously with deterministic routing (W3+W4)
+2. ✅ Lane environment initialization is automatic and template-driven (W1+W2)
+3. ✅ Per-lane hostname isolation prevents cookie/auth leakage between lanes (W4)
+4. ✅ Preview URLs are generated and shareable (W4)
+5. ✅ Isolation state is visible and manageable from Play (W6)
+6. ✅ Failures provide actionable fallback paths (W6)

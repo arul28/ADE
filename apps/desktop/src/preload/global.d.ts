@@ -421,6 +421,13 @@ import type {
   EncodeOAuthStateArgs,
   DecodeOAuthStateArgs,
   DecodeOAuthStateResult,
+  RuntimeDiagnosticsStatus,
+  RuntimeDiagnosticsEvent,
+  LaneHealthCheck,
+  GetLaneHealthArgs,
+  RunHealthCheckArgs,
+  ActivateFallbackArgs,
+  DeactivateFallbackArgs,
 } from "../shared/types";
 
 export {};
@@ -633,6 +640,13 @@ declare global {
         oauthDecodeState: (args: DecodeOAuthStateArgs) => Promise<DecodeOAuthStateResult>;
         oauthListSessions: () => Promise<OAuthSession[]>;
         onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void) => () => void;
+        diagnosticsGetStatus: () => Promise<RuntimeDiagnosticsStatus>;
+        diagnosticsGetLaneHealth: (args: GetLaneHealthArgs) => Promise<LaneHealthCheck | null>;
+        diagnosticsRunHealthCheck: (args: RunHealthCheckArgs) => Promise<LaneHealthCheck>;
+        diagnosticsRunFullCheck: () => Promise<LaneHealthCheck[]>;
+        diagnosticsActivateFallback: (args: ActivateFallbackArgs) => Promise<void>;
+        diagnosticsDeactivateFallback: (args: DeactivateFallbackArgs) => Promise<void>;
+        onDiagnosticsEvent: (cb: (ev: RuntimeDiagnosticsEvent) => void) => () => void;
       };
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;

@@ -437,7 +437,14 @@ import type {
   SendAgentMessageArgs,
   GetGlobalChatArgs,
   GetActiveAgentsArgs,
-  ActiveAgentInfo
+  ActiveAgentInfo,
+  RuntimeDiagnosticsStatus,
+  RuntimeDiagnosticsEvent,
+  LaneHealthCheck,
+  GetLaneHealthArgs,
+  RunHealthCheckArgs,
+  ActivateFallbackArgs,
+  DeactivateFallbackArgs
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -821,6 +828,23 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: OAuthRedirectEvent) => cb(payload);
       ipcRenderer.on(IPC.lanesOAuthEvent, listener);
       return () => ipcRenderer.removeListener(IPC.lanesOAuthEvent, listener);
+    },
+    diagnosticsGetStatus: async (): Promise<RuntimeDiagnosticsStatus> =>
+      ipcRenderer.invoke(IPC.lanesDiagnosticsGetStatus),
+    diagnosticsGetLaneHealth: async (args: GetLaneHealthArgs): Promise<LaneHealthCheck | null> =>
+      ipcRenderer.invoke(IPC.lanesDiagnosticsGetLaneHealth, args),
+    diagnosticsRunHealthCheck: async (args: RunHealthCheckArgs): Promise<LaneHealthCheck> =>
+      ipcRenderer.invoke(IPC.lanesDiagnosticsRunHealthCheck, args),
+    diagnosticsRunFullCheck: async (): Promise<LaneHealthCheck[]> =>
+      ipcRenderer.invoke(IPC.lanesDiagnosticsRunFullCheck),
+    diagnosticsActivateFallback: async (args: ActivateFallbackArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDiagnosticsActivateFallback, args),
+    diagnosticsDeactivateFallback: async (args: DeactivateFallbackArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDiagnosticsDeactivateFallback, args),
+    onDiagnosticsEvent: (cb: (ev: RuntimeDiagnosticsEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RuntimeDiagnosticsEvent) => cb(payload);
+      ipcRenderer.on(IPC.lanesDiagnosticsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesDiagnosticsEvent, listener);
     },
   },
   sessions: {
