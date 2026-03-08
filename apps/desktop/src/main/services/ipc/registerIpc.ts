@@ -381,6 +381,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentService";
 import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createPortAllocationService } from "../lanes/portAllocationService";
+import type { createLaneProxyService } from "../lanes/laneProxyService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { ContextDocService } from "../context/contextDocService";
@@ -451,6 +452,7 @@ export type AppContext = {
   laneEnvironmentService: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
   portAllocationService: ReturnType<typeof createPortAllocationService> | null;
+  laneProxyService: ReturnType<typeof createLaneProxyService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
@@ -2220,6 +2222,51 @@ export function registerIpc({
     const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
     const validIds = new Set(lanes.map((l) => l.id));
     return ctx.portAllocationService.recoverOrphans(validIds);
+  });
+
+  // --- Per-Lane Hostname Isolation & Preview (Phase 5 W4) --------------------
+
+  ipcMain.handle(IPC.lanesProxyGetStatus, async () => {
+    const ctx = getCtx();
+    return ctx.laneProxyService?.getStatus() ?? { running: false, proxyPort: 8080, routes: [] };
+  });
+
+  ipcMain.handle(IPC.lanesProxyStart, async (_event, args?: { port?: number }) => {
+    const ctx = getCtx();
+    if (!ctx.laneProxyService) throw new Error("Proxy service not available");
+    return ctx.laneProxyService.start(args?.port);
+  });
+
+  ipcMain.handle(IPC.lanesProxyStop, async () => {
+    const ctx = getCtx();
+    if (!ctx.laneProxyService) return;
+    await ctx.laneProxyService.stop();
+  });
+
+  ipcMain.handle(IPC.lanesProxyAddRoute, async (_event, args: { laneId: string; targetPort: number }) => {
+    const ctx = getCtx();
+    if (!ctx.laneProxyService) throw new Error("Proxy service not available");
+    const lane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find((l) => l.id === args.laneId);
+    return ctx.laneProxyService.addRoute(args.laneId, args.targetPort, lane?.name);
+  });
+
+  ipcMain.handle(IPC.lanesProxyRemoveRoute, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    ctx.laneProxyService?.removeRoute(args.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesProxyGetPreviewInfo, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    return ctx.laneProxyService?.getPreviewInfo(args.laneId) ?? null;
+  });
+
+  ipcMain.handle(IPC.lanesProxyOpenPreview, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.laneProxyService) throw new Error("Proxy service not available");
+    const info = ctx.laneProxyService.getPreviewInfo(args.laneId);
+    if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
+    const { shell } = await import("electron");
+    await shell.openExternal(info.previewUrl);
   });
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {

@@ -402,7 +402,16 @@ import type {
   ReleasePortLeaseArgs,
   PortLease,
   PortConflict,
-  PortAllocationEvent
+  PortAllocationEvent,
+  ProxyStatus,
+  ProxyRoute,
+  LanePreviewInfo,
+  LaneProxyEvent,
+  AddProxyRouteArgs,
+  RemoveProxyRouteArgs,
+  GetPreviewInfoArgs,
+  OpenPreviewArgs,
+  StartProxyArgs
 } from "../shared/types";
 
 export {};
@@ -600,6 +609,14 @@ declare global {
         portListConflicts: () => Promise<PortConflict[]>;
         portRecoverOrphans: () => Promise<PortLease[]>;
         onPortEvent: (cb: (ev: PortAllocationEvent) => void) => () => void;
+        proxyGetStatus: () => Promise<ProxyStatus>;
+        proxyStart: (args?: StartProxyArgs) => Promise<ProxyStatus>;
+        proxyStop: () => Promise<void>;
+        proxyAddRoute: (args: AddProxyRouteArgs) => Promise<ProxyRoute>;
+        proxyRemoveRoute: (args: RemoveProxyRouteArgs) => Promise<void>;
+        proxyGetPreviewInfo: (args: GetPreviewInfoArgs) => Promise<LanePreviewInfo | null>;
+        proxyOpenPreview: (args: OpenPreviewArgs) => Promise<void>;
+        onProxyEvent: (cb: (ev: LaneProxyEvent) => void) => () => void;
       };
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;

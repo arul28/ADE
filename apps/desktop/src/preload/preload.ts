@@ -302,6 +302,15 @@ import type {
   PortLease,
   PortConflict,
   PortAllocationEvent,
+  ProxyStatus,
+  ProxyRoute,
+  LanePreviewInfo,
+  LaneProxyEvent,
+  AddProxyRouteArgs,
+  RemoveProxyRouteArgs,
+  GetPreviewInfoArgs,
+  OpenPreviewArgs,
+  StartProxyArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -767,6 +776,25 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: PortAllocationEvent) => cb(payload);
       ipcRenderer.on(IPC.lanesPortEvent, listener);
       return () => ipcRenderer.removeListener(IPC.lanesPortEvent, listener);
+    },
+    proxyGetStatus: async (): Promise<ProxyStatus> =>
+      ipcRenderer.invoke(IPC.lanesProxyGetStatus),
+    proxyStart: async (args?: StartProxyArgs): Promise<ProxyStatus> =>
+      ipcRenderer.invoke(IPC.lanesProxyStart, args),
+    proxyStop: async (): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesProxyStop),
+    proxyAddRoute: async (args: AddProxyRouteArgs): Promise<ProxyRoute> =>
+      ipcRenderer.invoke(IPC.lanesProxyAddRoute, args),
+    proxyRemoveRoute: async (args: RemoveProxyRouteArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesProxyRemoveRoute, args),
+    proxyGetPreviewInfo: async (args: GetPreviewInfoArgs): Promise<LanePreviewInfo | null> =>
+      ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args),
+    proxyOpenPreview: async (args: OpenPreviewArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args),
+    onProxyEvent: (cb: (ev: LaneProxyEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: LaneProxyEvent) => cb(payload);
+      ipcRenderer.on(IPC.lanesProxyEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesProxyEvent, listener);
     },
   },
   sessions: {

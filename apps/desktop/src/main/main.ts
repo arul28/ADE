@@ -10,6 +10,7 @@ import { createLaneService } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
+import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createContextDocService } from "./services/context/contextDocService";
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
@@ -601,6 +602,11 @@ app.whenReady().then(async () => {
         logger.warn("port_allocation.startup_recovery_failed", { error: err?.message });
       }
     })();
+
+    const laneProxyService = createLaneProxyService({
+      logger,
+      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesProxyEvent, ev),
+    });
 
     const aiIntegrationService = createAiIntegrationService({
       db,
@@ -1233,6 +1239,7 @@ app.whenReady().then(async () => {
       laneEnvironmentService,
       laneTemplateService,
       portAllocationService,
+      laneProxyService,
       rebaseSuggestionService,
       autoRebaseService,
       sessionService,

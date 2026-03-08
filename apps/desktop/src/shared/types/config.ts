@@ -299,6 +299,61 @@ export type ListPortConflictsArgs = Record<string, never>;
 export type AcquirePortLeaseArgs = { laneId: string };
 export type ReleasePortLeaseArgs = { laneId: string };
 
+// --- Per-Lane Hostname Isolation & Preview types (Phase 5 W4) ---
+
+export type ProxyRouteStatus = "active" | "inactive" | "error";
+
+/** A proxy route mapping a hostname to a lane's dev server port. */
+export type ProxyRoute = {
+  laneId: string;
+  hostname: string;
+  targetPort: number;
+  status: ProxyRouteStatus;
+  createdAt: string;
+};
+
+/** Overall proxy server status. */
+export type ProxyStatus = {
+  running: boolean;
+  proxyPort: number;
+  routes: ProxyRoute[];
+  startedAt?: string;
+  error?: string;
+};
+
+/** Proxy configuration. */
+export type ProxyConfig = {
+  /** Port the reverse proxy listens on (default: 8080) */
+  proxyPort: number;
+  /** Hostname suffix for lane routing (default: ".localhost") */
+  hostnameSuffix: string;
+};
+
+/** Preview URL info for a lane. */
+export type LanePreviewInfo = {
+  laneId: string;
+  hostname: string;
+  previewUrl: string;
+  proxyPort: number;
+  targetPort: number;
+  active: boolean;
+};
+
+/** Event payload for proxy/preview changes. */
+export type LaneProxyEvent = {
+  type: "proxy-started" | "proxy-stopped" | "route-added" | "route-removed" | "route-error";
+  status?: ProxyStatus;
+  route?: ProxyRoute;
+  error?: string;
+};
+
+/** IPC args for proxy/preview operations. */
+export type AddProxyRouteArgs = { laneId: string; targetPort: number };
+export type RemoveProxyRouteArgs = { laneId: string };
+export type GetPreviewInfoArgs = { laneId: string };
+export type OpenPreviewArgs = { laneId: string };
+export type StartProxyArgs = { port?: number };
+
 export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";
 export type AutomationActionType =
   | "update-packs"
