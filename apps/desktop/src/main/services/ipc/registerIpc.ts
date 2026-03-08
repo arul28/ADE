@@ -2226,6 +2226,41 @@ export function registerIpc({
 
   // --- Per-Lane Hostname Isolation & Preview (Phase 5 W4) --------------------
 
+  const ensureLanePreviewInfo = async (laneId: string) => {
+    const ctx = getCtx();
+    if (!ctx.laneProxyService || !ctx.portAllocationService) return null;
+
+    const lane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find(
+      (item) => item.id === laneId
+    );
+    if (!lane) {
+      ctx.laneProxyService.removeRoute(laneId);
+      return null;
+    }
+
+    const lease = ctx.portAllocationService.getLease(laneId);
+    if (!lease || lease.status !== "active") {
+      ctx.laneProxyService.removeRoute(laneId);
+      return null;
+    }
+
+    if (!ctx.laneProxyService.getStatus().running) {
+      await ctx.laneProxyService.start();
+    }
+
+    const expectedHostname = ctx.laneProxyService.generateHostname(laneId, lane.name);
+    const currentRoute = ctx.laneProxyService.getRoute(laneId);
+    if (
+      !currentRoute ||
+      currentRoute.targetPort !== lease.rangeStart ||
+      currentRoute.hostname !== expectedHostname
+    ) {
+      ctx.laneProxyService.addRoute(laneId, lease.rangeStart, lane.name);
+    }
+
+    return ctx.laneProxyService.getPreviewInfo(laneId);
+  };
+
   ipcMain.handle(IPC.lanesProxyGetStatus, async () => {
     const ctx = getCtx();
     return ctx.laneProxyService?.getStatus() ?? { running: false, proxyPort: 8080, routes: [] };
@@ -2256,14 +2291,11 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesProxyGetPreviewInfo, async (_event, args: { laneId: string }) => {
-    const ctx = getCtx();
-    return ctx.laneProxyService?.getPreviewInfo(args.laneId) ?? null;
+    return ensureLanePreviewInfo(args.laneId);
   });
 
   ipcMain.handle(IPC.lanesProxyOpenPreview, async (_event, args: { laneId: string }) => {
-    const ctx = getCtx();
-    if (!ctx.laneProxyService) throw new Error("Proxy service not available");
-    const info = ctx.laneProxyService.getPreviewInfo(args.laneId);
+    const info = await ensureLanePreviewInfo(args.laneId);
     if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
     const { shell } = await import("electron");
     await shell.openExternal(info.previewUrl);

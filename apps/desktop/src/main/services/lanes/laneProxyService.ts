@@ -48,9 +48,41 @@ export function createLaneProxyService({
       .replace(/^-+|-+$/g, "") || "lane";
   }
 
-  /** Build the hostname for a lane (e.g. "my-feature.localhost"). */
+  function buildHostnameFromSlug(slug: string): string {
+    return `${slug}${cfg.hostnameSuffix}`;
+  }
+
+  function findRouteByHostname(hostname: string, excludeLaneId?: string): ProxyRoute | null {
+    for (const route of routes.values()) {
+      if (route.laneId === excludeLaneId) continue;
+      if (route.hostname === hostname && route.status === "active") {
+        return route;
+      }
+    }
+    return null;
+  }
+
+  /** Build a collision-safe hostname for a lane (e.g. "my-feature.localhost"). */
   function buildHostname(laneId: string, laneName?: string): string {
-    return `${toLaneSlug(laneId, laneName)}${cfg.hostnameSuffix}`;
+    const preferredSlug = toLaneSlug(laneId, laneName);
+    const preferredHostname = buildHostnameFromSlug(preferredSlug);
+    if (!findRouteByHostname(preferredHostname, laneId)) {
+      return preferredHostname;
+    }
+
+    const laneIdSlug = toLaneSlug(laneId);
+    const disambiguatedBase =
+      preferredSlug === laneIdSlug ? `${preferredSlug}-lane` : `${preferredSlug}-${laneIdSlug}`;
+
+    let candidateSlug = disambiguatedBase;
+    let candidateHostname = buildHostnameFromSlug(candidateSlug);
+    let suffix = 2;
+    while (findRouteByHostname(candidateHostname, laneId)) {
+      candidateSlug = `${disambiguatedBase}-${suffix}`;
+      candidateHostname = buildHostnameFromSlug(candidateSlug);
+      suffix += 1;
+    }
+    return candidateHostname;
   }
 
   /** Build the preview URL for a lane. */
@@ -60,16 +92,15 @@ export function createLaneProxyService({
 
   /** Resolve a Host header value to a route. */
   function resolveRoute(hostHeader: string): ProxyRoute | null {
-    // Strip port from Host header if present (e.g. "my-lane.localhost:8080")
-    const hostname = hostHeader.split(":")[0].toLowerCase();
+    // Strip port from Host header if present (e.g. "my-lane.localhost:8080").
+    // Bracketed IPv6 hosts are not expected for *.localhost routing but we
+    // normalize them here anyway to avoid malformed lookups.
+    const normalizedHost = hostHeader.trim();
+    const hostname = normalizedHost.startsWith("[")
+      ? normalizedHost.slice(1, normalizedHost.indexOf("]")).toLowerCase()
+      : normalizedHost.split(":")[0].toLowerCase();
 
-    // Direct hostname lookup
-    for (const route of routes.values()) {
-      if (route.hostname === hostname && route.status === "active") {
-        return route;
-      }
-    }
-    return null;
+    return findRouteByHostname(hostname);
   }
 
   /** Build a snapshot of the current proxy status. */
@@ -93,7 +124,12 @@ export function createLaneProxyService({
       port: targetPort,
       path: req.url,
       method: req.method,
-      headers: { ...req.headers },
+      headers: {
+        ...req.headers,
+        "x-forwarded-host": req.headers.host,
+        "x-forwarded-port": String(cfg.proxyPort),
+        "x-forwarded-proto": "http",
+      },
     };
 
     const proxyReq = http.request(options, (proxyRes) => {

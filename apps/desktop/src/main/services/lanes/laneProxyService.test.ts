@@ -55,6 +55,15 @@ describe("laneProxyService", () => {
       const h2 = svc.generateHostname("b", "feature-b");
       expect(h1).not.toBe(h2);
     });
+
+    it("disambiguates colliding hostnames for different lanes", () => {
+      const routeA = svc.addRoute("lane-1", 3000, "Feature A");
+      const routeB = svc.addRoute("lane-2", 3100, "Feature A!!");
+
+      expect(routeA.hostname).toBe("feature-a.localhost");
+      expect(routeB.hostname).toBe("feature-a-lane-2.localhost");
+      expect(routeB.hostname).not.toBe(routeA.hostname);
+    });
   });
 
   describe("preview URL generation", () => {
@@ -240,7 +249,14 @@ describe("laneProxyService", () => {
       // Start a simple target server
       targetServer = http.createServer((req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ path: req.url, host: req.headers.host }));
+        res.end(
+          JSON.stringify({
+            path: req.url,
+            host: req.headers.host,
+            forwardedHost: req.headers["x-forwarded-host"],
+            forwardedPort: req.headers["x-forwarded-port"],
+          })
+        );
       });
 
       await new Promise<void>((resolve) => {
@@ -287,6 +303,9 @@ describe("laneProxyService", () => {
       expect(response.status).toBe(200);
       const data = JSON.parse(response.body);
       expect(data.path).toBe("/hello");
+      expect(data.host).toBe(`test-lane.localhost:${proxyPort}`);
+      expect(data.forwardedHost).toBe(`test-lane.localhost:${proxyPort}`);
+      expect(data.forwardedPort).toBe(String(proxyPort));
     });
 
     it("returns 404 for unknown hostnames", async () => {

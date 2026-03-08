@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   COLORS,
   MONO_FONT,
@@ -71,56 +71,84 @@ export function LanePreviewPanel({ laneId }: { laneId: string }) {
   const [previewInfo, setPreviewInfo] = useState<LanePreviewInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const copiedTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setError(null);
+    setCopied(false);
+
+    const refreshPreview = async () => {
+      try {
+        const info = await window.ade.lanes.proxyGetPreviewInfo({ laneId });
+        const status = await window.ade.lanes.proxyGetStatus();
+        if (cancelled) return;
+        setPreviewInfo(info);
+        setProxyStatus(status);
+        setError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setPreviewInfo(null);
+        setError(err instanceof Error ? err.message : "Preview unavailable.");
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
 
     const unsub = window.ade.lanes.onProxyEvent((ev) => {
       if (ev.status) setProxyStatus(ev.status);
       // Refresh preview info on route changes
       if (ev.route?.laneId === laneId || ev.type === "proxy-started" || ev.type === "proxy-stopped") {
-        window.ade.lanes.proxyGetPreviewInfo({ laneId }).then((info) => {
-          if (!cancelled) setPreviewInfo(info);
-        });
+        void refreshPreview();
       }
     });
 
-    Promise.all([
-      window.ade.lanes.proxyGetStatus(),
-      window.ade.lanes.proxyGetPreviewInfo({ laneId }),
-    ])
-      .then(([status, info]) => {
-        if (!cancelled) {
-          setProxyStatus(status);
-          setPreviewInfo(info);
-          setLoading(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setLoading(false);
-      });
+    void refreshPreview();
 
     return () => {
       cancelled = true;
       unsub();
+      if (copiedTimeoutRef.current !== null) {
+        window.clearTimeout(copiedTimeoutRef.current);
+      }
     };
   }, [laneId]);
 
   const handleOpen = useCallback(() => {
-    window.ade.lanes.proxyOpenPreview({ laneId }).catch(() => {
+    setError(null);
+    window.ade.lanes.proxyOpenPreview({ laneId }).catch(async (err) => {
       // If opening fails (no route), try to open the URL directly
       if (previewInfo?.previewUrl) {
-        window.ade.app.openExternal(previewInfo.previewUrl);
+        try {
+          await window.ade.app.openExternal(previewInfo.previewUrl);
+          return;
+        } catch {
+          // Fall through to the message below.
+        }
       }
+      setError(err instanceof Error ? err.message : "Unable to open preview.");
     });
   }, [laneId, previewInfo]);
 
   const handleCopy = useCallback(() => {
     if (!previewInfo?.previewUrl) return;
-    window.ade.app.writeClipboardText(previewInfo.previewUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setError(null);
+    window.ade.app.writeClipboardText(previewInfo.previewUrl).then(() => {
+      if (copiedTimeoutRef.current !== null) {
+        window.clearTimeout(copiedTimeoutRef.current);
+      }
+      setCopied(true);
+      copiedTimeoutRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copiedTimeoutRef.current = null;
+      }, 2000);
+    }).catch((err) => {
+      setError(err instanceof Error ? err.message : "Unable to copy preview URL.");
+    });
   }, [previewInfo]);
 
   if (loading) {
@@ -266,6 +294,19 @@ export function LanePreviewPanel({ laneId }: { laneId: string }) {
           </span>
         </div>
       )}
+
+      {error ? (
+        <div
+          style={{
+            ...recessedStyle(),
+            color: COLORS.danger,
+            fontFamily: MONO_FONT,
+            fontSize: 11,
+          }}
+        >
+          {error}
+        </div>
+      ) : null}
 
       {proxyStatus && proxyStatus.running && (
         <div
