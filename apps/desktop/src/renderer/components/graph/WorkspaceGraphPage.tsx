@@ -2151,7 +2151,7 @@ function GraphInner() {
               changeRequestCount: 0,
               commentCount: 0,
               pendingCheckCount: 0,
-              activityState: "steady" as const
+              activityState: "idle" as const
             })
           });
         } else if (action === "create-pr") {
@@ -3703,7 +3703,7 @@ function GraphInner() {
                         changeRequestCount: 0,
                         commentCount: 0,
                         pendingCheckCount: 0,
-                        activityState: "steady"
+                        activityState: "idle"
                       })}
                     >
                       <ChatText size={12} weight="bold" />

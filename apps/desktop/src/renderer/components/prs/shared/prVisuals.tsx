@@ -2,7 +2,7 @@ import React from "react";
 import type { PrChecksStatus, PrReviewStatus, PrState } from "../../../../shared/types";
 import { COLORS, inlineBadge } from "../../lanes/laneDesignTokens";
 
-export type PrActivityState = "active" | "steady" | "stale";
+export type PrActivityState = "active" | "idle" | "stale";
 
 type PrBadgeSpec = {
   label: string;
@@ -84,11 +84,11 @@ export function derivePrActivityState(args: {
   lastActivityAt: string | null;
   pendingCheckCount?: number;
 }): PrActivityState {
-  if (args.state === "merged" || args.state === "closed") return "steady";
+  if (args.state === "merged" || args.state === "closed") return "idle";
   if ((args.pendingCheckCount ?? 0) > 0 || args.reviewStatus === "requested") return "active";
   const lastActivityTs = args.lastActivityAt ? Date.parse(args.lastActivityAt) : Number.NaN;
   if (Number.isFinite(lastActivityTs) && Date.now() - lastActivityTs > 5 * 24 * 60 * 60 * 1000) return "stale";
-  return "steady";
+  return "idle";
 }
 
 export function PrInlineBadge(props: { label: string; color: string; bg: string; border: string }) {
