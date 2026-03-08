@@ -373,11 +373,14 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  LaneTemplate,
+  LaneEnvInitProgress,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentService";
+import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { ContextDocService } from "../context/contextDocService";
@@ -446,6 +449,7 @@ export type AppContext = {
   ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
   laneEnvironmentService: ReturnType<typeof createLaneEnvironmentService> | null;
+  laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
@@ -2040,6 +2044,43 @@ export function registerIpc({
     const ctx = getCtx();
     const { overrides } = await resolveLaneOverlayContext(ctx, args.laneId);
     return overrides;
+  });
+
+  ipcMain.handle(IPC.lanesListTemplates, async () => {
+    const ctx = getCtx();
+    return ctx.laneTemplateService?.listTemplates() ?? [];
+  });
+
+  ipcMain.handle(IPC.lanesGetTemplate, async (_event, args: { templateId: string }) => {
+    const ctx = getCtx();
+    return ctx.laneTemplateService?.getTemplate(args.templateId) ?? null;
+  });
+
+  ipcMain.handle(IPC.lanesGetDefaultTemplate, async () => {
+    const ctx = getCtx();
+    return ctx.laneTemplateService?.getDefaultTemplateId() ?? null;
+  });
+
+  ipcMain.handle(IPC.lanesSetDefaultTemplate, async (_event, args: { templateId: string | null }) => {
+    const ctx = getCtx();
+    ctx.laneTemplateService?.setDefaultTemplateId(args.templateId);
+  });
+
+  ipcMain.handle(IPC.lanesApplyTemplate, async (_event, args: { laneId: string; templateId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.laneTemplateService || !ctx.laneEnvironmentService) {
+      throw new Error("Lane template or environment service not available");
+    }
+    const template = ctx.laneTemplateService.getTemplate(args.templateId);
+    if (!template) throw new Error(`Template not found: ${args.templateId}`);
+
+    const envInitConfig = ctx.laneTemplateService.resolveTemplateAsEnvInit(template);
+    const lanes = await ctx.laneService.list({ includeStatus: false });
+    const lane = lanes.find((l) => l.id === args.laneId);
+    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
+
+    const overrides = template.portRange ? { portRange: template.portRange, env: template.envVars } : { env: template.envVars };
+    return await ctx.laneEnvironmentService.initLaneEnvironment(lane, envInitConfig, overrides);
   });
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {

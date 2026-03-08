@@ -198,6 +198,53 @@ export type ConfigLaneOverlayPolicy = {
   overrides?: LaneOverlayOverrides;
 };
 
+// --- Lane Template types (Phase 5 W2) ---
+
+/** A reusable lane initialization recipe stored in project config (local.yaml / ade.yaml). */
+export type LaneTemplate = {
+  id: string;
+  name: string;
+  description?: string;
+  /** Environment files to copy/template */
+  envFiles?: LaneEnvFileConfig[];
+  /** Docker Compose services to start */
+  docker?: LaneDockerConfig;
+  /** Dependency install commands */
+  dependencies?: LaneDependencyInstallConfig[];
+  /** Runtime mount points for agent profiles/context */
+  mountPoints?: LaneMountPointConfig[];
+  /** Port range for lanes created with this template */
+  portRange?: { start: number; end: number };
+  /** Extra environment variables to set */
+  envVars?: Record<string, string>;
+};
+
+/** Lenient version of LaneTemplate for YAML config parsing. */
+export type ConfigLaneTemplate = {
+  id: string;
+  name?: string;
+  description?: string;
+  envFiles?: LaneEnvFileConfig[];
+  docker?: LaneDockerConfig;
+  dependencies?: LaneDependencyInstallConfig[];
+  mountPoints?: LaneMountPointConfig[];
+  portRange?: { start: number; end: number };
+  envVars?: Record<string, string>;
+};
+
+/** IPC args for listing templates */
+export type ListLaneTemplatesArgs = Record<string, never>;
+
+/** IPC args for getting a single template */
+export type GetLaneTemplateArgs = { templateId: string };
+
+/** IPC args for getting/setting default template */
+export type GetDefaultLaneTemplateArgs = Record<string, never>;
+export type SetDefaultLaneTemplateArgs = { templateId: string | null };
+
+/** IPC args for applying a template to lane env init */
+export type ApplyLaneTemplateArgs = { laneId: string; templateId: string };
+
 export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";
 export type AutomationActionType =
   | "update-packs"
@@ -483,6 +530,10 @@ export type ProjectConfigFile = {
   ai?: AiConfig;
   /** Default lane environment initialization config */
   laneEnvInit?: LaneEnvInitConfig;
+  /** Lane templates: reusable initialization recipes (Phase 5 W2) */
+  laneTemplates?: ConfigLaneTemplate[];
+  /** Default lane template ID applied to new lanes */
+  defaultLaneTemplate?: string;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
 };
@@ -509,6 +560,10 @@ export type EffectiveProjectConfig = {
   ai?: AiConfig;
   /** Default lane environment initialization config */
   laneEnvInit?: LaneEnvInitConfig;
+  /** Lane templates: reusable initialization recipes (Phase 5 W2) */
+  laneTemplates?: LaneTemplate[];
+  /** Default lane template ID */
+  defaultLaneTemplate?: string;
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;

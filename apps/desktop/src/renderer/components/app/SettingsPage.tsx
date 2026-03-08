@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Plus, X } from "@phosphor-icons/react";
+import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Stack, Plus, X } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
@@ -9,6 +9,7 @@ import { UsageDashboard } from "../missions/UsageDashboard";
 import { AutomationsSection } from "../settings/AutomationsSection";
 import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
 import { KeybindingsSection } from "../settings/KeybindingsSection";
+import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
@@ -21,6 +22,7 @@ const SECTIONS = [
   { id: "context", label: "Context & Docs", icon: BookOpenText },
   { id: "automations", label: "Automations", icon: Robot },
   { id: "terminals", label: "Terminals", icon: Terminal },
+  { id: "lane-templates", label: "Lane Templates", icon: Stack },
   { id: "keybindings", label: "Keybindings", icon: Keyboard },
   { id: "phase-profiles", label: "Phase Profiles", icon: SquaresFour },
   { id: "usage", label: "Usage", icon: Lightning },
@@ -518,6 +520,7 @@ export function SettingsPage() {
         {section === "context" && <ContextSection />}
         {section === "automations" && <AutomationsSection />}
         {section === "terminals" && <TerminalProfilesSection />}
+        {section === "lane-templates" && <LaneTemplatesSection />}
         {section === "keybindings" && <KeybindingsSection />}
         {section === "phase-profiles" && <PhaseProfilesSection />}
         {section === "usage" && <UsageDashboard missionId={null} />}

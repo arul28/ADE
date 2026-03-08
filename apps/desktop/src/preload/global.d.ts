@@ -375,7 +375,11 @@ import type {
   GetLaneOverlayArgs,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
-  LaneOverlayOverrides
+  LaneOverlayOverrides,
+  LaneTemplate,
+  GetLaneTemplateArgs,
+  SetDefaultLaneTemplateArgs,
+  ApplyLaneTemplateArgs
 } from "../shared/types";
 
 export {};
@@ -561,6 +565,11 @@ declare global {
         getEnvStatus: (args: GetLaneEnvStatusArgs) => Promise<LaneEnvInitProgress | null>;
         getOverlay: (args: GetLaneOverlayArgs) => Promise<LaneOverlayOverrides>;
         onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => () => void;
+        listTemplates: () => Promise<LaneTemplate[]>;
+        getTemplate: (args: GetLaneTemplateArgs) => Promise<LaneTemplate | null>;
+        getDefaultTemplate: () => Promise<string | null>;
+        setDefaultTemplate: (args: SetDefaultLaneTemplateArgs) => Promise<void>;
+        applyTemplate: (args: ApplyLaneTemplateArgs) => Promise<LaneEnvInitProgress>;
       };
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;

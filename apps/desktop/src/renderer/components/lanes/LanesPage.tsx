@@ -45,7 +45,8 @@ import type {
   RebaseScope,
   RebaseSuggestion,
   AutoRebaseLaneStatus,
-  TerminalSessionSummary
+  TerminalSessionSummary,
+  LaneTemplate
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 
@@ -102,6 +103,8 @@ export function LanesPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
   const createEnvInitLaneIdRef = useRef<string | null>(null);
+  const [templates, setTemplates] = useState<LaneTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
   const [attachPath, setAttachPath] = useState("");
@@ -917,6 +920,7 @@ export function LanesPage() {
     setCreateBusy(false);
     setCreateError(null);
     setCreateEnvInitProgress(null);
+    setSelectedTemplateId("");
   }, []);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
@@ -948,7 +952,9 @@ export function LanesPage() {
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
 
       createEnvInitLaneIdRef.current = lane.id;
-      const envProgress = await window.ade.lanes.initEnv({ laneId: lane.id });
+      const envProgress = selectedTemplateId
+        ? await window.ade.lanes.applyTemplate({ laneId: lane.id, templateId: selectedTemplateId })
+        : await window.ade.lanes.initEnv({ laneId: lane.id });
       setCreateEnvInitProgress(envProgress);
 
       if (envProgress.overallStatus === "failed") {
@@ -963,7 +969,7 @@ export function LanesPage() {
     } finally {
       setCreateBusy(false);
     }
-  }, [createLaneName, createAsChild, createParentLaneId, createBusy, lanes, navigate, refreshLanes, resetCreateDialogState]);
+  }, [createLaneName, createAsChild, createParentLaneId, createBusy, lanes, navigate, refreshLanes, resetCreateDialogState, selectedTemplateId]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -1284,6 +1290,8 @@ export function LanesPage() {
                       })
                       .catch(() => {});
                   }
+                  window.ade.lanes.listTemplates().then(setTemplates).catch(() => setTemplates([]));
+                  window.ade.lanes.getDefaultTemplate().then((id) => setSelectedTemplateId(id ?? "")).catch(() => {});
                   setCreateOpen(true);
                 }}
               >
@@ -1602,6 +1610,8 @@ export function LanesPage() {
                       })
                       .catch(() => {});
                   }
+                  window.ade.lanes.listTemplates().then(setTemplates).catch(() => setTemplates([]));
+                  window.ade.lanes.getDefaultTemplate().then((id) => setSelectedTemplateId(id ?? "")).catch(() => {});
                   setCreateOpen(true);
                 }}
               >
@@ -1747,6 +1757,9 @@ export function LanesPage() {
         busy={createBusy}
         error={createError}
         envInitProgress={createEnvInitProgress}
+        templates={templates}
+        selectedTemplateId={selectedTemplateId}
+        setSelectedTemplateId={setSelectedTemplateId}
       />
 
       {/* Attach Lane dialog */}

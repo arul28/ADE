@@ -8,6 +8,7 @@ import { ensureAdeDirs } from "./services/state/projectState";
 import { readGlobalState, upsertRecentProject, writeGlobalState } from "./services/state/globalState";
 import { createLaneService } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
+import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createContextDocService } from "./services/context/contextDocService";
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
@@ -560,6 +561,11 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       projectId,
       db,
+      logger
+    });
+
+    const laneTemplateService = createLaneTemplateService({
+      projectConfigService,
       logger
     });
 
@@ -1192,6 +1198,7 @@ app.whenReady().then(async () => {
       onboardingService,
       laneService,
       laneEnvironmentService,
+      laneTemplateService,
       rebaseSuggestionService,
       autoRebaseService,
       sessionService,
@@ -1265,6 +1272,7 @@ app.whenReady().then(async () => {
       ciService: null,
       laneService: null,
       laneEnvironmentService: null,
+      laneTemplateService: null,
       rebaseSuggestionService: null,
       autoRebaseService: null,
       sessionService: null,

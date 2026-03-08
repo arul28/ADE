@@ -275,6 +275,10 @@ import type {
   LaneEnvInitProgress,
   LaneEnvInitEvent,
   LaneOverlayOverrides,
+  LaneTemplate,
+  GetLaneTemplateArgs,
+  SetDefaultLaneTemplateArgs,
+  ApplyLaneTemplateArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -714,6 +718,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.lanesEnvEvent, listener);
       return () => ipcRenderer.removeListener(IPC.lanesEnvEvent, listener);
     },
+    listTemplates: async (): Promise<LaneTemplate[]> =>
+      ipcRenderer.invoke(IPC.lanesListTemplates),
+    getTemplate: async (args: GetLaneTemplateArgs): Promise<LaneTemplate | null> =>
+      ipcRenderer.invoke(IPC.lanesGetTemplate, args),
+    getDefaultTemplate: async (): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.lanesGetDefaultTemplate),
+    setDefaultTemplate: async (args: SetDefaultLaneTemplateArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesSetDefaultTemplate, args),
+    applyTemplate: async (args: ApplyLaneTemplateArgs): Promise<LaneEnvInitProgress> =>
+      ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
   },
   sessions: {
     list: async (args: ListSessionsArgs = {}): Promise<TerminalSessionSummary[]> =>

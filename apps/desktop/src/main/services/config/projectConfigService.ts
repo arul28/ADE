@@ -15,6 +15,7 @@ import type {
   AutomationTriggerType,
   ConfigAutomationRule,
   ConfigLaneOverlayPolicy,
+  ConfigLaneTemplate,
   ConfigProcessDefinition,
   ConfigProcessReadiness,
   ConfigStackButtonDefinition,
@@ -29,6 +30,7 @@ import type {
   LaneOverlayOverrides,
   LaneOverlayPolicy,
   LaneMountPointConfig,
+  LaneTemplate,
   LaneType,
   ProcessDefinition,
   ProcessReadinessConfig,
@@ -455,6 +457,33 @@ function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null
   }
 
   return out;
+}
+
+function coerceLaneTemplate(value: unknown): ConfigLaneTemplate | null {
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id) return null;
+  return {
+    id,
+    name: typeof value.name === "string" ? value.name.trim() : undefined,
+    description: typeof value.description === "string" ? value.description.trim() : undefined,
+    envFiles: Array.isArray(value.envFiles)
+      ? value.envFiles.map(coerceLaneEnvFile).filter((x): x is LaneEnvFileConfig => x != null)
+      : undefined,
+    docker: coerceLaneDockerConfig(value.docker),
+    dependencies: Array.isArray(value.dependencies)
+      ? value.dependencies.map(coerceLaneDependencyInstall).filter((x): x is LaneDependencyInstallConfig => x != null)
+      : undefined,
+    mountPoints: Array.isArray(value.mountPoints)
+      ? value.mountPoints.map(coerceLaneMountPoint).filter((x): x is LaneMountPointConfig => x != null)
+      : undefined,
+    portRange: isRecord(value.portRange) && typeof value.portRange.start === "number" && typeof value.portRange.end === "number"
+      ? { start: value.portRange.start, end: value.portRange.end }
+      : undefined,
+    envVars: isRecord(value.envVars)
+      ? Object.fromEntries(Object.entries(value.envVars).filter(([, v]) => typeof v === "string")) as Record<string, string>
+      : undefined,
+  };
 }
 
 const AI_TASK_KEYS: AiTaskRoutingKey[] = [
@@ -1004,6 +1033,10 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ? value.environments.map(coerceEnvironmentMapping).filter((x): x is EnvironmentMapping => x != null)
     : [];
   const laneEnvInit = coerceLaneEnvInitConfig(value.laneEnvInit);
+  const laneTemplates = Array.isArray(value.laneTemplates)
+    ? value.laneTemplates.map(coerceLaneTemplate).filter((x): x is ConfigLaneTemplate => x != null)
+    : undefined;
+  const defaultLaneTemplate = typeof value.defaultLaneTemplate === "string" ? value.defaultLaneTemplate.trim() || undefined : undefined;
 
   const github =
     isRecord(value.github) && asNumber(value.github.prPollingIntervalSeconds) != null
@@ -1034,6 +1067,8 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     laneOverlayPolicies,
     automations,
     ...(laneEnvInit ? { laneEnvInit } : {}),
+    ...(laneTemplates?.length ? { laneTemplates } : {}),
+    ...(defaultLaneTemplate ? { defaultLaneTemplate } : {}),
     ...(environments.length ? { environments } : {}),
     ...(github ? { github } : {}),
     ...(git ? { git } : {}),
@@ -1074,6 +1109,8 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     laneOverlayPolicies: config.laneOverlayPolicies ?? [],
     automations: config.automations ?? [],
     ...(config.laneEnvInit ? { laneEnvInit: config.laneEnvInit } : {}),
+    ...(config.laneTemplates?.length ? { laneTemplates: config.laneTemplates } : {}),
+    ...(config.defaultLaneTemplate ? { defaultLaneTemplate: config.defaultLaneTemplate } : {}),
     ...(config.environments ? { environments: config.environments } : {}),
     ...(config.github ? { github: config.github } : {}),
     ...(config.git ? { git: config.git } : {}),
@@ -1178,6 +1215,14 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(over.actions != null ? { actions: over.actions } : base.actions != null ? { actions: base.actions } : {})
   }));
   const laneEnvInit = mergeLaneEnvInit(shared.laneEnvInit, local.laneEnvInit);
+
+  const mergedLaneTemplates = mergeById(
+    shared.laneTemplates ?? [],
+    local.laneTemplates ?? [],
+    (base, over) => ({ ...base, ...over })
+  );
+
+  const defaultLaneTemplate = local.defaultLaneTemplate ?? shared.defaultLaneTemplate;
 
   const processes: ProcessDefinition[] = mergedProcesses.map((entry) => ({
     id: entry.id.trim(),
@@ -1300,6 +1345,22 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     laneOverlayPolicies,
     automations,
     ...(laneEnvInit ? { laneEnvInit } : {}),
+    ...(mergedLaneTemplates.length
+      ? {
+          laneTemplates: mergedLaneTemplates.map((t): LaneTemplate => ({
+            id: t.id.trim(),
+            name: t.name?.trim() ?? t.id.trim(),
+            ...(t.description ? { description: t.description.trim() } : {}),
+            ...(t.envFiles?.length ? { envFiles: t.envFiles } : {}),
+            ...(t.docker ? { docker: t.docker } : {}),
+            ...(t.dependencies?.length ? { dependencies: t.dependencies } : {}),
+            ...(t.mountPoints?.length ? { mountPoints: t.mountPoints } : {}),
+            ...(t.portRange ? { portRange: { ...t.portRange } } : {}),
+            ...(t.envVars && Object.keys(t.envVars).length ? { envVars: t.envVars } : {})
+          }))
+        }
+      : {}),
+    ...(defaultLaneTemplate ? { defaultLaneTemplate } : {}),
     ...(environments.length ? { environments } : {}),
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),

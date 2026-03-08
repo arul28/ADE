@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../ui/Button";
-import type { LaneSummary, LaneEnvInitProgress } from "../../../shared/types";
+import type { LaneSummary, LaneEnvInitProgress, LaneTemplate } from "../../../shared/types";
 import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 
@@ -20,7 +20,10 @@ export function CreateLaneDialog({
   onSubmit,
   busy,
   error,
-  envInitProgress
+  envInitProgress,
+  templates,
+  selectedTemplateId,
+  setSelectedTemplateId
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -38,6 +41,9 @@ export function CreateLaneDialog({
   busy?: boolean;
   error?: string | null;
   envInitProgress?: LaneEnvInitProgress | null;
+  templates: LaneTemplate[];
+  selectedTemplateId: string;
+  setSelectedTemplateId: (id: string) => void;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -60,6 +66,24 @@ export function CreateLaneDialog({
                 disabled={busy}
               />
             </div>
+            {templates.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-xs text-muted-fg">Template</div>
+                <select
+                  value={selectedTemplateId}
+                  onChange={(e) => setSelectedTemplateId(e.target.value)}
+                  className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none"
+                  disabled={busy}
+                >
+                  <option value="">None (blank lane)</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}{t.description ? ` — ${t.description}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <label className="flex items-center gap-2 rounded border border-border/10 bg-card/60 px-3 py-2 text-xs cursor-pointer">
               <input
                 type="checkbox"
