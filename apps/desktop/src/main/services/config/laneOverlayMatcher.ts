@@ -50,14 +50,41 @@ function matchesPolicy(lane: LaneSummary, policy: LaneOverlayPolicy): boolean {
   return true;
 }
 
-function mergeEnvInit(current: LaneEnvInitConfig | undefined, next: LaneEnvInitConfig): LaneEnvInitConfig {
-  if (!current) return { ...next };
+function normalizeEnvInit(config: LaneEnvInitConfig): LaneEnvInitConfig {
   return {
+    ...(config.envFiles && config.envFiles.length > 0 ? { envFiles: config.envFiles } : {}),
+    ...(config.docker ? { docker: config.docker } : {}),
+    ...(config.dependencies && config.dependencies.length > 0 ? { dependencies: config.dependencies } : {}),
+    ...(config.mountPoints && config.mountPoints.length > 0 ? { mountPoints: config.mountPoints } : {})
+  };
+}
+
+function mergeDockerConfig(
+  current: LaneEnvInitConfig["docker"] | undefined,
+  next: LaneEnvInitConfig["docker"] | undefined
+): LaneEnvInitConfig["docker"] | undefined {
+  if (!current && !next) return undefined;
+  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
+  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
+  return {
+    ...current,
+    ...next,
+    ...(next.services != null
+      ? { services: [...next.services] }
+      : current.services != null
+        ? { services: [...current.services] }
+        : {})
+  };
+}
+
+function mergeEnvInit(current: LaneEnvInitConfig | undefined, next: LaneEnvInitConfig): LaneEnvInitConfig {
+  if (!current) return normalizeEnvInit(next);
+  return normalizeEnvInit({
     envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
-    docker: next.docker ?? current.docker,
+    ...(mergeDockerConfig(current.docker, next.docker) ? { docker: mergeDockerConfig(current.docker, next.docker) } : {}),
     dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
     mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
-  };
+  });
 }
 
 export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverlayPolicy[]): LaneOverlayOverrides {
@@ -100,4 +127,3 @@ export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverla
 
   return merged;
 }
-

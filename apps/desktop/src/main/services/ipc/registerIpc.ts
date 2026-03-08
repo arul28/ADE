@@ -568,6 +568,23 @@ async function resolveFirstAvailableLaneId(
   return lanes[0]?.id ?? "";
 }
 
+async function resolveLaneOverlayContext(ctx: AppContext, laneId: string) {
+  const lanes = await ctx.laneService.list({ includeStatus: false });
+  const lane = lanes.find((entry) => entry.id === laneId);
+  if (!lane) throw new Error(`Lane not found: ${laneId}`);
+
+  const config = ctx.projectConfigService.getEffective();
+  const { matchLaneOverlayPolicies } = await import("../config/laneOverlayMatcher");
+  const overrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
+  const envInitConfig = ctx.laneEnvironmentService?.resolveEnvInitConfig(config.laneEnvInit, overrides);
+
+  return {
+    lane,
+    overrides,
+    envInitConfig
+  };
+}
+
 async function buildLinearConnectionStatus(
   ctx: AppContext,
   tokenStored: boolean,
@@ -1929,7 +1946,20 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = getCtx();
+    const envContext = ctx.laneEnvironmentService
+      ? await resolveLaneOverlayContext(ctx, arg.laneId)
+      : null;
     await ctx.laneService.delete(arg);
+    if (ctx.laneEnvironmentService && envContext?.envInitConfig) {
+      try {
+        await ctx.laneEnvironmentService.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
+      } catch (error) {
+        ctx.logger.warn("lane_env_cleanup.post_delete_failed", {
+          laneId: envContext.lane.id,
+          error: getErrorMessage(error)
+        });
+      }
+    }
   });
 
   ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {
@@ -1995,15 +2025,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesInitEnv, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
     if (!ctx.laneEnvironmentService) throw new Error("Lane environment service not available");
-    const lanes = await ctx.laneService.list({ includeStatus: false });
-    const lane = lanes.find((l) => l.id === args.laneId);
-    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
-
-    const config = ctx.projectConfigService.getEffective();
-    const overlayPolicies = config.laneOverlayPolicies ?? [];
-    const { matchLaneOverlayPolicies } = await import("../config/laneOverlayMatcher");
-    const overrides = matchLaneOverlayPolicies(lane, overlayPolicies);
-    const envInitConfig = ctx.laneEnvironmentService.resolveEnvInitConfig(config.laneEnvInit, overrides);
+    const { lane, overrides, envInitConfig } = await resolveLaneOverlayContext(ctx, args.laneId);
 
     if (!envInitConfig) return { laneId: lane.id, steps: [], startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), overallStatus: "completed" };
     return await ctx.laneEnvironmentService.initLaneEnvironment(lane, envInitConfig, overrides);
@@ -2016,13 +2038,8 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesGetOverlay, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
-    const lanes = await ctx.laneService.list({ includeStatus: false });
-    const lane = lanes.find((l) => l.id === args.laneId);
-    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
-
-    const config = ctx.projectConfigService.getEffective();
-    const { matchLaneOverlayPolicies } = await import("../config/laneOverlayMatcher");
-    return matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
+    const { overrides } = await resolveLaneOverlayContext(ctx, args.laneId);
+    return overrides;
   });
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {

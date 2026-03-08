@@ -21,9 +21,14 @@ import type {
   ConfigTestSuiteDefinition,
   EnvironmentMapping,
   EffectiveProjectConfig,
+  LaneDependencyInstallConfig,
+  LaneDockerConfig,
+  LaneEnvFileConfig,
+  LaneEnvInitConfig,
   LaneOverlayMatch,
   LaneOverlayOverrides,
   LaneOverlayPolicy,
+  LaneMountPointConfig,
   LaneType,
   ProcessDefinition,
   ProcessReadinessConfig,
@@ -74,6 +79,10 @@ function asNumber(value: unknown): number | undefined {
 
 function asBool(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function asComputeBackend(value: unknown): "local" | "vps" | "daytona" | undefined {
+  return value === "local" || value === "vps" || value === "daytona" ? value : undefined;
 }
 
 function coerceOrchestratorHookConfig(value: unknown): { command: string; timeoutMs?: number } | null {
@@ -265,6 +274,139 @@ function coerceEnvironmentMapping(value: unknown): EnvironmentMapping | null {
   return out;
 }
 
+function coerceLaneEnvFile(value: unknown): LaneEnvFileConfig | null {
+  if (!isRecord(value)) return null;
+  const source = asString(value.source)?.trim() ?? "";
+  const dest = asString(value.dest)?.trim() ?? "";
+  if (!source || !dest) return null;
+
+  const out: LaneEnvFileConfig = { source, dest };
+  const vars = asStringMap(value.vars);
+  if (vars != null && Object.keys(vars).length > 0) out.vars = vars;
+  return out;
+}
+
+function coerceLaneDockerConfig(value: unknown): LaneDockerConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const composePath = asString(value.composePath)?.trim();
+  const out: LaneDockerConfig = {};
+  const services = asStringArray(value.services);
+  const projectPrefix = asString(value.projectPrefix)?.trim();
+  if (composePath) out.composePath = composePath;
+  if (services != null && services.length > 0) out.services = services;
+  if (projectPrefix) out.projectPrefix = projectPrefix;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function coerceLaneDependencyInstall(value: unknown): LaneDependencyInstallConfig | null {
+  if (!isRecord(value)) return null;
+  const command = asStringArray(value.command);
+  if (!command || command.length === 0) return null;
+
+  const out: LaneDependencyInstallConfig = { command };
+  const cwd = asString(value.cwd)?.trim();
+  if (cwd) out.cwd = cwd;
+  return out;
+}
+
+function coerceLaneMountPoint(value: unknown): LaneMountPointConfig | null {
+  if (!isRecord(value)) return null;
+  const source = asString(value.source)?.trim() ?? "";
+  const dest = asString(value.dest)?.trim() ?? "";
+  if (!source || !dest) return null;
+  return { source, dest };
+}
+
+function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const envFiles = Array.isArray(value.envFiles)
+    ? value.envFiles.map(coerceLaneEnvFile).filter((entry): entry is LaneEnvFileConfig => entry != null)
+    : undefined;
+  const docker = coerceLaneDockerConfig(value.docker);
+  const dependencies = Array.isArray(value.dependencies)
+    ? value.dependencies
+        .map(coerceLaneDependencyInstall)
+        .filter((entry): entry is LaneDependencyInstallConfig => entry != null)
+    : undefined;
+  const mountPoints = Array.isArray(value.mountPoints)
+    ? value.mountPoints.map(coerceLaneMountPoint).filter((entry): entry is LaneMountPointConfig => entry != null)
+    : undefined;
+
+  if (!envFiles?.length && !docker && !dependencies?.length && !mountPoints?.length) {
+    return undefined;
+  }
+
+  return {
+    ...(envFiles?.length ? { envFiles } : {}),
+    ...(docker ? { docker } : {}),
+    ...(dependencies?.length ? { dependencies } : {}),
+    ...(mountPoints?.length ? { mountPoints } : {})
+  };
+}
+
+function normalizeLaneEnvInitConfig(value: LaneEnvInitConfig): LaneEnvInitConfig | undefined {
+  const normalized: LaneEnvInitConfig = {
+    ...(value.envFiles && value.envFiles.length > 0 ? { envFiles: value.envFiles } : {}),
+    ...(value.docker ? { docker: value.docker } : {}),
+    ...(value.dependencies && value.dependencies.length > 0 ? { dependencies: value.dependencies } : {}),
+    ...(value.mountPoints && value.mountPoints.length > 0 ? { mountPoints: value.mountPoints } : {})
+  };
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function mergeLaneDockerConfig(
+  base: LaneDockerConfig | undefined,
+  over: LaneDockerConfig | undefined
+): LaneDockerConfig | undefined {
+  if (!base && !over) return undefined;
+  if (!base) return over ? { ...over, ...(over.services ? { services: [...over.services] } : {}) } : undefined;
+  if (!over) return { ...base, ...(base.services ? { services: [...base.services] } : {}) };
+
+  return {
+    ...base,
+    ...over,
+    ...(over.services != null
+      ? { services: [...over.services] }
+      : base.services != null
+        ? { services: [...base.services] }
+        : {})
+  };
+}
+
+function mergeLaneEnvInit(
+  base: LaneEnvInitConfig | undefined,
+  over: LaneEnvInitConfig | undefined
+): LaneEnvInitConfig | undefined {
+  if (!base && !over) return undefined;
+  if (!base) {
+    return over
+      ? normalizeLaneEnvInitConfig({
+          ...(over.envFiles ? { envFiles: [...over.envFiles] } : {}),
+          ...(mergeLaneDockerConfig(undefined, over.docker) ? { docker: mergeLaneDockerConfig(undefined, over.docker) } : {}),
+          ...(over.dependencies ? { dependencies: [...over.dependencies] } : {}),
+          ...(over.mountPoints ? { mountPoints: [...over.mountPoints] } : {})
+        })
+      : undefined;
+  }
+  if (!over) {
+    return normalizeLaneEnvInitConfig({
+      ...(base.envFiles ? { envFiles: [...base.envFiles] } : {}),
+      ...(mergeLaneDockerConfig(undefined, base.docker) ? { docker: mergeLaneDockerConfig(undefined, base.docker) } : {}),
+      ...(base.dependencies ? { dependencies: [...base.dependencies] } : {}),
+      ...(base.mountPoints ? { mountPoints: [...base.mountPoints] } : {})
+    });
+  }
+
+  return normalizeLaneEnvInitConfig({
+    envFiles: [...(base.envFiles ?? []), ...(over.envFiles ?? [])],
+    ...(mergeLaneDockerConfig(base.docker, over.docker) ? { docker: mergeLaneDockerConfig(base.docker, over.docker) } : {}),
+    dependencies: [...(base.dependencies ?? []), ...(over.dependencies ?? [])],
+    mountPoints: [...(base.mountPoints ?? []), ...(over.mountPoints ?? [])]
+  });
+}
+
 function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null {
   if (!isRecord(value)) return null;
   const id = asString(value.id)?.trim() ?? "";
@@ -296,10 +438,19 @@ function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null
     const cwd = asString(value.overrides.cwd);
     const processIds = asStringArray(value.overrides.processIds);
     const testSuiteIds = asStringArray(value.overrides.testSuiteIds);
+    const portStart = isRecord(value.overrides.portRange) ? asNumber(value.overrides.portRange.start) : undefined;
+    const portEnd = isRecord(value.overrides.portRange) ? asNumber(value.overrides.portRange.end) : undefined;
+    const proxyHostname = asString(value.overrides.proxyHostname)?.trim();
+    const computeBackend = asComputeBackend(value.overrides.computeBackend);
+    const envInit = coerceLaneEnvInitConfig(value.overrides.envInit);
     if (env != null) overrides.env = env;
     if (cwd != null) overrides.cwd = cwd;
     if (processIds != null) overrides.processIds = processIds;
     if (testSuiteIds != null) overrides.testSuiteIds = testSuiteIds;
+    if (portStart != null && portEnd != null) overrides.portRange = { start: portStart, end: portEnd };
+    if (proxyHostname) overrides.proxyHostname = proxyHostname;
+    if (computeBackend != null) overrides.computeBackend = computeBackend;
+    if (envInit != null) overrides.envInit = envInit;
     if (Object.keys(overrides).length > 0) out.overrides = overrides;
   }
 
@@ -852,6 +1003,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   const environments = Array.isArray(value.environments)
     ? value.environments.map(coerceEnvironmentMapping).filter((x): x is EnvironmentMapping => x != null)
     : [];
+  const laneEnvInit = coerceLaneEnvInitConfig(value.laneEnvInit);
 
   const github =
     isRecord(value.github) && asNumber(value.github.prPollingIntervalSeconds) != null
@@ -881,6 +1033,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     testSuites,
     laneOverlayPolicies,
     automations,
+    ...(laneEnvInit ? { laneEnvInit } : {}),
     ...(environments.length ? { environments } : {}),
     ...(github ? { github } : {}),
     ...(git ? { git } : {}),
@@ -920,6 +1073,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     testSuites: config.testSuites ?? [],
     laneOverlayPolicies: config.laneOverlayPolicies ?? [],
     automations: config.automations ?? [],
+    ...(config.laneEnvInit ? { laneEnvInit: config.laneEnvInit } : {}),
     ...(config.environments ? { environments: config.environments } : {}),
     ...(config.github ? { github: config.github } : {}),
     ...(config.git ? { git: config.git } : {}),
@@ -1001,7 +1155,18 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ...over,
       ...(base.match || over.match ? { match: { ...(base.match ?? {}), ...(over.match ?? {}) } } : {}),
       ...(base.overrides || over.overrides
-        ? { overrides: { ...(base.overrides ?? {}), ...(over.overrides ?? {}) } }
+        ? {
+            overrides: {
+              ...(base.overrides ?? {}),
+              ...(over.overrides ?? {}),
+              ...(base.overrides?.env || over.overrides?.env
+                ? { env: { ...(base.overrides?.env ?? {}), ...(over.overrides?.env ?? {}) } }
+                : {}),
+              ...(mergeLaneEnvInit(base.overrides?.envInit, over.overrides?.envInit)
+                ? { envInit: mergeLaneEnvInit(base.overrides?.envInit, over.overrides?.envInit) }
+                : {})
+            }
+          }
         : {})
     })
   );
@@ -1012,6 +1177,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(over.trigger != null ? { trigger: over.trigger } : base.trigger != null ? { trigger: base.trigger } : {}),
     ...(over.actions != null ? { actions: over.actions } : base.actions != null ? { actions: base.actions } : {})
   }));
+  const laneEnvInit = mergeLaneEnvInit(shared.laneEnvInit, local.laneEnvInit);
 
   const processes: ProcessDefinition[] = mergedProcesses.map((entry) => ({
     id: entry.id.trim(),
@@ -1058,7 +1224,11 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ...(entry.overrides?.env ? { env: entry.overrides.env } : {}),
       ...(entry.overrides?.cwd ? { cwd: entry.overrides.cwd.trim() } : {}),
       ...(entry.overrides?.processIds ? { processIds: entry.overrides.processIds.map((v) => v.trim()).filter(Boolean) } : {}),
-      ...(entry.overrides?.testSuiteIds ? { testSuiteIds: entry.overrides.testSuiteIds.map((v) => v.trim()).filter(Boolean) } : {})
+      ...(entry.overrides?.testSuiteIds ? { testSuiteIds: entry.overrides.testSuiteIds.map((v) => v.trim()).filter(Boolean) } : {}),
+      ...(entry.overrides?.portRange ? { portRange: { ...entry.overrides.portRange } } : {}),
+      ...(entry.overrides?.proxyHostname ? { proxyHostname: entry.overrides.proxyHostname.trim() } : {}),
+      ...(entry.overrides?.computeBackend ? { computeBackend: entry.overrides.computeBackend } : {}),
+      ...(entry.overrides?.envInit ? { envInit: mergeLaneEnvInit(undefined, entry.overrides.envInit) } : {})
     }
   }));
 
@@ -1129,6 +1299,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     testSuites,
     laneOverlayPolicies,
     automations,
+    ...(laneEnvInit ? { laneEnvInit } : {}),
     ...(environments.length ? { environments } : {}),
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),
@@ -1139,6 +1310,61 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(mergedProviders ? { providers: mergedProviders } : {}),
     ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {})
   };
+}
+
+function validateLaneEnvInitConfig(
+  config: LaneEnvInitConfig | undefined,
+  pathPrefix: string,
+  projectRoot: string,
+  issues: ProjectConfigValidationIssue[]
+): void {
+  if (!config) return;
+
+  for (const [index, file] of (config.envFiles ?? []).entries()) {
+    if (!file.source.trim()) {
+      issues.push({ path: `${pathPrefix}.envFiles[${index}].source`, message: "env file source is required" });
+    }
+    if (!file.dest.trim()) {
+      issues.push({ path: `${pathPrefix}.envFiles[${index}].dest`, message: "env file destination is required" });
+    }
+  }
+
+  if (config.docker) {
+    if (!config.docker.composePath?.trim()) {
+      issues.push({ path: `${pathPrefix}.docker.composePath`, message: "docker composePath is required" });
+    } else {
+      const composePath = path.isAbsolute(config.docker.composePath)
+        ? config.docker.composePath
+        : path.join(projectRoot, config.docker.composePath);
+      if (!fs.existsSync(composePath)) {
+        issues.push({
+          path: `${pathPrefix}.docker.composePath`,
+          message: `docker composePath does not exist: ${config.docker.composePath}`
+        });
+      }
+    }
+  }
+
+  for (const [index, dep] of (config.dependencies ?? []).entries()) {
+    if (dep.command.length === 0) {
+      issues.push({ path: `${pathPrefix}.dependencies[${index}].command`, message: "dependency command must not be empty" });
+    }
+    if (dep.cwd) {
+      const absCwd = path.isAbsolute(dep.cwd) ? dep.cwd : path.join(projectRoot, dep.cwd);
+      if (!isDirectory(absCwd)) {
+        issues.push({ path: `${pathPrefix}.dependencies[${index}].cwd`, message: `dependency cwd does not exist: ${dep.cwd}` });
+      }
+    }
+  }
+
+  for (const [index, mountPoint] of (config.mountPoints ?? []).entries()) {
+    if (!mountPoint.source.trim()) {
+      issues.push({ path: `${pathPrefix}.mountPoints[${index}].source`, message: "mount point source is required" });
+    }
+    if (!mountPoint.dest.trim()) {
+      issues.push({ path: `${pathPrefix}.mountPoints[${index}].dest`, message: "mount point destination is required" });
+    }
+  }
 }
 
 function validateDuplicateIds(
@@ -1375,7 +1601,22 @@ function validateEffectiveConfig(
         issues.push({ path: `${p}.overrides.testSuiteIds`, message: `Unknown test suite id '${suiteId}'` });
       }
     }
+    const portRange = policy.overrides.portRange;
+    if (portRange) {
+      if (!Number.isInteger(portRange.start) || portRange.start <= 0) {
+        issues.push({ path: `${p}.overrides.portRange.start`, message: "portRange.start must be a positive integer" });
+      }
+      if (!Number.isInteger(portRange.end) || portRange.end <= 0) {
+        issues.push({ path: `${p}.overrides.portRange.end`, message: "portRange.end must be a positive integer" });
+      }
+      if (Number.isInteger(portRange.start) && Number.isInteger(portRange.end) && portRange.end < portRange.start) {
+        issues.push({ path: `${p}.overrides.portRange`, message: "portRange.end must be greater than or equal to portRange.start" });
+      }
+    }
+    validateLaneEnvInitConfig(policy.overrides.envInit, `${p}.overrides.envInit`, projectRoot, issues);
   }
+
+  validateLaneEnvInitConfig(effective.laneEnvInit, "effective.laneEnvInit", projectRoot, issues);
 
   const automationIds = new Set<string>();
   for (const [idx, rule] of effective.automations.entries()) {

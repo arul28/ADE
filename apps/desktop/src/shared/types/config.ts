@@ -149,8 +149,8 @@ export type LaneEnvFileConfig = {
 };
 
 export type LaneDockerConfig = {
-  /** Path to docker-compose file relative to project root */
-  composePath: string;
+  /** Path to docker-compose file relative to project root. Optional on partial overrides before merge. */
+  composePath?: string;
   /** Service names to start (empty = all) */
   services?: string[];
   /** Project name prefix for isolation (lane slug appended) */

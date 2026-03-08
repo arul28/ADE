@@ -210,6 +210,41 @@ describe("matchLaneOverlayPolicies", () => {
     expect(result.envInit!.dependencies).toHaveLength(2);
   });
 
+  it("deep merges nested docker envInit fields", () => {
+    const lane = makeLane({ name: "feature-auth" });
+    const policies: LaneOverlayPolicy[] = [
+      {
+        id: "p1",
+        name: "Base init",
+        enabled: true,
+        match: {},
+        overrides: {
+          envInit: {
+            docker: { composePath: "docker-compose.yml", projectPrefix: "ade" }
+          }
+        }
+      },
+      {
+        id: "p2",
+        name: "Feature init",
+        enabled: true,
+        match: { namePattern: "feature*" },
+        overrides: {
+          envInit: {
+            docker: { services: ["api"] }
+          }
+        }
+      }
+    ];
+
+    const result = matchLaneOverlayPolicies(lane, policies);
+    expect(result.envInit?.docker).toEqual({
+      composePath: "docker-compose.yml",
+      projectPrefix: "ade",
+      services: ["api"]
+    });
+  });
+
   it("handles envInit when only second policy has it", () => {
     const lane = makeLane();
     const policies: LaneOverlayPolicy[] = [

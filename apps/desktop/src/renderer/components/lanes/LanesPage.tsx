@@ -39,6 +39,8 @@ import type {
   ConflictStatus,
   DeleteLaneArgs,
   GitCommitSummary,
+  LaneEnvInitEvent,
+  LaneEnvInitProgress,
   RebaseRun,
   RebaseScope,
   RebaseSuggestion,
@@ -96,6 +98,10 @@ export function LanesPage() {
   const [createAsChild, setCreateAsChild] = useState(false);
   const [createBaseBranch, setCreateBaseBranch] = useState("");
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
+  const createEnvInitLaneIdRef = useRef<string | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
   const [attachPath, setAttachPath] = useState("");
@@ -217,6 +223,13 @@ export function LanesPage() {
     sortedLanes.forEach((lane, index) => map.set(lane.id, index));
     return map;
   }, [sortedLanes]);
+
+  useEffect(() => {
+    return window.ade.lanes.onEnvEvent((event: LaneEnvInitEvent) => {
+      if (event.progress.laneId !== createEnvInitLaneIdRef.current) return;
+      setCreateEnvInitProgress(event.progress);
+    });
+  }, []);
 
   const filteredLanes = useMemo(() => {
     const bucketRank: Record<LaneRuntimeBucket, number> = {
@@ -895,34 +908,62 @@ export function LanesPage() {
 
   /* ---- Create/Attach lane submit handlers ---- */
 
-  const handleCreateSubmit = useCallback(() => {
+  const resetCreateDialogState = useCallback(() => {
+    createEnvInitLaneIdRef.current = null;
+    setCreateLaneName("");
+    setCreateParentLaneId("");
+    setCreateAsChild(false);
+    setCreateBaseBranch("");
+    setCreateBusy(false);
+    setCreateError(null);
+    setCreateEnvInitProgress(null);
+  }, []);
+
+  const handleCreateDialogOpenChange = useCallback((open: boolean) => {
+    if (!open && createBusy) return;
+    if (!open) resetCreateDialogState();
+    setCreateOpen(open);
+  }, [createBusy, resetCreateDialogState]);
+
+  const handleCreateSubmit = useCallback(async () => {
     const name = createLaneName.trim();
-    if (createAsChild && createParentLaneId) {
-      window.ade.lanes.createChild({ name, parentLaneId: createParentLaneId })
-        .then(async (lane) => {
-          await refreshLanes();
-          setCreateOpen(false);
-          setCreateLaneName("");
-          setCreateParentLaneId("");
-          setCreateAsChild(false);
-          navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
-        }).catch(() => {});
-    } else {
-      const primary = lanes.find((l) => l.laneType === "primary");
-      const promise = primary
-        ? window.ade.lanes.create({ name, parentLaneId: primary.id })
-        : window.ade.lanes.create({ name });
-      promise.then(async (lane) => {
-        await refreshLanes();
-        setCreateOpen(false);
-        setCreateLaneName("");
-        setCreateParentLaneId("");
-        setCreateAsChild(false);
-        setCreateBaseBranch("");
-        navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
-      }).catch(() => {});
+    if (!name || createBusy || (createAsChild && !createParentLaneId)) return;
+
+    setCreateBusy(true);
+    setCreateError(null);
+    setCreateEnvInitProgress(null);
+    createEnvInitLaneIdRef.current = null;
+
+    try {
+      const lane = createAsChild && createParentLaneId
+        ? await window.ade.lanes.createChild({ name, parentLaneId: createParentLaneId })
+        : await (() => {
+            const primary = lanes.find((entry) => entry.laneType === "primary");
+            return primary
+              ? window.ade.lanes.create({ name, parentLaneId: primary.id })
+              : window.ade.lanes.create({ name });
+          })();
+
+      await refreshLanes();
+      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+
+      createEnvInitLaneIdRef.current = lane.id;
+      const envProgress = await window.ade.lanes.initEnv({ laneId: lane.id });
+      setCreateEnvInitProgress(envProgress);
+
+      if (envProgress.overallStatus === "failed") {
+        setCreateError("Lane was created, but environment setup failed. Review the progress log and retry manually if needed.");
+        return;
+      }
+
+      resetCreateDialogState();
+      setCreateOpen(false);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreateBusy(false);
     }
-  }, [createLaneName, createAsChild, createParentLaneId, lanes, refreshLanes, navigate]);
+  }, [createLaneName, createAsChild, createParentLaneId, createBusy, lanes, navigate, refreshLanes, resetCreateDialogState]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -1691,7 +1732,7 @@ export function LanesPage() {
       {/* Create Lane dialog */}
       <CreateLaneDialog
         open={createOpen}
-        onOpenChange={setCreateOpen}
+        onOpenChange={handleCreateDialogOpenChange}
         createLaneName={createLaneName}
         setCreateLaneName={setCreateLaneName}
         createAsChild={createAsChild}
@@ -1703,6 +1744,9 @@ export function LanesPage() {
         createBranches={createBranches}
         lanes={lanes}
         onSubmit={handleCreateSubmit}
+        busy={createBusy}
+        error={createError}
+        envInitProgress={createEnvInitProgress}
       />
 
       {/* Attach Lane dialog */}

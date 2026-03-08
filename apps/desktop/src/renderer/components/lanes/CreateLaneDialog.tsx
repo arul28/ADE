@@ -18,6 +18,8 @@ export function CreateLaneDialog({
   createBranches,
   lanes,
   onSubmit,
+  busy,
+  error,
   envInitProgress
 }: {
   open: boolean;
@@ -33,6 +35,8 @@ export function CreateLaneDialog({
   createBranches: LaneBranchOption[];
   lanes: LaneSummary[];
   onSubmit: () => void;
+  busy?: boolean;
+  error?: string | null;
   envInitProgress?: LaneEnvInitProgress | null;
 }) {
   return (
@@ -42,7 +46,7 @@ export function CreateLaneDialog({
         <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
           <div className="flex items-center justify-between gap-3">
             <Dialog.Title className="text-sm font-semibold">Create lane</Dialog.Title>
-            <Dialog.Close asChild><Button variant="ghost" size="sm">Esc</Button></Dialog.Close>
+            <Dialog.Close asChild><Button variant="ghost" size="sm" disabled={busy}>Esc</Button></Dialog.Close>
           </div>
           <div className="mt-3 space-y-3">
             <div>
@@ -53,6 +57,7 @@ export function CreateLaneDialog({
                 placeholder="e.g. feature/auth-refresh"
                 className="mt-1 h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
                 autoFocus
+                disabled={busy}
               />
             </div>
             <label className="flex items-center gap-2 rounded border border-border/10 bg-card/60 px-3 py-2 text-xs cursor-pointer">
@@ -63,6 +68,7 @@ export function CreateLaneDialog({
                   setCreateAsChild(e.target.checked);
                   if (!e.target.checked) setCreateParentLaneId("");
                 }}
+                disabled={busy}
               />
               <span className="text-muted-fg">Create as child of another lane</span>
             </label>
@@ -73,6 +79,7 @@ export function CreateLaneDialog({
                   value={createParentLaneId}
                   onChange={(event) => setCreateParentLaneId(event.target.value)}
                   className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none"
+                  disabled={busy}
                 >
                   <option value="">Select a parent lane...</option>
                   {lanes.map((lane) => (
@@ -87,6 +94,7 @@ export function CreateLaneDialog({
                   value={createBaseBranch}
                   onChange={(event) => setCreateBaseBranch(event.target.value)}
                   className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none"
+                  disabled={busy}
                 >
                   {createBranches.filter((b) => !b.isRemote).map((branch) => (
                     <option key={branch.name} value={branch.name}>
@@ -100,14 +108,29 @@ export function CreateLaneDialog({
               </div>
             )}
           </div>
+          {error && (
+            <div className="mt-3 rounded border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              {error}
+            </div>
+          )}
           <div className="mt-3 flex items-center justify-end gap-2">
-            <Button variant="outline" onClick={() => { onOpenChange(false); setCreateLaneName(""); setCreateParentLaneId(""); setCreateAsChild(false); setCreateBaseBranch(""); }}>Cancel</Button>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => { onOpenChange(false); setCreateLaneName(""); setCreateParentLaneId(""); setCreateAsChild(false); setCreateBaseBranch(""); }}
+            >
+              Cancel
+            </Button>
             <Button
               variant="primary"
-              disabled={!createLaneName.trim().length || (createAsChild && !createParentLaneId)}
+              disabled={busy || !createLaneName.trim().length || (createAsChild && !createParentLaneId)}
               onClick={onSubmit}
             >
-              {createAsChild && createParentLaneId ? "Create child lane" : `Create from ${createBaseBranch || "primary"}`}
+              {busy
+                ? "Setting up lane..."
+                : createAsChild && createParentLaneId
+                  ? "Create child lane"
+                  : `Create from ${createBaseBranch || "primary"}`}
             </Button>
           </div>
           {envInitProgress && <LaneEnvInitProgressPanel progress={envInitProgress} />}

@@ -44,6 +44,8 @@ describe("laneEnvironmentService", () => {
   let projectRoot: string;
   let adeDir: string;
   let events: any[];
+  const originalPath = process.env.PATH;
+  const originalDockerLogPath = process.env.ADE_TEST_DOCKER_LOG;
 
   beforeEach(() => {
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-env-"));
@@ -54,6 +56,12 @@ describe("laneEnvironmentService", () => {
 
   afterEach(() => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
+    process.env.PATH = originalPath;
+    if (originalDockerLogPath == null) {
+      delete process.env.ADE_TEST_DOCKER_LOG;
+    } else {
+      process.env.ADE_TEST_DOCKER_LOG = originalDockerLogPath;
+    }
   });
 
   function createService() {
@@ -222,6 +230,60 @@ describe("laneEnvironmentService", () => {
       expect(result!.envFiles).toHaveLength(2);
       expect(result!.dependencies).toHaveLength(1);
       expect(result!.docker).toEqual({ composePath: "docker-compose.yml" });
+    });
+
+    it("deep merges nested docker config fields", () => {
+      const service = createService();
+      const projectDefault: LaneEnvInitConfig = {
+        docker: { composePath: "docker-compose.yml", projectPrefix: "ade" }
+      };
+      const overlayInit: LaneEnvInitConfig = {
+        docker: { services: ["api"] }
+      };
+      const result = service.resolveEnvInitConfig(projectDefault, { envInit: overlayInit });
+      expect(result?.docker).toEqual({
+        composePath: "docker-compose.yml",
+        projectPrefix: "ade",
+        services: ["api"]
+      });
+    });
+  });
+
+  describe("cleanupLaneEnvironment", () => {
+    it("uses the configured compose file when tearing down docker resources", async () => {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-env-bin-"));
+      const dockerLogPath = path.join(projectRoot, "docker-args.log");
+      const dockerPath = path.join(binDir, "docker");
+      fs.writeFileSync(
+        dockerPath,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ADE_TEST_DOCKER_LOG\"\n",
+        { mode: 0o755 }
+      );
+      process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+      process.env.ADE_TEST_DOCKER_LOG = dockerLogPath;
+
+      const composeDir = path.join(projectRoot, "infra");
+      fs.mkdirSync(composeDir, { recursive: true });
+      fs.writeFileSync(path.join(composeDir, "compose.yaml"), "services: {}\n");
+
+      const worktreePath = path.join(projectRoot, "wt-cleanup");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-clean", name: "cleanup lane", worktreePath });
+      const service = createService();
+      await service.cleanupLaneEnvironment(lane, {
+        docker: { composePath: "infra/compose.yaml", projectPrefix: "lane" }
+      });
+
+      expect(fs.readFileSync(dockerLogPath, "utf-8").trim().split("\n")).toEqual([
+        "compose",
+        "-f",
+        path.join(projectRoot, "infra/compose.yaml"),
+        "-p",
+        "lane-lane-clean",
+        "down",
+        "--remove-orphans"
+      ]);
     });
   });
 

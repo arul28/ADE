@@ -17,6 +17,63 @@ import type {
 
 import type { Logger } from "../logging/logger";
 
+function mergeDockerConfig(
+  current: LaneDockerConfig | undefined,
+  next: LaneDockerConfig | undefined
+): LaneDockerConfig | undefined {
+  if (!current && !next) return undefined;
+  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
+  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
+  return {
+    ...current,
+    ...next,
+    ...(next.services != null
+      ? { services: [...next.services] }
+      : current.services != null
+        ? { services: [...current.services] }
+        : {})
+  };
+}
+
+function mergeLaneEnvInitConfig(
+  current: LaneEnvInitConfig | undefined,
+  next: LaneEnvInitConfig | undefined
+): LaneEnvInitConfig | undefined {
+  if (!current && !next) return undefined;
+  if (!current) {
+    return next
+      ? {
+          ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
+          ...(mergeDockerConfig(undefined, next.docker) ? { docker: mergeDockerConfig(undefined, next.docker) } : {}),
+          ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
+          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {})
+        }
+      : undefined;
+  }
+  if (!next) {
+    return {
+      ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
+      ...(mergeDockerConfig(undefined, current.docker) ? { docker: mergeDockerConfig(undefined, current.docker) } : {}),
+      ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
+      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {})
+    };
+  }
+  return {
+    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
+    ...(mergeDockerConfig(current.docker, next.docker) ? { docker: mergeDockerConfig(current.docker, next.docker) } : {}),
+    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
+    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
+  };
+}
+
+function sanitizeLaneToken(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "lane";
+}
+
+function buildDockerProjectName(laneId: string, projectPrefix = "ade"): string {
+  return `${projectPrefix}-${sanitizeLaneToken(laneId)}`;
+}
+
 export function createLaneEnvironmentService({
   projectRoot,
   adeDir,
@@ -52,9 +109,12 @@ export function createLaneEnvironmentService({
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     return new Promise((resolve) => {
       const [cmd, ...args] = command;
-      const child = execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        const exitCode = error && typeof (error as { code?: unknown }).code === "number"
+          ? (error as { code: number }).code
+          : 1;
         resolve({
-          exitCode: error ? (error as any).code ?? 1 : 0,
+          exitCode: error ? exitCode : 0,
           stdout: stdout ?? "",
           stderr: stderr ?? ""
         });
@@ -99,15 +159,19 @@ export function createLaneEnvironmentService({
   async function startDocker(
     worktreePath: string,
     docker: LaneDockerConfig,
-    laneSlug: string
+    laneId: string
   ): Promise<{ exitCode: number; stderr: string }> {
+    if (!docker.composePath?.trim()) {
+      logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath ?? "" });
+      return { exitCode: 0, stderr: "" };
+    }
     const composePath = path.resolve(projectRoot, docker.composePath);
     if (!fs.existsSync(composePath)) {
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath });
       return { exitCode: 0, stderr: "" };
     }
 
-    const projectName = `${docker.projectPrefix ?? "ade"}-${laneSlug}`;
+    const projectName = buildDockerProjectName(laneId, docker.projectPrefix);
     const args = [
       "compose",
       "-f", composePath,
@@ -187,6 +251,17 @@ export function createLaneEnvironmentService({
     };
   }
 
+  function normalizeEnvInitConfig(config: LaneEnvInitConfig): LaneEnvInitConfig | undefined {
+    const normalized: LaneEnvInitConfig = {
+      ...(config.envFiles && config.envFiles.length > 0 ? { envFiles: config.envFiles } : {}),
+      ...(config.docker ? { docker: config.docker } : {}),
+      ...(config.dependencies && config.dependencies.length > 0 ? { dependencies: config.dependencies } : {}),
+      ...(config.mountPoints && config.mountPoints.length > 0 ? { mountPoints: config.mountPoints } : {})
+    };
+
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
+  }
+
   return {
     /**
      * Initialize environment for a newly created lane.
@@ -260,8 +335,7 @@ export function createLaneEnvironmentService({
         const startTime = Date.now();
         updateStep(progress, "docker", { status: "running" });
         try {
-          const slug = laneVars.LANE_SLUG;
-          const result = await startDocker(lane.worktreePath, config.docker, slug);
+          const result = await startDocker(lane.worktreePath, config.docker, lane.id);
           if (result.exitCode !== 0) {
             updateStep(progress, "docker", {
               status: "failed",
@@ -366,12 +440,22 @@ export function createLaneEnvironmentService({
       config: LaneEnvInitConfig | undefined
     ): Promise<void> {
       if (!config?.docker) return;
-      const slug = lane.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "lane";
-      const projectName = `${config.docker.projectPrefix ?? "ade"}-${slug}`;
+      if (!config.docker.composePath?.trim()) {
+        logger.warn("lane_env_cleanup.docker_compose_missing", { laneId: lane.id, path: config.docker.composePath ?? "" });
+        progressMap.delete(lane.id);
+        return;
+      }
+      const projectName = buildDockerProjectName(lane.id, config.docker.projectPrefix);
+      const composePath = path.resolve(projectRoot, config.docker.composePath);
+      if (!fs.existsSync(composePath)) {
+        logger.warn("lane_env_cleanup.docker_compose_missing", { laneId: lane.id, path: config.docker.composePath });
+        progressMap.delete(lane.id);
+        return;
+      }
       try {
         await execCommand(
-          ["docker", "compose", "-p", projectName, "down", "--remove-orphans"],
-          lane.worktreePath,
+          ["docker", "compose", "-f", composePath, "-p", projectName, "down", "--remove-orphans"],
+          projectRoot,
           60_000
         );
         logger.info("lane_env_cleanup.docker_down", { laneId: lane.id, projectName });
@@ -388,18 +472,8 @@ export function createLaneEnvironmentService({
       projectDefault: LaneEnvInitConfig | undefined,
       overlayOverrides: LaneOverlayOverrides
     ): LaneEnvInitConfig | undefined {
-      const overlayInit = overlayOverrides.envInit;
-      if (!projectDefault && !overlayInit) return undefined;
-      if (!projectDefault) return overlayInit;
-      if (!overlayInit) return projectDefault;
-
-      // Merge: overlay extends project defaults
-      return {
-        envFiles: [...(projectDefault.envFiles ?? []), ...(overlayInit.envFiles ?? [])],
-        docker: overlayInit.docker ?? projectDefault.docker,
-        dependencies: [...(projectDefault.dependencies ?? []), ...(overlayInit.dependencies ?? [])],
-        mountPoints: [...(projectDefault.mountPoints ?? []), ...(overlayInit.mountPoints ?? [])]
-      };
+      const normalizedDefault = projectDefault ? normalizeEnvInitConfig(projectDefault) : undefined;
+      return mergeLaneEnvInitConfig(normalizedDefault, overlayOverrides.envInit);
     },
 
     dispose(): void {
