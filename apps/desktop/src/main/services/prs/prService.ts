@@ -46,7 +46,26 @@ import type {
   StartIntegrationResolutionArgs,
   StartIntegrationResolutionResult,
   UpdateIntegrationProposalArgs,
-  UpdatePrDescriptionArgs
+  UpdatePrDescriptionArgs,
+  AddPrCommentArgs,
+  UpdatePrTitleArgs,
+  UpdatePrBodyArgs,
+  SetPrLabelsArgs,
+  RequestPrReviewersArgs,
+  SubmitPrReviewArgs,
+  ClosePrArgs,
+  ReopenPrArgs,
+  RerunPrChecksArgs,
+  AiReviewSummaryArgs,
+  AiReviewSummary,
+  PrDetail,
+  PrFile,
+  PrActionRun,
+  PrActionJob,
+  PrActionStep,
+  PrActivityEvent,
+  PrLabel,
+  PrUser
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
@@ -2658,6 +2677,480 @@ export function createPrService({
 
     setAgentChatService(_svc: ReturnType<typeof createAgentChatService>): void {
       // Reserved for future PR<->chat linking.
+    },
+
+    // ------------------------------------------------------------------
+    // PR Detail Overhaul Methods
+    // ------------------------------------------------------------------
+
+    async getDetail(prId: string): Promise<PrDetail> {
+      const row = getRow(prId);
+      if (!row) throw new Error(`PR not found: ${prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`
+      });
+      return {
+        prId,
+        body: asString(data?.body) || null,
+        labels: Array.isArray(data?.labels)
+          ? data.labels.map((l: any) => ({
+              name: asString(l?.name) || "",
+              color: asString(l?.color) || "",
+              description: asString(l?.description) || null
+            }))
+          : [],
+        assignees: Array.isArray(data?.assignees)
+          ? data.assignees.map((u: any) => ({
+              login: asString(u?.login) || "",
+              avatarUrl: asString(u?.avatar_url) || null
+            }))
+          : [],
+        requestedReviewers: Array.isArray(data?.requested_reviewers)
+          ? data.requested_reviewers.map((u: any) => ({
+              login: asString(u?.login) || "",
+              avatarUrl: asString(u?.avatar_url) || null
+            }))
+          : [],
+        author: {
+          login: asString(data?.user?.login) || "",
+          avatarUrl: asString(data?.user?.avatar_url) || null
+        },
+        isDraft: Boolean(data?.draft),
+        milestone: asString(data?.milestone?.title) || null,
+        linkedIssues: []
+      };
+    },
+
+    async getFiles(prId: string): Promise<PrFile[]> {
+      const row = getRow(prId);
+      if (!row) throw new Error(`PR not found: ${prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const { data } = await githubService.apiRequest<any[]>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`,
+        query: { per_page: 100 }
+      });
+      return (data ?? []).map((f: any) => {
+        const statusRaw = asString(f?.status).toLowerCase();
+        let status: PrFile["status"] = "modified";
+        if (statusRaw === "added") status = "added";
+        else if (statusRaw === "removed") status = "removed";
+        else if (statusRaw === "renamed") status = "renamed";
+        else if (statusRaw === "copied") status = "copied";
+        return {
+          filename: asString(f?.filename) || "",
+          status,
+          additions: Number(f?.additions) || 0,
+          deletions: Number(f?.deletions) || 0,
+          patch: asString(f?.patch) || null,
+          previousFilename: asString(f?.previous_filename) || null
+        };
+      });
+    },
+
+    async getActionRuns(prId: string): Promise<PrActionRun[]> {
+      const row = getRow(prId);
+      if (!row) throw new Error(`PR not found: ${prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      // Fetch the PR to get the head SHA
+      const pr = await fetchPr(repo, Number(row.github_pr_number));
+      const headSha = asString(pr?.head?.sha);
+      if (!headSha) return [];
+
+      const { data: runsData } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/actions/runs`,
+        query: { head_sha: headSha }
+      });
+      const rawRuns: any[] = Array.isArray(runsData?.workflow_runs) ? runsData.workflow_runs : [];
+
+      const runs: PrActionRun[] = await Promise.all(
+        rawRuns.map(async (run: any): Promise<PrActionRun> => {
+          const runId = Number(run?.id);
+          let jobs: PrActionJob[] = [];
+          try {
+            const { data: jobsData } = await githubService.apiRequest<any>({
+              method: "GET",
+              path: `/repos/${repo.owner}/${repo.name}/actions/runs/${runId}/jobs`
+            });
+            const rawJobs: any[] = Array.isArray(jobsData?.jobs) ? jobsData.jobs : [];
+            jobs = rawJobs.map((j: any): PrActionJob => ({
+              id: Number(j?.id) || 0,
+              name: asString(j?.name) || "",
+              status: (() => {
+                const s = asString(j?.status).toLowerCase();
+                if (s === "queued") return "queued" as const;
+                if (s === "in_progress") return "in_progress" as const;
+                return "completed" as const;
+              })(),
+              conclusion: (() => {
+                const c = asString(j?.conclusion).toLowerCase();
+                if (c === "success") return "success" as const;
+                if (c === "failure") return "failure" as const;
+                if (c === "neutral") return "neutral" as const;
+                if (c === "cancelled") return "cancelled" as const;
+                if (c === "skipped") return "skipped" as const;
+                return null;
+              })(),
+              startedAt: asString(j?.started_at) || null,
+              completedAt: asString(j?.completed_at) || null,
+              steps: Array.isArray(j?.steps)
+                ? j.steps.map((st: any): PrActionStep => ({
+                    name: asString(st?.name) || "",
+                    status: (() => {
+                      const s = asString(st?.status).toLowerCase();
+                      if (s === "queued") return "queued" as const;
+                      if (s === "in_progress") return "in_progress" as const;
+                      return "completed" as const;
+                    })(),
+                    conclusion: (() => {
+                      const c = asString(st?.conclusion).toLowerCase();
+                      if (c === "success") return "success" as const;
+                      if (c === "failure") return "failure" as const;
+                      if (c === "neutral") return "neutral" as const;
+                      if (c === "cancelled") return "cancelled" as const;
+                      if (c === "skipped") return "skipped" as const;
+                      return null;
+                    })(),
+                    number: Number(st?.number) || 0,
+                    startedAt: asString(st?.started_at) || null,
+                    completedAt: asString(st?.completed_at) || null
+                  }))
+                : []
+            }));
+          } catch {
+            // Jobs fetch failed; return empty jobs array
+          }
+          return {
+            id: runId,
+            name: asString(run?.name) || "",
+            status: (() => {
+              const s = asString(run?.status).toLowerCase();
+              if (s === "queued") return "queued" as const;
+              if (s === "in_progress") return "in_progress" as const;
+              if (s === "waiting") return "waiting" as const;
+              return "completed" as const;
+            })(),
+            conclusion: (() => {
+              const c = asString(run?.conclusion).toLowerCase();
+              if (c === "success") return "success" as const;
+              if (c === "failure") return "failure" as const;
+              if (c === "neutral") return "neutral" as const;
+              if (c === "cancelled") return "cancelled" as const;
+              if (c === "skipped") return "skipped" as const;
+              if (c === "timed_out") return "timed_out" as const;
+              if (c === "action_required") return "action_required" as const;
+              return null;
+            })(),
+            headSha,
+            htmlUrl: asString(run?.html_url) || "",
+            createdAt: asString(run?.created_at) || "",
+            updatedAt: asString(run?.updated_at) || "",
+            jobs
+          };
+        })
+      );
+      return runs;
+    },
+
+    async getActivity(prId: string): Promise<PrActivityEvent[]> {
+      const [comments, reviews, checks] = await Promise.all([
+        getComments(prId).catch(() => [] as PrComment[]),
+        getReviews(prId).catch(() => [] as PrReview[]),
+        getChecks(prId).catch(() => [] as PrCheck[])
+      ]);
+
+      const events: PrActivityEvent[] = [];
+
+      for (const c of comments) {
+        events.push({
+          id: `comment-${c.id}`,
+          type: "comment",
+          author: c.author,
+          avatarUrl: null,
+          body: c.body,
+          timestamp: c.createdAt || "",
+          metadata: { source: c.source, path: c.path, line: c.line, url: c.url }
+        });
+      }
+
+      for (const r of reviews) {
+        events.push({
+          id: `review-${r.reviewer}-${r.submittedAt || ""}`,
+          type: "review",
+          author: r.reviewer,
+          avatarUrl: null,
+          body: r.body,
+          timestamp: r.submittedAt || "",
+          metadata: { state: r.state }
+        });
+      }
+
+      for (const ch of checks) {
+        events.push({
+          id: `ci-${ch.name}`,
+          type: "ci_run",
+          author: "github-actions",
+          avatarUrl: null,
+          body: `${ch.name}: ${ch.conclusion ?? ch.status}`,
+          timestamp: ch.startedAt || ch.completedAt || "",
+          metadata: {
+            status: ch.status,
+            conclusion: ch.conclusion,
+            detailsUrl: ch.detailsUrl
+          }
+        });
+      }
+
+      // Sort descending by timestamp
+      events.sort((a, b) => {
+        const aTs = a.timestamp ? Date.parse(a.timestamp) : 0;
+        const bTs = b.timestamp ? Date.parse(b.timestamp) : 0;
+        return bTs - aTs;
+      });
+
+      return events;
+    },
+
+    async addComment(args: AddPrCommentArgs): Promise<PrComment> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      const { data } = await githubService.apiRequest<any>({
+        method: "POST",
+        path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/comments`,
+        body: { body: args.body }
+      });
+      return {
+        id: String(data?.id ?? ""),
+        author: asString(data?.user?.login) || "",
+        body: asString(data?.body) || null,
+        source: "issue" as const,
+        url: asString(data?.html_url) || null,
+        path: null,
+        line: null,
+        createdAt: asString(data?.created_at) || null,
+        updatedAt: asString(data?.updated_at) || null
+      };
+    },
+
+    async updateTitle(args: UpdatePrTitleArgs): Promise<void> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      await githubService.apiRequest({
+        method: "PATCH",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+        body: { title: args.title }
+      });
+      await refreshOne(args.prId);
+    },
+
+    async updateBody(args: UpdatePrBodyArgs): Promise<void> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      await githubService.apiRequest({
+        method: "PATCH",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+        body: { body: args.body }
+      });
+      await refreshOne(args.prId);
+    },
+
+    async setLabels(args: SetPrLabelsArgs): Promise<void> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      await githubService.apiRequest({
+        method: "PUT",
+        path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/labels`,
+        body: { labels: args.labels }
+      });
+    },
+
+    async requestReviewers(args: RequestPrReviewersArgs): Promise<void> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      await githubService.apiRequest({
+        method: "POST",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/requested_reviewers`,
+        body: { reviewers: args.reviewers }
+      });
+    },
+
+    async submitReview(args: SubmitPrReviewArgs): Promise<void> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      await githubService.apiRequest({
+        method: "POST",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
+        body: { event: args.event, body: args.body ?? "" }
+      });
+    },
+
+    async closePr(args: ClosePrArgs): Promise<void> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      await githubService.apiRequest({
+        method: "PATCH",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+        body: { state: "closed" }
+      });
+      db.run(
+        `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
+        ["closed", nowIso(), row.id, projectId]
+      );
+    },
+
+    async reopenPr(args: ReopenPrArgs): Promise<void> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      await githubService.apiRequest({
+        method: "PATCH",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+        body: { state: "open" }
+      });
+      db.run(
+        `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
+        ["open", nowIso(), row.id, projectId]
+      );
+    },
+
+    async rerunChecks(args: RerunPrChecksArgs): Promise<void> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+
+      if (args.checkRunIds && args.checkRunIds.length > 0) {
+        // Rerun specific check runs
+        for (const crId of args.checkRunIds) {
+          await githubService.apiRequest({
+            method: "POST",
+            path: `/repos/${repo.owner}/${repo.name}/check-runs/${crId}/rerequest`,
+            body: {}
+          });
+        }
+      } else {
+        // Rerun all failed runs: get action runs and rerun failed ones
+        const pr = await fetchPr(repo, Number(row.github_pr_number));
+        const headSha = asString(pr?.head?.sha);
+        if (!headSha) return;
+        const { data: runsData } = await githubService.apiRequest<any>({
+          method: "GET",
+          path: `/repos/${repo.owner}/${repo.name}/actions/runs`,
+          query: { head_sha: headSha }
+        });
+        const rawRuns: any[] = Array.isArray(runsData?.workflow_runs) ? runsData.workflow_runs : [];
+        for (const run of rawRuns) {
+          const conclusion = asString(run?.conclusion).toLowerCase();
+          if (conclusion === "failure" || conclusion === "timed_out") {
+            try {
+              await githubService.apiRequest({
+                method: "POST",
+                path: `/repos/${repo.owner}/${repo.name}/actions/runs/${Number(run.id)}/rerun-failed-jobs`,
+                body: {}
+              });
+            } catch {
+              // Best-effort: some runs may not be rerunnable
+            }
+          }
+        }
+      }
+    },
+
+    async aiReviewSummary(args: AiReviewSummaryArgs): Promise<AiReviewSummary> {
+      const row = getRow(args.prId);
+      if (!row) throw new Error(`PR not found: ${args.prId}`);
+
+      // Try to get files for context
+      const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+      let files: PrFile[] = [];
+      try {
+        const { data } = await githubService.apiRequest<any[]>({
+          method: "GET",
+          path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`,
+          query: { per_page: 100 }
+        });
+        files = (data ?? []).map((f: any) => ({
+          filename: asString(f?.filename) || "",
+          status: (asString(f?.status).toLowerCase() || "modified") as PrFile["status"],
+          additions: Number(f?.additions) || 0,
+          deletions: Number(f?.deletions) || 0,
+          patch: asString(f?.patch) || null,
+          previousFilename: asString(f?.previous_filename) || null
+        }));
+      } catch {
+        // Continue without files
+      }
+
+      if (aiIntegrationService) {
+        const diffSummary = files
+          .map((f) => `${f.status} ${f.filename} (+${f.additions}/-${f.deletions})`)
+          .join("\n");
+
+        const prompt = [
+          "You are a code reviewer. Analyze the following PR changes and return a JSON object with this exact shape:",
+          '{"summary": string, "potentialIssues": string[], "recommendations": string[], "mergeReadiness": "ready" | "needs_work" | "blocked"}',
+          "",
+          `PR Title: ${row.title ?? "Untitled"}`,
+          "",
+          "Changed files:",
+          diffSummary || "(no files)",
+          "",
+          "Patches:",
+          ...files.slice(0, 10).map((f) => `--- ${f.filename} ---\n${f.patch ?? "(binary or too large)"}`),
+          "",
+          "Return ONLY the JSON object, no markdown."
+        ].join("\n");
+
+        try {
+          const draft = await aiIntegrationService.draftPrDescription({
+            laneId: row.lane_id,
+            cwd: projectRoot,
+            prompt,
+            ...(args.model ? { model: args.model } : {})
+          });
+          const parsed = extractFirstJsonObject(draft.text);
+          if (parsed && typeof parsed === "object") {
+            const obj = parsed as Record<string, unknown>;
+            return {
+              summary: typeof obj.summary === "string" ? obj.summary : "AI review completed.",
+              potentialIssues: Array.isArray(obj.potentialIssues)
+                ? obj.potentialIssues.filter((i): i is string => typeof i === "string")
+                : [],
+              recommendations: Array.isArray(obj.recommendations)
+                ? obj.recommendations.filter((r): r is string => typeof r === "string")
+                : [],
+              mergeReadiness:
+                obj.mergeReadiness === "ready" || obj.mergeReadiness === "needs_work" || obj.mergeReadiness === "blocked"
+                  ? obj.mergeReadiness
+                  : "needs_work"
+            };
+          }
+        } catch (error) {
+          logger.warn("prs.ai_review_summary_failed", {
+            prId: args.prId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      // Fallback: return a basic summary based on file stats
+      const totalAdditions = files.reduce((s, f) => s + f.additions, 0);
+      const totalDeletions = files.reduce((s, f) => s + f.deletions, 0);
+      return {
+        summary: `This PR modifies ${files.length} file(s) with +${totalAdditions}/-${totalDeletions} changes.`,
+        potentialIssues: [],
+        recommendations: ["Review the changes manually for a detailed assessment."],
+        mergeReadiness: "needs_work"
+      };
     }
   };
 }

@@ -3006,6 +3006,21 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => getCtx().prService.getDetail(args.prId));
+  ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => getCtx().prService.getFiles(args.prId));
+  ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => getCtx().prService.getActionRuns(args.prId));
+  ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => getCtx().prService.getActivity(args.prId));
+  ipcMain.handle(IPC.prsAddComment, (_e, args) => getCtx().prService.addComment(args));
+  ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => getCtx().prService.updateTitle(args));
+  ipcMain.handle(IPC.prsUpdateBody, (_e, args) => getCtx().prService.updateBody(args));
+  ipcMain.handle(IPC.prsSetLabels, (_e, args) => getCtx().prService.setLabels(args));
+  ipcMain.handle(IPC.prsRequestReviewers, (_e, args) => getCtx().prService.requestReviewers(args));
+  ipcMain.handle(IPC.prsSubmitReview, (_e, args) => getCtx().prService.submitReview(args));
+  ipcMain.handle(IPC.prsClose, (_e, args) => getCtx().prService.closePr(args));
+  ipcMain.handle(IPC.prsReopen, (_e, args) => getCtx().prService.reopenPr(args));
+  ipcMain.handle(IPC.prsRerunChecks, (_e, args) => getCtx().prService.rerunChecks(args));
+  ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => getCtx().prService.aiReviewSummary(args));
+
   ipcMain.handle(IPC.rebaseScanNeeds, async () => getCtx().conflictService.scanRebaseNeeds());
 
   ipcMain.handle(IPC.rebaseGetNeed, async (_event, arg) => getCtx().conflictService.getRebaseNeed(arg.laneId));

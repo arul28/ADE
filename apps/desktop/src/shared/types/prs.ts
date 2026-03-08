@@ -546,3 +546,143 @@ export type PrStrategy =
   | { kind: "per-lane"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
   | { kind: "queue"; targetBranch?: string; draft?: boolean; autoRebase?: boolean; ciGating?: boolean; prDepth?: PrDepth }
   | { kind: "manual" };
+
+// --------------------------------
+// PR Detail Overhaul Types
+// --------------------------------
+
+/** Full PR detail fetched from GitHub API with body, labels, assignees, etc. */
+export type PrDetail = {
+  prId: string;
+  body: string | null;
+  labels: PrLabel[];
+  assignees: PrUser[];
+  requestedReviewers: PrUser[];
+  author: PrUser;
+  isDraft: boolean;
+  milestone: string | null;
+  linkedIssues: Array<{ number: number; title: string; state: string }>;
+};
+
+export type PrLabel = {
+  name: string;
+  color: string;
+  description: string | null;
+};
+
+export type PrUser = {
+  login: string;
+  avatarUrl: string | null;
+};
+
+/** A changed file in a PR with patch/diff data. */
+export type PrFile = {
+  filename: string;
+  status: "added" | "removed" | "modified" | "renamed" | "copied";
+  additions: number;
+  deletions: number;
+  patch: string | null;
+  previousFilename: string | null;
+};
+
+/** GitHub Actions workflow run. */
+export type PrActionRun = {
+  id: number;
+  name: string;
+  status: "queued" | "in_progress" | "completed" | "waiting";
+  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out" | "action_required" | null;
+  headSha: string;
+  htmlUrl: string;
+  createdAt: string;
+  updatedAt: string;
+  jobs: PrActionJob[];
+};
+
+export type PrActionJob = {
+  id: number;
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  steps: PrActionStep[];
+};
+
+export type PrActionStep = {
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | null;
+  number: number;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+/** Unified activity event for the PR timeline. */
+export type PrActivityEvent = {
+  id: string;
+  type: "comment" | "review" | "commit" | "label" | "ci_run" | "state_change" | "review_request";
+  author: string;
+  avatarUrl: string | null;
+  body: string | null;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+};
+
+// Args types for new PR actions
+
+export type AddPrCommentArgs = {
+  prId: string;
+  body: string;
+  inReplyToCommentId?: string;
+};
+
+export type UpdatePrTitleArgs = {
+  prId: string;
+  title: string;
+};
+
+export type UpdatePrBodyArgs = {
+  prId: string;
+  body: string;
+};
+
+export type SetPrLabelsArgs = {
+  prId: string;
+  labels: string[];
+};
+
+export type RequestPrReviewersArgs = {
+  prId: string;
+  reviewers: string[];
+};
+
+export type SubmitPrReviewArgs = {
+  prId: string;
+  event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+  body?: string;
+};
+
+export type ClosePrArgs = {
+  prId: string;
+};
+
+export type ReopenPrArgs = {
+  prId: string;
+};
+
+export type RerunPrChecksArgs = {
+  prId: string;
+  checkRunIds?: number[];
+};
+
+export type AiReviewSummaryArgs = {
+  prId: string;
+  model?: string;
+};
+
+export type AiReviewSummary = {
+  summary: string;
+  potentialIssues: string[];
+  recommendations: string[];
+  mergeReadiness: "ready" | "needs_work" | "blocked";
+};

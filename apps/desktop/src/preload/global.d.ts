@@ -194,6 +194,23 @@ import type {
   PrStatus,
   PrSummary,
   PrMergeContext,
+  PrDetail,
+  PrFile,
+  PrActionRun,
+  PrActivityEvent,
+  PrLabel,
+  PrUser,
+  AddPrCommentArgs,
+  UpdatePrTitleArgs,
+  UpdatePrBodyArgs,
+  SetPrLabelsArgs,
+  RequestPrReviewersArgs,
+  SubmitPrReviewArgs,
+  ClosePrArgs,
+  ReopenPrArgs,
+  RerunPrChecksArgs,
+  AiReviewSummaryArgs,
+  AiReviewSummary,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -722,6 +739,20 @@ declare global {
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
+        getDetail: (prId: string) => Promise<PrDetail>;
+        getFiles: (prId: string) => Promise<PrFile[]>;
+        getActionRuns: (prId: string) => Promise<PrActionRun[]>;
+        getActivity: (prId: string) => Promise<PrActivityEvent[]>;
+        addComment: (args: AddPrCommentArgs) => Promise<PrComment>;
+        updateTitle: (args: UpdatePrTitleArgs) => Promise<void>;
+        updateBody: (args: UpdatePrBodyArgs) => Promise<void>;
+        setLabels: (args: SetPrLabelsArgs) => Promise<void>;
+        requestReviewers: (args: RequestPrReviewersArgs) => Promise<void>;
+        submitReview: (args: SubmitPrReviewArgs) => Promise<void>;
+        close: (args: ClosePrArgs) => Promise<void>;
+        reopen: (args: ReopenPrArgs) => Promise<void>;
+        rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;
+        aiReviewSummary: (args: AiReviewSummaryArgs) => Promise<AiReviewSummary>;
       };
       rebase: {
         scanNeeds: () => Promise<RebaseNeed[]>;
