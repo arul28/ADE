@@ -17,7 +17,7 @@ import {
   applyNodeChanges,
   useReactFlow
 } from "@xyflow/react";
-import { Warning, ArrowSquareOut, Funnel, Plus, MagnifyingGlass, Cube, SquaresFour } from "@phosphor-icons/react";
+import { Warning, ArrowSquareOut, Funnel, Plus, MagnifyingGlass } from "@phosphor-icons/react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type {
   BatchAssessmentResult,
@@ -43,7 +43,6 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
-import { Graph3DScene, type Graph3DNode, type Graph3DEdge } from "./Graph3DScene";
 import { RiskMatrix } from "./shared/RiskMatrix";
 import type {
   GraphNodeData,
@@ -103,7 +102,6 @@ function GraphInner() {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrSummary[]>([]);
-  const [, setLoadingPrs] = React.useState(true);
   const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [autoRebaseByLaneId, setAutoRebaseByLaneId] = React.useState<Record<string, AutoRebaseLaneStatus | null>>({});
   const syncRefreshInFlightRef = React.useRef(false);
@@ -198,7 +196,6 @@ function GraphInner() {
   }, [lanes]);
 
   const [viewMode, setViewMode] = React.useState<GraphViewMode>("all");
-  const [is3DView, setIs3DView] = React.useState(false);
   const [graphState, setGraphState] = React.useState<GraphPersistedState>(createDefaultState());
   const [loadedGraphState, setLoadedGraphState] = React.useState(false);
   const [nodes, setNodes] = React.useState<Array<Node<GraphNodeData>>>([]);
@@ -653,23 +650,18 @@ function GraphInner() {
 
   React.useEffect(() => {
     let cancelled = false;
-    setLoadingPrs(true);
     window.ade.prs
       .listAll()
       .then((list) => {
         if (cancelled) return;
         setPrs(list);
       })
-      .catch((err) => console.warn("[Graph] listAll PRs failed:", err))
-      .finally(() => {
-        if (!cancelled) setLoadingPrs(false);
-      });
+      .catch((err) => console.warn("[Graph] listAll PRs failed:", err));
 
     const unsub = window.ade.prs.onEvent((event) => {
       if (event.type !== "prs-updated") return;
       if (cancelled) return;
       setPrs(event.prs);
-      setLoadingPrs(false);
     });
 
     return () => {
@@ -2188,104 +2180,6 @@ function GraphInner() {
   }
 
   const allNodesHidden = nodes.length > 0 && nodes.every((node) => node.data.dimmed);
-  const graph3DNodeById = new Map(nodes.map((node) => [node.id, node]));
-  const graph3DNodes: Graph3DNode[] = (() => {
-    if (nodes.length === 0) return [];
-
-    const positionedNodes = nodes
-      .map((node) => ({ node, x: node.position.x, y: node.position.y }))
-      .filter((entry) => Number.isFinite(entry.x) && Number.isFinite(entry.y));
-    if (positionedNodes.length === 0) return [];
-
-    const bounds = positionedNodes.reduce(
-      (acc, entry) => ({
-        minX: Math.min(acc.minX, entry.x),
-        maxX: Math.max(acc.maxX, entry.x),
-        minY: Math.min(acc.minY, entry.y),
-        maxY: Math.max(acc.maxY, entry.y)
-      }),
-      {
-        minX: Number.POSITIVE_INFINITY,
-        maxX: Number.NEGATIVE_INFINITY,
-        minY: Number.POSITIVE_INFINITY,
-        maxY: Number.NEGATIVE_INFINITY
-      }
-    );
-
-    const centerX = (bounds.minX + bounds.maxX) / 2;
-    const centerY = (bounds.minY + bounds.maxY) / 2;
-    const spanX = Math.max(1, bounds.maxX - bounds.minX);
-    const spanY = Math.max(1, bounds.maxY - bounds.minY);
-    const scale = 18 / Math.max(spanX, spanY);
-
-    const to3DStatus = (node: Node<GraphNodeData>): Graph3DNode["status"] => {
-      if (node.data.lane.laneType === "primary") return "primary";
-      if (node.data.status === "conflict-active" || node.data.status === "conflict-predicted") return "conflict";
-      if (node.data.proposalOutcome === "conflict" || node.data.proposalOutcome === "blocked") return "conflict";
-      if (node.data.mergeInProgress || node.data.mergeDisappearing) return "merged";
-      if (node.data.activityBucket === "high" || node.data.activeSessions > 0) return "active";
-      return "idle";
-    };
-
-    const to3DType = (node: Node<GraphNodeData>): Graph3DNode["type"] => {
-      if (node.data.lane.laneType === "primary") return "primary";
-      if (node.data.lane.laneType === "attached" || node.data.isVirtualProposal) return "attached";
-      return "worktree";
-    };
-
-    return positionedNodes.map(({ node, x, y }) => ({
-      id: node.id,
-      label: node.data.lane.name,
-      x: (x - centerX) * scale,
-      y: (centerY - y) * scale,
-      status: to3DStatus(node),
-      type: to3DType(node)
-    }));
-  })();
-  const graph3DEdges: Graph3DEdge[] = (() => {
-    if (edges.length === 0 || graph3DNodes.length === 0) return [];
-
-    const visibleNodeIds = new Set(graph3DNodes.map((node) => node.id));
-    const to3DEdgeType = (edge: Edge<GraphEdgeData>): Graph3DEdge["type"] => {
-      const edgeType = edge.data?.edgeType ?? edge.id.split(":")[0];
-      if (edgeType === "stack") return "stack";
-      if (edgeType === "risk") return "risk";
-      if (edgeType === "proposal") return edge.data?.proposalConflict ? "risk" : "topology";
-      return "topology";
-    };
-
-    return edges
-      .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
-      .map((edge) => ({
-        source: edge.source,
-        target: edge.target,
-        type: to3DEdgeType(edge)
-      }));
-  })();
-  const handle3DNodeClick = (nodeId: string) => {
-    const node = graph3DNodeById.get(nodeId);
-    if (!node) return;
-
-    if (node.data.isVirtualProposal) {
-      setSelectedLaneIds([]);
-      if (node.data.proposalId) {
-        navigate(`/prs?tab=integration&proposalId=${encodeURIComponent(node.data.proposalId)}`);
-      }
-      return;
-    }
-
-    setSelectedLaneIds([node.id]);
-    if (collapsedLaneIds.has(node.id)) {
-      updateGraphSnapshot((snapshot) => ({
-        ...snapshot,
-        collapsedLaneIds: snapshot.collapsedLaneIds.filter((entry) => entry !== node.id)
-      }));
-      return;
-    }
-
-    navigate(`/lanes?laneId=${encodeURIComponent(node.id)}&focus=single`);
-  };
-  const showNoVisibleLanesIn3D = allNodesHidden || graph3DNodes.length === 0;
 
   return (
     <div className="relative h-full w-full">
@@ -2572,25 +2466,6 @@ function GraphInner() {
             ) : null}
           </div>
 
-          {/* 2D / 3D toggle */}
-          <div className="ml-2 inline-flex rounded-lg bg-surface-recessed p-0.5">
-            <button
-              type="button"
-              className={cn("rounded px-2 py-1 text-xs flex items-center gap-1", !is3DView ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg")}
-              onClick={() => setIs3DView(false)}
-            >
-              <SquaresFour size={12} weight="regular" />
-              2D
-            </button>
-            <button
-              type="button"
-              className={cn("rounded px-2 py-1 text-xs flex items-center gap-1", is3DView ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg")}
-              onClick={() => setIs3DView(true)}
-            >
-              <Cube size={12} weight="regular" />
-              3D
-            </button>
-          </div>
           <Button
             size="sm"
             variant={showRiskMatrix ? "primary" : "outline"}
@@ -2602,39 +2477,6 @@ function GraphInner() {
         </div>
       </div>
 
-      {is3DView ? (
-        /* 3D Graph View */
-        <div className="absolute inset-0 pt-[52px]">
-          {showNoVisibleLanesIn3D ? (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center pt-[52px]">
-              <div className="pointer-events-auto rounded-lg border border-border/10 bg-card/90 backdrop-blur-sm shadow-card px-5 py-4 text-center">
-                <Funnel size={24} weight="regular" className="mx-auto mb-2 text-muted-fg" />
-                <div className="text-sm font-medium text-fg">No visible lanes</div>
-                <div className="mt-1 text-xs text-muted-fg">All lanes are hidden by the current filters.</div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="mt-3 text-xs"
-                  onClick={() => {
-                    updateGraphSnapshot((snapshot) => ({
-                      ...snapshot,
-                      filters: buildDefaultFilter()
-                    }));
-                  }}
-                >
-                  Reset Filters
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <Graph3DScene
-              nodes={graph3DNodes}
-              edges={graph3DEdges}
-              onNodeClick={handle3DNodeClick}
-            />
-          )}
-        </div>
-      ) : (
       <div className="absolute inset-0 pt-[52px]">
         <ReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>
           nodes={nodes}
@@ -2968,7 +2810,6 @@ function GraphInner() {
           </svg>
         ) : null}
       </div>
-      )}
 
       {contextMenu ? (
         <div
