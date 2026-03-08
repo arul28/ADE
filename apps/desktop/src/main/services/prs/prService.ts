@@ -570,14 +570,32 @@ export function createPrService({
     return data;
   };
 
+  const fetchAllPages = async <T>(args: {
+    path: string;
+    query?: Record<string, string | number | boolean | undefined | null>;
+    select?: (payload: any) => T[];
+  }): Promise<T[]> => {
+    const out: T[] = [];
+    const pageSize = 100;
+    for (let page = 1; page <= 10; page += 1) {
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: args.path,
+        query: { ...(args.query ?? {}), per_page: pageSize, page }
+      });
+      const batch = args.select ? args.select(data) : Array.isArray(data) ? (data as T[]) : [];
+      out.push(...batch);
+      if (batch.length < pageSize) break;
+    }
+    return out;
+  };
+
   const fetchReviews = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
-    const { data } = await githubService.apiRequest<any[]>({
-      method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/reviews`,
-      query: { per_page: 100 }
+    const data = await fetchAllPages<any>({
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/reviews`
     });
 
-    return (data ?? []).map((entry: any) => {
+    return data.map((entry: any) => {
       const rawState = asString(entry?.state).toLowerCase();
       let state: PrReview["state"];
       if (rawState === "approved") state = "approved";
@@ -594,13 +612,11 @@ export function createPrService({
   };
 
   const fetchIssueComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
-    const { data } = await githubService.apiRequest<any[]>({
-      method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`,
-      query: { per_page: 100 }
+    const data = await fetchAllPages<any>({
+      path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`
     });
 
-    return (data ?? []).map((entry: any) => ({
+    return data.map((entry: any) => ({
       id: `issue:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
       author: asString(entry?.user?.login) || "unknown",
       body: asString(entry?.body) || null,
@@ -614,13 +630,11 @@ export function createPrService({
   };
 
   const fetchReviewComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
-    const { data } = await githubService.apiRequest<any[]>({
-      method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/comments`,
-      query: { per_page: 100 }
+    const data = await fetchAllPages<any>({
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/comments`
     });
 
-    return (data ?? []).map((entry: any) => ({
+    return data.map((entry: any) => ({
       id: `review:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
       author: asString(entry?.user?.login) || "unknown",
       body: asString(entry?.body) || null,
@@ -2727,12 +2741,10 @@ export function createPrService({
       const row = getRow(prId);
       if (!row) throw new Error(`PR not found: ${prId}`);
       const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
-      const { data } = await githubService.apiRequest<any[]>({
-        method: "GET",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`,
-        query: { per_page: 100 }
+      const data = await fetchAllPages<any>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`
       });
-      return (data ?? []).map((f: any) => {
+      return data.map((f: any) => {
         const statusRaw = asString(f?.status).toLowerCase();
         let status: PrFile["status"] = "modified";
         if (statusRaw === "added") status = "added";
@@ -2762,7 +2774,7 @@ export function createPrService({
       const { data: runsData } = await githubService.apiRequest<any>({
         method: "GET",
         path: `/repos/${repo.owner}/${repo.name}/actions/runs`,
-        query: { head_sha: headSha }
+        query: { head_sha: headSha, per_page: 100 }
       });
       const rawRuns: any[] = Array.isArray(runsData?.workflow_runs) ? runsData.workflow_runs : [];
 
@@ -3045,7 +3057,7 @@ export function createPrService({
         const { data: runsData } = await githubService.apiRequest<any>({
           method: "GET",
           path: `/repos/${repo.owner}/${repo.name}/actions/runs`,
-          query: { head_sha: headSha }
+          query: { head_sha: headSha, per_page: 100 }
         });
         const rawRuns: any[] = Array.isArray(runsData?.workflow_runs) ? runsData.workflow_runs : [];
         for (const run of rawRuns) {
@@ -3073,12 +3085,10 @@ export function createPrService({
       const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
       let files: PrFile[] = [];
       try {
-        const { data } = await githubService.apiRequest<any[]>({
-          method: "GET",
-          path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`,
-          query: { per_page: 100 }
+        const data = await fetchAllPages<any>({
+          path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`
         });
-        files = (data ?? []).map((f: any) => ({
+        files = data.map((f: any) => ({
           filename: asString(f?.filename) || "",
           status: (asString(f?.status).toLowerCase() || "modified") as PrFile["status"],
           additions: Number(f?.additions) || 0,

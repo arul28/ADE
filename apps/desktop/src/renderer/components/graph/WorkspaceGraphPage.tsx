@@ -95,6 +95,7 @@ import { RiskEdge } from "./graphEdges/RiskEdge";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { PrDetailPane } from "../prs/detail/PrDetailPane";
 import { buildGraphPrOverlay } from "./graphPrData";
+import { getPrChecksBadge, getPrReviewsBadge, InlinePrBadge } from "../prs/shared/prVisuals";
 
 const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
 const edgeTypes = { custom: RiskEdge };
@@ -533,9 +534,9 @@ function GraphInner() {
     (laneId: string): string | null => {
       const lane = laneById.get(laneId);
       if (!lane) return null;
-      return laneIdByBranchRef.get(lane.baseRef) ?? lane.parentLaneId ?? primaryLaneId;
+      return resolvePrBaseLaneId(lane, lane.baseRef);
     },
-    [laneById, laneIdByBranchRef, primaryLaneId]
+    [laneById, resolvePrBaseLaneId]
   );
 
   // Map integration lane id → source lane ids from proposals
@@ -2123,7 +2124,7 @@ function GraphInner() {
       try {
         let shouldRefreshSync = false;
         const lanePr = prByLaneId.get(lane.id) ?? null;
-        const baseLaneId = lane.parentLaneId ?? primaryLaneId;
+        const baseLaneId = resolvePrBaseLaneId(lane, lane.baseRef);
         if (action === "open") {
           await window.ade.lanes.openFolder({ laneId: lane.id });
         } else if (action === "view-pr") {
@@ -2259,6 +2260,7 @@ function GraphInner() {
       primaryLaneId,
       refreshLaneSyncStatuses,
       refreshLanes,
+      resolvePrBaseLaneId,
       requestTextInput,
       runPullFromUpstream,
       runLaneRebase,
@@ -2798,19 +2800,19 @@ function GraphInner() {
             const laneBId = edge.target;
             if (!laneAId || !laneBId) return;
             const data = edge.data;
-            if (prefix === "risk") {
-              setEdgeSimulation(null);
-              setReparentDialog(null);
-              setContextMenu(null);
-              openConflictPanelForEdge(laneAId, laneBId);
-              return;
-            }
-
             if (data?.pr) {
               setEdgeSimulation(null);
               setReparentDialog(null);
               setContextMenu(null);
               openExistingPrDetail(data.pr);
+              return;
+            }
+
+            if (prefix === "risk") {
+              setEdgeSimulation(null);
+              setReparentDialog(null);
+              setContextMenu(null);
+              openConflictPanelForEdge(laneAId, laneBId);
               return;
             }
 
@@ -3453,26 +3455,30 @@ function GraphInner() {
                           draft: prDialog.draft,
                           baseBranch: prDialog.baseBranch
                         })
-                        .then((created) => {
-                          void refreshPrs().catch(() => {});
+                        .then(async (created) => {
+                          const refreshed = await window.ade.prs.listWithConflicts();
+                          setPrs(refreshed);
+                          const createdPr = refreshed.find((entry) => entry.id === created.id) ?? null;
+                          const [status, checks, reviews, comments] = await Promise.all([
+                            window.ade.prs.getStatus(created.id).catch(() => null),
+                            window.ade.prs.getChecks(created.id).catch(() => [] as PrCheck[]),
+                            window.ade.prs.getReviews(created.id).catch(() => [] as PrReview[]),
+                            window.ade.prs.getComments(created.id).catch(() => [] as PrComment[])
+                          ]);
                           setPrDialog((prev) =>
                             prev && prev.laneId === laneId
-                              ? { ...prev, creating: false, existingPr: created, loadingDetails: true }
+                              ? {
+                                  ...prev,
+                                  creating: false,
+                                  existingPr: createdPr,
+                                  loadingDetails: false,
+                                  status,
+                                  checks,
+                                  reviews,
+                                  comments
+                                }
                               : prev
                           );
-                          void Promise.all([
-                            window.ade.prs.getStatus(created.id),
-                            window.ade.prs.getChecks(created.id),
-                            window.ade.prs.getReviews(created.id)
-                          ])
-                            .then(([status, checks, reviews]) => {
-                              setPrDialog((prev) =>
-                                prev && prev.laneId === laneId
-                                  ? { ...prev, loadingDetails: false, status, checks, reviews }
-                                  : prev
-                              );
-                            })
-                            .catch(() => {});
                         })
                         .catch((error) => {
                           const message = error instanceof Error ? error.message : String(error);
@@ -3484,129 +3490,59 @@ function GraphInner() {
                   </Button>
                 </div>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
-                  <div className="font-semibold text-fg">{prDialog.existingPr.title}</div>
-                  <div className="mt-1 text-muted-fg">
-                    state: {prDialog.existingPr.state} · checks: {prDialog.existingPr.checksStatus} · reviews: {prDialog.existingPr.reviewStatus}
-                    {prDialog.existingPr.lastSyncedAt ? ` · synced ${prDialog.existingPr.lastSyncedAt}` : ""}
+            ) : prDialog.existingPr ? (
+              <div className="flex h-[min(82vh,900px)] min-h-[680px] flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/10 bg-card/60 px-3 py-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-fg">Graph Actions</span>
+                    <InlinePrBadge {...getPrChecksBadge(prDialog.existingPr.checksStatus)} />
+                    <InlinePrBadge {...getPrReviewsBadge(prDialog.existingPr.reviewStatus)} />
+                    {prDialog.status ? (
+                      <span className="text-muted-fg">
+                        mergeable <span className="text-fg">{prDialog.status.isMergeable ? "yes" : "no"}</span> · behind <span className="text-fg">{prDialog.status.behindBaseBy}</span>
+                      </span>
+                    ) : null}
                   </div>
-                </div>
-
-                {prDialog.loadingDetails ? (
-                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">Loading PR status…</div>
-                ) : prDialog.status ? (
-                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">
-                    <div>
-                      mergeable: <span className="text-fg">{prDialog.status.isMergeable ? "yes" : "no"}</span> · conflicts:{" "}
-                      <span className="text-fg">{prDialog.status.mergeConflicts ? "yes" : "no"}</span> · behind base:{" "}
-                      <span className="text-fg">{prDialog.status.behindBaseBy}</span>
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
-                    <div className="mb-1 font-semibold text-fg">Checks</div>
-                    {prDialog.checks.length === 0 ? (
-                      <div className="text-muted-fg">No checks.</div>
-                    ) : (
-                      prDialog.checks.slice(0, 12).map((check) => (
-                        <div key={check.name} className="flex items-center justify-between gap-2">
-                          <span className="truncate">{check.name}</span>
-                          <span className="text-muted-fg">{check.conclusion ?? check.status}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
-                    <div className="mb-1 font-semibold text-fg">Reviews</div>
-                    {prDialog.reviews.length === 0 ? (
-                      <div className="text-muted-fg">No reviews.</div>
-                    ) : (
-                      prDialog.reviews.slice(0, 12).map((review, idx) => (
-                        <div key={`${review.reviewer}:${idx}`} className="flex items-center justify-between gap-2">
-                          <span className="truncate">{review.reviewer}</span>
-                          <span className="text-muted-fg">{review.state}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <select
-                      value={prDialog.mergeMethod}
-                      onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, mergeMethod: e.target.value as MergeMethod } : prev))}
-                      className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs"
-                    >
-                      <option value="merge">merge</option>
-                      <option value="squash">squash</option>
-                      <option value="rebase">rebase</option>
-                    </select>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        const prId = prDialog.existingPr?.id;
-                        if (!prId) return;
-                        void window.ade.prs.openInGitHub(prId).catch(() => {});
-                      }}
-                    >
-                      Open in GitHub
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={prDialog.loadingDetails}
-                      onClick={() => openPrDialogForLane(prDialog.laneId, prDialog.baseLaneId)}
-                    >
+                    <span className="text-muted-fg">merge method</span>
+                    {(["merge", "squash", "rebase"] as MergeMethod[]).map((method) => (
+                      <button
+                        key={method}
+                        type="button"
+                        className={cn(
+                          "rounded border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide",
+                          prDialog.mergeMethod === method
+                            ? "border-accent bg-accent/20 text-accent"
+                            : "border-border/20 bg-surface-recessed text-muted-fg hover:text-fg"
+                        )}
+                        onClick={() => setPrDialog((prev) => (prev ? { ...prev, mergeMethod: method } : prev))}
+                      >
+                        {method}
+                      </button>
+                    ))}
+                    <Button size="sm" variant="outline" disabled={prDialog.loadingDetails} onClick={() => void refreshPrDialogDetail()}>
                       Refresh
                     </Button>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" variant="outline" onClick={() => setPrDialog(null)}>
-                      Close
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      disabled={prDialog.merging || !prDialog.existingPr}
-                      onClick={() => {
-                        const pr = prDialog.existingPr;
-                        if (!pr) return;
-                        const laneId = prDialog.laneId;
-                        setPrDialog((prev) => (prev ? { ...prev, merging: true, error: null } : prev));
-                        setMergeInProgressByLaneId((prev) => ({ ...prev, [laneId]: true }));
-                        window.ade.prs
-                          .land({ prId: pr.id, method: prDialog.mergeMethod })
-                          .then((result) => {
-                            void refreshPrs().catch(() => {});
-                            if (!result.success) {
-                              throw new Error(result.error || "Merge failed");
-                            }
-                            setMergeDisappearingAtByLaneId((prev) => ({ ...prev, [laneId]: Date.now() }));
-                            window.setTimeout(() => {
-                              void refreshLanes().catch(() => {});
-                              void refreshRiskBatch().catch(() => {});
-                            }, 650);
-                            setPrDialog(null);
-                          })
-                          .catch((error) => {
-                            const message = error instanceof Error ? error.message : String(error);
-                            setMergeInProgressByLaneId((prev) => ({ ...prev, [laneId]: false }));
-                            setPrDialog((prev) => (prev ? { ...prev, merging: false, error: message } : prev));
-                          });
-                      }}
-                    >
-                      {prDialog.merging ? "Merging…" : "Merge PR"}
-                    </Button>
-                  </div>
+                </div>
+                <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/10 bg-card">
+                  <PrDetailPane
+                    pr={prDialog.existingPr}
+                    status={prDialog.status}
+                    checks={prDialog.checks}
+                    reviews={prDialog.reviews}
+                    comments={prDialog.comments}
+                    detailBusy={prDialog.loadingDetails}
+                    lanes={lanes}
+                    mergeMethod={prDialog.mergeMethod}
+                    onRefresh={refreshPrDialogDetail}
+                    onNavigate={(path) => navigate(path)}
+                    onTabChange={() => {}}
+                    onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
+                  />
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -3698,6 +3634,131 @@ function GraphInner() {
               >
                 {integrationDialog.busy ? "Working…" : "Create"}
               </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedLane ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[60] flex justify-center">
+          <div className="pointer-events-auto w-[min(1120px,calc(100%-24px))] rounded border border-border/10 bg-card/95 px-3 py-2 shadow-float backdrop-blur-sm">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold text-fg">{selectedLane.name}</div>
+                <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-fg">
+                  {selectedLanePrOverlay ? (
+                    <>
+                      <InlinePrBadge {...getPrChecksBadge(selectedLanePrOverlay.checksStatus)} />
+                      <InlinePrBadge {...getPrReviewsBadge(selectedLanePrOverlay.reviewStatus)} />
+                      <span>
+                        {selectedLanePrOverlay.reviewCount} reviews · {selectedLanePrOverlay.commentCount} comments
+                      </span>
+                      {selectedLanePrOverlay.activityState === "stale" ? <span>stale</span> : null}
+                    </>
+                  ) : (
+                    <span>No PR linked to this lane yet.</span>
+                  )}
+                </div>
+              </div>
+              <div className="ml-auto flex flex-wrap items-center gap-1">
+                {!selectedLanePr ? (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={!getBaseLaneIdForLane(selectedLane.id)}
+                    onClick={() => {
+                      const baseLaneId = getBaseLaneIdForLane(selectedLane.id);
+                      if (!baseLaneId) return;
+                      openPrDialogForLane(selectedLane.id, baseLaneId);
+                    }}
+                  >
+                    <Plus size={12} weight="bold" />
+                    Create PR
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => openExistingPrDetail(selectedLanePrOverlay ?? {
+                        prId: selectedLanePr.id,
+                        laneId: selectedLanePr.laneId,
+                        baseLaneId: getBaseLaneIdForLane(selectedLanePr.laneId) ?? selectedLanePr.laneId,
+                        number: selectedLanePr.githubPrNumber,
+                        title: selectedLanePr.title,
+                        url: selectedLanePr.githubUrl,
+                        state: selectedLanePr.state,
+                        checksStatus: selectedLanePr.checksStatus,
+                        reviewStatus: selectedLanePr.reviewStatus,
+                        lastSyncedAt: selectedLanePr.lastSyncedAt ?? null,
+                        lastActivityAt: selectedLanePr.updatedAt,
+                        mergeInProgress: false,
+                        isMergeable: null,
+                        mergeConflicts: null,
+                        behindBaseBy: null,
+                        reviewCount: 0,
+                        approvedCount: 0,
+                        changeRequestCount: 0,
+                        commentCount: 0,
+                        pendingCheckCount: 0,
+                        activityState: "steady"
+                      })}
+                    >
+                      <ChatText size={12} weight="bold" />
+                      View Detail
+                    </Button>
+                    <select
+                      value={graphPrQuickMergeMethod}
+                      onChange={(e) => setGraphPrQuickMergeMethod(e.target.value as MergeMethod)}
+                      className="h-7 rounded border border-border/15 bg-surface-recessed px-2 text-[11px] text-fg"
+                    >
+                      <option value="merge">merge</option>
+                      <option value="squash">squash</option>
+                      <option value="rebase">rebase</option>
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={graphPrActionBusy !== null || selectedLanePr.state !== "open"}
+                      onClick={() => void runGraphPrMerge(selectedLanePr, graphPrQuickMergeMethod)}
+                    >
+                      <CheckCircle size={12} weight="bold" />
+                      Merge
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={graphPrActionBusy !== null || selectedLanePr.state === "merged" || selectedLanePr.state === "closed"}
+                      onClick={() => void runGraphPrReview(selectedLanePr, "APPROVE")}
+                    >
+                      <CheckCircle size={12} weight="bold" />
+                      Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={graphPrActionBusy !== null || selectedLanePr.state === "merged" || selectedLanePr.state === "closed"}
+                      onClick={() => void runGraphPrReview(selectedLanePr, "REQUEST_CHANGES")}
+                    >
+                      <ClockCounterClockwise size={12} weight="bold" />
+                      Request Changes
+                    </Button>
+                  </>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selectedLane.id)}&focus=single`)}
+                >
+                  Open Lane
+                </Button>
+              </div>
             </div>
           </div>
         </div>

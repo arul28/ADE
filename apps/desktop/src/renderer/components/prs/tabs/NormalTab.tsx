@@ -12,7 +12,7 @@ import { PrConflictBadge } from "../PrConflictBadge";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
 import { COLORS, MONO_FONT, LABEL_STYLE, outlineButton } from "../../lanes/laneDesignTokens";
-import { getPrChecksBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
+import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 
 function formatRelative(iso: string): string {
   const d = new Date(iso);
@@ -212,6 +212,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, s
               const laneName = laneById.get(pr.laneId)?.name ?? pr.laneId;
               const sc = getPrStateBadge(pr.state);
               const cc = getPrChecksBadge(pr.checksStatus);
+              const rc = getPrReviewsBadge(pr.reviewStatus);
 
               return (
                 <button
@@ -254,6 +255,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, s
                     <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
                       <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
                       <InlinePrBadge {...cc} />
+                      <InlinePrBadge {...rc} />
                       <InlinePrBadge {...sc} />
                       {/* Diff stats mini */}
                       <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.success }}>+{pr.additions}</span>

@@ -120,7 +120,7 @@ export function prOverlayColor(pr: GraphPrOverlay): string {
 }
 
 export function prCiDotColor(pr: GraphPrOverlay): string {
-  return getPrCiDotColor(pr);
+  return getPrCiDotColor({ checksStatus: pr.checksStatus, ciRunning: pr.pendingCheckCount > 0 });
 }
 
 export function iconGlyph(icon: LaneIcon): React.ReactNode {

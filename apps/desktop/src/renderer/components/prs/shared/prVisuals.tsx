@@ -2,7 +2,7 @@ import React from "react";
 import type { PrChecksStatus, PrReviewStatus, PrState } from "../../../../shared/types";
 import { COLORS, inlineBadge } from "../../lanes/laneDesignTokens";
 
-export type PrActivityState = "active" | "idle" | "stale";
+export type PrActivityState = "active" | "steady" | "stale";
 
 type PrBadgeSpec = {
   label: string;
@@ -46,10 +46,10 @@ export function getPrEdgeColor(args: {
   reviewStatus: PrReviewStatus;
   ciRunning?: boolean;
 }): string {
+  if (args.state === "merged") return COLORS.success;
   if (args.state === "draft") return COLORS.accent;
   if (args.reviewStatus === "changes_requested") return COLORS.danger;
   if (args.ciRunning || args.checksStatus === "pending") return COLORS.info;
-  if (args.state === "merged") return COLORS.success;
   if (args.reviewStatus === "requested" || args.reviewStatus === "none") return COLORS.warning;
   if (args.checksStatus === "failing") return COLORS.danger;
   if (args.checksStatus === "passing" || args.reviewStatus === "approved") return COLORS.success;
@@ -66,6 +66,13 @@ export function getPrCiDotColor(args: {
   return COLORS.textMuted;
 }
 
+export function getPrReviewDotColor(args: { reviewStatus: PrReviewStatus }): string {
+  if (args.reviewStatus === "changes_requested") return COLORS.danger;
+  if (args.reviewStatus === "approved") return COLORS.success;
+  if (args.reviewStatus === "requested") return COLORS.warning;
+  return COLORS.textMuted;
+}
+
 export function formatCompactCount(value: number): string {
   if (value >= 1000) return `${Math.round(value / 100) / 10}k`;
   return String(value);
@@ -77,11 +84,11 @@ export function derivePrActivityState(args: {
   lastActivityAt: string | null;
   pendingCheckCount?: number;
 }): PrActivityState {
-  if (args.state === "merged" || args.state === "closed") return "stale";
+  if (args.state === "merged" || args.state === "closed") return "steady";
   if ((args.pendingCheckCount ?? 0) > 0 || args.reviewStatus === "requested") return "active";
   const lastActivityTs = args.lastActivityAt ? Date.parse(args.lastActivityAt) : Number.NaN;
   if (Number.isFinite(lastActivityTs) && Date.now() - lastActivityTs > 5 * 24 * 60 * 60 * 1000) return "stale";
-  return "idle";
+  return "steady";
 }
 
 export function PrInlineBadge(props: { label: string; color: string; bg: string; border: string }) {

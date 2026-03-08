@@ -1,8 +1,6 @@
 import type { PrCheck, PrComment, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import { derivePrActivityState } from "../prs/shared/prVisuals";
 import type { GraphPrOverlay } from "./graphTypes";
-
-const ACTIVE_REVIEW_WINDOW_MS = 36 * 60 * 60 * 1000;
-const STALE_PR_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
 
 export type GraphPrDetailBundle = {
   status: PrStatus | null;
@@ -57,10 +55,6 @@ export function buildGraphPrOverlay(args: {
     .map((value) => ({ value, ts: toTs(value) }))
     .sort((a, b) => b.ts - a.ts)[0]?.value ?? null;
 
-  const lastActivityTs = toTs(lastActivityAt);
-  const activeReview = pr.reviewStatus === "requested" || (lastActivityTs > 0 && Date.now() - lastActivityTs <= ACTIVE_REVIEW_WINDOW_MS);
-  const stale = lastActivityTs > 0 ? Date.now() - lastActivityTs > STALE_PR_WINDOW_MS : false;
-
   return {
     prId: pr.id,
     laneId: pr.laneId,
@@ -82,6 +76,11 @@ export function buildGraphPrOverlay(args: {
     changeRequestCount: reviewCounts.changesRequested,
     commentCount: commentCounts.total,
     pendingCheckCount: ciSummary.pending,
-    activityState: activeReview ? "active" : stale ? "stale" : "idle",
+    activityState: derivePrActivityState({
+      state: pr.state,
+      lastActivityAt,
+      reviewStatus: pr.reviewStatus,
+      pendingCheckCount: ciSummary.pending
+    }),
   };
 }

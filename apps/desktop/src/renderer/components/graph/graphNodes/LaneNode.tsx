@@ -2,15 +2,20 @@ import { Handle, Node, NodeProps, Position } from "@xyflow/react";
 import { ChatText, CheckCircle, ClockCounterClockwise, GitBranch, Stack } from "@phosphor-icons/react";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
+import { COLORS } from "../../lanes/laneDesignTokens";
+import {
+  getPrChecksBadge,
+  getPrCiDotColor,
+  getPrReviewDotColor,
+  getPrReviewsBadge,
+  getPrStateBadge,
+  InlinePrBadge
+} from "../../prs/shared/prVisuals";
 import { iconGlyph, nodeDimensions } from "../graphHelpers";
 import type { GraphNodeData } from "../graphTypes";
-import { COLORS } from "../../lanes/laneDesignTokens";
-import { getPrChecksBadge, getPrCiDotColor, getPrReviewDotColor, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../../prs/shared/prVisuals";
-import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../../prs/shared/prVisuals";
 
 export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
   const lane = data.lane;
-  const pr = data.pr;
   const dimensions = nodeDimensions(lane, data.activityBucket, data.viewMode);
   const remoteSync = data.remoteSync;
   const autoRebase = data.autoRebaseStatus;
@@ -30,10 +35,6 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
   const prStateBadge = pr ? getPrStateBadge(pr.state) : null;
   const prChecksBadge = pr ? getPrChecksBadge(pr.checksStatus) : null;
   const prReviewsBadge = pr ? getPrReviewsBadge(pr.reviewStatus) : null;
-  const prStateBadge = pr ? getPrStateBadge(pr.state) : null;
-  const prChecksBadge = pr ? getPrChecksBadge(pr.checksStatus) : null;
-  const prReviewsBadge = pr ? getPrReviewsBadge(pr.reviewStatus) : null;
-  const prBorderColor = prStateBadge?.color ?? lane.color ?? data.environment?.color ?? undefined;
 
   return (
     <div
@@ -55,7 +56,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
       style={{
         width: dimensions.width,
         minHeight: dimensions.height,
-        borderColor: data.isIntegration ? "#A78BFA" : prBorderColor
+        borderColor: data.isIntegration ? "#A78BFA" : (lane.color ?? data.environment?.color ?? undefined)
       }}
     >
       <div className="flex items-center gap-1">
@@ -69,22 +70,6 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
           >
             <GitBranch size={10} weight="bold" />
             Integration
-          </span>
-        ) : null}
-        {pr ? (
-          <span
-            className={cn(
-              "ml-auto inline-flex items-center rounded px-1.5 py-0 text-[9px] font-bold uppercase tracking-[1px]",
-              pr.activityState === "active" && "ade-pr-badge-pulse"
-            )}
-            style={{
-              color: prStateBadge?.color,
-              backgroundColor: prStateBadge?.bg,
-              border: `1px solid ${prStateBadge?.border}`
-            }}
-            title={`PR #${pr.number}`}
-          >
-            #{pr.number}
           </span>
         ) : null}
       </div>
@@ -189,28 +174,6 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
         {data.mergeInProgress ? <Chip className="px-1 py-0 text-[10px] text-accent">merging</Chip> : null}
         {data.activeSessions > 0 ? <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" title="Active sessions" /> : null}
       </div>
-      {pr ? (
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          {prStateBadge ? <InlinePrBadge {...prStateBadge} /> : null}
-          {prChecksBadge ? <InlinePrBadge {...prChecksBadge} /> : null}
-          {prReviewsBadge ? <InlinePrBadge {...prReviewsBadge} /> : null}
-          <span
-            className={cn("inline-flex h-2.5 w-2.5 rounded-full ring-1 ring-border/40", pr.pendingCheckCount > 0 && "ade-pr-ci-pending")}
-            style={{ backgroundColor: prChecksBadge?.color }}
-            title={`CI: ${pr.checksStatus}`}
-          />
-          <span className="rounded border border-border/10 bg-card/60 px-1 py-0 text-[10px] text-muted-fg" title="Review count">
-            {pr.reviewCount} rev
-          </span>
-          <span className="rounded border border-border/10 bg-card/60 px-1 py-0 text-[10px] text-muted-fg" title="Comment count">
-            {pr.commentCount} com
-          </span>
-          {pr.approvedCount > 0 ? <span className="text-[10px] text-emerald-300">+{pr.approvedCount}</span> : null}
-          {pr.changeRequestCount > 0 ? <span className="text-[10px] text-red-300">!{pr.changeRequestCount}</span> : null}
-          {pr.activityState === "stale" ? <Chip className="px-1 py-0 text-[10px] text-muted-fg">stale</Chip> : null}
-          {pr.activityState === "active" ? <Chip className="px-1 py-0 text-[10px] text-sky-300">active</Chip> : null}
-        </div>
-      ) : null}
       {lane.tags.length > 0 ? (
         <div className="mt-1 flex flex-wrap gap-1">
           {lane.tags.slice(0, 3).map((tag) => (

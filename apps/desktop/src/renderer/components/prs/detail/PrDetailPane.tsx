@@ -218,6 +218,7 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
     try {
       await window.ade.prs.requestReviewers({ prId: pr.id, reviewers });
       setShowReviewerEditor(false);
+      await onRefresh();
       await loadDetail();
     } catch (err: unknown) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -722,9 +723,6 @@ function OverviewTab(props: OverviewTabProps) {
                 <ArrowsClockwise size={14} /> REOPEN PR
               </button>
             )}
-            <button type="button" onClick={() => props.onNavigate(`/graph?focusLane=${encodeURIComponent(pr.laneId)}`)} style={outlineButton({ color: COLORS.accent, borderColor: `${COLORS.accent}40` })}>
-              <ArrowRight size={14} /> SHOW IN GRAPH
-            </button>
             <button type="button" onClick={() => props.onNavigate(`/lanes?laneId=${encodeURIComponent(pr.laneId)}`)} style={outlineButton()}>
               <ArrowRight size={14} /> VIEW LANE
             </button>
