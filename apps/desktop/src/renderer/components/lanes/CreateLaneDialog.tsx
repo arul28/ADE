@@ -1,7 +1,8 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../ui/Button";
-import type { LaneSummary } from "../../../shared/types";
+import type { LaneSummary, LaneEnvInitProgress } from "../../../shared/types";
 import type { LaneBranchOption } from "./laneUtils";
+import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 
 export function CreateLaneDialog({
   open,
@@ -16,7 +17,8 @@ export function CreateLaneDialog({
   setCreateBaseBranch,
   createBranches,
   lanes,
-  onSubmit
+  onSubmit,
+  envInitProgress
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -31,6 +33,7 @@ export function CreateLaneDialog({
   createBranches: LaneBranchOption[];
   lanes: LaneSummary[];
   onSubmit: () => void;
+  envInitProgress?: LaneEnvInitProgress | null;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -107,6 +110,7 @@ export function CreateLaneDialog({
               {createAsChild && createParentLaneId ? "Create child lane" : `Create from ${createBaseBranch || "primary"}`}
             </Button>
           </div>
+          {envInitProgress && <LaneEnvInitProgressPanel progress={envInitProgress} />}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

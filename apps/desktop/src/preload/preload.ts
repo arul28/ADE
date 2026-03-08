@@ -269,6 +269,12 @@ import type {
   AutoRebaseLaneStatus,
   AutoRebaseEventPayload,
   UpdateLaneAppearanceArgs,
+  InitLaneEnvArgs,
+  GetLaneEnvStatusArgs,
+  GetLaneOverlayArgs,
+  LaneEnvInitProgress,
+  LaneEnvInitEvent,
+  LaneOverlayOverrides,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -696,7 +702,18 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.lanesAutoRebaseEvent, listener);
       return () => ipcRenderer.removeListener(IPC.lanesAutoRebaseEvent, listener);
     },
-    openFolder: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.lanesOpenFolder, args)
+    openFolder: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.lanesOpenFolder, args),
+    initEnv: async (args: InitLaneEnvArgs): Promise<LaneEnvInitProgress> =>
+      ipcRenderer.invoke(IPC.lanesInitEnv, args),
+    getEnvStatus: async (args: GetLaneEnvStatusArgs): Promise<LaneEnvInitProgress | null> =>
+      ipcRenderer.invoke(IPC.lanesGetEnvStatus, args),
+    getOverlay: async (args: GetLaneOverlayArgs): Promise<LaneOverlayOverrides> =>
+      ipcRenderer.invoke(IPC.lanesGetOverlay, args),
+    onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: LaneEnvInitEvent) => cb(payload);
+      ipcRenderer.on(IPC.lanesEnvEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesEnvEvent, listener);
+    },
   },
   sessions: {
     list: async (args: ListSessionsArgs = {}): Promise<TerminalSessionSummary[]> =>

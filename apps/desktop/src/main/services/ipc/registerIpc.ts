@@ -377,6 +377,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
+import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { ContextDocService } from "../context/contextDocService";
@@ -444,6 +445,7 @@ export type AppContext = {
   onboardingService: ReturnType<typeof createOnboardingService>;
   ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
+  laneEnvironmentService: ReturnType<typeof createLaneEnvironmentService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
@@ -1988,6 +1990,39 @@ export function registerIpc({
     const ctx = getCtx();
     const worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
     await shell.openPath(worktreePath);
+  });
+
+  ipcMain.handle(IPC.lanesInitEnv, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.laneEnvironmentService) throw new Error("Lane environment service not available");
+    const lanes = await ctx.laneService.list({ includeStatus: false });
+    const lane = lanes.find((l) => l.id === args.laneId);
+    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
+
+    const config = ctx.projectConfigService.getEffective();
+    const overlayPolicies = config.laneOverlayPolicies ?? [];
+    const { matchLaneOverlayPolicies } = await import("../config/laneOverlayMatcher");
+    const overrides = matchLaneOverlayPolicies(lane, overlayPolicies);
+    const envInitConfig = ctx.laneEnvironmentService.resolveEnvInitConfig(config.laneEnvInit, overrides);
+
+    if (!envInitConfig) return { laneId: lane.id, steps: [], startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), overallStatus: "completed" };
+    return await ctx.laneEnvironmentService.initLaneEnvironment(lane, envInitConfig, overrides);
+  });
+
+  ipcMain.handle(IPC.lanesGetEnvStatus, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    return ctx.laneEnvironmentService?.getProgress(args.laneId) ?? null;
+  });
+
+  ipcMain.handle(IPC.lanesGetOverlay, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    const lanes = await ctx.laneService.list({ includeStatus: false });
+    const lane = lanes.find((l) => l.id === args.laneId);
+    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
+
+    const config = ctx.projectConfigService.getEffective();
+    const { matchLaneOverlayPolicies } = await import("../config/laneOverlayMatcher");
+    return matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
   });
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {

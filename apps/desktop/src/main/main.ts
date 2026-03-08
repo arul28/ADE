@@ -7,6 +7,7 @@ import { openKvDb } from "./services/state/kvDb";
 import { ensureAdeDirs } from "./services/state/projectState";
 import { readGlobalState, upsertRecentProject, writeGlobalState } from "./services/state/globalState";
 import { createLaneService } from "./services/lanes/laneService";
+import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createContextDocService } from "./services/context/contextDocService";
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
@@ -540,6 +541,13 @@ app.whenReady().then(async () => {
       onRebaseEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesRebaseEvent, event)
     });
     await laneService.ensurePrimaryLane();
+
+    const laneEnvironmentService = createLaneEnvironmentService({
+      projectRoot,
+      adeDir: adePaths.adeDir,
+      logger,
+      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev)
+    });
 
     const sessionService = createSessionService({ db });
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({ status: "disposed" });
@@ -1183,6 +1191,7 @@ app.whenReady().then(async () => {
       agentToolsService,
       onboardingService,
       laneService,
+      laneEnvironmentService,
       rebaseSuggestionService,
       autoRebaseService,
       sessionService,
@@ -1255,6 +1264,7 @@ app.whenReady().then(async () => {
       onboardingService: null,
       ciService: null,
       laneService: null,
+      laneEnvironmentService: null,
       rebaseSuggestionService: null,
       autoRebaseService: null,
       sessionService: null,

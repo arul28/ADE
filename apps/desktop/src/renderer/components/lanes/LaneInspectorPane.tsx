@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { LanePrPanel } from "../prs/LanePrPanel";
 import { LaneConflictsPanel } from "./LaneConflictsPanel";
+import { LaneOverlayConfigPanel } from "./LaneOverlayConfigPanel";
 import { MemoryInspectorPanel } from "../settings/MemoryInspector";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 
@@ -76,6 +77,7 @@ export function LaneInspectorPane({
         {tab === "context" && (
           <div className="h-full overflow-auto">
             <MemoryInspectorPanel laneId={laneId} compact />
+            {laneId && <LaneOverlayConfigPanel laneId={laneId} />}
           </div>
         )}
         {tab === "pr" && (

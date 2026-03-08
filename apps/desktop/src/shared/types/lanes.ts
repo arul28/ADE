@@ -271,3 +271,17 @@ export type GraphPersistedState = {
   presets: GraphLayoutPreset[];
   activePreset: string;
 };
+
+// --- Lane Environment Init args (Phase 5 W1) ---
+
+export type InitLaneEnvArgs = {
+  laneId: string;
+};
+
+export type GetLaneEnvStatusArgs = {
+  laneId: string;
+};
+
+export type GetLaneOverlayArgs = {
+  laneId: string;
+};

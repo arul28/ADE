@@ -369,7 +369,13 @@ import type {
   SendAgentMessageArgs,
   GetGlobalChatArgs,
   GetActiveAgentsArgs,
-  ActiveAgentInfo
+  ActiveAgentInfo,
+  InitLaneEnvArgs,
+  GetLaneEnvStatusArgs,
+  GetLaneOverlayArgs,
+  LaneEnvInitProgress,
+  LaneEnvInitEvent,
+  LaneOverlayOverrides
 } from "../shared/types";
 
 export {};
@@ -551,6 +557,10 @@ declare global {
         listAutoRebaseStatuses: () => Promise<AutoRebaseLaneStatus[]>;
         onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;
+        initEnv: (args: InitLaneEnvArgs) => Promise<LaneEnvInitProgress>;
+        getEnvStatus: (args: GetLaneEnvStatusArgs) => Promise<LaneEnvInitProgress | null>;
+        getOverlay: (args: GetLaneOverlayArgs) => Promise<LaneOverlayOverrides>;
+        onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => () => void;
       };
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;

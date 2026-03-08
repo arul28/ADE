@@ -102,6 +102,84 @@ export type LaneOverlayOverrides = {
   cwd?: string;
   processIds?: string[];
   testSuiteIds?: string[];
+  /** Port range override for lane (e.g. { start: 3100, end: 3199 }) */
+  portRange?: { start: number; end: number };
+  /** Proxy hostname override (e.g. "feat-auth.localhost") */
+  proxyHostname?: string;
+  /** Compute backend override */
+  computeBackend?: "local" | "vps" | "daytona";
+  /** Lane environment initialization config override */
+  envInit?: LaneEnvInitConfig;
+};
+
+// --- Lane Environment Init types (Phase 5 W1) ---
+
+export type LaneEnvInitStepKind = "env-files" | "docker" | "dependencies" | "mount-points";
+
+export type LaneEnvInitStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+
+export type LaneEnvInitStep = {
+  kind: LaneEnvInitStepKind;
+  label: string;
+  status: LaneEnvInitStepStatus;
+  error?: string;
+  durationMs?: number;
+};
+
+export type LaneEnvInitProgress = {
+  laneId: string;
+  steps: LaneEnvInitStep[];
+  startedAt: string;
+  completedAt?: string;
+  overallStatus: "pending" | "running" | "completed" | "failed";
+};
+
+export type LaneEnvInitEvent = {
+  type: "lane-env-init";
+  progress: LaneEnvInitProgress;
+};
+
+export type LaneEnvFileConfig = {
+  /** Source path relative to project root (e.g. ".env.template") */
+  source: string;
+  /** Destination path relative to worktree root (e.g. ".env") */
+  dest: string;
+  /** Template variables to substitute (e.g. { PORT: "{{port}}", HOSTNAME: "{{hostname}}" }) */
+  vars?: Record<string, string>;
+};
+
+export type LaneDockerConfig = {
+  /** Path to docker-compose file relative to project root */
+  composePath: string;
+  /** Service names to start (empty = all) */
+  services?: string[];
+  /** Project name prefix for isolation (lane slug appended) */
+  projectPrefix?: string;
+};
+
+export type LaneDependencyInstallConfig = {
+  /** Command to run (e.g. ["npm", "install"] or ["pip", "install", "-r", "requirements.txt"]) */
+  command: string[];
+  /** Working directory relative to worktree root */
+  cwd?: string;
+};
+
+export type LaneMountPointConfig = {
+  /** Source path relative to .ade/ (e.g. "agent-profiles/default.json") */
+  source: string;
+  /** Destination path relative to worktree root */
+  dest: string;
+};
+
+export type LaneEnvInitConfig = {
+  /** Environment files to copy/template */
+  envFiles?: LaneEnvFileConfig[];
+  /** Docker Compose services to start */
+  docker?: LaneDockerConfig;
+  /** Dependency install commands */
+  dependencies?: LaneDependencyInstallConfig[];
+  /** Runtime mount points for agent profiles/context */
+  mountPoints?: LaneMountPointConfig[];
 };
 
 export type LaneOverlayPolicy = {
@@ -403,6 +481,8 @@ export type ProjectConfigFile = {
     autoRebaseOnHeadChange?: boolean;
   };
   ai?: AiConfig;
+  /** Default lane environment initialization config */
+  laneEnvInit?: LaneEnvInitConfig;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
 };
@@ -427,6 +507,8 @@ export type EffectiveProjectConfig = {
     autoRebaseOnHeadChange: boolean;
   };
   ai?: AiConfig;
+  /** Default lane environment initialization config */
+  laneEnvInit?: LaneEnvInitConfig;
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;

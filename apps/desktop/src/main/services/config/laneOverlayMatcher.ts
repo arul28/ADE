@@ -1,4 +1,4 @@
-import type { LaneOverlayOverrides, LaneOverlayPolicy, LaneSummary } from "../../../shared/types";
+import type { LaneEnvInitConfig, LaneOverlayOverrides, LaneOverlayPolicy, LaneSummary } from "../../../shared/types";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
@@ -50,6 +50,16 @@ function matchesPolicy(lane: LaneSummary, policy: LaneOverlayPolicy): boolean {
   return true;
 }
 
+function mergeEnvInit(current: LaneEnvInitConfig | undefined, next: LaneEnvInitConfig): LaneEnvInitConfig {
+  if (!current) return { ...next };
+  return {
+    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
+    docker: next.docker ?? current.docker,
+    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
+    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
+  };
+}
+
 export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverlayPolicy[]): LaneOverlayOverrides {
   const merged: LaneOverlayOverrides = {};
 
@@ -67,6 +77,18 @@ export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverla
     }
     merged.processIds = intersectOrAdopt(merged.processIds, overrides.processIds);
     merged.testSuiteIds = intersectOrAdopt(merged.testSuiteIds, overrides.testSuiteIds);
+    if (overrides.portRange) {
+      merged.portRange = { ...overrides.portRange };
+    }
+    if (typeof overrides.proxyHostname === "string" && overrides.proxyHostname.trim().length > 0) {
+      merged.proxyHostname = overrides.proxyHostname.trim();
+    }
+    if (overrides.computeBackend) {
+      merged.computeBackend = overrides.computeBackend;
+    }
+    if (overrides.envInit) {
+      merged.envInit = mergeEnvInit(merged.envInit, overrides.envInit);
+    }
   }
 
   if (merged.processIds && merged.processIds.length === 0) {
