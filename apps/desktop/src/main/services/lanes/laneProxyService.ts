@@ -165,7 +165,18 @@ export function createLaneProxyService({
   ): void {
     // Check interceptors first (e.g. OAuth redirect handler)
     for (const fn of interceptors) {
-      if (fn(req, res)) return;
+      try {
+        if (fn(req, res)) return;
+      } catch (error) {
+        logger.error("lane_proxy.interceptor_error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "text/plain" });
+        }
+        res.end("Proxy interceptor error");
+        return;
+      }
     }
 
     const host = req.headers.host;

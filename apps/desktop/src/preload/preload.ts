@@ -318,6 +318,7 @@ import type {
   UpdateOAuthRedirectConfigArgs,
   GenerateRedirectUrisArgs,
   EncodeOAuthStateArgs,
+  DecodeOAuthStateArgs,
   DecodeOAuthStateResult,
   RunTestSuiteArgs,
   SessionDeltaSummary,
@@ -812,7 +813,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.lanesOAuthGenerateRedirectUris, args),
     oauthEncodeState: async (args: EncodeOAuthStateArgs): Promise<string> =>
       ipcRenderer.invoke(IPC.lanesOAuthEncodeState, args),
-    oauthDecodeState: async (args: { encodedState: string }): Promise<DecodeOAuthStateResult> =>
+    oauthDecodeState: async (args: DecodeOAuthStateArgs): Promise<DecodeOAuthStateResult> =>
       ipcRenderer.invoke(IPC.lanesOAuthDecodeState, args),
     oauthListSessions: async (): Promise<OAuthSession[]> =>
       ipcRenderer.invoke(IPC.lanesOAuthListSessions),

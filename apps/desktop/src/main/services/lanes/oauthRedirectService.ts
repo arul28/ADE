@@ -1,3 +1,4 @@
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { URL } from "node:url";
 import type http from "node:http";
 import type {
@@ -60,15 +61,28 @@ export function createOAuthRedirectService({
 }) {
   const cfg: OAuthRedirectConfig = { ...DEFAULT_CONFIG, ...userConfig };
   const sessions = new Map<string, OAuthSession>();
+  const stateSecret = randomBytes(32);
   let sessionCounter = 0;
 
   // ---------------------------------------------------------------------------
   // State-parameter encoding
   // ---------------------------------------------------------------------------
 
+  function signState(laneId: string, originalState: string): string {
+    return createHmac("sha256", stateSecret)
+      .update(laneId)
+      .update("\0")
+      .update(originalState)
+      .digest("base64url");
+  }
+
   function encodeState(laneId: string, originalState: string): string {
+    if (!laneId.trim()) {
+      throw new Error("OAuth laneId must be a non-empty string");
+    }
     const b64Lane = Buffer.from(laneId).toString("base64url");
-    return `${STATE_PREFIX}${STATE_SEP}${b64Lane}${STATE_SEP}${originalState}`;
+    const signature = signState(laneId, originalState);
+    return `${STATE_PREFIX}${STATE_SEP}${signature}${STATE_SEP}${b64Lane}${STATE_SEP}${originalState}`;
   }
 
   function decodeState(
@@ -78,14 +92,33 @@ export function createOAuthRedirectService({
     if (!encoded.startsWith(prefix)) return null;
 
     const rest = encoded.slice(prefix.length);
-    const idx = rest.indexOf(STATE_SEP);
-    if (idx < 0) return null;
+    const signatureEnd = rest.indexOf(STATE_SEP);
+    if (signatureEnd < 0) return null;
+
+    const laneEnd = rest.indexOf(STATE_SEP, signatureEnd + STATE_SEP.length);
+    if (laneEnd < 0) return null;
 
     try {
-      const laneId = Buffer.from(rest.slice(0, idx), "base64url").toString(
+      const signature = rest.slice(0, signatureEnd);
+      const laneId = Buffer.from(
+        rest.slice(signatureEnd + STATE_SEP.length, laneEnd),
+        "base64url",
+      ).toString(
         "utf-8",
       );
-      const originalState = rest.slice(idx + STATE_SEP.length);
+      const originalState = rest.slice(laneEnd + STATE_SEP.length);
+      if (!laneId.trim() || !signature) return null;
+
+      const expectedSignature = signState(laneId, originalState);
+      const actualBytes = Buffer.from(signature);
+      const expectedBytes = Buffer.from(expectedSignature);
+      if (
+        actualBytes.length !== expectedBytes.length ||
+        !timingSafeEqual(actualBytes, expectedBytes)
+      ) {
+        return null;
+      }
+
       return { laneId, originalState };
     } catch {
       return null;
@@ -121,6 +154,44 @@ export function createOAuthRedirectService({
     } catch {
       return originalUrl;
     }
+  }
+
+  function completeSessionFromResponse(
+    session: OAuthSession,
+    res: http.ServerResponse,
+  ): (status: OAuthSessionStatus, error?: string) => void {
+    let finished = false;
+
+    const finalize = (status: OAuthSessionStatus, error?: string) => {
+      if (finished) return;
+      finished = true;
+      completeSession(session, status, error);
+      if (status === "completed") {
+        broadcastEvent({
+          type: "oauth-callback-routed",
+          session,
+          status: buildStatus(),
+        });
+      }
+    };
+
+    res.once("finish", () => {
+      if ((res.statusCode ?? 200) >= 400) {
+        finalize(
+          "failed",
+          `OAuth callback forwarding failed with status ${res.statusCode}.`,
+        );
+        return;
+      }
+      finalize("completed");
+    });
+
+    res.once("close", () => {
+      if (finished || res.writableEnded) return;
+      finalize("failed", "OAuth callback connection closed before completion.");
+    });
+
+    return finalize;
   }
 
   // ---------------------------------------------------------------------------
@@ -252,6 +323,7 @@ code{background:#0B0A0F;padding:2px 6px;font-size:12px;color:#A78BFA}
       );
 
       const session = createSession(decoded.laneId, urlPath);
+      const finalizeSession = completeSessionFromResponse(session, res);
 
       logger.info("oauth_redirect.routing", {
         laneId: decoded.laneId,
@@ -260,16 +332,27 @@ code{background:#0B0A0F;padding:2px 6px;font-size:12px;color:#A78BFA}
       });
 
       const origUrl = req.url;
-      req.url = rewrittenUrl;
-      forwardToPort(req, res, route.targetPort);
-      req.url = origUrl;
-
-      completeSession(session, "completed");
-      broadcastEvent({
-        type: "oauth-callback-routed",
-        session,
-        status: buildStatus(),
-      });
+      try {
+        req.url = rewrittenUrl;
+        forwardToPort(req, res, route.targetPort);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "OAuth callback forwarding failed unexpectedly.";
+        finalizeSession("failed", message);
+        logger.warn("oauth_redirect.forward_failed", {
+          laneId: decoded.laneId,
+          error: message,
+        });
+        if (!res.headersSent) {
+          res.writeHead(502, { "Content-Type": "text/html" });
+        }
+        res.end(errorPage(decoded.laneId, message));
+        return true;
+      } finally {
+        req.url = origUrl;
+      }
       return true;
     }
 
@@ -364,9 +447,39 @@ code{background:#0B0A0F;padding:2px 6px;font-size:12px;color:#A78BFA}
 
     /** Update config at runtime. */
     updateConfig(updates: Partial<OAuthRedirectConfig>): void {
-      if (updates.enabled !== undefined) cfg.enabled = updates.enabled;
-      if (updates.callbackPaths) cfg.callbackPaths = [...updates.callbackPaths];
-      if (updates.routingMode) cfg.routingMode = updates.routingMode;
+      if (updates.enabled !== undefined) {
+        if (typeof updates.enabled !== "boolean") {
+          throw new Error("OAuth redirect enabled flag must be boolean");
+        }
+        cfg.enabled = updates.enabled;
+      }
+
+      if (updates.callbackPaths !== undefined) {
+        if (!Array.isArray(updates.callbackPaths)) {
+          throw new Error("OAuth callback paths must be an array of strings");
+        }
+        const nextPaths = updates.callbackPaths
+          .map((path) => path.trim())
+          .filter(Boolean);
+        if (!nextPaths.length) {
+          throw new Error("OAuth callback paths cannot be empty");
+        }
+        if (nextPaths.some((path) => !path.startsWith("/"))) {
+          throw new Error("OAuth callback paths must start with '/'");
+        }
+        cfg.callbackPaths = nextPaths;
+      }
+
+      if (updates.routingMode !== undefined) {
+        if (
+          updates.routingMode !== "state-parameter" &&
+          updates.routingMode !== "hostname"
+        ) {
+          throw new Error("OAuth routing mode is invalid");
+        }
+        cfg.routingMode = updates.routingMode;
+      }
+
       broadcastEvent({ type: "oauth-config-changed", status: buildStatus() });
     },
 

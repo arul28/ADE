@@ -245,6 +245,30 @@ describe("laneProxyService", () => {
     let targetServer: http.Server;
     let targetPort: number;
 
+    const requestProxy = async (
+      proxyPort: number,
+      host: string,
+      path = "/",
+    ): Promise<{ status: number; body: string }> =>
+      await new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: proxyPort,
+            path,
+            method: "GET",
+            headers: { Host: host },
+          },
+          (res) => {
+            let body = "";
+            res.on("data", (chunk) => (body += chunk));
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+          }
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
     beforeEach(async () => {
       // Start a simple target server
       targetServer = http.createServer((req, res) => {
@@ -281,24 +305,11 @@ describe("laneProxyService", () => {
       svc.addRoute("lane-test", targetPort, "test-lane");
 
       // Make request through proxy
-      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-        const req = http.request(
-          {
-            hostname: "127.0.0.1",
-            port: proxyPort,
-            path: "/hello",
-            method: "GET",
-            headers: { Host: `test-lane.localhost:${proxyPort}` },
-          },
-          (res) => {
-            let body = "";
-            res.on("data", (chunk) => (body += chunk));
-            res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
-          }
-        );
-        req.on("error", reject);
-        req.end();
-      });
+      const response = await requestProxy(
+        proxyPort,
+        `test-lane.localhost:${proxyPort}`,
+        "/hello",
+      );
 
       expect(response.status).toBe(200);
       const data = JSON.parse(response.body);
@@ -312,24 +323,7 @@ describe("laneProxyService", () => {
       const proxyStatus = await svc.start(0);
       const proxyPort = proxyStatus.proxyPort;
 
-      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-        const req = http.request(
-          {
-            hostname: "127.0.0.1",
-            port: proxyPort,
-            path: "/",
-            method: "GET",
-            headers: { Host: `unknown.localhost:${proxyPort}` },
-          },
-          (res) => {
-            let body = "";
-            res.on("data", (chunk) => (body += chunk));
-            res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
-          }
-        );
-        req.on("error", reject);
-        req.end();
-      });
+      const response = await requestProxy(proxyPort, `unknown.localhost:${proxyPort}`);
 
       expect(response.status).toBe(404);
       expect(response.body).toContain("No route for hostname");
@@ -342,14 +336,67 @@ describe("laneProxyService", () => {
       // Register route to a port that nothing is listening on
       svc.addRoute("dead-lane", 59999, "dead");
 
+      const response = await requestProxy(proxyPort, `dead.localhost:${proxyPort}`);
+
+      expect(response.status).toBe(502);
+      expect(response.body).toContain("Proxy error");
+    });
+
+    it("lets interceptors short-circuit requests before hostname routing", async () => {
+      const proxyStatus = await svc.start(0);
+      const proxyPort = proxyStatus.proxyPort;
+
+      svc.registerInterceptor((_req, res) => {
+        res.writeHead(204, { "Content-Type": "text/plain" });
+        res.end("intercepted");
+        return true;
+      });
+
+      const response = await requestProxy(proxyPort, `ignored.localhost:${proxyPort}`);
+
+      expect(response.status).toBe(204);
+      expect(response.body).toBe("");
+    });
+
+    it("returns 500 when an interceptor throws", async () => {
+      const proxyStatus = await svc.start(0);
+      const proxyPort = proxyStatus.proxyPort;
+
+      svc.registerInterceptor(() => {
+        throw new Error("boom");
+      });
+
+      const response = await requestProxy(proxyPort, `ignored.localhost:${proxyPort}`);
+
+      expect(response.status).toBe(500);
+      expect(response.body).toContain("Proxy interceptor error");
+    });
+  });
+
+  describe("request interceptors", () => {
+    it("lets an interceptor short-circuit normal hostname routing", async () => {
+      const proxyStatus = await svc.start(0);
+      const proxyPort = proxyStatus.proxyPort;
+
+      const interceptor = vi.fn((req: http.IncomingMessage, res: http.ServerResponse) => {
+        if (req.url === "/oauth/callback") {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end("handled");
+          return true;
+        }
+        return false;
+      });
+
+      svc.registerInterceptor(interceptor);
+
       const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = http.request(
           {
             hostname: "127.0.0.1",
             port: proxyPort,
-            path: "/",
+            path: "/oauth/callback",
             method: "GET",
-            headers: { Host: `dead.localhost:${proxyPort}` },
+            headers: { Host: `localhost:${proxyPort}` },
           },
           (res) => {
             let body = "";
@@ -361,8 +408,41 @@ describe("laneProxyService", () => {
         req.end();
       });
 
-      expect(response.status).toBe(502);
-      expect(response.body).toContain("Proxy error");
+      expect(interceptor).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(200);
+      expect(response.body).toBe("handled");
+    });
+
+    it("stops calling an interceptor after unsubscribe", async () => {
+      const proxyStatus = await svc.start(0);
+      const proxyPort = proxyStatus.proxyPort;
+
+      const interceptor = vi.fn((_req: http.IncomingMessage, _res: http.ServerResponse) => true);
+      const unsubscribe = svc.registerInterceptor(interceptor);
+      unsubscribe();
+
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: proxyPort,
+            path: "/oauth/callback",
+            method: "GET",
+            headers: { Host: `localhost:${proxyPort}` },
+          },
+          (res) => {
+            let body = "";
+            res.on("data", (chunk) => (body += chunk));
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+          }
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
+      expect(interceptor).not.toHaveBeenCalled();
+      expect(response.status).toBe(404);
+      expect(response.body).toContain("No route for hostname");
     });
   });
 

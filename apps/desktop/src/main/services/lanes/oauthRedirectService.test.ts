@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { createOAuthRedirectService } from "./oauthRedirectService";
 import type { OAuthRedirectEvent, ProxyRoute } from "../../../shared/types";
@@ -20,12 +21,19 @@ function mockReq(url: string, host = "localhost:8080"): any {
 }
 
 function mockRes(): any {
-  const res: any = {
+  const res: any = new EventEmitter();
+  Object.assign(res, {
     writeHead: vi.fn(),
     end: vi.fn(),
     headersSent: false,
-  };
+    statusCode: 200,
+  });
   return res;
+}
+
+function finishRes(res: any, statusCode = 200) {
+  res.statusCode = statusCode;
+  res.emit("finish");
 }
 
 function makeRoute(
@@ -140,11 +148,26 @@ describe("oauthRedirectService", () => {
       expect(decoded).toEqual({ laneId: "lane-1", originalState: "" });
     });
 
+    it("rejects empty lane IDs when encoding state", () => {
+      expect(() => svc.encodeState("   ", "original-state")).toThrow(
+        "laneId",
+      );
+    });
+
     it("handles very long state strings", () => {
       const longState = "x".repeat(5000);
       const encoded = svc.encodeState("lane-1", longState);
       const decoded = svc.decodeState(encoded);
       expect(decoded).toEqual({ laneId: "lane-1", originalState: longState });
+    });
+
+    it("rejects tampered encoded states", () => {
+      const encoded = svc.encodeState("lane-1", "original-state");
+      const tampered = encoded.replace(
+        Buffer.from("lane-1").toString("base64url"),
+        Buffer.from("lane-2").toString("base64url"),
+      );
+      expect(svc.decodeState(tampered)).toBeNull();
     });
   });
 
@@ -234,6 +257,8 @@ describe("oauthRedirectService", () => {
 
       expect(handled).toBe(true);
       expect(forwardToPort).toHaveBeenCalledWith(req, res, 3001);
+      expect(svc.listSessions()[0].status).toBe("active");
+      expect(events.map((event) => event.type)).not.toContain("oauth-callback-routed");
     });
 
     it("calls forwardToPort with correct targetPort", () => {
@@ -253,6 +278,10 @@ describe("oauthRedirectService", () => {
     it("rewrites state parameter back to original value before forwarding", () => {
       routes.push(makeRoute("lane-1", 3001));
       const encoded = svc.encodeState("lane-1", "my-original-state");
+      let forwardedUrl = "";
+      forwardToPort.mockImplementation((forwardedReq: { url?: string }) => {
+        forwardedUrl = forwardedReq.url ?? "";
+      });
       const req = mockReq(
         `/oauth/callback?code=abc&state=${encodeURIComponent(encoded)}`,
       );
@@ -263,11 +292,8 @@ describe("oauthRedirectService", () => {
       // During forwarding the req.url should have been temporarily rewritten
       // and then restored. We verify via the forwardToPort call: at call time
       // req.url had the rewritten state.
-      const urlAtCallTime = forwardToPort.mock.calls[0][0].url;
-      // After the call, req.url is restored to the original.  The forwarded
-      // URL (captured at call time) should contain the *original* state, not the ade-encoded one.
-      // Because forwardToPort receives the req object by reference, we check that
-      // after handleRequest returns, req.url has been restored.
+      expect(forwardedUrl).toContain("state=my-original-state");
+      expect(forwardedUrl).not.toContain(encodeURIComponent(encoded));
       expect(req.url).toContain(encodeURIComponent(encoded));
     });
 
@@ -328,11 +354,29 @@ describe("oauthRedirectService", () => {
       const res = mockRes();
 
       svc.handleRequest(req, res);
+      finishRes(res);
 
       const sessions = svc.listSessions();
       expect(sessions).toHaveLength(1);
       expect(sessions[0].laneId).toBe("lane-1");
       expect(sessions[0].status).toBe("completed");
+    });
+
+    it("marks routed sessions failed when the upstream response errors", () => {
+      routes.push(makeRoute("lane-1", 3001));
+      const encoded = svc.encodeState("lane-1", "orig");
+      const req = mockReq(
+        `/oauth/callback?code=abc&state=${encodeURIComponent(encoded)}`,
+      );
+      const res = mockRes();
+
+      svc.handleRequest(req, res);
+      finishRes(res, 502);
+
+      const sessions = svc.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].status).toBe("failed");
+      expect(sessions[0].error).toContain("status 502");
     });
 
     it("creates failed OAuth session when route not found", () => {
@@ -374,6 +418,8 @@ describe("oauthRedirectService", () => {
 
       expect(svc.handleRequest(reqA, resA)).toBe(true);
       expect(svc.handleRequest(reqB, resB)).toBe(true);
+      finishRes(resA);
+      finishRes(resB);
 
       expect(forwardToPort).toHaveBeenCalledWith(reqA, resA, 3001);
       expect(forwardToPort).toHaveBeenCalledWith(reqB, resB, 3002);
@@ -385,14 +431,18 @@ describe("oauthRedirectService", () => {
       const stateA = svc.encodeState("lane-A", "a");
       const stateB = svc.encodeState("lane-B", "b");
 
+      const resA = mockRes();
       svc.handleRequest(
         mockReq(`/oauth/callback?state=${encodeURIComponent(stateA)}`),
-        mockRes(),
+        resA,
       );
+      finishRes(resA);
+      const resB = mockRes();
       svc.handleRequest(
         mockReq(`/oauth/callback?state=${encodeURIComponent(stateB)}`),
-        mockRes(),
+        resB,
       );
+      finishRes(resB);
 
       const sessions = svc.listSessions();
       expect(sessions).toHaveLength(2);
@@ -420,6 +470,7 @@ describe("oauthRedirectService", () => {
         );
         const res = mockRes();
         svc.handleRequest(req, res);
+        finishRes(res);
         expect(forwardToPort).toHaveBeenCalledWith(req, res, port);
       }
 
@@ -439,10 +490,12 @@ describe("oauthRedirectService", () => {
 
       // Successful session
       const s1 = svc.encodeState("lane-1", "a");
+      const res1 = mockRes();
       svc.handleRequest(
         mockReq(`/oauth/callback?state=${encodeURIComponent(s1)}`),
-        mockRes(),
+        res1,
       );
+      finishRes(res1);
 
       // Failed session (no route)
       const s2 = svc.encodeState("nonexistent", "b");
@@ -459,10 +512,12 @@ describe("oauthRedirectService", () => {
 
       // Completed session
       const ok = svc.encodeState("lane-ok", "s");
+      const okRes = mockRes();
       svc.handleRequest(
         mockReq(`/oauth/callback?state=${encodeURIComponent(ok)}`),
-        mockRes(),
+        okRes,
       );
+      finishRes(okRes);
 
       // Failed session
       const fail = svc.encodeState("lane-missing", "s");
@@ -486,11 +541,13 @@ describe("oauthRedirectService", () => {
     it("broadcastEvent is called for session lifecycle events", () => {
       routes.push(makeRoute("lane-1", 3001));
       const encoded = svc.encodeState("lane-1", "s");
+      const res = mockRes();
 
       svc.handleRequest(
         mockReq(`/oauth/callback?state=${encodeURIComponent(encoded)}`),
-        mockRes(),
+        res,
       );
+      finishRes(res);
 
       // Expect session-started, session-completed, and callback-routed events
       const types = events.map((e) => e.type);
@@ -604,6 +661,14 @@ describe("oauthRedirectService", () => {
       expect(svc.isOAuthCallback("/custom/callback")).toBe(true);
       // Old defaults should no longer match
       expect(svc.isOAuthCallback("/oauth/callback")).toBe(false);
+    });
+
+    it("updateConfig rejects malformed callback path payloads", () => {
+      expect(() =>
+        svc.updateConfig({
+          callbackPaths: "/oauth/callback" as unknown as string[],
+        }),
+      ).toThrow("array of strings");
     });
 
     it("updateConfig changes routing mode", () => {

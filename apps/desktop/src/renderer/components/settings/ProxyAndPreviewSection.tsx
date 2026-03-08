@@ -1,4 +1,11 @@
-import { useState, useEffect, useCallback, type CSSProperties } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useId,
+  useRef,
+  type CSSProperties,
+} from "react";
 import type {
   OAuthRedirectStatus,
   OAuthRedirectEvent,
@@ -144,14 +151,21 @@ function Toggle({
   checked,
   onChange,
   disabled,
+  label,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
+  label: string;
 }) {
   return (
     <button
+      type="button"
       onClick={() => !disabled && onChange(!checked)}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
       style={{
         position: "relative",
         width: 44,
@@ -183,29 +197,63 @@ function Toggle({
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
+  const handleCopy = useCallback(async () => {
+    try {
+      if (window.ade?.app?.writeClipboardText) {
+        await window.ade.app.writeClipboardText(text);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+      setCopyError(null);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    } catch (error) {
+      setCopyError(error instanceof Error ? error.message : "Failed to copy");
+      setCopied(false);
+    }
   }, [text]);
 
   return (
-    <button
-      onClick={handleCopy}
-      style={outlineButton({
-        height: 28,
-        padding: "0 8px",
-        fontSize: 10,
-        color: copied ? COLORS.success : COLORS.textSecondary,
-        borderColor: copied ? `${COLORS.success}40` : COLORS.outlineBorder,
-      })}
-      title={`Copy: ${text}`}
-    >
-      {copied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
-      {copied ? "COPIED" : "COPY"}
-    </button>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+      <button
+        type="button"
+        onClick={handleCopy}
+        style={outlineButton({
+          height: 28,
+          padding: "0 8px",
+          fontSize: 10,
+          color: copyError
+            ? COLORS.danger
+            : copied
+              ? COLORS.success
+              : COLORS.textSecondary,
+          borderColor: copyError
+            ? `${COLORS.danger}40`
+            : copied
+              ? `${COLORS.success}40`
+              : COLORS.outlineBorder,
+        })}
+        title={`Copy: ${text}`}
+        aria-label={`Copy redirect URI ${text}`}
+      >
+        {copied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
+        {copied ? "COPIED" : copyError ? "RETRY" : "COPY"}
+      </button>
+      {copyError && (
+        <span
+          aria-live="polite"
+          style={{
+            fontSize: 10,
+            fontFamily: MONO_FONT,
+            color: COLORS.danger,
+          }}
+        >
+          {copyError}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -223,17 +271,30 @@ export function ProxyAndPreviewSection() {
   const [oauthStatus, setOAuthStatus] = useState<OAuthRedirectStatus | null>(null);
   const [oauthBusy, setOAuthBusy] = useState(false);
   const [oauthError, setOAuthError] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<OAuthSession[]>([]);
 
   // --- Redirect URI helper ---
   const [selectedProvider, setSelectedProvider] = useState<ProviderName>("Generic");
   const [uriInfo, setUriInfo] = useState<RedirectUriInfo | null>(null);
   const [uriLoading, setUriLoading] = useState(false);
+  const [uriError, setUriError] = useState<string | null>(null);
 
   // --- Advanced settings ---
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [advancedDirty, setAdvancedDirty] = useState(false);
   const [routingMode, setRoutingMode] = useState<OAuthRoutingMode>("state-parameter");
   const [callbackPathsDraft, setCallbackPathsDraft] = useState("");
   const [advancedSaving, setAdvancedSaving] = useState(false);
+  const providerSelectId = useId();
+  const advancedPanelId = useId();
+  const callbackPathsId = useId();
+  const latestUriRequestRef = useRef(0);
+
+  const syncAdvancedDrafts = useCallback((status: OAuthRedirectStatus) => {
+    setRoutingMode(status.routingMode);
+    setCallbackPathsDraft(status.callbackPaths.join(", "));
+    setAdvancedDirty(false);
+  }, []);
 
   // -----------------------------------------------------------------------
   // Initial data fetch
@@ -253,9 +314,19 @@ export function ProxyAndPreviewSection() {
     try {
       const status = await window.ade.lanes.oauthGetStatus();
       setOAuthStatus(status);
-      setRoutingMode(status.routingMode);
-      setCallbackPathsDraft(status.callbackPaths.join(", "));
+      syncAdvancedDrafts(status);
       setOAuthError(null);
+    } catch (err) {
+      setOAuthError(err instanceof Error ? err.message : String(err));
+    }
+  }, [syncAdvancedDrafts]);
+
+  const fetchOAuthSessions = useCallback(async () => {
+    try {
+      const nextSessions = await window.ade.lanes.oauthListSessions();
+      setSessions(
+        [...nextSessions].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      );
     } catch (err) {
       setOAuthError(err instanceof Error ? err.message : String(err));
     }
@@ -265,7 +336,7 @@ export function ProxyAndPreviewSection() {
     let cancelled = false;
 
     const init = async () => {
-      await Promise.all([fetchProxyStatus(), fetchOAuthStatus()]);
+      await Promise.all([fetchProxyStatus(), fetchOAuthStatus(), fetchOAuthSessions()]);
       if (cancelled) return;
     };
     init();
@@ -281,8 +352,15 @@ export function ProxyAndPreviewSection() {
       if (cancelled) return;
       if (ev.status) {
         setOAuthStatus(ev.status);
-        setRoutingMode(ev.status.routingMode);
-        setCallbackPathsDraft(ev.status.callbackPaths.join(", "));
+        if (ev.type === "oauth-config-changed" || !advancedOpen || !advancedDirty) {
+          syncAdvancedDrafts(ev.status);
+        }
+      }
+      if (ev.session) {
+        setSessions((current) => {
+          const next = [ev.session!, ...current.filter((session) => session.id !== ev.session!.id)];
+          return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        });
       }
       if (ev.error) setOAuthError(ev.error);
     });
@@ -292,7 +370,14 @@ export function ProxyAndPreviewSection() {
       unsubProxy();
       unsubOAuth();
     };
-  }, [fetchProxyStatus, fetchOAuthStatus]);
+  }, [
+    advancedDirty,
+    advancedOpen,
+    fetchProxyStatus,
+    fetchOAuthStatus,
+    fetchOAuthSessions,
+    syncAdvancedDrafts,
+  ]);
 
   // -----------------------------------------------------------------------
   // Proxy actions
@@ -342,20 +427,28 @@ export function ProxyAndPreviewSection() {
   // -----------------------------------------------------------------------
 
   const fetchUris = useCallback(async (provider: ProviderName) => {
+    const requestId = latestUriRequestRef.current + 1;
+    latestUriRequestRef.current = requestId;
     setUriLoading(true);
+    setUriError(null);
     try {
       const results = await window.ade.lanes.oauthGenerateRedirectUris({
         provider: provider.toLowerCase(),
       });
+      if (latestUriRequestRef.current !== requestId) return;
       // API returns array; pick the first matching entry or first overall
       const match = results.find(
         (r) => r.provider.toLowerCase() === provider.toLowerCase(),
       ) ?? results[0] ?? null;
       setUriInfo(match);
-    } catch {
+    } catch (err) {
+      if (latestUriRequestRef.current !== requestId) return;
       setUriInfo(null);
+      setUriError(err instanceof Error ? err.message : "Unable to load redirect URIs.");
     } finally {
-      setUriLoading(false);
+      if (latestUriRequestRef.current === requestId) {
+        setUriLoading(false);
+      }
     }
   }, []);
 
@@ -391,7 +484,6 @@ export function ProxyAndPreviewSection() {
   // Derived
   // -----------------------------------------------------------------------
 
-  const sessions: OAuthSession[] = oauthStatus?.activeSessions ?? [];
   const proxyRunning = proxyStatus?.running ?? false;
   const oauthEnabled = oauthStatus?.enabled ?? false;
   const routeCount = proxyStatus?.routes?.length ?? 0;
@@ -492,11 +584,14 @@ export function ProxyAndPreviewSection() {
 
         {/* Proxy error */}
         {proxyError && (
-          <div style={{ ...errorBoxStyle, marginBottom: 16 }}>{proxyError}</div>
+          <div role="alert" style={{ ...errorBoxStyle, marginBottom: 16 }}>
+            {proxyError}
+          </div>
         )}
 
         {/* Start / Stop button */}
         <button
+          type="button"
           style={
             proxyRunning
               ? outlineButton({ color: COLORS.danger, borderColor: `${COLORS.danger}40` })
@@ -504,6 +599,7 @@ export function ProxyAndPreviewSection() {
           }
           disabled={proxyBusy}
           onClick={handleProxyToggle}
+          aria-label={proxyRunning ? "Stop reverse proxy" : "Start reverse proxy"}
         >
           <ArrowsClockwise
             size={13}
@@ -561,7 +657,9 @@ export function ProxyAndPreviewSection() {
         </div>
 
         {oauthError && (
-          <div style={{ ...errorBoxStyle, marginBottom: 16 }}>{oauthError}</div>
+          <div role="alert" style={{ ...errorBoxStyle, marginBottom: 16 }}>
+            {oauthError}
+          </div>
         )}
 
         {/* Enable / Disable toggle row */}
@@ -587,6 +685,7 @@ export function ProxyAndPreviewSection() {
             checked={oauthEnabled}
             onChange={handleOAuthToggle}
             disabled={oauthBusy}
+            label="Automatic OAuth routing"
           />
         </div>
       </div>
@@ -608,9 +707,12 @@ export function ProxyAndPreviewSection() {
             marginBottom: 16,
           }}
         >
-          <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>PROVIDER</span>
+          <label htmlFor={providerSelectId} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
+            PROVIDER
+          </label>
           <div style={{ position: "relative" }}>
             <select
+              id={providerSelectId}
               value={selectedProvider}
               onChange={(e) => setSelectedProvider(e.target.value as ProviderName)}
               style={{ ...selectStyle, paddingRight: 28 }}
@@ -639,6 +741,7 @@ export function ProxyAndPreviewSection() {
         {/* URI list */}
         {uriLoading ? (
           <div
+            aria-live="polite"
             style={{
               fontSize: 11,
               fontFamily: MONO_FONT,
@@ -647,6 +750,10 @@ export function ProxyAndPreviewSection() {
             }}
           >
             Loading URIs...
+          </div>
+        ) : uriError ? (
+          <div role="alert" style={{ ...errorBoxStyle, marginBottom: 8 }}>
+            {uriError}
           </div>
         ) : uriInfo ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -703,7 +810,7 @@ export function ProxyAndPreviewSection() {
               padding: "12px 0",
             }}
           >
-            No redirect URIs available. Ensure the proxy is running.
+            No redirect URIs available.
           </div>
         )}
       </div>
@@ -809,7 +916,10 @@ export function ProxyAndPreviewSection() {
       {/* ============ ADVANCED SETTINGS (collapsible) ============ */}
       <div style={cardStyle()}>
         <button
+          type="button"
           onClick={() => setAdvancedOpen((prev) => !prev)}
+          aria-expanded={advancedOpen}
+          aria-controls={advancedPanelId}
           style={{
             display: "flex",
             alignItems: "center",
@@ -831,6 +941,7 @@ export function ProxyAndPreviewSection() {
 
         {advancedOpen && (
           <div
+            id={advancedPanelId}
             style={{
               marginTop: 20,
               display: "flex",
@@ -849,7 +960,12 @@ export function ProxyAndPreviewSection() {
                   (mode) => (
                     <button
                       key={mode}
-                      onClick={() => setRoutingMode(mode)}
+                      type="button"
+                      onClick={() => {
+                        setRoutingMode(mode);
+                        setAdvancedDirty(true);
+                      }}
+                      aria-pressed={routingMode === mode}
                       style={{
                         ...outlineButton({
                           color:
@@ -892,16 +1008,23 @@ export function ProxyAndPreviewSection() {
 
             {/* Callback paths */}
             <div>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>
+              <label
+                htmlFor={callbackPathsId}
+                style={{ ...LABEL_STYLE, marginBottom: 8, display: "block" }}
+              >
                 CALLBACK PATHS
-              </div>
+              </label>
               <div style={{ ...descriptionStyle, fontSize: 11, marginBottom: 10 }}>
                 URL paths that are treated as OAuth callbacks (comma-separated).
               </div>
               <input
+                id={callbackPathsId}
                 type="text"
                 value={callbackPathsDraft}
-                onChange={(e) => setCallbackPathsDraft(e.target.value)}
+                onChange={(e) => {
+                  setCallbackPathsDraft(e.target.value);
+                  setAdvancedDirty(true);
+                }}
                 placeholder="/auth/callback, /oauth/callback, /api/auth/callback"
                 style={inputStyle}
               />
@@ -910,6 +1033,7 @@ export function ProxyAndPreviewSection() {
             {/* Save */}
             <div style={{ display: "flex", gap: 8 }}>
               <button
+                type="button"
                 style={primaryButton()}
                 disabled={advancedSaving}
                 onClick={handleSaveAdvanced}

@@ -414,6 +414,7 @@ export type RedirectUriInfo = {
 export type UpdateOAuthRedirectConfigArgs = Partial<OAuthRedirectConfig>;
 export type GenerateRedirectUrisArgs = { provider?: string };
 export type EncodeOAuthStateArgs = { laneId: string; originalState: string };
+export type DecodeOAuthStateArgs = { encodedState: string };
 export type DecodeOAuthStateResult = { laneId: string; originalState: string } | null;
 
 export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";

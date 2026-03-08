@@ -419,6 +419,7 @@ import type {
   UpdateOAuthRedirectConfigArgs,
   GenerateRedirectUrisArgs,
   EncodeOAuthStateArgs,
+  DecodeOAuthStateArgs,
   DecodeOAuthStateResult,
 } from "../shared/types";
 
@@ -629,7 +630,7 @@ declare global {
         oauthUpdateConfig: (args: UpdateOAuthRedirectConfigArgs) => Promise<void>;
         oauthGenerateRedirectUris: (args: GenerateRedirectUrisArgs) => Promise<RedirectUriInfo[]>;
         oauthEncodeState: (args: EncodeOAuthStateArgs) => Promise<string>;
-        oauthDecodeState: (args: { encodedState: string }) => Promise<DecodeOAuthStateResult>;
+        oauthDecodeState: (args: DecodeOAuthStateArgs) => Promise<DecodeOAuthStateResult>;
         oauthListSessions: () => Promise<OAuthSession[]>;
         onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void) => () => void;
       };

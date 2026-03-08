@@ -2305,6 +2305,84 @@ export function registerIpc({
 
   // --- OAuth Redirect Handling (Phase 5 W5) ---
 
+  const requireRecord = (value: unknown, name: string): Record<string, unknown> => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    throw new Error(`${name} must be an object`);
+  };
+
+  const parseOAuthUpdateConfigArgs = (
+    value: unknown,
+  ): import("../../../shared/types").UpdateOAuthRedirectConfigArgs => {
+    const record = requireRecord(value, "OAuth config update");
+    const updates: import("../../../shared/types").UpdateOAuthRedirectConfigArgs = {};
+
+    if ("enabled" in record) {
+      if (typeof record.enabled !== "boolean") {
+        throw new Error("OAuth config enabled must be boolean");
+      }
+      updates.enabled = record.enabled;
+    }
+
+    if ("routingMode" in record) {
+      if (
+        record.routingMode !== "state-parameter" &&
+        record.routingMode !== "hostname"
+      ) {
+        throw new Error("OAuth routing mode is invalid");
+      }
+      updates.routingMode = record.routingMode;
+    }
+
+    if ("callbackPaths" in record) {
+      if (
+        !Array.isArray(record.callbackPaths) ||
+        record.callbackPaths.some((path) => typeof path !== "string")
+      ) {
+        throw new Error("OAuth callback paths must be an array of strings");
+      }
+      updates.callbackPaths = [...record.callbackPaths];
+    }
+
+    return updates;
+  };
+
+  const parseGenerateRedirectUrisArgs = (
+    value: unknown,
+  ): import("../../../shared/types").GenerateRedirectUrisArgs => {
+    if (value === undefined) return {};
+    const record = requireRecord(value, "OAuth redirect URI request");
+    if (record.provider === undefined) return {};
+    if (typeof record.provider !== "string") {
+      throw new Error("OAuth provider must be a string");
+    }
+    return { provider: record.provider };
+  };
+
+  const parseEncodeOAuthStateArgs = (
+    value: unknown,
+  ): import("../../../shared/types").EncodeOAuthStateArgs => {
+    const record = requireRecord(value, "OAuth state encode request");
+    if (typeof record.laneId !== "string" || !record.laneId.trim()) {
+      throw new Error("OAuth state encode laneId must be a non-empty string");
+    }
+    if (typeof record.originalState !== "string") {
+      throw new Error("OAuth state encode originalState must be a string");
+    }
+    return { laneId: record.laneId, originalState: record.originalState };
+  };
+
+  const parseDecodeOAuthStateArgs = (
+    value: unknown,
+  ): import("../../../shared/types").DecodeOAuthStateArgs => {
+    const record = requireRecord(value, "OAuth state decode request");
+    if (typeof record.encodedState !== "string" || !record.encodedState) {
+      throw new Error("OAuth state decode encodedState must be a non-empty string");
+    }
+    return { encodedState: record.encodedState };
+  };
+
   ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.getStatus() ?? {
@@ -2315,28 +2393,34 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.lanesOAuthUpdateConfig, async (_event, args: import("../../../shared/types").UpdateOAuthRedirectConfigArgs) => {
+  ipcMain.handle(IPC.lanesOAuthUpdateConfig, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.oauthRedirectService) throw new Error("OAuth redirect service not available");
-    ctx.oauthRedirectService.updateConfig(args);
+    ctx.oauthRedirectService.updateConfig(parseOAuthUpdateConfigArgs(args));
   });
 
-  ipcMain.handle(IPC.lanesOAuthGenerateRedirectUris, async (_event, args: { provider?: string }) => {
+  ipcMain.handle(IPC.lanesOAuthGenerateRedirectUris, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.oauthRedirectService) return [];
-    return ctx.oauthRedirectService.generateRedirectUris(args.provider);
+    const request = parseGenerateRedirectUrisArgs(args);
+    return ctx.oauthRedirectService.generateRedirectUris(request.provider);
   });
 
-  ipcMain.handle(IPC.lanesOAuthEncodeState, async (_event, args: { laneId: string; originalState: string }) => {
+  ipcMain.handle(IPC.lanesOAuthEncodeState, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.oauthRedirectService) throw new Error("OAuth redirect service not available");
-    return ctx.oauthRedirectService.encodeState(args.laneId, args.originalState);
+    const request = parseEncodeOAuthStateArgs(args);
+    return ctx.oauthRedirectService.encodeState(
+      request.laneId,
+      request.originalState,
+    );
   });
 
-  ipcMain.handle(IPC.lanesOAuthDecodeState, async (_event, args: { encodedState: string }) => {
+  ipcMain.handle(IPC.lanesOAuthDecodeState, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.oauthRedirectService) return null;
-    return ctx.oauthRedirectService.decodeState(args.encodedState);
+    const request = parseDecodeOAuthStateArgs(args);
+    return ctx.oauthRedirectService.decodeState(request.encodedState);
   });
 
   ipcMain.handle(IPC.lanesOAuthListSessions, async () => {
