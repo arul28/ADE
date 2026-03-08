@@ -9,12 +9,15 @@ import type {
   MergeMethod,
   MergeSimulationResult,
   PrCheck,
+  PrComment,
   PrReview,
   PrReviewStatus,
   PrState,
   PrStatus,
-  PrSummary
+  PrSummary,
+  PrWithConflicts
 } from "../../../shared/types";
+import type { PrActivityState } from "../prs/shared/prVisuals";
 
 export type GraphNodeData = {
   lane: LaneSummary;
@@ -36,6 +39,7 @@ export type GraphNodeData = {
   isIntegration: boolean;
   focusGlow: boolean;
   isVirtualProposal: boolean;
+  pr: GraphPrOverlay | null;
   proposalOutcome?: "clean" | "conflict" | "blocked";
   proposalId?: string;
 };
@@ -55,7 +59,17 @@ export type GraphPrOverlay = {
   checksStatus: PrStatus["checksStatus"];
   reviewStatus: PrReviewStatus;
   lastSyncedAt: string | null;
+  lastActivityAt: string | null;
   mergeInProgress: boolean;
+  isMergeable: boolean | null;
+  mergeConflicts: boolean | null;
+  behindBaseBy: number | null;
+  reviewCount: number;
+  approvedCount: number;
+  changeRequestCount: number;
+  commentCount: number;
+  pendingCheckCount: number;
+  activityState: PrActivityState;
 };
 
 export type GraphEdgeData = {
@@ -98,11 +112,12 @@ export type PrDialogState = {
   draft: boolean;
   loadingDraft: boolean;
   creating: boolean;
-  existingPr: PrSummary | null;
+  existingPr: PrWithConflicts | null;
   loadingDetails: boolean;
   status: PrStatus | null;
   checks: PrCheck[];
   reviews: PrReview[];
+  comments: PrComment[];
   mergeMethod: MergeMethod;
   merging: boolean;
   error: string | null;

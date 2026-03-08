@@ -296,6 +296,12 @@ import type {
   GetLaneTemplateArgs,
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
+  GetPortLeaseArgs,
+  AcquirePortLeaseArgs,
+  ReleasePortLeaseArgs,
+  PortLease,
+  PortConflict,
+  PortAllocationEvent,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -745,6 +751,21 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.lanesSetDefaultTemplate, args),
     applyTemplate: async (args: ApplyLaneTemplateArgs): Promise<LaneEnvInitProgress> =>
       ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
+    portGetLease: async (args: GetPortLeaseArgs): Promise<PortLease | null> =>
+      ipcRenderer.invoke(IPC.lanesPortGetLease, args),
+    portListLeases: async (): Promise<PortLease[]> =>
+      ipcRenderer.invoke(IPC.lanesPortListLeases),
+    portAcquire: async (args: AcquirePortLeaseArgs): Promise<PortLease> =>
+      ipcRenderer.invoke(IPC.lanesPortAcquire, args),
+    portRelease: async (args: ReleasePortLeaseArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesPortRelease, args),
+    portListConflicts: async (): Promise<PortConflict[]> =>
+      ipcRenderer.invoke(IPC.lanesPortListConflicts),
+    onPortEvent: (cb: (ev: PortAllocationEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: PortAllocationEvent) => cb(payload);
+      ipcRenderer.on(IPC.lanesPortEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesPortEvent, listener);
+    },
   },
   sessions: {
     list: async (args: ListSessionsArgs = {}): Promise<TerminalSessionSummary[]> =>

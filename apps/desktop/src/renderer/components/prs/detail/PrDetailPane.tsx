@@ -11,39 +11,10 @@ import type {
   LaneSummary, MergeMethod, LandResult,
 } from "../../../../shared/types";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, recessedStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
+import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 
 // ---- Sub-tab type ----
 type DetailTab = "overview" | "files" | "checks" | "activity";
-
-// ---- Badge helpers ----
-function colorBadge(color: string) {
-  return { color, bg: `${color}18`, border: `${color}30` };
-}
-
-function stateChip(state: string): { label: string; color: string; bg: string; border: string } {
-  if (state === "draft") return { label: "DRAFT", ...colorBadge(COLORS.accent) };
-  if (state === "open") return { label: "OPEN", ...colorBadge(COLORS.info) };
-  if (state === "merged") return { label: "MERGED", ...colorBadge(COLORS.success) };
-  return { label: "CLOSED", ...colorBadge(COLORS.textSecondary) };
-}
-
-function checksChip(status: string): { label: string; color: string; bg: string; border: string } {
-  if (status === "passing") return { label: "PASSING", ...colorBadge(COLORS.success) };
-  if (status === "failing") return { label: "FAILING", ...colorBadge(COLORS.danger) };
-  if (status === "pending") return { label: "PENDING", ...colorBadge(COLORS.warning) };
-  return { label: "NONE", ...colorBadge(COLORS.textMuted) };
-}
-
-function reviewsChip(status: string): { label: string; color: string; bg: string; border: string } {
-  if (status === "approved") return { label: "APPROVED", ...colorBadge(COLORS.success) };
-  if (status === "changes_requested") return { label: "CHANGES", ...colorBadge(COLORS.warning) };
-  if (status === "requested") return { label: "REVIEW", ...colorBadge(COLORS.info) };
-  return { label: "NONE", ...colorBadge(COLORS.textMuted) };
-}
-
-function InlineBadge({ label, color, bg, border }: { label: string; color: string; bg: string; border: string }) {
-  return <span style={inlineBadge(color, { background: bg, border: `1px solid ${border}` })}>{label}</span>;
-}
 
 function formatTs(iso: string | null): string {
   if (!iso) return "---";
@@ -116,9 +87,10 @@ type PrDetailPaneProps = {
   onRefresh: () => Promise<void>;
   onNavigate: (path: string) => void;
   onTabChange: (tab: string) => void;
+  onShowInGraph?: (laneId: string) => void;
 };
 
-export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy, lanes, mergeMethod, onRefresh, onNavigate, onTabChange }: PrDetailPaneProps) {
+export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy, lanes, mergeMethod, onRefresh, onNavigate, onTabChange, onShowInGraph }: PrDetailPaneProps) {
   const [activeTab, setActiveTab] = React.useState<DetailTab>("overview");
   const [detail, setDetail] = React.useState<PrDetail | null>(null);
   const [files, setFiles] = React.useState<PrFile[]>([]);
@@ -305,9 +277,9 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
     } finally { setAiSummaryBusy(false); }
   };
 
-  const sc = stateChip(pr.state);
-  const cc = checksChip(pr.checksStatus);
-  const rc = reviewsChip(pr.reviewStatus);
+  const sc = getPrStateBadge(pr.state);
+  const cc = getPrChecksBadge(pr.checksStatus);
+  const rc = getPrReviewsBadge(pr.reviewStatus);
   const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
     { id: "overview", label: "OVERVIEW", icon: Eye },
     { id: "files", label: "FILES", icon: Code, count: files.length },
@@ -368,9 +340,9 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-            <InlineBadge {...sc} />
-            <InlineBadge {...cc} />
-            <InlineBadge {...rc} />
+            <InlinePrBadge {...sc} />
+            <InlinePrBadge {...cc} />
+            <InlinePrBadge {...rc} />
           </div>
         </div>
 
@@ -415,6 +387,11 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
             <button type="button" onClick={() => void onRefresh()} style={outlineButton({ height: 28, padding: "0 8px" })} title="Refresh">
               <ArrowsClockwise size={14} weight="bold" />
             </button>
+            {onShowInGraph ? (
+              <button type="button" onClick={() => onShowInGraph(pr.laneId)} style={outlineButton({ height: 28, padding: "0 10px", color: COLORS.info, borderColor: `${COLORS.info}40` })}>
+                <GitBranch size={14} /> GRAPH
+              </button>
+            ) : null}
             <button type="button" onClick={() => void window.ade.prs.openInGitHub(pr.id)} style={outlineButton({ height: 28, padding: "0 10px" })}>
               <GithubLogo size={14} /> GITHUB
             </button>
@@ -745,6 +722,9 @@ function OverviewTab(props: OverviewTabProps) {
                 <ArrowsClockwise size={14} /> REOPEN PR
               </button>
             )}
+            <button type="button" onClick={() => props.onNavigate(`/graph?focusLane=${encodeURIComponent(pr.laneId)}`)} style={outlineButton({ color: COLORS.accent, borderColor: `${COLORS.accent}40` })}>
+              <ArrowRight size={14} /> SHOW IN GRAPH
+            </button>
             <button type="button" onClick={() => props.onNavigate(`/lanes?laneId=${encodeURIComponent(pr.laneId)}`)} style={outlineButton()}>
               <ArrowRight size={14} /> VIEW LANE
             </button>

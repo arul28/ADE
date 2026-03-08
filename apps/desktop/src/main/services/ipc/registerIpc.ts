@@ -381,6 +381,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentService";
 import type { createLaneTemplateService } from "../lanes/laneTemplateService";
+import type { createPortAllocationService } from "../lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { ContextDocService } from "../context/contextDocService";
@@ -450,6 +451,7 @@ export type AppContext = {
   laneService: ReturnType<typeof createLaneService>;
   laneEnvironmentService: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
+  portAllocationService: ReturnType<typeof createPortAllocationService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
@@ -2081,6 +2083,42 @@ export function registerIpc({
 
     const overrides = template.portRange ? { portRange: template.portRange, env: template.envVars } : { env: template.envVars };
     return await ctx.laneEnvironmentService.initLaneEnvironment(lane, envInitConfig, overrides);
+  });
+
+  // --- Port Allocation (Phase 5 W3) ---
+
+  ipcMain.handle(IPC.lanesPortGetLease, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    return ctx.portAllocationService?.getLease(args.laneId) ?? null;
+  });
+
+  ipcMain.handle(IPC.lanesPortListLeases, async () => {
+    const ctx = getCtx();
+    return ctx.portAllocationService?.listLeases() ?? [];
+  });
+
+  ipcMain.handle(IPC.lanesPortAcquire, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.portAllocationService) throw new Error("Port allocation service not available");
+    return ctx.portAllocationService.acquire(args.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesPortRelease, async (_event, args: { laneId: string }) => {
+    const ctx = getCtx();
+    ctx.portAllocationService?.release(args.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesPortListConflicts, async () => {
+    const ctx = getCtx();
+    return ctx.portAllocationService?.listConflicts() ?? [];
+  });
+
+  ipcMain.handle(IPC.lanesPortRecoverOrphans, async () => {
+    const ctx = getCtx();
+    if (!ctx.portAllocationService) return [];
+    const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
+    const validIds = new Set(lanes.map((l) => l.id));
+    return ctx.portAllocationService.recoverOrphans(validIds);
   });
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {

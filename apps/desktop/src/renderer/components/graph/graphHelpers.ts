@@ -9,6 +9,7 @@ import type {
   LaneSummary
 } from "../../../shared/types";
 import type { GraphEdgeData, GraphNodeData, GraphPrOverlay } from "./graphTypes";
+import { getPrCiDotColor, getPrEdgeColor } from "../prs/shared/prVisuals";
 
 export const VIEW_MODES: GraphViewMode[] = ["stack", "risk", "activity", "all"];
 
@@ -115,19 +116,11 @@ export function proposalOutcomeColor(outcome: GraphNodeData["proposalOutcome"]):
 }
 
 export function prOverlayColor(pr: GraphPrOverlay): string {
-  if (pr.state === "draft") return "#a855f7";
-  if (pr.checksStatus === "failing") return "#dc2626";
-  if (pr.reviewStatus === "changes_requested") return "#f59e0b";
-  if (pr.checksStatus === "passing") return "#16a34a";
-  if (pr.checksStatus === "pending") return "#38bdf8";
-  return "#6b7280";
+  return getPrEdgeColor(pr);
 }
 
 export function prCiDotColor(pr: GraphPrOverlay): string {
-  if (pr.checksStatus === "failing") return "#dc2626";
-  if (pr.checksStatus === "passing") return "#16a34a";
-  if (pr.checksStatus === "pending") return "#f59e0b";
-  return "#6b7280";
+  return getPrCiDotColor(pr);
 }
 
 export function iconGlyph(icon: LaneIcon): React.ReactNode {

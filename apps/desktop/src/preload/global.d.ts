@@ -396,7 +396,13 @@ import type {
   LaneTemplate,
   GetLaneTemplateArgs,
   SetDefaultLaneTemplateArgs,
-  ApplyLaneTemplateArgs
+  ApplyLaneTemplateArgs,
+  GetPortLeaseArgs,
+  AcquirePortLeaseArgs,
+  ReleasePortLeaseArgs,
+  PortLease,
+  PortConflict,
+  PortAllocationEvent
 } from "../shared/types";
 
 export {};
@@ -587,6 +593,12 @@ declare global {
         getDefaultTemplate: () => Promise<string | null>;
         setDefaultTemplate: (args: SetDefaultLaneTemplateArgs) => Promise<void>;
         applyTemplate: (args: ApplyLaneTemplateArgs) => Promise<LaneEnvInitProgress>;
+        portGetLease: (args: GetPortLeaseArgs) => Promise<PortLease | null>;
+        portListLeases: () => Promise<PortLease[]>;
+        portAcquire: (args: AcquirePortLeaseArgs) => Promise<PortLease>;
+        portRelease: (args: ReleasePortLeaseArgs) => Promise<void>;
+        portListConflicts: () => Promise<PortConflict[]>;
+        onPortEvent: (cb: (ev: PortAllocationEvent) => void) => () => void;
       };
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;

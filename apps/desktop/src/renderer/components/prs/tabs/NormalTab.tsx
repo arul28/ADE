@@ -11,28 +11,8 @@ import { EmptyState } from "../../ui/EmptyState";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
-import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge, outlineButton } from "../../lanes/laneDesignTokens";
-
-/* ---- Badge helpers ---- */
-function colorBadge(color: string) { return { color, bg: `${color}18`, border: `${color}30` }; }
-
-function stateChip(state: PrSummary["state"]): { label: string; color: string; bg: string; border: string } {
-  if (state === "draft") return { label: "DRAFT", ...colorBadge(COLORS.accent) };
-  if (state === "open") return { label: "OPEN", ...colorBadge(COLORS.info) };
-  if (state === "merged") return { label: "MERGED", ...colorBadge(COLORS.success) };
-  return { label: "CLOSED", ...colorBadge(COLORS.textSecondary) };
-}
-
-function checksChip(status: PrSummary["checksStatus"]): { label: string; color: string; bg: string; border: string } {
-  if (status === "passing") return { label: "CI", ...colorBadge(COLORS.success) };
-  if (status === "failing") return { label: "CI", ...colorBadge(COLORS.danger) };
-  if (status === "pending") return { label: "CI", ...colorBadge(COLORS.warning) };
-  return { label: "CI", ...colorBadge(COLORS.textMuted) };
-}
-
-function InlineBadge({ label, color, bg, border }: { label: string; color: string; bg: string; border: string }) {
-  return <span style={inlineBadge(color, { background: bg, border: `1px solid ${border}` })}>{label}</span>;
-}
+import { COLORS, MONO_FONT, LABEL_STYLE, outlineButton } from "../../lanes/laneDesignTokens";
+import { getPrChecksBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 
 function formatRelative(iso: string): string {
   const d = new Date(iso);
@@ -230,8 +210,8 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, s
             filteredPrs.map((pr) => {
               const isSelected = pr.id === selectedPrId;
               const laneName = laneById.get(pr.laneId)?.name ?? pr.laneId;
-              const sc = stateChip(pr.state);
-              const cc = checksChip(pr.checksStatus);
+              const sc = getPrStateBadge(pr.state);
+              const cc = getPrChecksBadge(pr.checksStatus);
 
               return (
                 <button
@@ -273,8 +253,8 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, s
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
                       <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
-                      <InlineBadge {...cc} />
-                      <InlineBadge {...sc} />
+                      <InlinePrBadge {...cc} />
+                      <InlinePrBadge {...sc} />
                       {/* Diff stats mini */}
                       <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.success }}>+{pr.additions}</span>
                       <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.danger }}>-{pr.deletions}</span>
@@ -310,6 +290,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, s
             onRefresh={onRefresh}
             onNavigate={(path) => navigate(path)}
             onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")}
+            onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
           />
         ) : (
           <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", background: COLORS.pageBg }}>

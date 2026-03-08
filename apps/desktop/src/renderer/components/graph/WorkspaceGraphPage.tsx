@@ -17,7 +17,7 @@ import {
   applyNodeChanges,
   useReactFlow
 } from "@xyflow/react";
-import { Warning, ArrowSquareOut, Funnel, Plus, MagnifyingGlass } from "@phosphor-icons/react";
+import { Warning, ArrowSquareOut, Funnel, Plus, MagnifyingGlass, CheckCircle, ClockCounterClockwise, ChatText } from "@phosphor-icons/react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type {
   BatchAssessmentResult,
@@ -35,7 +35,11 @@ import type {
   LaneSummary,
   MergeMethod,
   MergeSimulationResult,
-  PrSummary,
+  PrCheck,
+  PrComment,
+  PrReview,
+  PrStatus,
+  PrWithConflicts,
   IntegrationProposal
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
@@ -89,6 +93,8 @@ import { GraphProposalNode } from "./graphNodes/ProposalNode";
 import { ConflictPanel as GraphConflictPanel } from "./graphDialogs/ConflictPanel";
 import { RiskEdge } from "./graphEdges/RiskEdge";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
+import { PrDetailPane } from "../prs/detail/PrDetailPane";
+import { buildGraphPrOverlay } from "./graphPrData";
 
 const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
 const edgeTypes = { custom: RiskEdge };
@@ -101,7 +107,14 @@ function GraphInner() {
   const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
-  const [prs, setPrs] = React.useState<PrSummary[]>([]);
+  const [prs, setPrs] = React.useState<PrWithConflicts[]>([]);
+  const [prInsightById, setPrInsightById] = React.useState<Record<string, {
+    status: PrStatus | null;
+    checks: PrCheck[];
+    reviews: PrReview[];
+    comments: PrComment[];
+    lastActivityAt: string | null;
+  }>>({});
   const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [autoRebaseByLaneId, setAutoRebaseByLaneId] = React.useState<Record<string, AutoRebaseLaneStatus | null>>({});
   const syncRefreshInFlightRef = React.useRef(false);
@@ -123,7 +136,7 @@ function GraphInner() {
   }, []);
 
   const refreshPrs = React.useCallback(async () => {
-    const next = await window.ade.prs.refresh();
+    const next = await window.ade.prs.listWithConflicts();
     setPrs(next);
   }, []);
 
@@ -248,6 +261,8 @@ function GraphInner() {
   const [mergeInProgressByLaneId, setMergeInProgressByLaneId] = React.useState<Record<string, boolean>>({});
   const [mergeDisappearingAtByLaneId, setMergeDisappearingAtByLaneId] = React.useState<Record<string, number>>({});
   const [prDialog, setPrDialog] = React.useState<PrDialogState | null>(null);
+  const [graphPrActionBusy, setGraphPrActionBusy] = React.useState<string | null>(null);
+  const [graphPrQuickMergeMethod, setGraphPrQuickMergeMethod] = React.useState<MergeMethod>("squash");
   const [conflictPanel, setConflictPanel] = React.useState<ConflictPanelState | null>(null);
   const [showRiskMatrix, setShowRiskMatrix] = React.useState(false);
   const [integrationDialog, setIntegrationDialog] = React.useState<IntegrationDialogState | null>(null);
@@ -412,31 +427,116 @@ function GraphInner() {
 
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
   const primaryLaneId = React.useMemo(() => lanes.find((lane) => lane.laneType === "primary")?.id ?? null, [lanes]);
-  const laneIdByBranchRef = React.useMemo(() => new Map(lanes.map((lane) => [lane.branchRef, lane.id] as const)), [lanes]);
+  const laneIdByBranchRef = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const lane of lanes) {
+      const rawRef = lane.branchRef;
+      const normalized = branchNameFromRef(lane.branchRef);
+      map.set(rawRef, lane.id);
+      map.set(normalized, lane.id);
+      map.set(`refs/heads/${normalized}`, lane.id);
+    }
+    return map;
+  }, [lanes]);
   const prByLaneId = React.useMemo(() => new Map(prs.map((pr) => [pr.laneId, pr] as const)), [prs]);
+  const resolvePrBaseLaneId = React.useCallback((lane: LaneSummary, baseBranch: string) => {
+    return laneIdByBranchRef.get(baseBranch) ?? laneIdByBranchRef.get(branchNameFromRef(baseBranch)) ?? lane.parentLaneId ?? primaryLaneId;
+  }, [laneIdByBranchRef, primaryLaneId]);
+  React.useEffect(() => {
+    let cancelled = false;
+
+    if (prs.length === 0) {
+      setPrInsightById({});
+      return;
+    }
+
+    const loadInsights = async () => {
+      const next: Record<string, { status: PrStatus | null; checks: PrCheck[]; reviews: PrReview[]; comments: PrComment[]; lastActivityAt: string | null }> = {};
+      const chunkSize = 4;
+      for (let index = 0; index < prs.length; index += chunkSize) {
+        const chunk = prs.slice(index, index + chunkSize);
+        const results = await Promise.all(
+          chunk.map(async (pr) => {
+            try {
+              const [status, checks, reviews, comments] = await Promise.all([
+                window.ade.prs.getStatus(pr.id).catch(() => null),
+                window.ade.prs.getChecks(pr.id).catch(() => [] as PrCheck[]),
+                window.ade.prs.getReviews(pr.id).catch(() => [] as PrReview[]),
+                window.ade.prs.getComments(pr.id).catch(() => [] as PrComment[])
+              ]);
+              const activityTimestamps = [
+                pr.updatedAt,
+                pr.lastSyncedAt,
+                ...checks.flatMap((check) => [check.startedAt, check.completedAt]),
+                ...reviews.map((review) => review.submittedAt),
+                ...comments.flatMap((comment) => [comment.createdAt, comment.updatedAt])
+              ]
+                .filter((value): value is string => Boolean(value))
+                .map((value) => ({ value, ts: Date.parse(value) }))
+                .filter((entry) => Number.isFinite(entry.ts))
+                .sort((a, b) => b.ts - a.ts);
+              return [pr.id, { status, checks, reviews, comments, lastActivityAt: activityTimestamps[0]?.value ?? pr.updatedAt }] as const;
+            } catch {
+              return [pr.id, { status: null, checks: [] as PrCheck[], reviews: [] as PrReview[], comments: [] as PrComment[], lastActivityAt: pr.updatedAt }] as const;
+            }
+          })
+        );
+        for (const [prId, insight] of results) next[prId] = insight;
+      }
+      if (!cancelled) setPrInsightById(next);
+    };
+
+    void loadInsights();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [prs]);
+
   const prOverlayByPair = React.useMemo(() => {
     const map = new Map<string, GraphPrOverlay>();
     for (const pr of prs) {
       const lane = laneById.get(pr.laneId);
       if (!lane) continue;
-      const baseLaneId = laneIdByBranchRef.get(pr.baseBranch) ?? lane.parentLaneId ?? primaryLaneId;
+      const baseLaneId = resolvePrBaseLaneId(lane, pr.baseBranch);
       if (!baseLaneId) continue;
-      map.set(edgePairKey(baseLaneId, pr.laneId), {
-        prId: pr.id,
-        laneId: pr.laneId,
+      map.set(edgePairKey(baseLaneId, pr.laneId), buildGraphPrOverlay({
+        pr,
         baseLaneId,
-        number: pr.githubPrNumber,
-        title: pr.title,
-        url: pr.githubUrl,
-        state: pr.state,
-        checksStatus: pr.checksStatus,
-        reviewStatus: pr.reviewStatus,
-        lastSyncedAt: pr.lastSyncedAt ?? null,
+        detail: prInsightById[pr.id],
         mergeInProgress: Boolean(mergeInProgressByLaneId[pr.laneId])
-      });
+      }));
     }
     return map;
-  }, [laneById, laneIdByBranchRef, mergeInProgressByLaneId, primaryLaneId, prs]);
+  }, [laneById, mergeInProgressByLaneId, prInsightById, prs, resolvePrBaseLaneId]);
+  const prOverlayByLaneId = React.useMemo(() => {
+    const map = new Map<string, GraphPrOverlay>();
+    for (const overlay of prOverlayByPair.values()) {
+      map.set(overlay.laneId, overlay);
+    }
+    return map;
+  }, [prOverlayByPair]);
+  const selectedLane = React.useMemo(
+    () => (selectedLaneIds.length === 1 ? laneById.get(selectedLaneIds[0]!) ?? null : null),
+    [laneById, selectedLaneIds]
+  );
+  const selectedLanePr = React.useMemo(
+    () => (selectedLane ? prByLaneId.get(selectedLane.id) ?? null : null),
+    [prByLaneId, selectedLane]
+  );
+  const selectedLanePrOverlay = React.useMemo(
+    () => (selectedLane ? prOverlayByLaneId.get(selectedLane.id) ?? null : null),
+    [prOverlayByLaneId, selectedLane]
+  );
+
+  const getBaseLaneIdForLane = React.useCallback(
+    (laneId: string): string | null => {
+      const lane = laneById.get(laneId);
+      if (!lane) return null;
+      return laneIdByBranchRef.get(lane.baseRef) ?? lane.parentLaneId ?? primaryLaneId;
+    },
+    [laneById, laneIdByBranchRef, primaryLaneId]
+  );
 
   // Map integration lane id → source lane ids from proposals
   const integrationSourcesByLaneId = React.useMemo(() => {
@@ -564,6 +664,11 @@ function GraphInner() {
     }
   }, []);
 
+  const refreshGraphPrSurface = React.useCallback(async () => {
+    await refreshPrs();
+    await Promise.allSettled([refreshRiskBatch(), refreshLanes()]);
+  }, [refreshLanes, refreshPrs, refreshRiskBatch]);
+
   const refreshActivity = React.useCallback(async () => {
     try {
       const [sessions, operations] = await Promise.all([
@@ -650,25 +755,19 @@ function GraphInner() {
 
   React.useEffect(() => {
     let cancelled = false;
-    window.ade.prs
-      .listAll()
-      .then((list) => {
-        if (cancelled) return;
-        setPrs(list);
-      })
-      .catch((err) => console.warn("[Graph] listAll PRs failed:", err));
+    void refreshPrs().catch((err) => console.warn("[Graph] listWithConflicts PRs failed:", err));
 
     const unsub = window.ade.prs.onEvent((event) => {
       if (event.type !== "prs-updated") return;
       if (cancelled) return;
-      setPrs(event.prs);
+      void refreshPrs().catch((err) => console.warn("[Graph] prs-updated refresh failed:", err));
     });
 
     return () => {
       cancelled = true;
       unsub();
     };
-  }, []);
+  }, [refreshPrs]);
 
   React.useEffect(() => {
     window.ade.prs
@@ -927,7 +1026,8 @@ function GraphInner() {
           mergeDisappearing: Boolean(mergeDisappearingAtByLaneId[lane.id]),
           isIntegration: isIntegrationLane(lane),
           focusGlow: focusLaneId === lane.id,
-          isVirtualProposal: false
+          isVirtualProposal: false,
+          pr: prOverlayByLaneId.get(lane.id) ?? null
         },
         selected: selectedLaneIds.includes(lane.id),
         draggable: true
@@ -1008,6 +1108,7 @@ function GraphInner() {
           isIntegration: true,
           focusGlow: focusLaneId === nodeId,
           isVirtualProposal: true,
+          pr: null,
           proposalOutcome: proposal.overallOutcome,
           proposalId: normalizedProposalId ?? undefined
         },
@@ -1203,6 +1304,7 @@ function GraphInner() {
     rebaseFailedPulse,
     riskByPair,
     prOverlayByPair,
+    prOverlayByLaneId,
     selectedLaneIds,
     syncByLaneId,
     autoRebaseByLaneId,
@@ -1474,6 +1576,7 @@ function GraphInner() {
         status: null,
         checks: [],
         reviews: [],
+        comments: [],
         mergeMethod: "squash",
         merging: false,
         error: null
@@ -1495,12 +1598,13 @@ function GraphInner() {
       void Promise.all([
         window.ade.prs.getStatus(existing.id),
         window.ade.prs.getChecks(existing.id),
-        window.ade.prs.getReviews(existing.id)
+        window.ade.prs.getReviews(existing.id),
+        window.ade.prs.getComments(existing.id)
       ])
-        .then(([status, checks, reviews]) => {
+        .then(([status, checks, reviews, comments]) => {
           setPrDialog((prev) =>
             prev && prev.laneId === laneId
-              ? { ...prev, loadingDetails: false, status, checks, reviews }
+              ? { ...prev, loadingDetails: false, status, checks, reviews, comments }
               : prev
           );
         })
@@ -1510,6 +1614,54 @@ function GraphInner() {
         });
     },
     [laneById, prByLaneId]
+  );
+
+  const runGraphPrReview = React.useCallback(
+    async (pr: PrWithConflicts, event: "APPROVE" | "REQUEST_CHANGES") => {
+      setGraphPrActionBusy(event);
+      try {
+        let body: string | undefined;
+        if (event === "REQUEST_CHANGES") {
+          const requested = await requestTextInput({
+            title: "Request Changes",
+            message: "Optional review note to include with the change request.",
+            placeholder: "Changes requested because...",
+            confirmLabel: "Submit review"
+          });
+          if (requested === null) return;
+          body = requested.trim() || undefined;
+        }
+        await window.ade.prs.submitReview({ prId: pr.id, event, body });
+        await refreshGraphPrSurface();
+      } catch (error) {
+        setErrorBanner(error instanceof Error ? error.message : String(error));
+      } finally {
+        setGraphPrActionBusy(null);
+      }
+    },
+    [refreshGraphPrSurface, requestTextInput]
+  );
+
+  const runGraphPrMerge = React.useCallback(
+    async (pr: PrWithConflicts, method: MergeMethod) => {
+      setGraphPrActionBusy("merge");
+      setMergeInProgressByLaneId((prev) => ({ ...prev, [pr.laneId]: true }));
+      try {
+        const result = await window.ade.prs.land({ prId: pr.id, method });
+        if (!result.success) {
+          throw new Error(result.error || "Merge failed");
+        }
+        setMergeDisappearingAtByLaneId((prev) => ({ ...prev, [pr.laneId]: Date.now() }));
+        await refreshGraphPrSurface();
+        setPrDialog(null);
+      } catch (error) {
+        setMergeInProgressByLaneId((prev) => ({ ...prev, [pr.laneId]: false }));
+        setErrorBanner(error instanceof Error ? error.message : String(error));
+      } finally {
+        setGraphPrActionBusy(null);
+      }
+    },
+    [refreshGraphPrSurface]
   );
 
   const openConflictPanelForEdge = React.useCallback(
@@ -1556,6 +1708,38 @@ function GraphInner() {
     },
     [laneById]
   );
+
+  const openExistingPrDetail = React.useCallback(
+    (pr: GraphPrOverlay) => {
+      openPrDialogForLane(pr.laneId, pr.baseLaneId);
+    },
+    [openPrDialogForLane]
+  );
+
+  const refreshPrDialogDetail = React.useCallback(async () => {
+    if (!prDialog?.existingPr) {
+      await refreshPrs();
+      return;
+    }
+    const refreshedPrs = await window.ade.prs.listWithConflicts();
+    setPrs(refreshedPrs);
+    const refreshed = refreshedPrs.find((entry) => entry.id === prDialog.existingPr?.id) ?? null;
+    if (!refreshed) {
+      setPrDialog(null);
+      return;
+    }
+    const [status, checks, reviews, comments] = await Promise.all([
+      window.ade.prs.getStatus(refreshed.id).catch(() => null),
+      window.ade.prs.getChecks(refreshed.id).catch(() => [] as PrCheck[]),
+      window.ade.prs.getReviews(refreshed.id).catch(() => [] as PrReview[]),
+      window.ade.prs.getComments(refreshed.id).catch(() => [] as PrComment[])
+    ]);
+    setPrDialog((prev) => (
+      prev && prev.existingPr?.id === refreshed.id
+        ? { ...prev, existingPr: refreshed, status, checks, reviews, comments, loadingDetails: false }
+        : prev
+    ));
+  }, [prDialog, refreshPrs]);
 
   const onNodeDragStop = React.useCallback(
     (_event: React.MouseEvent, node: Node<GraphNodeData>) => {
@@ -1938,8 +2122,40 @@ function GraphInner() {
 
       try {
         let shouldRefreshSync = false;
+        const lanePr = prByLaneId.get(lane.id) ?? null;
+        const baseLaneId = lane.parentLaneId ?? primaryLaneId;
         if (action === "open") {
           await window.ade.lanes.openFolder({ laneId: lane.id });
+        } else if (action === "view-pr") {
+          if (!lanePr || !baseLaneId) return;
+          openExistingPrDetail({
+            ...(prOverlayByLaneId.get(lane.id) ?? {
+              prId: lanePr.id,
+              laneId: lane.id,
+              baseLaneId,
+              number: lanePr.githubPrNumber,
+              title: lanePr.title,
+              url: lanePr.githubUrl,
+              state: lanePr.state,
+              checksStatus: lanePr.checksStatus,
+              reviewStatus: lanePr.reviewStatus,
+              lastSyncedAt: lanePr.lastSyncedAt ?? null,
+              lastActivityAt: lanePr.updatedAt,
+              mergeInProgress: Boolean(mergeInProgressByLaneId[lane.id]),
+              isMergeable: null,
+              mergeConflicts: null,
+              behindBaseBy: null,
+              reviewCount: 0,
+              approvedCount: 0,
+              changeRequestCount: 0,
+              commentCount: 0,
+              pendingCheckCount: 0,
+              activityState: "steady" as const
+            })
+          });
+        } else if (action === "create-pr") {
+          if (!baseLaneId) return;
+          openPrDialogForLane(lane.id, baseLaneId);
         } else if (action === "create-child") {
           const name = await requestTextInput({
             title: "Child lane name",
@@ -2034,7 +2250,13 @@ function GraphInner() {
       contextMenu,
       laneById,
       lanes,
+      mergeInProgressByLaneId,
+      openExistingPrDetail,
       openReparentDialog,
+      openPrDialogForLane,
+      prByLaneId,
+      prOverlayByLaneId,
+      primaryLaneId,
       refreshLaneSyncStatuses,
       refreshLanes,
       requestTextInput,
@@ -2504,9 +2726,7 @@ function GraphInner() {
                 ...snapshot,
                 collapsedLaneIds: snapshot.collapsedLaneIds.filter((entry) => entry !== node.id)
               }));
-              return;
             }
-            navigate(`/lanes?laneId=${encodeURIComponent(node.id)}&focus=single`);
           }}
           onNodeMouseEnter={(event, node) => {
             // Suppress hover highlights while a drag is active to prevent
@@ -2563,11 +2783,14 @@ function GraphInner() {
           }}
           onNodeDoubleClick={(_event, node) => {
             if (node.data.isVirtualProposal) return;
-            if (!collapsedLaneIds.has(node.id)) return;
-            updateGraphSnapshot((snapshot) => ({
-              ...snapshot,
-              collapsedLaneIds: snapshot.collapsedLaneIds.filter((entry) => entry !== node.id)
-            }));
+            if (collapsedLaneIds.has(node.id)) {
+              updateGraphSnapshot((snapshot) => ({
+                ...snapshot,
+                collapsedLaneIds: snapshot.collapsedLaneIds.filter((entry) => entry !== node.id)
+              }));
+              return;
+            }
+            navigate(`/lanes?laneId=${encodeURIComponent(node.id)}&focus=single`);
           }}
           onEdgeClick={(_event, edge) => {
             const prefix = edge.data?.edgeType ?? edge.id.split(":")[0];
@@ -2587,7 +2810,7 @@ function GraphInner() {
               setEdgeSimulation(null);
               setReparentDialog(null);
               setContextMenu(null);
-              openPrDialogForLane(data.pr.laneId, data.pr.baseLaneId);
+              openExistingPrDetail(data.pr);
               return;
             }
 
@@ -2630,7 +2853,9 @@ function GraphInner() {
             const prLines = pr
               ? [
                   `PR #${pr.number} · ${pr.state} · checks: ${pr.checksStatus} · reviews: ${pr.reviewStatus}`,
+                  `${pr.reviewCount} reviews · ${pr.commentCount} comments${pr.behindBaseBy != null ? ` · behind ${pr.behindBaseBy}` : ""}`,
                   pr.title ? pr.title : null,
+                  pr.lastActivityAt ? `activity ${toRelativeTime(pr.lastActivityAt)}` : null,
                   pr.lastSyncedAt ? `synced ${toRelativeTime(pr.lastSyncedAt)}` : null
                 ].filter((line): line is string => Boolean(line && line.trim().length))
               : [];
@@ -2823,8 +3048,12 @@ function GraphInner() {
             const hasParent = Boolean(lane?.parentLaneId);
             const hasChildren = (lane?.childCount ?? 0) > 0;
             const isCollapsed = collapsedLaneIds.has(contextMenu.laneId);
+            const hasPr = lane ? prByLaneId.has(lane.id) : false;
+            const canCreatePr = Boolean(lane && lane.laneType !== "primary" && (lane.parentLaneId ?? primaryLaneId));
             const items: Array<{ key: string; label: string; disabled?: boolean; reason?: string }> = [
               { key: "open", label: "Open" },
+              { key: "view-pr", label: "View PR", disabled: !hasPr, reason: "No linked PR for this lane." },
+              { key: "create-pr", label: hasPr ? "Open PR Workflow" : "Create PR", disabled: !canCreatePr, reason: "Primary lanes cannot open PRs." },
               { key: "create-child", label: "Create Child" },
               { key: "archive", label: "Archive", disabled: isPrimary, reason: "Primary lane cannot be archived." },
               { key: "delete", label: "Delete", disabled: isPrimary, reason: "Primary lane cannot be deleted." },

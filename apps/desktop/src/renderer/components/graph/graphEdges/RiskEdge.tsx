@@ -30,17 +30,18 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   const width = data?.edgeType === "proposal" ? 2.2 : data?.edgeType === "integration" ? 2.4 : pr && data?.edgeType !== "risk" ? 2.6 : data?.edgeType === "stack" ? 3 : 1.8;
   const dash = data?.edgeType === "proposal" ? "6 4" : data?.edgeType === "risk" ? "5 3" : data?.edgeType === "integration" ? "8 4" : undefined;
   const effectiveWidth = (selected ? width + 1 : width) + (data?.highlight ? 0.5 : 0);
-  const effectiveOpacity = data?.dimmed ? 0.16 : data?.highlight ? 1 : data?.stale ? 0.55 : 0.9;
+  const effectiveOpacity = data?.dimmed ? 0.16 : data?.highlight ? 1 : pr?.activityState === "stale" || data?.stale ? 0.38 : 0.92;
   const badgeColor = pr ? prOverlayColor(pr) : "#6b7280";
   const dotColor = pr ? prCiDotColor(pr) : "#6b7280";
   const badgeText = pr ? `PR #${pr.number}` : "";
-  const badgeWidth = Math.max(64, badgeText.length * 6 + 26);
+  const badgeMeta = pr ? `${pr.reviewCount}r · ${pr.commentCount}c` : "";
+  const badgeWidth = Math.max(74, (badgeText.length + badgeMeta.length) * 6 + 40);
   const badgeHeight = 18;
   return (
     <g>
       <path
         id={id}
-        className="ade-edge-path"
+        className={pr?.activityState === "active" ? "ade-edge-path ade-pr-edge-active" : "ade-edge-path"}
         d={path}
         markerEnd={markerEnd}
         fill="none"
@@ -50,7 +51,10 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
         opacity={effectiveOpacity}
       />
       {pr ? (
-        <g transform={`translate(${labelX}, ${labelY})`} className={pr.mergeInProgress ? "ade-pr-badge-pulse" : undefined}>
+        <g
+          transform={`translate(${labelX}, ${labelY})`}
+          className={pr.mergeInProgress || pr.activityState === "active" ? "ade-pr-badge-pulse" : undefined}
+        >
           <rect
             x={-badgeWidth / 2}
             y={-badgeHeight / 2}
@@ -68,7 +72,7 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
             cy={0}
             r={3}
             fill={dotColor}
-            className={pr.checksStatus === "pending" ? "ade-pr-ci-pending" : undefined}
+            className={pr.pendingCheckCount > 0 ? "ade-pr-ci-pending" : undefined}
           />
           <text
             x={-badgeWidth / 2 + 18}
@@ -78,6 +82,16 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
             fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
           >
             {badgeText}
+          </text>
+          <text
+            x={badgeWidth / 2 - 8}
+            y={3}
+            textAnchor="end"
+            fontSize={9}
+            fill="var(--color-muted-fg)"
+            fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
+          >
+            {badgeMeta}
           </text>
         </g>
       ) : null}

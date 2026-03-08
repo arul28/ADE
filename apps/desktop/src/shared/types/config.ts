@@ -245,6 +245,54 @@ export type SetDefaultLaneTemplateArgs = { templateId: string | null };
 /** IPC args for applying a template to lane env init */
 export type ApplyLaneTemplateArgs = { laneId: string; templateId: string };
 
+// --- Port Allocation & Lease types (Phase 5 W3) ---
+
+export type PortLeaseStatus = "active" | "released" | "orphaned";
+
+/** A port range lease assigned to a specific lane. */
+export type PortLease = {
+  laneId: string;
+  rangeStart: number;
+  rangeEnd: number;
+  status: PortLeaseStatus;
+  leasedAt: string;
+  releasedAt?: string;
+};
+
+/** Event payload for port allocation changes. */
+export type PortAllocationEvent = {
+  type: "port-lease-acquired" | "port-lease-released" | "port-conflict-detected" | "port-conflict-resolved";
+  lease?: PortLease;
+  conflict?: PortConflict;
+};
+
+/** Describes a port conflict between two lanes. */
+export type PortConflict = {
+  port: number;
+  laneIdA: string;
+  laneIdB: string;
+  detectedAt: string;
+  resolved: boolean;
+  resolvedAt?: string;
+};
+
+/** Port allocation configuration. */
+export type PortAllocationConfig = {
+  /** Base port for range allocation (default: 3000) */
+  basePort: number;
+  /** Number of ports per lane (default: 100) */
+  portsPerLane: number;
+  /** Maximum port number allowed (default: 9999) */
+  maxPort: number;
+};
+
+/** IPC args for port allocation queries. */
+export type GetPortLeaseArgs = { laneId: string };
+export type ListPortLeasesArgs = Record<string, never>;
+export type ListPortConflictsArgs = Record<string, never>;
+export type AcquirePortLeaseArgs = { laneId: string };
+export type ReleasePortLeaseArgs = { laneId: string };
+
 export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";
 export type AutomationActionType =
   | "update-packs"

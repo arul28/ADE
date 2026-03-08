@@ -1471,6 +1471,25 @@ button:active, [role="button"]:active {
   transition: opacity 200ms ease, stroke-width 200ms ease, stroke 260ms ease;
 }
 
+@keyframes ade-pr-edge-active {
+  0% {
+    stroke-dashoffset: 0;
+    filter: drop-shadow(0 0 0 rgba(167, 139, 250, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 6px rgba(167, 139, 250, 0.35));
+  }
+  100% {
+    stroke-dashoffset: -18;
+    filter: drop-shadow(0 0 0 rgba(167, 139, 250, 0));
+  }
+}
+
+.ade-pr-edge-active {
+  stroke-dasharray: 8 6;
+  animation: ade-pr-edge-active 1200ms linear infinite;
+}
+
 @keyframes ade-pr-badge-pulse {
   0% {
     opacity: 1;

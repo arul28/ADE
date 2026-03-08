@@ -9,6 +9,7 @@ import { readGlobalState, upsertRecentProject, writeGlobalState } from "./servic
 import { createLaneService } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
+import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createContextDocService } from "./services/context/contextDocService";
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
@@ -568,6 +569,26 @@ app.whenReady().then(async () => {
       projectConfigService,
       logger
     });
+
+    const portAllocationService = createPortAllocationService({
+      logger,
+      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesPortEvent, ev),
+      persistLeases: (leases) => db.setJson("port_leases", leases),
+      loadLeases: () => db.getJson<import("../shared/types").PortLease[]>("port_leases") ?? [],
+    });
+    portAllocationService.restore();
+
+    // Recover orphaned leases on startup
+    (async () => {
+      try {
+        const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+        const validIds = new Set(lanes.map((l) => l.id));
+        portAllocationService.recoverOrphans(validIds);
+        portAllocationService.detectConflicts();
+      } catch (err: any) {
+        logger.warn("port_allocation.startup_recovery_failed", { error: err?.message });
+      }
+    })();
 
     const aiIntegrationService = createAiIntegrationService({
       db,
@@ -1199,6 +1220,7 @@ app.whenReady().then(async () => {
       laneService,
       laneEnvironmentService,
       laneTemplateService,
+      portAllocationService,
       rebaseSuggestionService,
       autoRebaseService,
       sessionService,
