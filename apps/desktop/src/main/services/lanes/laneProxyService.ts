@@ -9,6 +9,12 @@ import type {
 
 import type { Logger } from "../logging/logger";
 
+/** A request interceptor that returns true if it handled the request. */
+export type ProxyRequestInterceptor = (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+) => boolean;
+
 const DEFAULT_CONFIG: ProxyConfig = {
   proxyPort: 8080,
   hostnameSuffix: ".localhost",
@@ -33,6 +39,7 @@ export function createLaneProxyService({
 }) {
   const cfg: ProxyConfig = { ...DEFAULT_CONFIG, ...userConfig };
   const routes = new Map<string, ProxyRoute>();
+  const interceptors: ProxyRequestInterceptor[] = [];
   let server: http.Server | null = null;
   let startedAt: string | undefined;
 
@@ -156,6 +163,11 @@ export function createLaneProxyService({
     req: http.IncomingMessage,
     res: http.ServerResponse
   ): void {
+    // Check interceptors first (e.g. OAuth redirect handler)
+    for (const fn of interceptors) {
+      if (fn(req, res)) return;
+    }
+
     const host = req.headers.host;
     if (!host) {
       res.writeHead(400, { "Content-Type": "text/plain" });
@@ -347,6 +359,31 @@ export function createLaneProxyService({
     },
 
     /**
+     * Register a request interceptor. Returns an unsubscribe function.
+     * Interceptors run before normal hostname routing — return true to
+     * indicate the request was handled.
+     */
+    registerInterceptor(fn: ProxyRequestInterceptor): () => void {
+      interceptors.push(fn);
+      return () => {
+        const idx = interceptors.indexOf(fn);
+        if (idx >= 0) interceptors.splice(idx, 1);
+      };
+    },
+
+    /**
+     * Forward an HTTP request to a specific target port.
+     * Exposed so interceptors (e.g. OAuth redirect) can reuse the proxy logic.
+     */
+    forwardToPort(
+      req: http.IncomingMessage,
+      res: http.ServerResponse,
+      targetPort: number,
+    ): void {
+      proxyRequest(req, res, targetPort);
+    },
+
+    /**
      * Dispose service — stop server and clear all state.
      */
     async dispose(): Promise<void> {
@@ -355,6 +392,7 @@ export function createLaneProxyService({
         server = null;
       }
       routes.clear();
+      interceptors.length = 0;
       startedAt = undefined;
     },
   };

@@ -11,6 +11,7 @@ import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentSe
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
+import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createContextDocService } from "./services/context/contextDocService";
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
@@ -607,6 +608,20 @@ app.whenReady().then(async () => {
       logger,
       broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesProxyEvent, ev),
     });
+
+    const oauthRedirectService = createOAuthRedirectService({
+      logger,
+      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesOAuthEvent, ev),
+      getRoutes: () => laneProxyService.listRoutes(),
+      getProxyPort: () => laneProxyService.getConfig().proxyPort,
+      getHostnameSuffix: () => laneProxyService.getConfig().hostnameSuffix,
+      forwardToPort: (req, res, port) => laneProxyService.forwardToPort(req, res, port),
+    });
+
+    // Register OAuth callback interceptor on the proxy
+    laneProxyService.registerInterceptor((req, res) =>
+      oauthRedirectService.handleRequest(req, res),
+    );
 
     const aiIntegrationService = createAiIntegrationService({
       db,
@@ -1240,6 +1255,7 @@ app.whenReady().then(async () => {
       laneTemplateService,
       portAllocationService,
       laneProxyService,
+      oauthRedirectService,
       rebaseSuggestionService,
       autoRebaseService,
       sessionService,

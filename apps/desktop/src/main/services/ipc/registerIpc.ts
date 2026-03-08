@@ -382,6 +382,7 @@ import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentServi
 import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createPortAllocationService } from "../lanes/portAllocationService";
 import type { createLaneProxyService } from "../lanes/laneProxyService";
+import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { ContextDocService } from "../context/contextDocService";
@@ -453,6 +454,7 @@ export type AppContext = {
   laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
   portAllocationService: ReturnType<typeof createPortAllocationService> | null;
   laneProxyService: ReturnType<typeof createLaneProxyService> | null;
+  oauthRedirectService: ReturnType<typeof createOAuthRedirectService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
@@ -2299,6 +2301,47 @@ export function registerIpc({
     if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
     const { shell } = await import("electron");
     await shell.openExternal(info.previewUrl);
+  });
+
+  // --- OAuth Redirect Handling (Phase 5 W5) ---
+
+  ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
+    const ctx = getCtx();
+    return ctx.oauthRedirectService?.getStatus() ?? {
+      enabled: false,
+      routingMode: "state-parameter" as const,
+      activeSessions: [],
+      callbackPaths: [],
+    };
+  });
+
+  ipcMain.handle(IPC.lanesOAuthUpdateConfig, async (_event, args: import("../../../shared/types").UpdateOAuthRedirectConfigArgs) => {
+    const ctx = getCtx();
+    if (!ctx.oauthRedirectService) throw new Error("OAuth redirect service not available");
+    ctx.oauthRedirectService.updateConfig(args);
+  });
+
+  ipcMain.handle(IPC.lanesOAuthGenerateRedirectUris, async (_event, args: { provider?: string }) => {
+    const ctx = getCtx();
+    if (!ctx.oauthRedirectService) return [];
+    return ctx.oauthRedirectService.generateRedirectUris(args.provider);
+  });
+
+  ipcMain.handle(IPC.lanesOAuthEncodeState, async (_event, args: { laneId: string; originalState: string }) => {
+    const ctx = getCtx();
+    if (!ctx.oauthRedirectService) throw new Error("OAuth redirect service not available");
+    return ctx.oauthRedirectService.encodeState(args.laneId, args.originalState);
+  });
+
+  ipcMain.handle(IPC.lanesOAuthDecodeState, async (_event, args: { encodedState: string }) => {
+    const ctx = getCtx();
+    if (!ctx.oauthRedirectService) return null;
+    return ctx.oauthRedirectService.decodeState(args.encodedState);
+  });
+
+  ipcMain.handle(IPC.lanesOAuthListSessions, async () => {
+    const ctx = getCtx();
+    return ctx.oauthRedirectService?.listSessions() ?? [];
   });
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {

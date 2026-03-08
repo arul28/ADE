@@ -311,6 +311,14 @@ import type {
   GetPreviewInfoArgs,
   OpenPreviewArgs,
   StartProxyArgs,
+  OAuthRedirectStatus,
+  OAuthRedirectEvent,
+  OAuthSession,
+  RedirectUriInfo,
+  UpdateOAuthRedirectConfigArgs,
+  GenerateRedirectUrisArgs,
+  EncodeOAuthStateArgs,
+  DecodeOAuthStateResult,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -795,6 +803,23 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: LaneProxyEvent) => cb(payload);
       ipcRenderer.on(IPC.lanesProxyEvent, listener);
       return () => ipcRenderer.removeListener(IPC.lanesProxyEvent, listener);
+    },
+    oauthGetStatus: async (): Promise<OAuthRedirectStatus> =>
+      ipcRenderer.invoke(IPC.lanesOAuthGetStatus),
+    oauthUpdateConfig: async (args: UpdateOAuthRedirectConfigArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesOAuthUpdateConfig, args),
+    oauthGenerateRedirectUris: async (args: GenerateRedirectUrisArgs): Promise<RedirectUriInfo[]> =>
+      ipcRenderer.invoke(IPC.lanesOAuthGenerateRedirectUris, args),
+    oauthEncodeState: async (args: EncodeOAuthStateArgs): Promise<string> =>
+      ipcRenderer.invoke(IPC.lanesOAuthEncodeState, args),
+    oauthDecodeState: async (args: { encodedState: string }): Promise<DecodeOAuthStateResult> =>
+      ipcRenderer.invoke(IPC.lanesOAuthDecodeState, args),
+    oauthListSessions: async (): Promise<OAuthSession[]> =>
+      ipcRenderer.invoke(IPC.lanesOAuthListSessions),
+    onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: OAuthRedirectEvent) => cb(payload);
+      ipcRenderer.on(IPC.lanesOAuthEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesOAuthEvent, listener);
     },
   },
   sessions: {

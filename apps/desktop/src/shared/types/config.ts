@@ -354,6 +354,68 @@ export type GetPreviewInfoArgs = { laneId: string };
 export type OpenPreviewArgs = { laneId: string };
 export type StartProxyArgs = { port?: number };
 
+// --- OAuth Redirect Handling types (Phase 5 W5) ---
+
+export type OAuthRoutingMode = "state-parameter" | "hostname";
+
+export type OAuthSessionStatus = "pending" | "active" | "completed" | "failed";
+
+/** Tracks a single OAuth callback that passed through the proxy. */
+export type OAuthSession = {
+  id: string;
+  laneId: string;
+  provider?: string;
+  status: OAuthSessionStatus;
+  callbackPath: string;
+  createdAt: string;
+  completedAt?: string;
+  error?: string;
+};
+
+/** Configuration for OAuth redirect handling. */
+export type OAuthRedirectConfig = {
+  /** Whether OAuth callback interception is enabled (default: true). */
+  enabled: boolean;
+  /** URL paths recognised as OAuth callbacks. */
+  callbackPaths: string[];
+  /** Primary routing strategy. */
+  routingMode: OAuthRoutingMode;
+};
+
+/** Runtime status of the OAuth redirect service. */
+export type OAuthRedirectStatus = {
+  enabled: boolean;
+  routingMode: OAuthRoutingMode;
+  activeSessions: OAuthSession[];
+  callbackPaths: string[];
+};
+
+/** Event payload for OAuth redirect changes. */
+export type OAuthRedirectEvent = {
+  type:
+    | "oauth-callback-routed"
+    | "oauth-session-started"
+    | "oauth-session-completed"
+    | "oauth-session-failed"
+    | "oauth-config-changed";
+  session?: OAuthSession;
+  status?: OAuthRedirectStatus;
+  error?: string;
+};
+
+/** Provider-specific redirect URI info for the copy-helper. */
+export type RedirectUriInfo = {
+  provider: string;
+  uris: string[];
+  instructions: string;
+};
+
+/** IPC args for OAuth redirect operations. */
+export type UpdateOAuthRedirectConfigArgs = Partial<OAuthRedirectConfig>;
+export type GenerateRedirectUrisArgs = { provider?: string };
+export type EncodeOAuthStateArgs = { laneId: string; originalState: string };
+export type DecodeOAuthStateResult = { laneId: string; originalState: string } | null;
+
 export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";
 export type AutomationActionType =
   | "update-packs"

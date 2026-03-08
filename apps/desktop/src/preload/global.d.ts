@@ -411,7 +411,15 @@ import type {
   RemoveProxyRouteArgs,
   GetPreviewInfoArgs,
   OpenPreviewArgs,
-  StartProxyArgs
+  StartProxyArgs,
+  OAuthRedirectStatus,
+  OAuthRedirectEvent,
+  OAuthSession,
+  RedirectUriInfo,
+  UpdateOAuthRedirectConfigArgs,
+  GenerateRedirectUrisArgs,
+  EncodeOAuthStateArgs,
+  DecodeOAuthStateResult,
 } from "../shared/types";
 
 export {};
@@ -617,6 +625,13 @@ declare global {
         proxyGetPreviewInfo: (args: GetPreviewInfoArgs) => Promise<LanePreviewInfo | null>;
         proxyOpenPreview: (args: OpenPreviewArgs) => Promise<void>;
         onProxyEvent: (cb: (ev: LaneProxyEvent) => void) => () => void;
+        oauthGetStatus: () => Promise<OAuthRedirectStatus>;
+        oauthUpdateConfig: (args: UpdateOAuthRedirectConfigArgs) => Promise<void>;
+        oauthGenerateRedirectUris: (args: GenerateRedirectUrisArgs) => Promise<RedirectUriInfo[]>;
+        oauthEncodeState: (args: EncodeOAuthStateArgs) => Promise<string>;
+        oauthDecodeState: (args: { encodedState: string }) => Promise<DecodeOAuthStateResult>;
+        oauthListSessions: () => Promise<OAuthSession[]>;
+        onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void) => () => void;
       };
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
