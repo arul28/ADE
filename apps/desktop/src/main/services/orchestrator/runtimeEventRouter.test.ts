@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildRunStateSnapshot, routeEventToCoordinator } from "./runtimeEventRouter";
+import {
+  buildRunStateSnapshot,
+  onAgentChatEvent,
+  onSessionRuntimeSignal,
+  routeEventToCoordinator,
+} from "./runtimeEventRouter";
 
 describe("runtimeEventRouter", () => {
   it("buildRunStateSnapshot falls back to default parallelism cap when metadata is NaN", () => {
@@ -374,5 +379,58 @@ describe("runtimeEventRouter", () => {
     const message = coordinator.injectEvent.mock.calls[0]?.[1] as string;
     expect(message).toContain("complete_mission");
     expect(message).toContain("all tracked steps are terminal");
+  });
+
+  it("replays queued worker messages when agent chat reports a terminal failure state", async () => {
+    const replayQueuedWorkerMessages = vi.fn().mockResolvedValue(undefined);
+    const ctx = {
+      disposed: { current: false },
+      logger: { debug: vi.fn() },
+      sessionSignalQueues: new Map(),
+    } as any;
+
+    onAgentChatEvent(
+      ctx,
+      {
+        sessionId: "session-1",
+        event: {
+          type: "status",
+          turnStatus: "failed",
+        },
+      } as any,
+      { replayQueuedWorkerMessages },
+    );
+
+    const queued = ctx.sessionSignalQueues.get("session-1");
+    await queued;
+
+    expect(replayQueuedWorkerMessages).toHaveBeenCalledWith({ reason: "agent_chat_event:status" });
+    expect(ctx.sessionSignalQueues.size).toBe(0);
+  });
+
+  it("cleans up session queue entries after runtime signal processing settles", async () => {
+    const processSessionRuntimeSignal = vi.fn().mockResolvedValue(undefined);
+    const ctx = {
+      disposed: { current: false },
+      logger: { debug: vi.fn() },
+      sessionRuntimeSignals: new Map(),
+      sessionSignalQueues: new Map(),
+    } as any;
+
+    onSessionRuntimeSignal(
+      ctx,
+      {
+        sessionId: "session-2",
+        runtimeState: "running",
+      } as any,
+      { processSessionRuntimeSignal },
+    );
+
+    const queued = ctx.sessionSignalQueues.get("session-2");
+    await queued;
+
+    expect(processSessionRuntimeSignal).toHaveBeenCalledTimes(1);
+    expect(ctx.sessionSignalQueues.size).toBe(0);
+    expect(ctx.sessionRuntimeSignals.get("session-2")?.runtimeState).toBe("running");
   });
 });

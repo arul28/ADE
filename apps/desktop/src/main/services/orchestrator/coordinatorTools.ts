@@ -667,6 +667,13 @@ export function createCoordinatorToolSet(deps: {
       };
 
   function resolveModelFromPhaseModel(g: OrchestratorRunGraph): PhaseModelResolution {
+    const phaseContext = resolveConfiguredPhaseContext(g);
+    if (!phaseContext.ok) {
+      return {
+        ok: false,
+        error: phaseContext.error,
+      };
+    }
     const runMeta = asRecord(g.run.metadata);
     const phaseRuntime = asRecord(runMeta?.phaseRuntime);
     const currentPhaseModel = asRecord(phaseRuntime?.currentPhaseModel);
@@ -683,6 +690,97 @@ export function createCoordinatorToolSet(deps: {
     }
 
     return { ok: false, error: "Current phase does not define modelId. Configure a phase model before spawning workers." };
+  }
+
+  type WorkerSpawnPolicyResult =
+    | {
+        ok: true;
+        missionPhases: PhaseCard[];
+        currentPhase: PhaseCard | null;
+        resolvedModelId: string;
+        resolvedProvider: string;
+      }
+    | {
+        ok: false;
+        error: string;
+        blockedByPhaseOrdering?: boolean;
+        blockedByValidationGate?: boolean;
+      };
+
+  function authorizeWorkerSpawnPolicy(args: {
+    g: OrchestratorRunGraph;
+    requestedModelId?: string | null;
+  }): WorkerSpawnPolicyResult {
+    const missionPhases = resolveMissionPhases(args.g);
+    const phaseContext = resolveConfiguredPhaseContext(args.g, missionPhases);
+    if (!phaseContext.ok) {
+      return { ok: false, error: phaseContext.error };
+    }
+    if (missionPhases.length > 0) {
+      const phaseCheck = validatePhaseOrdering(missionPhases, args.g);
+      if (!phaseCheck.valid) {
+        return {
+          ok: false,
+          error: phaseCheck.reason,
+          blockedByPhaseOrdering: true,
+        };
+      }
+      const validationGateCheck = validateRequiredValidationGates(missionPhases, args.g);
+      if (!validationGateCheck.valid) {
+        return {
+          ok: false,
+          error: validationGateCheck.reason,
+          blockedByValidationGate: true,
+        };
+      }
+    }
+
+    const explicitModelId = typeof args.requestedModelId === "string" ? args.requestedModelId.trim() : "";
+    let resolvedModelId = explicitModelId;
+    if (!resolvedModelId.length) {
+      const phaseModelResolution = resolveModelFromPhaseModel(args.g);
+      if (!phaseModelResolution.ok) {
+        return { ok: false, error: phaseModelResolution.error };
+      }
+      resolvedModelId = phaseModelResolution.modelId;
+    }
+    const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
+    if (!resolvedDescriptor) {
+      return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
+    }
+
+    const currentPhaseModelId =
+      missionPhases.length > 0 && typeof phaseContext.currentPhase?.model?.modelId === "string"
+        ? phaseContext.currentPhase.model.modelId.trim()
+        : "";
+    if (explicitModelId.length > 0 && currentPhaseModelId.length > 0) {
+      const currentPhaseDescriptor = resolveModelDescriptor(currentPhaseModelId);
+      const normalizedPhaseModelId = currentPhaseDescriptor?.id ?? currentPhaseModelId;
+      if (resolvedDescriptor.id !== normalizedPhaseModelId) {
+        const phaseLabel = phaseContext.currentPhase?.name;
+        return {
+          ok: false,
+          error:
+            `${phaseLabel ? `Current phase "${phaseLabel}"` : "Current phase"} is configured for model "${normalizedPhaseModelId}". ` +
+            `Omit modelId to use the phase model, or call set_current_phase before switching models.`
+        };
+      }
+    }
+
+    const resolvedProvider =
+      resolvedDescriptor.family === "anthropic"
+        ? "claude"
+        : resolvedDescriptor.family === "openai"
+          ? "codex"
+          : resolvedDescriptor.family;
+
+    return {
+      ok: true,
+      missionPhases,
+      currentPhase: phaseContext.currentPhase,
+      resolvedModelId: resolvedDescriptor.id,
+      resolvedProvider,
+    };
   }
 
   // ─── Worker Management ────────────────────────────────────────
@@ -954,6 +1052,7 @@ export function createCoordinatorToolSet(deps: {
         if (Array.isArray(runPhaseConfig.selectedPhases)) return runPhaseConfig.selectedPhases as PhaseCard[];
         if (Array.isArray(runPhaseConfig.phases)) return runPhaseConfig.phases as PhaseCard[];
       }
+      if (Array.isArray(runMeta?.phaseOverride)) return runMeta.phaseOverride as PhaseCard[];
       const runPhaseOverride = asRecord(runMeta?.phaseOverride);
       if (runPhaseOverride) {
         if (Array.isArray(runPhaseOverride.selectedPhases)) return runPhaseOverride.selectedPhases as PhaseCard[];
@@ -974,11 +1073,79 @@ export function createCoordinatorToolSet(deps: {
         if (Array.isArray(phaseConfig.selectedPhases)) return phaseConfig.selectedPhases as PhaseCard[];
         if (Array.isArray(phaseConfig.phases)) return phaseConfig.phases as PhaseCard[];
       }
+      if (Array.isArray(raw.phaseOverride)) return raw.phaseOverride as PhaseCard[];
       if (Array.isArray(raw.phases)) return raw.phases as PhaseCard[];
       return [];
     } catch {
       return [];
     }
+  }
+
+  type PhaseContextResolution =
+    | {
+        ok: true;
+        phases: PhaseCard[];
+        currentPhase: PhaseCard | null;
+        phaseRuntime: Record<string, unknown> | null;
+      }
+    | {
+        ok: false;
+        phases: PhaseCard[];
+        error: string;
+      };
+
+  function resolveConfiguredPhaseContext(
+    g: OrchestratorRunGraph,
+    phasesInput?: PhaseCard[],
+  ): PhaseContextResolution {
+    const phases = [...(phasesInput ?? resolveMissionPhases(g))].sort((a, b) => a.position - b.position);
+    const runMeta = asRecord(g.run.metadata);
+    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+    if (phases.length === 0) {
+      return {
+        ok: true,
+        phases,
+        currentPhase: null,
+        phaseRuntime,
+      };
+    }
+    if (!phaseRuntime) {
+      return {
+        ok: false,
+        phases,
+        error:
+          "Mission phases are configured, but phase runtime is missing. Call set_current_phase before spawning or delegating workers."
+      };
+    }
+    const runtimePhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const runtimePhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    if (!runtimePhaseKey && !runtimePhaseName) {
+      return {
+        ok: false,
+        phases,
+        error:
+          "Mission phases are configured, but the current phase is unset. Call set_current_phase before spawning or delegating workers."
+      };
+    }
+    const currentPhase = phases.find(
+      (phase) => phase.phaseKey === runtimePhaseKey || phase.name === runtimePhaseName,
+    );
+    if (!currentPhase) {
+      const requestedLabel = runtimePhaseName || runtimePhaseKey;
+      return {
+        ok: false,
+        phases,
+        error:
+          `Current phase "${requestedLabel}" is not present in the configured mission phases. ` +
+          "Call set_current_phase with a valid phase before spawning or delegating workers."
+      };
+    }
+    return {
+      ok: true,
+      phases,
+      currentPhase,
+      phaseRuntime,
+    };
   }
 
   function resolvePhaseStepType(phaseKey: string): string {
@@ -1212,26 +1379,13 @@ export function createCoordinatorToolSet(deps: {
     g: OrchestratorRunGraph,
   ): { valid: true } | { valid: false; reason: string } {
     if (phases.length === 0) return { valid: true };
-
-    // Resolve current phase from run metadata
-    const runMeta = asRecord(g.run.metadata);
-    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
-    const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
-    const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
-
-    if (!currentPhaseKey && !currentPhaseName) {
-      // No phase context set — cannot enforce ordering, allow spawn
-      return { valid: true };
+    const phaseContext = resolveConfiguredPhaseContext(g, phases);
+    if (!phaseContext.ok) {
+      return { valid: false, reason: phaseContext.error };
     }
-
-    const sorted = [...phases].sort((a, b) => a.position - b.position);
-    const currentPhase = sorted.find(
-      (p) => p.phaseKey === currentPhaseKey || p.name === currentPhaseName,
-    );
-    if (!currentPhase) {
-      // Current phase not found in cards — cannot enforce, allow spawn
-      return { valid: true };
-    }
+    if (!phaseContext.currentPhase) return { valid: true };
+    const sorted = phaseContext.phases;
+    const currentPhase = phaseContext.currentPhase;
 
     const currentIndex = sorted.indexOf(currentPhase);
 
@@ -1335,17 +1489,13 @@ export function createCoordinatorToolSet(deps: {
     g: OrchestratorRunGraph,
   ): { valid: true } | { valid: false; reason: string } {
     if (phases.length === 0) return { valid: true };
-    const runMeta = asRecord(g.run.metadata);
-    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
-    const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
-    const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
-    if (!currentPhaseKey && !currentPhaseName) return { valid: true };
-
-    const sorted = [...phases].sort((a, b) => a.position - b.position);
-    const currentPhase = sorted.find(
-      (phase) => phase.phaseKey === currentPhaseKey || phase.name === currentPhaseName,
-    );
-    if (!currentPhase) return { valid: true };
+    const phaseContext = resolveConfiguredPhaseContext(g, phases);
+    if (!phaseContext.ok) {
+      return { valid: false, reason: phaseContext.error };
+    }
+    if (!phaseContext.currentPhase) return { valid: true };
+    const sorted = phaseContext.phases;
+    const currentPhase = phaseContext.currentPhase;
     const currentIndex = sorted.indexOf(currentPhase);
 
     const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
@@ -1409,17 +1559,6 @@ export function createCoordinatorToolSet(deps: {
         if (!normalizedPrompt.length) {
           return { ok: false, error: "Worker prompt is required." };
         }
-        const missionPhases = resolveMissionPhases(g);
-        const currentPhaseForPromptGuard = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
-        const currentPhaseKeyForPromptGuard = currentPhaseForPromptGuard?.phaseKey.trim().toLowerCase() ?? "";
-        if (currentPhaseKeyForPromptGuard === "planning" && promptContainsImplementationDirectives(normalizedPrompt)) {
-          return {
-            ok: false,
-            error:
-              'Current phase is "planning". Planning workers must stay read-only and produce research/plan output only. ' +
-              'This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
-          };
-        }
         const requestedDependsOn = dedupeKeys(dependsOn);
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const normalizedRole = typeof role === "string" ? role.trim() : "";
@@ -1434,7 +1573,12 @@ export function createCoordinatorToolSet(deps: {
         if (validationContract && !parsedContract) {
           return { ok: false, error: "Invalid validationContract payload." };
         }
-        const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const missionPhases = resolveMissionPhases(g);
+        const phaseContext = resolveConfiguredPhaseContext(g, missionPhases);
+        if (!phaseContext.ok) {
+          return { ok: false, error: phaseContext.error };
+        }
+        const currentPhase = phaseContext.currentPhase;
         const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
         const inferredDependsOn =
           requestedDependsOn.length === 0 && missionPhases.length > 0
@@ -1442,6 +1586,14 @@ export function createCoordinatorToolSet(deps: {
             : [];
         const normalizedDependsOn =
           requestedDependsOn.length > 0 ? requestedDependsOn : inferredDependsOn;
+        if (currentPhaseKey === "planning" && promptContainsImplementationDirectives(normalizedPrompt)) {
+          return {
+            ok: false,
+            error:
+              'Current phase is "planning". Planning workers must stay read-only and produce research/plan output only. ' +
+              'This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
+          };
+        }
         if (
           currentPhaseKey !== "validation"
           && looksLikeValidationWorkerRequest({
@@ -1458,41 +1610,62 @@ export function createCoordinatorToolSet(deps: {
               'Finish the active work, call set_current_phase with phaseKey "validation", and depend on the worker you are validating.'
           };
         }
-
-        // Resolve worker model from explicit input -> active phase model.
-        const explicitModelId = typeof modelId === "string" ? modelId.trim() : "";
-        let resolvedModelId = explicitModelId;
-        if (!resolvedModelId.length) {
-          const phaseModelResolution = resolveModelFromPhaseModel(g);
-          if (!phaseModelResolution.ok) {
-            return { ok: false, error: phaseModelResolution.error };
-          }
-          resolvedModelId = phaseModelResolution.modelId;
-        }
-        const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
-        if (!resolvedDescriptor) {
-          return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
-        }
-        const resolvedProvider =
-          resolvedDescriptor.family === "anthropic"
-            ? "claude"
-            : resolvedDescriptor.family === "openai"
-            ? "codex"
-            : resolvedDescriptor.family;
-        const currentPhaseModelId =
-          typeof currentPhase?.model?.modelId === "string" ? currentPhase.model.modelId.trim() : "";
-        if (explicitModelId.length > 0 && currentPhase && currentPhaseModelId.length > 0) {
-          const currentPhaseDescriptor = resolveModelDescriptor(currentPhaseModelId);
-          const normalizedPhaseModelId = currentPhaseDescriptor?.id ?? currentPhaseModelId;
-          if (resolvedDescriptor.id !== normalizedPhaseModelId) {
-            return {
-              ok: false,
-              error:
-                `Current phase "${currentPhase.name}" is configured for model "${normalizedPhaseModelId}". ` +
-                `Omit modelId to use the phase model, or call set_current_phase before switching models.`
+        const spawnPolicy = authorizeWorkerSpawnPolicy({
+          g,
+          requestedModelId: modelId,
+        });
+        if (!spawnPolicy.ok) {
+          if (spawnPolicy.blockedByValidationGate) {
+            logger.info("coordinator.spawn_worker.validation_gate_blocked", {
+              name,
+              reason: spawnPolicy.error,
+            });
+            const gateBlockedAt = nowIso();
+            const graphStep = resolveStep(
+              g,
+              replacementSourceWorkerId.length > 0
+                ? replacementSourceWorkerId
+                : requestedDependsOn[requestedDependsOn.length - 1] ?? "",
+            );
+            const gateBlockedDetail = {
+              workerName: name,
+              requestedRole: normalizedRole.length > 0 ? normalizedRole : null,
+              phase: resolveCurrentPhase(g),
+              reason: spawnPolicy.error,
+              blockedByValidationGate: true,
+              laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
+              stepKey: graphStep?.stepKey ?? null
             };
+            orchestratorService.appendTimelineEvent({
+              runId,
+              stepId: graphStep?.id ?? null,
+              eventType: "validation_gate_blocked",
+              reason: "required_validation_gate_blocked",
+              detail: gateBlockedDetail
+            });
+            orchestratorService.appendRuntimeEvent({
+              runId,
+              stepId: graphStep?.id ?? null,
+              eventType: "validation_gate_blocked",
+              eventKey: `validation_gate_blocked:${runId}:${name}:${normalizedRole}:${gateBlockedAt}`,
+              occurredAt: gateBlockedAt,
+              payload: gateBlockedDetail
+            });
+            orchestratorService.emitRuntimeUpdate({
+              runId,
+              stepId: graphStep?.id ?? null,
+              reason: "validation_gate_blocked"
+            });
+          } else if (spawnPolicy.blockedByPhaseOrdering) {
+            logger.info("coordinator.spawn_worker.phase_ordering_blocked", {
+              name,
+              reason: spawnPolicy.error,
+            });
           }
+          return { ok: false, error: spawnPolicy.error };
         }
+        const resolvedModelId = spawnPolicy.resolvedModelId;
+        const resolvedProvider = spawnPolicy.resolvedProvider;
 
         // Hard cap check: refuse to spawn if budget hard caps are triggered
         const budgetCheck = await checkBudgetHardCaps({
@@ -1539,63 +1712,10 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
-        // Phase ordering enforcement: validate the current phase respects constraints
+        // Phase ordering enforcement is handled centrally. Planning still gets
+        // a dedicated post-completion guard because only one planning worker result
+        // should exist before transitioning phases.
         if (missionPhases.length > 0) {
-          const phaseCheck = validatePhaseOrdering(missionPhases, g);
-          if (!phaseCheck.valid) {
-            logger.info("coordinator.spawn_worker.phase_ordering_blocked", {
-              name,
-              reason: phaseCheck.reason,
-            });
-            return { ok: false, error: phaseCheck.reason };
-          }
-          const validationGateCheck = validateRequiredValidationGates(missionPhases, g);
-          if (!validationGateCheck.valid) {
-            logger.info("coordinator.spawn_worker.validation_gate_blocked", {
-              name,
-              reason: validationGateCheck.reason,
-            });
-            const gateBlockedAt = nowIso();
-            const graphStep = resolveStep(
-              g,
-              replacementSourceWorkerId.length > 0
-                ? replacementSourceWorkerId
-                : normalizedDependsOn[normalizedDependsOn.length - 1] ?? "",
-            );
-            const gateBlockedDetail = {
-              workerName: name,
-              requestedRole: normalizedRole.length > 0 ? normalizedRole : null,
-              phase: resolveCurrentPhase(g),
-              reason: validationGateCheck.reason,
-              blockedByValidationGate: true,
-              laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
-              stepKey: graphStep?.stepKey ?? null
-            };
-            orchestratorService.appendTimelineEvent({
-              runId,
-              stepId: graphStep?.id ?? null,
-              eventType: "validation_gate_blocked",
-              reason: "required_validation_gate_blocked",
-              detail: gateBlockedDetail
-            });
-            orchestratorService.appendRuntimeEvent({
-              runId,
-              stepId: graphStep?.id ?? null,
-              eventType: "validation_gate_blocked",
-              eventKey: `validation_gate_blocked:${runId}:${name}:${normalizedRole}:${gateBlockedAt}`,
-              occurredAt: gateBlockedAt,
-              payload: gateBlockedDetail
-            });
-            orchestratorService.emitRuntimeUpdate({
-              runId,
-              stepId: graphStep?.id ?? null,
-              reason: "validation_gate_blocked"
-            });
-            return { ok: false, error: validationGateCheck.reason };
-          }
-
-          const currentPhase = resolveCurrentPhaseCard(g, missionPhases);
-          const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
           if (currentPhaseKey === "planning") {
             const completedPlanningWorker = g.steps.some((step) => {
               const stepMeta = asRecord(step.metadata);
@@ -1933,11 +2053,11 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        const phaseModelResolution = resolveModelFromPhaseModel(g);
-        if (!phaseModelResolution.ok) {
-          return { ok: false, error: phaseModelResolution.error };
+        const spawnPolicy = authorizeWorkerSpawnPolicy({ g });
+        if (!spawnPolicy.ok) {
+          return { ok: false, error: spawnPolicy.error };
         }
-        const specialistModelId = phaseModelResolution.modelId;
+        const specialistModelId = spawnPolicy.resolvedModelId;
 
         const { workerId, step, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: workerName,
@@ -3353,27 +3473,19 @@ export function createCoordinatorToolSet(deps: {
           }
           const dependsOn = dedupeKeys(entry.dependsOn);
           const replacementSourceStep = replaces.length > 0 ? (stepByKey.get(replaces[0]) ?? null) : null;
-          const phaseModelResolution = resolveModelFromPhaseModel(initialGraph);
           const modelOverride = normalizeText(entry.modelId);
-          const resolvedModel =
-            modelOverride.length > 0
-              ? modelOverride
-              : (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
-          if (!resolvedModel.length) {
-            return {
-              ok: false,
-              error: `Unable to resolve modelId for new step '${normalizedKey}'. Add modelId explicitly or configure the phase modelId.`
-            };
-          }
-          const descriptor = resolveModelDescriptor(resolvedModel);
-          if (!descriptor) {
-            return { ok: false, error: `Unknown model '${resolvedModel}' for new step '${normalizedKey}'.` };
+          const spawnPolicy = authorizeWorkerSpawnPolicy({
+            g: initialGraph,
+            requestedModelId: modelOverride,
+          });
+          if (!spawnPolicy.ok) {
+            return { ok: false, error: spawnPolicy.error };
           }
           parsedNewSteps.push({
             key: normalizedKey,
             title: normalizedTitle,
             description: normalizedDescription,
-            modelId: descriptor.id,
+            modelId: spawnPolicy.resolvedModelId,
             roleName: normalizedRole.length > 0 ? normalizedRole : null,
             laneId: entry.laneId ?? replacementSourceStep?.laneId ?? null,
             dependsOn,
@@ -5113,29 +5225,20 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        // Resolve model for sub-agent: explicit override -> phase modelId.
         const roleDef = role?.trim().length ? resolveRoleDefinition(teamRuntime, role.trim()) : null;
-        const phaseModelResolution = resolveModelFromPhaseModel(g);
-        const requestedModelId = typeof modelId === "string" ? modelId.trim() : "";
-        const resolvedModelId = requestedModelId || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
-        if (!resolvedModelId.length) {
-          return {
-            ok: false,
-            error: phaseModelResolution.ok
-              ? "Unable to resolve sub-agent modelId from override or current phase."
-              : phaseModelResolution.error
-          };
+        const spawnPolicy = authorizeWorkerSpawnPolicy({
+          g,
+          requestedModelId: modelId,
+        });
+        if (!spawnPolicy.ok) {
+          return { ok: false, error: spawnPolicy.error };
         }
+        const resolvedModelId = spawnPolicy.resolvedModelId;
+        const resolvedProvider = spawnPolicy.resolvedProvider;
         const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
         if (!resolvedDescriptor) {
           return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
         }
-        const resolvedProvider =
-          resolvedDescriptor.family === "anthropic"
-            ? "claude"
-            : resolvedDescriptor.family === "openai"
-              ? "codex"
-              : resolvedDescriptor.family;
 
         // Hard constraint: allowClaudeAgentTeams must be enabled for Claude CLI sub-agents
         if (resolvedProvider === "claude" && resolvedDescriptor.isCliWrapped && teamRuntime?.allowClaudeAgentTeams === false) {
@@ -5169,7 +5272,7 @@ export function createCoordinatorToolSet(deps: {
         // Create child step via spawnWorkerStep with parent linkage
         const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name,
-          modelId: resolvedDescriptor.id,
+          modelId: resolvedModelId,
           prompt,
           dependsOn: [parentWorkerId],
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
@@ -5329,8 +5432,6 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        const phaseModelResolution = resolveModelFromPhaseModel(g);
-
         const validatedTasks: Array<{
           name: string;
           prompt: string;
@@ -5358,27 +5459,18 @@ export function createCoordinatorToolSet(deps: {
           if (normalizedRole && !roleDef) {
             return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
           }
-          const requestedModelId = typeof rawTask.modelId === "string" ? rawTask.modelId.trim() : "";
-          const resolvedModelId = requestedModelId
-            || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
-          if (!resolvedModelId.length) {
-            return {
-              ok: false,
-              error: phaseModelResolution.ok
-                ? `Unable to resolve modelId for task '${taskName}' from override or phase model.`
-                : phaseModelResolution.error,
-            };
+          const spawnPolicy = authorizeWorkerSpawnPolicy({
+            g,
+            requestedModelId: rawTask.modelId,
+          });
+          if (!spawnPolicy.ok) {
+            return { ok: false, error: spawnPolicy.error };
           }
-          const descriptor = resolveModelDescriptor(resolvedModelId);
+          const descriptor = resolveModelDescriptor(spawnPolicy.resolvedModelId);
           if (!descriptor) {
-            return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
+            return { ok: false, error: `Model '${spawnPolicy.resolvedModelId}' is not registered.` };
           }
-          const provider =
-            descriptor.family === "anthropic"
-              ? "claude"
-              : descriptor.family === "openai"
-                ? "codex"
-                : descriptor.family;
+          const provider = spawnPolicy.resolvedProvider;
 
           if (provider === "claude" && descriptor.isCliWrapped && teamRuntime?.allowClaudeAgentTeams === false) {
             return {
@@ -5392,7 +5484,7 @@ export function createCoordinatorToolSet(deps: {
             prompt: taskPrompt,
             normalizedRole,
             roleName: roleDef?.name ?? normalizedRole,
-            resolvedModelId: descriptor.id,
+            resolvedModelId: spawnPolicy.resolvedModelId,
             provider,
             toolProfile: normalizedRole ? resolveRoleToolProfile(teamRuntime, normalizedRole) : null,
           });

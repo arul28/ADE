@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { routeMessageToCoordinatorCtx } from "./workerDeliveryService";
+import { resolveWorkerDeliverySessionCtx, routeMessageToCoordinatorCtx } from "./workerDeliveryService";
 
 describe("workerDeliveryService routeMessageToCoordinatorCtx", () => {
   it("answers worker status questions locally without waking the coordinator", async () => {
@@ -131,5 +131,92 @@ describe("workerDeliveryService routeMessageToCoordinatorCtx", () => {
     expect(deps.runHealthSweep).not.toHaveBeenCalled();
     expect(deps.steerMission).toHaveBeenCalledTimes(1);
     expect(deps.enqueueChatResponse).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("workerDeliveryService resolveWorkerDeliverySessionCtx", () => {
+  it("prefers the session already bound to the worker thread before lane fallback", async () => {
+    const ctx = {
+      agentChatService: {
+        listSessions: vi.fn().mockResolvedValue([
+          {
+            sessionId: "session-thread-a",
+            laneId: "lane-1",
+            provider: "codex",
+            status: "active",
+            threadId: "thread-a",
+          },
+          {
+            sessionId: "session-thread-b",
+            laneId: "lane-1",
+            provider: "codex",
+            status: "active",
+            threadId: "thread-b",
+          },
+        ]),
+      },
+    } as any;
+
+    const resolution = await resolveWorkerDeliverySessionCtx(ctx, {
+      message: {
+        missionId: "mission-1",
+        laneId: "lane-1",
+        threadId: "thread-a",
+        sourceSessionId: null,
+        target: { kind: "worker", sessionId: null },
+      } as any,
+      context: {
+        missionId: "mission-1",
+        threadId: "thread-a",
+        laneId: "lane-1",
+        sessionId: null,
+        target: { kind: "worker", sessionId: null },
+      } as any,
+      deliveryMeta: {
+        agentSessionId: null,
+      } as any,
+    });
+
+    expect(resolution.sessionId).toBe("session-thread-a");
+    expect(resolution.error).toBeNull();
+  });
+
+  it("blocks lane fallback when thread-bound sessions exist for other worker threads", async () => {
+    const ctx = {
+      agentChatService: {
+        listSessions: vi.fn().mockResolvedValue([
+          {
+            sessionId: "session-thread-b",
+            laneId: "lane-1",
+            provider: "codex",
+            status: "active",
+            threadId: "thread-b",
+          },
+        ]),
+      },
+    } as any;
+
+    const resolution = await resolveWorkerDeliverySessionCtx(ctx, {
+      message: {
+        missionId: "mission-1",
+        laneId: "lane-1",
+        threadId: "thread-a",
+        sourceSessionId: null,
+        target: { kind: "worker", sessionId: null },
+      } as any,
+      context: {
+        missionId: "mission-1",
+        threadId: "thread-a",
+        laneId: "lane-1",
+        sessionId: null,
+        target: { kind: "worker", sessionId: null },
+      } as any,
+      deliveryMeta: {
+        agentSessionId: null,
+      } as any,
+    });
+
+    expect(resolution.sessionId).toBeNull();
+    expect(resolution.error).toContain("Lane fallback is blocked");
   });
 });

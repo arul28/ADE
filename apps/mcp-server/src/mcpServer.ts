@@ -804,6 +804,18 @@ const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
   { name: "get_project_context", description: "Coordinator: return compact mission/project context for planning.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
 ];
 
+const AGENT_VISIBLE_COORDINATOR_TOOL_NAMES = new Set([
+  "report_status",
+  "report_result",
+  "report_validation",
+  "delegate_to_subagent",
+  "delegate_parallel",
+]);
+
+const AGENT_VISIBLE_COORDINATOR_TOOL_SPECS = COORDINATOR_TOOL_SPECS.filter((tool) =>
+  AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(tool.name)
+);
+
 const ALL_TOOL_SPECS: ToolSpec[] = [...TOOL_SPECS, ...COORDINATOR_TOOL_SPECS];
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
 
@@ -1226,6 +1238,21 @@ function resolveCallerContext(session?: SessionState): CallerContext {
     stepId: session.identity.stepId ?? envContext.stepId,
     attemptId: session.identity.attemptId ?? envContext.attemptId
   };
+}
+
+function canCallerAccessCoordinatorTool(name: string, callerCtx: CallerContext): boolean {
+  if (!COORDINATOR_TOOL_NAMES.has(name)) return true;
+  if (callerCtx.role === "orchestrator") return true;
+  if (callerCtx.role === "agent" && AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(name)) return true;
+  return false;
+}
+
+function listToolSpecsForSession(session: SessionState): ToolSpec[] {
+  const callerCtx = resolveCallerContext(session);
+  if (callerCtx.role === "agent") {
+    return [...TOOL_SPECS, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS];
+  }
+  return ALL_TOOL_SPECS;
 }
 
 function parseInitializeIdentity(params: unknown): SessionIdentity {
@@ -1796,6 +1823,42 @@ function normalizeCoordinatorWorkerToolArgs(args: {
   return normalized;
 }
 
+function normalizeAgentDelegationToolArgs(args: {
+  name: string;
+  toolArgs: Record<string, unknown>;
+  callerCtx: CallerContext;
+  graph: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  const normalized = { ...args.toolArgs };
+  if (args.callerCtx.role !== "agent") return normalized;
+  if (args.name !== "delegate_to_subagent" && args.name !== "delegate_parallel") return normalized;
+  if (!args.graph) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Agent caller cannot use '${args.name}' without an active run graph.`
+    );
+  }
+
+  const ownedWorkerId = inferWorkerIdFromCaller(args.graph, args.callerCtx);
+  if (!ownedWorkerId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Agent caller cannot use '${args.name}' without an active parent worker context.`
+    );
+  }
+
+  const requestedParentWorkerId = asOptionalTrimmedString(normalized.parentWorkerId);
+  if (requestedParentWorkerId && requestedParentWorkerId !== ownedWorkerId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Agent caller may only delegate beneath its own worker '${ownedWorkerId}'.`
+    );
+  }
+
+  normalized.parentWorkerId = ownedWorkerId;
+  return normalized;
+}
+
 function resolveParentAttemptIdFromGraph(graph: Record<string, unknown>, parentWorkerId: string): string | null {
   const steps = Array.isArray(graph.steps) ? (graph.steps as Array<Record<string, unknown>>) : [];
   const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
@@ -2104,7 +2167,7 @@ async function runCoordinatorTool(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
   }
   const graph = getRunGraphSafe(args.runtime, runId);
-  const effectiveToolArgs =
+  const normalizedToolArgs =
     args.name === "report_status" || args.name === "report_result" || args.name === "report_validation"
       ? normalizeCoordinatorWorkerToolArgs({
           name: args.name,
@@ -2113,6 +2176,12 @@ async function runCoordinatorTool(args: {
           graph,
         })
       : { ...args.toolArgs };
+  const effectiveToolArgs = normalizeAgentDelegationToolArgs({
+    name: args.name,
+    toolArgs: normalizedToolArgs,
+    callerCtx: args.callerCtx,
+    graph,
+  });
   const nativeRegistration = ensureNativeTeammateRegistration({
     runtime: args.runtime,
     runId,
@@ -2153,6 +2222,9 @@ async function runTool(args: {
   const callerCtx = resolveCallerContext(session);
 
   if (COORDINATOR_TOOL_NAMES.has(name)) {
+    if (!canCallerAccessCoordinatorTool(name, callerCtx)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
     return await runCoordinatorTool({ runtime, name, toolArgs, callerCtx });
   }
 
@@ -3658,7 +3730,7 @@ export function createMcpRequestHandler(args: {
 
     if (method === "tools/list") {
       return {
-        tools: ALL_TOOL_SPECS.map((tool) => ({
+        tools: listToolSpecsForSession(session).map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema

@@ -767,6 +767,59 @@ export async function resolveWorkerDeliverySessionCtx(
     };
   }
 
+  const threadId = toOptionalString(args.context?.threadId) ?? toOptionalString(args.message.threadId);
+  const sessionsWithThreadBinding = sessions.filter((entry) => !!toOptionalString(entry.threadId));
+  if (threadId && sessionsWithThreadBinding.length > 0) {
+    const threadScoped = sessionsWithThreadBinding.filter((entry) => toOptionalString(entry.threadId) === threadId);
+    const providerScopedThread = providerHint
+      ? threadScoped.filter((entry) => entry.provider === providerHint)
+      : threadScoped;
+    const activeProviderScopedThread = providerScopedThread.filter((entry) => entry.status !== "ended");
+    if (activeProviderScopedThread.length === 1) {
+      return {
+        sessionId: activeProviderScopedThread[0].sessionId,
+        source: "lane_fallback",
+        providerHint,
+        summary: activeProviderScopedThread[0],
+        error: null
+      };
+    }
+    if (activeProviderScopedThread.length > 1) {
+      return {
+        sessionId: null,
+        source: "lane_fallback",
+        providerHint,
+        summary: null,
+        error: "Multiple active worker chat sessions are mapped to this worker thread; target a specific session to avoid misdelivery."
+      };
+    }
+    if (providerScopedThread.length === 1) {
+      return {
+        sessionId: providerScopedThread[0].sessionId,
+        source: "lane_fallback",
+        providerHint,
+        summary: providerScopedThread[0],
+        error: null
+      };
+    }
+    if (providerScopedThread.length > 1) {
+      return {
+        sessionId: null,
+        source: "lane_fallback",
+        providerHint,
+        summary: null,
+        error: "Multiple worker chat sessions were found for this worker thread, but none are active. Resume a specific session or target one directly."
+      };
+    }
+    return {
+      sessionId: null,
+      source: "lane_fallback",
+      providerHint,
+      summary: null,
+      error: "No worker chat session is mapped to this worker thread. Lane fallback is blocked to avoid cross-thread misdelivery."
+    };
+  }
+
   if (!laneId) {
     return {
       sessionId: null,
@@ -851,12 +904,34 @@ async function isSteerLikelyQueuedForSession(
     const sessions = await ctx.agentChatService.listSessions();
     const session = sessions.find((entry) => entry.sessionId === sessionId) ?? null;
     if (!session) return true;
-    // Codex turn steering is injected into the current turn; Claude/Unified steers are queued.
-    return session.provider !== "codex";
+    const provider = typeof session.provider === "string" ? session.provider.trim().toLowerCase() : "";
+    // Only known queued providers should stay queued. Unknown providers that accept steer
+    // should count as delivered so we do not immediately retry with another direct send.
+    if (provider === "claude" || provider === "unified") {
+      return true;
+    }
+    return false;
   } catch {
     // Conservative default: assume steer is queued if we cannot resolve provider.
     return true;
   }
+}
+
+function isQueuedSteerDeliveryPending(
+  ctx: OrchestratorContext,
+  message: OrchestratorChatMessage,
+  sessionId: string,
+): boolean {
+  const deliveryMeta = readWorkerDeliveryMetadataCtx(ctx, message);
+  const lastMethod = typeof deliveryMeta.workerDelivery.lastMethod === "string"
+    ? deliveryMeta.workerDelivery.lastMethod.trim()
+    : "";
+  if (lastMethod !== "steer") return false;
+  const mappedSessionId =
+    toOptionalString(message.sourceSessionId)
+    ?? toOptionalString(deliveryMeta.workerDelivery.agentSessionId)
+    ?? toOptionalString(deliveryMeta.inFlightSessionId);
+  return mappedSessionId === sessionId;
 }
 
 export async function sendWorkerMessageToSessionWithStatusCtx(
@@ -1042,7 +1117,23 @@ export async function deliverWorkerMessageCtx(
       maxRetries: deliveryMeta.maxRetries,
       deliverySessionId: sessionId
     });
-    const deliveryMethod = await sendWorkerMessageToSessionCtx(ctx, sessionId, message.content);
+    const deliveryStatus = await sendWorkerMessageToSessionWithStatusCtx(ctx, sessionId, message.content);
+    if (!deliveryStatus.ok) {
+      throw new Error(deliveryStatus.error ?? deliveryStatus.reason);
+    }
+    if (!deliveryStatus.delivered) {
+      return updateWorkerDeliveryStateCtx(ctx, {
+        message: workingMessage,
+        context,
+        state: "queued",
+        retries: deliveryMeta.retries,
+        maxRetries: deliveryMeta.maxRetries,
+        error: "Delivery accepted into the worker session queue; awaiting the current turn to finish.",
+        method: deliveryStatus.method,
+        nextRetryAt: null,
+        deliverySessionId: sessionId
+      });
+    }
     const delivered = updateWorkerDeliveryStateCtx(ctx, {
       message: workingMessage,
       context,
@@ -1050,7 +1141,7 @@ export async function deliverWorkerMessageCtx(
       retries: deliveryMeta.retries,
       maxRetries: deliveryMeta.maxRetries,
       error: null,
-      method: deliveryMethod,
+      method: deliveryStatus.method,
       nextRetryAt: null,
       deliverySessionId: sessionId
     });
@@ -1068,7 +1159,7 @@ export async function deliverWorkerMessageCtx(
         {
           sourceMessageId: delivered.id,
           threadId: delivered.threadId ?? null,
-          deliveryMethod
+          deliveryMethod: deliveryStatus.method
         },
         { appendChatMessage: deps.appendChatMessage }
       );
@@ -1194,25 +1285,40 @@ export async function replayQueuedWorkerMessagesCtx(
     const batch = threadEntries.slice(batchIndex, batchIndex + maxParallelThreads);
     await Promise.all(
       batch.map(async ([threadId, messages]) => {
-        const ignoreBackoff = args.reason.startsWith("runtime_signal") || args.reason.startsWith("agent_chat");
-        const previous = ctx.workerDeliveryThreadQueues.get(threadId) ?? Promise.resolve();
-        const next = previous
-          .catch((error) => { ctx.logger.warn("ai_orchestrator.worker_delivery_queue_previous_failed", { threadId, error: getErrorMessage(error) }); })
-          .then(async () => {
-            if (ctx.disposed.current) return;
-            for (const candidate of messages) {
+          const ignoreBackoff = args.reason.startsWith("runtime_signal") || args.reason.startsWith("agent_chat");
+          const previous = ctx.workerDeliveryThreadQueues.get(threadId) ?? Promise.resolve();
+          const next = previous
+            .catch((error) => { ctx.logger.warn("ai_orchestrator.worker_delivery_queue_previous_failed", { threadId, error: getErrorMessage(error) }); })
+            .then(async () => {
               if (ctx.disposed.current) return;
-              const fresh = getChatMessageById(ctx, candidate.id);
-              if (!fresh || fresh.deliveryState !== "queued") continue;
-              const context = resolveWorkerDeliveryContextCtx(ctx, fresh);
-              if (args.sessionId) {
-                const signalSessionId = args.sessionId.trim();
-                if (signalSessionId.length > 0) {
-                  const mapped = toOptionalString(context?.sessionId) ?? toOptionalString(fresh.sourceSessionId);
-                  if (!mapped || mapped !== signalSessionId) continue;
+              for (const candidate of messages) {
+                if (ctx.disposed.current) return;
+                const fresh = getChatMessageById(ctx, candidate.id);
+                if (!fresh || fresh.deliveryState !== "queued") continue;
+                const context = resolveWorkerDeliveryContextCtx(ctx, fresh);
+                if (args.sessionId) {
+                  const signalSessionId = args.sessionId.trim();
+                  if (signalSessionId.length > 0) {
+                    const mapped = toOptionalString(context?.sessionId) ?? toOptionalString(fresh.sourceSessionId);
+                    if (!mapped || mapped !== signalSessionId) continue;
+                    if (args.reason.startsWith("agent_chat_event") && isQueuedSteerDeliveryPending(ctx, fresh, signalSessionId)) {
+                      updateWorkerDeliveryStateCtx(ctx, {
+                        message: fresh,
+                        context,
+                        state: "delivered",
+                        retries: readWorkerDeliveryMetadataCtx(ctx, fresh).retries,
+                        maxRetries: readWorkerDeliveryMetadataCtx(ctx, fresh).maxRetries,
+                        error: null,
+                        method: "steer",
+                        nextRetryAt: null,
+                        deliverySessionId: signalSessionId
+                      });
+                      delivered += 1;
+                      continue;
+                    }
+                  }
                 }
-              }
-              const updated = await deliverWorkerMessageCtx(ctx, fresh, deps, {
+                const updated = await deliverWorkerMessageCtx(ctx, fresh, deps, {
                 ignoreBackoff
               });
               if (updated.deliveryState === "delivered") {

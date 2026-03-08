@@ -489,11 +489,11 @@ async function callTool(
 }
 
 describe("mcpServer", () => {
-  it("lists the full tool surface including coordinator orchestration tools", async () => {
+  it("lists the full tool surface including coordinator orchestration tools for orchestrator callers", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
 
-    await initialize(handler);
+    await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
     const result = (await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" })) as any;
 
     const names = (result.tools ?? []).map((tool: any) => tool.name);
@@ -554,6 +554,155 @@ describe("mcpServer", () => {
       ])
     );
     expect(names.length).toBeGreaterThan(38);
+  });
+
+  it("shows only self-scoped delegation and reporting coordinator tools to agent callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const result = (await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" })) as any;
+    const names = (result.tools ?? []).map((tool: any) => tool.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "report_status",
+        "report_result",
+        "report_validation",
+        "delegate_to_subagent",
+        "delegate_parallel",
+      ])
+    );
+    expect(names).not.toEqual(
+      expect.arrayContaining([
+        "spawn_worker",
+        "revise_plan",
+        "request_specialist",
+        "set_current_phase",
+        "message_worker",
+        "update_tool_profiles",
+      ])
+    );
+  });
+
+  it("rejects coordinator-only tool calls from agent callers before coordinator dispatch", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "spawn_worker", {
+      name: "implementation-worker",
+      prompt: "Do work"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
+  });
+
+  it("lets agent callers delegate nested work only beneath their own worker", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [{ id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} }],
+      attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false }
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "delegate_parallel", {
+      tasks: [
+        { name: "child-1", prompt: "Handle the first child task.", modelId: "openai/gpt-5.3-codex" },
+        { name: "child-2", prompt: "Handle the second child task.", modelId: "openai/gpt-5.3-codex" },
+      ]
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent.ok).toBe(true);
+    expect(response.structuredContent.parentWorkerId).toBe("step-a");
+    expect(response.structuredContent.total).toBe(2);
+  });
+
+  it("rejects agent delegation attempts that target another worker", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        { id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} },
+        { id: "step-2", stepKey: "step-b", laneId: "lane-1", status: "running", metadata: {} },
+      ],
+      attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false }
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "delegate_to_subagent", {
+      parentWorkerId: "step-b",
+      name: "rogue-child",
+      prompt: "Try to escape the current worker scope."
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "may only delegate beneath its own worker 'step-a'"
+    );
+  });
+
+  it("still routes coordinator-only tool calls for orchestrator callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
+    const response = await callTool(handler, "spawn_worker", {
+      name: "implementation-worker",
+      prompt: "Do work"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("requires run context");
   });
 
   it("routes reflection_add and uses initialize identity fallback", async () => {

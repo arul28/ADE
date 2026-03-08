@@ -2564,6 +2564,353 @@ describe("coordinatorTools validation enforcement", () => {
     });
     expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
+
+  it("spawn_worker reads raw phaseOverride arrays from run metadata", async () => {
+    const phaseCards = [
+      {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+      {
+        id: "phase-validation",
+        phaseKey: "validation",
+        name: "Validation",
+        description: "Verify",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustFollow: ["development"] },
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "self", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 2,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+    ];
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: {
+                modelId: "openai/gpt-5.3-codex",
+                provider: "openai",
+              },
+            },
+            phaseOverride: phaseCards,
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "validate-tab",
+      prompt: "You are a validation worker. Use report_validation with verdict \"pass\" or \"fail\".",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Validation workers can only be spawned during the "validation" phase.'),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("request_specialist fails closed when mission phases are configured but current phase is unset", async () => {
+    const phaseCards = [
+      {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+    ];
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseConfiguration: {
+              selectedPhases: phaseCards,
+            },
+            teamRuntime: {
+              enabled: true,
+              template: {
+                roles: [
+                  {
+                    name: "validator",
+                    capabilities: ["validation"],
+                  }
+                ]
+              }
+            }
+          }
+        },
+        steps: [],
+        attempts: [],
+      },
+    });
+
+    const result = await (tools.request_specialist as any).execute({
+      role: "validator",
+      objective: "Validate the implementation.",
+      reason: "Need an independent pass.",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("current phase is unset"),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("delegate_to_subagent enforces the current phase model on explicit overrides", async () => {
+    const phaseCards = [
+      {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+    ];
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseConfiguration: {
+              selectedPhases: phaseCards,
+            },
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: {
+                modelId: "openai/gpt-5.3-codex",
+                provider: "openai",
+              },
+            },
+          },
+        },
+        steps: [
+          {
+            id: "step-parent",
+            stepKey: "parent-worker",
+            stepIndex: 0,
+            title: "Parent Worker",
+            laneId: "lane-parent",
+            status: "running",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {},
+          },
+        ],
+        attempts: [],
+      },
+    });
+
+    const result = await (tools.delegate_to_subagent as any).execute({
+      parentWorkerId: "parent-worker",
+      name: "security-reviewer",
+      prompt: "Review auth edge cases.",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Current phase "Development" is configured for model "openai/gpt-5.3-codex".'),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("delegate_parallel enforces the current phase model on explicit overrides", async () => {
+    const phaseCards = [
+      {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+    ];
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseConfiguration: {
+              selectedPhases: phaseCards,
+            },
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: {
+                modelId: "openai/gpt-5.3-codex",
+                provider: "openai",
+              },
+            },
+          },
+        },
+        steps: [
+          {
+            id: "step-parent",
+            stepKey: "parent-worker",
+            stepIndex: 0,
+            title: "Parent Worker",
+            laneId: "lane-parent",
+            status: "running",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {},
+          },
+        ],
+        attempts: [],
+      },
+    });
+
+    const result = await (tools.delegate_parallel as any).execute({
+      parentWorkerId: "parent-worker",
+      tasks: [
+        { name: "mismatch", prompt: "Review auth edge cases.", modelId: "anthropic/claude-sonnet-4-6" },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Current phase "Development" is configured for model "openai/gpt-5.3-codex".'),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("revise_plan enforces the current phase model on new replacement steps", async () => {
+    const phaseCards = [
+      {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-02T00:00:00.000Z",
+        updatedAt: "2026-03-02T00:00:00.000Z",
+      },
+    ];
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseConfiguration: {
+              selectedPhases: phaseCards,
+            },
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: {
+                modelId: "openai/gpt-5.3-codex",
+                provider: "openai",
+              },
+            },
+          },
+        },
+        steps: [
+          {
+            id: "step-legacy",
+            stepKey: "legacy",
+            stepIndex: 0,
+            title: "Legacy",
+            laneId: null,
+            status: "pending",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {}
+          }
+        ],
+        attempts: [],
+      },
+    });
+
+    const result = await (tools.revise_plan as any).execute({
+      mode: "partial",
+      replaceStepKeys: ["legacy"],
+      replacementMap: [],
+      dependencyPatches: [],
+      reason: "Need better plan.",
+      newSteps: [
+        {
+          key: "replacement",
+          title: "Replacement",
+          description: "Implement replacement task.",
+          dependsOn: [],
+          modelId: "anthropic/claude-sonnet-4-6",
+          replaces: ["legacy"]
+        }
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Current phase "Development" is configured for model "openai/gpt-5.3-codex".'),
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
 });
 
 describe("coordinatorTools insert_milestone", () => {

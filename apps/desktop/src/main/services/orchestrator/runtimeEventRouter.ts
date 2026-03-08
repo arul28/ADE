@@ -23,6 +23,20 @@ import type { MetaReasonerRunState } from "./metaReasoner";
 
 // ── Session Runtime Signal Processing ────────────────────────────
 
+function trackSessionQueue(
+  ctx: OrchestratorContext,
+  sessionId: string,
+  work: Promise<void>,
+): void {
+  let tracked: Promise<void>;
+  tracked = work.finally(() => {
+    if (ctx.sessionSignalQueues.get(sessionId) === tracked) {
+      ctx.sessionSignalQueues.delete(sessionId);
+    }
+  });
+  ctx.sessionSignalQueues.set(sessionId, tracked);
+}
+
 /**
  * Queue a session runtime signal for serial processing.
  * The actual signal processing is delegated to the provided handler.
@@ -60,7 +74,7 @@ export function onSessionRuntimeSignal(
         error: error instanceof Error ? error.message : String(error)
       });
     });
-  ctx.sessionSignalQueues.set(sessionId, next);
+  trackSessionQueue(ctx, sessionId, next);
 }
 
 /**
@@ -77,9 +91,19 @@ export function onAgentChatEvent(
   if (!sessionId.length) return;
 
   const event = envelope.event;
+  const turnStatus = typeof (event as any).turnStatus === "string" ? (event as any).turnStatus.trim().toLowerCase() : "";
   const shouldReplay =
     event.type === "done" ||
-    (event.type === "status" && (event as any).turnStatus === "completed");
+    (event.type === "status" && (
+      turnStatus === "completed"
+      || turnStatus === "failed"
+      || turnStatus === "error"
+      || turnStatus === "errored"
+      || turnStatus === "interrupted"
+      || turnStatus === "cancelled"
+      || turnStatus === "canceled"
+      || turnStatus === "stopped"
+    ));
 
   const previous = ctx.sessionSignalQueues.get(sessionId) ?? Promise.resolve();
   const next = previous
@@ -102,7 +126,7 @@ export function onAgentChatEvent(
         error: error instanceof Error ? error.message : String(error)
       });
     });
-  ctx.sessionSignalQueues.set(sessionId, next);
+  trackSessionQueue(ctx, sessionId, next);
 }
 
 /**

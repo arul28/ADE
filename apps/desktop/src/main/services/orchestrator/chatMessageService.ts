@@ -1460,6 +1460,12 @@ export function routeMessageCtx(
         targetAttemptId: ws.attemptId,
         content: message.content,
         priority: "normal"
+      }).catch((error: unknown) => {
+        ctx.logger.debug("ai_orchestrator.route_message_delivery_failed", {
+          missionId,
+          targetAttemptId: ws.attemptId,
+          error: error instanceof Error ? error.message : String(error)
+        });
       });
     }
     return;
@@ -1483,9 +1489,59 @@ export function routeMessageCtx(
         targetAttemptId: targetWorker[1].attemptId,
         content: message.content,
         priority: "normal"
+      }).catch((error: unknown) => {
+        ctx.logger.debug("ai_orchestrator.route_message_delivery_failed", {
+          missionId,
+          targetAttemptId: targetWorker[1].attemptId,
+          error: error instanceof Error ? error.message : String(error)
+        });
       });
     }
   }
+}
+
+function queueRecoverableAgentDeliveryCtx(
+  ctx: OrchestratorContext,
+  args: {
+    missionId: string;
+    targetAttemptId: string;
+    content: string;
+    fromAttemptId?: string | null;
+  }
+): void {
+  const targetThread = ensureThreadForTarget(ctx, {
+    missionId: args.missionId,
+    threadId: null,
+    target: { kind: "worker", attemptId: args.targetAttemptId } as OrchestratorChatTarget
+  });
+  const queued = appendChatMessageCtx(ctx, {
+    id: randomUUID(),
+    missionId: args.missionId,
+    role: "user",
+    content: args.content,
+    timestamp: nowIso(),
+    threadId: targetThread.id,
+    target: { kind: "worker", attemptId: args.targetAttemptId } as OrchestratorChatTarget,
+    visibility: "full" as OrchestratorChatVisibilityMode,
+    deliveryState: "queued" as OrchestratorChatDeliveryState,
+    sourceSessionId: null,
+    attemptId: args.targetAttemptId,
+    laneId: null,
+    runId: targetThread.runId ?? null,
+    stepKey: null,
+    metadata: {
+      interAgentDelivery: true,
+      queuedFallback: true,
+      fromAttemptId: args.fromAttemptId ?? null,
+    }
+  });
+  emitThreadEvent(ctx, {
+    type: "message_appended",
+    missionId: args.missionId,
+    threadId: queued.threadId ?? targetThread.id,
+    messageId: queued.id,
+    reason: "agent_message_delivery_queued"
+  });
 }
 
 // ── Inter-agent messaging: deliver message to a running agent ──
@@ -1502,7 +1558,13 @@ export async function deliverMessageToAgentCtx(
 ): Promise<{ delivered: boolean; method: string }> {
   const ws = ctx.workerStates.get(args.targetAttemptId);
   if (!ws) {
-    return { delivered: false, method: "not_found" };
+    queueRecoverableAgentDeliveryCtx(ctx, {
+      missionId: args.missionId,
+      targetAttemptId: args.targetAttemptId,
+      content: args.content,
+      fromAttemptId: args.fromAttemptId ?? null,
+    });
+    return { delivered: false, method: "queued" };
   }
 
   const priority = args.priority ?? "normal";
@@ -1533,7 +1595,13 @@ export async function deliverMessageToAgentCtx(
     }
   }
 
-  return { delivered: false, method: "no_active_session" };
+  queueRecoverableAgentDeliveryCtx(ctx, {
+    missionId: args.missionId,
+    targetAttemptId: args.targetAttemptId,
+    content: formattedContent,
+    fromAttemptId: args.fromAttemptId ?? null,
+  });
+  return { delivered: false, method: "queued" };
 }
 
 // ── Global chat: all messages for a mission across all threads ──
