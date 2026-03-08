@@ -48,6 +48,7 @@ import type {
   TestSuiteDefinition,
   TestSuiteTag
 } from "../../../shared/types";
+import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord } from "../shared/utils";
@@ -1222,7 +1223,10 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     (base, over) => ({ ...base, ...over })
   );
 
-  const defaultLaneTemplate = local.defaultLaneTemplate ?? shared.defaultLaneTemplate;
+  const defaultLaneTemplate =
+    local.defaultLaneTemplate === NO_DEFAULT_LANE_TEMPLATE
+      ? undefined
+      : local.defaultLaneTemplate ?? shared.defaultLaneTemplate;
 
   const processes: ProcessDefinition[] = mergedProcesses.map((entry) => ({
     id: entry.id.trim(),
@@ -1678,6 +1682,57 @@ function validateEffectiveConfig(
   }
 
   validateLaneEnvInitConfig(effective.laneEnvInit, "effective.laneEnvInit", projectRoot, issues);
+
+  const templateIds = new Set<string>();
+  for (const [idx, template] of (effective.laneTemplates ?? []).entries()) {
+    const p = `effective.laneTemplates[${idx}]`;
+    if (!template.id) {
+      issues.push({ path: `${p}.id`, message: "Lane template id is required" });
+      continue;
+    }
+    if (templateIds.has(template.id)) {
+      issues.push({ path: `${p}.id`, message: `Duplicate lane template id '${template.id}'` });
+    } else {
+      templateIds.add(template.id);
+    }
+    if (!template.name) {
+      issues.push({ path: `${p}.name`, message: "Lane template name is required" });
+    }
+    const portRange = template.portRange;
+    if (portRange) {
+      if (!Number.isInteger(portRange.start) || portRange.start <= 0) {
+        issues.push({ path: `${p}.portRange.start`, message: "portRange.start must be a positive integer" });
+      }
+      if (!Number.isInteger(portRange.end) || portRange.end <= 0) {
+        issues.push({ path: `${p}.portRange.end`, message: "portRange.end must be a positive integer" });
+      }
+      if (Number.isInteger(portRange.start) && Number.isInteger(portRange.end) && portRange.end < portRange.start) {
+        issues.push({ path: `${p}.portRange`, message: "portRange.end must be greater than or equal to portRange.start" });
+      }
+    }
+    validateLaneEnvInitConfig(
+      {
+        ...(template.envFiles?.length ? { envFiles: template.envFiles } : {}),
+        ...(template.docker ? { docker: template.docker } : {}),
+        ...(template.dependencies?.length ? { dependencies: template.dependencies } : {}),
+        ...(template.mountPoints?.length ? { mountPoints: template.mountPoints } : {}),
+      },
+      p,
+      projectRoot,
+      issues
+    );
+  }
+
+  if (
+    effective.defaultLaneTemplate &&
+    effective.defaultLaneTemplate !== NO_DEFAULT_LANE_TEMPLATE &&
+    !templateIds.has(effective.defaultLaneTemplate)
+  ) {
+    issues.push({
+      path: "effective.defaultLaneTemplate",
+      message: `Unknown default lane template '${effective.defaultLaneTemplate}'`
+    });
+  }
 
   const automationIds = new Set<string>();
   for (const [idx, rule] of effective.automations.entries()) {

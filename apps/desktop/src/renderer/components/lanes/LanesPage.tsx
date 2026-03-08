@@ -923,6 +923,35 @@ export function LanesPage() {
     setSelectedTemplateId("");
   }, []);
 
+  const prepareCreateDialog = useCallback(() => {
+    setCreateLaneName("");
+    setCreateParentLaneId("");
+    setCreateAsChild(false);
+    setCreateBaseBranch("");
+    const primary = lanes.find((l) => l.laneType === "primary");
+    if (primary) {
+      window.ade.git.listBranches({ laneId: primary.id })
+        .then((branches) => {
+          setCreateBranches(branches);
+          const current = branches.find((b) => b.isCurrent && !b.isRemote);
+          if (current) setCreateBaseBranch(current.name);
+        })
+        .catch(() => {});
+    }
+    Promise.all([
+      window.ade.lanes.listTemplates().catch(() => [] as LaneTemplate[]),
+      window.ade.lanes.getDefaultTemplate().catch(() => null),
+    ]).then(([nextTemplates, defaultTemplateId]) => {
+      setTemplates(nextTemplates);
+      setSelectedTemplateId(
+        defaultTemplateId && nextTemplates.some((template) => template.id === defaultTemplateId)
+          ? defaultTemplateId
+          : ""
+      );
+    });
+    setCreateOpen(true);
+  }, [lanes]);
+
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     if (!open && createBusy) return;
     if (!open) resetCreateDialogState();
@@ -932,6 +961,10 @@ export function LanesPage() {
   const handleCreateSubmit = useCallback(async () => {
     const name = createLaneName.trim();
     if (!name || createBusy || (createAsChild && !createParentLaneId)) return;
+    if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
+      setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
+      return;
+    }
 
     setCreateBusy(true);
     setCreateError(null);
@@ -969,7 +1002,7 @@ export function LanesPage() {
     } finally {
       setCreateBusy(false);
     }
-  }, [createLaneName, createAsChild, createParentLaneId, createBusy, lanes, navigate, refreshLanes, resetCreateDialogState, selectedTemplateId]);
+  }, [createLaneName, createAsChild, createParentLaneId, createBusy, lanes, navigate, refreshLanes, resetCreateDialogState, selectedTemplateId, templates]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -1276,23 +1309,7 @@ export function LanesPage() {
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
-                  setCreateLaneName("");
-                  setCreateParentLaneId("");
-                  setCreateAsChild(false);
-                  setCreateBaseBranch("");
-                  const primary = lanes.find((l) => l.laneType === "primary");
-                  if (primary) {
-                    window.ade.git.listBranches({ laneId: primary.id })
-                      .then((branches) => {
-                        setCreateBranches(branches);
-                        const current = branches.find((b) => b.isCurrent && !b.isRemote);
-                        if (current) setCreateBaseBranch(current.name);
-                      })
-                      .catch(() => {});
-                  }
-                  window.ade.lanes.listTemplates().then(setTemplates).catch(() => setTemplates([]));
-                  window.ade.lanes.getDefaultTemplate().then((id) => setSelectedTemplateId(id ?? "")).catch(() => {});
-                  setCreateOpen(true);
+                  prepareCreateDialog();
                 }}
               >
                 <Plus size={14} />
@@ -1596,23 +1613,7 @@ export function LanesPage() {
                 className="mt-3"
                 disabled={!canCreateLane}
                 onClick={() => {
-                  setCreateLaneName("");
-                  setCreateParentLaneId("");
-                  setCreateAsChild(false);
-                  setCreateBaseBranch("");
-                  const primary = lanes.find((l) => l.laneType === "primary");
-                  if (primary) {
-                    window.ade.git.listBranches({ laneId: primary.id })
-                      .then((branches) => {
-                        setCreateBranches(branches);
-                        const current = branches.find((b) => b.isCurrent && !b.isRemote);
-                        if (current) setCreateBaseBranch(current.name);
-                      })
-                      .catch(() => {});
-                  }
-                  window.ade.lanes.listTemplates().then(setTemplates).catch(() => setTemplates([]));
-                  window.ade.lanes.getDefaultTemplate().then((id) => setSelectedTemplateId(id ?? "")).catch(() => {});
-                  setCreateOpen(true);
+                  prepareCreateDialog();
                 }}
               >
                 Create Lane

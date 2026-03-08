@@ -27,9 +27,13 @@ export function LaneTemplatesSection() {
 
   const handleSetDefault = useCallback(async (templateId: string) => {
     const newId = templateId || null;
-    await window.ade.lanes.setDefaultTemplate({ templateId: newId });
-    setDefaultId(newId);
-  }, []);
+    try {
+      await window.ade.lanes.setDefaultTemplate({ templateId: newId });
+      setDefaultId(newId);
+    } catch {
+      await refresh();
+    }
+  }, [refresh]);
 
   if (loading) {
     return <div style={{ fontSize: 12, color: COLORS.textMuted, padding: 16 }}>Loading templates...</div>;

@@ -75,7 +75,7 @@ export function CreateLaneDialog({
                   className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none"
                   disabled={busy}
                 >
-                  <option value="">None (blank lane)</option>
+                  <option value="">Use project defaults</option>
                   {templates.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name}{t.description ? ` — ${t.description}` : ""}

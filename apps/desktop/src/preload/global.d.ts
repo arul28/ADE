@@ -598,6 +598,7 @@ declare global {
         portAcquire: (args: AcquirePortLeaseArgs) => Promise<PortLease>;
         portRelease: (args: ReleasePortLeaseArgs) => Promise<void>;
         portListConflicts: () => Promise<PortConflict[]>;
+        portRecoverOrphans: () => Promise<PortLease[]>;
         onPortEvent: (cb: (ev: PortAllocationEvent) => void) => () => void;
       };
       sessions: {

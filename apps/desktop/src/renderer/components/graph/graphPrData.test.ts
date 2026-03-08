@@ -91,6 +91,53 @@ describe("buildGraphPrOverlay", () => {
 
     vi.useRealTimers();
   });
+
+  it("prefers live detail status over stale summary fields", () => {
+    const overlay = buildGraphPrOverlay({
+      pr: {
+        id: "pr-2",
+        laneId: "lane-2",
+        projectId: "proj-1",
+        repoOwner: "acme",
+        repoName: "ade",
+        githubPrNumber: 52,
+        githubUrl: "https://github.com/acme/ade/pull/52",
+        githubNodeId: "node-52",
+        title: "Refresh summary status",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "feature/live-status",
+        checksStatus: "pending",
+        reviewStatus: "requested",
+        additions: 12,
+        deletions: 4,
+        lastSyncedAt: "2026-03-08T10:30:00Z",
+        createdAt: "2026-03-07T08:00:00Z",
+        updatedAt: "2026-03-08T10:30:00Z"
+      },
+      baseLaneId: "lane-main",
+      mergeInProgress: false,
+      detail: {
+        status: {
+          prId: "pr-2",
+          state: "merged",
+          checksStatus: "passing",
+          reviewStatus: "approved",
+          isMergeable: true,
+          mergeConflicts: false,
+          behindBaseBy: 0
+        },
+        checks: [],
+        reviews: [],
+        comments: []
+      }
+    });
+
+    expect(overlay.state).toBe("merged");
+    expect(overlay.checksStatus).toBe("passing");
+    expect(overlay.reviewStatus).toBe("approved");
+    expect(overlay.activityState).toBe("idle");
+  });
 });
 
 describe("getPrEdgeColor", () => {

@@ -25,19 +25,16 @@ export function buildGraphPrOverlay(args: {
   const checks = detail?.checks ?? [];
   const reviews = detail?.reviews ?? [];
   const comments = detail?.comments ?? [];
+  const liveStatus = detail?.status;
 
   const ciSummary = {
     total: checks.length,
-    passing: checks.filter((check) => check.conclusion === "success").length,
-    failing: checks.filter((check) => check.conclusion === "failure" || check.conclusion === "cancelled").length,
     pending: checks.filter((check) => check.status === "queued" || check.status === "in_progress").length
   };
   const reviewCounts = {
     total: reviews.length,
     approved: reviews.filter((review) => review.state === "approved").length,
     changesRequested: reviews.filter((review) => review.state === "changes_requested").length,
-    commented: reviews.filter((review) => review.state === "commented").length,
-    pending: reviews.filter((review) => review.state === "pending").length
   };
   const commentCounts = {
     total: comments.length,
@@ -62,24 +59,24 @@ export function buildGraphPrOverlay(args: {
     number: pr.githubPrNumber,
     title: pr.title,
     url: pr.githubUrl,
-    state: pr.state,
-    checksStatus: pr.checksStatus,
-    reviewStatus: pr.reviewStatus,
+    state: liveStatus?.state ?? pr.state,
+    checksStatus: liveStatus?.checksStatus ?? pr.checksStatus,
+    reviewStatus: liveStatus?.reviewStatus ?? pr.reviewStatus,
     lastSyncedAt: pr.lastSyncedAt ?? null,
     lastActivityAt,
     mergeInProgress,
-    isMergeable: detail?.status?.isMergeable ?? null,
-    mergeConflicts: detail?.status?.mergeConflicts ?? null,
-    behindBaseBy: detail?.status?.behindBaseBy ?? null,
+    isMergeable: liveStatus?.isMergeable ?? null,
+    mergeConflicts: liveStatus?.mergeConflicts ?? null,
+    behindBaseBy: liveStatus?.behindBaseBy ?? null,
     reviewCount: reviewCounts.total,
     approvedCount: reviewCounts.approved,
     changeRequestCount: reviewCounts.changesRequested,
     commentCount: commentCounts.total,
     pendingCheckCount: ciSummary.pending,
     activityState: derivePrActivityState({
-      state: pr.state,
+      state: liveStatus?.state ?? pr.state,
       lastActivityAt,
-      reviewStatus: pr.reviewStatus,
+      reviewStatus: liveStatus?.reviewStatus ?? pr.reviewStatus,
       pendingCheckCount: ciSummary.pending
     }),
   };

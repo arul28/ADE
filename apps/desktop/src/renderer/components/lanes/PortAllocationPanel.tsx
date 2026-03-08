@@ -69,28 +69,26 @@ export function PortAllocationPanel({ laneId }: { laneId: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    let sawPortEvent = false;
     setLoading(true);
+    setLease(null);
+    setConflicts([]);
 
-    Promise.all([
-      window.ade.lanes.portGetLease({ laneId }),
-      window.ade.lanes.portListConflicts(),
-    ]).then(([leaseResult, conflictsResult]) => {
-      if (!cancelled) {
-        setLease(leaseResult);
-        setConflicts(
-          conflictsResult.filter(
-            (c: PortConflict) => c.laneIdA === laneId || c.laneIdB === laneId
-          )
-        );
-        setLoading(false);
-      }
-    }).catch(() => {
-      if (!cancelled) setLoading(false);
-    });
+    const applySnapshot = (leaseResult: PortLease | null, conflictsResult: PortConflict[]) => {
+      setLease(leaseResult);
+      setConflicts(
+        conflictsResult.filter(
+          (c: PortConflict) => c.laneIdA === laneId || c.laneIdB === laneId
+        )
+      );
+      setLoading(false);
+    };
 
     const unsub = window.ade.lanes.onPortEvent((ev) => {
+      sawPortEvent = true;
       if (ev.lease && ev.lease.laneId === laneId) {
         setLease(ev.lease);
+        setLoading(false);
       }
       if (ev.conflict) {
         setConflicts((prev) => {
@@ -109,6 +107,22 @@ export function PortAllocationPanel({ laneId }: { laneId: string }) {
           }
           return prev;
         });
+        setLoading(false);
+      }
+    });
+
+    Promise.all([
+      window.ade.lanes.portGetLease({ laneId }),
+      window.ade.lanes.portListConflicts(),
+    ]).then(([leaseResult, conflictsResult]) => {
+      if (!cancelled && !sawPortEvent) {
+        applySnapshot(leaseResult, conflictsResult);
+      }
+    }).catch(() => {
+      if (!cancelled && !sawPortEvent) {
+        setLease(null);
+        setConflicts([]);
+        setLoading(false);
       }
     });
 

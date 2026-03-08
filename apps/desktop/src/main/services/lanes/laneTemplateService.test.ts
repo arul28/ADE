@@ -5,8 +5,8 @@ import type {
   EffectiveProjectConfig,
   ProjectConfigSnapshot,
   ProjectConfigFile,
-  LaneEnvInitConfig,
 } from "../../../shared/types";
+import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 
 function makeLogger() {
   return {
@@ -83,10 +83,6 @@ function makeProjectConfigService(snapshot: ProjectConfigSnapshot) {
     getEffective: vi.fn(() => snapshot.effective),
     save: vi.fn(),
   } as any;
-}
-
-function makeLaneEnvironmentService() {
-  return {} as any;
 }
 
 describe("laneTemplateService", () => {
@@ -193,7 +189,10 @@ describe("laneTemplateService", () => {
 
     it("returns configured default", () => {
       const snapshot = makeSnapshot({
-        effective: { defaultLaneTemplate: "tpl-default" },
+        effective: {
+          laneTemplates: [makeTemplate({ id: "tpl-default" })],
+          defaultLaneTemplate: "tpl-default"
+        },
       });
       const configService = makeProjectConfigService(snapshot);
 
@@ -205,11 +204,28 @@ describe("laneTemplateService", () => {
 
       expect(service.getDefaultTemplateId()).toBe("tpl-default");
     });
+
+    it("returns null when the configured default no longer exists", () => {
+      const snapshot = makeSnapshot({
+        effective: { defaultLaneTemplate: "tpl-missing", laneTemplates: [makeTemplate({ id: "tpl-live" })] },
+      });
+      const configService = makeProjectConfigService(snapshot);
+
+      const service = createLaneTemplateService({
+        projectConfigService: configService,
+
+        logger,
+      });
+
+      expect(service.getDefaultTemplateId()).toBeNull();
+    });
   });
 
   describe("setDefaultTemplateId", () => {
     it("updates local config", () => {
-      const snapshot = makeSnapshot();
+      const snapshot = makeSnapshot({
+        effective: { laneTemplates: [makeTemplate({ id: "tpl-new", name: "New Default" })] },
+      });
       const configService = makeProjectConfigService(snapshot);
 
       const service = createLaneTemplateService({
@@ -244,6 +260,44 @@ describe("laneTemplateService", () => {
       const savedArg = configService.save.mock.calls[0][0];
       expect(savedArg.local.defaultLaneTemplate).toBeUndefined();
       expect(logger.info).toHaveBeenCalledWith("lane_template.default_set", { templateId: null });
+    });
+
+    it("stores an explicit no-default sentinel when overriding a shared default", () => {
+      const snapshot = makeSnapshot({
+        shared: { defaultLaneTemplate: "tpl-shared" },
+        effective: {
+          laneTemplates: [makeTemplate({ id: "tpl-shared" })],
+          defaultLaneTemplate: "tpl-shared"
+        },
+      });
+      const configService = makeProjectConfigService(snapshot);
+
+      const service = createLaneTemplateService({
+        projectConfigService: configService,
+
+        logger,
+      });
+
+      service.setDefaultTemplateId(null);
+
+      const savedArg = configService.save.mock.calls[0][0];
+      expect(savedArg.local.defaultLaneTemplate).toBe(NO_DEFAULT_LANE_TEMPLATE);
+    });
+
+    it("rejects unknown defaults before saving", () => {
+      const snapshot = makeSnapshot({
+        effective: { laneTemplates: [makeTemplate({ id: "tpl-live" })] },
+      });
+      const configService = makeProjectConfigService(snapshot);
+
+      const service = createLaneTemplateService({
+        projectConfigService: configService,
+
+        logger,
+      });
+
+      expect(() => service.setDefaultTemplateId("tpl-missing")).toThrow("Unknown lane template: tpl-missing");
+      expect(configService.save).not.toHaveBeenCalled();
     });
   });
 

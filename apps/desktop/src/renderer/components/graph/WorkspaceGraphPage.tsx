@@ -99,6 +99,8 @@ import { getPrChecksBadge, getPrReviewsBadge, InlinePrBadge } from "../prs/share
 
 const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
 const edgeTypes = { custom: RiskEdge };
+const MERGE_SUCCESS_ANIMATION_MS = 1200;
+
 function GraphInner() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -799,6 +801,31 @@ function GraphInner() {
     const timer = window.setTimeout(() => setUndoToast(null), 10_000);
     return () => window.clearTimeout(timer);
   }, [undoToast]);
+
+  React.useEffect(() => {
+    const timers = Object.entries(mergeDisappearingAtByLaneId).map(([laneId, startedAt]) =>
+      window.setTimeout(() => {
+        setMergeDisappearingAtByLaneId((prev) => {
+          if (!(laneId in prev)) return prev;
+          const next = { ...prev };
+          delete next[laneId];
+          return next;
+        });
+        setMergeInProgressByLaneId((prev) => {
+          if (!(laneId in prev)) return prev;
+          const next = { ...prev };
+          delete next[laneId];
+          return next;
+        });
+      }, Math.max(0, MERGE_SUCCESS_ANIMATION_MS - (Date.now() - startedAt)))
+    );
+
+    return () => {
+      for (const timer of timers) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [mergeDisappearingAtByLaneId]);
 
   // E3: Handle ?focusLane= query param
   React.useEffect(() => {

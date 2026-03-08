@@ -232,6 +232,12 @@ export type ConfigLaneTemplate = {
   envVars?: Record<string, string>;
 };
 
+/**
+ * Internal config sentinel used to explicitly override an inherited shared
+ * default template with "no default" in local config.
+ */
+export const NO_DEFAULT_LANE_TEMPLATE = "__ade_none__";
+
 /** IPC args for listing templates */
 export type ListLaneTemplatesArgs = Record<string, never>;
 

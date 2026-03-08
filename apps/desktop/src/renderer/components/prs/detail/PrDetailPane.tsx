@@ -117,6 +117,26 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
   const [reviewEvent, setReviewEvent] = React.useState<"APPROVE" | "REQUEST_CHANGES" | "COMMENT">("APPROVE");
   const [expandedRun, setExpandedRun] = React.useState<number | null>(null);
   const [expandedFile, setExpandedFile] = React.useState<string | null>(null);
+  const detailLoadSeqRef = React.useRef(0);
+
+  const loadDetail = React.useCallback(async () => {
+    const requestId = ++detailLoadSeqRef.current;
+    try {
+      const [d, f, a, act] = await Promise.all([
+        window.ade.prs.getDetail(pr.id).catch(() => null),
+        window.ade.prs.getFiles(pr.id).catch(() => []),
+        window.ade.prs.getActionRuns(pr.id).catch(() => []),
+        window.ade.prs.getActivity(pr.id).catch(() => []),
+      ]);
+      if (requestId !== detailLoadSeqRef.current) return;
+      setDetail(d);
+      setFiles(f);
+      setActionRuns(a);
+      setActivity(act);
+    } catch {
+      // silently fail - basic data still available from context
+    }
+  }, [pr.id]);
 
   // Load detail on PR change
   React.useEffect(() => {
@@ -134,24 +154,10 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
     setShowReviewModal(false);
 
     void loadDetail();
-  }, [pr.id]);
-
-  const loadDetail = async () => {
-    try {
-      const [d, f, a, act] = await Promise.all([
-        window.ade.prs.getDetail(pr.id).catch(() => null),
-        window.ade.prs.getFiles(pr.id).catch(() => []),
-        window.ade.prs.getActionRuns(pr.id).catch(() => []),
-        window.ade.prs.getActivity(pr.id).catch(() => []),
-      ]);
-      setDetail(d);
-      setFiles(f);
-      setActionRuns(a);
-      setActivity(act);
-    } catch {
-      // silently fail - basic data still available from context
-    }
-  };
+    return () => {
+      detailLoadSeqRef.current += 1;
+    };
+  }, [loadDetail, pr.id]);
 
   // ---- Actions ----
   const handleMerge = async () => {

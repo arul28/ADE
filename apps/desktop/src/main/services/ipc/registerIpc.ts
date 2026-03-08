@@ -373,9 +373,8 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
-  LaneTemplate,
-  LaneEnvInitProgress,
 } from "../../../shared/types";
+import type { LaneEnvInitConfig, LaneOverlayOverrides, PortLease } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -581,14 +580,96 @@ async function resolveLaneOverlayContext(ctx: AppContext, laneId: string) {
 
   const config = ctx.projectConfigService.getEffective();
   const { matchLaneOverlayPolicies } = await import("../config/laneOverlayMatcher");
-  const overrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
+  const overlayOverrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
+  const lease = ctx.portAllocationService?.getLease(lane.id) ?? null;
+  const overrides = applyLeaseToOverrides(overlayOverrides, lease);
   const envInitConfig = ctx.laneEnvironmentService?.resolveEnvInitConfig(config.laneEnvInit, overrides);
 
   return {
     lane,
     overrides,
-    envInitConfig
+    envInitConfig,
+    lease
   };
+}
+
+function mergeLaneDockerConfig(
+  current: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
+  next: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined
+) {
+  if (!current && !next) return undefined;
+  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
+  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
+  return {
+    ...current,
+    ...next,
+    ...(next.services != null
+      ? { services: [...next.services] }
+      : current.services != null
+        ? { services: [...current.services] }
+        : {})
+  };
+}
+
+function mergeLaneEnvInitConfig(
+  current: LaneEnvInitConfig | undefined,
+  next: LaneEnvInitConfig | undefined
+): LaneEnvInitConfig | undefined {
+  if (!current && !next) return undefined;
+  if (!current) {
+    return next
+      ? {
+          ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
+          ...(mergeLaneDockerConfig(undefined, next.docker) ? { docker: mergeLaneDockerConfig(undefined, next.docker) } : {}),
+          ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
+          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {})
+        }
+      : undefined;
+  }
+  if (!next) {
+    return {
+      ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
+      ...(mergeLaneDockerConfig(undefined, current.docker) ? { docker: mergeLaneDockerConfig(undefined, current.docker) } : {}),
+      ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
+      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {})
+    };
+  }
+  return {
+    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
+    ...(mergeLaneDockerConfig(current.docker, next.docker) ? { docker: mergeLaneDockerConfig(current.docker, next.docker) } : {}),
+    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
+    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
+  };
+}
+
+function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
+  return {
+    ...base,
+    ...next,
+    ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
+    ...(base.processIds || next.processIds ? { processIds: [...(next.processIds ?? base.processIds ?? [])] } : {}),
+    ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
+    ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {})
+  };
+}
+
+function applyLeaseToOverrides(overrides: LaneOverlayOverrides, lease: PortLease | null): LaneOverlayOverrides {
+  if (!lease || lease.status !== "active" || overrides.portRange) {
+    return { ...overrides };
+  }
+  return {
+    ...overrides,
+    portRange: { start: lease.rangeStart, end: lease.rangeEnd }
+  };
+}
+
+async function ensureLanePortLease(ctx: AppContext, laneId: string): Promise<PortLease | null> {
+  if (!ctx.portAllocationService) return null;
+  const activeLane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find((entry) => entry.id === laneId);
+  if (!activeLane) throw new Error(`Lane not found: ${laneId}`);
+  const existing = ctx.portAllocationService.getLease(laneId);
+  if (existing?.status === "active") return existing;
+  return ctx.portAllocationService.acquire(laneId);
 }
 
 async function buildLinearConnectionStatus(
@@ -1907,27 +1988,37 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    return await ctx.laneService.create({ name: arg.name, description: arg.description, parentLaneId: arg.parentLaneId });
+    const lane = await ctx.laneService.create({ name: arg.name, description: arg.description, parentLaneId: arg.parentLaneId });
+    await ensureLanePortLease(ctx, lane.id);
+    return lane;
   });
 
   ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    return await ctx.laneService.createChild(arg);
+    const lane = await ctx.laneService.createChild(arg);
+    await ensureLanePortLease(ctx, lane.id);
+    return lane;
   });
 
   ipcMain.handle(IPC.lanesImportBranch, async (_event, arg: ImportBranchLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    return await ctx.laneService.importBranch(arg);
+    const lane = await ctx.laneService.importBranch(arg);
+    await ensureLanePortLease(ctx, lane.id);
+    return lane;
   });
 
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    return await ctx.laneService.attach(arg);
+    const lane = await ctx.laneService.attach(arg);
+    await ensureLanePortLease(ctx, lane.id);
+    return lane;
   });
 
   ipcMain.handle(IPC.lanesAdoptAttached, async (_event, arg: AdoptAttachedLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    return await ctx.laneService.adoptAttached(arg);
+    const lane = await ctx.laneService.adoptAttached(arg);
+    await ensureLanePortLease(ctx, lane.id);
+    return lane;
   });
 
   ipcMain.handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {
@@ -1948,6 +2039,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesArchive, async (_event, arg: ArchiveLaneArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.laneService.archive(arg);
+    ctx.portAllocationService?.release(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
@@ -1956,6 +2048,7 @@ export function registerIpc({
       ? await resolveLaneOverlayContext(ctx, arg.laneId)
       : null;
     await ctx.laneService.delete(arg);
+    ctx.portAllocationService?.release(arg.laneId);
     if (ctx.laneEnvironmentService && envContext?.envInitConfig) {
       try {
         await ctx.laneEnvironmentService.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
@@ -2073,22 +2166,25 @@ export function registerIpc({
     if (!ctx.laneTemplateService || !ctx.laneEnvironmentService) {
       throw new Error("Lane template or environment service not available");
     }
+    const { lane, overrides, envInitConfig } = await resolveLaneOverlayContext(ctx, args.laneId);
     const template = ctx.laneTemplateService.getTemplate(args.templateId);
     if (!template) throw new Error(`Template not found: ${args.templateId}`);
-
-    const envInitConfig = ctx.laneTemplateService.resolveTemplateAsEnvInit(template);
-    const lanes = await ctx.laneService.list({ includeStatus: false });
-    const lane = lanes.find((l) => l.id === args.laneId);
-    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
-
-    const overrides = template.portRange ? { portRange: template.portRange, env: template.envVars } : { env: template.envVars };
-    return await ctx.laneEnvironmentService.initLaneEnvironment(lane, envInitConfig, overrides);
+    const templateEnvInit = ctx.laneTemplateService.resolveTemplateAsEnvInit(template);
+    const mergedOverrides = mergeLaneOverrides(overrides, {
+      ...(template.envVars ? { env: template.envVars } : {}),
+      ...(!overrides.portRange && template.portRange ? { portRange: template.portRange } : {}),
+      envInit: templateEnvInit
+    });
+    const mergedEnvInitConfig =
+      mergeLaneEnvInitConfig(envInitConfig, templateEnvInit) ?? templateEnvInit;
+    return await ctx.laneEnvironmentService.initLaneEnvironment(lane, mergedEnvInitConfig, mergedOverrides);
   });
 
   // --- Port Allocation (Phase 5 W3) ---
 
   ipcMain.handle(IPC.lanesPortGetLease, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
+    await ensureLanePortLease(ctx, args.laneId);
     return ctx.portAllocationService?.getLease(args.laneId) ?? null;
   });
 
@@ -2100,11 +2196,16 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesPortAcquire, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
     if (!ctx.portAllocationService) throw new Error("Port allocation service not available");
-    return ctx.portAllocationService.acquire(args.laneId);
+    return (await ensureLanePortLease(ctx, args.laneId))!;
   });
 
   ipcMain.handle(IPC.lanesPortRelease, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
+    await ctx.laneService.list({ includeArchived: true, includeStatus: false }).then((lanes) => {
+      if (!lanes.some((lane) => lane.id === args.laneId)) {
+        throw new Error(`Lane not found: ${args.laneId}`);
+      }
+    });
     ctx.portAllocationService?.release(args.laneId);
   });
 

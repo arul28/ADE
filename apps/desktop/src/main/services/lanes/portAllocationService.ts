@@ -42,28 +42,44 @@ export function createPortAllocationService({
   const leases = new Map<string, PortLease>();
   const conflicts: PortConflict[] = [];
 
+  if (!Number.isInteger(cfg.basePort) || cfg.basePort <= 0) {
+    throw new Error(`Invalid port allocation config: basePort must be a positive integer (received ${cfg.basePort})`);
+  }
+  if (!Number.isInteger(cfg.portsPerLane) || cfg.portsPerLane <= 0) {
+    throw new Error(`Invalid port allocation config: portsPerLane must be a positive integer (received ${cfg.portsPerLane})`);
+  }
+  if (!Number.isInteger(cfg.maxPort) || cfg.maxPort < cfg.basePort) {
+    throw new Error(`Invalid port allocation config: maxPort must be an integer >= basePort (received ${cfg.maxPort})`);
+  }
+
   // --- helpers ---------------------------------------------------------------
 
   function maxSlots(): number {
     return Math.floor((cfg.maxPort - cfg.basePort + 1) / cfg.portsPerLane);
   }
 
-  /** Return the set of range-start values currently occupied by active leases. */
-  function occupiedStarts(): Set<number> {
-    const starts = new Set<number>();
-    for (const lease of leases.values()) {
-      if (lease.status === "active") starts.add(lease.rangeStart);
-    }
-    return starts;
+  function activeLeases(): PortLease[] {
+    return Array.from(leases.values()).filter((lease) => lease.status === "active");
+  }
+
+  function rangesOverlap(
+    rangeA: { start: number; end: number },
+    rangeB: { start: number; end: number }
+  ): boolean {
+    return rangeA.start <= rangeB.end && rangeB.start <= rangeA.end;
   }
 
   /** Find the first free slot and return its range start, or null if exhausted. */
   function findFreeSlot(): { start: number; end: number } | null {
-    const occupied = occupiedStarts();
+    const active = activeLeases();
     const slots = maxSlots();
     for (let i = 0; i < slots; i++) {
       const start = cfg.basePort + i * cfg.portsPerLane;
-      if (!occupied.has(start)) {
+      const candidate = { start, end: start + cfg.portsPerLane - 1 };
+      const overlapsExisting = active.some((lease) =>
+        rangesOverlap(candidate, { start: lease.rangeStart, end: lease.rangeEnd })
+      );
+      if (!overlapsExisting) {
         return { start, end: start + cfg.portsPerLane - 1 };
       }
     }
@@ -99,6 +115,8 @@ export function createPortAllocationService({
      * Restore leases from persistence layer. Call once at startup.
      */
     restore(): void {
+      leases.clear();
+      conflicts.length = 0;
       const persisted = loadLeases();
       for (const lease of persisted) {
         leases.set(lease.laneId, lease);

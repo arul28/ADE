@@ -761,6 +761,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.lanesPortRelease, args),
     portListConflicts: async (): Promise<PortConflict[]> =>
       ipcRenderer.invoke(IPC.lanesPortListConflicts),
+    portRecoverOrphans: async (): Promise<PortLease[]> =>
+      ipcRenderer.invoke(IPC.lanesPortRecoverOrphans),
     onPortEvent: (cb: (ev: PortAllocationEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PortAllocationEvent) => cb(payload);
       ipcRenderer.on(IPC.lanesPortEvent, listener);

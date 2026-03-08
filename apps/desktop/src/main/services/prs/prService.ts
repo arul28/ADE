@@ -2981,6 +2981,7 @@ export function createPrService({
         path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/labels`,
         body: { labels: args.labels }
       });
+      await refreshOne(args.prId);
     },
 
     async requestReviewers(args: RequestPrReviewersArgs): Promise<void> {
@@ -2992,6 +2993,7 @@ export function createPrService({
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/requested_reviewers`,
         body: { reviewers: args.reviewers }
       });
+      await refreshOne(args.prId);
     },
 
     async submitReview(args: SubmitPrReviewArgs): Promise<void> {
@@ -3003,6 +3005,7 @@ export function createPrService({
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
         body: { event: args.event, body: args.body ?? "" }
       });
+      await refreshOne(args.prId);
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {
@@ -3018,6 +3021,7 @@ export function createPrService({
         `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
         ["closed", nowIso(), row.id, projectId]
       );
+      await refreshOne(args.prId);
     },
 
     async reopenPr(args: ReopenPrArgs): Promise<void> {
@@ -3033,6 +3037,7 @@ export function createPrService({
         `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
         ["open", nowIso(), row.id, projectId]
       );
+      await refreshOne(args.prId);
     },
 
     async rerunChecks(args: RerunPrChecksArgs): Promise<void> {
@@ -3075,6 +3080,7 @@ export function createPrService({
           }
         }
       }
+      await refreshOne(args.prId);
     },
 
     async aiReviewSummary(args: AiReviewSummaryArgs): Promise<AiReviewSummary> {

@@ -196,6 +196,25 @@ describe("portAllocationService", () => {
       expect(detected[0].resolved).toBe(false);
     });
 
+    it("does not allocate a default slot that overlaps an off-grid restored lease", () => {
+      const svc = createService({
+        initialLeases: [
+          {
+            laneId: "lane-off-grid",
+            rangeStart: 3050,
+            rangeEnd: 3149,
+            status: "active",
+            leasedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      });
+      svc.restore();
+
+      const lease = svc.acquire("lane-fresh");
+      expect(lease.rangeStart).toBe(3200);
+      expect(lease.rangeEnd).toBe(3299);
+    });
+
     it("does not double-report the same conflict", () => {
       const svc = createService({
         initialLeases: [
@@ -476,6 +495,16 @@ describe("portAllocationService", () => {
       expect(cfg.basePort).toBe(4000);
       expect(cfg.portsPerLane).toBe(50);
       expect(cfg.maxPort).toBe(5000);
+    });
+  });
+
+  describe("config validation", () => {
+    it("rejects non-positive portsPerLane values", () => {
+      expect(() => createService({ portsPerLane: 0 })).toThrow(/portsPerLane must be a positive integer/i);
+    });
+
+    it("rejects maxPort values below basePort", () => {
+      expect(() => createService({ basePort: 4000, maxPort: 3999 })).toThrow(/maxPort must be an integer >= basePort/i);
     });
   });
 

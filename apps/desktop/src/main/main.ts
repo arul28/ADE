@@ -584,6 +584,18 @@ app.whenReady().then(async () => {
         const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
         const validIds = new Set(lanes.map((l) => l.id));
         portAllocationService.recoverOrphans(validIds);
+        for (const lane of lanes) {
+          const lease = portAllocationService.getLease(lane.id);
+          if (lease?.status === "active") continue;
+          try {
+            portAllocationService.acquire(lane.id);
+          } catch (error: any) {
+            logger.warn("port_allocation.startup_acquire_failed", {
+              laneId: lane.id,
+              error: error?.message ?? String(error),
+            });
+          }
+        }
         portAllocationService.detectConflicts();
       } catch (err: any) {
         logger.warn("port_allocation.startup_recovery_failed", { error: err?.message });
