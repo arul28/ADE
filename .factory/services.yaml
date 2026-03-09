@@ -1,0 +1,15 @@
+commands:
+  install: cd apps/desktop && npm install
+  typecheck: cd apps/desktop && npx tsc --noEmit
+  build: cd apps/desktop && npm run build
+  test: cd apps/desktop && npx vitest run --reporter=verbose
+  lint: echo "lint not configured (todo)"
+  dev: cd apps/desktop && npm run dev
+
+services:
+  electron-dev:
+    start: cd apps/desktop && npm run dev
+    stop: "pkill -f 'electron .' || true"
+    healthcheck: "ps aux | grep -v grep | grep 'electron .'"
+    port: null
+    depends_on: []
