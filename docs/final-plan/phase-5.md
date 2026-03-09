@@ -68,10 +68,10 @@ Each workstream includes its own renderer/UI changes and validation tests (no st
 
 Files created:
 - `apps/desktop/src/main/services/lanes/laneEnvironmentService.ts` — Lane env init pipeline
-- `apps/desktop/src/main/services/lanes/laneEnvironmentService.test.ts` — 15 tests
+- `apps/desktop/src/main/services/lanes/laneEnvironmentService.test.ts` — 12 tests
 - `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` — Extended overlay matcher
-- `apps/desktop/src/main/services/config/laneOverlayMatcher.test.ts` — 12 tests
-- `apps/desktop/src/main/services/config/projectConfigService.laneEnvInit.test.ts` — 8 tests
+- `apps/desktop/src/main/services/config/laneOverlayMatcher.test.ts` — 11 tests
+- `apps/desktop/src/main/services/config/projectConfigService.laneEnvInit.test.ts` — 3 tests
 - `apps/desktop/src/renderer/components/lanes/LaneEnvInitProgress.tsx` — Progress UI
 - `apps/desktop/src/renderer/components/lanes/LaneOverlayConfigPanel.tsx` — Overlay config UI
 
@@ -93,7 +93,7 @@ Codex audit findings (f3e71d9): hardened error handling in env init pipeline, fi
 
 Files created:
 - `apps/desktop/src/main/services/lanes/laneTemplateService.ts` — Template CRUD
-- `apps/desktop/src/main/services/lanes/laneTemplateService.test.ts` — 10 tests
+- `apps/desktop/src/main/services/lanes/laneTemplateService.test.ts` — 19 tests
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx` — Template management UI
 - `apps/desktop/src/renderer/components/lanes/CreateLaneDialog.tsx` — Template selector added
 
@@ -114,7 +114,7 @@ Codex audit findings (dab585e): removed unused React import, verified template-e
 
 Files created:
 - `apps/desktop/src/main/services/lanes/portAllocationService.ts` — Lease-based port allocation
-- `apps/desktop/src/main/services/lanes/portAllocationService.test.ts` — 14 tests
+- `apps/desktop/src/main/services/lanes/portAllocationService.test.ts` — 30 tests
 - `apps/desktop/src/renderer/components/lanes/PortAllocationPanel.tsx` — Port allocation UI
 
 Codex audit findings (dab585e): removed unused PortLeaseStatus import.
@@ -136,9 +136,9 @@ Codex audit findings (dab585e): removed unused PortLeaseStatus import.
 
 Files created:
 - `apps/desktop/src/main/services/lanes/laneProxyService.ts` — Per-lane hostname reverse proxy
-- `apps/desktop/src/main/services/lanes/laneProxyService.test.ts` — 16 tests
+- `apps/desktop/src/main/services/lanes/laneProxyService.test.ts` — 33 tests
 - `apps/desktop/src/renderer/components/lanes/LanePreviewPanel.tsx` — Preview URL panel
-- `apps/desktop/src/renderer/components/lanes/LanePreviewPanel.test.tsx` — 8 tests
+- `apps/desktop/src/renderer/components/lanes/LanePreviewPanel.test.tsx` — 2 tests
 
 Codex audit findings (6677edf): proxy hardening — IPv6 normalization, hostname collision detection, error propagation.
 
@@ -168,9 +168,10 @@ Codex audit findings (6677edf): proxy hardening — IPv6 normalization, hostname
 
 Files created:
 - `apps/desktop/src/main/services/lanes/oauthRedirectService.ts` — OAuth callback routing
-- `apps/desktop/src/main/services/lanes/oauthRedirectService.test.ts` — 18 tests
+- `apps/desktop/src/main/services/lanes/oauthRedirectService.test.ts` — 48 tests
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx` — Settings UI with OAuth config
-- `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.test.tsx` — 10 tests
+- `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.test.tsx` — 3 tests
+- `apps/desktop/src/preload/preload.test.ts` — 1 test (created in audit)
 
 Codex audit findings (d7058c9): auth redirect hardening — HMAC validation, session cleanup, error pages.
 
@@ -186,7 +187,7 @@ Codex audit findings (d7058c9): auth redirect hardening — HMAC validation, ses
 - Proxy status reporting.
 - Actionable fallback activation from the diagnostics surfaces.
 
-**Status: COMPLETED** (commit d55b4e2, audited and hardened in follow-up fixes on this branch)
+**Status: COMPLETED** (commit d55b4e2, hardened in 97565cf)
 
 Files created:
 - `apps/desktop/src/main/services/lanes/runtimeDiagnosticsService.ts` — Health checks, fallback mode, diagnostics aggregation
@@ -195,6 +196,8 @@ Files created:
 - `apps/desktop/src/renderer/components/lanes/RuntimeDiagnosticsPanel.test.tsx` — 11 tests
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx` — Proxy status dashboard
 - `apps/desktop/src/renderer/components/lanes/LaneHealthDot.tsx` — Lane list health indicators
+
+Codex audit findings (97565cf): runtime diagnostics hardening — health check timeout handling, fallback mode edge cases, cleanup on dispose, accessibility improvements, responsive layout, proper error boundaries.
 
 ### Exit criteria
 
@@ -211,14 +214,14 @@ Files created:
 
 | Workstream | Status | Tests | Key Commit |
 |------------|--------|-------|------------|
-| W1: Lane Env Init & Overlay | **COMPLETED** | 35 | 88ad573, f3e71d9 |
-| W2: Lane Template System | **COMPLETED** | 10 | 3e3bec8, dab585e |
-| W3: Port Allocation & Lease | **COMPLETED** | 14 | 5e95b4e, dab585e |
-| W4: Hostname Isolation | **COMPLETED** | 24 | d9193d4, 6677edf |
-| W5: Auth Redirect | **COMPLETED** | 28 | c3ab33a, d7058c9 |
-| W6: Runtime Diagnostics | **COMPLETED** | 36 | d55b4e2 + audit hardening |
+| W1: Lane Env Init & Overlay | **COMPLETED** | 26 | 88ad573, f3e71d9 |
+| W2: Lane Template System | **COMPLETED** | 19 | 3e3bec8, dab585e |
+| W3: Port Allocation & Lease | **COMPLETED** | 30 | 5e95b4e, dab585e |
+| W4: Hostname Isolation | **COMPLETED** | 35 | d9193d4, 6677edf |
+| W5: Auth Redirect | **COMPLETED** | 52 | c3ab33a, d7058c9 |
+| W6: Runtime Diagnostics | **COMPLETED** | 36 | d55b4e2, 97565cf |
 
-Total new tests from Phase 5: **147 tests**
+Total new tests from Phase 5: **198 tests**
 
 ### Parallel Work Completed
 

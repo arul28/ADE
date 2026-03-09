@@ -134,6 +134,32 @@ export function recessedStyle(overrides?: CSSProperties): CSSProperties {
   };
 }
 
+export function healthColor(status: string): string {
+  switch (status) {
+    case "healthy":
+      return COLORS.success;
+    case "degraded":
+      return COLORS.warning;
+    case "unhealthy":
+      return COLORS.danger;
+    case "unknown":
+    default:
+      return COLORS.textDim;
+  }
+}
+
+export function formatTimestamp(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
 export function conflictDotColor(status: string | undefined): string {
   switch (status) {
     case "conflict-active":

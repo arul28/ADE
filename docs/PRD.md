@@ -309,7 +309,7 @@ See: [features/PROJECT_HOME.md](features/PROJECT_HOME.md)
 
 ### 7.2 Lanes
 
-The Lanes tab is the primary cockpit and the core surface of ADE. It uses a 3-pane resizable layout: a left pane with the lane list (filterable by active/ready/archived) and topology mode toggle (list, stack graph, workspace canvas); a center pane showing lane detail with diff views (working tree, staged, recent commits), file tree toggle, quick edit capability, and in-app git operations (stage/unstage, commit/amend, stash, push, branch management); and a right inspector pane with sub-tabs for Terminals, Packs, Conflicts, and PR. Each lane row displays high-density status including lane type, dirty/clean state, ahead/behind counts, conflict risk score, and last activity timestamp.
+The Lanes tab is the primary cockpit and the core surface of ADE. It uses a 3-pane resizable layout: a left pane with the lane list (filterable by active/ready/archived) and topology mode toggle (list, stack graph, workspace canvas); a center pane showing lane detail with diff views (working tree, staged, recent commits), file tree toggle, quick edit capability, and in-app git operations (stage/unstage, commit/amend, stash, push, branch management); and a right inspector pane with sub-tabs for Terminals, Packs, Conflicts, and PR. Each lane row displays high-density status including lane type, dirty/clean state, ahead/behind counts, conflict risk score, and last activity timestamp. Phase 5 adds full runtime isolation: per-lane hostname routing via a reverse proxy (*.localhost), shareable preview URLs, OAuth redirect handling with state-parameter routing for multi-lane callback resolution, and runtime diagnostics with traffic-light health indicators and one-click fallback mode.
 
 See: [features/LANES.md](features/LANES.md)
 
@@ -509,7 +509,7 @@ Each feature area is specified in detail in the following documents. These are t
 
 | # | Feature | Document | Summary |
 |---|---------|----------|---------|
-| 1 | Lanes | [features/LANES.md](features/LANES.md) | The primary cockpit for parallel work. Covers lane types (primary, worktree, attached), 3-pane layout, diff views, in-app git operations, stacked lane workflows, lane profiles, and overlay policies. |
+| 1 | Lanes | [features/LANES.md](features/LANES.md) | The primary cockpit for parallel work. Covers lane types (primary, worktree, attached), 3-pane layout, diff views, in-app git operations, stacked lane workflows, lane profiles, overlay policies, per-lane hostname isolation and preview URLs, OAuth redirect handling, and runtime diagnostics. |
 | 2 | Run (Command Center) | [features/PROJECT_HOME.md](features/PROJECT_HOME.md) | Project command center with play/pause icon. Covers managed process lifecycle, stack buttons, test suites, lane-scoped command execution, AI-suggested run prompts, CI/CD workflow sync, agent CLI tools registry (Claude Code, Codex, Cursor, Aider, Continue), and project configuration editing. |
 | 3 | Files and Editor | [features/FILES_AND_EDITOR.md](features/FILES_AND_EDITOR.md) | IDE-style file workbench. Covers workspace scope selection, file explorer tree, Monaco editor with diff modes, quick edit, conflict marker editing, and atomic save operations. |
 | 4 | Terminals and Sessions | [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md) | PTY-based embedded terminals and agent chat sessions. Covers lane-scoped sessions, transcript capture, session metadata tracking, checkpoint creation on session end, agent command shortcuts, the session end contract, and agent chat integration (Codex App Server, Claude multi-turn, and unified API/local runtime). |
@@ -929,7 +929,7 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan/README.md`
 
-Current status: Phase 1 (Agent SDK Integration), Phase 1.5 (Agent Chat Integration), and Phase 2 (MCP Server) are complete. Phase 3 orchestrator implementation is complete through reflection protocol closure (Task 7); integration soak verification (Task 8) remains as hardening work.
+Current status: Phase 1 (Agent SDK Integration), Phase 1.5 (Agent Chat Integration), Phase 2 (MCP Server), and Phase 5 (Lane Runtime Isolation) are complete. Phase 3 orchestrator implementation is complete through reflection protocol closure (Task 7); integration soak verification (Task 8) remains as hardening work.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 

@@ -73,23 +73,18 @@ export function createLaneProxyService({
   function buildHostname(laneId: string, laneName?: string): string {
     const preferredSlug = toLaneSlug(laneId, laneName);
     const preferredHostname = buildHostnameFromSlug(preferredSlug);
-    if (!findRouteByHostname(preferredHostname, laneId)) {
-      return preferredHostname;
-    }
+    if (!findRouteByHostname(preferredHostname, laneId)) return preferredHostname;
 
     const laneIdSlug = toLaneSlug(laneId);
-    const disambiguatedBase =
-      preferredSlug === laneIdSlug ? `${preferredSlug}-lane` : `${preferredSlug}-${laneIdSlug}`;
+    const base = preferredSlug === laneIdSlug ? `${preferredSlug}-lane` : `${preferredSlug}-${laneIdSlug}`;
 
-    let candidateSlug = disambiguatedBase;
-    let candidateHostname = buildHostnameFromSlug(candidateSlug);
+    let candidate = buildHostnameFromSlug(base);
     let suffix = 2;
-    while (findRouteByHostname(candidateHostname, laneId)) {
-      candidateSlug = `${disambiguatedBase}-${suffix}`;
-      candidateHostname = buildHostnameFromSlug(candidateSlug);
+    while (findRouteByHostname(candidate, laneId)) {
+      candidate = buildHostnameFromSlug(`${base}-${suffix}`);
       suffix += 1;
     }
-    return candidateHostname;
+    return candidate;
   }
 
   /** Build the preview URL for a lane. */
@@ -99,14 +94,10 @@ export function createLaneProxyService({
 
   /** Resolve a Host header value to a route. */
   function resolveRoute(hostHeader: string): ProxyRoute | null {
-    // Strip port from Host header if present (e.g. "my-lane.localhost:8080").
-    // Bracketed IPv6 hosts are not expected for *.localhost routing but we
-    // normalize them here anyway to avoid malformed lookups.
-    const normalizedHost = hostHeader.trim();
-    const hostname = normalizedHost.startsWith("[")
-      ? normalizedHost.slice(1, normalizedHost.indexOf("]")).toLowerCase()
-      : normalizedHost.split(":")[0].toLowerCase();
-
+    const trimmed = hostHeader.trim();
+    const hostname = trimmed.startsWith("[")
+      ? trimmed.slice(1, trimmed.indexOf("]")).toLowerCase()
+      : trimmed.split(":")[0].toLowerCase();
     return findRouteByHostname(hostname);
   }
 

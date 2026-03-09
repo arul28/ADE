@@ -154,12 +154,10 @@ export function createRuntimeDiagnosticsService({
     }
 
     // Deduplicate: if we have both process-dead and port-unresponsive, keep only port-unresponsive
-    const dedupedIssues = issues.filter((issue, idx) => {
-      if (issue.type === "process-dead") {
-        return !issues.some((other, otherIdx) => otherIdx !== idx && other.type === "port-unresponsive");
-      }
-      return true;
-    });
+    const hasPortUnresponsive = issues.some((i) => i.type === "port-unresponsive");
+    const dedupedIssues = hasPortUnresponsive
+      ? issues.filter((i) => i.type !== "process-dead")
+      : issues;
 
     const health: LaneHealthCheck = {
       laneId,

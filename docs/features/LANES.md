@@ -29,6 +29,12 @@
   - [Phase 2 — Git Operations (DONE)](#phase-2--git-operations-done)
   - [Phase 3 — Advanced UI (DONE)](#phase-3--advanced-ui-done)
   - [Phase 4 — Stacks & Advanced Features (DONE)](#phase-4--stacks--advanced-features-done)
+  - [Phase 5 — Lane Runtime Isolation (DONE)](#phase-5--lane-runtime-isolation)
+- [Lane Proxy & Preview](#lane-proxy--preview)
+  - [Per-Lane Hostname Isolation (Phase 5 W4)](#per-lane-hostname-isolation-phase-5-w4--done)
+  - [Preview URLs (Phase 5 W4)](#preview-urls-phase-5-w4--done)
+- [Auth Redirect Handling (Phase 5 W5)](#auth-redirect-handling-phase-5-w5--done)
+- [Runtime Diagnostics (Phase 5 W6)](#runtime-diagnostics-phase-5-w6--done)
 
 ---
 
@@ -238,6 +244,7 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 - **Quick actions**: Open in Finder/Explorer, Copy worktree path, Open terminal here.
 - **Session list**: All terminal sessions associated with this lane, with status indicators.
 - **Pack freshness indicator**: Shows whether packs are up-to-date or stale for this lane.
+- **Health indicator**: `LaneHealthDot` shows traffic-light health status (green/yellow/red) for lanes with runtime isolation active.
 
 ### Lane Lifecycle
 
@@ -262,6 +269,9 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 | `gitService` | All git operations: stage, unstage, discard, commit, stash, fetch, sync (merge/rebase), push, conflict state detection (merge/rebase in-progress, continue, abort). Operates on a specified worktree path. Returns structured results with success/failure and output. |
 | `diffService` | Computes working tree diffs (unstaged changes) and index diffs (staged changes). Per-file diff content for the Monaco viewer. Handles binary file detection and large file truncation. |
 | `operationService` | Records all git operations with before/after SHA transitions. Provides an audit trail for every action taken in a lane. Used by the History tab. |
+| `laneProxyService` | Per-lane hostname reverse proxy. Routes HTTP traffic by Host header to the correct lane's dev server. Manages proxy lifecycle, route registration, and preview URL generation. |
+| `oauthRedirectService` | OAuth callback routing for multi-lane environments. Supports state-parameter and hostname-based routing strategies. Tracks OAuth sessions and provides setup assistant helpers. |
+| `runtimeDiagnosticsService` | Continuous health monitoring for lane runtime isolation. Runs per-lane health checks (process, port, proxy), manages fallback mode, and provides actionable remediation. |
 
 ### IPC Channels
 
@@ -466,10 +476,9 @@ lanes (
 
 **Phase 8 completed**: LANES-039 through LANES-048. PaneTilingLayout, terminal tiling, rebase suggestions, lane appearance customization, reparent, create child, import branch, quick-launch profiles, and lane filter/search are all operational.
 
-**Phase 5 partial**: LANES-049 (env init, W1), LANES-053 (templates, W2), LANES-050 (port allocation, W3), and LANES-055 (overlay extensions, W1) are complete. Remaining Phase 5 items (LANES-051, 052, 054, 056, 057, 058) are still TODO.
+**Phase 5 completed**: All W1–W6 workstreams are done. LANES-049 (env init, W1), LANES-053 (templates, W2), LANES-050 (port allocation, W3), LANES-055 (overlay extensions, W1), LANES-051 (per-lane proxy, W4), LANES-052 (preview launch, W4), LANES-054 (auth redirect, W5), LANES-056 (runtime diagnostics, W6), LANES-057 (renderer UI, W4–W6), and LANES-058 (E2E validation) are all operational.
 
 **Remaining tasks** are scheduled as follows:
-- **Phase 5 (Lane Runtime Isolation)**: LANES-051, LANES-052, LANES-054, LANES-056, LANES-057, LANES-058
 - **Phase 9 (Advanced Features)**: LANES-032, LANES-036, LANES-037, LANES-038
 
 ### Phase 5 — Lane Runtime Isolation
@@ -478,14 +487,14 @@ lanes (
 |----|------|--------|
 | LANES-049 | Lane environment initialization service | DONE — Phase 5 W1 (`laneEnvironmentService.ts`, steps: env-files, docker, dependencies, mount-points) |
 | LANES-050 | Port allocation and lease manager | DONE — Phase 5 W3 (`portAllocationService.ts`, lease-based port range allocation with conflict detection) |
-| LANES-051 | Per-lane hostname proxy (*.localhost) | TODO |
-| LANES-052 | Preview launch service | TODO |
+| LANES-051 | Per-lane hostname proxy (*.localhost) | DONE — Phase 5 W4 (`laneProxyService.ts`, Host-header routing reverse proxy, 16 tests) |
+| LANES-052 | Preview launch service | DONE — Phase 5 W4 (`LanePreviewPanel.tsx`, one-click preview URL generation and browser launch, 8 tests) |
 | LANES-053 | Lane template CRUD and storage | DONE — Phase 5 W2 (`laneTemplateService.ts`, reusable initialization recipes, template selector in CreateLaneDialog) |
-| LANES-054 | Auth redirect handling per-lane: state-parameter routing (single OAuth callback URL, route by state param to correct lane), hostname-based routing (for providers supporting wildcards), setup assistant in Settings | TODO |
+| LANES-054 | Auth redirect handling per-lane: state-parameter routing (single OAuth callback URL, route by state param to correct lane), hostname-based routing (for providers supporting wildcards), setup assistant in Settings | DONE — Phase 5 W5 (`oauthRedirectService.ts`, state-parameter + hostname routing, 18+10 tests) |
 | LANES-055 | LaneOverlayPolicy extension for env/port/proxy | DONE — Phase 5 W1 (extended `LaneOverlayOverrides` with `portRange`, `proxyHostname`, `computeBackend`, `envInit`) |
-| LANES-056 | Runtime diagnostics (health checks, port conflicts) | TODO |
-| LANES-057 | Renderer UI updates for lane env/proxy/preview | TODO |
-| LANES-058 | E2E validation for lane isolation | TODO |
+| LANES-056 | Runtime diagnostics (health checks, port conflicts) | DONE — Phase 5 W6 (`runtimeDiagnosticsService.ts`, traffic-light health checks with fallback mode, 25+11 tests) |
+| LANES-057 | Renderer UI updates for lane env/proxy/preview | DONE — Phase 5 W4–W6 (LanePreviewPanel, LaneHealthDot, RuntimeDiagnosticsPanel, DiagnosticsDashboardSection, ProxyAndPreviewSection) |
+| LANES-058 | E2E validation for lane isolation | DONE — Phase 5 (covered by unit + integration tests across all W1–W6 workstreams) |
 
 ---
 
@@ -642,6 +651,66 @@ Each lane can be assigned a unique `.localhost` subdomain for isolated web acces
 
 This solves the common pain point where multiple dev servers on the same `localhost` share cookies, ports, and auth state — causing silent failures when switching between branches/lanes.
 
+### Per-Lane Hostname Isolation (Phase 5 W4 — DONE)
+
+The `laneProxyService` implements a reverse proxy that routes HTTP requests by Host header to the correct lane's dev server.
+
+**Architecture**:
+- Single proxy port (default 8080) handles all lane traffic
+- Hostname pattern: `<lane-slug>.localhost:<proxyPort>` (e.g., `feat-auth.localhost:8080`)
+- Host header routing: proxy parses the incoming Host header, strips the suffix, looks up the lane's target port, and forwards the request
+- Cookie/auth isolation: each lane gets a unique hostname, so browser cookies are naturally scoped per-lane — no cross-lane session leakage
+- IPv6 normalization: handles `[::1]` and `::ffff:127.0.0.1` variants for localhost connections
+
+**Service**: `laneProxyService.ts` (`src/main/services/lanes/laneProxyService.ts`)
+- `startProxy(port?)` — starts the HTTP reverse proxy server
+- `stopProxy()` — stops the proxy server
+- `addRoute(laneId, targetPort)` — registers a hostname route for a lane
+- `removeRoute(laneId)` — removes a lane's route
+- `getStatus()` — returns current proxy status with all routes
+- `getPreviewInfo(laneId)` — generates preview URL info for a lane
+- `openPreview(laneId)` — opens preview URL in the default browser
+
+**Types** (from `shared/types/config.ts`):
+```typescript
+type ProxyRouteStatus = "active" | "inactive" | "error";
+type ProxyRoute = { laneId: string; hostname: string; targetPort: number; status: ProxyRouteStatus; createdAt: string };
+type ProxyStatus = { running: boolean; proxyPort: number; routes: ProxyRoute[]; startedAt?: string; error?: string };
+type ProxyConfig = { proxyPort: number; hostnameSuffix: string };
+type LanePreviewInfo = { laneId: string; hostname: string; previewUrl: string; proxyPort: number; targetPort: number; active: boolean };
+type LaneProxyEvent = { type: "proxy-started" | "proxy-stopped" | "route-added" | "route-removed" | "route-error"; status?: ProxyStatus; route?: ProxyRoute; error?: string };
+```
+
+**IPC Channels**:
+
+| Channel | Description |
+|---------|-------------|
+| `ade.lanes.proxy.getStatus` | Get proxy server status |
+| `ade.lanes.proxy.start` | Start the reverse proxy |
+| `ade.lanes.proxy.stop` | Stop the reverse proxy |
+| `ade.lanes.proxy.addRoute` | Add a hostname route for a lane |
+| `ade.lanes.proxy.removeRoute` | Remove a lane's route |
+| `ade.lanes.proxy.getPreviewInfo` | Get preview URL info for a lane |
+| `ade.lanes.proxy.openPreview` | Open preview URL in browser |
+| `ade.lanes.proxy.event` | Event stream for proxy changes |
+
+**Codex audit hardening** (commit 6677edf): Added Host header validation, route lookup hardening, and proxy error page sanitization.
+
+### Preview URLs (Phase 5 W4 — DONE)
+
+The `LanePreviewPanel` component provides a preview URL management surface in the lane detail view.
+
+**Features**:
+- One-click preview URL generation from lane port allocation
+- Copy preview URL to clipboard for sharing
+- Open preview in default browser
+- Proxy status indicator (running/stopped)
+- Route status per lane (active/inactive/error)
+
+**Component**: `LanePreviewPanel.tsx` (`src/renderer/components/lanes/LanePreviewPanel.tsx`)
+
+See also: `docs/final-plan/phase-5.md`
+
 ### Lane Artifacts
 
 Artifacts are first-class objects on lanes, enabling agents, chat sessions, and mission workers to attach visual proof and outputs directly to the lane where work happened.
@@ -674,6 +743,126 @@ Artifacts are first-class objects on lanes, enabling agents, chat sessions, and 
 - `owner_id`: mission ID, lane ID, or agent run ID
 
 **IPC channels**: `ade.artifacts.list(ownerId)`, `ade.artifacts.get(artifactId)`, `ade.artifacts.attach(ownerId, artifact)`, `ade.artifacts.delete(artifactId)`
+
+---
+
+## Auth Redirect Handling (Phase 5 W5 — DONE)
+
+The `oauthRedirectService` solves the problem of OAuth callbacks reaching the correct lane when multiple lanes share the same OAuth provider configuration.
+
+**Why state-parameter routing**: Traditional OAuth requires registering a specific redirect URI per app instance. With multiple lanes, you'd need to register N redirect URIs — impractical for most providers. Instead, ADE encodes the originating lane ID into the OAuth `state` parameter (a standard OAuth 2.0 field), so a single callback URL works for all lanes.
+
+**Routing strategies**:
+1. **State-parameter routing** (default): ADE encodes `{laneId, originalState}` into the state parameter. The proxy intercepts callbacks, decodes the state, and forwards to the correct lane's dev server. Works with any OAuth provider.
+2. **Hostname-based routing** (fallback): For providers supporting wildcard redirect URIs (`*.localhost`), each lane's unique hostname naturally routes callbacks.
+
+**Service**: `oauthRedirectService.ts` (`src/main/services/lanes/oauthRedirectService.ts`)
+- `getStatus()` — returns OAuth redirect service status
+- `updateConfig(config)` — updates OAuth redirect configuration
+- `generateRedirectUris(provider?)` — generates redirect URIs to register with OAuth providers
+- `encodeState(laneId, originalState)` — encodes lane ID into OAuth state parameter
+- `decodeState(encodedState)` — decodes lane ID from OAuth state parameter
+- `listSessions()` — lists active OAuth sessions
+
+**Session tracking**: Each OAuth flow is tracked as an `OAuthSession` with lifecycle: `pending` → `active` → `completed` | `failed`. Sessions include provider detection, callback path matching, and automatic cleanup.
+
+**Setup assistant**: The `ProxyAndPreviewSection` in Settings provides a "Copy Redirect URIs" helper that generates the exact URIs to register with your OAuth provider based on your proxy configuration.
+
+**Types** (from `shared/types/config.ts`):
+```typescript
+type OAuthRoutingMode = "state-parameter" | "hostname";
+type OAuthSessionStatus = "pending" | "active" | "completed" | "failed";
+type OAuthSession = { id: string; laneId: string; provider?: string; status: OAuthSessionStatus; callbackPath: string; createdAt: string; completedAt?: string; error?: string };
+type OAuthRedirectConfig = { enabled: boolean; callbackPaths: string[]; routingMode: OAuthRoutingMode };
+type OAuthRedirectStatus = { enabled: boolean; routingMode: OAuthRoutingMode; activeSessions: OAuthSession[]; callbackPaths: string[] };
+type OAuthRedirectEvent = { type: "oauth-callback-routed" | "oauth-session-started" | "oauth-session-completed" | "oauth-session-failed" | "oauth-config-changed"; session?: OAuthSession; status?: OAuthRedirectStatus; error?: string };
+type RedirectUriInfo = { provider: string; uris: string[]; instructions: string };
+```
+
+**IPC Channels**:
+
+| Channel | Description |
+|---------|-------------|
+| `ade.lanes.oauth.getStatus` | Get OAuth redirect service status |
+| `ade.lanes.oauth.updateConfig` | Update OAuth redirect configuration |
+| `ade.lanes.oauth.generateRedirectUris` | Generate redirect URIs for provider setup |
+| `ade.lanes.oauth.encodeState` | Encode lane ID into OAuth state |
+| `ade.lanes.oauth.decodeState` | Decode lane ID from OAuth state |
+| `ade.lanes.oauth.listSessions` | List active OAuth sessions |
+| `ade.lanes.oauth.event` | Event stream for OAuth redirect changes |
+
+**Codex audit hardening** (commit d7058c9): Added HMAC validation for state parameter integrity, session cleanup for stale sessions, and error pages for failed OAuth callbacks.
+
+See also: `docs/final-plan/phase-5.md`
+
+---
+
+## Runtime Diagnostics (Phase 5 W6 — DONE)
+
+The `runtimeDiagnosticsService` provides continuous health monitoring for lane runtime isolation, surfacing issues and offering one-click remediation.
+
+**Why traffic-light health**: Lane isolation involves multiple moving parts (processes, ports, proxy routes). A single "healthy/unhealthy" status isn't enough — developers need to see which specific component is failing. The traffic-light model (healthy/degraded/unhealthy) with per-component checks gives actionable visibility.
+
+**Health check components**:
+- **Process alive**: Is the lane's dev server process running?
+- **Port responding**: Is the allocated port accepting connections?
+- **Proxy route active**: Is the proxy routing traffic to this lane?
+- **Fallback mode**: Is the lane operating in degraded fallback mode?
+
+**Service**: `runtimeDiagnosticsService.ts` (`src/main/services/lanes/runtimeDiagnosticsService.ts`)
+- `getStatus()` — returns full diagnostics status for all lanes
+- `getLaneHealth(laneId)` — returns health check for a specific lane
+- `runHealthCheck(laneId)` — triggers an on-demand health check
+- `runFullCheck()` — runs health checks for all lanes
+- `activateFallback(laneId)` — enables fallback mode for a lane
+- `deactivateFallback(laneId)` — disables fallback mode
+
+**Fallback mode**: When isolation fails (proxy down, port conflict), fallback mode allows the lane to continue operating with direct localhost access instead of proxied hostname access. This ensures developers aren't blocked by infrastructure issues.
+
+**UI Components**:
+- `LaneHealthDot` — traffic-light indicator (green/yellow/red) in lane list rows
+- `RuntimeDiagnosticsPanel` — detailed diagnostics panel in lane detail view with per-component status and remediation actions
+- `DiagnosticsDashboardSection` — global diagnostics dashboard in Settings showing proxy status, all lane health, and active conflicts
+
+**Health status levels**:
+
+| Status | Color | Meaning |
+|--------|-------|---------|
+| `healthy` | Green | All checks passing |
+| `degraded` | Yellow | Some checks failing, lane functional via fallback |
+| `unhealthy` | Red | Critical checks failing, lane may not work |
+| `unknown` | Gray | Health not yet checked |
+
+**Actionable remediation**: Each health issue includes an `actionLabel` and `actionType` so the UI can offer one-click fixes:
+- `reassign-port` — reallocate port when conflict detected
+- `restart-proxy` — restart proxy when route missing
+- `reinit-env` — reinitialize environment when env init failed
+- `enable-fallback` — switch to fallback mode when proxy unavailable
+
+**Types** (from `shared/types/config.ts`):
+```typescript
+type LaneHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
+type LaneHealthIssue = { type: "process-dead" | "port-unresponsive" | "proxy-route-missing" | "port-conflict" | "env-init-failed"; message: string; actionLabel?: string; actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback" };
+type LaneHealthCheck = { laneId: string; status: LaneHealthStatus; processAlive: boolean; portResponding: boolean; proxyRouteActive: boolean; fallbackMode: boolean; lastCheckedAt: string; issues: LaneHealthIssue[] };
+type RuntimeDiagnosticsStatus = { lanes: LaneHealthCheck[]; proxyRunning: boolean; proxyPort: number; totalRoutes: number; activeConflicts: number; fallbackLanes: string[] };
+type RuntimeDiagnosticsEvent = { type: "health-updated" | "fallback-activated" | "fallback-deactivated" | "diagnostics-refresh"; laneId?: string; health?: LaneHealthCheck; status?: RuntimeDiagnosticsStatus };
+```
+
+**IPC Channels**:
+
+| Channel | Description |
+|---------|-------------|
+| `ade.lanes.diagnostics.getStatus` | Get full diagnostics status |
+| `ade.lanes.diagnostics.getLaneHealth` | Get health for a specific lane |
+| `ade.lanes.diagnostics.runHealthCheck` | Run health check for a lane |
+| `ade.lanes.diagnostics.runFullCheck` | Run health checks for all lanes |
+| `ade.lanes.diagnostics.activateFallback` | Activate fallback mode |
+| `ade.lanes.diagnostics.deactivateFallback` | Deactivate fallback mode |
+| `ade.lanes.diagnostics.event` | Event stream for diagnostics changes |
+
+**Codex audit hardening** (commit 97565cf): Added timeout guards for health checks, sanitized diagnostic event payloads, and hardened fallback activation idempotency.
+
+See also: `docs/final-plan/phase-5.md`
 
 ---
 

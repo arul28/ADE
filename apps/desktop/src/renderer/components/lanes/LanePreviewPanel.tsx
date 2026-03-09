@@ -11,6 +11,9 @@ import {
 } from "./laneDesignTokens";
 import type { ProxyStatus, LanePreviewInfo } from "../../../shared/types";
 
+const detailLabelStyle = { fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT } as const;
+const detailValueStyle = { fontSize: 12, color: COLORS.textPrimary, fontFamily: MONO_FONT, fontWeight: 600 } as const;
+
 function ProxyStatusBadge({ running }: { running: boolean }) {
   const color = running ? COLORS.success : COLORS.textDim;
   return (
@@ -212,62 +215,16 @@ export function LanePreviewPanel({ laneId }: { laneId: string }) {
             })}
           >
             <div style={{ display: "flex", gap: 16 }}>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: COLORS.textDim,
-                  fontFamily: MONO_FONT,
-                }}
-              >
-                HOSTNAME
-              </span>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: COLORS.textPrimary,
-                  fontFamily: MONO_FONT,
-                  fontWeight: 600,
-                }}
-              >
-                {previewInfo.hostname}
-              </span>
+              <span style={detailLabelStyle}>HOSTNAME</span>
+              <span style={detailValueStyle}>{previewInfo.hostname}</span>
             </div>
             <div style={{ display: "flex", gap: 16 }}>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: COLORS.textDim,
-                  fontFamily: MONO_FONT,
-                }}
-              >
-                TARGET PORT
-              </span>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: COLORS.textPrimary,
-                  fontFamily: MONO_FONT,
-                  fontWeight: 600,
-                }}
-              >
-                {previewInfo.targetPort}
-              </span>
+              <span style={detailLabelStyle}>TARGET PORT</span>
+              <span style={detailValueStyle}>{previewInfo.targetPort}</span>
             </div>
             <div style={{ display: "flex", gap: 16 }}>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: COLORS.textDim,
-                  fontFamily: MONO_FONT,
-                }}
-              >
-                STATUS
-              </span>
-              <span
-                style={inlineBadge(
-                  previewInfo.active ? COLORS.success : COLORS.textDim
-                )}
-              >
+              <span style={detailLabelStyle}>STATUS</span>
+              <span style={inlineBadge(previewInfo.active ? COLORS.success : COLORS.textDim)}>
                 {previewInfo.active ? "ROUTABLE" : "INACTIVE"}
               </span>
             </div>
@@ -295,7 +252,7 @@ export function LanePreviewPanel({ laneId }: { laneId: string }) {
         </div>
       )}
 
-      {error ? (
+      {error && (
         <div
           style={{
             ...recessedStyle(),
@@ -306,9 +263,9 @@ export function LanePreviewPanel({ laneId }: { laneId: string }) {
         >
           {error}
         </div>
-      ) : null}
+      )}
 
-      {proxyStatus && proxyStatus.running && (
+      {proxyStatus?.running && (
         <div
           style={{
             fontSize: 10,

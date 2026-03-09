@@ -7,6 +7,8 @@ import {
   cardStyle,
   recessedStyle,
   outlineButton,
+  healthColor,
+  formatTimestamp,
 } from "./laneDesignTokens";
 import type {
   LaneHealthCheck,
@@ -18,45 +20,12 @@ import type {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function healthColor(status: LaneHealthStatus): string {
-  switch (status) {
-    case "healthy":
-      return COLORS.success;
-    case "degraded":
-      return COLORS.warning;
-    case "unhealthy":
-      return COLORS.danger;
-    case "unknown":
-    default:
-      return COLORS.textDim;
-  }
-}
-
-function healthLabel(status: LaneHealthStatus): string {
-  switch (status) {
-    case "healthy":
-      return "Healthy";
-    case "degraded":
-      return "Degraded";
-    case "unhealthy":
-      return "Unhealthy";
-    case "unknown":
-    default:
-      return "Unknown";
-  }
-}
-
-function formatTimestamp(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
+const HEALTH_LABELS: Record<LaneHealthStatus, string> = {
+  healthy: "Healthy",
+  degraded: "Degraded",
+  unhealthy: "Unhealthy",
+  unknown: "Unknown",
+};
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -234,25 +203,13 @@ export function RuntimeDiagnosticsPanel({ laneId }: { laneId: string }) {
     const loadHealth = async () => {
       try {
         const cached = await window.ade.lanes.diagnosticsGetLaneHealth({ laneId });
-        if (cancelled) {
-          return;
-        }
-        if (cached) {
-          setHealth(cached);
-          setLoading(false);
-          return;
-        }
-
-        const fresh = await window.ade.lanes.diagnosticsRunHealthCheck({ laneId });
-        if (!cancelled) {
-          setHealth(fresh);
-          setLoading(false);
-        }
+        if (cancelled) return;
+        const result = cached ?? await window.ade.lanes.diagnosticsRunHealthCheck({ laneId });
+        if (!cancelled) setHealth(result);
       } catch {
-        if (!cancelled) {
-          setHealth(null);
-          setLoading(false);
-        }
+        /* silent */
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -303,15 +260,11 @@ export function RuntimeDiagnosticsPanel({ laneId }: { laneId: string }) {
   const handleIssueAction = async (
     actionType: NonNullable<LaneHealthIssue["actionType"]>,
   ) => {
+    if (actionType !== "restart-proxy" && actionType !== "enable-fallback") return;
     setCheckBusy(true);
     try {
-      if (actionType === "restart-proxy") {
-        await window.ade.lanes.proxyStart();
-      } else if (actionType === "enable-fallback") {
-        await window.ade.lanes.diagnosticsActivateFallback({ laneId });
-      } else {
-        return;
-      }
+      if (actionType === "restart-proxy") await window.ade.lanes.proxyStart();
+      else await window.ade.lanes.diagnosticsActivateFallback({ laneId });
       const result = await window.ade.lanes.diagnosticsRunHealthCheck({ laneId });
       setHealth(result);
     } catch {
@@ -394,7 +347,7 @@ export function RuntimeDiagnosticsPanel({ laneId }: { laneId: string }) {
             color: COLORS.textPrimary,
           }}
         >
-          {healthLabel(status)}
+          {HEALTH_LABELS[status] ?? "Unknown"}
         </span>
         <span style={inlineBadge(color)}>{status.toUpperCase()}</span>
       </div>

@@ -100,12 +100,7 @@ export function createOAuthRedirectService({
 
     try {
       const signature = rest.slice(0, signatureEnd);
-      const laneId = Buffer.from(
-        rest.slice(signatureEnd + STATE_SEP.length, laneEnd),
-        "base64url",
-      ).toString(
-        "utf-8",
-      );
+      const laneId = Buffer.from(rest.slice(signatureEnd + STATE_SEP.length, laneEnd), "base64url").toString("utf-8");
       const originalState = rest.slice(laneEnd + STATE_SEP.length);
       if (!laneId.trim() || !signature) return null;
 
@@ -228,12 +223,8 @@ export function createOAuthRedirectService({
     session.completedAt = new Date().toISOString();
     if (error) session.error = error;
 
-    const evType =
-      status === "completed"
-        ? "oauth-session-completed"
-        : "oauth-session-failed";
     broadcastEvent({
-      type: evType as OAuthRedirectEvent["type"],
+      type: status === "completed" ? "oauth-session-completed" : "oauth-session-failed",
       session,
       status: buildStatus(),
       error,
@@ -447,34 +438,27 @@ code{background:#0B0A0F;padding:2px 6px;font-size:12px;color:#A78BFA}
 
     /** Update config at runtime. */
     updateConfig(updates: Partial<OAuthRedirectConfig>): void {
-      if (updates.enabled !== undefined) {
+      if (updates.enabled != null) {
         if (typeof updates.enabled !== "boolean") {
           throw new Error("OAuth redirect enabled flag must be boolean");
         }
         cfg.enabled = updates.enabled;
       }
 
-      if (updates.callbackPaths !== undefined) {
+      if (updates.callbackPaths != null) {
         if (!Array.isArray(updates.callbackPaths)) {
           throw new Error("OAuth callback paths must be an array of strings");
         }
-        const nextPaths = updates.callbackPaths
-          .map((path) => path.trim())
-          .filter(Boolean);
-        if (!nextPaths.length) {
-          throw new Error("OAuth callback paths cannot be empty");
-        }
-        if (nextPaths.some((path) => !path.startsWith("/"))) {
+        const nextPaths = updates.callbackPaths.map((p) => p.trim()).filter(Boolean);
+        if (!nextPaths.length) throw new Error("OAuth callback paths cannot be empty");
+        if (nextPaths.some((p) => !p.startsWith("/"))) {
           throw new Error("OAuth callback paths must start with '/'");
         }
         cfg.callbackPaths = nextPaths;
       }
 
-      if (updates.routingMode !== undefined) {
-        if (
-          updates.routingMode !== "state-parameter" &&
-          updates.routingMode !== "hostname"
-        ) {
+      if (updates.routingMode != null) {
+        if (updates.routingMode !== "state-parameter" && updates.routingMode !== "hostname") {
           throw new Error("OAuth routing mode is invalid");
         }
         cfg.routingMode = updates.routingMode;

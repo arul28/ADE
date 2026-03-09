@@ -1439,6 +1439,130 @@ type LaneTemplate = {
 const NO_DEFAULT_LANE_TEMPLATE = "__ade_none__";
 ```
 
+### Per-Lane Proxy Types (`shared/types/config.ts`)
+
+```typescript
+type ProxyRouteStatus = "active" | "inactive" | "error";
+
+type ProxyRoute = {
+  laneId: string; hostname: string;
+  targetPort: number; status: ProxyRouteStatus;
+  createdAt: string;
+};
+
+type ProxyStatus = {
+  running: boolean; proxyPort: number;
+  routes: ProxyRoute[];
+  startedAt?: string; error?: string;
+};
+
+type ProxyConfig = {
+  proxyPort: number;
+  hostnameSuffix: string;
+};
+
+type LanePreviewInfo = {
+  laneId: string; hostname: string;
+  previewUrl: string; proxyPort: number;
+  targetPort: number; active: boolean;
+};
+
+type LaneProxyEvent = {
+  type: "proxy-started" | "proxy-stopped" | "route-added" | "route-removed" | "route-error";
+  status?: ProxyStatus; route?: ProxyRoute; error?: string;
+};
+
+type AddProxyRouteArgs = { laneId: string; targetPort: number };
+type RemoveProxyRouteArgs = { laneId: string };
+type GetPreviewInfoArgs = { laneId: string };
+type OpenPreviewArgs = { laneId: string };
+type StartProxyArgs = { port?: number };
+```
+
+### OAuth Redirect Types (`shared/types/config.ts`)
+
+```typescript
+type OAuthRoutingMode = "state-parameter" | "hostname";
+type OAuthSessionStatus = "pending" | "active" | "completed" | "failed";
+
+type OAuthSession = {
+  id: string; laneId: string; provider?: string;
+  status: OAuthSessionStatus; callbackPath: string;
+  createdAt: string; completedAt?: string; error?: string;
+};
+
+type OAuthRedirectConfig = {
+  enabled: boolean;
+  callbackPaths: string[];
+  routingMode: OAuthRoutingMode;
+};
+
+type OAuthRedirectStatus = {
+  enabled: boolean; routingMode: OAuthRoutingMode;
+  activeSessions: OAuthSession[];
+  callbackPaths: string[];
+};
+
+type OAuthRedirectEvent = {
+  type: "oauth-callback-routed" | "oauth-session-started"
+    | "oauth-session-completed" | "oauth-session-failed"
+    | "oauth-config-changed";
+  session?: OAuthSession; status?: OAuthRedirectStatus;
+  error?: string;
+};
+
+type RedirectUriInfo = {
+  provider: string; uris: string[];
+  instructions: string;
+};
+
+type UpdateOAuthRedirectConfigArgs = Partial<OAuthRedirectConfig>;
+type GenerateRedirectUrisArgs = { provider?: string };
+type EncodeOAuthStateArgs = { laneId: string; originalState: string };
+type DecodeOAuthStateArgs = { encodedState: string };
+type DecodeOAuthStateResult = { laneId: string; originalState: string } | null;
+```
+
+### Runtime Diagnostics Types (`shared/types/config.ts`)
+
+```typescript
+type LaneHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
+
+type LaneHealthIssue = {
+  type: "process-dead" | "port-unresponsive" | "proxy-route-missing"
+    | "port-conflict" | "env-init-failed";
+  message: string;
+  actionLabel?: string;
+  actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback";
+};
+
+type LaneHealthCheck = {
+  laneId: string; status: LaneHealthStatus;
+  processAlive: boolean; portResponding: boolean;
+  proxyRouteActive: boolean; fallbackMode: boolean;
+  lastCheckedAt: string; issues: LaneHealthIssue[];
+};
+
+type RuntimeDiagnosticsStatus = {
+  lanes: LaneHealthCheck[];
+  proxyRunning: boolean; proxyPort: number;
+  totalRoutes: number; activeConflicts: number;
+  fallbackLanes: string[];
+};
+
+type RuntimeDiagnosticsEvent = {
+  type: "health-updated" | "fallback-activated"
+    | "fallback-deactivated" | "diagnostics-refresh";
+  laneId?: string; health?: LaneHealthCheck;
+  status?: RuntimeDiagnosticsStatus;
+};
+
+type GetLaneHealthArgs = { laneId: string };
+type RunHealthCheckArgs = { laneId: string };
+type ActivateFallbackArgs = { laneId: string };
+type DeactivateFallbackArgs = { laneId: string };
+```
+
 ### Graph PR Overlay (`renderer/components/graph/graphTypes.ts`)
 
 ```typescript

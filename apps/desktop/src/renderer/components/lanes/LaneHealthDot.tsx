@@ -1,20 +1,6 @@
 import { useEffect, useState } from "react";
-import { COLORS } from "./laneDesignTokens";
-import type { LaneHealthCheck, LaneHealthStatus } from "../../../shared/types";
-
-function dotColor(status: LaneHealthStatus): string {
-  switch (status) {
-    case "healthy":
-      return COLORS.success;
-    case "degraded":
-      return COLORS.warning;
-    case "unhealthy":
-      return COLORS.danger;
-    case "unknown":
-    default:
-      return COLORS.textDim;
-  }
-}
+import { healthColor } from "./laneDesignTokens";
+import type { LaneHealthStatus } from "../../../shared/types";
 
 export function LaneHealthDot({ laneId }: { laneId: string }) {
   const [status, setStatus] = useState<LaneHealthStatus>("unknown");
@@ -26,20 +12,11 @@ export function LaneHealthDot({ laneId }: { laneId: string }) {
     const loadHealth = async () => {
       try {
         const cached = await window.ade.lanes.diagnosticsGetLaneHealth({ laneId });
-        if (cancelled) {
-          return;
-        }
-        if (cached) {
-          setStatus(cached.status);
-          return;
-        }
-
-        const fresh = await window.ade.lanes.diagnosticsRunHealthCheck({ laneId });
-        if (!cancelled) {
-          setStatus(fresh.status);
-        }
+        if (cancelled) return;
+        const result = cached ?? await window.ade.lanes.diagnosticsRunHealthCheck({ laneId });
+        if (!cancelled) setStatus(result.status);
       } catch {
-        /* silent — dot stays unknown */
+        /* silent -- dot stays unknown */
       }
     };
 
@@ -66,7 +43,7 @@ export function LaneHealthDot({ laneId }: { laneId: string }) {
         width: 8,
         height: 8,
         borderRadius: "50%",
-        background: dotColor(status),
+        background: healthColor(status),
         flexShrink: 0,
       }}
     />

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   COLORS,
   MONO_FONT,
@@ -7,42 +7,13 @@ import {
   cardStyle,
   recessedStyle,
   primaryButton,
+  healthColor,
+  formatTimestamp,
 } from "../lanes/laneDesignTokens";
 import type {
   RuntimeDiagnosticsStatus,
   LaneHealthCheck,
-  LaneHealthStatus,
 } from "../../../shared/types";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function healthColor(status: LaneHealthStatus): string {
-  switch (status) {
-    case "healthy":
-      return COLORS.success;
-    case "degraded":
-      return COLORS.warning;
-    case "unhealthy":
-      return COLORS.danger;
-    case "unknown":
-    default:
-      return COLORS.textDim;
-  }
-}
-
-function formatTimestamp(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -118,6 +89,36 @@ function LaneHealthRow({ health }: { health: LaneHealthCheck }) {
   );
 }
 
+function SummaryMetric({ label, value, color }: { label: string; value: number; color?: string }) {
+  return (
+    <div>
+      <span
+        style={{
+          fontSize: 10,
+          fontFamily: MONO_FONT,
+          fontWeight: 700,
+          color: COLORS.textDim,
+          textTransform: "uppercase",
+          letterSpacing: "0.5px",
+          marginRight: 6,
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontSize: 13,
+          fontFamily: MONO_FONT,
+          fontWeight: 600,
+          color: color ?? COLORS.textPrimary,
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -128,6 +129,16 @@ export function DiagnosticsDashboardSection() {
   const [checkBusy, setCheckBusy] = useState(false);
   const [lastChecked, setLastChecked] = useState<string | null>(null);
 
+  const syncLastChecked = useCallback((lanes: LaneHealthCheck[]) => {
+    const timestamps = lanes.map((lane) => lane.lastCheckedAt).filter(Boolean);
+    if (timestamps.length === 0) {
+      setLastChecked(null);
+      return;
+    }
+    timestamps.sort();
+    setLastChecked(timestamps[timestamps.length - 1]);
+  }, []);
+
   // -------------------------------------------------------------------------
   // Fetch + subscribe
   // -------------------------------------------------------------------------
@@ -136,16 +147,6 @@ export function DiagnosticsDashboardSection() {
     let cancelled = false;
 
     setLoading(true);
-
-    const syncLastChecked = (lanes: LaneHealthCheck[]) => {
-      const timestamps = lanes.map((lane) => lane.lastCheckedAt).filter(Boolean);
-      if (timestamps.length === 0) {
-        setLastChecked(null);
-        return;
-      }
-      timestamps.sort();
-      setLastChecked(timestamps[timestamps.length - 1]);
-    };
 
     const loadStatus = async () => {
       try {
@@ -228,7 +229,7 @@ export function DiagnosticsDashboardSection() {
       cancelled = true;
       unsub();
     };
-  }, []);
+  }, [syncLastChecked]);
 
   // -------------------------------------------------------------------------
   // Actions
@@ -240,13 +241,7 @@ export function DiagnosticsDashboardSection() {
       await window.ade.lanes.diagnosticsRunFullCheck();
       const refreshed = await window.ade.lanes.diagnosticsGetStatus();
       setStatus(refreshed);
-      const timestamps = refreshed.lanes.map((lane) => lane.lastCheckedAt).filter(Boolean);
-      if (timestamps.length === 0) {
-        setLastChecked(null);
-      } else {
-        timestamps.sort();
-        setLastChecked(timestamps[timestamps.length - 1]);
-      }
+      syncLastChecked(refreshed.lanes);
     } catch {
       /* silent */
     } finally {
@@ -328,58 +323,14 @@ export function DiagnosticsDashboardSection() {
         </div>
 
         {/* Route count */}
-        <div>
-          <span
-            style={{
-              fontSize: 10,
-              fontFamily: MONO_FONT,
-              fontWeight: 700,
-              color: COLORS.textDim,
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
-              marginRight: 6,
-            }}
-          >
-            Routes
-          </span>
-          <span
-            style={{
-              fontSize: 13,
-              fontFamily: MONO_FONT,
-              fontWeight: 600,
-              color: COLORS.textPrimary,
-            }}
-          >
-            {totalRoutes}
-          </span>
-        </div>
+        <SummaryMetric label="Routes" value={totalRoutes} />
 
         {/* Active conflicts */}
-        <div>
-          <span
-            style={{
-              fontSize: 10,
-              fontFamily: MONO_FONT,
-              fontWeight: 700,
-              color: COLORS.textDim,
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
-              marginRight: 6,
-            }}
-          >
-            Conflicts
-          </span>
-          <span
-            style={{
-              fontSize: 13,
-              fontFamily: MONO_FONT,
-              fontWeight: 600,
-              color: activeConflicts > 0 ? COLORS.danger : COLORS.textPrimary,
-            }}
-          >
-            {activeConflicts}
-          </span>
-        </div>
+        <SummaryMetric
+          label="Conflicts"
+          value={activeConflicts}
+          color={activeConflicts > 0 ? COLORS.danger : undefined}
+        />
       </div>
 
       {/* Fallback lanes banner */}

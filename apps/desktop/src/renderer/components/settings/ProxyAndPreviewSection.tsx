@@ -45,7 +45,6 @@ type ProviderName = (typeof PROVIDERS)[number];
 function statusColor(status: OAuthSessionStatus): string {
   switch (status) {
     case "active":
-      return COLORS.success;
     case "completed":
       return COLORS.success;
     case "pending":
@@ -55,10 +54,6 @@ function statusColor(status: OAuthSessionStatus): string {
     default:
       return COLORS.textMuted;
   }
-}
-
-function statusLabel(status: OAuthSessionStatus): string {
-  return status.toUpperCase();
 }
 
 function formatTime(iso: string): string {
@@ -335,11 +330,7 @@ export function ProxyAndPreviewSection() {
   useEffect(() => {
     let cancelled = false;
 
-    const init = async () => {
-      await Promise.all([fetchProxyStatus(), fetchOAuthStatus(), fetchOAuthSessions()]);
-      if (cancelled) return;
-    };
-    init();
+    void Promise.all([fetchProxyStatus(), fetchOAuthStatus(), fetchOAuthSessions()]);
 
     // Subscribe to live events
     const unsubProxy = window.ade.lanes.onProxyEvent((ev: LaneProxyEvent) => {
@@ -873,7 +864,7 @@ export function ProxyAndPreviewSection() {
                   </div>
 
                   <span style={inlineBadge(statusColor(session.status))}>
-                    {statusLabel(session.status)}
+                    {session.status.toUpperCase()}
                   </span>
                 </div>
 
