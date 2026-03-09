@@ -233,31 +233,18 @@ function normalizeFinalizationState(value: unknown): MissionFinalizationState | 
   if (!raw) return null;
   const policy = normalizeFinalizationPolicy(raw.policy);
   if (!policy) return null;
-  const status =
-    raw.status === "idle"
-    || raw.status === "finalizing"
-    || raw.status === "creating_pr"
-    || raw.status === "rehearsing_queue"
-    || raw.status === "landing_queue"
-    || raw.status === "resolving_integration_conflicts"
-    || raw.status === "resolving_queue_conflicts"
-    || raw.status === "waiting_for_green"
-    || raw.status === "awaiting_operator_review"
-    || raw.status === "posting_review_comment"
-    || raw.status === "finalization_failed"
-    || raw.status === "completed"
-      ? raw.status
-      : "idle";
-  const waitReason =
-    raw.waitReason === "ci"
-    || raw.waitReason === "review"
-    || raw.waitReason === "merge_conflict"
-    || raw.waitReason === "resolver_failed"
-    || raw.waitReason === "merge_blocked"
-    || raw.waitReason === "manual"
-    || raw.waitReason === "canceled"
-      ? raw.waitReason
-      : null;
+  const VALID_FINALIZATION_STATUSES = new Set([
+    "idle", "finalizing", "creating_pr", "rehearsing_queue", "landing_queue",
+    "resolving_integration_conflicts", "resolving_queue_conflicts", "waiting_for_green",
+    "awaiting_operator_review", "posting_review_comment", "finalization_failed", "completed",
+  ]);
+  const VALID_WAIT_REASONS = new Set(["ci", "review", "merge_conflict", "resolver_failed", "merge_blocked", "manual", "canceled"]);
+  const status = VALID_FINALIZATION_STATUSES.has(raw.status as string)
+    ? (raw.status as MissionFinalizationState["status"])
+    : "idle";
+  const waitReason = VALID_WAIT_REASONS.has(raw.waitReason as string)
+    ? (raw.waitReason as MissionFinalizationState["waitReason"])
+    : null;
   return {
     policy,
     status,
