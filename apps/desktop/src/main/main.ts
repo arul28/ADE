@@ -56,6 +56,7 @@ import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestion
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
+import { createCompactionFlushService } from "./services/memory/compactionFlushService";
 import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
@@ -829,6 +830,8 @@ app.whenReady().then(async () => {
       sessionService
     });
 
+    const compactionFlushService = createCompactionFlushService(undefined, { logger });
+    aiIntegrationService.setCompactionFlushService(compactionFlushService);
     const memoryService = createUnifiedMemoryService(db);
     const memoryLifecycleService = createMemoryLifecycleService({
       db,

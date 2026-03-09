@@ -19,6 +19,7 @@ import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
 import { isRecord } from "../shared/utils";
 import type { createMemoryService } from "../memory/memoryService";
+import type { CompactionFlushService } from "../memory/compactionFlushService";
 
 export type AiTaskType =
   | "planning"
@@ -283,6 +284,7 @@ export function createAiIntegrationService(args: {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
 }) {
   const { db, logger, projectConfigService } = args;
+  let compactionFlushService: CompactionFlushService | null = null;
 
   // Non-blocking: fetch models.dev data and enrich pricing + registry
   initModelsDevService().then((modelData) => {
@@ -592,6 +594,7 @@ export function createAiIntegrationService(args: {
         stepId: args.stepId,
         attemptId: args.attemptId,
         ...(hasFullRunContext ? { db, enableCompaction: true } : {}),
+        ...(compactionFlushService ? { compactionFlushService } : {}),
         ...(args.memoryService ? { memoryService: args.memoryService } : {}),
         ...(args.memoryService && args.runId
           ? { addSharedFact: args.memoryService.addSharedFact.bind(args.memoryService) }
@@ -766,6 +769,9 @@ export function createAiIntegrationService(args: {
     getAvailabilityAsync,
     resolveModelForTask,
     executeViaUnified: executeViaUnifiedPath,
+    setCompactionFlushService(service: CompactionFlushService | null) {
+      compactionFlushService = service;
+    },
 
     // Backward-compatible convenience methods used by migrated services.
     async generateNarrative(args: {
@@ -900,6 +906,7 @@ export function createAiIntegrationService(args: {
           runId: args.runId,
           stepId: args.stepId,
           enableCompaction: true,
+          ...(compactionFlushService ? { compactionFlushService } : {}),
         }),
         args.feature,
         modelId,

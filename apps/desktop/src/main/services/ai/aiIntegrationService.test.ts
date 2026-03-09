@@ -232,6 +232,11 @@ describe("aiIntegrationService", () => {
     const memoryService = {
       addSharedFact: vi.fn(),
     } as any;
+    const compactionFlushService = {
+      beforeCompaction: vi.fn(),
+    } as any;
+
+    service.setCompactionFlushService(compactionFlushService);
 
     await service.executeTask({
       feature: "orchestrator",
@@ -254,6 +259,7 @@ describe("aiIntegrationService", () => {
     expect(firstCall.attemptId).toBe("attempt-1");
     expect(firstCall.memoryService).toBe(memoryService);
     expect(firstCall.enableCompaction).toBe(true);
+    expect(firstCall.compactionFlushService).toBe(compactionFlushService);
     expect(firstCall.addSharedFact).toBeTypeOf("function");
   });
 
