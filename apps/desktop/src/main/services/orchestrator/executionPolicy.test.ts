@@ -92,7 +92,7 @@ describe("executionPolicy", () => {
       expect(stepTypeToPhase("code")).toBe("implementation");
       expect(stepTypeToPhase("implementation")).toBe("implementation");
       expect(stepTypeToPhase("test")).toBe("testing");
-      expect(stepTypeToPhase("validation")).toBe("testing");
+      expect(stepTypeToPhase("validation")).toBe("validation");
       expect(stepTypeToPhase("review")).toBe("codeReview");
       expect(stepTypeToPhase("integration")).toBe("integration");
       expect(stepTypeToPhase("merge")).toBeNull(); // merge phase removed — always off

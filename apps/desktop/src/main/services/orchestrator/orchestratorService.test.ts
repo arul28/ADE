@@ -2254,6 +2254,129 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("does not let force finalize bypass required phase success", async () => {
+    const fixture = await createFixture();
+    try {
+      const developmentPhase = {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build the feature.",
+        instructions: "Implement the feature.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false, mode: "never" },
+        validationGate: { tier: "dedicated", required: true, criteria: "Implementation must actually succeed" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      };
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [developmentPhase] },
+          missionLevelSettings: { prStrategy: { kind: "manual" } },
+        },
+        steps: [
+          {
+            stepKey: "impl",
+            title: "Implementation",
+            stepIndex: 0,
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            },
+          },
+        ],
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      fixture.service.skipStep({
+        runId: started.run.id,
+        stepId: step.id,
+        reason: "Skipped by coordinator",
+      });
+
+      const finalized = fixture.service.finalizeRun({ runId: started.run.id, force: true });
+      const run = fixture.service.listRuns({ missionId: fixture.missionId }).find((entry) => entry.id === started.run.id);
+
+      expect(finalized.finalized).toBe(false);
+      expect(finalized.finalStatus).toBe("completing");
+      expect(finalized.blockers.some((entry) => entry.includes("without any successful work"))).toBe(true);
+      expect(run?.status).toBe("completing");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps interventions on the same step distinct until each interventionId is resolved", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "finalize-step", title: "Finalize Step", stepIndex: 0 }],
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner",
+      });
+      await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+      });
+
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        eventType: "intervention_opened",
+        eventKey: "intervention-opened-1",
+        payload: { interventionId: "intervention-1" },
+      });
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        eventType: "intervention_opened",
+        eventKey: "intervention-opened-2",
+        payload: { interventionId: "intervention-2" },
+      });
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        eventType: "intervention_resolved",
+        eventKey: "intervention-resolved-1",
+        payload: { interventionId: "intervention-1" },
+      });
+
+      const blocked = fixture.service.finalizeRun({ runId: started.run.id });
+      expect(blocked.finalized).toBe(false);
+      expect(blocked.blockers).toEqual(
+        expect.arrayContaining([expect.stringContaining("unresolved intervention")]),
+      );
+
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        eventType: "intervention_resolved",
+        eventKey: "intervention-resolved-2",
+        payload: { interventionId: "intervention-2" },
+      });
+
+      const finalized = fixture.service.finalizeRun({ runId: started.run.id });
+      expect(finalized.finalized).toBe(true);
+      expect(finalized.finalStatus).toBe("succeeded");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("supports claim heartbeat and expiry recovery for blocked collision steps", async () => {
     const fixture = await createFixture();
     try {

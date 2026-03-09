@@ -21,6 +21,12 @@ import {
 } from "./orchestratorContext";
 import type { MetaReasonerRunState } from "./metaReasoner";
 
+type ReplayQueuedWorkerMessagesResult = {
+  delivered: number;
+  failed: number;
+  queued: number;
+};
+
 // ── Session Runtime Signal Processing ────────────────────────────
 
 function trackSessionQueue(
@@ -46,6 +52,9 @@ export function onSessionRuntimeSignal(
   signal: SessionRuntimeSignal,
   deps: {
     processSessionRuntimeSignal: (signal: SessionRuntimeSignal) => Promise<void>;
+    replayQueuedWorkerMessages?: (
+      args: { reason: string; sessionId?: string | null; missionId?: string | null }
+    ) => Promise<void | ReplayQueuedWorkerMessagesResult>;
   }
 ): void {
   const sessionId = String(signal.sessionId ?? "").trim();
@@ -66,7 +75,14 @@ export function onSessionRuntimeSignal(
     .catch(() => {})
     .then(() => {
       if (ctx.disposed.current) return;
-      return deps.processSessionRuntimeSignal(normalizedSignal);
+      return deps.processSessionRuntimeSignal(normalizedSignal)
+        .then(() => {
+          if (ctx.disposed.current || !deps.replayQueuedWorkerMessages) return;
+          return deps.replayQueuedWorkerMessages({
+            reason: "runtime_signal",
+            sessionId,
+          }).then(() => undefined);
+        });
     })
     .catch((error) => {
       ctx.logger.debug("ai_orchestrator.session_signal_processing_failed", {
@@ -84,7 +100,9 @@ export function onAgentChatEvent(
   ctx: OrchestratorContext,
   envelope: AgentChatEventEnvelope,
   deps: {
-    replayQueuedWorkerMessages: (args: { reason: string; missionId?: string | null }) => Promise<void>;
+    replayQueuedWorkerMessages: (
+      args: { reason: string; missionId?: string | null; sessionId?: string | null }
+    ) => Promise<void | ReplayQueuedWorkerMessagesResult>;
   }
 ): void {
   const sessionId = String(envelope.sessionId ?? "").trim();
@@ -94,6 +112,7 @@ export function onAgentChatEvent(
   const turnStatus = typeof (event as any).turnStatus === "string" ? (event as any).turnStatus.trim().toLowerCase() : "";
   const shouldReplay =
     event.type === "done" ||
+    event.type === "error" ||
     (event.type === "status" && (
       turnStatus === "completed"
       || turnStatus === "failed"
@@ -111,13 +130,16 @@ export function onAgentChatEvent(
     .then(() => {
       if (ctx.disposed.current) return;
       if (shouldReplay) {
-        return deps.replayQueuedWorkerMessages({ reason: `agent_chat_event:${event.type}` }).catch((error: unknown) => {
+        return deps.replayQueuedWorkerMessages({
+          reason: `agent_chat_event:${event.type}`,
+          sessionId,
+        }).catch((error: unknown) => {
           ctx.logger.debug("ai_orchestrator.worker_delivery_chat_event_replay_failed", {
             sessionId,
             eventType: event.type,
             error: error instanceof Error ? error.message : String(error)
           });
-        });
+        }).then(() => undefined);
       }
     })
     .catch((error) => {

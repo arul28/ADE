@@ -638,6 +638,77 @@ export function ensureThreadForTarget(
   });
 }
 
+function deriveTargetFromThread(thread: OrchestratorChatThread): OrchestratorChatTarget | null {
+  if (thread.threadType === "worker") {
+    return {
+      kind: "worker",
+      runId: thread.runId ?? null,
+      stepId: thread.stepId ?? null,
+      stepKey: thread.stepKey ?? null,
+      attemptId: thread.attemptId ?? null,
+      sessionId: thread.sessionId ?? null,
+      laneId: thread.laneId ?? null,
+    };
+  }
+  if (thread.threadType === "teammate") {
+    const metadata = isRecord(thread.metadata) ? thread.metadata : {};
+    return {
+      kind: "teammate",
+      runId: thread.runId ?? null,
+      teamMemberId: typeof metadata.teamMemberId === "string" ? metadata.teamMemberId : null,
+      sessionId: thread.sessionId ?? null,
+    };
+  }
+  return {
+    kind: "coordinator",
+    runId: thread.runId ?? null,
+  };
+}
+
+function mergeThreadResolvedTarget(
+  thread: OrchestratorChatThread,
+  explicitTarget: OrchestratorChatTarget | null,
+): OrchestratorChatTarget | null {
+  const threadTarget = deriveTargetFromThread(thread);
+  if (!threadTarget) return explicitTarget;
+  if (!explicitTarget) return threadTarget;
+  if (threadTarget.kind !== explicitTarget.kind) return explicitTarget;
+  switch (explicitTarget.kind) {
+    case "worker": {
+      const threadWorkerTarget = threadTarget.kind === "worker" ? threadTarget : null;
+      return {
+        kind: "worker",
+        runId: explicitTarget.runId ?? threadTarget.runId ?? null,
+        stepId: explicitTarget.stepId ?? threadWorkerTarget?.stepId ?? null,
+        stepKey: explicitTarget.stepKey ?? threadWorkerTarget?.stepKey ?? null,
+        attemptId: explicitTarget.attemptId ?? threadWorkerTarget?.attemptId ?? null,
+        sessionId: explicitTarget.sessionId ?? threadWorkerTarget?.sessionId ?? null,
+        laneId: explicitTarget.laneId ?? threadWorkerTarget?.laneId ?? null,
+      };
+    }
+    case "teammate": {
+      const threadTeammateTarget = threadTarget.kind === "teammate" ? threadTarget : null;
+      return {
+        kind: "teammate",
+        runId: explicitTarget.runId ?? threadTarget.runId ?? null,
+        teamMemberId: explicitTarget.teamMemberId ?? threadTeammateTarget?.teamMemberId ?? null,
+        sessionId: explicitTarget.sessionId ?? threadTeammateTarget?.sessionId ?? null,
+      };
+    }
+    case "workers":
+      return explicitTarget;
+    case "agent":
+      return explicitTarget;
+    case "coordinator":
+      return {
+        kind: "coordinator",
+        runId: explicitTarget.runId ?? threadTarget.runId ?? null,
+      };
+    default:
+      return explicitTarget;
+  }
+}
+
 // ── Chat Message Row Parsing ─────────────────────────────────────
 
 export type ChatMessageRow = {
@@ -1237,15 +1308,16 @@ export function sendThreadMessageCtx(
   threadArgs: SendOrchestratorThreadMessageArgs,
   deps: ChatRoutingDeps
 ): OrchestratorChatMessage {
-  const target = sanitizeChatTarget(threadArgs.target);
-  if (target?.kind === "workers") {
-    return sendWorkersBroadcastMessageCtx(ctx, threadArgs, target, deps);
+  const explicitTarget = sanitizeChatTarget(threadArgs.target);
+  if (explicitTarget?.kind === "workers") {
+    return sendWorkersBroadcastMessageCtx(ctx, threadArgs, explicitTarget, deps);
   }
   const thread = ensureThreadForTarget(ctx, {
     missionId: threadArgs.missionId,
     threadId: threadArgs.threadId ?? null,
-    target
+    target: explicitTarget
   });
+  const target = mergeThreadResolvedTarget(thread, explicitTarget);
   const isWorkerTarget = target?.kind === "worker";
   const isTeammateTarget = target?.kind === "teammate";
   const visibilityFallback = isWorkerTarget ? DEFAULT_WORKER_CHAT_VISIBILITY : DEFAULT_CHAT_VISIBILITY;
@@ -1335,11 +1407,14 @@ export function sendChatCtx(
   chatArgs: SendOrchestratorChatArgs,
   deps: ChatRoutingDeps
 ): OrchestratorChatMessage {
+  const resolvedTarget =
+    chatArgs.target
+    ?? (chatArgs.threadId ? undefined : { kind: "coordinator", runId: null } satisfies OrchestratorChatTarget);
   return sendThreadMessageCtx(ctx, {
     missionId: chatArgs.missionId,
     content: chatArgs.content,
     threadId: chatArgs.threadId ?? missionThreadId(chatArgs.missionId),
-    target: chatArgs.target ?? { kind: "coordinator", runId: null },
+    ...(resolvedTarget ? { target: resolvedTarget } : {}),
     visibilityMode: chatArgs.visibilityMode ?? DEFAULT_CHAT_VISIBILITY,
     metadata: chatArgs.metadata ?? null
   }, deps);

@@ -1331,11 +1331,29 @@ export function createCoordinatorToolSet(deps: {
   ): boolean {
     const phaseKey = phase.phaseKey.trim().toLowerCase();
     const phaseName = phase.name.trim().toLowerCase();
-    const phaseSteps = stepsForPhase(phase);
+    const phaseSteps = filterExecutionSteps(stepsForPhase(phase));
     if (phaseKey === "planning" || phaseName === "planning") {
       return phaseSteps.some((step) => isPlanningExecutionStep(step) && step.status === "succeeded");
     }
     return phaseSteps.some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+  }
+
+  function phaseHasSuccessfulCompletion(
+    phase: PhaseCard,
+    stepsForPhase: (phase: PhaseCard) => OrchestratorStep[],
+  ): boolean {
+    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    const phaseName = phase.name.trim().toLowerCase();
+    const phaseSteps = filterExecutionSteps(stepsForPhase(phase));
+    if (phaseSteps.length === 0) return false;
+    if (phaseKey === "planning" || phaseName === "planning") {
+      return phaseSteps.some((step) => isPlanningExecutionStep(step) && step.status === "succeeded");
+    }
+    const allTerminalWithoutFailure = phaseSteps.every(
+      (step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded",
+    );
+    const hasConcreteSuccess = phaseSteps.some((step) => step.status === "succeeded");
+    return allTerminalWithoutFailure && hasConcreteSuccess;
   }
 
   function stopReasonLooksLikeNormalCompletion(reason: string): boolean {
@@ -1400,6 +1418,8 @@ export function createCoordinatorToolSet(deps: {
 
     const phaseHasTerminalStep = (phase: PhaseCard): boolean =>
       phaseHasCompletionEligibleStep(phase, stepsForPhase);
+    const phaseHasSucceeded = (phase: PhaseCard): boolean =>
+      phaseHasSuccessfulCompletion(phase, stepsForPhase);
 
     const phaseHasNonTerminalStep = (phase: PhaseCard): boolean =>
       stepsForPhase(phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
@@ -1429,10 +1449,10 @@ export function createCoordinatorToolSet(deps: {
         const trimmed = predecessor.trim();
         if (!trimmed.length) continue;
         const predecessorPhase = sorted.find((p) => p.phaseKey === trimmed || p.name === trimmed);
-        if (predecessorPhase && !phaseHasTerminalStep(predecessorPhase)) {
+        if (predecessorPhase && !phaseHasSucceeded(predecessorPhase)) {
           return {
             valid: false,
-            reason: `Phase "${currentPhase.name}" requires phase "${predecessorPhase.name}" to complete first (mustFollow constraint). No completed steps found for "${predecessorPhase.name}".`,
+            reason: `Phase "${currentPhase.name}" requires phase "${predecessorPhase.name}" to succeed first (mustFollow constraint). No successful completion was found for "${predecessorPhase.name}".`,
           };
         }
       }
@@ -1442,10 +1462,10 @@ export function createCoordinatorToolSet(deps: {
     for (let i = 0; i < currentIndex; i++) {
       const earlier = sorted[i];
       if (!earlier.validationGate.required) continue;
-      if (!phaseHasTerminalStep(earlier)) {
+      if (!phaseHasSucceeded(earlier)) {
         return {
           valid: false,
-          reason: `Required phase "${earlier.name}" (position ${earlier.position}) has no completed steps yet. It must finish before starting phase "${currentPhase.name}" (position ${currentPhase.position}).`,
+          reason: `Required phase "${earlier.name}" (position ${earlier.position}) has not succeeded yet. It must succeed before starting phase "${currentPhase.name}" (position ${currentPhase.position}).`,
         };
       }
     }
@@ -3883,13 +3903,19 @@ export function createCoordinatorToolSet(deps: {
           });
         const hasTerminalStep = (phase: PhaseCard): boolean =>
           phaseHasCompletionEligibleStep(phase, stepsForPhase);
+        const hasSuccessfulCompletion = (phase: PhaseCard): boolean =>
+          phaseHasSuccessfulCompletion(phase, stepsForPhase);
 
         const targetIndex = missionPhases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
         if (targetIndex < 0) {
           return { ok: false, error: `Could not resolve target phase index for '${targetPhase.phaseKey}'.` };
         }
 
-        if (currentPhase?.phaseKey === "planning" && targetPhase.phaseKey !== "planning" && !hasTerminalStep(currentPhase)) {
+        if (
+          currentPhase?.phaseKey === "planning"
+          && targetPhase.phaseKey !== "planning"
+          && !hasSuccessfulCompletion(currentPhase)
+        ) {
           return {
             ok: false,
             error: "Planning phase has not completed yet. Wait for a planning worker to succeed before transitioning."
@@ -3899,10 +3925,10 @@ export function createCoordinatorToolSet(deps: {
         for (let i = 0; i < targetIndex; i += 1) {
           const earlier = missionPhases[i]!;
           const mustComplete = earlier.validationGate.required || earlier.orderingConstraints.mustBeFirst;
-          if (mustComplete && !hasTerminalStep(earlier)) {
+          if (mustComplete && !hasSuccessfulCompletion(earlier)) {
             return {
               ok: false,
-              error: `Cannot enter phase '${targetPhase.name}' before '${earlier.name}' has completed.`
+              error: `Cannot enter phase '${targetPhase.name}' before '${earlier.name}' has succeeded.`
             };
           }
         }
@@ -3912,10 +3938,10 @@ export function createCoordinatorToolSet(deps: {
           const predecessorKey = rawPredecessor.trim();
           if (!predecessorKey.length) continue;
           const predecessor = missionPhases.find((phase) => phase.phaseKey === predecessorKey || phase.name === predecessorKey);
-          if (predecessor && !hasTerminalStep(predecessor)) {
+          if (predecessor && !hasSuccessfulCompletion(predecessor)) {
             return {
               ok: false,
-              error: `Cannot enter phase '${targetPhase.name}' until '${predecessor.name}' completes (mustFollow).`
+              error: `Cannot enter phase '${targetPhase.name}' until '${predecessor.name}' succeeds (mustFollow).`
             };
           }
         }
@@ -4472,7 +4498,7 @@ export function createCoordinatorToolSet(deps: {
 
   const complete_mission = tool({
     description:
-      "Declare the mission complete. Call this when you are satisfied that all work is done.",
+      "Request mission success finalization. The runtime still enforces completion gates before success is granted.",
     inputSchema: z.object({
       summary: z.string().describe("Summary of what was accomplished"),
     }),
@@ -4518,46 +4544,33 @@ export function createCoordinatorToolSet(deps: {
             blockers
           };
         }
+        const finalized = orchestratorService.finalizeRun({ runId });
+        if (!finalized.finalized) {
+          return {
+            ok: false,
+            error: "Mission cannot be completed until the runtime completion gates pass.",
+            blockers: finalized.blockers,
+          };
+        }
+        if (finalized.finalStatus !== "succeeded") {
+          return {
+            ok: false,
+            error: `Mission completion request did not resolve to success (final status: ${finalized.finalStatus}).`,
+            blockers: finalized.blockers,
+            finalStatus: finalized.finalStatus,
+          };
+        }
 
         orchestratorService.appendRuntimeEvent({
           runId,
           eventType: "done",
           payload: { summary, completedBy: "coordinator" },
         });
-        // Mark all remaining ready/blocked steps as skipped
-        for (const step of relevantSteps) {
-          if (step.status === "ready" || step.status === "blocked" || step.status === "pending") {
-            orchestratorService.skipStep({
-              runId,
-              stepId: step.id,
-              reason: "Mission completed by coordinator",
-            });
-            onDagMutation({
-              runId,
-              mutation: { type: "status_changed", stepKey: step.stepKey, newStatus: "skipped" },
-              timestamp: nowIso(),
-              source: "coordinator",
-            });
-          }
-        }
-        // Finalize via proper lifecycle callback
         if (deps.onRunFinalize) {
           deps.onRunFinalize({ runId, succeeded: true, summary });
-        } else {
-          // Fallback: raw update if no callback provided (shouldn't happen in practice)
-          const ts = nowIso();
-          db.run(
-            `update orchestrator_runs set status = 'succeeded', completed_at = ?, updated_at = ? where id = ?`,
-            [ts, ts, runId],
-          );
-          try {
-            deps.orchestratorService.generateRunRetrospective({ runId });
-          } catch {
-            // best-effort
-          }
         }
         logger.info("coordinator.complete_mission", { runId, summary });
-        return { ok: true, runId, summary };
+        return { ok: true, runId, summary, finalStatus: finalized.finalStatus };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.complete_mission.error", { error: msg });

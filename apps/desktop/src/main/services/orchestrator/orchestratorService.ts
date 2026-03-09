@@ -9522,49 +9522,30 @@ export function createOrchestratorService({
             and not exists (
               select 1 from orchestrator_runtime_events r
               where r.project_id = e.project_id and r.run_id = e.run_id
-                and (
-                  r.step_id = e.step_id
-                  or (r.step_id is null and e.step_id is null)
-                )
                 and r.event_type = 'intervention_resolved'
+                and (
+                  (
+                    json_extract(e.payload_json, '$.interventionId') is not null
+                    and json_extract(r.payload_json, '$.interventionId') = json_extract(e.payload_json, '$.interventionId')
+                  )
+                  or (
+                    json_extract(e.payload_json, '$.interventionId') is null
+                    and (
+                      r.step_id = e.step_id
+                      or (r.step_id is null and e.step_id is null)
+                    )
+                  )
+                )
             )
         `,
         [projectId, runId]
       );
 
       const validation = validateRunCompletion(run, steps, attempts, claims, runState, interventionRows);
-
-      if (!validation.canComplete && !args.force) {
-        // Store the validation error in run state
-        if (runState) {
-          this.upsertRunState(runId, {
-            ...runState,
-            lastValidationError: validation.blockers.map((b) => b.message).join("; "),
-            completionValidated: false
-          });
-        }
-
-        appendTimelineEvent({
-          runId,
-          eventType: "run_completion_blocked",
-          reason: "validation_failed",
-          detail: {
-            blockers: validation.blockers,
-            validatedAt: validation.validatedAt
-          }
-        });
-
-        return {
-          finalized: false,
-          blockers: validation.blockers.map((b) => b.message),
-          finalStatus: "completing"
-        };
-      }
-
-      // Validation passed (or forced) — evaluate the final status from step outcomes
       const finalRunMeta = parseJsonRecord(runRow.metadata_json);
       const finalPhases = resolveRunPhaseCardsFromMetadata(finalRunMeta);
       const finalSettings = resolveRunMissionLevelSettingsFromMetadata(finalRunMeta);
+      const hasConfiguredPhaseEvaluation = Boolean(finalPhases && finalPhases.length > 0 && finalSettings);
 
       let evaluation: RunCompletionEvaluation;
       if (finalPhases && finalPhases.length > 0 && finalSettings) {
@@ -9578,21 +9559,56 @@ export function createOrchestratorService({
         );
       }
 
+      const evaluationBlockers = evaluation.diagnostics
+        .filter((diagnostic) => diagnostic.blocking)
+        .filter((diagnostic) => hasConfiguredPhaseEvaluation || diagnostic.code === "required_validation_missing")
+        .map((diagnostic) => ({
+          code: diagnostic.code,
+          message: diagnostic.message,
+          detail: diagnostic.details ?? null,
+        }));
+      const completionBlockers = [...validation.blockers, ...evaluationBlockers];
+      const completionReady =
+        validation.canComplete
+        && evaluationBlockers.length === 0
+        && (!hasConfiguredPhaseEvaluation || evaluation.completionReady);
+
+      if (!completionReady) {
+        // Store the validation error in run state
+        if (runState) {
+          this.upsertRunState(runId, {
+            ...runState,
+            lastValidationError: completionBlockers.map((b) => b.message).join("; "),
+            completionValidated: false
+          });
+        }
+
+        appendTimelineEvent({
+          runId,
+          eventType: "run_completion_blocked",
+          reason: "completion_gates_failed",
+          detail: {
+            blockers: completionBlockers,
+            validatedAt: validation.validatedAt,
+            completionReady: evaluation.completionReady,
+            evaluationStatus: evaluation.status
+          }
+        });
+
+        return {
+          finalized: false,
+          blockers: completionBlockers.map((b) => b.message),
+          finalStatus: "completing"
+        };
+      }
+
       // Determine final terminal status
       let finalStatus: OrchestratorRunStatus;
-      const allStepStatuses = filterExecutionSteps(steps).map((s) => s.status);
-      const anyFailed = allStepStatuses.some((s) => s === "failed");
-      const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
-
-      if (anyFailed) {
-        finalStatus = "failed";
-      } else if (allSucceeded) {
-        finalStatus = "succeeded";
-      } else if (args.force) {
-        // Force-completing with mixed non-failure results still resolves to succeeded.
-        finalStatus = "succeeded";
+      if (hasConfiguredPhaseEvaluation) {
+        finalStatus = evaluation.status === "failed" ? "failed" : "succeeded";
       } else {
-        finalStatus = "succeeded";
+        const allStepStatuses = filterExecutionSteps(steps).map((step) => step.status);
+        finalStatus = allStepStatuses.some((status) => status === "failed") ? "failed" : "succeeded";
       }
 
       // Persist completion diagnostics
@@ -9633,7 +9649,7 @@ export function createOrchestratorService({
         reason: "finalize_run",
         detail: {
           finalStatus,
-          force: args.force ?? false,
+          forceRequested: args.force ?? false,
           diagnosticCount: evaluation.diagnostics.length,
           riskFactors: evaluation.riskFactors
         }

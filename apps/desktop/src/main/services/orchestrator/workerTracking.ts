@@ -313,6 +313,9 @@ export function listWorkerDigests(
 ): OrchestratorWorkerDigest[] {
   const runId = toOptionalString(digestArgs.runId);
   const missionId = toOptionalString(digestArgs.missionId);
+  const stepId = toOptionalString(digestArgs.stepId);
+  const attemptId = toOptionalString(digestArgs.attemptId);
+  const laneId = toOptionalString(digestArgs.laneId);
   const limit = clampLimit(digestArgs.limit, 50, MAX_THREAD_PAGE_SIZE);
 
   const clauses: string[] = [];
@@ -325,6 +328,18 @@ export function listWorkerDigests(
   if (missionId) {
     clauses.push("wd.run_id IN (SELECT id FROM orchestrator_runs WHERE mission_id = ?)");
     params.push(missionId);
+  }
+  if (stepId) {
+    clauses.push("wd.step_id = ?");
+    params.push(stepId);
+  }
+  if (attemptId) {
+    clauses.push("wd.attempt_id = ?");
+    params.push(attemptId);
+  }
+  if (laneId) {
+    clauses.push("wd.lane_id = ?");
+    params.push(laneId);
   }
 
   const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
@@ -343,11 +358,18 @@ export function getWorkerDigest(
   digestArgs: GetOrchestratorWorkerDigestArgs
 ): OrchestratorWorkerDigest | null {
   const digestId = toOptionalString(digestArgs.digestId);
+  const missionId = toOptionalString(digestArgs.missionId);
   if (!digestId) return null;
 
   const row = ctx.db.get(
-    `SELECT * FROM orchestrator_worker_digests WHERE id = ? LIMIT 1`,
-    [digestId]
+    `
+      SELECT *
+      FROM orchestrator_worker_digests
+      WHERE id = ?
+        AND run_id IN (SELECT id FROM orchestrator_runs WHERE mission_id = ?)
+      LIMIT 1
+    `,
+    [digestId, missionId]
   ) as any;
 
   return row ? parseWorkerDigestRow(row) : null;

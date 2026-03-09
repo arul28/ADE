@@ -1008,6 +1008,8 @@ export type CompletionDiagnostic = {
     | "phase_skipped_by_policy"
     | "phase_in_progress"
     | "phase_failed"
+    | "phase_completed_without_success"
+    | "phase_terminal_without_success"
     | "phase_succeeded"
     | "required_validation_missing";
   message: string;
@@ -1318,11 +1320,18 @@ export type GetOrchestratorThreadMessagesArgs = {
 export type SendOrchestratorThreadMessageArgs = {
   missionId: string;
   content: string;
-  threadId?: string | null;
-  target?: OrchestratorChatTarget;
   visibilityMode?: OrchestratorChatVisibilityMode;
   metadata?: Record<string, unknown> | null;
-};
+} & (
+  | {
+      threadId: string;
+      target?: OrchestratorChatTarget | null;
+    }
+  | {
+      threadId?: string | null;
+      target: OrchestratorChatTarget;
+    }
+);
 
 export type SendAgentMessageArgs = {
   missionId: string;

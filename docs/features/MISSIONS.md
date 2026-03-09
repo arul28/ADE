@@ -21,6 +21,8 @@ Current baseline:
 
 When planning is enabled, the run starts in `planning`. The coordinator should gather context, hand off quickly to a read-only planning worker, require a usable planner result, and then transition explicitly to `development`.
 
+Configured phase transitions are explicit coordinator actions. The runtime may summarize phase progress, but it should not silently advance the configured current phase on the coordinator's behalf.
+
 After delegation, the coordinator should stay mostly quiet and wake back up for meaningful runtime events, steering input, or blocked/error conditions.
 
 ### Execution
@@ -33,6 +35,8 @@ Validation is strict runtime behavior:
 
 - required validation cannot be skipped,
 - dedicated validation can auto-spawn validator work,
+- completion requests do not bypass runtime completion gates,
+- required predecessor phases must actually succeed before later required phases unlock,
 - missing required validation blocks downstream progress and emits explicit runtime/timeline signals.
 
 ## Mission Detail Tabs

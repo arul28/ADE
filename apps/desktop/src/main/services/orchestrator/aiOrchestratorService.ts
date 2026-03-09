@@ -61,7 +61,6 @@ import type {
   TeamRuntimeConfig,
   FinalizeRunArgs,
   FinalizeRunResult,
-  RunCompletionBlocker,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
   MissionStateDocumentPatch,
@@ -180,6 +179,8 @@ import {
 
 // Import from runtime event router module
 import {
+  onAgentChatEvent as onAgentChatEventCtx,
+  onSessionRuntimeSignal as onSessionRuntimeSignalCtx,
   pruneSessionRuntimeSignals as pruneSessionRuntimeSignalsCtx,
 } from "./runtimeEventRouter";
 
@@ -399,17 +400,12 @@ export function deriveMissionPhaseSyncTarget(graph: OrchestratorRunGraph): Phase
         currentPhaseExecutionSteps.length > 0
         && currentPhaseExecutionSteps.every((step) => TERMINAL_PHASE_STEP_STATUSES.has(step.status))
       ) {
-        const planningPhase = currentPhase.phaseKey.trim().toLowerCase() === "planning"
-          || currentPhase.name.trim().toLowerCase() === "planning";
         const currentPhaseCompleted = currentPhaseExecutionSteps.some((step) =>
           phaseStepCountsAsCompleteForSync(step, currentPhase)
         );
-        if (!planningPhase || currentPhaseCompleted) {
-          const nextPhase = configuredPhases[currentPhaseIndex + 1];
-          if (nextPhase) {
-            const sourceStepId = currentPhaseExecutionSteps[currentPhaseExecutionSteps.length - 1]?.id ?? null;
-            return buildPhaseSyncTargetFromCard(nextPhase, sourceStepId);
-          }
+        if (currentPhaseCompleted) {
+          const sourceStepId = currentPhaseExecutionSteps[currentPhaseExecutionSteps.length - 1]?.id ?? null;
+          return buildPhaseSyncTargetFromCard(currentPhase, sourceStepId);
         }
       }
     }
@@ -1627,8 +1623,8 @@ export function createAiOrchestratorService(args: {
               runId,
               event: "mission_failed",
             });
+            finalizeRun({ runId, force: true });
           }
-          finalizeRun({ runId, force: true });
         },
         onHardCapTriggered: (detail) => {
           pauseOnBudgetHardCap(missionId, detail);
@@ -3637,83 +3633,37 @@ Check all worker statuses and continue managing the mission from here. Read work
    * Validates that all tasks are done, no running attempts remain, and no blockers exist.
    */
   const finalizeRun = (finalizeArgs: FinalizeRunArgs): FinalizeRunResult => {
-    const { runId, force } = finalizeArgs;
+    const { runId } = finalizeArgs;
     const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
     const missionId = graph.run.missionId;
 
     // The act of calling finalizeRun IS the completion request
     updateTeamRuntimePhase(runId, "executing", { completionRequested: true });
-
-    const blockers: RunCompletionBlocker[] = [];
-
-    // Hard gate: can't complete while workers are still executing
-    const runningAttempts = graph.attempts.filter((a) => a.status === "running");
-    if (runningAttempts.length > 0) {
-      blockers.push({ code: "running_attempts", message: `${runningAttempts.length} attempts still running` });
-    }
-
-    // Soft gate: tasks not done — only block if NOT force (coordinator already skipped remaining steps)
-    if (!force) {
-      const notDoneSteps = graph.steps.filter(
-        (s) =>
-          s.status !== "succeeded" &&
-          s.status !== "skipped" &&
-          s.status !== "superseded" &&
-          s.status !== "canceled" &&
-          s.status !== "failed"
-      );
-      if (notDoneSteps.length > 0) {
-        blockers.push({ code: "claimed_tasks", message: `${notDoneSteps.length} tasks not yet complete` });
-      }
-    }
-
-    // completion_not_requested gate removed — calling finalizeRun IS the request
-
-    if (blockers.length > 0 && !force) {
+    const finalized = orchestratorService.finalizeRun(finalizeArgs);
+    if (!finalized.finalized) {
       updateTeamRuntimePhase(runId, "executing", {
         completionRequested: true,
         completionValidated: false,
-        lastValidationError: blockers.map((b) => b.message).join("; "),
+        lastValidationError: finalized.blockers.join("; ") || null,
       });
-      return { finalized: false, blockers: blockers.map((b) => b.message), finalStatus: "active" };
+      return finalized;
     }
 
-    // When force is true, only running_attempts is a hard gate
-    if (force && runningAttempts.length > 0) {
-      return { finalized: false, blockers: blockers.map((b) => b.message), finalStatus: "active" };
-    }
-
-    // Determine final status
-    const failedSteps = graph.steps.filter((s) => s.status === "failed");
-    const allSucceededOrSkipped = graph.steps.every(
-      (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "superseded" || s.status === "canceled"
-    );
-    let finalStatus: OrchestratorRunStatus;
-    if (allSucceededOrSkipped) {
-      finalStatus = "succeeded";
-    } else if (failedSteps.length > 0 && failedSteps.length < graph.steps.length) {
-      finalStatus = "failed";
-    } else {
-      finalStatus = "failed";
-    }
-
-    // Transition run
+    const finalStatus = finalized.finalStatus;
     const ts = nowIso();
-    db.run(
-      `update orchestrator_runs set status = ?, completed_at = ?, updated_at = ? where id = ?`,
-      [finalStatus, ts, ts, runId]
-    );
     updateTeamRuntimePhase(runId, "done", {
       completionRequested: true,
       completionValidated: true,
+      lastValidationError: null,
     });
 
     // End coordinator
     endCoordinatorAgentV2(runId);
     cleanupCoordinatorCheckpointFile(runId, "finalize_run");
+    const finalGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
 
     const buildRecoveryHandoffPayload = () => {
-      const doneSteps = graph.steps
+      const doneSteps = finalGraph.steps
         .filter((step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded" || step.status === "canceled")
         .map((step) => ({
           stepId: step.id,
@@ -3722,7 +3672,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           status: step.status,
           laneId: step.laneId
         }));
-      const remainingSteps = graph.steps
+      const remainingSteps = finalGraph.steps
         .filter((step) => step.status !== "succeeded" && step.status !== "skipped" && step.status !== "superseded" && step.status !== "canceled")
         .map((step) => ({
           stepId: step.id,
@@ -3731,14 +3681,14 @@ Check all worker statuses and continue managing the mission from here. Read work
           status: step.status,
           laneId: step.laneId
         }));
-      const laneMap = graph.steps.reduce<Record<string, string[]>>((acc, step) => {
+      const laneMap = finalGraph.steps.reduce<Record<string, string[]>>((acc, step) => {
         const laneKey = step.laneId ?? "unassigned";
         const list = acc[laneKey] ?? [];
         list.push(step.stepKey);
         acc[laneKey] = list;
         return acc;
       }, {});
-      const validations = graph.runtimeEvents
+      const validations = finalGraph.runtimeEvents
         ?.filter((event) => event.eventType === "validation_report")
         .slice(-25)
         .map((event) => ({
@@ -3823,8 +3773,14 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }
 
-    logger.info("ai_orchestrator.run_finalized", { runId, missionId, finalStatus, blockerCount: blockers.length, retrospectiveGenerated: Boolean(retrospective) });
-    return { finalized: true, blockers: [], finalStatus };
+    logger.info("ai_orchestrator.run_finalized", {
+      runId,
+      missionId,
+      finalStatus,
+      blockerCount: finalized.blockers.length,
+      retrospectiveGenerated: Boolean(retrospective)
+    });
+    return finalized;
   };
 
   /**
@@ -4669,10 +4625,22 @@ Check all worker statuses and continue managing the mission from here. Read work
       const now = nowIso();
       for (const downstream of downstreamSteps) {
         const meta = isRecord(downstream.metadata) ? { ...downstream.metadata } : {};
-        const existing = Array.isArray(meta.handoffSummaries) ? [...meta.handoffSummaries as unknown[]] : [];
+        const handoffKey = `${completedStep.id}:${args.digest.attemptId}`;
+        const existing = Array.isArray(meta.handoffSummaries)
+          ? [...meta.handoffSummaries as unknown[]].filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+          : [];
+        const existingKeys = Array.isArray(meta.handoffSummaryKeys)
+          ? [...meta.handoffSummaryKeys as unknown[]].filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+          : [];
+        const alreadyApplied = existingKeys.includes(handoffKey) || existing.includes(handoffText);
+        if (alreadyApplied) {
+          continue;
+        }
         existing.push(handoffText);
+        existingKeys.push(handoffKey);
         // Cap at 10 handoff entries to prevent prompt bloat
         meta.handoffSummaries = existing.slice(-10);
+        meta.handoffSummaryKeys = existingKeys.slice(-10);
         db.run(
           `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
           [JSON.stringify(meta), now, downstream.id, args.runId]
@@ -5147,107 +5115,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!graph.run.missionId) return;
     const target = deriveMissionPhaseSyncTarget(graph);
     if (!target) return;
-    const nextPhaseKey = target.phaseKey;
-    const nextPhaseName = target.phaseName;
-    const nextPhaseModel = target.phaseModel;
-    const nextPhaseInstructions = target.phaseInstructions;
-    const nextPhaseValidation = target.phaseValidation;
-    const nextPhaseBudget = target.phaseBudget;
-
-    const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
-    const phaseRuntime = isRecord(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
-    const prevPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey : null;
-    const prevPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName : null;
-    if (prevPhaseKey === nextPhaseKey) return;
-
-    const transitionedAt = nowIso();
-    const transitionReason = `${prevPhaseName ?? "Start"} -> ${nextPhaseName}`;
-
-    updateRunMetadata(graph.run.id, (metadata) => {
-      const nextRuntime = isRecord(metadata.phaseRuntime) ? { ...metadata.phaseRuntime } : {};
-      const transitions = Array.isArray(nextRuntime.transitions) ? [...nextRuntime.transitions] : [];
-      transitions.unshift({
-        fromPhaseKey: prevPhaseKey,
-        fromPhaseName: prevPhaseName,
-        toPhaseKey: nextPhaseKey,
-        toPhaseName: nextPhaseName,
-        at: transitionedAt,
-        reason
-      });
-      nextRuntime.transitions = transitions.slice(0, 64);
-      nextRuntime.currentPhaseKey = nextPhaseKey;
-      nextRuntime.currentPhaseName = nextPhaseName;
-      nextRuntime.currentPhaseModel = nextPhaseModel;
-      nextRuntime.currentPhaseInstructions = nextPhaseInstructions;
-      nextRuntime.currentPhaseValidation = nextPhaseValidation;
-      nextRuntime.currentPhaseBudget = nextPhaseBudget;
-      nextRuntime.transitionedAt = transitionedAt;
-
-      const phaseBudgets = isRecord(nextRuntime.phaseBudgets) ? { ...nextRuntime.phaseBudgets } : {};
-      if (!isRecord(phaseBudgets[nextPhaseKey])) {
-        phaseBudgets[nextPhaseKey] = {
-          enteredAt: transitionedAt,
-          usedTokens: 0,
-          usedCostUsd: 0
-        };
-      }
-      nextRuntime.phaseBudgets = phaseBudgets;
-      metadata.phaseRuntime = nextRuntime;
-    });
-
-    orchestratorService.appendTimelineEvent({
-      runId: graph.run.id,
-      stepId: target.sourceStepId ?? undefined,
-      eventType: "phase_transition",
-      reason: transitionReason,
-      detail: {
-        fromPhaseKey: prevPhaseKey,
-        fromPhaseName: prevPhaseName,
-        toPhaseKey: nextPhaseKey,
-        toPhaseName: nextPhaseName,
-        transitionReason: reason,
-        phaseModel: nextPhaseModel,
-        phaseValidation: nextPhaseValidation,
-        phaseBudget: nextPhaseBudget,
-        transitionedAt
-      }
-    });
-
-    emitOrchestratorMessage(
-      graph.run.missionId,
-      `Phase transition: ${prevPhaseName ?? "Start"} → ${nextPhaseName}`,
-      null,
-      { phaseFrom: prevPhaseKey, phaseTo: nextPhaseKey }
-    );
-
     updateMissionStateDoc(graph.run.id, {
       updateProgress: {
-        currentPhase: nextPhaseName,
+        currentPhase: target.phaseName,
       },
     }, { graph });
-
-    try {
-      missionService.logEvent({
-        missionId: graph.run.missionId,
-        eventType: "phase_transition",
-        actor: "system",
-        summary: transitionReason,
-        payload: {
-          runId: graph.run.id,
-          fromPhaseKey: prevPhaseKey,
-          fromPhaseName: prevPhaseName,
-          toPhaseKey: nextPhaseKey,
-          toPhaseName: nextPhaseName,
-          transitionReason: reason,
-          phaseModel: nextPhaseModel,
-          phaseValidation: nextPhaseValidation,
-          phaseBudget: nextPhaseBudget,
-          transitionedAt
-        }
-      });
-    } catch {
-      // Best effort mission event write; runtime should continue.
-    }
   };
 
   const syncMissionFromRun = async (
@@ -7034,83 +6906,29 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (disposed) return;
     const sessionId = String(signal.sessionId ?? "").trim();
     if (!sessionId.length) return;
-    const runtimeState = parseTerminalRuntimeState(signal.runtimeState) ?? "running";
     const normalizedSignal: SessionRuntimeSignal = {
       laneId: String(signal.laneId ?? "").trim(),
       sessionId,
-      runtimeState,
+      runtimeState: parseTerminalRuntimeState(signal.runtimeState) ?? "running",
       lastOutputPreview:
         typeof signal.lastOutputPreview === "string" && signal.lastOutputPreview.trim().length > 0
           ? clipTextForContext(signal.lastOutputPreview.trim(), MAX_RUNTIME_SIGNAL_PREVIEW_CHARS)
           : null,
       at: typeof signal.at === "string" && signal.at.trim().length > 0 ? signal.at : nowIso()
     };
-    sessionRuntimeSignals.set(sessionId, normalizedSignal);
+    onSessionRuntimeSignalCtx(ctx, normalizedSignal, {
+      processSessionRuntimeSignal,
+      replayQueuedWorkerMessages,
+    });
     if (sessionRuntimeSignals.size > 500) {
       pruneSessionRuntimeSignals();
     }
-    const previous = sessionSignalQueues.get(sessionId) ?? Promise.resolve();
-    const next = previous
-      .catch((error) => { logger.warn("ai_orchestrator.session_signal_queue_previous_failed", { sessionId, error: getErrorMessage(error) }); })
-      .then(async () => {
-        if (disposed) return;
-        await processSessionRuntimeSignal(normalizedSignal);
-        if (disposed) return;
-        await replayQueuedWorkerMessages({
-          reason: "runtime_signal",
-          sessionId
-        });
-      })
-      .catch((error) => {
-        logger.debug("ai_orchestrator.runtime_signal_process_failed", {
-          sessionId,
-          runtimeState: normalizedSignal.runtimeState,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      })
-      .finally(() => {
-        if (sessionSignalQueues.get(sessionId) === next) {
-          sessionSignalQueues.delete(sessionId);
-        }
-      });
-    sessionSignalQueues.set(sessionId, next);
   };
 
   const onAgentChatEvent = (envelope: AgentChatEventEnvelope): void => {
     if (disposed) return;
-    const sessionId = String(envelope.sessionId ?? "").trim();
-    if (!sessionId.length) return;
-    const event = envelope.event;
     persistStructuredWorkerChatEvent(envelope);
-    const shouldReplay =
-      (event.type === "status" && (event.turnStatus === "completed" || event.turnStatus === "interrupted" || event.turnStatus === "failed"))
-      || event.type === "done"
-      || event.type === "error";
-    if (!shouldReplay) return;
-
-    const previous = sessionSignalQueues.get(sessionId) ?? Promise.resolve();
-    const next = previous
-      .catch((error) => { logger.warn("ai_orchestrator.session_signal_queue_previous_failed", { sessionId, error: getErrorMessage(error) }); })
-      .then(async () => {
-        if (disposed) return;
-        await replayQueuedWorkerMessages({
-          reason: `agent_chat:${event.type}`,
-          sessionId
-        });
-      })
-      .catch((error) => {
-        logger.warn("ai_orchestrator.agent_chat_replay_failed", {
-          sessionId,
-          eventType: event.type,
-          error: getErrorMessage(error)
-        });
-      })
-      .finally(() => {
-        if (sessionSignalQueues.get(sessionId) === next) {
-          sessionSignalQueues.delete(sessionId);
-        }
-      });
-    sessionSignalQueues.set(sessionId, next);
+    onAgentChatEventCtx(ctx, envelope, { replayQueuedWorkerMessages });
   };
 
   // ── Execution Plan Preview ──────────────────────────────────

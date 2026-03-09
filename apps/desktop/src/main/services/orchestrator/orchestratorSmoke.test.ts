@@ -384,10 +384,38 @@ describe("orchestrator smoke", () => {
       fixture.orchestratorService.addSteps({
         runId,
         steps: [
-          { stepKey: "api-health", title: "Add GET /api/health endpoint", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Implement health endpoint" } },
-          { stepKey: "endpoint-tests", title: "Add/update endpoint tests", stepIndex: 1, dependencyStepKeys: ["api-health"], executorKind: "manual", metadata: { instructions: "Write tests" } },
-          { stepKey: "readme-update", title: "Update README health section", stepIndex: 2, dependencyStepKeys: ["endpoint-tests"], executorKind: "manual", metadata: { instructions: "Update docs" } },
-          { stepKey: "final-review", title: "Run final review for regressions", stepIndex: 3, dependencyStepKeys: ["readme-update"], executorKind: "manual", metadata: { instructions: "Final review" } }
+          {
+            stepKey: "api-health",
+            title: "Add GET /api/health endpoint",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { instructions: "Implement health endpoint", taskType: "implementation" }
+          },
+          {
+            stepKey: "endpoint-tests",
+            title: "Add/update endpoint tests",
+            stepIndex: 1,
+            dependencyStepKeys: ["api-health"],
+            executorKind: "manual",
+            metadata: { instructions: "Write tests", taskType: "test" }
+          },
+          {
+            stepKey: "readme-update",
+            title: "Update README health section",
+            stepIndex: 2,
+            dependencyStepKeys: ["endpoint-tests"],
+            executorKind: "manual",
+            metadata: { instructions: "Update docs", taskType: "implementation" }
+          },
+          {
+            stepKey: "final-review",
+            title: "Run final review for regressions",
+            stepIndex: 3,
+            dependencyStepKeys: ["readme-update"],
+            executorKind: "manual",
+            metadata: { instructions: "Final review", taskType: "milestone" }
+          }
         ]
       });
 
@@ -919,14 +947,78 @@ describe("orchestrator smoke", () => {
       orchestratorService.addSteps({
         runId,
         steps: [
-          { stepKey: "api-health-route", title: "Build health API route", stepIndex: 0, dependencyStepKeys: [], executorKind: "unified", laneId, metadata: { instructions: "Implement GET /api/health", modelId: workerModelId } },
-          { stepKey: "runtime-watchdog-hardening", title: "Harden watchdog recovery", stepIndex: 1, dependencyStepKeys: [], executorKind: "unified", laneId: childLane1.id, metadata: { instructions: "Improve stall detection", modelId: workerModelId } },
-          { stepKey: "ui-telemetry-panel", title: "Add mission telemetry panel UI", stepIndex: 2, dependencyStepKeys: [], executorKind: "unified", laneId: childLane2.id, metadata: { instructions: "Expose telemetry in UI", modelId: workerModelId } },
-          { stepKey: "integration-contract-check", title: "Integrate contracts and orchestration data model", stepIndex: 3, dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"], executorKind: "unified", laneId, metadata: { instructions: "Validate interface compatibility", modelId: workerModelId } },
-          { stepKey: "docs-and-readme", title: "Update docs and README", stepIndex: 4, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Document changes", modelId: workerModelId } },
-          { stepKey: "test-matrix", title: "Execute endpoint and orchestration test matrix", stepIndex: 5, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Run tests", modelId: workerModelId } },
-          { stepKey: "rollback-and-risk-check", title: "Perform rollback and risk sanity check", stepIndex: 6, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Verify rollback path", modelId: workerModelId } },
-          { stepKey: "final-review-gate", title: "Finalize review gate", stepIndex: 7, dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"], executorKind: "unified", laneId, metadata: { instructions: "Final review", modelId: workerModelId } }
+          {
+            stepKey: "api-health-route",
+            title: "Build health API route",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Implement GET /api/health", modelId: workerModelId, taskType: "implementation" }
+          },
+          {
+            stepKey: "runtime-watchdog-hardening",
+            title: "Harden watchdog recovery",
+            stepIndex: 1,
+            dependencyStepKeys: [],
+            executorKind: "unified",
+            laneId: childLane1.id,
+            metadata: { instructions: "Improve stall detection", modelId: workerModelId, taskType: "implementation" }
+          },
+          {
+            stepKey: "ui-telemetry-panel",
+            title: "Add mission telemetry panel UI",
+            stepIndex: 2,
+            dependencyStepKeys: [],
+            executorKind: "unified",
+            laneId: childLane2.id,
+            metadata: { instructions: "Expose telemetry in UI", modelId: workerModelId, taskType: "implementation" }
+          },
+          {
+            stepKey: "integration-contract-check",
+            title: "Integrate contracts and orchestration data model",
+            stepIndex: 3,
+            dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Validate interface compatibility", modelId: workerModelId, taskType: "integration" }
+          },
+          {
+            stepKey: "docs-and-readme",
+            title: "Update docs and README",
+            stepIndex: 4,
+            dependencyStepKeys: ["integration-contract-check"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Document changes", modelId: workerModelId, taskType: "implementation" }
+          },
+          {
+            stepKey: "test-matrix",
+            title: "Execute endpoint and orchestration test matrix",
+            stepIndex: 5,
+            dependencyStepKeys: ["integration-contract-check"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Run tests", modelId: workerModelId, taskType: "test" }
+          },
+          {
+            stepKey: "rollback-and-risk-check",
+            title: "Perform rollback and risk sanity check",
+            stepIndex: 6,
+            dependencyStepKeys: ["integration-contract-check"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Verify rollback path", modelId: workerModelId, taskType: "validation" }
+          },
+          {
+            stepKey: "final-review-gate",
+            title: "Finalize review gate",
+            stepIndex: 7,
+            dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Final review", modelId: workerModelId, taskType: "milestone" }
+          }
         ]
       });
 

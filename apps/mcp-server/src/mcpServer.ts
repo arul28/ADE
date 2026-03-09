@@ -794,7 +794,7 @@ const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
   { name: "mark_step_complete", description: "Coordinator: mark a worker step as succeeded.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "mark_step_failed", description: "Coordinator: mark a worker step as failed.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "retry_step", description: "Coordinator: retry a failed worker step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "complete_mission", description: "Coordinator: finalize the mission run as succeeded.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "complete_mission", description: "Coordinator: request mission success finalization. The runtime still enforces completion gates before success is granted.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "fail_mission", description: "Coordinator: finalize the mission run as failed.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "get_budget_status", description: "Coordinator: inspect mission budget pressure/hard caps.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "request_user_input", description: "Coordinator: open a user intervention with a question.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },

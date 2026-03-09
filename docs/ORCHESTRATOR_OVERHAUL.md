@@ -24,8 +24,8 @@ This document supersedes stale orchestrator planning details in older roadmap do
 
 1. Validation remains deterministic runtime contract enforcement.
 2. No sampled validation tier exists in active behavior.
-3. No completion-risk bypass exists in active behavior.
-4. Phase transitions are blocked when earlier required validation is missing.
+3. Coordinator completion requests do not bypass runtime completion gates; success finalization still requires kernel validation.
+4. Phase transitions are blocked when earlier required validation or required predecessor success is missing.
 5. Worker spawning is phase-model-routed only (`explicit model override -> current phase model`).
 6. Legacy statuses are unsupported by design:
    - Run status `succeeded_with_risk` removed.
@@ -76,6 +76,7 @@ Delivered:
 These notes reflect the current Missions/orchestrator UX and runtime behavior beyond the original phase checklist:
 
 - Planning is a built-in phase and should hand off quickly to a read-only planning worker; the coordinator should not spend long doing its own repo exploration first.
+- Configured phase transitions remain explicit coordinator actions; runtime sync can summarize phase progress, but it should not silently advance `currentPhaseKey` across configured boundaries.
 - After delegation, coordinator wake-ups should be driven by actionable runtime events, steering input, or worker escalation rather than constant idle reasoning.
 - Missions chat is split by purpose: Global is the high-signal summary/broadcast thread, while worker and orchestrator channels are the detailed inspection surface.
 - Worker/orchestrator thread panes now reuse the shared agent chat renderer, so tool/thinking/status UI should converge with the normal chat experience instead of maintaining a separate Missions-only renderer.

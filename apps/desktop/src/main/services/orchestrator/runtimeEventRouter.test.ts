@@ -404,12 +404,16 @@ describe("runtimeEventRouter", () => {
     const queued = ctx.sessionSignalQueues.get("session-1");
     await queued;
 
-    expect(replayQueuedWorkerMessages).toHaveBeenCalledWith({ reason: "agent_chat_event:status" });
+    expect(replayQueuedWorkerMessages).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "agent_chat_event:status",
+      sessionId: "session-1",
+    }));
     expect(ctx.sessionSignalQueues.size).toBe(0);
   });
 
   it("cleans up session queue entries after runtime signal processing settles", async () => {
     const processSessionRuntimeSignal = vi.fn().mockResolvedValue(undefined);
+    const replayQueuedWorkerMessages = vi.fn().mockResolvedValue(undefined);
     const ctx = {
       disposed: { current: false },
       logger: { debug: vi.fn() },
@@ -423,14 +427,48 @@ describe("runtimeEventRouter", () => {
         sessionId: "session-2",
         runtimeState: "running",
       } as any,
-      { processSessionRuntimeSignal },
+      { processSessionRuntimeSignal, replayQueuedWorkerMessages },
     );
 
     const queued = ctx.sessionSignalQueues.get("session-2");
     await queued;
 
     expect(processSessionRuntimeSignal).toHaveBeenCalledTimes(1);
+    expect(replayQueuedWorkerMessages).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "runtime_signal",
+      sessionId: "session-2",
+    }));
     expect(ctx.sessionSignalQueues.size).toBe(0);
     expect(ctx.sessionRuntimeSignals.get("session-2")?.runtimeState).toBe("running");
+  });
+
+  it("replays queued worker messages when agent chat reports an error event", async () => {
+    const replayQueuedWorkerMessages = vi.fn().mockResolvedValue(undefined);
+    const ctx = {
+      disposed: { current: false },
+      logger: { debug: vi.fn() },
+      sessionSignalQueues: new Map(),
+    } as any;
+
+    onAgentChatEvent(
+      ctx,
+      {
+        sessionId: "session-err",
+        event: {
+          type: "error",
+          message: "worker crashed",
+        },
+      } as any,
+      { replayQueuedWorkerMessages },
+    );
+
+    const queued = ctx.sessionSignalQueues.get("session-err");
+    await queued;
+
+    expect(replayQueuedWorkerMessages).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "agent_chat_event:error",
+      sessionId: "session-err",
+    }));
+    expect(ctx.sessionSignalQueues.size).toBe(0);
   });
 });
