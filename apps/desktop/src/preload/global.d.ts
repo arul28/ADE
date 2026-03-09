@@ -385,6 +385,7 @@ import type {
   OrchestratorArtifact,
   OrchestratorWorkerCheckpoint,
   GetOrchestratorPromptInspectorArgs,
+  GetPlanningPromptPreviewArgs,
   OrchestratorPromptInspector,
   GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
@@ -578,6 +579,7 @@ declare global {
         listArtifacts: (args: ListOrchestratorArtifactsArgs) => Promise<OrchestratorArtifact[]>;
         listWorkerCheckpoints: (args: ListOrchestratorWorkerCheckpointsArgs) => Promise<OrchestratorWorkerCheckpoint[]>;
         getPromptInspector: (args: GetOrchestratorPromptInspectorArgs) => Promise<OrchestratorPromptInspector>;
+        getPlanningPromptPreview: (args: GetPlanningPromptPreviewArgs) => Promise<OrchestratorPromptInspector>;
         getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }>;
         setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
         getExecutionPlanPreview: (args: { runId: string }) => Promise<ExecutionPlanPreview | null>;

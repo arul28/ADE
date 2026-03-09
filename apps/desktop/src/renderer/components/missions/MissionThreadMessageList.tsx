@@ -60,7 +60,8 @@ function extractAskUserQuestion(approval: PendingApproval | null): string | null
   const detail = readRecord(approval.detail);
   const tool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
   const question = typeof detail?.question === "string" ? detail.question.trim() : "";
-  if (tool !== "askUser" || !question.length) return null;
+  const normalizedTool = tool.toLowerCase();
+  if ((normalizedTool !== "askuser" && normalizedTool !== "ask_user") || !question.length) return null;
   return question;
 }
 

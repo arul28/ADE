@@ -83,6 +83,7 @@ import type {
   OrchestratorArtifact,
   OrchestratorWorkerCheckpoint,
   GetOrchestratorPromptInspectorArgs,
+  GetPlanningPromptPreviewArgs,
   OrchestratorPromptInspector,
   ValidationEvidenceRequirement,
 } from "../../../shared/types";
@@ -120,6 +121,7 @@ import {
 import { getErrorMessage, normalizeBranchName } from "../shared/utils";
 import {
   buildCoordinatorPromptInspector,
+  buildPlanningPromptPreview,
   buildWorkerPromptInspector,
 } from "./promptInspector";
 
@@ -2132,7 +2134,21 @@ Check all worker statuses and continue managing the mission from here. Read work
   }): MissionCloseoutRequirement[] => {
     const outcomeSummary = buildOutcomeSummary(args.graph).trim();
     const modifiedFiles = args.stateDoc?.modifiedFiles ?? [];
-    const validationVerdict = args.graph.completionEvaluation?.validation?.canComplete;
+    const completionDiagnostics = args.graph.completionEvaluation?.diagnostics ?? [];
+    const explicitValidationVerdict = args.graph.completionEvaluation?.validation?.canComplete;
+    const validationPhaseSucceeded = completionDiagnostics.some(
+      (diagnostic) => diagnostic.phase === "validation" && diagnostic.code === "phase_succeeded"
+    );
+    const validationPhaseBlocked = completionDiagnostics.some(
+      (diagnostic) => diagnostic.phase === "validation" && diagnostic.blocking
+    );
+    const validationVerdict = typeof explicitValidationVerdict === "boolean"
+      ? explicitValidationVerdict
+      : validationPhaseSucceeded
+        ? true
+        : validationPhaseBlocked
+          ? false
+          : undefined;
     const missionArtifacts = args.mission.artifacts ?? [];
     const orchestratorArtifacts = orchestratorService.getArtifactsForMission(args.mission.id);
     const closeoutRequirements = new Map<MissionCloseoutRequirementKey, MissionCloseoutRequirement>();
@@ -7650,6 +7666,8 @@ Check all worker statuses and continue managing the mission from here. Read work
       currentPhaseName: toOptionalString(phaseRuntime?.currentPhaseName),
     });
   };
+  const getPlanningPromptPreview = (promptArgs: GetPlanningPromptPreviewArgs): OrchestratorPromptInspector =>
+    buildPlanningPromptPreview(promptArgs);
 
   const chatRoutingDeps: ChatRoutingDeps = {
     routeMessageToWorker,
@@ -8620,6 +8638,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     listArtifacts,
     listWorkerCheckpoints,
     getPromptInspector,
+    getPlanningPromptPreview,
     getMissionMetrics,
     setMissionMetricsConfig,
     getExecutionPlanPreview,

@@ -1,6 +1,7 @@
 import {
   compactText,
   buildCompactPlanView,
+  buildFullPrompt,
 } from "./baseOrchestratorAdapter";
 import {
   DEFAULT_CONTEXT_VIEW_POLICIES,
@@ -14,6 +15,7 @@ import type {
 import type {
   OrchestratorAttempt,
   OrchestratorContextSnapshot,
+  GetPlanningPromptPreviewArgs,
   OrchestratorPromptInspector,
   OrchestratorPromptLayer,
   OrchestratorRunGraph,
@@ -59,6 +61,75 @@ function formatContextSnapshotLayer(snapshot: OrchestratorContextSnapshot | null
     lines.push(`Context sources: ${cursor.contextSources.join(", ")}`);
   }
   return lines.join("\n");
+}
+
+function buildExactWorkerPrompt(args: {
+  runId: string;
+  missionId: string;
+  missionGoal: string;
+  phase: PhaseCard;
+}): string {
+  const syntheticRun = {
+    id: args.runId,
+    missionId: args.missionId,
+    status: "queued",
+    metadata: {
+      missionGoal: args.missionGoal,
+      phaseRuntime: {
+        currentPhaseKey: args.phase.phaseKey,
+        currentPhaseName: args.phase.name,
+        currentPhaseInstructions: args.phase.instructions,
+        currentPhaseModel: args.phase.model,
+        currentPhaseValidation: args.phase.validationGate,
+      },
+    },
+  } as unknown as OrchestratorRunGraph["run"];
+  const syntheticStep = {
+    id: `preview-step:${args.phase.phaseKey}`,
+    stepKey: `planning_${args.phase.phaseKey}`,
+    title: `${args.phase.name} worker`,
+    status: "pending" as OrchestratorStepStatus,
+    stepIndex: 0,
+    laneId: null,
+    dependencyStepIds: [],
+    joinPolicy: "blocking",
+    metadata: {
+      role: "planner",
+      modelId: args.phase.model.modelId,
+      reasoningEffort: args.phase.model.thinkingLevel,
+      instructions: args.phase.instructions,
+      phaseInstructions: args.phase.instructions,
+      phaseKey: args.phase.phaseKey,
+      phaseName: args.phase.name,
+      phaseModel: args.phase.model,
+      phaseValidation: args.phase.validationGate,
+      readOnlyExecution: true,
+      stepType: "planning",
+      taskType: "planning",
+    },
+  } as unknown as OrchestratorStep;
+  const syntheticAttempt = {
+    id: `preview-attempt:${args.phase.phaseKey}`,
+    runId: args.runId,
+    stepId: syntheticStep.id,
+    status: "queued",
+    executorKind: "unified",
+    executorSessionId: null,
+    metadata: {},
+  } as unknown as OrchestratorAttempt;
+
+  return buildFullPrompt({
+    run: syntheticRun,
+    step: syntheticStep,
+    attempt: syntheticAttempt,
+    allSteps: [syntheticStep],
+    contextProfile: null as never,
+    laneExport: null,
+    projectExport: {} as never,
+    docsRefs: [],
+    fullDocs: [],
+    createTrackedSession: async () => ({ ptyId: "preview", sessionId: "preview" }),
+  }).prompt;
 }
 
 function findLatestAttemptForStep(graph: OrchestratorRunGraph, stepId: string): OrchestratorAttempt | null {
@@ -571,5 +642,45 @@ export function buildCoordinatorPromptInspector(args: {
     notes,
     layers,
     fullPrompt,
+  };
+}
+
+export function buildPlanningPromptPreview(args: GetPlanningPromptPreviewArgs): OrchestratorPromptInspector {
+  const sortedPhases = [...args.phases].sort((a, b) => a.position - b.position);
+  const planningPhase = {
+    ...(sortedPhases.find((phase) => phase.id === args.phase.id || phase.phaseKey === args.phase.phaseKey) ?? {}),
+    ...args.phase,
+  };
+  const prompt = buildExactWorkerPrompt({
+    runId: toOptionalString(args.runId) ?? "preview-run",
+    missionId: toOptionalString(args.missionId) ?? "preview-mission",
+    missionGoal: args.missionPrompt.trim(),
+    phase: planningPhase,
+  });
+
+  const layers: OrchestratorPromptLayer[] = [];
+  pushLayer(layers, {
+    label: "Exact composed planner prompt",
+    source: "system_owned",
+    sourceKind: "live_effective_prompt",
+    editable: false,
+    text: prompt,
+    description: "This is the actual planner-worker prompt shape ADE assembles from the planning phase contract and your current custom instructions.",
+  });
+
+  return {
+    target: "worker",
+    runId: toOptionalString(args.runId) ?? "preview-run",
+    missionId: toOptionalString(args.missionId) ?? "preview-mission",
+    stepId: null,
+    phaseKey: planningPhase.phaseKey,
+    phaseName: planningPhase.name,
+    title: "Planning worker prompt",
+    notes: [
+      "Read-only, system-composed planner prompt preview.",
+      "Edit the Custom Instructions field below to change the phase-specific instruction layer that gets folded into this prompt.",
+    ],
+    layers,
+    fullPrompt: prompt,
   };
 }

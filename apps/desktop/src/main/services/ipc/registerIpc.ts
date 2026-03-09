@@ -328,6 +328,7 @@ import type {
   OrchestratorArtifact,
   OrchestratorWorkerCheckpoint,
   GetOrchestratorPromptInspectorArgs,
+  GetPlanningPromptPreviewArgs,
   OrchestratorPromptInspector,
   GetMissionLogsArgs,
   GetMissionLogsResult,
@@ -1817,6 +1818,14 @@ export function registerIpc({
     async (_event, arg: GetOrchestratorPromptInspectorArgs): Promise<OrchestratorPromptInspector> => {
       const ctx = getCtx();
       return ctx.aiOrchestratorService.getPromptInspector(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetPlanningPromptPreview,
+    async (_event, arg: GetPlanningPromptPreviewArgs): Promise<OrchestratorPromptInspector> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getPlanningPromptPreview(arg);
     }
   );
 

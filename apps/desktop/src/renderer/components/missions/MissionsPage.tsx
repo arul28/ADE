@@ -80,7 +80,6 @@ import type { CreateDraft, CreateMissionDefaults } from "./CreateMissionDialog";
 import { MissionCreateDialogHost } from "./MissionCreateDialogHost";
 import { MissionSettingsDialog } from "./MissionSettingsDialog";
 import { PlanTab } from "./PlanTab";
-import { WorkTab } from "./WorkTab";
 import { StepDetailPanel } from "./StepDetailPanel";
 import { ActivityNarrativeHeader } from "./ActivityNarrativeHeader";
 import { MissionsHomeDashboard } from "./MissionsHomeDashboard";
@@ -915,10 +914,6 @@ export default function MissionsPage() {
     return [...labels];
   }, [runSteps, selectedMission?.laneName]);
 
-  const handleViewWorkSession = useCallback((sessionId: string) => {
-    navigate(`/work?sessionId=${encodeURIComponent(sessionId)}`);
-  }, [navigate]);
-
   const loadCoordinatorPromptInspector = useCallback(async () => {
     if (!runGraph) return;
     setCoordinatorPromptLoading(true);
@@ -1466,7 +1461,6 @@ export default function MissionsPage() {
                 {([
                   { key: "overview" as WorkspaceTab, label: "Overview", icon: SquaresFour },
                   { key: "plan" as WorkspaceTab, label: "Plan", icon: Graph },
-                  { key: "ops" as WorkspaceTab, label: "Workers", icon: TerminalWindow },
                   { key: "chat" as WorkspaceTab, label: "Chat", icon: ChatCircle },
                   { key: "artifacts" as WorkspaceTab, label: "Artifacts", icon: Lightning },
                   { key: "history" as WorkspaceTab, label: "History", icon: Pulse }
@@ -1509,9 +1503,7 @@ export default function MissionsPage() {
                 "flex-1 min-h-0",
                 activeTab === "chat"
                   ? "flex flex-col overflow-hidden"
-                  : activeTab === "ops"
-                    ? "flex flex-col overflow-hidden p-4"
-                    : "overflow-auto p-4"
+                  : "overflow-auto p-4"
               )}>
                 {activeTab === "overview" && selectedMission && (
                   <div className="space-y-3">
@@ -1657,7 +1649,6 @@ export default function MissionsPage() {
                           setChatJumpTarget(target);
                           setActiveTab("chat");
                         }}
-                        onViewWorkSession={handleViewWorkSession}
                         onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)}
                       />
                       {selectedStep ? (
@@ -1671,11 +1662,6 @@ export default function MissionsPage() {
                     </div>
                   </div>
                 )}
-
-                {activeTab === "ops" && (
-                  <WorkTab runGraph={runGraph} />
-                )}
-
                 {activeTab === "history" && (
                   <div className="space-y-3">
                     <div className="flex items-center gap-1">

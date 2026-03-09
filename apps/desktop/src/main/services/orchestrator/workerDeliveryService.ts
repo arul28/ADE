@@ -816,7 +816,7 @@ export async function resolveWorkerDeliverySessionCtx(
         source: "lane_fallback",
         providerHint,
         summary: null,
-        error: "Multiple active worker chat sessions are mapped to this worker thread; target a specific session to avoid misdelivery."
+        error: "Multiple active worker sessions could match this worker thread, so ADE kept the message queued instead of risking delivery to the wrong worker."
       };
     }
     if (providerScopedThread.length === 1) {
@@ -834,7 +834,7 @@ export async function resolveWorkerDeliverySessionCtx(
         source: "lane_fallback",
         providerHint,
         summary: null,
-        error: "Multiple worker chat sessions were found for this worker thread, but none are active. Resume a specific session or target one directly."
+        error: "ADE found multiple past worker sessions for this thread, but none are live right now. The message will stay queued until the worker becomes messageable again."
       };
     }
     return {
@@ -842,7 +842,7 @@ export async function resolveWorkerDeliverySessionCtx(
       source: "lane_fallback",
       providerHint,
       summary: null,
-      error: "No worker chat session is mapped to this worker thread. Lane fallback is blocked to avoid cross-thread misdelivery."
+      error: "This worker does not currently have a live interactive session. ADE kept the message queued on the worker thread instead of sending it somewhere unsafe."
     };
   }
 
@@ -852,7 +852,7 @@ export async function resolveWorkerDeliverySessionCtx(
       source: "lane_fallback",
       providerHint,
       summary: null,
-      error: "No lane is mapped for this worker thread, so fallback delivery cannot choose a safe chat session."
+      error: "This worker thread is not linked to a live lane session right now. ADE kept the message queued for the worker instead of guessing."
     };
   }
 
@@ -875,7 +875,7 @@ export async function resolveWorkerDeliverySessionCtx(
       source: "lane_fallback",
       providerHint,
       summary: null,
-      error: "Multiple active worker chat sessions are available for this lane; specify a worker session target to avoid misdelivery."
+      error: "Multiple active worker sessions are available on this lane, so ADE kept the message queued rather than risking delivery to the wrong worker."
     };
   }
   if (providerScoped.length === 1) {
@@ -893,7 +893,7 @@ export async function resolveWorkerDeliverySessionCtx(
       source: "lane_fallback",
       providerHint,
       summary: null,
-      error: "Multiple worker chat sessions were found, but none are active. Resume a specific session or target one directly."
+      error: "Multiple past worker sessions were found on this lane, but none are live. ADE will keep the message queued until a live worker session appears."
     };
   }
 
@@ -902,7 +902,7 @@ export async function resolveWorkerDeliverySessionCtx(
     source: "lane_fallback",
     providerHint,
     summary: null,
-    error: "No worker agent-chat session is currently mapped to this thread."
+    error: "This worker is running without a live interactive chat session right now. ADE kept the message queued on the worker thread so the worker can still pick it up."
   };
 }
 
@@ -1527,7 +1527,7 @@ export function maybeEmitWorkerQueuedNoticeCtx(
     emitOrchestratorMessage(
       ctx,
       fresh.missionId,
-      `Worker message queued for ${workerLabel}; delivery will resume once the worker session is available.`,
+      `Message queued for ${workerLabel}. ADE will deliver it as soon as that worker has a live session or checks its mission messages.`,
       stepKey ?? fresh.stepKey ?? null,
       undefined,
       { appendChatMessage: deps.appendChatMessage }

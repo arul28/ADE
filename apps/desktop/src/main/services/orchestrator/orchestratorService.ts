@@ -7066,7 +7066,12 @@ export function createOrchestratorService({
 		      const defaultSummary =
 		        status === "succeeded"
 		          ? reportedSummary
-		            || transcriptSummary
+		            || (
+		              stepMetadata.readOnlyExecution === true
+		              || String(stepMetadata.stepType ?? "").trim().toLowerCase() === "planning"
+		                ? null
+		                : transcriptSummary
+		            )
 		            || (
 		              stepMetadata.readOnlyExecution === true
 		                || String(stepMetadata.stepType ?? "").trim().toLowerCase() === "planning"

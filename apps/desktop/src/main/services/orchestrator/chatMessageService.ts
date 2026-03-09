@@ -70,6 +70,49 @@ import type {
   OrchestratorThreadEvent,
 } from "../../../shared/types";
 
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function looksLikeLowSignalMissionNoise(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.length) return true;
+  if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
+  if (/^usage$/i.test(trimmed)) return true;
+  if (/^mcp:/i.test(trimmed)) return true;
+  if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
+  if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
+  if (!/\s/.test(trimmed) && trimmed.length < 24) return true;
+  if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
+  return false;
+}
+
+function shouldCountAsMissionAttentionMessage(message: OrchestratorChatMessage): boolean {
+  if (message.role === "user" || message.visibility === "metadata_only") return false;
+  const metadata = isRecord(message.metadata) ? message.metadata : null;
+  if (metadata?.missionChatMode === "thread_only") return false;
+
+  const structured = isRecord(metadata?.structuredStream) ? metadata.structuredStream : null;
+  const kind = readString(structured?.kind);
+  const content = typeof message.content === "string" ? message.content : "";
+
+  if (kind === "plan" || kind === "approval_request" || kind === "user_message") return true;
+  if (kind === "text" || kind === "reasoning") return !looksLikeLowSignalMissionNoise(content);
+  if (kind === "status") {
+    const status = readString(structured?.status)?.toLowerCase() ?? "";
+    const statusMessage = readString(structured?.message) ?? "";
+    if (status === "failed" || status === "interrupted") return true;
+    return statusMessage.length > 0 && !looksLikeLowSignalMissionNoise(statusMessage);
+  }
+  if (kind === "error") {
+    const errorMessage = readString(structured?.message) ?? content;
+    return errorMessage.length > 0 && !looksLikeLowSignalMissionNoise(errorMessage);
+  }
+  if (kind) return false;
+
+  return !looksLikeLowSignalMissionNoise(content);
+}
+
 // ── Thread Event Emission ────────────────────────────────────────
 
 export function emitThreadEvent(
@@ -1068,7 +1111,7 @@ export function appendChatMessageCtx(
         createdAt
       ]
     );
-    const unreadIncrement = normalized.role === "user" ? 0 : 1;
+    const unreadIncrement = shouldCountAsMissionAttentionMessage(normalized) ? 1 : 0;
     ctx.db.run(
       `
         update orchestrator_chat_threads

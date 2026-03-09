@@ -1,8 +1,9 @@
 import React from "react";
 import { X } from "@phosphor-icons/react";
-import type { PhaseCard, ModelConfig } from "../../../shared/types";
+import type { PhaseCard, ModelConfig, OrchestratorPromptInspector } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
+import { PromptInspectorCard } from "./PromptInspectorCard";
 
 export type PhaseCardEditorProps = {
   phase: PhaseCard;
@@ -22,6 +23,10 @@ export type PhaseCardEditorProps = {
   onToggleDisabled?: () => void;
   labelStyle?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
+  planningPromptPreview?: {
+    missionPrompt: string;
+    phases: PhaseCard[];
+  } | null;
 };
 
 const DEFAULT_LABEL_STYLE: React.CSSProperties = {
@@ -46,28 +51,6 @@ const DEFAULT_INPUT_STYLE: React.CSSProperties = {
   outline: "none",
 };
 
-const PLANNING_PROTOCOL_PREVIEW = [
-  "Read-only system-managed planning prompt preview",
-  "",
-  "Coordinator contract",
-  "- If Planning is enabled, ADE starts by briefing one read-only planning worker.",
-  "- The coordinator should ask questions only when genuinely needed, then wait for the planner result.",
-  "- After the planner succeeds, ADE moves into Development without a separate plan-exit approval step.",
-  "",
-  "Planner worker brief",
-  "- Research the codebase and discover the execution plan from the repo itself.",
-  "- Identify risks, dependencies, and sensible workstreams.",
-  "- Do not edit files during Planning.",
-  "",
-  "Runtime-added context at launch",
-  "- The exact mission goal",
-  "- Project context and known docs",
-  "- Current phase/runtime constraints",
-  "- The selected model configuration",
-  "",
-  "This preview shows the built-in planning prompt layers. The full run-specific prompt is assembled at launch and includes your custom instructions below.",
-].join("\n");
-
 export function PhaseCardEditor({
   phase,
   index,
@@ -85,14 +68,47 @@ export function PhaseCardEditor({
   onToggleDisabled,
   labelStyle: lblStyle,
   inputStyle: inpStyle,
+  planningPromptPreview,
 }: PhaseCardEditorProps) {
   const labelStyle = lblStyle ?? DEFAULT_LABEL_STYLE;
   const inputStyle = inpStyle ?? DEFAULT_INPUT_STYLE;
   const isPlanningPhase = phase.phaseKey.trim().toLowerCase() === "planning";
+  const [planningInspector, setPlanningInspector] = React.useState<OrchestratorPromptInspector | null>(null);
+  const [planningInspectorLoading, setPlanningInspectorLoading] = React.useState(false);
+  const [planningInspectorError, setPlanningInspectorError] = React.useState<string | null>(null);
 
   const updateField = <K extends keyof PhaseCard>(key: K, value: PhaseCard[K]) => {
     onUpdate({ ...phase, [key]: value });
   };
+
+  React.useEffect(() => {
+    if (!isPlanningPhase || !expanded || !planningPromptPreview || !planningPromptPreview.missionPrompt.trim().length) {
+      setPlanningInspector(null);
+      setPlanningInspectorLoading(false);
+      setPlanningInspectorError(null);
+      return;
+    }
+    let cancelled = false;
+    setPlanningInspectorLoading(true);
+    setPlanningInspectorError(null);
+    void window.ade.orchestrator.getPlanningPromptPreview({
+      missionPrompt: planningPromptPreview.missionPrompt,
+      phase,
+      phases: planningPromptPreview.phases,
+    }).then((inspector) => {
+      if (cancelled) return;
+      setPlanningInspector(inspector);
+      setPlanningInspectorLoading(false);
+    }).catch((error) => {
+      if (cancelled) return;
+      setPlanningInspector(null);
+      setPlanningInspectorError(error instanceof Error ? error.message : String(error));
+      setPlanningInspectorLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, isPlanningPhase, phase, planningPromptPreview]);
 
   return (
     <div
@@ -275,13 +291,13 @@ export function PhaseCardEditor({
           {isPlanningPhase ? (
             <>
               <div className="space-y-1 text-[10px]">
-                <span style={labelStyle}>SYSTEM-MANAGED PROMPT PREVIEW</span>
-                <pre
-                  className="whitespace-pre-wrap break-words px-2 py-2"
-                  style={{ ...inputStyle, minHeight: 84, color: COLORS.textSecondary }}
-                >
-                  {PLANNING_PROTOCOL_PREVIEW}
-                </pre>
+                <span style={labelStyle}>EXACT COMPOSED PLANNER PROMPT</span>
+                <PromptInspectorCard
+                  inspector={planningInspector}
+                  loading={planningInspectorLoading}
+                  error={planningInspectorError}
+                  title="Read-only system / composed planner prompt"
+                />
               </div>
 
               <div className="space-y-1">

@@ -365,6 +365,7 @@ export const IPC = {
   orchestratorListArtifacts: "ade.orchestrator.listArtifacts",
   orchestratorListWorkerCheckpoints: "ade.orchestrator.listWorkerCheckpoints",
   orchestratorGetPromptInspector: "ade.orchestrator.getPromptInspector",
+  orchestratorGetPlanningPromptPreview: "ade.orchestrator.getPlanningPromptPreview",
   orchestratorGetCheckpointStatus: "ade.orchestrator.getCheckpointStatus",
   orchestratorGetMissionBudgetStatus: "ade.orchestrator.getMissionBudgetStatus",
   orchestratorGetMissionBudgetTelemetry: "ade.orchestrator.getMissionBudgetTelemetry",

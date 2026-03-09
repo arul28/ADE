@@ -317,7 +317,7 @@ describe("workerDeliveryService resolveWorkerDeliverySessionCtx", () => {
     });
 
     expect(resolution.sessionId).toBeNull();
-    expect(resolution.error).toContain("Lane fallback is blocked");
+    expect(resolution.error).toContain("queued on the worker thread");
   });
 });
 

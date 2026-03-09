@@ -428,6 +428,7 @@ import type {
   ListOrchestratorArtifactsArgs,
   ListOrchestratorWorkerCheckpointsArgs,
   GetOrchestratorPromptInspectorArgs,
+  GetPlanningPromptPreviewArgs,
   OrchestratorArtifact,
   OrchestratorWorkerCheckpoint,
   OrchestratorPromptInspector,
@@ -697,6 +698,10 @@ contextBridge.exposeInMainWorld("ade", {
       args: GetOrchestratorPromptInspectorArgs
     ): Promise<OrchestratorPromptInspector | null> =>
       ipcRenderer.invoke(IPC.orchestratorGetPromptInspector, args),
+    getPlanningPromptPreview: async (
+      args: GetPlanningPromptPreviewArgs
+    ): Promise<OrchestratorPromptInspector | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetPlanningPromptPreview, args),
     getCheckpointStatus: async (
       args: { runId: string }
     ): Promise<{ savedAt: string; turnCount: number; compactionCount: number } | null> =>

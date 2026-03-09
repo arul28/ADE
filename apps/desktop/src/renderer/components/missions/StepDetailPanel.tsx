@@ -3,7 +3,6 @@ import {
   SpinnerGap,
   Warning,
   CaretDown,
-  Eye,
 } from "@phosphor-icons/react";
 import type {
   OrchestratorAttempt,
@@ -332,16 +331,6 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
             style={{ background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent, fontFamily: MONO_FONT }}
           >
             JUMP TO WORKER CHANNEL
-          </button>
-        )}
-        {!isPlanNode && latestAttempt?.executorSessionId && onViewWorkSession && (
-          <button
-            onClick={() => onViewWorkSession(latestAttempt.executorSessionId!)}
-            className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
-            style={{ background: `${COLORS.textMuted}10`, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }}
-          >
-            <Eye size={12} weight="regular" />
-            VIEW IN WORK TAB
           </button>
         )}
       </div>

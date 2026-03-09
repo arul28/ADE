@@ -255,6 +255,99 @@ async function createSmokeFixture() {
   );
 
   const missionService = createMissionService({ db, projectId });
+  const laneService = {
+    list: async () => db.all<{
+      id: string;
+      project_id: string;
+      name: string;
+      lane_type: string | null;
+      base_ref: string | null;
+      branch_ref: string | null;
+      worktree_path: string | null;
+      attached_root_path: string | null;
+      status: string | null;
+    }>(
+      `
+        select
+          id,
+          project_id,
+          name,
+          lane_type,
+          base_ref,
+          branch_ref,
+          worktree_path,
+          attached_root_path,
+          status
+        from lanes
+        where project_id = ?
+          and archived_at is null
+        order by created_at asc, id asc
+      `,
+      [projectId]
+    ).map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      laneType: row.lane_type === "primary" ? "primary" : "worktree",
+      baseRef: row.base_ref,
+      branchRef: row.branch_ref,
+      worktreePath: row.worktree_path,
+      attachedRootPath: row.attached_root_path,
+      status: row.status === "archived" ? "archived" : "active",
+    })),
+    createChild: async (args: { parentLaneId: string; name: string; description?: string; folder?: string }) => {
+      const childId = `lane-${Math.random().toString(36).slice(2, 10)}`;
+      const childBranch = `mission/${childId}`;
+      db.run(
+        `
+          insert into lanes(
+            id,
+            project_id,
+            name,
+            description,
+            lane_type,
+            base_ref,
+            branch_ref,
+            worktree_path,
+            attached_root_path,
+            is_edit_protected,
+            parent_lane_id,
+            color,
+            icon,
+            tags_json,
+            status,
+            created_at,
+            archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          childId,
+          projectId,
+          args.name,
+          args.description ?? null,
+          "worktree",
+          "main",
+          childBranch,
+          projectRoot,
+          null,
+          0,
+          args.parentLaneId,
+          null,
+          null,
+          JSON.stringify(args.folder ? [args.folder] : []),
+          "active",
+          now,
+          null,
+        ]
+      );
+      return {
+        id: childId,
+        name: args.name,
+        branchRef: childBranch,
+        laneType: "worktree",
+      };
+    }
+  } as any;
   const projectConfigService = {
     get: () => ({
       effective: {
@@ -336,7 +429,7 @@ async function createSmokeFixture() {
     missionService,
     orchestratorService,
     aiIntegrationService: createMockAiIntegrationService(),
-    laneService: null,
+    laneService,
     projectConfigService,
     projectRoot
   });
@@ -463,7 +556,7 @@ describe("orchestrator smoke", () => {
       // tick() no longer auto-terminates runs — explicitly finalize.
       fixture.aiOrchestratorService.finalizeRun({ runId, force: true });
 
-      fixture.aiOrchestratorService.syncMissionFromRun(runId, "smoke_finalize");
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "smoke_finalize");
       const finalGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
       const refreshedMission = fixture.missionService.get(mission.id);
       expect(finalGraph.run.status).toBe("succeeded");
@@ -1097,7 +1190,7 @@ describe("orchestrator smoke", () => {
         throw new Error(`Observer run did not reach terminal state (run status: ${graph.run.status}).`);
       }
 
-      aiOrchestratorService.syncMissionFromRun(runId, "complex_smoke_finalize");
+      await aiOrchestratorService.syncMissionFromRun(runId, "complex_smoke_finalize");
       const sweep = await aiOrchestratorService.runHealthSweep("complex_smoke_post");
 
       const finalGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 1_000 });

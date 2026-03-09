@@ -42,7 +42,7 @@ export function ManualInputResponseModal({
         border: `${COLORS.warning}35`,
         background: `${COLORS.warning}12`,
         color: COLORS.warning,
-        copy: "ADE could not deliver a message to a worker thread. This is a recovery step, not a planner question.",
+        copy: "A worker message could not be delivered live. ADE kept the note on the worker thread and is asking how you want the mission to recover.",
       };
     }
     if (canProceedWithoutAnswer) {
@@ -121,7 +121,7 @@ export function ManualInputResponseModal({
                 color: COLORS.accent,
               }}
             >
-              {workerDeliveryFailure ? "Worker Delivery Recovery" : "Coordinator Input"}
+              {workerDeliveryFailure ? "Worker Message Recovery" : "Coordinator Input"}
             </span>
           </div>
           <button
@@ -207,12 +207,12 @@ export function ManualInputResponseModal({
           <div>
               <div style={{ ...LABEL_STYLE, color: COLORS.textMuted, marginBottom: 6 }}>
               {workerDeliveryFailure ? "HOW ADE SHOULD RECOVER" : "YOUR ANSWER"}
-              </div>
+            </div>
             <textarea
               value={answer}
               onChange={(event) => setAnswer(event.target.value)}
               placeholder={workerDeliveryFailure
-                ? "Tell ADE how to recover: retarget the coordinator, ignore the stale worker message, or resend once the worker thread is available."
+                ? "Tell ADE how to recover: reroute through the coordinator, leave the note queued, or retry when the worker is active again."
                 : "Type the answer you want the mission to follow..."}
               style={{
                 width: "100%",

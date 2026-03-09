@@ -802,7 +802,7 @@ export function buildExecutionPlanPreview(args: {
 /** Maps a phaseKey from PhaseCard to an ExecutionPhase */
 function phaseKeyToExecutionPhase(phaseKey: string): ExecutionPhase | null {
   const key = phaseKey.trim().toLowerCase();
-  if (key === "planning" || key === "analysis") return "implementation";
+  if (key === "planning" || key === "analysis") return null;
   if (key === "implementation" || key === "development" || key === "code") return "implementation";
   if (key === "testing" || key === "test") return "testing";
   if (key === "validation") return "validation";

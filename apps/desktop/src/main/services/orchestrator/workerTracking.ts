@@ -626,8 +626,7 @@ export function extractAndRegisterArtifacts(
     const { graph, attempt } = args;
     const envelope = attempt.resultEnvelope;
     if (!envelope) return;
-    const outputs = envelope.outputs;
-    if (!outputs || !isRecord(outputs)) return;
+    const outputs = isRecord(envelope.outputs) ? envelope.outputs : {};
 
     const step = graph.steps.find((s) => s.id === attempt.stepId);
     const stepMeta = step && isRecord(step.metadata) ? step.metadata : {};
@@ -663,7 +662,9 @@ export function extractAndRegisterArtifacts(
       });
     };
 
-    const stepSummary = typeof envelope.summary === "string" ? envelope.summary.trim() : "";
+    const reportedSummary =
+      typeof lastResultReport?.summary === "string" ? lastResultReport.summary.trim() : "";
+    const stepSummary = reportedSummary || (typeof envelope.summary === "string" ? envelope.summary.trim() : "");
     if (stepSummary.length > 0) {
       register("step_summary", "custom", stepSummary, {
         title: "Step summary",

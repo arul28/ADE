@@ -118,6 +118,23 @@ function looksLikeRawNoise(text: string): boolean {
   return false;
 }
 
+function isUsefulStructuredSignal(msg: OrchestratorChatMessage, kind: string, structured: Record<string, unknown>): boolean {
+  if (kind === "plan" || kind === "approval_request" || kind === "user_message") return true;
+  if (kind === "text" || kind === "reasoning") return !looksLikeRawNoise(msg.content);
+  if (kind === "status") {
+    const status = readString(structured.status)?.toLowerCase() ?? "";
+    const message = readString(structured.message) ?? msg.content;
+    if (status === "failed" || status === "interrupted") return true;
+    return message.length > 0 && !looksLikeRawNoise(message);
+  }
+  if (kind === "error") {
+    const errorMessage = readString(structured.message) ?? msg.content;
+    return errorMessage.length > 0 && !looksLikeRawNoise(errorMessage);
+  }
+  if (kind === "done") return false;
+  return isStructuredSignalKind(kind);
+}
+
 function isSignalMessage(msg: OrchestratorChatMessage): boolean {
   if (msg.visibility === "metadata_only") return false;
   if (msg.role === "user") return true;
@@ -125,7 +142,7 @@ function isSignalMessage(msg: OrchestratorChatMessage): boolean {
   const structured = readRecord(metadata?.structuredStream);
   const kind = readString(structured?.kind);
   if (kind) {
-    return isStructuredSignalKind(kind);
+    return isUsefulStructuredSignal(msg, kind, structured ?? {});
   }
   const content = typeof msg.content === "string" ? msg.content : "";
   return !looksLikeRawNoise(content);
@@ -581,10 +598,18 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     setJumpNotice(null);
 
     if (jumpTarget.kind === "worker") {
+      if (jumpTarget.attemptId) {
+        setSelectedChannelId(`thread:worker:${missionId}:${jumpTarget.attemptId}`);
+        onJumpHandled();
+        return;
+      }
+      if (threads.length === 0) return;
       const workerThread = threads.find(
         (t) =>
           t.threadType === "worker" &&
           ((jumpTarget.attemptId && t.attemptId === jumpTarget.attemptId) ||
+            (jumpTarget.stepId && t.stepId === jumpTarget.stepId) ||
+            (jumpTarget.sessionId && t.sessionId === jumpTarget.sessionId) ||
             (jumpTarget.stepKey && t.stepKey === jumpTarget.stepKey))
       );
       if (workerThread) {
@@ -596,9 +621,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         } else {
           setSelectedChannelId("global");
         }
-        setJumpNotice(`No worker conversation is available for ${jumpTarget.stepKey ? `"${jumpTarget.stepKey}"` : "that step"} yet.`);
+        setJumpNotice("ADE has not hydrated that worker thread yet, so I landed you on the coordinator instead.");
       }
     } else if (jumpTarget.kind === "teammate") {
+      if (threads.length === 0) return;
       const teammateThread = threads.find((t) => t.threadType === "teammate");
       if (teammateThread) {
         setSelectedChannelId(`thread:${teammateThread.id}`);
@@ -908,7 +934,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     <div className="flex h-full min-h-0">
       {/* ── Sidebar ── */}
       <aside
-        className="flex w-[176px] shrink-0 flex-col"
+        className="flex w-[160px] shrink-0 flex-col"
         style={{ background: BG_SIDEBAR, borderRight: `1px solid ${BORDER}` }}
       >
         <div className="px-2.5 py-2" style={{ borderBottom: `1px solid ${BORDER}` }}>
@@ -1053,7 +1079,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
       <div className="flex min-w-0 flex-1 flex-col" style={{ background: BG_PAGE }}>
         {/* Header */}
         <div
-          className="flex items-center gap-2 px-3 py-1.5"
+          className="flex items-center gap-2 px-3 py-1"
           style={{ borderBottom: `1px solid ${BORDER}` }}
         >
           <Hash size={14} weight="regular" style={{ color: TEXT_MUTED }} />
@@ -1097,7 +1123,9 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
               style={{ background: "#8B5CF618", color: "#8B5CF6", border: "1px solid #8B5CF630" }}
             >
               <Wrench size={10} weight="fill" />
-              {selectedChannel.phaseLabel ? `${selectedChannel.phaseLabel} worker` : "Worker"}
+              {selectedChannel.status === "active"
+                ? (selectedChannel.phaseLabel ? `${selectedChannel.phaseLabel} worker` : "Active worker")
+                : (selectedChannel.phaseLabel ? `${selectedChannel.phaseLabel} history` : "Worker history")}
             </span>
           )}
           <div className="ml-auto flex items-center gap-1">
@@ -1198,6 +1226,14 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
               ))}
             </div>
           )}
+          {selectedChannel?.kind === "worker" && !chatBlocked && (
+            <div
+              className="px-3 py-1.5 text-[10px]"
+              style={{ borderBottom: `1px solid ${BORDER}`, background: BG_MAIN, color: TEXT_MUTED, fontFamily: MONO }}
+            >
+              Messages here steer the active worker. If it is between turns, ADE keeps the note queued on this worker thread until the worker can pick it up.
+            </div>
+          )}
           <MentionInput
             value={input}
             onChange={setInput}
@@ -1208,6 +1244,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
                 case "global": return "Message global (use @mention to target)...";
                 case "orchestrator": return "Message the orchestrator...";
                 case "teammate": return `Message teammate ${selectedChannel?.label ?? ""}...`;
+                case "worker":
+                  return selectedChannel.status === "active"
+                    ? `Steer worker ${selectedChannel?.label ?? ""}...`
+                    : `This worker thread is history-only...`;
                 default: return `Message ${selectedChannel?.fullLabel ?? "worker"}...`;
               }
             })()}

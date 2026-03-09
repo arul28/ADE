@@ -202,22 +202,34 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
 
   if (event.type === "reasoning") {
     const nextTurn = event.turnId ?? null;
+    const nextItemId = event.itemId ?? null;
+    const nextSummaryIndex = event.summaryIndex ?? null;
     const matchIndex = [...out]
       .reverse()
       .findIndex((candidate) =>
         candidate.event.type === "reasoning"
-        && (candidate.event.turnId ?? null) === nextTurn,
+        && (
+          (candidate.event.turnId ?? null) === nextTurn
+          || ((candidate.event.itemId ?? null) === nextItemId && (candidate.event.summaryIndex ?? null) === nextSummaryIndex)
+        ),
       );
     if (matchIndex >= 0) {
       const actualIndex = out.length - 1 - matchIndex;
       const existing = out[actualIndex];
       if (existing?.event.type === "reasoning") {
+        const separator =
+          existing.event.text.length > 0
+          && event.text.length > 0
+          && !/\s$/.test(existing.event.text)
+          && !/^\s/.test(event.text)
+            ? " "
+            : "";
         out[actualIndex] = {
           ...existing,
           timestamp: envelope.timestamp,
           event: {
             ...existing.event,
-            text: `${existing.event.text}${event.text}`
+            text: `${existing.event.text}${separator}${event.text}`
           }
         };
         return;
@@ -863,15 +875,14 @@ function renderEvent(
       <div className="space-y-1 border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[11px]">
         {kvPairs.map(([k, v]) => {
           const val = typeof v === "string" ? v : JSON.stringify(v);
-          const truncated = val.length > 300 ? `${val.slice(0, 300)}…` : val;
           const isLongStr = typeof v === "string" && v.includes("\n");
           return (
             <div key={k} className={isLongStr ? "flex flex-col gap-0.5" : "flex items-start gap-2"}>
               <span className="flex-shrink-0 text-muted-fg/40">{k}</span>
               {isLongStr ? (
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] text-fg/55 leading-[1.5]">{truncated}</pre>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] text-fg/55 leading-[1.5]">{val}</pre>
               ) : (
-                <span className="min-w-0 break-all text-fg/65">{truncated}</span>
+                <span className="min-w-0 break-all text-fg/65">{val}</span>
               )}
             </div>
           );
@@ -927,7 +938,8 @@ function renderEvent(
     const detail = readRecord(event.detail);
     const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
     const question = typeof detail?.question === "string" ? detail.question.trim() : "";
-    const isAskUser = detailTool === "askUser" && question.length > 0;
+    const normalizedTool = detailTool.toLowerCase();
+    const isAskUser = (normalizedTool === "askuser" || normalizedTool === "ask_user") && question.length > 0;
     const detailText = event.detail == null || isAskUser ? "" : formatStructuredValue(event.detail);
     return (
       <div className="border border-amber-500/12 bg-amber-500/[0.02] p-4">

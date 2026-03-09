@@ -1252,6 +1252,12 @@ function canCallerAccessCoordinatorTool(name: string, callerCtx: CallerContext):
   if (!COORDINATOR_TOOL_NAMES.has(name)) return true;
   if (callerCtx.role === "orchestrator") return true;
   if (callerCtx.role === "agent" && AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(name)) return true;
+  if (
+    AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(name)
+    && (callerCtx.attemptId || callerCtx.stepId || callerCtx.runId || callerCtx.missionId)
+  ) {
+    return true;
+  }
   return false;
 }
 

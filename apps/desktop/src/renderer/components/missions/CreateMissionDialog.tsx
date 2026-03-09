@@ -1421,6 +1421,10 @@ function CreateMissionDialogInner({
                         availableModelIds={availableModelIds}
                         labelStyle={dlgLabelStyle}
                         inputStyle={dlgInputStyle}
+                        planningPromptPreview={{
+                          missionPrompt: draft.prompt,
+                          phases: draft.phaseOverride,
+                        }}
                       />
                     ))}
                   </div>

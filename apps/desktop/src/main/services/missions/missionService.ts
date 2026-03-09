@@ -2650,6 +2650,47 @@ export function createMissionService({
         });
       }
 
+      if (plannerPlan) {
+        const planSummaryText = [
+          plannerPlan.missionSummary?.strategy ? `Strategy: ${plannerPlan.missionSummary.strategy}` : null,
+          plannerPlan.missionSummary?.objective ? `Objective: ${plannerPlan.missionSummary.objective}` : null,
+          plannerPlan.assumptions?.length ? `Assumptions:\n${plannerPlan.assumptions.map((entry) => `- ${entry}`).join("\n")}` : null,
+          plannerPlan.risks?.length ? `Risks:\n${plannerPlan.risks.map((entry) => `- ${entry}`).join("\n")}` : null,
+          plannerPlan.steps.length
+            ? `Plan Steps:\n${plannerPlan.steps.map((step, index) => `${index + 1}. ${step.name}`).join("\n")}`
+            : null,
+        ].filter((entry): entry is string => Boolean(entry)).join("\n\n");
+
+        if (planSummaryText.trim().length > 0) {
+          insertArtifact({
+            missionId: id,
+            artifactType: "summary",
+            title: "Generated mission plan",
+            description: planSummaryText,
+            createdBy: "system",
+            metadata: {
+              plannerStepCount: plannerPlan.steps.length,
+              source: "planner_plan",
+            },
+          });
+        }
+      }
+
+      if (plannerRun?.rawResponse?.trim()) {
+        insertArtifact({
+          missionId: id,
+          artifactType: "note",
+          title: "Planner output",
+          description: truncateForMetadata(plannerRun.rawResponse, 20_000),
+          createdBy: "system",
+          metadata: {
+            plannerRunId: plannerRun.id,
+            resolvedEngine: plannerRun.resolvedEngine,
+            source: "planner_run",
+          },
+        });
+      }
+
       db.flushNow();
       emit({ missionId: id, reason: "created" });
       const detail = this.get(id);

@@ -5,7 +5,7 @@
 import type { ModelId } from "./core";
 import type { ModelConfig } from "./models";
 import type { PrDepth, QueueWaitReason } from "./prs";
-import type { MissionDetail, MissionStepHandoff } from "./missions";
+import type { MissionDetail, MissionStepHandoff, PhaseCard } from "./missions";
 import type {
   OrchestratorContextProfileId,
   PackDeltaDigestV1,
@@ -1592,6 +1592,14 @@ export type GetOrchestratorPromptInspectorArgs = {
   runId: string;
   target: "coordinator" | "worker";
   stepId?: string | null;
+};
+
+export type GetPlanningPromptPreviewArgs = {
+  missionPrompt: string;
+  phase: PhaseCard;
+  phases: PhaseCard[];
+  missionId?: string | null;
+  runId?: string | null;
 };
 
 export type OrchestratorPromptInspector = {

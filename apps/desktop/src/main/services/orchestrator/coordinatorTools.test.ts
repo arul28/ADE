@@ -1087,7 +1087,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      error: expect.stringContaining("reserved for the Planning phase"),
+      error: expect.stringContaining("Ask Questions is disabled for the current phase"),
     });
   });
 

@@ -1285,13 +1285,64 @@ export function createCoordinatorToolSet(deps: {
     return `Planning input is still pending. Resolve ${blocking.length === 1 ? "the open question" : "the open questions"} before executing planning actions.`;
   }
 
-  function getQuestionAskingBlockReason(g: OrchestratorRunGraph): string | null {
+  function resolvePlanningQuestionPolicy(g: OrchestratorRunGraph): {
+    phase: PhaseCard | null;
+    phaseKey: string;
+    enabled: boolean;
+    mode: "always" | "auto_if_uncertain" | "never";
+    maxQuestions: number;
+  } {
     const phases = resolveMissionPhases(g);
     const current = resolveCurrentPhaseCard(g, phases);
     const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
     const currentName = current?.name.trim().toLowerCase() ?? "";
-    if (currentKey === "planning" || currentName === "planning") return null;
-    return "Ask Questions is reserved for the Planning phase. Outside Planning, proceed with the best reasonable assumption unless runtime opens its own intervention.";
+    const inPlanning = currentKey === "planning" || currentName === "planning";
+    const rawMode = current?.askQuestions.mode;
+    const mode =
+      rawMode === "always" || rawMode === "auto_if_uncertain" || rawMode === "never"
+        ? rawMode
+        : "never";
+    return {
+      phase: current ?? null,
+      phaseKey: current?.phaseKey ?? current?.name ?? "",
+      enabled: inPlanning && current?.askQuestions.enabled === true && mode !== "never",
+      mode: inPlanning ? mode : "never",
+      maxQuestions: Math.max(1, Math.min(10, Number(current?.askQuestions.maxQuestions ?? 5) || 5)),
+    };
+  }
+
+  function listPlanningQuestionInterventions(g: OrchestratorRunGraph): import("../../../shared/types").MissionIntervention[] {
+    const mission = missionService.get(missionId);
+    if (!mission) return [];
+    const policy = resolvePlanningQuestionPolicy(g);
+    const normalizedPhase = policy.phaseKey.trim().toLowerCase();
+    return mission.interventions.filter((entry) => {
+      if (entry.interventionType !== "manual_input") return false;
+      const metadata = asRecord(entry.metadata);
+      if (metadata?.source !== "ask_user") return false;
+      const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
+      return phase.length === 0 || phase === "planning" || phase === normalizedPhase;
+    });
+  }
+
+  function getPlanningQuestionPolicyBlockReason(g: OrchestratorRunGraph): string | null {
+    const policy = resolvePlanningQuestionPolicy(g);
+    if (policy.mode !== "always") return null;
+    const interventions = listPlanningQuestionInterventions(g);
+    const openQuestion = interventions.find((entry) => entry.status === "open") ?? null;
+    if (openQuestion) {
+      return "Planning questions are still open. Resolve them before spawning the planning worker.";
+    }
+    if (interventions.length === 0) {
+      return "Planning Ask Questions is set to Always. Use ask_user first, wait for the user's answers, then spawn the planning worker.";
+    }
+    return null;
+  }
+
+  function getQuestionAskingBlockReason(g: OrchestratorRunGraph): string | null {
+    const policy = resolvePlanningQuestionPolicy(g);
+    if (policy.enabled) return null;
+    return "Ask Questions is disabled for the current phase. Outside Planning, proceed with the best reasonable assumption unless runtime opens its own intervention.";
   }
 
   function getPlanningRepoReadBlockReason(g: OrchestratorRunGraph): string | null {
@@ -1605,6 +1656,10 @@ export function createCoordinatorToolSet(deps: {
         const planningInputBlockReason = getPlanningInputBlockReason(g);
         if (planningInputBlockReason) {
           return { ok: false, error: planningInputBlockReason };
+        }
+        const planningQuestionPolicyBlockReason = getPlanningQuestionPolicyBlockReason(g);
+        if (planningQuestionPolicyBlockReason) {
+          return { ok: false, error: planningQuestionPolicyBlockReason };
         }
         const normalizedName = normalizeText(name);
         if (!normalizedName.length) {
@@ -4973,6 +5028,27 @@ export function createCoordinatorToolSet(deps: {
         if (questionBlockReason) {
           return { ok: false as const, error: questionBlockReason };
         }
+        const policy = resolvePlanningQuestionPolicy(g);
+        const priorInterventions = listPlanningQuestionInterventions(g);
+        const openQuestion = priorInterventions.find((entry) => entry.status === "open") ?? null;
+        if (openQuestion) {
+          const openMeta = asRecord(openQuestion.metadata);
+          return {
+            ok: true as const,
+            interventionId: openQuestion.id,
+            questionCount: Math.max(1, Number(openMeta?.questionCount ?? 1) || 1),
+            deduped: true,
+          };
+        }
+        if (!policy.enabled || policy.mode === "never") {
+          return { ok: false as const, error: "Ask Questions is disabled for this Planning phase." };
+        }
+        if (priorInterventions.length >= policy.maxQuestions) {
+          return {
+            ok: false as const,
+            error: `This Planning phase already reached its Ask Questions limit (${policy.maxQuestions}). Continue with the best grounded assumptions you can.`,
+          };
+        }
         const firstQuestion = questions[0].question.trim();
         if (!firstQuestion.length) {
           return { ok: false as const, error: "First question text is required." };
@@ -5002,7 +5078,7 @@ export function createCoordinatorToolSet(deps: {
             quizMode: true,
             canProceedWithoutAnswer: false,
             questions,
-            phase: phase ?? null,
+            phase: phase ?? policy.phaseKey ?? null,
             questionCount: questions.length,
           }
         });
@@ -5017,7 +5093,7 @@ export function createCoordinatorToolSet(deps: {
             source: "ask_user",
             quizMode: true,
             questionCount: questions.length,
-            phase: phase ?? null,
+            phase: phase ?? policy.phaseKey ?? null,
           },
         });
         orchestratorService.appendTimelineEvent({
@@ -5036,7 +5112,7 @@ export function createCoordinatorToolSet(deps: {
           missionId,
           interventionId: intervention.id,
           questionCount: questions.length,
-          phase: phase ?? null,
+          phase: phase ?? policy.phaseKey ?? null,
         });
         return { ok: true as const, interventionId: intervention.id, questionCount: questions.length, deduped: false };
       } catch (err) {
