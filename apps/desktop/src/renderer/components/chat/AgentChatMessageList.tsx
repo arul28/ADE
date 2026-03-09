@@ -209,8 +209,8 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
       .findIndex((candidate) =>
         candidate.event.type === "reasoning"
         && (
-          (candidate.event.turnId ?? null) === nextTurn
-          || ((candidate.event.itemId ?? null) === nextItemId && (candidate.event.summaryIndex ?? null) === nextSummaryIndex)
+          (nextTurn !== null && (candidate.event.turnId ?? null) === nextTurn)
+          || (nextItemId !== null && (candidate.event.itemId ?? null) === nextItemId && (candidate.event.summaryIndex ?? null) === nextSummaryIndex)
         ),
       );
     if (matchIndex >= 0) {

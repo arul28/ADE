@@ -31,7 +31,6 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
   allSteps,
   claims,
   onOpenWorkerThread,
-  onViewWorkSession,
   onInspectPrompt,
 }: {
   step: OrchestratorStep | null;
@@ -39,7 +38,6 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
   allSteps: OrchestratorStep[];
   claims: OrchestratorClaim[];
   onOpenWorkerThread: (target: OrchestratorChatTarget) => void;
-  onViewWorkSession?: (sessionId: string) => void;
   onInspectPrompt?: (stepId: string) => void;
 }) {
   const [showFullOutput, setShowFullOutput] = useState(false);

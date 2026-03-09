@@ -205,7 +205,7 @@ export function ManualInputResponseModal({
           ) : null}
 
           <div>
-              <div style={{ ...LABEL_STYLE, color: COLORS.textMuted, marginBottom: 6 }}>
+            <div style={{ ...LABEL_STYLE, color: COLORS.textMuted, marginBottom: 6 }}>
               {workerDeliveryFailure ? "HOW ADE SHOULD RECOVER" : "YOUR ANSWER"}
             </div>
             <textarea

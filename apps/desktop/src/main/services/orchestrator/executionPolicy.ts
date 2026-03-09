@@ -265,7 +265,7 @@ export function evaluateRunCompletion(
         message: `Phase "${phase}" has failed steps`,
         blocking
       });
-      if (!blocking && required) {
+      if (!blocking) {
         riskFactors.push(`${phase}_failed`);
       }
     } else if (anyBlocked || anyInProgress) {
@@ -1005,7 +1005,7 @@ export function evaluateRunCompletionFromPhases(
         message: `Phase "${phaseLabel}" has failed steps`,
         blocking
       });
-      if (!blocking && required) {
+      if (!blocking) {
         riskFactors.push(`${phase}_failed`);
       }
     } else if (anyBlocked || anyInProgress) {

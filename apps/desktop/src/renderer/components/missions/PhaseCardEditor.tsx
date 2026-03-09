@@ -81,8 +81,26 @@ export function PhaseCardEditor({
     onUpdate({ ...phase, [key]: value });
   };
 
+  // Stable fingerprint to avoid re-fetching on every object-identity change.
+  const previewFingerprint = React.useMemo(() => {
+    if (!isPlanningPhase || !expanded || !planningPromptPreview) return null;
+    return JSON.stringify({
+      missionPrompt: planningPromptPreview.missionPrompt,
+      phaseInstructions: phase.instructions,
+      phaseModel: phase.model.modelId,
+      askQuestionsEnabled: phase.askQuestions.enabled,
+      askQuestionsMode: phase.askQuestions.mode,
+      phases: planningPromptPreview.phases.map((p) => p.phaseKey),
+    });
+  }, [isPlanningPhase, expanded, planningPromptPreview, phase.instructions, phase.model.modelId, phase.askQuestions.enabled, phase.askQuestions.mode]);
+
+  // Keep a ref to the latest values so the debounced callback always uses fresh data.
+  const previewArgsRef = React.useRef({ phase, planningPromptPreview });
+  previewArgsRef.current = { phase, planningPromptPreview };
+
   React.useEffect(() => {
-    if (!isPlanningPhase || !expanded || !planningPromptPreview || !planningPromptPreview.missionPrompt.trim().length) {
+    if (!previewFingerprint || !previewArgsRef.current.planningPromptPreview
+        || !previewArgsRef.current.planningPromptPreview.missionPrompt.trim().length) {
       setPlanningInspector(null);
       setPlanningInspectorLoading(false);
       setPlanningInspectorError(null);
@@ -91,24 +109,29 @@ export function PhaseCardEditor({
     let cancelled = false;
     setPlanningInspectorLoading(true);
     setPlanningInspectorError(null);
-    void window.ade.orchestrator.getPlanningPromptPreview({
-      missionPrompt: planningPromptPreview.missionPrompt,
-      phase,
-      phases: planningPromptPreview.phases,
-    }).then((inspector) => {
-      if (cancelled) return;
-      setPlanningInspector(inspector);
-      setPlanningInspectorLoading(false);
-    }).catch((error) => {
-      if (cancelled) return;
-      setPlanningInspector(null);
-      setPlanningInspectorError(error instanceof Error ? error.message : String(error));
-      setPlanningInspectorLoading(false);
-    });
+    const timer = setTimeout(() => {
+      const args = previewArgsRef.current;
+      if (!args.planningPromptPreview) return;
+      void window.ade.orchestrator.getPlanningPromptPreview({
+        missionPrompt: args.planningPromptPreview.missionPrompt,
+        phase: args.phase,
+        phases: args.planningPromptPreview.phases,
+      }).then((inspector) => {
+        if (cancelled) return;
+        setPlanningInspector(inspector);
+        setPlanningInspectorLoading(false);
+      }).catch((error) => {
+        if (cancelled) return;
+        setPlanningInspector(null);
+        setPlanningInspectorError(error instanceof Error ? error.message : String(error));
+        setPlanningInspectorLoading(false);
+      });
+    }, 500);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
-  }, [expanded, isPlanningPhase, phase, planningPromptPreview]);
+  }, [previewFingerprint]);
 
   return (
     <div

@@ -141,7 +141,7 @@ export const WORKER_STATUS_HEX: Record<string, string> = {
   disposed: "#71717A",
 };
 
-export type WorkspaceTab = "overview" | "plan" | "ops" | "chat" | "artifacts" | "history";
+export type WorkspaceTab = "overview" | "plan" | "chat" | "artifacts" | "history";
 export type MissionListViewMode = "list" | "board";
 export type PlannerProvider = "auto" | "claude" | "codex";
 export type TeammatePlanMode = "auto" | "off" | "required";

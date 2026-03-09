@@ -113,7 +113,10 @@ function looksLikeRawNoise(text: string): boolean {
   if (/^mcp:/i.test(trimmed)) return true;
   if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
   if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
-  if (!/\s/.test(trimmed) && trimmed.length < 24) return true;
+  // Single-token strings under 24 chars that look like identifiers or noise
+  // tokens rather than prose. Allow strings with sentence-ending punctuation
+  // (e.g. "Done.", "Error!") since those are genuine assistant responses.
+  if (!/\s/.test(trimmed) && trimmed.length < 24 && !/[.!?]/.test(trimmed)) return true;
   if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
   return false;
 }

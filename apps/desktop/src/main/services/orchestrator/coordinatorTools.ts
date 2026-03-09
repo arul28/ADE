@@ -1502,8 +1502,6 @@ export function createCoordinatorToolSet(deps: {
         return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
       });
 
-    const phaseHasTerminalStep = (phase: PhaseCard): boolean =>
-      phaseHasCompletionEligibleStep(phase, stepsForPhase);
     const phaseHasSucceeded = (phase: PhaseCard): boolean =>
       phaseHasSuccessfulCompletion(phase, stepsForPhase);
 
@@ -1569,12 +1567,12 @@ export function createCoordinatorToolSet(deps: {
       }
     }
 
-    // Check mustBeFirst: if a phase is mustBeFirst, it must complete before others start
+    // Check mustBeFirst: if a phase is mustBeFirst, it must succeed before others start
     const firstPhase = sorted.find((p) => p.orderingConstraints.mustBeFirst);
-    if (firstPhase && firstPhase !== currentPhase && !phaseHasTerminalStep(firstPhase)) {
+    if (firstPhase && firstPhase !== currentPhase && !phaseHasSucceeded(firstPhase)) {
       return {
         valid: false,
-        reason: `Phase "${firstPhase.name}" is marked mustBeFirst and has not completed yet. Cannot start phase "${currentPhase.name}" until it finishes.`,
+        reason: `Phase "${firstPhase.name}" is marked mustBeFirst and has not succeeded yet. Cannot start phase "${currentPhase.name}" until it succeeds.`,
       };
     }
 
@@ -4006,8 +4004,6 @@ export function createCoordinatorToolSet(deps: {
             const stepPhaseName = typeof meta?.phaseName === "string" ? meta.phaseName.trim() : "";
             return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
           });
-        const hasTerminalStep = (phase: PhaseCard): boolean =>
-          phaseHasCompletionEligibleStep(phase, stepsForPhase);
         const hasSuccessfulCompletion = (phase: PhaseCard): boolean =>
           phaseHasSuccessfulCompletion(phase, stepsForPhase);
 

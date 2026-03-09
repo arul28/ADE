@@ -1,6 +1,5 @@
 import type {
   GetModelCapabilitiesResult,
-  MissionArtifact,
   MissionDetail,
   OrchestratorArtifact,
   OrchestratorRunGraph,
@@ -113,7 +112,7 @@ export function deriveActivePhaseViewModel(args: {
 
   const whyBits: string[] = [];
   if (inFlightCurrentPhase.length > 0) {
-    whyBits.push(`${inFlightCurrentPhase.length} step${inFlightCurrentPhase.length === 1 ? "" : "s"} are active in this phase.`);
+    whyBits.push(`${inFlightCurrentPhase.length} step${inFlightCurrentPhase.length === 1 ? " is" : "s are"} active in this phase.`);
   } else if (phaseSteps.length > 0 && completedCurrentPhase.length < phaseSteps.length) {
     whyBits.push("This phase still has non-terminal work that must finish before advancement.");
   } else if (runGraph.run.status === "paused") {

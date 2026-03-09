@@ -359,7 +359,7 @@ export function getWorkerDigest(
 ): OrchestratorWorkerDigest | null {
   const digestId = toOptionalString(digestArgs.digestId);
   const missionId = toOptionalString(digestArgs.missionId);
-  if (!digestId) return null;
+  if (!digestId || !missionId) return null;
 
   const row = ctx.db.get(
     `

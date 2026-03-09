@@ -136,6 +136,7 @@ const CHECKPOINT_DAG_MUTATION_TOOLS = new Set([
   "mark_step_complete",
   "complete_mission",
 ]);
+
 export function shouldUseSdkTools(modelId: string): boolean {
   const descriptor = resolveModelDescriptor(modelId);
   if (!descriptor?.isCliWrapped) return true;

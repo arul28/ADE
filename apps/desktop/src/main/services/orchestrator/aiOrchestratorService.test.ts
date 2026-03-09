@@ -4899,7 +4899,7 @@ describe("aiOrchestratorService", () => {
         if (!updated) return false;
         if (updated.deliveryState !== "queued") return false;
         const workerDelivery = ((updated.metadata ?? {}) as { workerDelivery?: { lastError?: string } }).workerDelivery;
-        return typeof workerDelivery?.lastError === "string" && workerDelivery.lastError.includes("Multiple active worker chat sessions");
+        return typeof workerDelivery?.lastError === "string" && workerDelivery.lastError.includes("Multiple active worker sessions");
       });
 
       expect(sendMessage).not.toHaveBeenCalled();
