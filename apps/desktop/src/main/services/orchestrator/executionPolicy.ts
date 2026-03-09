@@ -225,58 +225,7 @@ export function evaluateRunCompletion(
       continue;
     }
 
-    const statuses = stepsInPhase.map((s) => s.status);
-    const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
-    const anyFailed = statuses.some((s) => s === "failed");
-    const allSucceededOrSkipped = phaseIsSuccessfulTerminal(statuses);
-    const hasConcreteSuccess = phaseHasConcreteSuccess(statuses);
-    const anyBlocked = statuses.some((s) => s === "blocked");
-    const anyInProgress = statuses.some((s) => s === "running" || s === "ready" || s === "pending");
-
-    if (allSucceededOrSkipped) {
-      if (required && !hasConcreteSuccess) {
-        diagnostics.push({
-          phase,
-          code: "phase_completed_without_success",
-          message: `Required phase "${phase}" reached a terminal state without any successful work.`,
-          blocking: true
-        });
-        riskFactors.push(`${phase}_completed_without_success`);
-      } else if (!required && !hasConcreteSuccess) {
-        diagnostics.push({
-          phase,
-          code: "phase_terminal_without_success",
-          message: `Phase "${phase}" ended without a successful step.`,
-          blocking: false
-        });
-      } else {
-        diagnostics.push({
-          phase,
-          code: "phase_succeeded",
-          message: `Phase "${phase}" completed successfully`,
-          blocking: false
-        });
-      }
-    } else if (anyFailed && allTerminal) {
-      const blocking = required;
-      diagnostics.push({
-        phase,
-        code: "phase_failed",
-        message: `Phase "${phase}" has failed steps`,
-        blocking
-      });
-      if (!blocking) {
-        riskFactors.push(`${phase}_failed`);
-      }
-    } else if (anyBlocked || anyInProgress) {
-      // In-progress is always blocking — can't complete while steps are running
-      diagnostics.push({
-        phase,
-        code: "phase_in_progress",
-        message: `Phase "${phase}" still in progress`,
-        blocking: true
-      });
-    }
+    evaluatePhaseStepStatuses(phase, phase, required, stepsInPhase, diagnostics, riskFactors);
   }
 
   const requiredValidationMissingStepKeys = relevantSteps
@@ -358,6 +307,67 @@ function phaseHasConcreteSuccess(statuses: OrchestratorStep["status"][]): boolea
 
 function phaseIsSuccessfulTerminal(statuses: OrchestratorStep["status"][]): boolean {
   return statuses.every((status) => status === "succeeded" || status === "skipped" || status === "superseded");
+}
+
+function evaluatePhaseStepStatuses(
+  phase: string,
+  phaseLabel: string,
+  required: boolean,
+  steps: OrchestratorStep[],
+  diagnostics: CompletionDiagnostic[],
+  riskFactors: string[],
+): void {
+  const statuses = steps.map((s) => s.status);
+  const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
+  const anyFailed = statuses.some((s) => s === "failed");
+  const allSucceededOrSkipped = phaseIsSuccessfulTerminal(statuses);
+  const hasConcreteSuccess = phaseHasConcreteSuccess(statuses);
+  const anyBlocked = statuses.some((s) => s === "blocked");
+  const anyInProgress = statuses.some((s) => s === "running" || s === "ready" || s === "pending");
+
+  if (allSucceededOrSkipped) {
+    if (required && !hasConcreteSuccess) {
+      diagnostics.push({
+        phase,
+        code: "phase_completed_without_success",
+        message: `Required phase "${phaseLabel}" reached a terminal state without any successful work.`,
+        blocking: true
+      });
+      riskFactors.push(`${phase}_completed_without_success`);
+    } else if (!required && !hasConcreteSuccess) {
+      diagnostics.push({
+        phase,
+        code: "phase_terminal_without_success",
+        message: `Phase "${phaseLabel}" ended without a successful step.`,
+        blocking: false
+      });
+    } else {
+      diagnostics.push({
+        phase,
+        code: "phase_succeeded",
+        message: `Phase "${phaseLabel}" completed successfully`,
+        blocking: false
+      });
+    }
+  } else if (anyFailed && allTerminal) {
+    const blocking = required;
+    diagnostics.push({
+      phase,
+      code: "phase_failed",
+      message: `Phase "${phaseLabel}" has failed steps`,
+      blocking
+    });
+    if (!blocking) {
+      riskFactors.push(`${phase}_failed`);
+    }
+  } else if (anyBlocked || anyInProgress) {
+    diagnostics.push({
+      phase,
+      code: "phase_in_progress",
+      message: `Phase "${phaseLabel}" still in progress`,
+      blocking: true
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────
@@ -965,57 +975,7 @@ export function evaluateRunCompletionFromPhases(
       continue;
     }
 
-    const statuses = stepsInPhase.map((s) => s.status);
-    const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
-    const anyFailed = statuses.some((s) => s === "failed");
-    const allSucceededOrSkipped = phaseIsSuccessfulTerminal(statuses);
-    const hasConcreteSuccess = phaseHasConcreteSuccess(statuses);
-    const anyBlocked = statuses.some((s) => s === "blocked");
-    const anyInProgress = statuses.some((s) => s === "running" || s === "ready" || s === "pending");
-
-    if (allSucceededOrSkipped) {
-      if (required && !hasConcreteSuccess) {
-        diagnostics.push({
-          phase,
-          code: "phase_completed_without_success",
-          message: `Required phase "${phaseLabel}" reached a terminal state without any successful work.`,
-          blocking: true
-        });
-        riskFactors.push(`${phase}_completed_without_success`);
-      } else if (!required && !hasConcreteSuccess) {
-        diagnostics.push({
-          phase,
-          code: "phase_terminal_without_success",
-          message: `Phase "${phaseLabel}" ended without a successful step.`,
-          blocking: false
-        });
-      } else {
-        diagnostics.push({
-          phase,
-          code: "phase_succeeded",
-          message: `Phase "${phaseLabel}" completed successfully`,
-          blocking: false
-        });
-      }
-    } else if (anyFailed && allTerminal) {
-      const blocking = required;
-      diagnostics.push({
-        phase,
-        code: "phase_failed",
-        message: `Phase "${phaseLabel}" has failed steps`,
-        blocking
-      });
-      if (!blocking) {
-        riskFactors.push(`${phase}_failed`);
-      }
-    } else if (anyBlocked || anyInProgress) {
-      diagnostics.push({
-        phase,
-        code: "phase_in_progress",
-        message: `Phase "${phaseLabel}" still in progress`,
-        blocking: true
-      });
-    }
+    evaluatePhaseStepStatuses(phase, phaseLabel, required, stepsInPhase, diagnostics, riskFactors);
   }
 
   // Check validation contracts

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { At, Image, Pause, Square, X, Hash, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
+import { At, Image, Square, X, Hash, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
   AgentChatExecutionMode,
@@ -15,7 +15,6 @@ import {
   safetyBadgeLabel,
   safetyColors,
   type PermissionOption,
-  type SafetyLevel,
 } from "../shared/permissionOptions";
 
 type ExecutionModeOption = {

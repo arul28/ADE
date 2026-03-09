@@ -710,6 +710,12 @@ export function extractAndRegisterArtifacts(
       register("implementation_pr", "pr", prUrl.trim());
     }
 
+    const ARTIFACT_TYPE_TO_KIND: Record<string, OrchestratorArtifactKind> = {
+      branch: "branch",
+      pr: "pr",
+      pull_request: "pr",
+      test_report: "test_report",
+    };
     const reportArtifacts = Array.isArray(lastResultReport?.artifacts) ? lastResultReport.artifacts : [];
     reportArtifacts.forEach((entry, index) => {
       const artifact = isRecord(entry) ? entry : null;
@@ -717,20 +723,11 @@ export function extractAndRegisterArtifacts(
       const rawType = artifact && typeof artifact.type === "string" ? artifact.type.trim().toLowerCase() : "";
       const rawUri = artifact && typeof artifact.uri === "string" ? artifact.uri.trim() : "";
       const title = rawTitle || `Worker artifact ${index + 1}`;
-      const artifactKeyBase = rawTitle.length
-        ? rawTitle.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
-        : `reported_artifact_${index + 1}`;
-      const artifactKey = artifactKeyBase.length ? artifactKeyBase : `reported_artifact_${index + 1}`;
-      const kind =
-        rawType === "branch"
-          ? "branch"
-          : rawType === "pr" || rawType === "pull_request"
-            ? "pr"
-            : rawType === "test_report"
-              ? "test_report"
-              : rawUri.length
-                ? "file"
-                : "custom";
+      const fallbackKey = `reported_artifact_${index + 1}`;
+      const artifactKey = rawTitle.length
+        ? rawTitle.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || fallbackKey
+        : fallbackKey;
+      const kind = ARTIFACT_TYPE_TO_KIND[rawType] ?? (rawUri.length ? "file" : "custom");
       const value = rawUri.length
         ? rawUri
         : artifact?.metadata != null

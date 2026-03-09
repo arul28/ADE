@@ -1,5 +1,4 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   Clock,
   SpinnerGap,
@@ -9,7 +8,6 @@ import {
   Rocket,
   MagnifyingGlass,
   Stop,
-  TerminalWindow,
   X,
   Pulse,
   GitBranch,
@@ -139,7 +137,6 @@ function buildQuizDirective(quiz: ClarificationQuiz): string {
 /* ════════════════════ MAIN COMPONENT ════════════════════ */
 
 export default function MissionsPage() {
-  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const mappedLanes = useMemo(() => lanes.map((l) => ({ id: l.id, name: l.name })), [lanes]);

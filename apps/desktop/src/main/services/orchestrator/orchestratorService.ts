@@ -509,11 +509,8 @@ function resolveRunPhaseCardsFromMetadata(runMetadata: Record<string, unknown> |
 }
 
 function buildInitialPhaseRuntime(phaseCards: PhaseCard[] | null | undefined): Record<string, unknown> | null {
-  const sorted = Array.isArray(phaseCards)
-    ? [...phaseCards].sort((left, right) => left.position - right.position)
-    : [];
-  const initialPhase = sorted[0] ?? null;
-  if (!initialPhase) return null;
+  if (!Array.isArray(phaseCards) || phaseCards.length === 0) return null;
+  const initialPhase = [...phaseCards].sort((left, right) => left.position - right.position)[0]!;
   const transitionedAt = nowIso();
   return {
     currentPhaseKey: initialPhase.phaseKey,
@@ -573,16 +570,15 @@ function resolveCurrentRunPhaseCard(
   phaseCards: PhaseCard[] | null | undefined,
 ): PhaseCard | null {
   if (!runMetadata || !Array.isArray(phaseCards) || phaseCards.length === 0) return null;
-  const sorted = [...phaseCards].sort((left, right) => left.position - right.position);
   const phaseRuntime = asRecord(runMetadata.phaseRuntime);
   const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
   const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
   if (currentPhaseKey.length > 0) {
-    const byKey = sorted.find((phase) => phase.phaseKey === currentPhaseKey);
+    const byKey = phaseCards.find((phase) => phase.phaseKey === currentPhaseKey);
     if (byKey) return byKey;
   }
   if (currentPhaseName.length > 0) {
-    const byName = sorted.find((phase) => phase.name === currentPhaseName);
+    const byName = phaseCards.find((phase) => phase.name === currentPhaseName);
     if (byName) return byName;
   }
   return null;

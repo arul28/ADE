@@ -11,7 +11,7 @@ let phaseProfilesEntry: CacheEntry<PhaseProfile[]> | null = null;
 let phaseItemsEntry: CacheEntry<PhaseCard[]> | null = null;
 
 function isFresh(entry: CacheEntry<unknown> | null): boolean {
-  return Boolean(entry && Date.now() - entry.cachedAt < MISSION_DIALOG_DATA_TTL_MS);
+  return entry != null && Date.now() - entry.cachedAt < MISSION_DIALOG_DATA_TTL_MS;
 }
 
 export function getCachedPhaseProfiles(): PhaseProfile[] | null {

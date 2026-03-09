@@ -1,6 +1,6 @@
 import React from "react";
 import { X } from "@phosphor-icons/react";
-import type { PhaseCard, ModelConfig, OrchestratorPromptInspector } from "../../../shared/types";
+import type { PhaseCard, OrchestratorPromptInspector } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
 import { PromptInspectorCard } from "./PromptInspectorCard";

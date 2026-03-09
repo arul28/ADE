@@ -719,30 +719,31 @@ function mergeThreadResolvedTarget(
   if (!threadTarget) return explicitTarget;
   if (!explicitTarget) return threadTarget;
   if (threadTarget.kind !== explicitTarget.kind) return explicitTarget;
+  // threadTarget.kind === explicitTarget.kind is guaranteed by the guard above,
+  // so we can safely narrow threadTarget inside each case branch.
   switch (explicitTarget.kind) {
     case "worker": {
-      const threadWorkerTarget = threadTarget.kind === "worker" ? threadTarget : null;
+      const tt = threadTarget as Extract<typeof threadTarget, { kind: "worker" }>;
       return {
         kind: "worker",
-        runId: explicitTarget.runId ?? threadTarget.runId ?? null,
-        stepId: explicitTarget.stepId ?? threadWorkerTarget?.stepId ?? null,
-        stepKey: explicitTarget.stepKey ?? threadWorkerTarget?.stepKey ?? null,
-        attemptId: explicitTarget.attemptId ?? threadWorkerTarget?.attemptId ?? null,
-        sessionId: explicitTarget.sessionId ?? threadWorkerTarget?.sessionId ?? null,
-        laneId: explicitTarget.laneId ?? threadWorkerTarget?.laneId ?? null,
+        runId: explicitTarget.runId ?? tt.runId ?? null,
+        stepId: explicitTarget.stepId ?? tt.stepId ?? null,
+        stepKey: explicitTarget.stepKey ?? tt.stepKey ?? null,
+        attemptId: explicitTarget.attemptId ?? tt.attemptId ?? null,
+        sessionId: explicitTarget.sessionId ?? tt.sessionId ?? null,
+        laneId: explicitTarget.laneId ?? tt.laneId ?? null,
       };
     }
     case "teammate": {
-      const threadTeammateTarget = threadTarget.kind === "teammate" ? threadTarget : null;
+      const tt = threadTarget as Extract<typeof threadTarget, { kind: "teammate" }>;
       return {
         kind: "teammate",
-        runId: explicitTarget.runId ?? threadTarget.runId ?? null,
-        teamMemberId: explicitTarget.teamMemberId ?? threadTeammateTarget?.teamMemberId ?? null,
-        sessionId: explicitTarget.sessionId ?? threadTeammateTarget?.sessionId ?? null,
+        runId: explicitTarget.runId ?? tt.runId ?? null,
+        teamMemberId: explicitTarget.teamMemberId ?? tt.teamMemberId ?? null,
+        sessionId: explicitTarget.sessionId ?? tt.sessionId ?? null,
       };
     }
     case "workers":
-      return explicitTarget;
     case "agent":
       return explicitTarget;
     case "coordinator":

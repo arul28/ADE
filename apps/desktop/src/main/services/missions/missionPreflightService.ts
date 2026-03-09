@@ -277,9 +277,10 @@ export function createMissionPreflightService(args: {
     }
     if (selectedPrStrategy?.kind === "queue" && selectedPrStrategy.rehearseQueue === true) {
       const targetBranch = toNonEmptyString(selectedPrStrategy.targetBranch) ?? "main";
+      const stripRefPrefix = (ref: string) => ref.trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
       const targetExists = activeLanes.some((lane) => {
-        const branchRef = String((lane as { branchRef?: string }).branchRef ?? "").trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
-        const baseRef = String((lane as { baseRef?: string }).baseRef ?? "").trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+        const branchRef = stripRefPrefix(String((lane as { branchRef?: string }).branchRef ?? ""));
+        const baseRef = stripRefPrefix(String((lane as { baseRef?: string }).baseRef ?? ""));
         return lane.id === targetBranch || branchRef === targetBranch || baseRef === targetBranch;
       });
       if (!targetExists) {
@@ -293,11 +294,7 @@ export function createMissionPreflightService(args: {
         selectedPrStrategy?.kind === "queue" ? selectedPrStrategy.conflictResolverModel ?? "" : "",
       ]
         .map((modelId) => getModelById(modelId) ?? resolveModelAlias(modelId))
-        .some((descriptor) =>
-          Boolean(descriptor)
-          && descriptor!.isCliWrapped
-          && (descriptor!.family === "anthropic" || descriptor!.family === "openai")
-        );
+        .some((d) => d?.isCliWrapped && (d.family === "anthropic" || d.family === "openai"));
       if (!hasCliResolverModel) {
         capabilityIssues.push(
           selectedPrStrategy?.kind === "queue"

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
-import { getDefaultModelDescriptor, getModelById, MODEL_REGISTRY, resolveModelAlias } from "../../../shared/modelRegistry";
 import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkStatusFilter, type WorkViewMode } from "../../state/appStore";
 import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
 import { isChatToolType } from "../../lib/sessions";
@@ -24,21 +23,6 @@ function inferToolFromResumeCommand(command: string): string | null {
   if (n.startsWith("gemini ")) return "gemini";
   return null;
 }
-
-function resolveModelDescriptor(modelIdOrAlias: string | null | undefined) {
-  const raw = String(modelIdOrAlias ?? "").trim();
-  if (!raw.length) return null;
-  return getModelById(raw) ?? resolveModelAlias(raw);
-}
-
-const DEFAULT_CLAUDE_CHAT_MODEL_ID = getDefaultModelDescriptor("claude")?.id
-  ?? MODEL_REGISTRY.find((model) => model.family === "anthropic" && model.isCliWrapped)?.id
-  ?? MODEL_REGISTRY[0]?.id
-  ?? "anthropic/claude-sonnet-4-6";
-const DEFAULT_CODEX_CHAT_MODEL_ID = getDefaultModelDescriptor("codex")?.id
-  ?? MODEL_REGISTRY.find((model) => model.family === "openai" && model.isCliWrapped)?.id
-  ?? MODEL_REGISTRY[0]?.id
-  ?? "openai/gpt-5.4-codex";
 
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
@@ -109,13 +93,6 @@ export function useWorkSessions() {
   const setViewMode = useCallback(
     (nextMode: WorkViewMode) => {
       setProjectViewState({ viewMode: nextMode });
-    },
-    [setProjectViewState],
-  );
-
-  const setDraftKind = useCallback(
-    (nextKind: WorkDraftKind) => {
-      setProjectViewState({ draftKind: nextKind });
     },
     [setProjectViewState],
   );
@@ -635,93 +612,6 @@ export function useWorkSessions() {
     [focusSession, openSessionTab, refresh, selectLane],
   );
 
-  const handleLaunchPty = useCallback(
-    async (laneId: string, profile: "claude" | "codex" | "shell", tracked = true) => {
-      await launchPtySession({ laneId, profile, tracked });
-    },
-    [launchPtySession],
-  );
-
-  const handleLaunchChat = useCallback(
-    async (laneId: string, modelIdOrProvider?: string) => {
-      let provider: "claude" | "codex" | "unified" = "codex";
-      let model = DEFAULT_CODEX_CHAT_MODEL_ID;
-      let modelId: string | undefined;
-
-      const applyDescriptor = (raw: string | null | undefined): boolean => {
-        const descriptor = resolveModelDescriptor(raw);
-        if (!descriptor) return false;
-        modelId = descriptor.id;
-        if (descriptor.isCliWrapped) {
-          provider = descriptor.family === "openai" ? "codex" : "claude";
-          model = descriptor.shortId;
-        } else {
-          provider = "unified";
-          model = descriptor.id;
-        }
-        return true;
-      };
-
-      if (modelIdOrProvider === "codex") {
-        applyDescriptor(DEFAULT_CODEX_CHAT_MODEL_ID);
-      } else if (modelIdOrProvider === "claude") {
-        applyDescriptor(DEFAULT_CLAUDE_CHAT_MODEL_ID);
-      } else if (modelIdOrProvider && modelIdOrProvider.trim().length) {
-        applyDescriptor(modelIdOrProvider);
-      } else {
-        try {
-          const status = await window.ade.ai.getStatus();
-          const detectedLocal = (status.detectedAuth ?? []).find(
-            (entry) =>
-              entry.type === "local" &&
-              (entry.provider === "lmstudio" || entry.provider === "ollama" || entry.provider === "vllm"),
-          );
-          if (detectedLocal) {
-            const localModelId =
-              detectedLocal.provider === "ollama" ? "ollama/llama-3.3" : `${detectedLocal.provider}/auto`;
-            applyDescriptor(localModelId);
-          } else if (status.availableProviders.codex) {
-            const codexId = status.models.codex?.[0]?.id ?? DEFAULT_CODEX_CHAT_MODEL_ID;
-            applyDescriptor(codexId) || applyDescriptor(DEFAULT_CODEX_CHAT_MODEL_ID);
-          } else if (status.availableProviders.claude) {
-            const claudeId = status.models.claude?.[0]?.id ?? DEFAULT_CLAUDE_CHAT_MODEL_ID;
-            applyDescriptor(claudeId) || applyDescriptor(DEFAULT_CLAUDE_CHAT_MODEL_ID);
-          } else {
-            const availableModelIds = Array.isArray(status.availableModelIds)
-              ? status.availableModelIds.map((entry) => String(entry ?? "").trim()).filter(Boolean)
-              : [];
-            const preferredDirectModelId =
-              availableModelIds.find((candidate) => {
-                const descriptor = resolveModelDescriptor(candidate);
-                return descriptor != null && !descriptor.isCliWrapped;
-              }) ?? null;
-            if (preferredDirectModelId) {
-              applyDescriptor(preferredDirectModelId);
-            } else if (availableModelIds[0]) {
-              applyDescriptor(availableModelIds[0]);
-            }
-          }
-        } catch {
-          // Fallback defaults below.
-        }
-
-        if (!modelId) {
-          applyDescriptor(DEFAULT_CODEX_CHAT_MODEL_ID) || applyDescriptor(DEFAULT_CLAUDE_CHAT_MODEL_ID);
-        }
-      }
-
-      if (!modelId) {
-        throw new Error("No configured chat model is available. Configure Codex/Claude or a local/API model in Settings.");
-      }
-      const session = await window.ade.agentChat.create({ laneId, provider, model, modelId });
-      selectLane(laneId);
-      focusSession(session.id);
-      openSessionTab(session.id);
-      await refresh();
-    },
-    [focusSession, openSessionTab, refresh, selectLane],
-  );
-
   return {
     sessions,
     lanes,
@@ -750,7 +640,6 @@ export function useWorkSessions() {
     viewMode,
     setViewMode,
     draftKind,
-    setDraftKind,
     showDraftKind,
     openSessionTab,
     closeTab,
@@ -765,8 +654,6 @@ export function useWorkSessions() {
     resumeSession,
     closeChatSession,
     launchPtySession,
-    handleLaunchPty,
-    handleLaunchChat,
 
     navigate,
     selectLane,
